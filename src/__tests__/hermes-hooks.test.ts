@@ -219,6 +219,7 @@ describe('lastInstructionsSection', () => {
   const overBudget = '2026-11-01 10:22:03,123 WARNING [s2] hermes_cli.plugins: Plugin system prompt section teamai.instructions (teamai-instructions) exceeded the aggregate session budget (8000 chars) and was skipped';
   const overCount = '2026-11-01 11:00:00,000 WARNING hermes_cli.plugins: Plugin system prompt section teamai.instructions exceeded the section-count budget (32) and was skipped';
   const raised = '2026-11-01 12:00:00,000 WARNING [s4] hermes_cli.plugins: Plugin system prompt section teamai.instructions (teamai-instructions) raised and was skipped: boom';
+  const tooLong = '2026-11-01 14:00:00,000 WARNING [s6] hermes_cli.plugins: Plugin system prompt section teamai.instructions (teamai-instructions) exceeded max_chars (4210 > 4000) and was skipped';
   const other = '2026-11-01 13:00:00,000 INFO [s5] hermes_cli.plugins: Session plugin prompt section: id=acme.notes plugin=acme position=after_memory chars=7000';
   const writeLog = (...lines: string[]) => {
     fs.mkdirSync(path.join(tmpDir, 'logs'), { recursive: true });
@@ -246,8 +247,10 @@ describe('lastInstructionsSection', () => {
     expect(await lastInstructionsSection()).toEqual({ kind: 'crowded-out', at: '2026-11-01 11:00:00', reason: 'exceeded the section-count budget (32) and was skipped' });
   });
 
-  it('reports a skip of teamai\'s own making apart', async () => {
+  it('reports a skip of teamai\'s own section apart', async () => {
     writeLog(rendered, raised);
-    expect(await lastInstructionsSection()).toEqual({ kind: 'failed', at: '2026-11-01 12:00:00', reason: 'raised and was skipped: boom' });
+    expect(await lastInstructionsSection()).toEqual({ kind: 'skipped', at: '2026-11-01 12:00:00', reason: 'raised and was skipped: boom' });
+    writeLog(rendered, tooLong);
+    expect(await lastInstructionsSection()).toEqual({ kind: 'skipped', at: '2026-11-01 14:00:00', reason: 'exceeded max_chars (4210 > 4000) and was skipped' });
   });
 });

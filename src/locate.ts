@@ -1226,7 +1226,7 @@ async function settingsHooksOf(
     format: channel.format,
     workspace: null,
     reads: await readsOf(channel.reads, roots, host, HOOK_LIST_KEY),
-    readGates: own === null ? [] : await readGatesOf(channel.readGates, install, host),
+    readGates: await readGatesOf(channel.readGates, install, host),
     retired: settled(own, [unmoved], host.path),
     gates,
   };

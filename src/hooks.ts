@@ -4346,7 +4346,7 @@ export async function reconcileTeamHooksForConfig(
 export async function deliveredHookFiles(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
   const files: string[] = [];
   for (const { file, tool, manifestPath } of await projectHookFiles(teamConfig, localConfig)) {
-    if (await hasTeamaiHooks(file, tool, manifestPath)) files.push(file);
+    if (!files.includes(file) && await hasTeamaiHooks(file, tool, manifestPath)) files.push(file);
   }
   return files;
 }
@@ -4359,7 +4359,7 @@ export async function deliveredHookFiles(teamConfig: TeamaiConfig, localConfig: 
 export async function unreadableHookFiles(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
   const files: string[] = [];
   for (const { file } of await projectHookFiles(teamConfig, localConfig)) {
-    if ((await readJsonObject(file)).kind === 'invalid') files.push(file);
+    if (!files.includes(file) && (await readJsonObject(file)).kind === 'invalid') files.push(file);
   }
   return files;
 }
@@ -4380,12 +4380,10 @@ async function projectHookFiles(
   const selfToolPaths = scopedToolPaths(teamConfig, localConfig);
   const selfManifest = getManagedHooksPath(localConfig);
   const selfRecords = await readManifest(selfManifest);
-  const selfFiles = new Set<string>();
+  // Qoder and Qoder CN share one file: each tool's records are tested against it.
   for (const tool of Object.keys(selfToolPaths)) {
     const selfLocal = selfLocalTeamHookFile(localConfig, selfToolPaths, tool);
-    if (selfLocal === null || selfFiles.has(selfLocal) || (selfRecords[tool]?.length ?? 0) === 0) continue;
-    selfFiles.add(selfLocal);
-    files.push({ file: selfLocal, tool, manifestPath: selfManifest });
+    if (selfLocal !== null && (selfRecords[tool]?.length ?? 0) > 0) files.push({ file: selfLocal, tool, manifestPath: selfManifest });
   }
   const copilotHooks = await locate(COPILOT_TOOL_ID, 'hooks', installOf(teamConfig, localConfig));
   const copilotFile = (workspaceHooksOf(copilotHooks) ?? ownOf(copilotHooks))?.path;

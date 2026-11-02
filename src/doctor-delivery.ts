@@ -2633,7 +2633,7 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
       check: async () => channel.ready && overLimit === null,
       fix: channel.ready ? overLimit ?? '' : channel.fix,
     });
-    if (hook.probe === 'hermes-plugin') {
+    if (hook.probe === 'hermes-plugin' && channel.ready) {
       const check = await hermesSectionCheck();
       if (check !== null) checks.push(check);
     }
@@ -2659,15 +2659,17 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
 /**
  * Whether Hermes's last session took teamai's prompt section, as its log says: the team
  * instructions reach Hermes only through it. Null while the log records no outcome for it.
- * The log names no project, so a section other plugins crowded out may have been another
- * project's, whose section was longer: that warns. A section of teamai's own that failed fails.
+ * The log names no project, and both why a section is crowded out and how long it is depend on
+ * the project the session ran in, so a section Hermes dropped warns.
  */
 async function hermesSectionCheck(): Promise<Check | null> {
-  const { HERMES_INSTRUCTIONS_SECTION, lastInstructionsSection } = await import('./hermes-hooks.js');
+  const { HERMES_INSTRUCTIONS_SECTION, HERMES_SECTION_LIMIT, lastInstructionsSection } = await import('./hermes-hooks.js');
   const { getHermesConfigPath } = await import('./hermes-config.js');
   const section = await lastInstructionsSection();
   const agentLog = path.join(toolHome('hermes'), 'logs', 'agent.log');
   const name = 'Hermes\'s last session took teamai\'s instructions section';
+  // Hermes logs a rendered section at INFO: below that level an old skip stays the last line.
+  const lastSession = (at: string) => `The last Hermes session on this machine, at ${at}, got none of the team instructions`;
   switch (section.kind) {
     case 'unseen':
       return null;
@@ -2678,18 +2680,20 @@ async function hermesSectionCheck(): Promise<Check | null> {
         name,
         source: 'local',
         check: async () => 'warn',
-        fix: `The last Hermes session on this machine, at ${section.at}, got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+        fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
           + `Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before `
           + `${HERMES_INSTRUCTIONS_SECTION} took them first. Disable a plugin you do not need (plugins.disabled in ${getHermesConfigPath()}) `
           + `or shorten its section, then start a new Hermes session. ${agentLog} lists each section Hermes rendered and its size.`,
       };
-    case 'failed':
+    case 'skipped':
       return {
         name,
         source: 'local',
-        check: async () => false,
-        fix: `The last Hermes session on this machine, at ${section.at}, got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
-          + `Run \`teamai hooks inject\`, then start a new Hermes session; ${agentLog} has the details.`,
+        check: async () => 'warn',
+        fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+          + (section.reason.startsWith('exceeded max_chars')
+            ? `Hermes takes at most ${HERMES_SECTION_LIMIT} characters in one section; \`teamai doctor\` in the project that session ran in names the instructions to shorten.`
+            : `Run \`teamai hooks inject\`, then start a new Hermes session; ${agentLog} has the details.`),
       };
     default: {
       const unhandled: never = section;

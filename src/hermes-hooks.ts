@@ -48,8 +48,8 @@ export type InstructionsSection =
   | { readonly kind: 'rendered'; readonly at: string }
   /** Other plugins' sections took the shared budget, 8,000 characters or 32 sections, first. */
   | { readonly kind: 'crowded-out'; readonly at: string; readonly reason: string }
-  /** teamai's own section did not render: it raised, returned no string, or ran over its limit. */
-  | { readonly kind: 'failed'; readonly at: string; readonly reason: string };
+  /** teamai's own section did not render: over its 4,000-character limit, or another skip Hermes logged. */
+  | { readonly kind: 'skipped'; readonly at: string; readonly reason: string };
 
 /**
  * Hermes v0.22.5 renders plugin sections once per session, in section id order, and skips one
@@ -67,7 +67,7 @@ export async function lastInstructionsSection(home = toolHome('hermes')): Promis
     if (rendered.test(line)) return { kind: 'rendered', at };
     const reason = skipped.exec(line)?.[1];
     if (reason === undefined) continue;
-    return { kind: /^exceeded the (?:aggregate session|section-count) budget/.test(reason) ? 'crowded-out' : 'failed', at, reason };
+    return { kind: /^exceeded the (?:aggregate session|section-count) budget/.test(reason) ? 'crowded-out' : 'skipped', at, reason };
   }
   return { kind: 'unseen' };
 }
