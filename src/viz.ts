@@ -503,6 +503,7 @@ async function computeRelationStats(
   isSilent: (entry: SearchIndexEntry) => boolean,
 ): Promise<RelationStats> {
   const memberGraphs = paths.scope ? await memberScopeGraphs({ dryRun: true, config: paths.scope }) : null;
+
   const graph = memberGraphs
     ? computeLintAssetGraph(memberGraphs)
     : await (async () => {
@@ -512,16 +513,21 @@ async function computeRelationStats(
           // is the team-tree root in both, which is all relation resolution reads.
           config: { repo: { localPath: paths.knowledgeRoot } } as LocalConfig,
         });
+
         const targetExists = (kind: AssetKind, treePath: string): boolean => {
           const rel = kind === 'learning' ? `${treePath.slice('learnings/'.length)}.md` : treePath;
           const roots = kind === 'learning' ? paths.indexLearningsDirs : [paths.knowledgeRoot];
+
           return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
         };
+
         return computeLintAssetGraph([{ ctx, targetExists }]);
       })();
+
   const silentPaths = new Set(
     entries.filter(isSilent).map((e) => e.treePath).filter((p): p is string => typeof p === 'string'),
   );
+
   return {
     assetCount: graph.assetCount,
     relationCount: graph.relationCount,
@@ -572,6 +578,7 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const silent = metrics.filter((m) => m.recalledCount === 0);
   const trend = buildTrend(metrics);
   const authors = buildAuthors(metrics);
+
   const relations = await computeRelationStats(
     entries,
     paths,

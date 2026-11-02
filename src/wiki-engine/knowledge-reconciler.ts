@@ -463,16 +463,22 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   // until a person copies one into the asset's `related:` frontmatter.
   const assetRoot = options.assetRoot
     ?? (path.basename(wikiRoot) === 'teamwiki' ? path.dirname(wikiRoot) : undefined);
+
   if (assetRoot) {
     const assetPages: PageRecord[] = [];
+
     for (const dir of ['rules', 'docs']) {
       assetPages.push(...await readPages(path.join(assetRoot, dir)));
     }
+
     for (const assetPage of assetPages) {
       const terms = keyTerms(assetPage);
+
       if (terms.length === 0) continue;
+
       for (const codePage of codePages) {
         const matchedTerms = terms.filter(t => codePage.text.includes(t));
+
         if (matchedTerms.length === 0) continue;
         const term = matchedTerms[0];
         const nearTitle = codePage.title.includes(term);

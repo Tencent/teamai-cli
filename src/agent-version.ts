@@ -146,6 +146,7 @@ function detectorOf(agentType: string): VersionDetector | null {
 async function detectPiVersion(): Promise<string> {
   // Pi Coding Agent: "1.4.0"
   const raw = await execVersion('pi');
+
   return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
 }
 

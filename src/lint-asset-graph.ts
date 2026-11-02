@@ -75,17 +75,22 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
       // entry is prose, not a second edge — the same declared-beats-link rule
       // recall renders (#1562 review).
       const declaredTargets = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
+
       for (const r of own) {
         const kind = classifyTreePath(r.target);
+
         if (r.via === 'declared' && kind !== null) {
           const normalized = normalizeTargetPath(r.target);
+
           if (normalized !== null && !targetExists(kind, normalized)) {
             unresolved.set(`${treePath}|${r.relation}|${normalized}`, {
               from: treePath, relation: r.relation, target: normalized, reason: 'no-asset',
             });
           }
         }
+
         if (r.via === 'link' && declaredTargets.has(r.target)) continue;
+
         // A relation to a teamwiki page counts when the page exists on disk
         // and its codebase is not withheld — the same visibility recall
         // renders. The page stays out of `assets` and `withoutRelation`: a
@@ -93,13 +98,17 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
         if (kind === 'teamwiki') {
           if (ctx.withheld === null) continue;
           const slug = teamwikiCodebaseSlug(r.target);
+
           if (slug !== null && ctx.withheld.has(caseFoldKey(slug))) continue;
+
           if (!targetExists('teamwiki', r.target)) continue;
           ordered.set(`${treePath}|${r.relation}|${r.target}`, { from: treePath, relation: r.relation, target: r.target, via: r.via });
           continue;
         }
+
         if (kind === null || !ctx.byTreePath.has(r.target)) continue;
         const key = `${treePath}|${r.relation}|${r.target}`;
+
         if (ordered.get(key)?.via === 'declared') continue;
         ordered.set(key, { from: treePath, relation: r.relation, target: r.target, via: r.via });
       }
@@ -114,6 +123,7 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
   // review).
   const relations = new Set<string>();
   const connected = new Set<string>();
+
   for (const edge of ordered.values()) {
     relations.add(`${edge.relation}|${[edge.from, edge.target].sort().join('|')}|${edge.via}`);
     connected.add(edge.from);
@@ -129,9 +139,12 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
       const declaredTargets = new Set(
         (ctx.byTreePath.get(rule)?.related ?? []).filter((r) => r.via === 'declared').map((r) => r.target),
       );
+
       for (const glob of globs) {
         const matched = (ctx.codePages ?? []).filter((pg) => pg.sources.some((s) => matchGlob(glob, s)));
+
         if (new Set(matched.map((m) => m.slug)).size !== 1) continue;
+
         for (const pg of matched) {
           if (declaredTargets.has(pg.treePath)) continue;
           relations.add(`MAPS_TO|${[rule, pg.treePath].sort().join('|')}|derived`);
@@ -160,17 +173,22 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
  */
 async function scopeTargetExists(config: LocalConfig): Promise<(kind: AssetKind, treePath: string) => boolean> {
   let learningRoots: string[] = [];
+
   try {
     learningRoots = [pendingLearningsDir(config), ...await indexableLearningsRoots(config, [])];
   } catch {
     learningRoots = [pendingLearningsDir(config)];
   }
+
   const repoRoot = config.repo.localPath;
+
   return (kind, treePath) => {
     const rel = kind === 'learning'
       ? `${treePath.slice('learnings/'.length)}.md`
       : treePath;
+
     const roots = kind === 'learning' ? learningRoots : [repoRoot];
+
     return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
   };
 }
@@ -193,8 +211,10 @@ async function scopeTargetExists(config: LocalConfig): Promise<(kind: AssetKind,
 export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: LocalConfig } = {}): Promise<LintScopeGraph[] | null> {
   const loadOpts = { dryRun: opts.dryRun ?? true };
   let projectConfig: LocalConfig | null = opts.config ?? null;
+
   try {
     if (!projectConfig) projectConfig = await detectProjectConfig(undefined, undefined, loadOpts);
+
     // A workspace searches what its children select too (#913), as recall.
     if (projectConfig) projectConfig = await readWorkspaceChildren(projectConfig);
   } catch {
@@ -202,14 +222,17 @@ export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: Local
   }
 
   const scopeConfigs: Array<{ config: LocalConfig; scope: 'user' | 'project' }> = [];
+
   if (projectConfig) {
     // An explicitly supplied config may be user-scoped (the dashboard reports
     // either); only a project scope can inherit the user one.
     const scope = projectConfig.scope === 'project' ? 'project' : 'user';
     scopeConfigs.push({ config: projectConfig, scope });
+
     if (scope === 'project' && projectConfig.inheritUserScope === true) {
       try {
         const userConfig = await loadLocalConfigForScope('user', undefined, loadOpts);
+
         if (userConfig) scopeConfigs.push({ config: userConfig, scope: 'user' });
       } catch {
         // The inherited user scope is unavailable; the project scope still counts.
@@ -225,6 +248,7 @@ export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: Local
   }
 
   const loaded: Array<{ config: LocalConfig; scope: 'user' | 'project'; index: SearchIndex }> = [];
+
   for (const { config, scope } of scopeConfigs) {
     try {
       // The project index is partition-aware (per checkout in self mode);
@@ -232,7 +256,9 @@ export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: Local
       const indexPath = config.scope === 'project' && config.projectRoot
         ? getProjectSearchIndexPath(config)
         : getUserSearchIndexPath();
+
       const index = await loadIndex(indexPath);
+
       if (index) loaded.push({ config, scope, index });
     } catch {
       // An unreadable index excludes its scope, as an unavailable one does in recall.
@@ -247,6 +273,7 @@ export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: Local
   );
 
   const graphs: LintScopeGraph[] = [];
+
   for (const { config, scope, index } of loaded) {
     try {
       const ctx = await buildRelationContext({
@@ -254,16 +281,19 @@ export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: Local
         config,
         hidden: scope === 'user' ? projectEntryKeys : undefined,
       });
+
       graphs.push({ ctx, targetExists: await scopeTargetExists(config) });
     } catch {
       // Relations are unavailable for this scope, as a failed build is in recall.
     }
   }
+
   return graphs;
 }
 
 /** Count the member's asset relations over {@link memberScopeGraphs}. */
 export async function lintAssetGraph(opts: { dryRun?: boolean } = {}): Promise<LintAssetGraph | null> {
   const graphs = await memberScopeGraphs(opts);
+
   return graphs ? computeLintAssetGraph(graphs) : null;
 }
