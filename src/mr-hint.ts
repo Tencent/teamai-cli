@@ -2,10 +2,12 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
-import type { LocalConfig } from './types.js';
+import { JsonValueSchema, type LocalConfig } from './types.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
 //
@@ -48,12 +50,14 @@ export interface MRSummary {
 }
 
 /** Persisted cache for a repo. */
-interface HintCache {
+const HintCacheSchema = z.object({
   /** MR IDs that have already been hinted. */
-  hintedMrIds: string[];
+  hintedMrIds: z.array(z.string()),
   /** ISO 8601 timestamp of last update. */
-  updatedAt: string;
-}
+  updatedAt: z.string(),
+});
+
+type HintCache = z.infer<typeof HintCacheSchema>;
 
 // ─── Cache helpers ───────────────────────────────────────
 
@@ -86,7 +90,7 @@ function getCachePath(owner: string, repo: string): string {
 function loadCache(owner: string, repo: string): HintCache {
   try {
     const raw = fs.readFileSync(getCachePath(owner, repo), 'utf-8');
-    const parsed = JSON.parse(raw) as HintCache;
+    const parsed = HintCacheSchema.parse(JSON.parse(raw));
     const age = Date.now() - new Date(parsed.updatedAt).getTime();
 
     if (age > CACHE_TTL_MS) {
@@ -198,12 +202,12 @@ export function parseRemoteToRepo(remoteUrl: string): RemoteRepo | null {
 // ─── MR listing ─────────────────────────────────────────
 
 /** TGit API MR object (subset of fields). */
-interface TGitMR {
-  iid: number;
-  title: string;
-  web_url: string;
-  merged_at: string | null;
-}
+const TGitMRSchema = z.object({
+  iid: z.number(),
+  title: z.string(),
+  web_url: z.string(),
+  merged_at: z.string().nullable(),
+});
 
 /**
  * List recently merged MRs from TGit REST API.
@@ -246,7 +250,7 @@ async function listTGitMergedMRs(
       return [];
     }
 
-    const items = (await resp.json()) as TGitMR[];
+    const items = z.array(TGitMRSchema).parse(await resp.json());
     const sinceMs = since.getTime();
 
     return items
@@ -258,28 +262,27 @@ async function listTGitMergedMRs(
         mergedAt: mr.merged_at!,
       }));
   } catch (err) {
-    log.debug(`mr-hint: TGit API error: ${(err as Error).message}`);
+    log.debug(`mr-hint: TGit API error: ${err instanceof Error ? err.message : String(err)}`);
 
     return [];
   }
 }
 
 /** GitHub PR object from gh CLI JSON output. */
-interface GhPR {
-  number: number;
-  title: string;
-  url: string;
-  mergedAt: string;
-}
+const GhPRSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  url: z.string(),
+  mergedAt: z.string(),
+});
 
 /** GitHub REST API pull request object (subset of fields used). */
-interface GitHubRestPR {
-  number: number;
-  title: string;
-  html_url: string;
-  merged_at: string | null;
-  pull_request?: { merged_at: string | null };
-}
+const GitHubRestPRSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  html_url: z.string(),
+  merged_at: z.string().nullable(),
+});
 
 /**
  * Fetch merged PRs from the GitHub REST API.
@@ -298,9 +301,8 @@ async function listGitHubMergedMRsViaREST(
   since: Date,
 ): Promise<MRSummary[]> {
   const token = process.env['GITHUB_TOKEN'];
-  const headers: Record<string, string> = { 'User-Agent': 'teamai-cli', Accept: 'application/vnd.github+json' };
-
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const baseHeaders = { 'User-Agent': 'teamai-cli', Accept: 'application/vnd.github+json' };
+  const headers = token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders;
 
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${MAX_MRS}`;
 
@@ -313,7 +315,7 @@ async function listGitHubMergedMRsViaREST(
       return [];
     }
 
-    const items = (await resp.json()) as GitHubRestPR[];
+    const items = z.array(GitHubRestPRSchema).parse(await resp.json());
     const sinceMs = since.getTime();
 
     return items
@@ -325,7 +327,7 @@ async function listGitHubMergedMRsViaREST(
         mergedAt: pr.merged_at!,
       }));
   } catch (err) {
-    log.debug(`mr-hint: GitHub REST API error: ${(err as Error).message}`);
+    log.debug(`mr-hint: GitHub REST API error: ${err instanceof Error ? err.message : String(err)}`);
 
     return [];
   }
@@ -362,7 +364,7 @@ async function listGitHubMergedMRs(
     );
 
     if (result.status === 0 && result.stdout.trim()) {
-      const items = JSON.parse(result.stdout) as GhPR[];
+      const items = z.array(GhPRSchema).parse(JSON.parse(result.stdout));
       const sinceMs = since.getTime();
 
       return items
@@ -377,7 +379,7 @@ async function listGitHubMergedMRs(
 
     log.debug(`mr-hint: gh pr list unavailable (status=${result.status}), falling back to REST API`);
   } catch (err) {
-    log.debug(`mr-hint: gh CLI error: ${(err as Error).message}, falling back to REST API`);
+    log.debug(`mr-hint: gh CLI error: ${err instanceof Error ? err.message : String(err)}, falling back to REST API`);
   }
 
   // ── Fallback: GitHub REST API ────────────────────────────
@@ -562,28 +564,29 @@ export async function computeMrHintOutput(
   });
 }
 
+/** The SessionStart hook's stdin object; anything else reads as no payload. */
+const HookPayloadSchema = z.record(z.string(), JsonValueSchema);
+
+type HookPayload = z.infer<typeof HookPayloadSchema>;
+
 export async function mrHint(tool?: string): Promise<void> {
   // Drain STDIN when piped (hook invocation) so the caller doesn't block.
   // The payload's cwd selects the scope whose teamai.yaml `language` applies.
-  let payload: Record<string, unknown> = {};
+  let payload: HookPayload = {};
 
   if (!process.stdin.isTTY) {
     try {
       const chunks: Buffer[] = [];
 
       for await (const chunk of process.stdin) {
-        chunks.push(chunk as Buffer);
+        chunks.push(chunk);
       }
 
       const raw = Buffer.concat(chunks).toString('utf-8').trim();
 
       if (raw) {
         try {
-          const parsed = JSON.parse(raw) as unknown;
-
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            payload = parsed as Record<string, unknown>;
-          }
+          payload = HookPayloadSchema.safeParse(JSON.parse(raw)).data ?? payload;
         } catch {
           // non-critical: an unparseable payload still drains
         }
