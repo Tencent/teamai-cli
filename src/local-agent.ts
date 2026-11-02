@@ -3596,8 +3596,8 @@ async function syncClaudemd(
     const unreadable = sentWorkspace === null ? unreadableConfigOf(location) : undefined;
 
     if (unreadable !== undefined) {
-      const problem = `teamai cannot read ${unreadable.file} as plain JSON, so it cannot tell which workspace ${tool} reads, `
-        + 'and writes no instructions there. Make that file plain JSON (no comments or trailing commas), then retry.';
+      const problem = `${unreadable.file} does not parse as JSON or JSON5, so teamai cannot tell which workspace ${tool} reads, `
+        + 'and writes no instructions there. Fix that file, then retry.';
 
       log.warn(problem);
       skipped.push(problem);

@@ -14,7 +14,7 @@ import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { realFilePath } from './git-exclude.js';
 import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
 import { pathExists, readFileIfExists } from './utils/fs.js';
-import { mapStrings, parseJson } from './utils/json.js';
+import { mapStrings, parseJson, parseJson5 } from './utils/json.js';
 
 /**
  * What teamai holds in the gated place. `summary` opens the fix
@@ -227,7 +227,7 @@ async function copilotFolderTrust(gate: Extract<ReadGate, { kind: 'copilot-folde
   const { resolveAnchors } = await import('./utils/git.js');
   const root = await realFilePath(gate.checkout);
   const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
-  const config = await readStore(gate.config, { comments: true });
+  const config = await readStore(gate.config, { syntax: 'line-comments' });
 
   if (config.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: config.reason, question: 'Copilot CLI trusts this project' });
   const folders = config.kind === 'ok' ? [config.value.trustedFolders, config.value.trusted_folders].flatMap(stringsIn) : [];
@@ -260,13 +260,11 @@ type StoreRead =
 
 /**
  * Only an absent store means the tool has not asked yet; one that is there
- * but cannot be read or parsed leaves its verdict unknown. `comments` drops
- * the `//` lines Copilot heads config.json with; `notJson` words a parse failure.
+ * but cannot be read or parsed leaves its verdict unknown. `syntax` is how the
+ * tool parses the file: `line-comments` drops the `//` lines Copilot heads
+ * config.json with, `json5` takes what OpenClaw takes.
  */
-async function readStore(
-  file: string,
-  { comments = false, notJson = (error: string) => `does not parse (${error})` }: { comments?: boolean; notJson?: (error: string) => string } = {},
-): Promise<StoreRead> {
+async function readStore(file: string, { syntax = 'json' }: { syntax?: 'json' | 'line-comments' | 'json5' } = {}): Promise<StoreRead> {
   let raw: string | null;
 
   try {
@@ -276,16 +274,14 @@ async function readStore(
   }
 
   if (raw === null) return { kind: 'missing' };
-  const body = comments ? raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n') : raw;
 
   try {
-    const value = parseJson(body);
+    const value = syntax === 'json5' ? parseJson5(raw)
+      : parseJson(syntax === 'line-comments' ? raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n') : raw);
 
-    return isJsonObject(value)
-      ? { kind: 'ok', value }
-      : { kind: 'unreadable', reason: notJson('not a JSON object') };
+    return isJsonObject(value) ? { kind: 'ok', value } : { kind: 'unreadable', reason: 'does not parse (not a JSON object)' };
   } catch (error) {
-    return { kind: 'unreadable', reason: notJson(error instanceof Error ? error.message : String(error)) };
+    return { kind: 'unreadable', reason: `does not parse (${error instanceof Error ? error.message : String(error)})` };
   }
 }
 
@@ -592,11 +588,11 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
   });
 }
 
-/** openclaw.json as OpenClaw writes it is plain JSON; a member may write JSON5, which teamai cannot read. */
+/** openclaw.json, read as OpenClaw reads it: plain JSON, else JSON5. */
 async function readOpenclawConfig(
   config: string, cause: string, question: string,
 ): Promise<{ readonly read: true; readonly value: JsonObject } | { readonly read: false; readonly verdict: ReadGateVerdict }> {
-  const found = await readStore(config, { notJson: (error) => `is not plain JSON (${error}), as comments or JSON5 make it` });
+  const found = await readStore(config, { syntax: 'json5' });
 
   if (found.kind === 'unreadable') return { read: false, verdict: unreadable({ cause, file: config, reason: found.reason, question }) };
 

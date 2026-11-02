@@ -23,7 +23,7 @@ function hostWith(existing: readonly string[]): Host {
     exists: async (dir: string) => set.has(dir),
     realpath: async (file: string) => file,
     readText: async () => null, existsNow: () => false, readTextNow: () => null,
-    readJson: async () => ({ kind: 'missing' }),
+    readOpenclawConfig: async () => ({ kind: 'missing' }),
     userToolRoots: async () => undefined,
   };
 }

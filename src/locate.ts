@@ -148,7 +148,7 @@ export type Read = {
 export type Gate =
   | { readonly kind: 'selected'; readonly met: boolean }
   | { readonly kind: 'installed'; readonly probe: string; readonly met: boolean }
-  /** OpenClaw's instruction files: an openclaw.json teamai cannot parse may name another workspace (#946). */
+  /** OpenClaw's instruction files: an openclaw.json that does not parse may name another workspace (#946). */
   | { readonly kind: 'readable-config'; readonly file: string; readonly met: boolean };
 
 /**

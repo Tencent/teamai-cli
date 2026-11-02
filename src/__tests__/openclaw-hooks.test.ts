@@ -167,12 +167,13 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('openclaw hooks enable teamai-status-report'));
   });
 
-  it('leaves a config it cannot parse unchanged and warns', async () => {
-    const json5 = '{\n  // comment\n  agents: { defaults: { workspace: "x" } },\n}\n';
+  it('injects into the workspace a JSON5 config names, leaves the file and its comments as written, and warns', async () => {
+    const json5 = `{\n  // the team laptop\n  agents: { defaults: { workspace: ${JSON.stringify(wsDir)} } },\n}\n`;
     fs.writeFileSync(cfgPath(), json5);
 
     await injectOpenClawHooks('openclaw');
 
+    expect(fs.existsSync(path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR, 'HOOK.md'))).toBe(true);
     expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe(json5);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('openclaw hooks enable teamai-status-report'));
   });

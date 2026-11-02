@@ -2352,7 +2352,7 @@ describe('local-agent: cmds[] migration', () => {
     const workspace = path.join(tmpDir, 'openclaw-workspace');
     const configFile = path.join(tmpDir, '.openclaw', 'openclaw.json');
     await fse.ensureDir(workspace);
-    await fse.outputFile(configFile, '{ agents: { defaults: { workspace: "/elsewhere" } } }');
+    await fse.outputFile(configFile, '{ agents: { defaults: { workspace: "/elsewhere" ');
     vi.stubEnv('OPENCLAW_CONFIG_PATH', configFile);
     vi.stubEnv('OPENCLAW_WORKSPACE_DIR', workspace);
 

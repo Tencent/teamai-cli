@@ -432,8 +432,8 @@ async function updateOpenClawPluginConfig(file: string, action: 'load' | 'unload
 
   if (read.kind === 'invalid') {
     log.warn(action === 'load'
-      ? `OpenClaw: teamai cannot read ${cfgPath} as plain JSON (${read.error}), so the team's hooks do not run. Add ${file} to plugins.load.paths by hand.`
-      : `OpenClaw: teamai cannot read ${cfgPath} as plain JSON (${read.error}), so the team's hooks plugin is still listed there. Remove ${file} from plugins.load.paths by hand.`);
+      ? `OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. The team's hooks do not run. Add ${file} to plugins.load.paths by hand.`
+      : `OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. The team's hooks plugin is still listed there. Remove ${file} from plugins.load.paths by hand.`);
 
     return;
   }
@@ -508,8 +508,8 @@ async function enableOpenClawHookEntry(hookKey: string): Promise<void> {
   const read = await readJsonObject(cfgPath);
 
   if (read.kind === 'invalid') {
-    log.warn(`OpenClaw: teamai cannot read ${cfgPath} as plain JSON (${read.error}), so it cannot enable `
-      + `its hook ${hookKey} there; the hook does not run until you run ${enableCmd}.`);
+    log.warn(`OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. `
+      + `teamai's hook ${hookKey} does not run until you run ${enableCmd}.`);
 
     return;
   }
@@ -580,8 +580,8 @@ export async function removeOpenClawHookEntry(hookKey: string = OPENCLAW_HOOK_KE
   if (read.kind === 'missing') return;
 
   if (read.kind === 'invalid') {
-    log.warn(`OpenClaw: teamai cannot read ${cfgPath} as plain JSON (${read.error}), so it left `
-      + `hooks.internal.entries.${hookKey} there; remove it by hand or run \`openclaw hooks disable ${hookKey}\`.`);
+    log.warn(`OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. `
+      + `hooks.internal.entries.${hookKey} is still there; remove it by hand or run \`openclaw hooks disable ${hookKey}\`.`);
 
     return;
   }

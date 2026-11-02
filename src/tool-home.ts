@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { homeVariables, isToolId, TOOLS, type HomeMove, type ToolDescriptor, type ToolId } from './tools.js';
-import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
+import { pathExists, readFileSafe, readJson5Object, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
 import { getUserHome, normalizeHomePath, usesInstallHome } from './utils/home.js';
 
 export type Host = {
@@ -20,8 +20,8 @@ export type Host = {
   /** The session's directory, read only when a relative path needs it: a removed one throws (#810). */
   cwd(): string;
   exists(file: string): Promise<boolean>;
-  /** A JSON object file, as `readJsonObject` reads it: OpenClaw's openclaw.json. */
-  readJson(file: string): Promise<JsonObjectRead>;
+  /** OpenClaw's openclaw.json, read as OpenClaw reads it (`readJson5Object`). */
+  readOpenclawConfig(file: string): Promise<JsonObjectRead>;
   /** `file` through its links; `file` itself when it cannot be resolved (missing, a loop, unreadable). */
   realpath(file: string): Promise<string>;
   /** A small text file, or null when it is missing or unreadable: a linked worktree's `.git` and its `commondir`. */
@@ -51,7 +51,7 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
     toolHomes: cachedToolHomesRead(),
     cwd: () => process.cwd(),
     exists: pathExists,
-    readJson: readJsonObject,
+    readOpenclawConfig: readJson5Object,
     realpath: (file) => fs.promises.realpath(file).catch(() => file),
     readText: readFileSafe,
     existsNow: (file) => fs.existsSync(file),
