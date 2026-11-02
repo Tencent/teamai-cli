@@ -8,6 +8,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { benchmarkFixture, envelope, fixTask, PRODUCT_URL, runFixBenchmark, said, startFixBenchmark, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
 const TWO_REPETITIONS = `schemaVersion: v1alpha1
@@ -371,6 +372,8 @@ describe('teamai run in a trial clone', () => {
     const before = { member: memberSide(fixture), homes: homeFiles(fixture) };
 
     const hook = teamai(['hook-dispatch', 'session-start', '--tool', 'codex'], JSON.stringify({ cwd: dir, session_id: 'in-clone', hook_event_name: 'SessionStart', source: 'startup' }));
+    // The hook's background pass pulls too; a pull while it holds the lock is skipped.
+    await waitForDetachedChildren();
     const pulled = teamai(['pull']);
 
     expect(hook.status, String(hook.stderr)).toBe(0);
