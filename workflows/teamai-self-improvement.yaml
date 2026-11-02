@@ -24,6 +24,8 @@ steps:
       1. Find what the failures share. Change the team's assets in {{ steps.plan.outputs.team }} so that work like this passes the rubric. Any asset
          teamai delivers may change: skills, rules, agents, prompts, hooks, MCP servers, models, env, the team culture (claudemd), docs and workflows.
          Change the scorer only when the failures show its rubric is wrong. Never change application code.
+         Edit or add files only: a deleted file is not proposed. Write nowhere outside the asset directories teamai pulls, since a file
+         elsewhere, such as notes.txt at the top, makes the whole proposal fail.
       2. For each failure, write {{ steps.plan.outputs.team }}/{{ inputs.suite }}/tasks/<id>.yaml, where <id> is letters, digits, "-" or "_", with:
          schemaVersion v1alpha1; title, what went wrong in a few words; prompt, the request the work was given, as its learnings or its workflow
          step describe it, without the fix; startingCommit, its start.commit; successCriteria, what the rubric's passing label asks of this work,

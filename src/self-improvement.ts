@@ -235,8 +235,10 @@ async function propose({ team, branch }: { team: string; branch: string }): Prom
     refuse('invalid_task', `The regression suite cannot run with these files, so nothing was proposed. Fix them in ${team}:\n${invalid.join('\n')}`);
     return;
   }
+  // The branch as plan cloned it: a teammate's commit pushed while the run edited the files is kept, not replaced.
+  const seen = await git(team, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`]).catch(() => '');
   const { pushFile } = await import('./push-file.js');
-  await pushFile({ file: files.map((file) => path.join(team, file)), path: files, branch });
+  await pushFile({ file: files.map((file) => path.join(team, file)), path: files, branch, branchSeen: seen ? { kind: 'at', commit: seen } : { kind: 'absent' } });
 }
 
 export const SelfImprovement = { WORKFLOW, SUITE, BRANCH_PREFIX, pick, isReady, commandOf, plan, propose, branchOf, commitsIn } as const;

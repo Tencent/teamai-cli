@@ -84,8 +84,11 @@ function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
   return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: 'pipe' }).trim();
 }
 
-/** The fake `<tool>`: improves when prompted to, else fixes a trial's task once the team files it got hold the marker. */
-function fakeTool(tool: string, improveLog: string): string {
+/**
+ * The fake `<tool>`: improves when prompted to, else fixes a trial's task once the team files it got hold the marker.
+ * While it improves, it runs the script at `during` once if there is one, as a teammate acting in the meantime.
+ */
+function fakeTool(tool: string, improveLog: string, during: string): string {
   return `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
@@ -96,6 +99,10 @@ if (said.includes("Improve the team's harness")) {
   const suite = new RegExp(team.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&') + '/(\\\\S+)/tasks/<id>\\\\.yaml').exec(said)[1];
   const failures = JSON.parse(/Failures to fix, newest first: (.*)$/m.exec(said)[1]);
   fs.appendFileSync(${JSON.stringify(improveLog)}, JSON.stringify({ cwd: process.cwd(), failures }) + '\\n');
+  if (fs.existsSync(${JSON.stringify(during)})) {
+    spawnSync('sh', [${JSON.stringify(during)}], { stdio: 'inherit' });
+    fs.rmSync(${JSON.stringify(during)});
+  }
   const skill = path.join(team, 'skills', 'review', 'SKILL.md');
   if (!fs.readFileSync(skill, 'utf8').includes(${JSON.stringify(MARKER)})) fs.appendFileSync(skill, ${JSON.stringify(`${MARKER}\n`)});
   for (const { failure, start } of failures) {
@@ -186,8 +193,8 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
   });
 
   const prove = (pull: number): Ran[] => runJob(guideJob('.github/workflows/regressions.yml'), {
-    'vars.TEAM_REPO': TEAM_URL, 'secrets.TEAM_TOKEN': 'fixture-team-token', 'secrets.ANTHROPIC_API_KEY': 'fixture-anthropic-key',
-    'secrets.OPENAI_API_KEY': 'fixture-openai-key', 'secrets.PROJECT_READ_TOKEN': 'fixture-project-token',
+    'vars.TEAM_REPO': TEAM_URL, 'secrets.ANTHROPIC_API_KEY': 'fixture-anthropic-key',
+    'secrets.OPENAI_API_KEY': 'fixture-openai-key', 'secrets.PROJECT_READ_TOKEN': 'fixture-project-token', 'github.token': 'fixture-github-token',
     'github.head_ref': BRANCH, 'github.event.pull_request.number': String(pull),
   });
 
@@ -214,7 +221,7 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
     fs.symlinkSync(execFileSync('which', ['bash'], { encoding: 'utf8' }).trim(), path.join(fixture.bin, 'bash'));
     for (const tool of ['claude', 'codex']) {
       fs.renameSync(path.join(fixture.bin, tool), path.join(fixture.bin, `${tool}.fixture`));
-      fs.writeFileSync(path.join(fixture.bin, tool), fakeTool(tool, improveLog), { mode: 0o755 });
+      fs.writeFileSync(path.join(fixture.bin, tool), fakeTool(tool, improveLog, path.join(fixture.root, 'during-improve.sh')), { mode: 0o755 });
     }
     fs.writeFileSync(path.join(fixture.bin, 'npx'), [
       '#!/bin/sh',
@@ -291,5 +298,25 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
     expect(improveLaunches().at(-1)?.failures.map(({ failure }) => failure.subject.sessionId)).toEqual(['s4000000']);
     expect(proposed()).toContain('benchmarks/regressions/tasks/missed-null-check-s4000000.yaml');
     expect(proposed()).toContain('benchmarks/regressions/tasks/missed-null-check-s1000000.yaml');
+  }, 240_000);
+
+  it('keeps a teammate\'s commit pushed to the proposal while a run improves it, and pushes nothing over it', () => {
+    publishLabels('bob', [failing('s5000000', { commit: fixture.startingCommit, dirty: false })]);
+    const teammate = path.join(fixture.root, 'teammate');
+    fs.writeFileSync(path.join(fixture.root, 'during-improve.sh'), [
+      `git clone -q --branch ${BRANCH} ${JSON.stringify(fixture.teamOrigin)} ${JSON.stringify(teammate)}`,
+      `cd ${JSON.stringify(teammate)}`,
+      'mkdir -p rules && echo "# Ask for a test of each fix" > rules/during.md',
+      'git add -A && git -c user.name=Bob -c user.email=bob@example.com commit -qm "Ask for a test of each fix"',
+      `git push -q origin ${BRANCH}`, '',
+    ].join('\n'));
+
+    const ran = improve();
+
+    const theirs = git(teammate, ['rev-parse', 'HEAD']);
+    expect(ran.some((step) => step.status !== 0), said(ran)).toBe(true);
+    expect(said(ran)).toContain(`${BRANCH} moved on origin to ${theirs}`);
+    expect(branchHead()).toBe(theirs);
+    expect(proposed()).toContain('rules/during.md');
   }, 240_000);
 });

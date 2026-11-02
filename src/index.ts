@@ -975,7 +975,7 @@ selfImprovementCmd
 
 selfImprovementCmd
   .command('propose')
-  .description('The workflow\'s last step: push every file the team checkout --team adds or changes against the default branch on its origin to --branch, in one pull request, as teamai push --file --path --branch does, so an open pull request of that branch is updated. A deleted file is not proposed, and is named on stderr.')
+  .description('The workflow\'s last step: push every file the team checkout --team adds or changes against the default branch on its origin to --branch, in one pull request, as teamai push --file --path --branch does, so an open pull request of that branch is updated. A deleted file is not proposed, and is named on stderr. Pushes nothing when --branch on origin moved since plan cloned it, so a commit pushed meanwhile is kept, or when a changed suite or task would not parse.')
   .requiredOption('--team <dir>', 'The team checkout plan printed as team')
   .requiredOption('--branch <branch>', 'The branch plan printed as branch')
   .action(async (cmdOpts: { team: string; branch: string }) => {

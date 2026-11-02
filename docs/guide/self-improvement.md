@@ -166,7 +166,7 @@ jobs:
       - run: npx teamai-cli self-improvement run "$SCORER" --tools default=claude --sandbox
 ```
 
-- `TEAM_TOKEN` clones the team repo and pushes the proposal's branch to it; `PROJECT_READ_TOKEN` reads the suite's repo.
+- `TEAM_TOKEN` clones the team repo and pushes the proposal's branch to it; `PROJECT_READ_TOKEN` reads the suite's repo. The proof job below needs no push: it runs in the team repo, so its own `github.token` clones it and edits the PR body.
 - `--tools default=claude` runs the prompt step on Claude Code; `--sandbox` declares the runner a machine to throw away, which that step requires: it edits files without asking.
 - `--suite` names another suite than `benchmarks/regressions`, such as `--suite benchmarks/web/regressions` for a role's.
 
@@ -197,7 +197,7 @@ $ teamai self-improvement plan review-quality --suite benchmarks/regressions | j
 }
 ```
 
-Run it twice on the same failures and the second run opens nothing: each failure has its task on the proposal's branch, so `plan` keeps none and `improve` is skipped. A new failure of the same scorer updates the same PR, keeping the tasks it had. A proposal that conflicts with the default branch stops `plan` with `proposal_conflict`: merge the default branch into it, or delete it. Close a proposal by deleting its branch: `push` refuses a branch that origin has with no open PR.
+Run it twice on the same failures and the second run opens nothing: each failure has its task on the proposal's branch, so `plan` keeps none and `improve` is skipped. A new failure of the same scorer updates the same PR, keeping the tasks it had. A proposal that conflicts with the default branch stops `plan` with `proposal_conflict`: merge the default branch into it, or delete it. A commit a teammate pushes to the proposal while a run works stops that run's `propose`, which pushes nothing over it; the next run starts from it. Close a proposal by deleting its branch: `push` refuses a branch that origin has with no open PR.
 
 To run it your way, push your own `workflows/teamai-self-improvement.yaml`: it replaces the default for `self-improvement run`, which gives it the inputs `scorer` and `suite`, so it declares both. `teamai list workflows` shows which one is in effect.
 
@@ -205,9 +205,7 @@ To run it your way, push your own `workflows/teamai-self-improvement.yaml`: it r
 
 ```yaml
 # .github/workflows/regressions.yml
-on:
-  pull_request:
-    paths: ['skills/**', 'rules/**', 'agents/**', 'prompts/**', 'hooks/**', 'mcp/**', 'models/**', 'env/**', 'claudemd/**', 'docs/**', 'workflows/**', 'scorers/**', 'benchmarks/regressions/**']
+on: pull_request
 concurrency: regressions-${{ github.event.pull_request.number }}
 jobs:
   benchmark:
@@ -216,7 +214,7 @@ jobs:
     permissions: { contents: read, pull-requests: write }
     env:
       TEAM_REPO: ${{ vars.TEAM_REPO }}
-      GH_TOKEN: ${{ secrets.TEAM_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       HEAD_REF: ${{ github.head_ref }}
@@ -245,7 +243,7 @@ jobs:
             jq -r --arg ref "$HEAD_REF" '($ref | ltrimstr("teamai/self-improvement/")) as $mine | .data.scorers[] | select($mine == $ref or .scorer == $mine) | .scorer as $s | .cohorts[] | select(.agreement) | "| \($s) | \(.judge.tool) \(.judge.model.id // "") | \(.agreement.paired) | \(.agreement.agree) | \(.agreement.judgePassedHumanFailed) | \(.agreement.judgeFailedHumanPassed) |"' digest.json
             echo '<!-- /teamai:regressions -->'
           } > evidence.md
-          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body -q .body | sed '/<!-- teamai:regressions -->/,/<!-- \/teamai:regressions -->/d' > body.md
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body -q .body | perl -0pe 's/<!-- teamai:regressions -->.*?<!-- \/teamai:regressions -->\n?//gs' > body.md
           cat evidence.md >> body.md
           gh pr edit "$PR" -R "$GITHUB_REPOSITORY" --body-file body.md
       - name: Fail on a regression
@@ -258,7 +256,7 @@ jobs:
               and all($pairs[].tasks[]; .to.planned > 0 and .to.passed * .from.planned >= .from.passed * .to.planned)' done.json
 ```
 
-It runs on any PR that changes an asset, a person's too, so every change is measured against every failure fixed before. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. The last step fails the job when a task passes less often on the PR than on `main` with any tool, when a task's check could not run or passed before any change, when a trial did not run, or when the run compared no `main` arm with a PR arm: only those pairs count, so a suite that drops the PR's arms fails it. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
+It runs on every PR, a person's too, so every change is measured against every failure fixed before. It has no `paths:` filter: GitHub leaves a required check that a filter skipped pending, which would block every PR outside those paths. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. The last step fails the job when a task passes less often on the PR than on `main` with any tool, when a task's check could not run or passed before any change, when a trial did not run, or when the run compared no `main` arm with a PR arm: only those pairs count, so a suite that drops the PR's arms fails it. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
 
 The dashboard's [Self-improvement page](dashboard.md#self-improvement) follows each proposal and each landed change: the assets it touched, its proof on the regression suite per tool, and the scorer's pass rate before and after it landed.
 

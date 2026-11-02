@@ -165,7 +165,7 @@ jobs:
       - run: npx teamai-cli self-improvement run "$SCORER" --tools default=claude --sandbox
 ```
 
-- `TEAM_TOKEN` 克隆团队仓库，并把提案分支推送上去；`PROJECT_READ_TOKEN` 读取套件仓库。
+- `TEAM_TOKEN` 克隆团队仓库，并把提案分支推送上去；`PROJECT_READ_TOKEN` 读取套件仓库。下面的证明任务不需要推送：它在团队仓库里运行，用它自己的 `github.token` 克隆仓库并编辑 PR 正文。
 - `--tools default=claude` 让 prompt 步骤在 Claude Code 上运行；`--sandbox` 声明这台 runner 是用完即弃的机器，那个步骤需要这一点：它不经询问就修改文件。
 - `--suite` 指定 `benchmarks/regressions` 以外的套件，比如某个角色的 `--suite benchmarks/web/regressions`。
 
@@ -196,7 +196,7 @@ $ teamai self-improvement plan review-quality --suite benchmarks/regressions | j
 }
 ```
 
-在同样的失败上再跑一次，第二次什么也不会打开：每个失败在提案分支上已经有任务，所以 `plan` 一个也不保留，`improve` 被跳过。同一评分器的新失败会更新同一个 PR，并保留它已有的任务。和默认分支冲突的提案会让 `plan` 以 `proposal_conflict` 停止：把默认分支合并进去，或者删掉它。删除分支即可关闭提案：origin 上有这个分支却没有打开的 PR 时，`push` 会拒绝。
+在同样的失败上再跑一次，第二次什么也不会打开：每个失败在提案分支上已经有任务，所以 `plan` 一个也不保留，`improve` 被跳过。同一评分器的新失败会更新同一个 PR，并保留它已有的任务。和默认分支冲突的提案会让 `plan` 以 `proposal_conflict` 停止：把默认分支合并进去，或者删掉它。运行期间队友推送到提案分支的提交会让这次运行的 `propose` 停止，不会在它上面推送任何东西；下一次运行从它开始。删除分支即可关闭提案：origin 上有这个分支却没有打开的 PR 时，`push` 会拒绝。
 
 想按自己的方式运行，就推送你自己的 `workflows/teamai-self-improvement.yaml`：它会替换 `self-improvement run` 用的默认工作流，`self-improvement run` 会给它输入 `scorer` 和 `suite`，所以它要声明这两个输入。`teamai list workflows` 显示当前生效的是哪一个。
 
@@ -204,9 +204,7 @@ $ teamai self-improvement plan review-quality --suite benchmarks/regressions | j
 
 ```yaml
 # .github/workflows/regressions.yml
-on:
-  pull_request:
-    paths: ['skills/**', 'rules/**', 'agents/**', 'prompts/**', 'hooks/**', 'mcp/**', 'models/**', 'env/**', 'claudemd/**', 'docs/**', 'workflows/**', 'scorers/**', 'benchmarks/regressions/**']
+on: pull_request
 concurrency: regressions-${{ github.event.pull_request.number }}
 jobs:
   benchmark:
@@ -215,7 +213,7 @@ jobs:
     permissions: { contents: read, pull-requests: write }
     env:
       TEAM_REPO: ${{ vars.TEAM_REPO }}
-      GH_TOKEN: ${{ secrets.TEAM_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       HEAD_REF: ${{ github.head_ref }}
@@ -244,7 +242,7 @@ jobs:
             jq -r --arg ref "$HEAD_REF" '($ref | ltrimstr("teamai/self-improvement/")) as $mine | .data.scorers[] | select($mine == $ref or .scorer == $mine) | .scorer as $s | .cohorts[] | select(.agreement) | "| \($s) | \(.judge.tool) \(.judge.model.id // "") | \(.agreement.paired) | \(.agreement.agree) | \(.agreement.judgePassedHumanFailed) | \(.agreement.judgeFailedHumanPassed) |"' digest.json
             echo '<!-- /teamai:regressions -->'
           } > evidence.md
-          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body -q .body | sed '/<!-- teamai:regressions -->/,/<!-- \/teamai:regressions -->/d' > body.md
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body -q .body | perl -0pe 's/<!-- teamai:regressions -->.*?<!-- \/teamai:regressions -->\n?//gs' > body.md
           cat evidence.md >> body.md
           gh pr edit "$PR" -R "$GITHUB_REPOSITORY" --body-file body.md
       - name: Fail on a regression
@@ -257,7 +255,7 @@ jobs:
               and all($pairs[].tasks[]; .to.planned > 0 and .to.passed * .from.planned >= .from.passed * .to.planned)' done.json
 ```
 
-它在任何修改资产的 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变，所以 `teamai push` 打开 PR 时写的文件列表，在后来的运行更新 PR 时不会增加：当前的文件集看 PR 的 files 标签页。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者这次运行没有把 `main` 组和 PR 组放在一起比较时，让任务失败：只看这些配对，所以去掉 PR 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
+它在每个 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。它没有 `paths:` 过滤：被过滤跳过的必需检查在 GitHub 上会一直等待，会挡住所有不在这些路径里的 PR。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变，所以 `teamai push` 打开 PR 时写的文件列表，在后来的运行更新 PR 时不会增加：当前的文件集看 PR 的 files 标签页。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者这次运行没有把 `main` 组和 PR 组放在一起比较时，让任务失败：只看这些配对，所以去掉 PR 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
 
 Dashboard 的[自我改进页面](dashboard.md#自我改进self-improvement)跟踪每个提议和每个已合并的修改：它改了哪些资产、它在回归套件上每个工具的证明，以及合并前后评分器的通过率。
 
