@@ -83,9 +83,9 @@ async function reportNotInitialized(run: () => Promise<void>): Promise<void> {
  * The trace is not lost: `log.debug` always appends it to ~/.teamai/debug.log,
  * and prints it on the console only under `--verbose`.
  */
-export async function reportCommandError(e: unknown): Promise<void> {
-  const error = e instanceof Error ? e : undefined;
-  log.error(error?.message || error?.name || String(e));
+export async function reportCommandError(cause: unknown): Promise<void> {
+  const error = cause instanceof Error ? cause : undefined;
+  log.error(error?.message || error?.name || String(cause));
 
   if (error?.stack) log.debug(error.stack);
   process.exitCode = 1;
@@ -151,7 +151,7 @@ program
     // move (read-only commands use the double-read fallback). Dry-run previews.
     const name = actionCommand.name();
 
-    if (TEAMAI_HOOK_SUBCOMMANDS.includes(name as (typeof TEAMAI_HOOK_SUBCOMMANDS)[number])) return;
+    if (TEAMAI_HOOK_SUBCOMMANDS.some((subcommand) => subcommand === name)) return;
 
     if (!triggersMigration(actionCommand)) return;
 
@@ -171,7 +171,7 @@ program
       // state. Surface a clean message and exit — the copy→verify→rename design
       // leaves the source intact, so a rerun retries safely. (Without this the
       // async-hook rejection would surface as a raw unhandled-rejection stack.)
-      log.error(`Auto-migration failed: ${(e as Error).message}`);
+      log.error(`Auto-migration failed: ${e instanceof Error ? e.message : String(e)}`);
       log.error('Your original .teamai data is unchanged. Re-run the command to retry.');
       process.exit(1);
     }
@@ -209,10 +209,10 @@ program
   // comma-separated (`--agent a,b`, split later by normalizeAgentList) both work,
   // WITHOUT the greedy `<name...>` variadic that would swallow the `[repo]`
   // positional (e.g. `init --agent claude .` must keep `.` as the repo arg).
-  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [] as string[])
+  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [])
   .option('--force', 'Rewrite the existing config without confirmation, keeping the settings init does not set')
   .action(async (repoArg, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { init } = await import('./init.js');
     await init({ ...globalOpts, ...cmdOpts, repoPositional: repoArg });
   });
@@ -235,9 +235,9 @@ program
     + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried')
   .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
     + 'Use it only after carrying that change into your root copy, with the value the stop printed; '
-    + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [] as string[])
+    + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [])
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     // --file and --path name one file and its destination: no scan, no placement.
     const { isFilePush, pushFile } = await import('./push-file.js');
     const { push } = await import('./push.js');
@@ -257,7 +257,7 @@ program
   .option('--force', 'Force full sync even if repo is unchanged')
   .option('--team-ref <ref>', 'Pin this workspace to a branch, tag or commit of the team repo; the default branch unpins it')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
 
     if (cmdOpts.silent) setSilent(true);
     const { pull } = await import('./pull.js');
@@ -275,7 +275,7 @@ program
   .description('Show local vs team repo diff')
   .option('--all', 'List every project data partition under ~/.teamai/projects (flags stale/orphan ones)')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { status } = await import('./status.js');
     await reportNotInitialized(() => status({ ...globalOpts, ...cmdOpts }));
   });
@@ -287,7 +287,7 @@ program
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .option('--reveal', 'Show env values in plaintext (default: masked)')
   .action(async (type, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { list } = await import('./status.js');
     await reportNotInitialized(() => list(type, { ...globalOpts, ...cmdOpts }));
   });
@@ -296,7 +296,7 @@ const skillCmd = program
   .command('skill')
   .description('List and inspect skills (default: repo + installed agents, then the CLI-served catalog)')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { skillList } = await import('./skill-cmd.js');
     await skillList(globalOpts);
   });
@@ -306,7 +306,7 @@ skillCmd
   .description('List team and installed skills, then the built-in catalog the CLI serves')
   .option('--json', 'Output the CLI-served built-in skill catalog as JSON')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { skillList } = await import('./skill-cmd.js');
     await skillList({ ...globalOpts, ...cmdOpts });
   });
@@ -337,7 +337,7 @@ skillCmd
   .command('show <name>')
   .description('Show skill metadata: source / contributors / installed agents / description')
   .action(async (name: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { skillShow } = await import('./skill-cmd.js');
     await skillShow(name, { ...globalOpts, ...cmdOpts });
   });
@@ -346,7 +346,7 @@ const excludeCmd = skillCmd
   .command('exclude')
   .description('Manage per-user skill exclusion (skip sync without affecting team repo)')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { excludeList } = await import('./exclude.js');
     await excludeList(globalOpts);
   });
@@ -355,7 +355,7 @@ excludeCmd
   .command('list')
   .description('List excluded skills')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { excludeList } = await import('./exclude.js');
     await excludeList(globalOpts);
   });
@@ -364,7 +364,7 @@ excludeCmd
   .command('add <skills...>')
   .description('Add skill(s) to the exclude list')
   .action(async (skills: string[]) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { excludeAdd } = await import('./exclude.js');
     await excludeAdd(skills, globalOpts);
   });
@@ -373,7 +373,7 @@ excludeCmd
   .command('remove <skills...>')
   .description('Remove skill(s) from the exclude list')
   .action(async (skills: string[]) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { excludeRemove } = await import('./exclude.js');
     await excludeRemove(skills, globalOpts);
   });
@@ -383,7 +383,7 @@ const membersCmd = program
   .description('Manage team members')
   .action(async () => {
     // Default action: list members (backward compatible)
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { listMembers } = await import('./members.js');
     await listMembers(globalOpts);
   });
@@ -392,7 +392,7 @@ membersCmd
   .command('list')
   .description('List team members')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { listMembers } = await import('./members.js');
     await listMembers(globalOpts);
   });
@@ -404,7 +404,7 @@ program
   .option('--role <ns>', 'mcp: remove the server from mcp/<ns>/mcp.yaml instead of the root mcp/mcp.yaml')
   .option('--project <id>', "mcp: remove the server from the project's mcp namespace instead of the root mcp/mcp.yaml")
   .action(async (type, names, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { remove } = await import('./remove.js');
     await remove(type, names, { ...globalOpts, ...cmdOpts });
   });
@@ -417,7 +417,7 @@ program
   .option('--json', 'Output the report as JSON (suitable for CI)')
   .option('--fix', 'Remove lock files left behind by dead processes')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { doctor } = await import('./doctor.js');
     const allPassed = await doctor({ ...globalOpts, ...cmdOpts });
 
@@ -439,7 +439,7 @@ rolesCmd
   .command('init')
   .description('Create a roles manifest for the team repo (admin)')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { rolesInit } = await import('./roles-cmd.js');
     await rolesInit(globalOpts);
   });
@@ -458,7 +458,7 @@ rolesCmd
   .description('Set your primary role (updates local config; refused when manifest/members.yaml assigns roles)')
   .option('--add <roles...>', 'Additional roles to include')
   .action(async (primary: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { rolesSet } = await import('./roles-cmd.js');
     await rolesSet(primary, { ...globalOpts, ...cmdOpts });
   });
@@ -469,7 +469,7 @@ rolesCmd
   .requiredOption('--namespaces <ns>', 'Comma-separated resource namespaces (e.g. common,hai)')
   .option('-d, --description <desc>', 'Description for the role')
   .action(async (id: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { rolesAdd } = await import('./roles-cmd.js');
     await rolesAdd(id, { ...globalOpts, ...cmdOpts });
   });
@@ -478,7 +478,7 @@ rolesCmd
   .command('remove <id>')
   .description('Remove a role from the manifest (admin)')
   .action(async (id: string) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { rolesRemove } = await import('./roles-cmd.js');
     await rolesRemove(id, globalOpts);
   });
@@ -490,7 +490,7 @@ rolesCmd
   .option('--remove-namespaces <ns>', 'Comma-separated namespaces to remove')
   .option('-d, --description <desc>', 'New description for the role')
   .action(async (id: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { rolesUpdate } = await import('./roles-cmd.js');
     await rolesUpdate(id, { ...globalOpts, ...cmdOpts });
   });
@@ -502,7 +502,7 @@ const projectsCmd = program
   .description('Manage multi-project resource distribution (orthogonal to roles)')
   .action(async () => {
     // Default action: list projects
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { projectsList } = await import('./projects-cmd.js');
     await projectsList(globalOpts);
   });
@@ -511,7 +511,7 @@ projectsCmd
   .command('list')
   .description('List defined projects and the ones active in this directory')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { projectsList } = await import('./projects-cmd.js');
     await projectsList(globalOpts);
   });
@@ -520,7 +520,7 @@ projectsCmd
   .command('set [ids...]')
   .description('Set the projects active in this directory (comma-separated or repeated; empty to clear)')
   .action(async (ids: string[] = [], _cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { projectsSet } = await import('./projects-cmd.js');
     await projectsSet(ids, globalOpts);
   });
@@ -532,7 +532,7 @@ projectsCmd
   .option('--name <name>', 'Display name for the project')
   .option('-d, --description <desc>', 'Description for the project')
   .action(async (id: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { projectsAdd } = await import('./projects-cmd.js');
     await projectsAdd(id, { ...globalOpts, ...cmdOpts });
   });
@@ -545,7 +545,7 @@ projectsCmd
   .option('--name <name>', 'New display name for the project')
   .option('-d, --description <desc>', 'New description for the project')
   .action(async (id: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { projectsUpdate } = await import('./projects-cmd.js');
     await projectsUpdate(id, { ...globalOpts, ...cmdOpts });
   });
@@ -554,7 +554,7 @@ projectsCmd
   .command('remove <id>')
   .description('Remove a project from manifest/projects.yaml (admin)')
   .action(async (id: string) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { projectsRemove } = await import('./projects-cmd.js');
     await projectsRemove(id, globalOpts);
   });
@@ -563,7 +563,7 @@ projectsCmd
   .command('members <id>')
   .description('List members registered for a project')
   .action(async (id: string) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { projectsMembers } = await import('./projects-cmd.js');
     await projectsMembers(id, globalOpts);
   });
@@ -591,7 +591,7 @@ tagsCmd
   .command('subscribe <tags...>')
   .description('Subscribe to tags (only matching skills/rules will be synced)')
   .action(async (tags: string[]) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { tagsSubscribe } = await import('./tags.js');
     await tagsSubscribe(tags, globalOpts);
   });
@@ -600,7 +600,7 @@ tagsCmd
   .command('unsubscribe <tags...>')
   .description('Unsubscribe from tags')
   .action(async (tags: string[]) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { tagsUnsubscribe } = await import('./tags.js');
     await tagsUnsubscribe(tags, globalOpts);
   });
@@ -617,7 +617,7 @@ tagsCmd
       '    $ teamai tags add rules common-coding-style coding best-practices\n',
   )
   .action(async (type: string, name: string, tags: string[]) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
 
     if (type !== 'skills' && type !== 'rules') {
       console.error('Type must be "skills" or "rules"');
@@ -640,7 +640,7 @@ tagsCmd
       '    $ teamai tags remove rules common-coding-style best-practices\n',
   )
   .action(async (type: string, name: string, tags: string[]) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
 
     if (type !== 'skills' && type !== 'rules') {
       console.error('Type must be "skills" or "rules"');
@@ -666,7 +666,7 @@ sourceCmd
   .description('Add a cross-team source repo')
   .option('--name <name>', 'Alias for this source')
   .action(async (repo: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { sourceAdd } = await import('./source.js');
     await sourceAdd(repo, { ...globalOpts, ...cmdOpts });
   });
@@ -675,7 +675,7 @@ sourceCmd
   .command('remove <name>')
   .description('Remove a source and clean up its skills')
   .action(async (name: string) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { sourceRemove } = await import('./source.js');
     await sourceRemove(name, globalOpts);
   });
@@ -687,7 +687,7 @@ sourceCmd
   .option('--agent <name>', 'The AI tool this token is for (e.g. codebuddy, claude); hooks are injected into that tool only. An agent access token (sk-) works for one agent only, so each agent keeps its own; while that agent\'s current token still works it is kept and the new one is not used.')
   .option('--force', 'Overwrite an existing HTTP source config')
   .action(async (endpoint: string, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { sourceAddHttp } = await import('./source.js');
     await sourceAddHttp(endpoint, { ...globalOpts, ...cmdOpts });
   });
@@ -696,7 +696,7 @@ sourceCmd
   .command('remove-http')
   .description('Remove the HTTP source and clean up its resources')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { sourceRemoveHttp } = await import('./source.js');
     await sourceRemoveHttp(globalOpts);
   });
@@ -721,7 +721,7 @@ sourceCmd
   .command('browse <name>')
   .description('Browse public skills from a source')
   .action(async (name: string) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { sourceBrowse } = await import('./source.js');
     await sourceBrowse(name, globalOpts);
   });
@@ -733,7 +733,7 @@ program
   .description('Check for updates and upgrade teamai CLI')
   .option('--check', 'Only check if an update is available, do not install')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { update } = await import('./update.js');
     await update({ ...globalOpts, ...cmdOpts });
   });
@@ -744,7 +744,7 @@ program
   .option('--force', 'Skip confirmation prompt')
   .option('--agent <name>', 'Only uninstall this agent\'s resources in this checkout; shared resources, and the project\'s other checkouts, go only if it is the last tool')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { uninstall } = await import('./uninstall.js');
     await uninstall({ ...globalOpts, ...cmdOpts });
   });
@@ -767,7 +767,7 @@ const envCmd = program
   .option('--reveal', 'Show env variable values in plaintext (default: masked)')
   .action(async (cmdOpts) => {
     // Default action: list env vars (backward compatible)
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { envList } = await import('./env-commands.js');
     await envList({ ...globalOpts, ...cmdOpts });
   });
@@ -778,7 +778,7 @@ envCmd
   .option('--reveal', 'Show env variable values in plaintext (default: masked)')
   .action(async (_cmdOpts, command: Command) => {
     const { envList } = await import('./env-commands.js');
-    await envList(command.optsWithGlobals() as GlobalOptions & { reveal?: boolean });
+    await envList(command.optsWithGlobals<GlobalOptions & { reveal?: boolean }>());
   });
 
 envCmd
@@ -790,7 +790,7 @@ envCmd
   .option('--role <ns>', 'Write to env/<ns>/ instead of env/ (env.yaml, or secrets.yaml with --secret)')
   .option('--project <id>', "Write to the project's env namespace (resources.env in manifest/projects.yaml)")
   .action(async (key, value, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { envAdd } = await import('./env-commands.js');
     await envAdd(key, value, { ...globalOpts, ...cmdOpts });
   });
@@ -802,7 +802,7 @@ envCmd
   .option('--role <ns>', 'Remove from env/<ns>/ instead of env/')
   .option('--project <id>', "Remove from the project's env namespace (resources.env in manifest/projects.yaml)")
   .action(async (key, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { envRemove } = await import('./env-commands.js');
     await envRemove(key, { ...globalOpts, ...cmdOpts });
   });
@@ -814,7 +814,7 @@ envCmd
   .option('--from-env <var>', 'Read the value from this environment variable each time it is used; no copy is stored')
   .option('--global', 'Set a secret for every team on this machine; a value set for a team still wins')
   .action(async (key, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { envSet } = await import('./env-commands.js');
     await envSet(key, { ...globalOpts, ...cmdOpts });
   });
@@ -824,7 +824,7 @@ envCmd
   .description("Remove your value for a secret or env variable, for this directory's team, from this machine")
   .option('--global', 'Remove the value set for every team on this machine instead')
   .action(async (key, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { envUnset } = await import('./env-commands.js');
     await envUnset(key, { ...globalOpts, ...cmdOpts });
   });
@@ -833,7 +833,7 @@ envCmd
   .command('exec <command...>')
   .description("Run a command with this directory's team env variables and secrets (put -- before the command)")
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { envExec, exitLike } = await import('./env-exec.js');
     // What was typed after `exec`, `--` included: Commander drops it.
     const argv = process.argv.slice(2);
@@ -1015,7 +1015,7 @@ program
   .option('--team-session <name>', 'Judge a session a member pushed with session push instead of one on this machine, by the name session list prints for this directory\'s repository: read from teamai-reports, else from the archive the team kept on its default branch before, and redacted before a judge reads it. Run session pull first for the newest. Its label is about the session where it ran, so it pairs with that session\'s labels from the machine that ran it, and records no agent. Not with --session, --source or --json')
   .option('--author <name>', 'With --team-session: who pushed it, when two members pushed a session with that name')
   .option('--label <value>', 'Label the session by hand with this value of the one --scorer: no judge runs, score and passed come from the scorer, and no reasoning is kept. A value the scorer does not list fails and lists the ones it does. A hand label and a model label of a session are kept side by side, so rescoring with the model never replaces yours; the dashboard Scorers page shows how often the model judge agrees with hand labels. Not with a scorer file, --batch or --json')
-  .option('--scorer <name>', 'With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Repeatable.', (value: string, previous: string[]) => previous.concat(value), [] as string[])
+  .option('--scorer <name>', 'With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Repeatable.', (value: string, previous: string[]) => previous.concat(value), [])
   .option('--queue', 'With --run: leave the work to any driver\'s score --next instead of judging it here')
   .option('--batch', 'With --run or --session: the scorers share one judge call when they resolve to the same tool and model')
   .option('--push', 'Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after --session. Labels only: never the session, the prompt or the judge\'s reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push.')
@@ -1035,7 +1035,7 @@ hooksCmd
   .command('list')
   .description('List hook install status + effective built-in (A) and team (B) hooks')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { hooksList } = await import('./hooks-cmd.js');
     await hooksList(globalOpts);
   });
@@ -1045,7 +1045,7 @@ hooksCmd
   .description('Inject teamai hooks into all AI tool settings')
   .option('--silent', 'Silent mode (suppress success message)')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
 
     if (cmdOpts.silent) setSilent(true);
     const { hooksInject } = await import('./hooks-cmd.js');
@@ -1056,7 +1056,7 @@ hooksCmd
   .command('remove')
   .description('Remove teamai hooks from all AI tool settings')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { hooksRemove } = await import('./hooks-cmd.js');
     await hooksRemove(globalOpts);
   });
@@ -1071,7 +1071,7 @@ mcpCmd
   .command('list')
   .description('List team MCP servers and their per-tool install status')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { mcpList } = await import('./mcp-cmd.js');
     await mcpList(globalOpts);
   });
@@ -1082,7 +1082,7 @@ mcpCmd
   .option('--dry-run', 'Show what would change without writing')
   .option('--force', 'Overwrite servers that collide with user-owned entries')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { mcpInject } = await import('./mcp-cmd.js');
     await mcpInject({ ...globalOpts, ...cmdOpts });
   });
@@ -1091,7 +1091,7 @@ mcpCmd
   .command('remove')
   .description('Remove all teamai-managed MCP servers from AI tool configs')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { mcpRemove } = await import('./mcp-cmd.js');
     await mcpRemove(globalOpts);
   });
@@ -1130,7 +1130,7 @@ webhookCmd
   .description('Send test event to webhook endpoints')
   .option('--url <url>', 'Test specific endpoint URL')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { testWebhook } = await import('./webhook.js');
     await testWebhook(cmdOpts.url, { dryRun: globalOpts.dryRun });
   });
@@ -1142,7 +1142,7 @@ async function runModelsCommand(run: (commands: typeof import('./models-cmd.js')
   try {
     await run(await import('./models-cmd.js'));
   } catch (error) {
-    log.error((error as Error).message);
+    log.error((error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
   }
 }
@@ -1183,11 +1183,11 @@ modelsCmd
 modelsCmd
   .command('switch [profile]')
   .description('Point agents at a model profile (every compatible agent by default); omit the profile to pick one')
-  .option('--agent <name>', 'Only switch this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
+  .option('--agent <name>', 'Only switch this agent. Repeatable or comma-separated.', collectRepeatable, [])
   .option('--model <id>', 'Default model to select (defaults to the first in the profile)')
   .option('--dry-run', 'Show what would change without writing')
   .action((profile: string | undefined, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
 
     return runModelsCommand((m) => m.modelsSwitch(profile, { ...globalOpts, ...cmdOpts }));
   });
@@ -1195,10 +1195,10 @@ modelsCmd
 modelsCmd
   .command('restore')
   .description('Restore agent model settings captured before the first TeamAI switch')
-  .option('--agent <name>', 'Only restore this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
+  .option('--agent <name>', 'Only restore this agent. Repeatable or comma-separated.', collectRepeatable, [])
   .option('--dry-run', 'Show what would change without writing')
   .action((cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
 
     return runModelsCommand((m) => m.modelsRestore({ ...globalOpts, ...cmdOpts }));
   });
@@ -1245,7 +1245,7 @@ program
   .option('--by-repo', 'Break the local event log down per repository')
   .option('--by-time', 'Show local event log activity by hour of day')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { showStats } = await import('./stats.js');
     await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime, dryRun: globalOpts.dryRun });
   });
@@ -1264,7 +1264,7 @@ sessionCmd
   .option('--include-prompt', 'Include the redacted first-prompt line in the pushed summary (default: off)')
   .option('--scope <scope>', 'Config scope for --push: user | workspace (default: auto-detect)')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { saveSession } = await import('./save-session.js');
     await saveSession({ ...globalOpts, ...cmdOpts });
   });
@@ -1278,7 +1278,7 @@ if (shouldRegisterSessionFlowCommands()) {
     const { registerSessionFlowCommands } = await import('./session-flow/session-cmd.js');
     registerSessionFlowCommands(sessionCmd);
   } catch (e) {
-    log.warn(`Session commands unavailable: ${(e as Error).message}`);
+    log.warn(`Session commands unavailable: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -1371,7 +1371,7 @@ program
           code = await runCodebuddyTeamHook(cmdOpts.teamHookGate, cmdOpts.teamHookCommand, parsedTimeout);
         }
       } catch (e) {
-        process.stderr.write(`teamai: team hooks did not run: ${(e as Error).message}\n`);
+        process.stderr.write(`teamai: team hooks did not run: ${e instanceof Error ? e.message : String(e)}\n`);
 
         // CodeBuddy must report dispatcher failures to its host. Codex keeps
         // its historical fail-open wrapper: its hook runner reports the
@@ -1455,7 +1455,7 @@ program
   .option('--session-id <id>', 'Session the learning came from (default: the agent\'s session, e.g. $CLAUDE_CODE_SESSION_ID). Recorded as `session` in the learning and counted as that session\'s outcome. Inside a workflow attempt, the learning is also recorded on the step')
   .option('--scope <scope>', 'Target scope: user or workspace')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { contribute } = await import('./contribute.js');
     await contribute({ ...globalOpts, ...cmdOpts });
   });
@@ -1468,9 +1468,9 @@ const recallCmd = program
   .option('--depth <level>', 'Recall depth: route (entry-points only) | context (module-level, default) | lookup (full graph traversal)', 'context')
   .option('--check', 'Relevance precheck only: print RELEVANT/NOT_RELEVANT + top score; no file reads, no upvote')
   .addOption(new Option('--caller <name>', 'Internal, set by the teamai-recall subagent to mark its own runs; do not pass it yourself').hideHelp())
-  .action(async (queryParts, cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
-    const query = (queryParts as string[]).join(' ');
+  .action(async (queryParts: string[], cmdOpts) => {
+    const globalOpts = program.opts<GlobalOptions>();
+    const query = queryParts.join(' ');
     const { recall } = await import('./recall.js');
     await recall(query, { ...globalOpts, depth: cmdOpts.depth, check: cmdOpts.check, caller: cmdOpts.caller });
   });
@@ -1479,7 +1479,7 @@ recallCmd
   .command('disable')
   .description('Disable automatic knowledge-base recall')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { recallDisable } = await import('./recall-toggle.js');
     await recallDisable(globalOpts);
   });
@@ -1488,7 +1488,7 @@ recallCmd
   .command('enable')
   .description('Enable automatic knowledge-base recall')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { recallEnable } = await import('./recall-toggle.js');
     await recallEnable(globalOpts);
   });
@@ -1497,7 +1497,7 @@ recallCmd
   .command('status')
   .description('Show recall feature status')
   .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { recallStatus } = await import('./recall-toggle.js');
     await recallStatus(globalOpts);
   });
@@ -1548,7 +1548,7 @@ program
   .addOption(new Option('--max-bytes <n>', 'Override capacity cap for --cache-gc').hideHelp())
   .addOption(new Option('--stale-days <n>', 'Threshold for stale-eviction in days (default 30)').default('30').hideHelp())
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
 
     if (cmdOpts.cacheStatus || cmdOpts.cacheGc) {
       const { cacheCmd } = await import('./cache-cmd.js');
@@ -1595,7 +1595,7 @@ program
   .option('--json', 'Output report as JSON (suitable for CI)')
   .addOption(new Option('--output <path>', 'Use <path>/teamwiki, as written by `teamai import --output <path>`, instead of the team repo\'s').hideHelp())
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { codebaseCmd } = await import('./codebase-cmd.js');
     await codebaseCmd({ ...globalOpts, ...cmdOpts });
   });
@@ -1612,7 +1612,7 @@ program
     .option('--branch <name>', 'Run read-only health checks on this team repo branch (e.g. teamai/push/<user>/<timestamp>) and report fail/warn/info findings')
     .option('--json', 'Machine-readable output (dry-run decisions include dryRun: true; ok reports validation only; --branch prints the findings object)')
     .action(async (idArg, cmdOpts) => {
-        const globalOpts = program.opts() as GlobalOptions;
+        const globalOpts = program.opts<GlobalOptions>();
 
         if (cmdOpts.branch) {
             const { reviewBranchCmd } = await import('./review-branch.js');
@@ -1645,7 +1645,7 @@ ciCmd
   .option('--individual-comments', 'Post each suggestion as separate comment with reaction/resolve support')
   .option('--no-discussions', 'Leave the MR\'s review threads out of the extraction')
   .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     const { ciExtractMr } = await import('./ci/extract-mr.js');
     await ciExtractMr({ ...globalOpts, ...cmdOpts });
   });
@@ -1680,7 +1680,7 @@ recallCmd
   .option('--negative <docId>', 'Record negative signal for a document')
   .action(async (cmdOpts) => {
     const { recallFeedback } = await import('./votes.js');
-    const globalOpts = program.opts() as GlobalOptions;
+    const globalOpts = program.opts<GlobalOptions>();
     await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative, dryRun: globalOpts.dryRun });
   });
 
@@ -1697,7 +1697,7 @@ recallCmd
     // The root program takes `--dry-run` wherever it is written, so this
     // command's own declaration never sets it: read it merged, as the other
     // actions do (#900).
-    const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
+    const cmdOpts = { ...program.opts<GlobalOptions>(), ...localOpts };
 
     if (!cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.updateQuality) {
       log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
@@ -1813,7 +1813,7 @@ recallCmd
   .option('--dry-run', 'Show what would be done without making changes')
   .action(async (learningId, localOpts) => {
     // As in `recall maintenance`: `--dry-run` reaches the root's options only (#900).
-    const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
+    const cmdOpts = { ...program.opts<GlobalOptions>(), ...localOpts };
     const { autoDetectInit } = await import('./config.js');
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
     const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
@@ -1847,8 +1847,8 @@ recallCmd
         const refreshed = await maintenancePathsOrExit(localConfig, { holdsSyncLock: true });
 
         if (refreshed) {
-          await fetchPromotionRefs(knowledgeCheckout).catch((e: unknown) => {
-            log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${e instanceof Error ? e.message : String(e)}`);
+          await fetchPromotionRefs(knowledgeCheckout).catch((cause: unknown) => {
+            log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${cause instanceof Error ? cause.message : String(cause)}`);
           });
         }
 
@@ -1911,6 +1911,7 @@ recallCmd
     }
 
     await executePromotion(candidate, repoPath, {
+      // SAFETY: --category is declared with .choices(['skills', 'rules', 'docs']), so Commander admits nothing else.
       category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
       dryRun: cmdOpts.dryRun,
       learningsWriteDir,
