@@ -8,6 +8,7 @@ import { agentHarnessOf, type AgentHarness, type AgentObservation, type Recorded
 import { wilson } from '../benchmark/history.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
+import type { FailureLinks } from './failure-links.js';
 import { DECIDERS, isStageDecider, judgeCohort, labelId, type Decider, type JudgeCohort, type RunSubject, type ScoreLabel, type SessionSubject } from './label.js';
 
 /** A label as the view reads it: who published it, and what the judged work ran as when that was recorded. */
@@ -146,9 +147,20 @@ export type SubjectRef =
 
 /**
  * A failing label as the view lists it, with the harness the judged work ran with when that was recorded: never its
- * subject's native session id, reasoning or prompt.
+ * subject's native session id, reasoning or prompt. `start`: where its work started, as an improvement reads it; `task`:
+ * the regression task that names its subject; `learnings`, for a session only: the ids of the learnings that name it.
  */
-export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; decidedBy?: Decider; harness?: AgentHarness } & SubjectRef;
+export type FailingLabel = {
+  author: string;
+  scoredAt: string;
+  label: string;
+  skills?: string[];
+  decidedBy?: Decider;
+  harness?: AgentHarness;
+  start: FailureStart;
+  task?: string;
+  learnings?: string[];
+} & SubjectRef;
 
 /**
  * What decided a workflow cohort's labels (#1247): its labels per stage, the most first and those that recorded none
@@ -255,11 +267,12 @@ export type SelectedCohort = {
   groups?: Group[];
   split?: Split;
   /**
-   * The newest failing labels the query asked for, and how many it matches. With a group selected, `byHarness` counts
+   * The newest failing labels the query asked for, and how many it matches. `covered`: how many have a regression task;
+   * `startable`: how many more a task can start from, with a recorded commit. With a group selected, `byHarness` counts
    * all of them by the harness each ran with, the most failures first: whether one harness causes them; and
    * `revisionChange`, when the group's labels show one, names the team revision they started failing on.
    */
-  failing: { labels: FailingLabel[]; total: number; byHarness?: HarnessFailures[]; revisionChange?: RevisionChange };
+  failing: { labels: FailingLabel[]; total: number; covered: number; startable: number; byHarness?: HarnessFailures[]; revisionChange?: RevisionChange };
   /** Only for a workflow cohort whose labels recorded what decided them. */
   decided?: Decided;
   /** Only for a session cohort on a dashboard that read this machine's reminder state: the sessions of the last `days`. */
@@ -438,7 +451,7 @@ function subjectRef(entry: ViewedLabel): SubjectRef {
   }
 }
 
-function failingLabel(entry: ViewedLabel): FailingLabel {
+function failingLabel(entry: ViewedLabel, links: FailureLinks | undefined): FailingLabel {
   const { label } = entry;
   const harness = agentHarnessOf(entry.agent);
 
@@ -446,10 +459,13 @@ function failingLabel(entry: ViewedLabel): FailingLabel {
     author: entry.author,
     scoredAt: label.scoredAt,
     label: label.label,
-    // Left undefined without skills, a recorded decider or a harness, so the JSON view leaves them out.
+    // Left undefined when absent, so the JSON view leaves them out.
     skills: label.used?.skills.length ? label.used.skills : undefined,
     decidedBy: label.source === 'workflow' ? label.decidedBy : undefined,
     harness,
+    start: startOf(entry.agent),
+    task: links?.taskOf(label.subject),
+    learnings: label.source === 'session' && links ? links.learningsOf(label.subject).map(({ id }) => id) : undefined,
     ...subjectRef(entry),
   };
 }
@@ -754,7 +770,7 @@ export const ScorerResults = {
   },
 
   /** The results of every scorer in `labels`, with the selected scorer's cohort counted over the window. */
-  of({ labels, query, now, reminders, rubricLabels }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput; rubricLabels?: RubricLabels }): ScorerResultsView {
+  of({ labels, query, now, reminders, rubricLabels, links }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput; rubricLabels?: RubricLabels; links?: FailureLinks }): ScorerResultsView {
     const window = ScorerResults.window(query.windowDays, now);
     const { from, to } = window;
     const inWindow = (entry: ViewedLabel) => entry.label.scoredAt >= from && entry.label.scoredAt <= to;
@@ -842,7 +858,14 @@ export const ScorerResults = {
 
     const change = groupBy && group !== undefined ? revisionChange(counted.filter(inGroup)) : undefined;
     const stageBreakdown = summary.source === 'workflow' ? decided(counted) : undefined;
-    const failingList: SelectedCohort['failing'] = { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length };
+    const isCovered = (entry: ViewedLabel) => links?.taskOf(entry.label.subject) !== undefined;
+
+    const failingList: SelectedCohort['failing'] = {
+      labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map((entry) => failingLabel(entry, links)),
+      total: failing.length,
+      covered: failing.filter(isCovered).length,
+      startable: failing.filter((entry) => !isCovered(entry) && 'commit' in startOf(entry.agent)).length,
+    };
 
     if (groupBy && group !== undefined) failingList.byHarness = failuresByHarness(failing);
 

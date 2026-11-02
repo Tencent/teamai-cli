@@ -164,12 +164,26 @@ function harnessFailures(byHarness){
 function revisionChangeHint(change){
  return change?'<p class="scorer-hint revision-change">'+label('First failed at team revision')+' '+splitButton(change.firstFailed)+' · '+label('last passed on')+' <span title="'+e(change.lastPassed)+'" data-verbatim>'+short(change.lastPassed)+'</span></p>':'';
 }
+function regressionCell(r){
+ if(r.task)return '<span class="tag good" data-verbatim title="'+e(r.task)+'">'+e(r.task.split('/').pop().replace(/\\.yaml$/,''))+'</span><small>'+label('Regression task')+'</small>';
+ if(r.start&&r.start.commit)return '<span class="good">'+label('Can become a task')+'</span><small data-verbatim>'+e(r.start.commit.slice(0,7))+'</small>';
+ return '<span class="muted">'+(r.start&&r.start.refused==='tracked_changes'?label('Started with uncommitted changes'):label('Start not recorded'))+'</span>';
+}
+function learningsCell(r){
+ return r.learnings&&r.learnings.length?r.learnings.map(id=>'<span class="tag" data-verbatim title="'+e(id)+'">'+e(id.split('/').pop().replace(/-\\d{4}-\\d{2}-\\d{2}-[a-z0-9]+$/,''))+'</span>').join(' '):'—';
+}
+function improveHint(sel){
+ const f=sel.failing, ready=f.startable>=2||(f.startable>=1&&f.covered>=1);
+ const counts='<span class="label">'+number(f.covered)+' '+label('with a regression task')+' · '+number(f.startable)+' '+label('can become one')+'</span>';
+ return '<div class="improve-hint">'+counts+(ready?'<p class="scorer-hint">'+label('Turn them into one pull request that changes the team\\'s assets and adds a regression task each, on a machine to throw away such as a CI runner:')+'</p><code class="command" data-verbatim>teamai self-improvement run '+e(sel.cohort.scorer)+' --tools default=claude --sandbox</code>':'')+'<p class="scorer-hint">'+link('self-improvement','See what earlier runs changed and proved')+'</p></div>';
+}
 function failingPanel(sel){
- const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided, heads=['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['HARNESS','PLATFORM','SKILLS','OPEN']), group=scorerQuery.group&&sel.groups?sel.groups.find(g=>g.key===scorerQuery.group):undefined;
+ const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided, heads=['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['HARNESS','PLATFORM','SKILLS','REGRESSION','LEARNINGS','OPEN']), group=scorerQuery.group&&sel.groups?sel.groups.find(g=>g.key===scorerQuery.group):undefined;
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+(group?' · '+groupName(group):'')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
   +revisionChangeHint(sel.failing.revisionChange)+harnessFailures(sel.failing.byHarness)
+  +(total?improveHint(sel):'')
   +(rows.length?'<div class="table-scroll card-table"><table class="session-table failing-labels"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +rows.map(r=>'<tr>'+[e(when(r.scoredAt)),'<span data-verbatim>'+e(r.author)+'</span>','<span class="amber" data-verbatim>'+e(r.label)+'</span>'].concat(staged?[deciderText(r.decidedBy||'not recorded')]:[],[harnessCell(r.harness),'<span data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</span>',r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—',subjectCell(r)]).map((cell,i)=>'<td data-label="'+e(t(heads[i]))+'">'+cell+'</td>').join('')+'</tr>').join('')
+  +rows.map(r=>'<tr>'+[e(when(r.scoredAt)),'<span data-verbatim>'+e(r.author)+'</span>','<span class="amber" data-verbatim>'+e(r.label)+'</span>'].concat(staged?[deciderText(r.decidedBy||'not recorded')]:[],[harnessCell(r.harness),'<span data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</span>',r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—',regressionCell(r),learningsCell(r),subjectCell(r)]).map((cell,i)=>'<td data-label="'+e(t(heads[i]))+'">'+cell+'</td>').join('')+'</tr>').join('')
   +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> '+(rows.length<failingMax?'<button class="link" data-scorer-more>'+label('Show more')+'</button>':'<span class="label">'+label('Pick a group or a shorter window to list the rest.')+'</span>')+'</div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
 }
 function remindersPanel(sel){

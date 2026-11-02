@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-Open `http://localhost:3721`. The sidebar is Overview, then three groups: Execution (Sessions, Tokens & Cost, Workflow Runs, Scorers, Benchmarks, Distribution), Context (Knowledge Base, Resources), and Improvement (Improvement Center). Sessions and trends are from this machine; the Knowledge Base and the Improvement Center read the team repo.
+Open `http://localhost:3721`. The sidebar is Overview, then three groups: Execution (Sessions, Tokens & Cost, Workflow Runs, Scorers, Benchmarks, Distribution), Context (Knowledge Base, Resources), and Improvement (Improvement Center, Self-improvement). Sessions and trends are from this machine; the Knowledge Base and the Improvement Center read the team repo.
 
 ## Improvement Center
 
@@ -79,7 +79,7 @@ The Scorers page shows the pass rate of every [scorer](scorers.md) that has labe
 - Pass or fail as each label stored it. Changing a scorer's `passingScore` does not change past results.
 - **Group by** tool, model, team revision, agent definition, the role, project or tag the team assets were delivered for, fingerprint, a team skill the work used, or what decided a workflow label. A label that lists two skills counts under both. Model groups keep a model the tool reported apart from one that was only requested. A label that did not record that part is `Not recorded`. A label is grouped by the [`agent` it records](scorers.md#the-harness-a-label-judged). The role is the step's own role when the pass ran with one, else the member's. A workflow label written before labels carried `agent` is grouped by the agent of the pass it judged, read from the run's record. A run recorded before agents were observed gives only its definition.
 - **Split at team commit.** Give a commit of the team repo. A label is after it when its team revision contains the commit, checked with `git merge-base --is-ancestor` in this machine's team clone. A label with no team revision, or one this clone does not have, is `Not recorded`. The split also applies inside each group, so you can compare the sessions that loaded a skill before and after the commit that changed it.
-- **Failing labels**, newest first: author, scored time, the harness it judged (tool, model, effort, role and short team revision, or `Harness not recorded`), platform and the skills used, and for a workflow measurement the stage that decided each. The page lists 25 at a time, up to 1,000; **Show more** lists the next ones. Select a group to list only its failing labels. A session pushed to the team archive shows `teamai session resume <name> --platform <platform>`. A workflow label opens its run.
+- **Failing labels**, newest first: author, scored time, the harness it judged (tool, model, effort, role and short team revision, or `Harness not recorded`), platform, the skills used, **Regression** (the regression task that names the failure, or whether one can start from it), **Learnings** (the learnings that name the session), and for a workflow measurement the stage that decided each. The page lists 25 at a time, up to 1,000; **Show more** lists the next ones. Select a group to list only its failing labels. A session pushed to the team archive shows `teamai session resume <name> --platform <platform>`. A workflow label opens its run.
 - **Failures by harness**, with a group selected: its failing labels counted by harness, the most first, so you see whether one harness causes them. Grouped by Tool with `claude` selected, two failing labels read `1 failing claude · claude-sonnet-5-5 · spec step role · 3bb7751` and `1 failing claude · claude-sonnet-5-5 · frontend member role · 3bb7751`. Select a short team revision to split at that commit.
 - **First failed at**, with a group selected, when its labels turned clearly: `First failed at team revision bbbbbbb · last passed on aaaaaaa`. It shows only when, in the order they were scored, the group's labels passed up to one point and failed from then on, on team revisions none of the passing labels ran on. Select the revision to split there.
 - Grouped by Role, a role that a benchmark arm ran with links to it: `review step · Benchmark arms: review-sql · review ↗` opens Benchmarks on `review-sql`'s Arms with `review` marked. The arms are those of the Benchmarks page's window.
@@ -125,6 +125,45 @@ Here the Codex judge passed two sessions the team failed, so its pass rate reads
 Labels from benchmark runs are left out. The page reads labels and recorded configuration only. It never reads or shows a judge's reasoning, a prompt, a transcript, a diff, or a session's own id.
 
 Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.
+
+## Self-improvement
+
+The Self-improvement page follows [`teamai self-improvement run`](self-improvement.md) from a scorer's failing labels to the change that fixes them, its proof on the regression suite, and the pass rate after it lands. It reads the team clone, `teamai-reports` and origin's `teamai/self-improvement/*` branches. It runs nothing.
+
+```text
+Runs in CI · Last run 11/2/2026 07:29 · succeeded
+
+10 Failing labels › 3 Regression tasks › 1 Proposed › 2 Proven › 2 Landed › 2 Better after
+
+Changes  All 3 | Proposed 1 | Landed 2
+CHANGE                                             SCORER          ASSETS                           PROOF ON THE REGRESSION SUITE              PASS RATE BEFORE → AFTER   OPEN
+Proposed  [teamai] Add skills/code-review/SKILL.md review-quality  prompts/review skills/code-review claude 3/5 → 5/5 +40 pts                   Measured once it lands     Pull request
+          and 3 more files · 2 regression tasks                                                     codex  2/5 → 4/5 +40 pts
+Landed    Reviewer agent: read tests before the code   review-quality  agents/reviewer                  claude 2/3 → 3/3 +33 pts                   53% → 62% +8 pts           a16e6e2
+          (#44) · 1 regression task                                    rules/review-checklist
+Landed    Review skill: check every early return       review-quality  skills/code-review               Not run yet                                44% → 63% +19 pts          415b103
+          (#41) · 2 regression tasks
+```
+
+| Part | Where it comes from |
+| --- | --- |
+| Proposed | A `teamai/self-improvement/<scorer>` branch on origin that the default branch does not contain. **Open** links its pull request when the host answers, otherwise names the branch. |
+| Landed | A commit on the default branch in the last 180 days that adds a regression task whose source is a failing label. |
+| Assets | The files the change adds or edits, by top directory and name. Regression tasks are counted, not listed. |
+| Proof | The newest benchmark run whose `pulled` arms ran the change: each tool's pass rate on `main`, then on the change. The run opens from the date under it. |
+| Pass rate before → after | The scorer's default measurement split at the change's commit, as **Split at team commit** on the Scorers page does, over 180 days. |
+
+**Scorers in the loop** shows, for each scorer with labels in the last 30 days, what a run would start from now:
+
+```text
+SCORER          PASS RATE, 30 DAYS  FAILURES                                      NEXT RUN                                                                      CHANGES
+review-quality  61% · 23 labels     3 can become a task · 3 covered               teamai self-improvement run review-quality --tools default=claude --sandbox  1 open · 2 landed
+                                    Not usable: 1 uncommitted changes ·
+                                    1 start not recorded · 1 commit not in this checkout
+test-quality    80% · 5 labels      1 can become a task · 0 covered               Waiting for a second failure a task can start from                            0 open · 0 landed
+```
+
+A scorer is ready with two failures a task can start from, or one when a regression task covers another. **Setup** checks the rest: the workflow in effect (the default, or the team's `workflows/teamai-self-improvement.yaml`), a scheduled job that runs `teamai self-improvement run`, a pull request job that runs `teamai benchmark run`, and the regression suite with its tasks. **Recent runs** lists the last ten runs of the workflow. Click a scorer to open it on the Scorers page.
 
 ## Benchmarks
 

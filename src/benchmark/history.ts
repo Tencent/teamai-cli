@@ -237,7 +237,7 @@ export function wilson({ passed, planned }: PassRate) {
 }
 
 /** An arm's identity across runs. The role joins it only when set, so an arm without one keeps the key it had before roles. */
-function armKey({ name, tool, model, effort, team, workflow, role }: Pick<Arm, 'name' | 'tool' | 'model' | 'effort' | 'team' | 'workflow' | 'role'>): string {
+export function armKey({ name, tool, model, effort, team, workflow, role }: Pick<Arm, 'name' | 'tool' | 'model' | 'effort' | 'team' | 'workflow' | 'role'>): string {
   return JSON.stringify([name, tool, model ?? null, effort ?? null, teamChoiceOf(team), workflow?.name ?? null, ...(role !== undefined ? [role] : [])]);
 }
 

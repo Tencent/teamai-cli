@@ -251,6 +251,8 @@ jobs:
 
 It runs on any PR that changes an asset, a person's too, so every change is measured against every failure fixed before. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
 
+The dashboard's [Self-improvement page](dashboard.md#self-improvement) follows each proposal and each landed change: the assets it touched, its proof on the regression suite per tool, and the scorer's pass rate before and after it landed.
+
 ## When a failure is not used
 
 `plan` lists each failure of the scorer it cannot start a task from in `refused`, with why:

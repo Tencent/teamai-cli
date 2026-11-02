@@ -237,7 +237,7 @@ describe('scorer results', () => {
     expect(selected?.groups?.find((group) => group.kind === 'value' && group.value === 'tdd')?.split).toMatchObject({ before: { n: 1 }, after: { n: 1 }, notRecorded: { n: 2 } });
   });
 
-  it('lists the failing labels of a cohort newest first, with their author, platform, skills and session name only', () => {
+  it('lists the failing labels of a cohort newest first, with their author, platform, skills, session name and start only', () => {
     const labels = [
       viewed(sessionLabel({ passed: false, label: 'poor', scoredAt: '2026-03-12T00:00:00.000Z', used: { skills: ['tdd'] } }), { author: 'bob', sessionName: 'fix-login' }),
       viewed(sessionLabel({ passed: true })),
@@ -245,9 +245,11 @@ describe('scorer results', () => {
     ];
     expect(ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.failing).toEqual({
       total: 2,
+      covered: 0,
+      startable: 0,
       labels: [
-        { author: 'alice', scoredAt: '2026-03-15T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude' },
-        { author: 'bob', scoredAt: '2026-03-12T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', skills: ['tdd'], sessionName: 'fix-login' },
+        { author: 'alice', scoredAt: '2026-03-15T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', start: { refused: 'not_recorded' } },
+        { author: 'bob', scoredAt: '2026-03-12T00:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', skills: ['tdd'], sessionName: 'fix-login', start: { refused: 'not_recorded' } },
       ],
     });
   });
@@ -553,6 +555,26 @@ describe('failures to improve from', () => {
       session: { name: 'claude-code_fix-retry_20260309' },
     });
     expect(JSON.stringify(failures)).not.toContain('reasoning');
+  });
+
+  it('shows with each failing label where its work started, its regression task and its learnings, and counts what is covered and what can become a task', () => {
+    const covered = { platform: 'claude-code', sessionId: '7c1e' };
+    const labels = [
+      viewed(failing('7c1e', { scoredAt: '2026-03-12T00:00:00.000Z' }), { agent: ran({ commit: COMMIT, dirty: false }) }),
+      viewed(failing('9d2f', { scoredAt: '2026-03-11T00:00:00.000Z' }), { agent: ran({ commit: COMMIT, dirty: false }) }),
+      viewed(failing('a0b1', { scoredAt: '2026-03-10T00:00:00.000Z' }), { agent: ran({ commit: COMMIT, dirty: true }) }),
+    ];
+    const links = {
+      tasks: new Map([[JSON.stringify(covered), 'benchmarks/regressions/tasks/missed-null-check.yaml']]),
+      learnings: new Map([[JSON.stringify(covered), [{ id: 'retry-loops-need-a-bound', path: '/tmp/l.md' }]]]),
+    };
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW, links: { taskOf: (subject) => links.tasks.get(JSON.stringify(subject)), learningsOf: (subject) => links.learnings.get(JSON.stringify(subject)) ?? [] } });
+    expect(selected?.failing.labels.map(({ start, task, learnings }) => ({ start, task, learnings }))).toEqual([
+      { start: { commit: COMMIT }, task: 'benchmarks/regressions/tasks/missed-null-check.yaml', learnings: ['retry-loops-need-a-bound'] },
+      { start: { commit: COMMIT }, task: undefined, learnings: [] },
+      { start: { refused: 'tracked_changes' }, task: undefined, learnings: [] },
+    ]);
+    expect(selected?.failing).toMatchObject({ total: 3, covered: 1, startable: 1 });
   });
 
   it('gives each scorer its cohorts, and each model cohort its agreement with hand labels in both directions', () => {

@@ -15,6 +15,7 @@ import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { cachedScorerNames, loadCachedScorer, scorerSourceHash } from '../scorers/cache.js';
 import { parseScorer } from '../scorers/definition.js';
+import { FailureLinks } from '../scorers/failure-links.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type RubricLabels, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
@@ -294,7 +295,7 @@ async function resolveCommit(config: LocalConfig, commit: string): Promise<strin
 const SPLIT_GIT_BATCH = 8;
 
 /** Which side of `commit` each revision is on: after when the revision contains it. A revision this clone lacks has none. */
-async function sidesOf(config: LocalConfig, commit: string, revisions: ReadonlySet<string>): Promise<Map<string, Side>> {
+export async function sidesOf(config: LocalConfig, commit: string, revisions: ReadonlySet<string>): Promise<Map<string, Side>> {
   const sides = new Map<string, Side>();
   const pending = [...revisions];
 
@@ -398,7 +399,7 @@ export async function scorerResults({ config, query, now = new Date(), events, r
   const viewed = await readScorerLabels(config, { refresh });
   const { commit, ...rest } = query;
 
-  const [split, reminders, rubricLabels] = await Promise.all([
+  const [split, reminders, rubricLabels, links] = await Promise.all([
     commit ? (async () => {
       const full = await resolveCommit(config, commit);
 
@@ -406,11 +407,12 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     })() : undefined,
     events ? reminderInput({ events, windowDays: query.windowDays, now }) : undefined,
     rubricLabelsOf(config, viewed.map(({ label }) => label)),
+    FailureLinks.read(config),
   ]);
 
   const resultsQuery: ScorerResultsQuery = { ...rest };
 
   if (split) resultsQuery.split = split;
 
-  return ScorerResults.of({ labels: viewed, query: resultsQuery, now, rubricLabels, reminders });
+  return ScorerResults.of({ labels: viewed, query: resultsQuery, now, rubricLabels, reminders, links });
 }

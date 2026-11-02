@@ -176,4 +176,4 @@ async function propose({ team, branch }: { team: string; branch: string }): Prom
   await pushFile({ file: files.map((file) => path.join(team, file)), path: files, branch });
 }
 
-export const SelfImprovement = { pick, plan, propose, branchOf } as const;
+export const SelfImprovement = { pick, plan, propose, branchOf, commitsIn } as const;

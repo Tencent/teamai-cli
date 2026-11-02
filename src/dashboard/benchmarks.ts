@@ -237,16 +237,22 @@ export async function benchmarkHistory({ config, query, now = new Date(), refres
   now?: Date;
   refresh?: boolean;
 }): Promise<BenchmarkPage> {
+  const runs = await benchmarkRuns(config, { refresh });
+  const view = BenchmarkHistory.of({ runs, query, now });
+
+  return { ...await withTeamCommits(config, view), roleArms: roleArmsOf(runs, view.window) };
+}
+
+/** Every ended benchmark run of the workspace: this machine's records, and the team's it has none for. */
+export async function benchmarkRuns(config: LocalConfig, { refresh }: { refresh: boolean }): Promise<BenchmarkRunInput[]> {
   const [local, reported] = await Promise.all([
     readLocal(config),
     publishedBenchmarkRuns(config, { refresh }),
   ]);
 
   const localIds = new Set(local.map(({ run }) => run));
-  const runs = [...local, ...reported.filter(({ run }) => !localIds.has(run))];
-  const view = BenchmarkHistory.of({ runs, query, now });
 
-  return { ...await withTeamCommits(config, view), roleArms: roleArmsOf(runs, view.window) };
+  return [...local, ...reported.filter(({ run }) => !localIds.has(run))];
 }
 
 /** Each arm with a role in the runs `window` holds, newest run first, once per suite and arm name. */
