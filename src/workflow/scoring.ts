@@ -990,15 +990,18 @@ type Returned = { kind: 'returned'; status: 'released' | 'failed' };
 
 type SubmittedLease = SettledLease | Returned;
 
-type LabelAnswer = Pick<SucceededAttempt, 'scorer' | 'subject' | 'labelId'> & Pick<SucceededAttempt['verdict'], 'label' | 'score' | 'passed' | 'decidedBy'> & { reasoning: string };
+type LabelAnswer = Pick<SucceededAttempt, 'scorer' | 'subject' | 'labelId'> & Pick<SucceededAttempt['verdict'], 'label' | 'score' | 'passed' | 'agent' | 'decidedBy'> & { reasoning: string };
 
 function labelAnswer(config: LocalConfig, attempt: SucceededAttempt): LabelAnswer {
-  const { label, score, passed, version, decidedBy } = attempt.verdict;
+  const { label, score, passed, version, agent, decidedBy } = attempt.verdict;
+  const judged: Pick<LabelAnswer, 'agent'> = {};
+
+  if (agent) judged.agent = agent;
   const decider: Pick<LabelAnswer, 'decidedBy'> = {};
 
   if (decidedBy) decider.decidedBy = decidedBy;
 
-  return { scorer: attempt.scorer, subject: attempt.subject, label, score, passed, ...decider, labelId: attempt.labelId, reasoning: reasoningPath(config, version) };
+  return { scorer: attempt.scorer, subject: attempt.subject, label, score, passed, ...judged, ...decider, labelId: attempt.labelId, reasoning: reasoningPath(config, version) };
 }
 
 /** `{ label }` for a lease of one scorer, `{ labels }` in the step's order for a batch. */
@@ -1385,13 +1388,16 @@ async function labelMembers<T extends LeasedAttempt>({ config, submission, now, 
 
     if (!label.passed) log.info(shareFailedLabelHint(reasoningPath(config, version), sessionId));
 
+    const observed: Pick<SucceededAttempt['verdict'], 'agent'> = {};
+
+    if (label.agent) observed.agent = label.agent;
     const decided: Pick<SucceededAttempt['verdict'], 'decidedBy'> = {};
 
     if (label.source === 'workflow' && label.decidedBy) decided.decidedBy = label.decidedBy;
 
     const succeeded = toSucceeded(attempt, {
       settledAt: now, ...usageOnHead(submission, members, attempt), labelId: id,
-      verdict: { label: label.label, score: label.score, passed: label.passed, version, ...decided },
+      verdict: { label: label.label, score: label.score, passed: label.passed, version, ...observed, ...decided },
     });
 
     await AttemptStore.write(config, succeeded);

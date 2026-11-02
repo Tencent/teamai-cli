@@ -175,13 +175,14 @@ describe('teamai score with an external driver', () => {
 
     const good = await runCLI(['score', '--lease', lease.ref, '--submit', '--stdin'], app, env, answer('thorough'));
     expect(good.code, good.stdout + good.stderr).toBe(0);
-    expect(envelope(good.stdout).data).toMatchObject({ label: { scorer: 'review-quality', label: 'thorough', score: 1, passed: true }, published: true });
+    const judgedAgent = { tool: { name: 'claude' }, model: { reported: 'claude-review-1' }, effort: { requested: 'high' }, driver: 'ext' };
+    expect(envelope(good.stdout).data).toMatchObject({ label: { scorer: 'review-quality', label: 'thorough', score: 1, passed: true, agent: judgedAgent }, published: true });
     const dataHome = path.resolve(lease.evidence, '..', '..', '..');
     const labels = fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n');
     expect(labels).toHaveLength(1);
     expect(JSON.parse(labels[0] ?? '{}')).toMatchObject({
       scorer: 'review-quality', label: 'thorough', source: 'workflow', subject: { runId, step: 'review', pass: 1 }, used: { skills: ['review-notes'] },
-      agent: { tool: { name: 'claude' }, model: { reported: 'claude-review-1' }, effort: { requested: 'high' }, driver: 'ext' },
+      agent: judgedAgent,
     });
     expect(envelope((await runCLI(['score', '--next', '--json', JSON.stringify(judge)], app, env)).stdout).data).toEqual({ idle: { open: 0, leased: 0 } });
 

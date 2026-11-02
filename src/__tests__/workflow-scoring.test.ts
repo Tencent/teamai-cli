@@ -965,6 +965,21 @@ describe('the harness a judged pass ran with', () => {
     expect(label.agent).toEqual(recorded);
   });
 
+  it('names the judged harness in the submit answer, also when the same lease is submitted again', async () => {
+    const config = fixture(scorer(100));
+    const runId = await settledRun(config, { tool: 'claude', model: 'claude-review-1', agent: { effort: { requested: 'high' }, team } });
+    const recorded = agentOfStep(await runOf(config, runId), 'review');
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    const success = { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } } as const;
+
+    const first = data(await submitJudgeLease(config, lease.ref, success));
+    const again = data(await submitJudgeLease(config, lease.ref, success));
+
+    expect(recorded).toMatchObject({ model: { reported: 'claude-review-1' }, team });
+    expect(first).toMatchObject({ label: { label: 'good', agent: recorded } });
+    expect(again).toMatchObject({ label: { label: 'good', agent: recorded } });
+  });
+
   it('shows the judge nothing of the harness: its prompt and evidence name no tool version, model, role or team revision of the pass', async () => {
     const config = fixture(scorer(100));
     const stepTeam = { ...team, revision: 'e'.repeat(40), selection: { ...team.selection, primaryRole: 'harness-only-role' } };
