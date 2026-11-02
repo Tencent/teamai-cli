@@ -17,7 +17,7 @@ import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
   writtenList, type EntryLayout, type EntryReader, type EntryResolution,
 } from '../namespaced-entries.js';
-import type { JsonValue, LocalConfig } from '../types.js';
+import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
 import { ENV_KEY_RE, envName } from './env-key.js';
 
@@ -115,13 +115,14 @@ export async function readSecretsForEdit(
   if (!read.ok) return read;
   const text = await readFileSafe(absolutePath);
   const written = writtenList(text === null ? null : parseYaml(text), 'secrets');
-  // The read above validated every entry, so each one parses here with all its keys.
-  const entries = z.array(z.unknown()).catch([]).parse(written);
+  // The read above validated every entry, so each one parses here with all its keys. The spread keeps the
+  // order they were written in, so a rewrite of the team's file changes only the entry it edits.
+  const entries = Array.isArray(written) ? written : [];
 
   return { ok: true, secrets: entries.flatMap((entry) => {
     const declaration = WrittenSecretDeclarationSchema.safeParse(entry);
 
-    return declaration.success ? [declaration.data] : [];
+    return declaration.success && isJsonObject(entry) ? [{ ...entry, ...declaration.data }] : [];
   }) };
 }
 

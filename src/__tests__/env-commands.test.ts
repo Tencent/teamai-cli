@@ -1286,6 +1286,16 @@ scope: 'user',
       expect(await secretsIn(rootSecrets())).toEqual([{ key: 'NPM_TOKEN' }]);
     });
 
+    it('leaves the other declarations of the team file with their keys in the order it has them', async () => {
+      await fse.outputFile(rootSecrets(), 'secrets:\n  - url: https://www.npmjs.com/settings/tokens\n    key: NPM_TOKEN\n');
+
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true });
+
+      expect(await fse.readFile(rootSecrets(), 'utf-8')).toBe(
+        'secrets:\n  - url: https://www.npmjs.com/settings/tokens\n    key: NPM_TOKEN\n  - key: GITHUB_TOKEN\n',
+      );
+    });
+
     it('--role declares it in env/<ns>/secrets.yaml, and --role names that file when no one declares the namespace', async () => {
       await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }] }));
 

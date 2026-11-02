@@ -539,6 +539,28 @@ describe('#1083 workflow stats merge', () => {
     expect(await reports.raw(['ls-tree', '--name-only', 'teamai-reports', 'stats/'])).toBe('stats/alice.yaml\n');
   });
 
+  it('writes a member stats file back with its keys in the order they were read', async () => {
+    const { config, origin } = await reportsRemote('alice');
+    const clone = path.dirname(origin) + '/team-repo';
+    const git = simpleGit(clone);
+    const written = 'skills: {}\nupdatedAt: 2026-10-13T00:00:00.000Z\nusername: alice\n';
+    await git.checkout(['--orphan', 'teamai-reports']);
+    await git.raw(['rm', '-rf', '--cached', '.']);
+    fs.mkdirSync(path.join(clone, 'stats'));
+    fs.writeFileSync(path.join(clone, 'stats', 'alice.yaml'), written);
+    await git.add(['stats/alice.yaml']);
+    await git.commit('stats');
+    await git.push('origin', 'teamai-reports');
+    await git.checkout(['-f', 'main']);
+    await enqueueRecord(config, buildEndRecord(runState(), driver, 'alice'), {});
+
+    expect(await publishPendingRecords(config)).toEqual({ state: 'published' });
+
+    expect(await simpleGit(origin).show(['teamai-reports:stats/alice.yaml'])).toBe(
+      `${written}workflows:\n  runs: 1\n  succeeded: 1\n  failed: 0\n  totalDurationMs: 150000\n`,
+    );
+  });
+
   it('moves a run out of the stats of the member whose end another member replaced', async () => {
     const { config, origin } = await reportsRemote('bob');
     await enqueueRecord(config, buildEndRecord(runState({ status: 'failed' }), driver, 'alice'), {});

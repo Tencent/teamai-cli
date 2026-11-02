@@ -272,8 +272,8 @@ async function loadManifest(): Promise<ModelSwitchManifest | null> {
       throw new Error(`Invalid model ownership entry for ${agent}: ${file}`);
     }
 
-    // A falsy `pending` has always read as no pending entry.
-    const { pending: written, ...fields } = state.data;
+    // A falsy `pending` has always read as no pending entry. The spread keeps the entry's own key order for the next save.
+    const { pending: written, ...fields } = isJsonObject(entry) ? { ...entry, ...state.data } : state.data;
     const pending = written ? PendingSchema.safeParse(written) : undefined;
 
     if (pending && (!pending.success || (pending.data.kind === 'switch' && !('prior' in pending.data)))) {
