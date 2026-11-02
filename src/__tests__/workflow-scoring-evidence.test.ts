@@ -647,13 +647,29 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'comple
     } });
   });
 
+  it('asks for --step when the workflow lists the scorer on two steps, though only one of them succeeded', async () => {
+    const { config, runId } = await deliveredRun(unsampled);
+    const scorers = { names: ['quality'] };
+    await updateRun(config, runId, await knownSecrets(config), async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: {
+      ...run,
+      definition: { ...run.definition, steps: run.definition.steps.map((step) => (step.id === 'read-issue' ? { ...step, scorers } : step)) },
+      steps: run.steps.map((step): StepState => (step.id === 'read-issue' && step.status === 'succeeded' ? { ...step, status: 'failed', outcome: 'failed', failure: { code: 'tool_failed', message: 'The issue could not be read.' } } : step)),
+    } }));
+    fakeClaude();
+
+    expect(await scoreOnDemand(config, { run: runId, scorers: ['quality'] })).toEqual({ error: {
+      code: 'step_ambiguous',
+      message: `Run ${runId} lists scorer quality on steps read-issue, change. Pass --step <path> to pick one.`,
+    } });
+  });
+
   it('fails, names the session that is gone, and writes no label', async () => {
     const { config, runId } = await deliveredRun(unsampled, { session: 'session-change' });
     fakeClaude();
 
     expect(await scoreOnDemand(config, { run: runId, scorers: ['quality'] })).toEqual({ error: {
       code: 'evidence_missing',
-      message: `Pass 1 of step change in run ${runId} cannot be scored: claude-code session session-change of change#1 is no longer on this machine. Restore it, or score another pass. No label was written.`,
+      message: `Pass 1 of step change in run ${runId} cannot be scored: no longer on this machine: claude-code session session-change of change#1. Restore what is missing, or score another pass. No label was written.`,
     } });
     expect(await LabelStore.local(config)).toEqual([]);
   });

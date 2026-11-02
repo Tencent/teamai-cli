@@ -274,23 +274,23 @@ describe('what decided workflow labels', () => {
   it('says how many labels each stage decided, how many never reached a judge, and how the judge did on the rest', () => {
     const decided = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.decided;
 
-    expect(decided).toEqual({
-      rows: [
-        { by: 'judge', stats: { n: 3, passed: 2, failed: 1, rate: 2 / 3 } },
-        { by: 'ci', stats: { n: 2, passed: 0, failed: 2, rate: 0 } },
-        { by: 'check', stats: { n: 1, passed: 0, failed: 1, rate: 0 } },
-        { by: 'protected', stats: { n: 1, passed: 0, failed: 1, rate: 0 } },
-        { by: 'not recorded', stats: { n: 1, passed: 1, failed: 0, rate: 1 } },
-      ],
-      beforeJudge: 4,
-    });
+    expect(decided?.rows.map(({ by, stats }) => ({ by, stats }))).toEqual([
+      { by: 'judge', stats: { n: 3, passed: 2, failed: 1, rate: 2 / 3 } },
+      { by: 'ci', stats: { n: 2, passed: 0, failed: 2, rate: 0 } },
+      { by: 'check', stats: { n: 1, passed: 0, failed: 1, rate: 0 } },
+      { by: 'protected', stats: { n: 1, passed: 0, failed: 1, rate: 0 } },
+      { by: 'not recorded', stats: { n: 1, passed: 1, failed: 0, rate: 1 } },
+    ]);
+    expect(decided?.beforeJudge).toBe(4);
   });
 
   it('groups by what decided a label, and lists each failing label with the stage that decided it', () => {
-    const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'decidedBy', failing: { group: JSON.stringify(['value', 'ci', null, false]) } }, now: NOW }).selected;
+    const ci = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.decided?.rows.find((row) => row.by === 'ci')?.key;
+    const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'decidedBy', failing: { group: ci } }, now: NOW }).selected;
 
     expect(selected?.groups?.map((group) => `${group.kind === 'value' ? group.value : group.kind} ${group.stats.n}`)).toEqual(['judge 3', 'ci 2', 'check 1', 'protected 1', 'not recorded 1']);
     expect(selected?.failing.labels.map((failing) => failing.decidedBy)).toEqual(['ci', 'ci']);
+    expect(selected?.decided?.rows.map((row) => row.key)).toEqual(selected?.groups?.map((group) => group.key));
   });
 
   it('counts a label a stage decided in the measurement of the judge tool it names, though that judge reported no model for it', () => {

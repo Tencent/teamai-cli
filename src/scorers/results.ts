@@ -134,7 +134,7 @@ export type FailingLabel = { author: string; scoredAt: string; label: string; sk
  * What decided a workflow cohort's labels (#1247): its labels per stage, the most first and those that recorded none
  * last, and how many a stage decided before any judge ran.
  */
-export type Decided = { rows: Array<{ by: Decider | 'not recorded'; stats: Stats }>; beforeJudge: number };
+export type Decided = { rows: Array<{ by: Decider | 'not recorded'; key: string; stats: Stats }>; beforeJudge: number };
 
 /**
  * The friction reminder per session run on this machine (#1182): `hinted` from the member's contribute state, by
@@ -370,12 +370,12 @@ function failingLabel(entry: ViewedLabel): FailingLabel {
 function decided(labels: readonly ViewedLabel[]): Decided | undefined {
   const byOf = (entry: ViewedLabel) => (entry.label.source === 'workflow' ? entry.label.decidedBy : undefined);
   if (!labels.some((entry) => byOf(entry) !== undefined)) return undefined;
-  const rows = DECIDERS.map((by) => ({ by, stats: stats(labels.filter((entry) => byOf(entry) === by)) }))
+  const rows = DECIDERS.map((by) => ({ by, key: groupKey({ value: by }), stats: stats(labels.filter((entry) => byOf(entry) === by)) }))
     .filter((row) => row.stats.n > 0)
     .sort((left, right) => right.stats.n - left.stats.n || DECIDERS.indexOf(left.by) - DECIDERS.indexOf(right.by));
   const unrecorded = labels.filter((entry) => byOf(entry) === undefined);
   return {
-    rows: [...rows, ...unrecorded.length > 0 ? [{ by: 'not recorded' as const, stats: stats(unrecorded) }] : []],
+    rows: [...rows, ...unrecorded.length > 0 ? [{ by: 'not recorded' as const, key: NOT_RECORDED_KEY, stats: stats(unrecorded) }] : []],
     beforeJudge: labels.filter((entry) => isStageDecider(byOf(entry))).length,
   };
 }
@@ -593,7 +593,7 @@ export const ScorerResults = {
     const inGroup = (entry: ViewedLabel) => !groupBy || group === undefined || groupKeys(entry, groupBy).includes(group);
     const failing = counted.filter((entry) => !entry.label.passed && inGroup(entry))
       .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
-    const decidedBy = summary.source === 'workflow' ? decided(counted) : undefined;
+    const stageBreakdown = summary.source === 'workflow' ? decided(counted) : undefined;
     return {
       window,
       scorers,
@@ -603,7 +603,7 @@ export const ScorerResults = {
         ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
         ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
         failing: { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length },
-        ...(decidedBy ? { decided: decidedBy } : {}),
+        ...(stageBreakdown ? { decided: stageBreakdown } : {}),
         ...(reminders && summary.source === 'session' ? { reminders: { days: reminders.days, rows: reminderRows(chosen.all, reminders) } } : {}),
       },
     };

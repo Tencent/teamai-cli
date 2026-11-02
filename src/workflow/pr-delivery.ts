@@ -182,13 +182,12 @@ export async function findDelivered(
   return findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
 }
 
-/** The provider of the checkout's configured origin; git alone when the checkout has none. */
 /**
  * How the CI of `commit`, the head of a pull request delivered from `checkout`, went on the origin's host (#1247), or why
  * it was not read: the host's CI is one TeamAI does not read, or the host did not answer, with what it failed on. Read
  * once, with no wait for a pending one.
  */
-export async function deliveredCi(checkout: string, commit: string): Promise<
+export async function deliveredCi({ checkout, commit }: { checkout: string; commit: string }): Promise<
   { kind: 'read'; status: CiStatus } | { kind: 'unsupported' } | { kind: 'unanswered'; reason: string }
 > {
   if (!OBJECT_ID.test(commit)) return { kind: 'unsupported' };
@@ -201,6 +200,7 @@ export async function deliveredCi(checkout: string, commit: string): Promise<
   }
 }
 
+/** The provider of the checkout's configured origin; git alone when the checkout has none. */
 async function originOf(checkout: string): Promise<OriginProvider> {
   const remote = await git(checkout, ['config', '--get', 'remote.origin.url']);
   return remote.code === 0 ? providerForRemote(remote.stdout) : { kind: 'transport' };

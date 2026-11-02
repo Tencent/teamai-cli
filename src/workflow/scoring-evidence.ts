@@ -58,13 +58,18 @@ export function evidencePlan(run: RunState, subject: RunSubject, settling?: RunP
   if (!diff && ranges.length === 0) gaps.push('no_recorded_range');
   // What a run delivered is judged against what the run was asked (#1247): its inputs and every step's outputs, as the
   // run stored them when each step reported, so a later edit to an issue a step read changes neither.
-  const delivers = definitionOf(subject.step)?.deliver === 'pr';
+  const delivers = isDelivered(run, subject);
   const isOwn = (pass: RunPass) => pass.step === subject.step && pass.pass === subject.pass;
   const reported = !delivers ? passes : own && !all.some(isOwn) ? [...all, own] : all.map((pass) => (own && isOwn(pass) ? own : pass));
   return {
     subject, kind: workflow ? 'workflow' : 'prompt', checkout: run.checkout, diff, repoAt: diff?.to ?? ranges.at(-1)?.to, passes, ranges, gaps,
     reported, ...(delivers && run.inputs !== undefined ? { inputs: run.inputs } : {}),
   };
+}
+
+/** Whether `subject` is a pass of a `deliver: pr` step: what its judge reads, and what decides it first (#1247). */
+export function isDelivered(run: RunState, subject: RunSubject): boolean {
+  return stepDefinitions(run)(subject.step)?.deliver === 'pr';
 }
 
 /**

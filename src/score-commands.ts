@@ -184,7 +184,7 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
     return loaded.ok ? scoreOnDemand(loaded.config, demand) : loaded.envelope;
   }
   if (options.next === (options.lease !== undefined)) {
-    return failure('invalid_arguments', 'Pass --next to take judge work, --lease <ref> to judge it here, --lease <ref> --submit to settle it, --run <id> --step <path> --scorer <name> to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels');
+    return failure('invalid_arguments', 'Pass --next to take judge work, --lease <ref> to judge it here, --lease <ref> --submit to settle it, --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels');
   }
   const payload = await payloadOf(options);
   if (!payload.ok) return payload.envelope;

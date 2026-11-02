@@ -11,7 +11,7 @@ import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConf
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { AttemptStore, isDecidedBeforeJudge, isRunAttempt, scoresDir } from './attempts.js';
-import { isStageDecider, labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type Decider, type JudgeUsage, type ScoreLabel } from './label.js';
+import { isStageDecider, labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
 
 function labelsFile(config: LocalConfig): string {
   return path.join(scoresDir(config), 'labels.jsonl');
@@ -83,7 +83,7 @@ async function publishedLabels(config: LocalConfig): Promise<ScoreLabel[]> {
 export type LabelDelivery = { state: 'published' } | { state: 'pending' | 'unsupported'; reason: string };
 
 /** What Workflow Runs shows of a label: never its reasoning, judge, or usage. `decidedBy` is absent on labels from before #1247. */
-export type PassScore = Pick<ScoreLabel, 'scorer' | 'label' | 'passed'> & { decidedBy?: Decider };
+export type PassScore = Pick<ScoreLabel, 'scorer' | 'label' | 'passed'> & Pick<RunLabel, 'decidedBy'>;
 
 type RunLabel = Extract<ScoreLabel, { source: 'workflow' }>;
 

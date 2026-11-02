@@ -41,10 +41,12 @@ import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../sco
 import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidenceHash, evidencePlan, missingEvidence } from './scoring-evidence.js';
-import { decideBeforeJudge, failingLabel, isDelivered, judgedAlone } from './scoring-stages.js';
+import { decideBeforeJudge, failingLabel, judgedAlone } from './scoring-stages.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
+import { runPasses } from './loop.js';
 import { stepDefinitions } from './scope.js';
+import { agentPassOf } from './step-state.js';
 import { parseStepPath } from './step-path.js';
 import { installOwner, isRunId, readRun, runsDir } from './store.js';
 import { isWorkflowFile, workflowRunBy, type InlineWorkflow, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowStep } from './types.js';
@@ -376,7 +378,7 @@ export async function takeJudgeLease(config: LocalConfig, request: JudgeRequest,
   for (;;) {
     const taken = await takeOneLease(config, request, now);
     switch (taken.kind) {
-      case 'evidence_empty':
+      case 'closed':
         earlier.push(...taken.closed);
         // A named session is open again after a failed attempt, so reading it again would fail again.
         if (request.entries?.source === 'session') return { kind: 'idle', open: 0, leased: 0, skipped: [], closed: earlier, decided };
@@ -415,13 +417,13 @@ function entrySources(entries: JudgeRequest['entries']): { named?: NamedSession;
 }
 
 /**
- * What the attempts lock decided: a lease, an unreadable session that closed, nothing to lease, or `raced`: the session
+ * What the attempts lock decided: a lease, an unreadable subject that closed, nothing to lease, or `raced`: the session
  * to lease is not the one read before the lock, since another driver took that one meanwhile.
  */
 type LockedLease =
   | { kind: 'workflow'; members: Members; handedBack: boolean }
   | { kind: 'session'; members: SessionMembers; judged: JudgedSession }
-  | { kind: 'evidence_empty'; closed: ClosedEntry[] }
+  | { kind: 'closed'; closed: ClosedEntry[] }
   | { kind: 'raced' }
   | { kind: 'none' };
 
@@ -488,7 +490,7 @@ function stageAnswer(members: Members, reasoning: string): JudgeAnswer {
 
 async function takeOneLease(
   config: LocalConfig, request: JudgeRequest, now: string,
-): Promise<OneLease | { kind: 'busy' } | { kind: 'evidence_empty'; closed: ClosedEntry[] } | { kind: 'decided'; attempts: SucceededAttempt[] } | { kind: 'raced' }> {
+): Promise<OneLease | { kind: 'busy' } | { kind: 'closed'; closed: ClosedEntry[] } | { kind: 'decided'; attempts: SucceededAttempt[] } | { kind: 'raced' }> {
   const requested = await requestedEntries(config, request, now);
   if (!requested) return { kind: 'idle', open: 0, leased: 0, skipped: [] };
   const { scoring, all, runs, sessions, captured, named } = requested;
@@ -594,7 +596,7 @@ async function takeOneLease(
       });
       if (!prepared.read.ok) {
         for (const member of tried) await AttemptStore.write(config, { ...taken(member), status: 'failed', code: 'evidence_empty', settledAt: now });
-        return { kind: 'evidence_empty', closed: tried.map((member) => ({ ref: leaseRefOf({ entry: member.entry.id, attempt }), code: 'evidence_empty' })) };
+        return { kind: 'closed', closed: tried.map((member) => ({ ref: leaseRefOf({ entry: member.entry.id, attempt }), code: 'evidence_empty' })) };
       }
       const { judged } = prepared.read;
       const leased = (member: (typeof tried)[number]): SessionMember => ({ entry: member.entry, attempt: { ...taken(member), status: 'leased', session: judged.context } });
@@ -663,36 +665,43 @@ async function takeOneLease(
         });
         if (failed.status === 'busy') return { kind: 'busy' };
         await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
-        return { kind: 'evidence_empty', closed: leased.members.map((member) => ({ ref: leaseRefOf(member.attempt), code: built.code })) };
+        return { kind: 'closed', closed: leased.members.map((member) => ({ ref: leaseRefOf(member.attempt), code: built.code })) };
       }
       const [only, ...more] = leased.members;
       const check = more.length === 0 && only.entry.definition.check ? { scorer: only.entry.scorer, check: only.entry.definition.check, expiresAt: attempt.expiresAt } : undefined;
-      const stage = isDelivered(entry.run, entry.subject) ? await decideBeforeJudge(entry.run, entry.subject, check) : { kind: 'judge' as const };
-      if (stage.kind === 'unrunnable') {
-        log.warn(`${stage.message} Its entry settles unscored; fix the check, then score the pass again with teamai score --run.`);
-        const failed = await AttemptStore.locked(config, async () => {
-          const current = await AttemptStore.get(config, attempt.entry, attempt.attempt);
-          if (current?.status === 'leased') await AttemptStore.write(config, { ...current, status: 'failed', code: 'check_could_not_run', settledAt: now });
-        });
-        if (failed.status === 'busy') return { kind: 'busy' };
-        await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
-        return { kind: 'evidence_empty', closed: [{ ref: leaseRefOf(attempt), code: 'check_could_not_run', message: stage.message }] };
+      const stage = await decideBeforeJudge(entry.run, entry.subject, check);
+      switch (stage.kind) {
+        case 'unrunnable': {
+          log.warn(`${stage.message} Its entry settles unscored; fix the check, then score the pass again with teamai score --run.`);
+          const failed = await AttemptStore.locked(config, async () => {
+            const current = await AttemptStore.get(config, attempt.entry, attempt.attempt);
+            if (current?.status === 'leased') await AttemptStore.write(config, { ...current, status: 'failed', code: 'check_could_not_run', settledAt: now });
+          });
+          if (failed.status === 'busy') return { kind: 'busy' };
+          await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
+          return { kind: 'closed', closed: [{ ref: leaseRefOf(attempt), code: 'check_could_not_run', message: stage.message }] };
+        }
+        case 'decided': {
+          // Published with the next label a judge submits, or by the caller, as a drain publishes once at its end.
+          const settled = await labelJudgeLease(config, leaseRefOf(attempt), {
+            driver: request.driver, outcome: 'success', answer: stageAnswer(leased.members, stage.reasoning),
+          }, now, { decidedBy: stage.by, publish: false });
+          if ('error' in settled) return settled.error.code === 'busy' ? { kind: 'busy' } : { kind: 'raced' };
+          return { kind: 'decided', attempts: [...settled.attempts] };
+        }
+        case 'judge':
+          return { kind: 'lease', lease: await leaseAnswer(config, { source: 'workflow', members: leased.members, handedBack: leased.handedBack }), skipped };
+        default: {
+          const unhandled: never = stage;
+          return unhandled;
+        }
       }
-      if (stage.kind === 'decided') {
-        // Published with the next label a judge submits, or by the caller, as a drain publishes once at its end.
-        const settled = await labelJudgeLease(config, leaseRefOf(attempt), {
-          driver: request.driver, outcome: 'success', answer: stageAnswer(leased.members, stage.reasoning),
-        }, now, { decidedBy: stage.by, publish: false });
-        if ('error' in settled) return settled.error.code === 'busy' ? { kind: 'busy' } : { kind: 'raced' };
-        return { kind: 'decided', attempts: [...settled.attempts] };
-      }
-      return { kind: 'lease', lease: await leaseAnswer(config, { source: 'workflow', members: leased.members, handedBack: leased.handedBack }), skipped };
     }
     case 'session': {
       await writeSessionEvidence(evidenceDir(config, leased.members[0].attempt.attempt), leased.judged, rubricsOf(leased.members, (member) => member.entry.definition));
       return { kind: 'lease', lease: await leaseAnswer(config, { source: 'session', members: leased.members }), skipped };
     }
-    case 'evidence_empty':
+    case 'closed':
     case 'raced':
       return leased;
     case 'none':
@@ -1390,13 +1399,19 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
     const ids = (await localRuns(config)).toReversed().slice(0, 10).map((known) => known.id);
     return error('run_not_found', `Run ${demand.run} is not on this machine. ${ids.length > 0 ? `Runs here, newest first: ${ids.join(', ')}.` : 'This scope has no runs.'}`);
   }
-  const judgeablePass = judgeablePasses(run);
-  const judgeable = judgeablePass.map(({ pass }) => pass);
+  const judgeable = judgeablePasses(run).map(({ pass }) => pass);
   const steps = [...new Set(judgeable.map((pass) => pass.step))];
   let { step } = demand;
   if (step === undefined) {
     const named = demand.scorers.join(', ');
-    const listing = [...new Set(judgeablePass.filter(({ definition }) => demand.scorers.every((scorer) => definition.scorers?.names.includes(scorer))).map(({ pass }) => pass.step))];
+    // The steps whose definition lists every scorer, whether or not they succeeded: --step may be left out only when the
+    // workflow lists the scorer on one step.
+    const definitionOf = stepDefinitions(run);
+    const listing = [...new Set(runPasses(run, agentPassOf).map((pass) => pass.step).filter((stepPath) => {
+      const definition = definitionOf(stepPath);
+      if (!definition || (definition.forEach && parseStepPath(stepPath).at(-1)?.index === undefined)) return false;
+      return demand.scorers.every((scorer) => definition.scorers?.names.includes(scorer));
+    }))];
     if (listing.length > 1) return error('step_ambiguous', `Run ${run.id} lists scorer ${named} on steps ${listing.join(', ')}. Pass --step <path> to pick one.`);
     [step] = listing;
     if (step === undefined) {
@@ -1413,7 +1428,7 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   const subject: RunSubject = { runId: run.id, step, pass };
   const missing = await missingEvidence(run, subject);
   if (missing.length > 0) {
-    return error('evidence_missing', `Pass ${pass} of step ${step} in run ${run.id} cannot be scored: ${missing.join('; ')} ${missing.length > 1 ? 'are' : 'is'} no longer on this machine. Restore ${missing.length > 1 ? 'them' : 'it'}, or score another pass. No label was written.`);
+    return error('evidence_missing', `Pass ${pass} of step ${step} in run ${run.id} cannot be scored: no longer on this machine: ${missing.join('; ')}. Restore what is missing, or score another pass. No label was written.`);
   }
   const cached = await pinScorers(config, demand.scorers.filter((name) => !Object.hasOwn(run.scorers ?? {}, name)));
   const asked: Array<{ scorer: string; pin: PinnedScorer }> = [];

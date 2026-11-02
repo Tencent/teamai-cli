@@ -142,7 +142,7 @@ $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --qu
 
 ```console
 $ teamai score --run r3f9… --scorer delivered
-{"error":{"code":"evidence_missing","message":"Pass 1 of step change in run r3f9… cannot be scored: claude-code session 6f1c2a0e-… of change#1 is no longer on this machine. Restore it, or score another pass. No label was written."}}
+{"error":{"code":"evidence_missing","message":"Pass 1 of step change in run r3f9… cannot be scored: no longer on this machine: claude-code session 6f1c2a0e-… of change#1. Restore what is missing, or score another pass. No label was written."}}
 ```
 
 ## 为交付的工作评分

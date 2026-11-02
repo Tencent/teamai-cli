@@ -11,8 +11,7 @@ import type { Decider, RunSubject } from '../scorers/label.js';
 import { log } from '../utils/logger.js';
 import { runPasses } from './loop.js';
 import { deliveredCi } from './pr-delivery.js';
-import { evidencePlan } from './scoring-evidence.js';
-import { stepDefinitions } from './scope.js';
+import { evidencePlan, isDelivered } from './scoring-evidence.js';
 import { agentPassOf, type StepPass } from './step-state.js';
 import type { RunState } from './types.js';
 
@@ -24,11 +23,6 @@ export type StageVerdict =
   | { kind: 'decided'; by: Exclude<Decider, 'judge'>; reasoning: string }
   | { kind: 'unrunnable'; message: string }
   | { kind: 'judge' };
-
-/** Whether `subject` is a pass of a `deliver: pr` step, the only passes the stages decide. */
-export function isDelivered(run: RunState, subject: RunSubject): boolean {
-  return stepDefinitions(run)(subject.step)?.deliver === 'pr';
-}
 
 /** Whether a scorer judges `subject` in a lease of its own: its check is run on a delivered pass, for it alone. */
 export function judgedAlone(run: RunState, subject: RunSubject, definition: Pick<ScorerDefinition, 'check'>): boolean {
@@ -56,7 +50,7 @@ async function ciStage(run: RunState, subject: RunSubject, pass: StepPass | unde
   const receipt = run.deliveries?.find((each) => each.step === subject.step && each.pass === subject.pass);
   const head = pass?.delivery?.head;
   if (!receipt || !head || !run.checkout) return { kind: 'judge' };
-  const ci = await deliveredCi(run.checkout, head);
+  const ci = await deliveredCi({ checkout: run.checkout, commit: head });
   if (ci.kind === 'unanswered') log.warn(`The CI of ${receipt.url} could not be read, so the judge of step "${subject.step}" decides without it: ${ci.reason}`);
   if (ci.kind !== 'read' || ci.status !== 'failed') return { kind: 'judge' };
   return { kind: 'decided', by: 'ci', reasoning: `Decided by CI, before any judge: the checks of commit ${head} on ${receipt.url} failed.` };
@@ -102,10 +96,11 @@ async function checkStage(run: RunState, subject: RunSubject, pass: StepPass | u
 export interface StageCheck { scorer: string; check: NonNullable<ScorerDefinition['check']>; expiresAt: string }
 
 /**
- * What decides delivered pass `subject` before its judge, stage by stage in order. `check` is the scorer's: a scorer
- * with one is judged alone, since the other stages decide every scorer of the pass alike.
+ * What decides pass `subject` before its judge, stage by stage in order; only a delivered pass has stages. `check` is
+ * the scorer's: a scorer with one is judged alone, since the other stages decide every scorer of the pass alike.
  */
 export async function decideBeforeJudge(run: RunState, subject: RunSubject, check?: StageCheck): Promise<StageVerdict> {
+  if (!isDelivered(run, subject)) return { kind: 'judge' };
   const pass = passOf(run, subject);
   const stages = [
     ...(check ? [() => checkStage(run, subject, pass, check)] : []),

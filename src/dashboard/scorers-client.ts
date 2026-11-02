@@ -37,7 +37,6 @@ const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
 const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
 const deciderNames=${JSON.stringify(DECIDER_NAMES)};
 const deciderText=by=>'<span class="decider decider-'+e(by.replace(' ','-'))+'">'+label(deciderNames[by]||by)+'</span>';
-const deciderKey=by=>by==='not recorded'?JSON.stringify(['not recorded']):JSON.stringify(['value',by,null,false]);
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
 let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:'',group:'',failing:''};
 function resetScorers(){scorerCommitDraft='';scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:'',group:'',failing:''};}
@@ -95,12 +94,12 @@ function decidedPanel(sel){
  const d=sel.decided;
  if(!d)return '';
  const n=sel.cohort.stats.n, judged=d.rows.find(r=>r.by==='judge');
- const selected=by=>scorerQuery.groupBy==='decidedBy'&&scorerQuery.group===deciderKey(by);
+ const selected=key=>scorerQuery.groupBy==='decidedBy'&&scorerQuery.group===key;
  return '<section class="panel sessions decided"><div class="panelhead"><h2>'+label('What decided these labels')+'</h2><span class="label">'+label('A delivered pull request is decided by the first stage that fails it: the scorer check, the pull request CI, then the protected-path refusal. The judge only reads work every stage passed.')+'</span></div>'
   +'<div class="kpis">'+kpiCard(label('Decided before the judge'),pct(n?d.beforeJudge/n:null),number(d.beforeJudge)+' / '+number(n)+' '+label('labels')+' · '+label('no judge call'))
   +kpiCard(label('Judge pass rate'),pct(judged?judged.stats.rate:null),judged?number(judged.stats.n)+' '+label('labels reached the judge'):label('No label reached the judge'))+'</div>'
   +'<div class="table-scroll"><table class="session-table compact"><thead><tr>'+['DECIDED BY','LABELS','PASSED','FAILED','SHARE'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +d.rows.map(r=>'<tr class="'+(selected(r.by)?'selected-row':'')+'"><td><button class="link" data-decided="'+e(deciderKey(r.by))+'" aria-pressed="'+selected(r.by)+'">'+deciderText(r.by)+'</button></td><td>'+number(r.stats.n)+'</td><td>'+number(r.stats.passed)+'</td><td>'+number(r.stats.failed)+'</td><td>'+meter(n?r.stats.n/n:null)+' '+pct(n?r.stats.n/n:null)+'</td></tr>').join('')
+  +d.rows.map(r=>'<tr class="'+(selected(r.key)?'selected-row':'')+'"><td><button class="link" data-decided="'+e(r.key)+'" aria-pressed="'+selected(r.key)+'">'+deciderText(r.by)+'</button></td><td>'+number(r.stats.n)+'</td><td>'+number(r.stats.passed)+'</td><td>'+number(r.stats.failed)+'</td><td>'+meter(n?r.stats.n/n:null)+' '+pct(n?r.stats.n/n:null)+'</td></tr>').join('')
   +'</tbody></table></div><p class="scorer-hint">'+label('Select a stage to list its failing labels. Many labels decided by CI or a check point at the work, not the rubric; fix those first.')+'</p></section>';
 }
 function valuesPanel(sel){
