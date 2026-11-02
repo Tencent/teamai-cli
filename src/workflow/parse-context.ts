@@ -66,6 +66,11 @@ export interface WorkflowFiles {
    * manifest. Undefined when the sync could not read it: a lease checks the role then.
    */
   roles?: ReadonlySet<string>;
+  /**
+   * Whether another workflow this sync settles runs this file by name. A step here that continues a copy no step here
+   * opens then continues the copy a step of that workflow opens, whose walk checks the copy's role.
+   */
+  isRunByName?: boolean;
 }
 
 /** What a reader may read of the workflow a step runs, and how a message names that workflow. */

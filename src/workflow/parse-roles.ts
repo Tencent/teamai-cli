@@ -294,9 +294,13 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const copy = copyOf(levels);
 
     if (!copy) {
-      // The copy this step continues is opened by a step running this file, whose walk of it checks the copy's role.
-      if (runsWith(levels).kind === 'unknown') consume(levels, 'enclosing_copy');
-      else if (last.step.role !== undefined && last.written) {
+      if (runsWith(levels).kind === 'unknown') {
+        // The copy this step continues is opened by a step of a workflow that runs this file, whose walk checks its role;
+        // with no such workflow, it can only be one that runs with the team pulled now.
+        const by = ctx.files?.isRunByName ? 'enclosing_copy' : 'current_team';
+        consume(levels, by);
+        ownRoleDeclared(last, by);
+      } else if (last.step.role !== undefined && last.written) {
         report('bad_role', valueNode(last.written.item, 'role'), `${last.written.field}.role`, `${last.label} has role ${last.step.role} but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it`);
       }
 

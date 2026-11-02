@@ -1026,6 +1026,7 @@ function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | 
     const files: WorkflowFiles = { runnable: runs, cycle: (workflow) => cycleBack(workflow, stem) };
 
     if (roles) files.roles = roles;
+    files.isRunByName = [...chosen.keys()].some((other) => other !== stem && workflowsRunBy(runs(other) ?? { steps: [] }).some(({ workflow }) => workflow === stem));
     const parsed = parseWorkflow(version.relativePath, version.content, files);
     const diagnostics = parsed.ok ? [] : parsed.diagnostics;
 
