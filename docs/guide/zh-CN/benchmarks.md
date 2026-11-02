@@ -157,11 +157,12 @@ title: Reject expired refresh tokens
 prompt: |
   Refresh tokens past their expiry are still accepted. Fix it.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+solutionCommit: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e
 check:
   run: npx vitest run test/auth/refresh.test.ts
   protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
   add: [test/auth/refresh.test.ts]
-source: { platform: claude-code, sessionId: 7c1e2b9a, fix: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e }
+source: { platform: claude-code, sessionId: 7c1e2b9a }
 ```
 
 ```yaml
@@ -176,10 +177,11 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | 键 | 值 |
 | --- | --- |
 | `startingCommit` | 任务开始时 `repo` 的完整提交。 |
+| `solutionCommit` | 可选：包含任务参考解决方案的完整提交。[`benchmark try`](#试运行任务) 会检查 check 在这里通过，`check.add` 也从这里读取文件。 |
 | `check` | `run`：任务完成后以 0 退出的命令；`protect`：agent 不能提供的路径。 |
-| `check.add` | 可选：check 之前写入、agent 永远拿不到的文件：按 `source.fix` 中的样子写入的文件，例如修复的测试；或者 `{ from, to }`，套件目录中的一个文件或目录。目录会加入其下的所有文件，但不包括以点开头的条目，例如 `.DS_Store`；要加入点文件，在 `from` 中直接指明它。见[修复带来的测试](#修复带来的测试)和[套件目录中的测试](#套件目录中的测试)。 |
+| `check.add` | 可选：check 之前写入、agent 永远拿不到的文件：按 `solutionCommit` 中的样子写入的文件，例如解决方案的测试；或者 `{ from, to }`，套件目录中的一个文件或目录。目录会加入其下的所有文件，但不包括以点开头的条目，例如 `.DS_Store`；要加入点文件，在 `from` 中直接指明它。见[解决方案带来的测试](#解决方案带来的测试)和[套件目录中的测试](#套件目录中的测试)。 |
 | `successCriteria` | 代替 `check`：由评判器按这些标准判定。 |
-| `source` | 可选：任务来自的会话，`platform` 和 `sessionId`，以及 `fix`，即在那里修复它的完整提交，[`benchmark try`](#试运行任务) 会检查它。 |
+| `source` | 可选：任务的来源，即会话的 `platform` 和 `sessionId`。不会从它运行任何东西。 |
 
 `teamai pull` 和 `teamai review --branch` 检查每个文件，并带文件和行号报告每个问题。`benchmarks/<namespace>/<suite>/` 下的套件只发给该角色或项目的成员，见[角色和项目](distribution.md#角色和项目)。
 
@@ -205,9 +207,9 @@ vitest.config.ts          edited     as 3f2c9a7 has it
 
 check 读取的内容无法一一列出的任务，应改用 `successCriteria`。
 
-### 修复带来的测试
+### 解决方案带来的测试
 
-如果证明修复的测试是修复本身带来的，把这个测试文件列进 `check.add`；修复只是在起始提交已有的文件里加了一个用例时也一样。check 读到的是 `source.fix` 中的版本，agent 永远看不到：
+如果证明解决方案的测试是解决方案本身带来的，把这个测试文件列进 `check.add`；解决方案只是在起始提交已有的文件里加了一个用例时也一样。check 读到的是 `solutionCommit` 中的版本，agent 永远看不到：
 
 ```text
 step                          test/auth/refresh.test.ts
@@ -220,13 +222,13 @@ try at 9a1d4e7                protect restored, then written from 9a1d4e7: the c
 
 | `teamai pull` 和 `teamai review --branch` 拒绝 | 原因 |
 | --- | --- |
-| 没有 `source.fix` 的 `check.add` | 这些文件来自 `source.fix`。 |
+| 没有 `solutionCommit` 的 `check.add` | 这些文件来自 `solutionCommit`。 |
 | 没有任何 `protect` 条目匹配的 `check.add` 路径 | agent 可以自己提供它。 |
 | `check.add` 里的通配符 | 每一项都只指明一个文件。 |
 
 ### 套件目录中的测试
 
-任务的提交里没有的测试，例如你专门为任务写的测试，可以放在套件目录中。`check.add` 的 `{ from, to }` 条目把它写到 check 读取的位置，写入的时机和修复的测试相同；agent 永远拿不到它：
+任务的提交里没有的测试，例如你专门为任务写的测试，可以放在套件目录中。`check.add` 的 `{ from, to }` 条目把它写到 check 读取的位置，写入的时机和解决方案的测试相同；agent 永远拿不到它：
 
 ```text
 benchmarks/fix-auth/
@@ -244,7 +246,7 @@ check:
       to: test/auth/refresh.test.ts
 ```
 
-`from` 是套件目录中的一个文件或目录；目录会把其下的每个文件写到 `to` 之下。每个文件按字节写入，保留可执行位。`teamai pull` 把这些文件和套件一起保存，运行写入的是它启动时的版本，所以运行期间 pull 不会改变任何 check。修改其中一个文件会改变任务的 `sourceHash`。这种条目不需要 `source.fix`。
+`from` 是套件目录中的一个文件或目录；目录会把其下的每个文件写到 `to` 之下。每个文件按字节写入，保留可执行位。`teamai pull` 把这些文件和套件一起保存，运行写入的是它启动时的版本，所以运行期间 pull 不会改变任何 check。修改其中一个文件会改变任务的 `sourceHash`。这种条目不需要 `solutionCommit`。
 
 | `teamai pull` 和 `teamai review --branch` 拒绝 | 原因 |
 | --- | --- |
@@ -299,19 +301,19 @@ trial:
 ```console
 $ teamai benchmark try ../team/benchmarks/fix-auth/tasks/expired-token.yaml
 ℹ Task expired-token: trying the check at 3f2c9a7
-ℹ Task expired-token: trying the check at the fix 9a1d4e7, with the protected paths as 3f2c9a7 has them
-{"data":{"try":{"task":"expired-token","message":"Task \"expired-token\": the check fails at 3f2c9a7 and passes at the fix 9a1d4e7, with the protected paths as 3f2c9a7 has them."}}}
+ℹ Task expired-token: trying the check at the solution 9a1d4e7, with the protected paths as 3f2c9a7 has them
+{"data":{"try":{"task":"expired-token","message":"Task \"expired-token\": the check fails at 3f2c9a7 and passes at the solution 9a1d4e7, with the protected paths as 3f2c9a7 has them."}}}
 ```
 
 ```text
-task           at startingCommit      at source.fix (protect restored)   exit
-pod-startup    check fails            check passes                       0
-old-bug        check passes           not tried                          1: "check passes without changes at 3f2c9a7"
-bad-fix        check fails            check fails                        1: "check fails at the fix 9a1d4e7"
-test-in-fix    check fails            check fails (fix's test restored)  1: "The fix changes test/startup.test.ts, which protect puts back as 3f2c9a7 has them: list a test the fix brought in check.add"
-changed-test   check fails            check passes (check.add written)   0
-add-missing    not tried              not tried                          1: "test/missing.test.ts is not a file at the fix 9a1d4e7"
-no-fix         check fails            not tried                          0: "the check was not tried on a fix"
+task           at startingCommit      at solutionCommit (protect restored)    exit
+pod-startup    check fails            check passes                            0
+old-bug        check passes           not tried                               1: "check passes without changes at 3f2c9a7"
+bad-fix        check fails            check fails                             1: "check fails at the solution 9a1d4e7"
+test-in-fix    check fails            check fails (solution's test restored)  1: "The solution changes test/startup.test.ts, which protect puts back as 3f2c9a7 has them: list a test the solution brought in check.add"
+changed-test   check fails            check passes (check.add written)        0
+add-missing    not tried              not tried                               1: "test/missing.test.ts is not a file at the solutionCommit 9a1d4e7"
+no-solution    check fails            not tried                               0: "the check was not tried on a solution"
 criteria-only  no check               no check                           0: "there is no check to try"
 missing-tool   could not run          not tried                          1: names the command and 3f2c9a7
 setup-error    setup failed           not tried                          1: names setup and 3f2c9a7

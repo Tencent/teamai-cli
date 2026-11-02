@@ -155,13 +155,14 @@ describe('parseSuite', () => {
     ['a task with both check and successCriteria', taskText({ successCriteria: 'The test passes.' }), 'check', 'a task has exactly one of check and successCriteria'],
     ['a task with an empty protect', taskText({ check: '{ run: node test.js, protect: [] }' }), 'check.protect', 'check.protect lists every path the check reads and the agent must not supply'],
     ['a short startingCommit', taskText({ startingCommit: 'abc1234' }), 'startingCommit', 'must be a full 40-character commit'],
-    ['a short source.fix', taskText({ source: '{ platform: claude-code, sessionId: s1, fix: 9a1d4e7 }' }), 'source.fix', 'must be a full 40-character commit'],
-    ['check.add without source.fix', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [test/startup.test.js] }" }), 'check.add', 'check.add writes its files from source.fix; add source.fix, the full commit that brought them'],
-    ['check.add outside protect', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [lib/startup.test.js] }", source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'check.add.0', 'check.add "lib/startup.test.js" is not under check.protect, so the agent could supply it; add a protect path that covers it'],
-    ['a glob in check.add', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: ['test/*.js'] }", source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'check.add.0', 'must name one file, without glob characters'],
-    ['check.add paths that nest', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [test/a, test/a/b.js] }", source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'check.add.1', 'check.add writes "test/a" as a file and as the directory of "test/a/b.js"; write paths that do not nest'],
+    ['a short solutionCommit', taskText({ solutionCommit: '9a1d4e7' }), 'solutionCommit', 'must be a full 40-character commit'],
+    ['a commit in source, which only says where the task came from', taskText({ source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'source', 'Unrecognized key: "fix"'],
+    ['check.add without solutionCommit', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [test/startup.test.js] }" }), 'check.add', 'check.add writes its files from solutionCommit; add solutionCommit, the full commit with the solution that brought them'],
+    ['check.add outside protect', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [lib/startup.test.js] }", solutionCommit: 'b'.repeat(40) }), 'check.add.0', 'check.add "lib/startup.test.js" is not under check.protect, so the agent could supply it; add a protect path that covers it'],
+    ['a glob in check.add', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: ['test/*.js'] }", solutionCommit: 'b'.repeat(40) }), 'check.add.0', 'must name one file, without glob characters'],
+    ['check.add paths that nest', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [test/a, test/a/b.js] }", solutionCommit: 'b'.repeat(40) }), 'check.add.1', 'check.add writes "test/a" as a file and as the directory of "test/a/b.js"; write paths that do not nest'],
     ...['test/[', 'test/[!'].map((entry) => [
-      `an unclosed class ${entry} in check.protect`, taskText({ check: `{ run: node test.js, protect: ['${entry}'], add: ['test/check.js'] }`, source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'check.protect.0', 'has a [ class with no closing ]',
+      `an unclosed class ${entry} in check.protect`, taskText({ check: `{ run: node test.js, protect: ['${entry}'], add: ['test/check.js'] }`, solutionCommit: 'b'.repeat(40) }), 'check.protect.0', 'has a [ class with no closing ]',
     ]),
     ...['./test.js', 'lib/../test.js', 'test//check.js', 'test/', 'te\\sts/**'].map((entry) => [
       `a protected path ${entry}`, taskText({ check: `{ run: node test.js, protect: ['${entry}'] }` }), 'check.protect.0', 'must be a path relative to the repo, with no backslash and no ".", ".." or empty segment',
@@ -173,11 +174,11 @@ describe('parseSuite', () => {
     expect(parsed.diagnostics).toEqual([expect.objectContaining({ file: 'benchmarks/fix/tasks/bad.yaml', field, message })]);
   });
 
-  it('keeps the commit a task names as its fix', () => {
-    const fix = 'b'.repeat(40);
-    const parsed = parse(suiteText(), { fix: taskText({ source: `{ platform: claude-code, sessionId: s1, fix: ${fix} }` }) });
+  it('keeps the solutionCommit a task names, and the session it came from as its source', () => {
+    const solution = 'b'.repeat(40);
+    const parsed = parse(suiteText(), { fix: taskText({ solutionCommit: solution, source: '{ platform: claude-code, sessionId: s1 }' }) });
 
-    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ id: 'fix', source: { platform: 'claude-code', sessionId: 's1', fix } }] } });
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ id: 'fix', solutionCommit: solution, source: { platform: 'claude-code', sessionId: 's1' } }] } });
   });
 
   it.each([
@@ -187,14 +188,22 @@ describe('parseSuite', () => {
     ['the path itself', '[test/startup.test.js]', 'test/startup.test.js'],
     ['a path with a literal ^', "['test/^check.js']", 'test/^check.js'],
     ['a class with a literal *', "['test/[ab*].js']", 'test/a.js'],
-  ])('keeps the files check.add writes from the fix, under %s in protect', (_case, protect, added) => {
-    const fix = 'b'.repeat(40);
-    const parsed = parse(suiteText(), { fix: taskText({ check: `{ run: node test.js, protect: ${protect}, add: [${added}] }`, source: `{ platform: claude-code, sessionId: s1, fix: ${fix} }` }) });
+  ])('keeps the files check.add writes from solutionCommit, under %s in protect', (_case, protect, added) => {
+    const solution = 'b'.repeat(40);
+    const parsed = parse(suiteText(), { fix: taskText({ check: `{ run: node test.js, protect: ${protect}, add: [${added}] }`, solutionCommit: solution }) });
 
-    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ judge: { kind: 'check', add: { commit: fix, paths: [added] } } }] } });
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ judge: { kind: 'check', add: { commit: solution, paths: [added] } } }] } });
   });
 
-  it('keeps a file of the suite directory that check.add writes at its own path, with its bytes and mode, without source.fix', () => {
+  it('keeps the files check.add writes from solutionCommit in a task written by hand, with no source session', () => {
+    const solution = 'b'.repeat(40);
+    const parsed = parse(suiteText(), { fix: taskText({ solutionCommit: solution, check: "{ run: node test.js, protect: ['test/**'], add: [test/startup.test.js] }" }) });
+
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ judge: { kind: 'check', add: { commit: solution, paths: ['test/startup.test.js'] } } }] } });
+    expect(parsed.ok && parsed.suite.tasks[0]).not.toHaveProperty('source');
+  });
+
+  it('keeps a file of the suite directory that check.add writes at its own path, with its bytes and mode, without solutionCommit', () => {
     const test = 'assert(refresh(expired) === null);\n';
     const parsed = parse(suiteText(), { fix: taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [{ from: check-files/refresh.test.js, to: test/auth/refresh.test.js }] }" }) }, undefined, [
       suiteFile('check-files/refresh.test.js', test, '100755'),
@@ -229,7 +238,7 @@ describe('parseSuite', () => {
     ['a directory whose files land outside protect', '[{ from: check-files, to: test }]', 'check.add.0.to', 'check.add "test/a.js" is not under check.protect, so the agent could supply it; add a protect path that covers it'],
     ['two entries that write one path', '[{ from: check-files/a.js, to: test/unit/a.test.js }, { from: check-files/a.js, to: test/unit/a.test.js }]', 'check.add.1.to', 'check.add writes "test/unit/a.test.js" twice; write each path once'],
     ['two entries whose paths nest', '[{ from: check-files/a.js, to: test/a.test.js/b.test.js }, { from: check-files/a.js, to: test/a.test.js }]', 'check.add.1.to', 'check.add writes "test/a.test.js" as a file and as the directory of "test/a.test.js/b.test.js"; write paths that do not nest'],
-    ['an entry with neither form', '[{ to: test/unit/a.test.js }]', 'check.add.0', 'must be a path of source.fix, or { from, to }: a file or directory of the suite directory, and where the check reads it'],
+    ['an entry with neither form', '[{ to: test/unit/a.test.js }]', 'check.add.0', 'must be a path of solutionCommit, or { from, to }: a file or directory of the suite directory, and where the check reads it'],
   ])('reports %s at its check.add entry', (_rule, add, field, message) => {
     const parsed = parse(suiteText(), { bad: taskText({ check: `{ run: node test.js, protect: ['test/**/*.test.js'], add: ${add} }` }), fix: taskText() }, undefined, [suiteFile('check-files/a.js', 'a')]);
 

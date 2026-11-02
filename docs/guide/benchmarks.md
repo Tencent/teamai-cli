@@ -157,11 +157,12 @@ title: Reject expired refresh tokens
 prompt: |
   Refresh tokens past their expiry are still accepted. Fix it.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+solutionCommit: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e
 check:
   run: npx vitest run test/auth/refresh.test.ts
   protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
   add: [test/auth/refresh.test.ts]
-source: { platform: claude-code, sessionId: 7c1e2b9a, fix: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e }
+source: { platform: claude-code, sessionId: 7c1e2b9a }
 ```
 
 ```yaml
@@ -176,10 +177,11 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | Key | Value |
 | --- | --- |
 | `startingCommit` | The full commit of `repo` the task starts from. |
+| `solutionCommit` | Optional: the full commit with the task's reference solution. [`benchmark try`](#try-a-task) checks the check passes there, and `check.add` reads its files from it. |
 | `check` | `run`, a command that exits 0 once the task is done, and `protect`, the paths the agent must not supply. |
-| `check.add` | Optional: files written before the check that the agent never has: a file as `source.fix` has it, such as the fix's test, or `{ from, to }`, a file or directory of the suite directory. A directory adds every file under it except its dot entries, such as `.DS_Store`; name a dotfile in `from` to add it. See [Tests the fix brought](#tests-the-fix-brought) and [Tests in the suite directory](#tests-in-the-suite-directory). |
+| `check.add` | Optional: files written before the check that the agent never has: a file as `solutionCommit` has it, such as the solution's test, or `{ from, to }`, a file or directory of the suite directory. A directory adds every file under it except its dot entries, such as `.DS_Store`; name a dotfile in `from` to add it. See [Tests the solution brought](#tests-the-solution-brought) and [Tests in the suite directory](#tests-in-the-suite-directory). |
 | `successCriteria` | Instead of `check`: a judge decides from these. |
-| `source` | Optional: the session the task came from, `platform` and `sessionId`, and `fix`, the full commit that fixed it there, which [`benchmark try`](#try-a-task) checks. |
+| `source` | Optional: where the task came from, the session's `platform` and `sessionId`. Nothing runs from it. |
 
 `teamai pull` and `teamai review --branch` check every file and report each problem with its file and line. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
 
@@ -205,9 +207,9 @@ So `protect` lists everything the check reads that the agent must not supply: th
 
 A task whose check reads things you cannot list belongs in `successCriteria`.
 
-### Tests the fix brought
+### Tests the solution brought
 
-When the fix brought the test that proves it, list that test file in `check.add`, also when the fix only added a case to a file the starting commit has. The check reads it as `source.fix` has it; the agent never does:
+When the solution brought the test that proves it, list that test file in `check.add`, also when the solution only added a case to a file the starting commit has. The check reads it as `solutionCommit` has it; the agent never does:
 
 ```text
 step                          test/auth/refresh.test.ts
@@ -220,13 +222,13 @@ try at 9a1d4e7                protect restored, then written from 9a1d4e7: the c
 
 | `teamai pull` and `teamai review --branch` refuse | Because |
 | --- | --- |
-| `check.add` without `source.fix` | The files come from `source.fix`. |
+| `check.add` without `solutionCommit` | The files come from `solutionCommit`. |
 | A `check.add` path no `protect` entry matches | The agent could supply it. |
 | A glob in `check.add` | Each entry names one file. |
 
 ### Tests in the suite directory
 
-A test the task's commits do not have, such as one you wrote for the task, can live in the suite directory. A `{ from, to }` entry of `check.add` writes it where the check reads it, at the same steps as a fix's test; the agent never has it:
+A test the task's commits do not have, such as one you wrote for the task, can live in the suite directory. A `{ from, to }` entry of `check.add` writes it where the check reads it, at the same steps as a solution's test; the agent never has it:
 
 ```text
 benchmarks/fix-auth/
@@ -244,7 +246,7 @@ check:
       to: test/auth/refresh.test.ts
 ```
 
-`from` is a file or a directory of the suite directory; a directory writes every file under it below `to`. Each file is written as bytes, with its executable bit. `teamai pull` keeps the files with the suite, and a run writes them as they were when it started, so a pull during the run changes no check. Editing one changes the task's `sourceHash`. The entry needs no `source.fix`.
+`from` is a file or a directory of the suite directory; a directory writes every file under it below `to`. Each file is written as bytes, with its executable bit. `teamai pull` keeps the files with the suite, and a run writes them as they were when it started, so a pull during the run changes no check. Editing one changes the task's `sourceHash`. The entry needs no `solutionCommit`.
 
 | `teamai pull` and `teamai review --branch` refuse | Because |
 | --- | --- |
@@ -299,19 +301,19 @@ Try a new task file before it joins the suite, in a checkout of the suite's `rep
 ```console
 $ teamai benchmark try ../team/benchmarks/fix-auth/tasks/expired-token.yaml
 ℹ Task expired-token: trying the check at 3f2c9a7
-ℹ Task expired-token: trying the check at the fix 9a1d4e7, with the protected paths as 3f2c9a7 has them
-{"data":{"try":{"task":"expired-token","message":"Task \"expired-token\": the check fails at 3f2c9a7 and passes at the fix 9a1d4e7, with the protected paths as 3f2c9a7 has them."}}}
+ℹ Task expired-token: trying the check at the solution 9a1d4e7, with the protected paths as 3f2c9a7 has them
+{"data":{"try":{"task":"expired-token","message":"Task \"expired-token\": the check fails at 3f2c9a7 and passes at the solution 9a1d4e7, with the protected paths as 3f2c9a7 has them."}}}
 ```
 
 ```text
-task           at startingCommit      at source.fix (protect restored)   exit
-pod-startup    check fails            check passes                       0
-old-bug        check passes           not tried                          1: "check passes without changes at 3f2c9a7"
-bad-fix        check fails            check fails                        1: "check fails at the fix 9a1d4e7"
-test-in-fix    check fails            check fails (fix's test restored)  1: "The fix changes test/startup.test.ts, which protect puts back as 3f2c9a7 has them: list a test the fix brought in check.add"
-changed-test   check fails            check passes (check.add written)   0
-add-missing    not tried              not tried                          1: "test/missing.test.ts is not a file at the fix 9a1d4e7"
-no-fix         check fails            not tried                          0: "the check was not tried on a fix"
+task           at startingCommit      at solutionCommit (protect restored)    exit
+pod-startup    check fails            check passes                            0
+old-bug        check passes           not tried                               1: "check passes without changes at 3f2c9a7"
+bad-fix        check fails            check fails                             1: "check fails at the solution 9a1d4e7"
+test-in-fix    check fails            check fails (solution's test restored)  1: "The solution changes test/startup.test.ts, which protect puts back as 3f2c9a7 has them: list a test the solution brought in check.add"
+changed-test   check fails            check passes (check.add written)        0
+add-missing    not tried              not tried                               1: "test/missing.test.ts is not a file at the solutionCommit 9a1d4e7"
+no-solution    check fails            not tried                               0: "the check was not tried on a solution"
 criteria-only  no check               no check                           0: "there is no check to try"
 missing-tool   could not run          not tried                          1: names the command and 3f2c9a7
 setup-error    setup failed           not tried                          1: names setup and 3f2c9a7

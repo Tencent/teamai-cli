@@ -104,13 +104,13 @@ ${suiteLines}`);
   return { commits, home, tmp, suiteDir, tryTask, pushElsewhere, has: (sha: string) => spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: work, env }).status === 0 };
 }
 
-function task({ start, fix, run = 'node test.js', judge }: { start: string; fix?: string; run?: string; judge?: string }): string {
+function task({ start, solution, run = 'node test.js', judge }: { start: string; solution?: string; run?: string; judge?: string }): string {
   return `schemaVersion: v1alpha1
 title: Fix the answer
 prompt: Make node test.js pass.
 startingCommit: ${start}
 ${judge ?? `check:\n  run: ${run}\n  protect: [test.js]`}
-${fix ? `source: { platform: claude-code, sessionId: s1, fix: ${fix} }\n` : ''}`;
+${solution ? `solutionCommit: ${solution}\n` : ''}`;
 }
 
 function said(result: Result): string {
@@ -130,11 +130,11 @@ const short = (commit: string): string => commit.slice(0, 7);
 describe('benchmark try', () => {
   // #1402's table: the task, then the suite's extra lines, the exit, and what the answer says.
   it.each<[string, (commits: Commits) => string, string, number, (commits: Commits) => string]>([
-    ['pod-startup', (c) => task({ start: c.start, fix: c.fix }), '', 0, (c) => `the check fails at ${short(c.start)} and passes at the fix ${short(c.fix)}`],
+    ['pod-startup', (c) => task({ start: c.start, solution: c.fix }), '', 0, (c) => `the check fails at ${short(c.start)} and passes at the solution ${short(c.fix)}`],
     ['old-bug', (c) => task({ start: c.fix }), '', 1, (c) => `the check passes without changes at ${short(c.fix)}`],
-    ['bad-fix', (c) => task({ start: c.start, fix: c.badFix }), '', 1, (c) => `the check fails at the fix ${short(c.badFix)} (exit 1)`],
-    ['test-in-fix', (c) => task({ start: c.start, fix: c.testInFix }), '', 1, (c) => `the check fails at the fix ${short(c.testInFix)} (exit 1), with the protected paths as ${short(c.start)} has them. The fix changes test.js`],
-    ['no-fix', (c) => task({ start: c.start }), '', 0, () => 'the check was not tried on a fix'],
+    ['bad-fix', (c) => task({ start: c.start, solution: c.badFix }), '', 1, (c) => `the check fails at the solution ${short(c.badFix)} (exit 1)`],
+    ['test-in-fix', (c) => task({ start: c.start, solution: c.testInFix }), '', 1, (c) => `the check fails at the solution ${short(c.testInFix)} (exit 1), with the protected paths as ${short(c.start)} has them. The solution changes test.js`],
+    ['no-solution', (c) => task({ start: c.start }), '', 0, () => 'the check was not tried on a solution'],
     ['criteria-only', (c) => task({ start: c.start, judge: 'successCriteria: The answer is 42.' }), '', 0, () => 'there is no check to try'],
     ['missing-tool', (c) => task({ start: c.start, run: 'no-such-tool test' }), '', 1, (c) => `the check "no-such-tool test" could not run at ${short(c.start)} (not_found)`],
     ['setup-error', (c) => task({ start: c.start }), 'setup:\n  command: exit 3\n', 1, (c) => `could not be tried at ${short(c.start)}: Setup "exit 3" exited with code 3`],
@@ -152,17 +152,17 @@ describe('benchmark try', () => {
     expect(fs.existsSync(trials) ? fs.readdirSync(trials) : []).toEqual([]);
   }, 60_000);
 
-  // check.add writes its files from the fix at both commits, whether or not startingCommit has them.
+  // check.add writes its files from solutionCommit at both commits, whether or not startingCommit has them.
   it.each<[string, (commits: Commits) => [string, string], string, string, number, (commits: Commits) => string]>([
-    ['pod-startup', (c) => [c.podStart, c.podFix], '\n  add: [test/startup.test.js]', '', 0, (c) => `the check fails at ${short(c.podStart)} and passes at the fix ${short(c.podFix)}`],
-    ['changed-test', (c) => [c.changedStart, c.changedFix], '\n  add: [test/startup.test.js]', '', 0, (c) => `the check fails at ${short(c.changedStart)} and passes at the fix ${short(c.changedFix)}`],
-    ['not-added', (c) => [c.podStart, c.podFix], '', '', 1, (c) => `the check fails at the fix ${short(c.podFix)}`],
-    ['add-missing', (c) => [c.podStart, c.podFix], '\n  add: [test/missing.test.js]', '', 1, (c) => `test/missing.test.js is not a file at the fix ${short(c.podFix)}`],
+    ['pod-startup', (c) => [c.podStart, c.podFix], '\n  add: [test/startup.test.js]', '', 0, (c) => `the check fails at ${short(c.podStart)} and passes at the solution ${short(c.podFix)}`],
+    ['changed-test', (c) => [c.changedStart, c.changedFix], '\n  add: [test/startup.test.js]', '', 0, (c) => `the check fails at ${short(c.changedStart)} and passes at the solution ${short(c.changedFix)}`],
+    ['not-added', (c) => [c.podStart, c.podFix], '', '', 1, (c) => `the check fails at the solution ${short(c.podFix)}`],
+    ['add-missing', (c) => [c.podStart, c.podFix], '\n  add: [test/missing.test.js]', '', 1, (c) => `test/missing.test.js is not a file at the solutionCommit ${short(c.podFix)}`],
   ])('check.add: %s', async (name, commitsOf, add, suite, exit, expected) => {
     const { commits, tryTask } = fixture(suite);
-    const [start, fix] = commitsOf(commits);
+    const [start, solution] = commitsOf(commits);
 
-    const result = await tryTask(name, task({ start, fix, judge: `check:\n  run: node test/startup.test.js\n  protect: [test]${add}` }));
+    const result = await tryTask(name, task({ start, solution, judge: `check:\n  run: node test/startup.test.js\n  protect: [test]${add}` }));
 
     expect(result.code, said(result)).toBe(exit);
     expect(message(result)).toContain(expected(commits));
@@ -174,10 +174,10 @@ describe('benchmark try', () => {
     fs.writeFileSync(path.join(suiteDir, 'check-files', 'startup.test.js'), STARTUP_TEST);
     const add = '\n  add:\n    - from: check-files/startup.test.js\n      to: test/startup.test.js';
 
-    const result = await tryTask('hidden', task({ start: commits.podStart, fix: commits.fix, judge: `check:\n  run: node test/startup.test.js\n  protect: [test]${add}` }));
+    const result = await tryTask('hidden', task({ start: commits.podStart, solution: commits.fix, judge: `check:\n  run: node test/startup.test.js\n  protect: [test]${add}` }));
 
     expect(result.code, said(result)).toBe(0);
-    expect(message(result)).toContain(`the check fails at ${short(commits.podStart)} and passes at the fix ${short(commits.fix)}`);
+    expect(message(result)).toContain(`the check fails at ${short(commits.podStart)} and passes at the solution ${short(commits.fix)}`);
   }, 60_000);
 
   it('runs setup before it writes the added files at both commits, as a run does', async () => {
@@ -186,29 +186,29 @@ describe('benchmark try', () => {
     fs.writeFileSync(path.join(suiteDir, 'check-files', 'startup.test.js'), STARTUP_TEST);
     const add = '\n  add:\n    - from: check-files/startup.test.js\n      to: test/startup.test.js';
 
-    const result = await tryTask('setup-first', task({ start: commits.podStart, fix: commits.fix, judge: `check:\n  run: node test/startup.test.js\n  protect: [test]${add}` }));
+    const result = await tryTask('setup-first', task({ start: commits.podStart, solution: commits.fix, judge: `check:\n  run: node test/startup.test.js\n  protect: [test]${add}` }));
 
     expect(result.code, said(result)).toBe(0);
-    expect(message(result)).toContain(`the check fails at ${short(commits.podStart)} and passes at the fix ${short(commits.fix)}`);
+    expect(message(result)).toContain(`the check fails at ${short(commits.podStart)} and passes at the solution ${short(commits.fix)}`);
   }, 60_000);
 
-  it('fetches a fix this checkout lacks by SHA from the suite repo, as a run does', async () => {
+  it('fetches a solution commit this checkout lacks by SHA from the suite repo, as a run does', async () => {
     const { commits, tryTask, pushElsewhere, has } = fixture();
-    const fix = pushElsewhere(commits.podStart, { 'answer.js': 'module.exports = 42;\n', 'test/startup.test.js': STARTUP_TEST });
+    const solution = pushElsewhere(commits.podStart, { 'answer.js': 'module.exports = 42;\n', 'test/startup.test.js': STARTUP_TEST });
 
-    const result = await tryTask('fetched', task({ start: commits.podStart, fix, judge: 'check:\n  run: node test/startup.test.js\n  protect: [test]\n  add: [test/startup.test.js]' }));
+    const result = await tryTask('fetched', task({ start: commits.podStart, solution, judge: 'check:\n  run: node test/startup.test.js\n  protect: [test]\n  add: [test/startup.test.js]' }));
 
     expect(result.code, said(result)).toBe(0);
-    expect(message(result)).toContain(`passes at the fix ${short(fix)}`);
-    expect(has(fix)).toBe(false);
+    expect(message(result)).toContain(`passes at the solution ${short(solution)}`);
+    expect(has(solution)).toBe(false);
   }, 60_000);
 
   it('validates the task file as pull does', async () => {
     const { commits, tryTask } = fixture();
 
-    const result = await tryTask('short-fix', task({ start: commits.start, fix: '9a1d4e7' }));
+    const result = await tryTask('short-fix', task({ start: commits.start, solution: '9a1d4e7' }));
 
     expect(result.code, said(result)).toBe(1);
-    expect(message(result)).toContain('field "source.fix": must be a full 40-character commit');
+    expect(message(result)).toContain('field "solutionCommit": must be a full 40-character commit');
   }, 60_000);
 });

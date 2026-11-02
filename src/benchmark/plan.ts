@@ -328,9 +328,9 @@ function laneOf(lane: number): string {
   return `lane${lane}`;
 }
 
-/** What check.add writes before a check of `judge`: its fix's files, then `checkFiles`, the suite directory's as committed. */
+/** What check.add writes before a check of `judge`: its solution commit's files, then `checkFiles`, the suite directory's as committed. */
 export function addedOf(judge: Extract<TaskJudge, { kind: 'check' }>, checkFiles: Added | undefined): Added[] {
-  return [...(judge.add ? [{ kind: 'fix' as const, ...judge.add }] : []), ...(checkFiles ? [checkFiles] : [])];
+  return [...(judge.add ? [{ kind: 'solution' as const, ...judge.add }] : []), ...(checkFiles ? [checkFiles] : [])];
 }
 
 /** The team a trial's clone installs: the arm's, with the run's asset selection. */

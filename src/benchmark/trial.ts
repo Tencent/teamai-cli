@@ -53,7 +53,7 @@ export async function commitCheckFiles(cache: string, suite: Suite): Promise<{ o
 
 /**
  * Writes `files` into the bare repo `cache` as a commit of their own, each at its path with its mode, so a trial's check
- * writes them as `check.add` writes a fix's: a pull during the run changes none of them. A fixed author, committer and
+ * writes them as `check.add` writes a solution commit's: a pull during the run changes none of them. A fixed author, committer and
  * date make the same files the same commit. A ref keeps it from gc while runs read it.
  */
 async function commitFiles(cache: string, files: readonly CheckFile[]): Promise<{ commit: string } | { failed: string }> {
@@ -328,7 +328,7 @@ async function stagedEntries(git: Git, cwd: string, specs: readonly string[]): P
 
 /**
  * Writes the files each entry of `add` names into `clone` as its commit has them, whether or not the clone has them, so
- * the check reads the fix's test, or the suite's, and the agent never did. Each must be a file at that commit. The
+ * the check reads the solution's test, or the suite's, and the agent never did. Each must be a file at that commit. The
  * commit is read from the first of `sources` that has it into an index of its own, and its files are written from that
  * source's objects, so nothing the clone holds decides what is written. Then each must hold that commit's bytes, as
  * `restoreProtected` checks its own, git stopped at `expiresAt` as there. Undefined once every entry is written.
@@ -351,8 +351,8 @@ async function writeAdded({ clone, add, sources, env, expiresAt }: {
       if (missing !== undefined) {
         return {
           code: 'trial_prepare_failed',
-          message: kind === 'fix'
-            ? `check.add path ${missing} is not a file at the fix ${commit}. List files the fix has in check.add, or fix source.fix.`
+          message: kind === 'solution'
+            ? `check.add path ${missing} is not a file at the solutionCommit ${commit}. List files the solution has in check.add, or fix solutionCommit.`
             : `check.add path ${missing} is not a file at ${commit}, the commit start made of the suite directory's files. Start a new run, which commits them again.`,
         };
       }

@@ -260,10 +260,10 @@ const CheckFileSchema = z.object({
     .pipe(z.tuple([ProtectedPathSchema], ProtectedPathSchema)),
   /**
    * Files written before the check whether or not the starting commit has them, so the agent never sees them: a path of
-   * `source.fix`, such as its test, or `{ from, to }`, a file or directory of the suite directory written at `to`.
+   * `solutionCommit`, such as its test, or `{ from, to }`, a file or directory of the suite directory written at `to`.
    */
   add: z.array(z.union([AddedPathSchema, z.object({ from: SuitePathSchema, to: AddedPathSchema }).strict()], {
-    error: 'must be a path of source.fix, or { from, to }: a file or directory of the suite directory, and where the check reads it',
+    error: 'must be a path of solutionCommit, or { from, to }: a file or directory of the suite directory, and where the check reads it',
   })).nonempty().optional(),
 }).strict();
 
@@ -290,10 +290,12 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     title: z.string().min(1),
     prompt: z.string().min(1),
     startingCommit: CommitSchema,
+    /** The commit with the task's reference solution: `--try` checks the check passes there, and check.add reads its files from it. */
+    solutionCommit: CommitSchema.optional(),
     check: CheckFileSchema.optional(),
     successCriteria: z.string().trim().min(1).optional(),
-    /** The session the task came from, and the commit that fixed it there, which `--try` checks the check passes at. */
-    source: z.object({ platform: z.string().min(1), sessionId: z.string().min(1), fix: CommitSchema.optional() }).strict().optional(),
+    /** Where the task came from: the session it was made from. Provenance only; nothing runs from it. */
+    source: z.object({ platform: z.string().min(1), sessionId: z.string().min(1) }).strict().optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
     if (successCriteria !== undefined && !check) return { ...task, judge: { kind: 'criteria', successCriteria } satisfies TaskJudge };
     if (!check || successCriteria !== undefined) {
@@ -301,10 +303,10 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
       return z.NEVER;
     }
     const { add = [], ...rest } = check;
-    const [firstFixed, ...otherFixed] = add.flatMap((entry) => (typeof entry === 'string' ? [entry] : []));
-    const fix = task.source?.fix;
-    if (firstFixed !== undefined && fix === undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check', 'add'], message: 'check.add writes its files from source.fix; add source.fix, the full commit that brought them' });
+    const [firstSolved, ...otherSolved] = add.flatMap((entry) => (typeof entry === 'string' ? [entry] : []));
+    const solution = task.solutionCommit;
+    if (firstSolved !== undefined && solution === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check', 'add'], message: 'check.add writes its files from solutionCommit; add solutionCommit, the full commit with the solution that brought them' });
       return z.NEVER;
     }
     const issues: Array<{ path: Array<string | number>; message: string }> = [];
@@ -346,7 +348,7 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
       ...task,
       judge: {
         kind: 'check', ...rest,
-        ...(firstFixed !== undefined && fix !== undefined ? { add: { commit: fix, paths: [firstFixed, ...otherFixed] } } : {}),
+        ...(firstSolved !== undefined && solution !== undefined ? { add: { commit: solution, paths: [firstSolved, ...otherSolved] } } : {}),
         ...(firstFile ? { files: [firstFile, ...otherFiles] } : {}),
       } satisfies TaskJudge,
     };
@@ -379,7 +381,7 @@ export type FileMode = '100644' | '100755';
 
 /** How a task is decided. Exactly one, by construction: the file rule above becomes a union here. */
 export type TaskJudge =
-  /** `add`: the files written from `commit`, the task's fix, before the check. `files`: those written from the suite directory. */
+  /** `add`: the files written from `commit`, the task's `solutionCommit`, before the check. `files`: those written from the suite directory. */
   | { kind: 'check'; run: string; protect: [string, ...string[]]; add?: { commit: string; paths: [string, ...string[]] }; files?: [CheckFile, ...CheckFile[]] }
   | { kind: 'criteria'; successCriteria: string };
 
@@ -391,8 +393,11 @@ export interface Task {
   title: string;
   prompt: string;
   startingCommit: string;
+  /** The commit with the reference solution, which `benchmark try` checks the check passes at. */
+  solutionCommit?: string;
   judge: TaskJudge;
-  source?: { platform: string; sessionId: string; fix?: string };
+  /** The session the task was made from, as provenance. */
+  source?: { platform: string; sessionId: string };
   /** sha256 of the file bytes. */
   sourceHash: string;
 }
@@ -477,8 +482,11 @@ export function parseSuite(input: { suite: SourceFile; tasks: readonly SourceFil
       diagnostics.push(...task.diagnostics);
       continue;
     }
-    const { title, prompt, startingCommit, judge, source: origin } = task.value;
-    tasks.push({ id, relativePath: source.relativePath, title, prompt, startingCommit, judge, ...(origin ? { source: origin } : {}), sourceHash: taskHash(source.content, judge) });
+    const { title, prompt, startingCommit, solutionCommit, judge, source: origin } = task.value;
+    tasks.push({
+      id, relativePath: source.relativePath, title, prompt, startingCommit, ...(solutionCommit ? { solutionCommit } : {}), judge,
+      ...(origin ? { source: origin } : {}), sourceHash: taskHash(source.content, judge),
+    });
   }
   const [first, ...rest] = tasks;
   if (!first) {

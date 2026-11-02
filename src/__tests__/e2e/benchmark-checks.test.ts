@@ -110,14 +110,14 @@ describe('benchmark checks on the local driver', () => {
     expect(fixture.status()).toBe(before);
   }, 120_000);
 
-  // The check passes without the fix's version of test/answer.test.js, so a valid baseline shows the baseline wrote it,
+  // The check passes without the solution's version of test/answer.test.js, so a valid baseline shows the baseline wrote it,
   // and a failed trial that its check did, after the restore put back the starting commit's.
   it.each([
-    ['fixes answer.js', 'a test the fix brought', 'fixes', 'passed'],
-    ['changes nothing', 'a test the fix brought', 'does-nothing', 'failed'],
-    ['changes nothing', 'the case the fix added to an existing test', 'does-nothing', 'failed'],
-  ] as const)('checks a trial that %s with %s, which check.add writes from the fix', async (_, test, tool, result) => {
-    const existing = test !== 'a test the fix brought';
+    ['fixes answer.js', 'a test the solution brought', 'fixes', 'passed'],
+    ['changes nothing', 'a test the solution brought', 'does-nothing', 'failed'],
+    ['changes nothing', 'the case the solution added to an existing test', 'does-nothing', 'failed'],
+  ] as const)('checks a trial that %s with %s, which check.add writes from solutionCommit', async (_, test, tool, result) => {
+    const existing = test !== 'a test the solution brought';
     const app = { 'test/other.test.js': OTHER_CASE, ...(existing ? { 'test/answer.test.js': OTHER_CASE } : {}) };
     const fixture = await benchmarkFixture({ tool, sandbox: true, tools: ['claude'], app });
     fixtures.push(fixture);
@@ -130,7 +130,7 @@ check:
   run: 'for f in test/*.test.js; do node "$f" || exit 1; done'
   protect: [test]
   add: [test/answer.test.js]
-source: { platform: claude-code, sessionId: s1, fix: ${fix} }
+solutionCommit: ${fix}
 ` });
     const pulled = await fixture.teamai(['pull']);
     expect(pulled.code, said(pulled)).toBe(0);
@@ -161,7 +161,7 @@ source: { platform: claude-code, sessionId: s1, fix: ${fix} }
   }, 120_000);
 
   // Neither test is in the starting commit, and the check needs both, so a passed trial shows check.add wrote each.
-  it('checks a trial with a test the fix brought and a test from the suite directory, in one check.add', async () => {
+  it('checks a trial with a test the solution brought and a test from the suite directory, in one check.add', async () => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'], app: { 'test/other.test.js': OTHER_CASE }, team: { [REFRESH_FROM]: REFRESH_TEST }, executable: [REFRESH_FROM] });
     fixtures.push(fixture);
     const fix = fixture.pushProduct({ 'answer.js': 'module.exports = 42;\n', 'test/answer.test.js': "require('node:assert').strictEqual(require('../answer.js'), 42);\n" });
@@ -176,7 +176,7 @@ check:
     - test/answer.test.js
     - from: check-files/expired-token/refresh.test.js
       to: ${REFRESH_TO}
-source: { platform: claude-code, sessionId: s1, fix: ${fix} }
+solutionCommit: ${fix}
 ` });
     const pulled = await fixture.teamai(['pull']);
     expect(pulled.code, said(pulled)).toBe(0);

@@ -116,8 +116,8 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const unreachable = await unreachableTask(config, found, options.checkout);
   if (unreachable) {
     const { task, commit } = unreachable;
-    const named = commit === task.startingCommit ? `starts from ${short(commit)}` : `writes check.add from its fix ${short(commit)}`;
-    return refuse(error('commit_unreachable', `Task "${task.id}" ${named}, which neither this checkout nor ${found.repo} has. Push it, or fix ${commit === task.startingCommit ? 'startingCommit' : 'source.fix'}, and start again.`));
+    const named = commit === task.startingCommit ? `starts from ${short(commit)}` : `writes check.add from its solutionCommit ${short(commit)}`;
+    return refuse(error('commit_unreachable', `Task "${task.id}" ${named}, which neither this checkout nor ${found.repo} has. Push it, or fix ${commit === task.startingCommit ? 'startingCommit' : 'solutionCommit'}, and start again.`));
   }
   let aliases: Promise<ModelAliases> | undefined;
   const loadAliases = (): Promise<ModelAliases> => (aliases ??= armAliases(config, revision, options.memberAliases));
@@ -330,14 +330,14 @@ async function pulledTeamRevision(config: LocalConfig, checkout: string): Promis
 }
 
 /**
- * The first task, and its commit, whose starting commit or check.add fix neither the checkout nor the commit cache has,
+ * The first task, and its commit, whose starting commit or solution commit for check.add neither the checkout nor the commit cache has,
  * after a fetch by SHA from the suite repo into the cache: a shallow CI checkout lacks older commits, and a trial's clone
  * fetches offline.
  */
 async function unreachableTask(config: LocalConfig, suite: Suite, checkout: string): Promise<{ task: Suite['tasks'][number]; commit: string } | undefined> {
   const cache = commitCacheOf(config, suite.repo);
   for (const task of suite.tasks) {
-    // A check's added files come from the task's fix, so its trials need that commit too.
+    // A check's added files come from the task's solution commit, so its trials need that commit too.
     const commit = await firstUnreachable(checkout, cache, suite.repo, [task.startingCommit, ...(task.judge.kind === 'check' && task.judge.add ? [task.judge.add.commit] : [])]);
     if (commit !== undefined) return { task, commit };
   }
@@ -371,10 +371,10 @@ function selectionOf(config: LocalConfig): TeamSelection {
 }
 
 /**
- * `teamai benchmark try <task file>`: whether a task's check tells its fix from no change, before the task reaches a
+ * `teamai benchmark try <task file>`: whether a task's check tells its solution from no change, before the task reaches a
  * suite. Reads the task file and the suite.yaml two directories up from it as written, with no
  * install, and validates both as pull does. A check task's check must fail by its own exit at `startingCommit`, as its
- * baseline must, and with `source.fix`, pass at the fix with the protected paths as `startingCommit` has them, as a
+ * baseline must, and with `solutionCommit`, pass at the solution with the protected paths as `startingCommit` has them, as a
  * trial's check would read a correct change. Each runs in a fresh clone from `checkout`, or from a cache that fetched the
  * commit by SHA from the suite repo as start does, under the suite's setup and timeout. No run, arm, trial, judge or
  * record.
@@ -394,13 +394,13 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
   const [task] = suite.tasks;
   const { judge, startingCommit } = task;
   if (judge.kind === 'criteria') return tried(task.id, `Task "${task.id}" is judged by successCriteria, so there is no check to try. Its files are valid.`);
-  const fix = task.source?.fix;
+  const { solutionCommit } = task;
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-try-commits-'));
   try {
-    const unreachable = await firstUnreachable(options.checkout, cache, suite.repo, [startingCommit, ...(fix ? [fix] : [])]);
+    const unreachable = await firstUnreachable(options.checkout, cache, suite.repo, [startingCommit, ...(solutionCommit ? [solutionCommit] : [])]);
     if (unreachable !== undefined) {
-      const named = unreachable === startingCommit ? `starts from ${short(unreachable)}` : `names the fix ${short(unreachable)}`;
-      return error('commit_unreachable', `Task "${task.id}" ${named}, which neither this checkout nor ${suite.repo} has. Push it, or fix ${unreachable === startingCommit ? 'startingCommit' : 'source.fix'}, and try again.`);
+      const named = unreachable === startingCommit ? `starts from ${short(unreachable)}` : `names the solutionCommit ${short(unreachable)}`;
+      return error('commit_unreachable', `Task "${task.id}" ${named}, which neither this checkout nor ${suite.repo} has. Push it, or fix ${unreachable === startingCommit ? 'startingCommit' : 'solutionCommit'}, and try again.`);
     }
     const committed = await commitCheckFiles(cache, suite);
     if (!committed.ok) {
@@ -413,7 +413,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
 }
 
 /**
- * --try once the task's commits are reachable from `sources`: its check at the starting commit, then at the fix, each
+ * --try once the task's commits are reachable from `sources`: its check at the starting commit, then at the solution, each
  * with the files `add` writes.
  */
 async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: Extract<TaskJudge, { kind: 'check' }>, add: readonly Added[], sources: readonly string[], options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
@@ -428,22 +428,22 @@ async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: Extra
   const unusable = unusableRun(task.id, judge.run, startingCommit, start);
   if (unusable !== undefined) return error('task_try_failed', unusable);
   if (start.kind === 'check' && start.verdict.verdict === 'passed') {
-    return error('task_try_failed', `Task "${task.id}": the check passes without changes at ${short(startingCommit)}, so it cannot tell a fix from no change. Pick a startingCommit where the check fails, or fix the check.`);
+    return error('task_try_failed', `Task "${task.id}": the check passes without changes at ${short(startingCommit)}, so it cannot tell a solution from no change. Pick a startingCommit where the check fails, or fix the check.`);
   }
-  const fix = task.source?.fix;
-  if (fix === undefined) return tried(task.id, `Task "${task.id}": the check fails at ${short(startingCommit)}, as the task expects. The task has no source.fix, so the check was not tried on a fix.`);
-  options.progress(`Task ${task.id}: trying the check at the fix ${short(fix)}, with the protected paths as ${short(startingCommit)} has them`);
-  const fixed = await at(fix, judge.protect);
-  const unusableFix = unusableRun(task.id, judge.run, fix, fixed);
-  if (unusableFix !== undefined) return error('task_try_failed', unusableFix);
-  if (fixed.kind === 'check' && fixed.verdict.verdict === 'failed') {
-    const changed = await git(options.checkout, ['diff', '--name-only', startingCommit, fix, '--', ...judge.protect.map((entry) => `:(glob)${entry}`)]);
+  const { solutionCommit } = task;
+  if (solutionCommit === undefined) return tried(task.id, `Task "${task.id}": the check fails at ${short(startingCommit)}, as the task expects. The task has no solutionCommit, so the check was not tried on a solution.`);
+  options.progress(`Task ${task.id}: trying the check at the solution ${short(solutionCommit)}, with the protected paths as ${short(startingCommit)} has them`);
+  const solved = await at(solutionCommit, judge.protect);
+  const unusableSolution = unusableRun(task.id, judge.run, solutionCommit, solved);
+  if (unusableSolution !== undefined) return error('task_try_failed', unusableSolution);
+  if (solved.kind === 'check' && solved.verdict.verdict === 'failed') {
+    const changed = await git(options.checkout, ['diff', '--name-only', startingCommit, solutionCommit, '--', ...judge.protect.map((entry) => `:(glob)${entry}`)]);
     const added = new Set(add.flatMap((entry) => entry.paths));
     const paths = changed.code === 0 ? changed.stdout.split('\n').filter((line) => line !== '' && !added.has(line)) : [];
-    const hint = paths.length > 0 ? ` The fix changes ${paths.join(', ')}, which protect puts back as ${short(startingCommit)} has them: list a test the fix brought in check.add.` : '';
-    return error('task_try_failed', `Task "${task.id}": the check fails at the fix ${short(fix)} (exit ${fixed.verdict.exitCode}), with the protected paths as ${short(startingCommit)} has them.${hint}`);
+    const hint = paths.length > 0 ? ` The solution changes ${paths.join(', ')}, which protect puts back as ${short(startingCommit)} has them: list a test the solution brought in check.add.` : '';
+    return error('task_try_failed', `Task "${task.id}": the check fails at the solution ${short(solutionCommit)} (exit ${solved.verdict.exitCode}), with the protected paths as ${short(startingCommit)} has them.${hint}`);
   }
-  return tried(task.id, `Task "${task.id}": the check fails at ${short(startingCommit)} and passes at the fix ${short(fix)}, with the protected paths as ${short(startingCommit)} has them.`);
+  return tried(task.id, `Task "${task.id}": the check fails at ${short(startingCommit)} and passes at the solution ${short(solutionCommit)}, with the protected paths as ${short(startingCommit)} has them.`);
 }
 
 function tried(task: string, message: string): WorkflowEnvelope {
