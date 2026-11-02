@@ -18,6 +18,21 @@ export interface ManagedSection {
     syncedAt?: string;
 }
 
+/** A markdown file split into the text before its first section and its sections. */
+export interface SectionedMarkdown {
+    prelude: string;
+    sections: ManagedSection[];
+}
+
+/** The merged file and which section slugs the merge changed, kept, added and removed. */
+export interface AnchorMerge {
+    mergedMd: string;
+    changedSlugs: string[];
+    keptSlugs: string[];
+    addedSlugs: string[];
+    removedSlugs: string[];
+}
+
 // ─── Internal helpers ───────────────────────────────────
 
 /**
@@ -33,7 +48,7 @@ function slugify(title: string): string {
  * 返回 { frontmatter: 原始 frontmatter 文本含首尾 ---，rest: 剩余内容 }。
  * 若不存在，frontmatter 为空字符串。
  */
-function extractFrontmatter(md: string): { frontmatter: string; rest: string } {
+function extractFrontmatter(md: string) {
     const { raw, body } = splitFrontmatter(md);
 
     return { frontmatter: raw, rest: body };
@@ -68,7 +83,7 @@ export function hashBody(body: string): string {
  *
  * @returns { prelude, sections } 顺序保留
  */
-export function splitToSections(md: string): { prelude: string; sections: ManagedSection[] } {
+export function splitToSections(md: string): SectionedMarkdown {
     const { frontmatter, rest } = extractFrontmatter(md);
 
     const lines = rest.split('\n');
@@ -172,7 +187,7 @@ export function joinSections(prelude: string, sections: ManagedSection[]): strin
  *   - 未配对的开锚 → 整个文档抛 Error('unclosed anchor: <slug>')
  *   - 不存在任何锚点 → 返回 { prelude: 整篇, sections: [] }
  */
-export function parseSections(md: string): { prelude: string; sections: ManagedSection[] } {
+export function parseSections(md: string): SectionedMarkdown {
     // 同时接受 --from-repo 和 --from-iwiki 来源（保持写入侧锚点不变，解析侧放宽）。
     // [^>\n]{0,256}? 限制字符种类（不含换行）与长度上限（256），防止恶意输入触发 ReDoS 回溯。
     const openRe = /<!--\s*managed-by:\s*import\s+--from-(?:repo|iwiki),\s*section:\s*([^,>\s]+)([^>\n]{0,256}?)-->/g;
@@ -359,13 +374,7 @@ export function mergeWithAnchors(
     oldFile: string | null,
     freshMd: string,
     meta: { source: string; syncedAt: string },
-): {
-    mergedMd: string;
-    changedSlugs: string[];
-    keptSlugs: string[];
-    addedSlugs: string[];
-    removedSlugs: string[];
-} {
+): AnchorMerge {
     const { prelude: freshPrelude, sections: freshSections } = splitToSections(freshMd);
 
     // 首次写入
