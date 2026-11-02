@@ -358,6 +358,78 @@ describe('judge evidence', () => {
   });
 });
 
+const SHIP = `schemaVersion: v1alpha1
+name: ship-issue
+description: Read an issue, then deliver the change it asks for.
+inputs: { issue: number }
+steps:
+  - id: read-issue
+    prompt: Read issue {{ inputs.issue }} and return its title and body.
+    output: { title: string, body: string }
+  - id: change
+    needs: [read-issue]
+    prompt: Make the change the issue asks for.
+    workspace: new
+    deliver: pr
+    scorers: [quality]
+`;
+
+/** A run of SHIP whose `change` step delivered a pagination commit, with the issue's text as `read-issue` returned it. */
+async function deliveredRun(): Promise<{ config: LocalConfig; runId: string }> {
+  const checkout = path.join(root, 'app');
+  fs.mkdirSync(checkout, { recursive: true });
+  git(checkout, 'init', '-q', '-b', 'main');
+  git(checkout, 'config', 'user.email', 't@example.com');
+  git(checkout, 'config', 'user.name', 'T');
+  fs.writeFileSync(path.join(checkout, 'users.ts'), 'export const users = () => all();\n');
+  git(checkout, 'add', '-A');
+  git(checkout, 'commit', '-qm', 'base');
+  const from = git(checkout, 'rev-parse', 'HEAD');
+  const knowledge = path.join(root, 'knowledge');
+  fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
+  fs.writeFileSync(path.join(knowledge, 'workflows', 'ship-issue.yaml'), SHIP);
+  fs.writeFileSync(path.join(knowledge, 'scorers', 'quality.md'), SCORER);
+  const config: LocalConfig = {
+    repo: { localPath: knowledge, remote: 'local', kind: 'self' },
+    username: 'tester', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data'),
+  };
+  await syncWorkflowDefinitions(config);
+  const runId = String(data(await startRun(config, 'ship-issue', { issue: 42 }, { secrets: await knownSecrets(config), base: { ref: 'main', commit: from }, checkout })).run);
+  const can = { can: { workspace: ['new', 'continue', 'read-only'] } };
+  const issue = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, external, can)).lease);
+  data(await reportAttempt(config, runId, {
+    attempt: issue.attempt, revision: issue.revision, outcome: 'success', driver: external, outputs: { title: 'Paginate /users', body: 'Add pagination to /users' },
+  }));
+  const change = z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }).parse(data(await leaseNext(config, runId, external, can)).lease);
+  git(checkout, 'checkout', '-q', '-B', change.workspace.branch, from);
+  fs.writeFileSync(path.join(checkout, 'users.ts'), 'export const users = (page = 1) => all().slice((page - 1) * 50, page * 50);\n');
+  git(checkout, 'commit', '-qam', 'paginate');
+  const to = git(checkout, 'rev-parse', 'HEAD');
+  git(checkout, 'checkout', '-q', 'main');
+  data(await reportAttempt(config, runId, {
+    attempt: change.attempt, revision: change.revision, outcome: 'success', driver: external,
+    outputs: { summary: 'paginated' }, changes: { branch: change.workspace.branch, base: from, from, to, commits: [to] },
+  }));
+  return { config, runId };
+}
+
+describe('evidence of what a run delivered', () => {
+  it('holds the run\'s inputs and the outputs every step reported, as the run stored them', async () => {
+    const { config } = await deliveredRun();
+
+    const lease = LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease);
+
+    expect(lease.subject.step).toBe('change');
+    expect(json(path.join(lease.evidence, 'inputs.json'))).toEqual({ issue: 42 });
+    expect(json(path.join(lease.evidence, 'outputs.json'))).toEqual({
+      'read-issue#1': { title: 'Paginate /users', body: 'Add pagination to /users' },
+      'change#1': { summary: 'paginated' },
+    });
+    expect(read(lease.prompt)).toContain('Add pagination to /users');
+  });
+});
+
 describe('subject evidence removal', () => {
   it('also removes what a collection stopped midway left beside the evidence', async () => {
     const scores = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-subject-evidence-'));
