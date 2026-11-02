@@ -136,7 +136,13 @@ async function sourceAt(config: LocalConfig, { commit, file }: { commit: string;
  * The changes on the team clone's checked-out branch since `since` that add a regression task made from a scorer's
  * failure: each commit as the default branch got it, so a merge counts once, with everything it brought.
  */
-async function landedChanges(config: LocalConfig, { since, scorerOf }: { since: Date; scorerOf: ReadonlyMap<string, string> }): Promise<Array<Found<'landed'>>> {
+async function landedChanges(config: LocalConfig, { since, scorersOf, namedIn }: {
+  since: Date;
+  /** The scorers that failed each subject, by its canonical JSON. */
+  scorersOf: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The scorer whose proposal a commit title names, from its branch or its merged request. */
+  namedIn: (title: string) => string | undefined;
+}): Promise<Array<Found<'landed'>>> {
   const log = await teamGit(config, ['log', '--first-parent', '--diff-merges=first-parent', `--since=${since.toISOString()}`, '--relative', '--no-renames', '--name-status', '--format=%x00%H%x09%P%x09%cI%x09%s', 'HEAD']);
   if (log === undefined) return [];
   const changes: Array<Found<'landed'>> = [];
@@ -148,13 +154,18 @@ async function landedChanges(config: LocalConfig, { since, scorerOf }: { since: 
       return status !== undefined && file !== undefined ? [{ status, file }] : [];
     });
     const added = entries.filter(({ status, file }) => status === 'A' && TASK_FILE.test(file)).map(({ file }) => file);
-    const scored = (await Promise.all(added.map(async (file) => ({ file, scorer: scorerOf.get(await sourceAt(config, { commit, file }) ?? '') }))))
-      .flatMap(({ file, scorer }) => (scorer === undefined ? [] : [{ file, scorer }]));
-    const scorer = scored[0]?.scorer;
+    const scored = (await Promise.all(added.map(async (file) => ({ file, scorers: scorersOf.get(await sourceAt(config, { commit, file }) ?? '') }))))
+      .flatMap(({ file, scorers }) => (scorers === undefined ? [] : [{ file, scorers }]));
+    // A subject several scorers failed: the scorer the commit names, else the one most of the added tasks failed.
+    const candidates = [...new Set(scored.flatMap(({ scorers }) => [...scorers]))]
+      .map((name) => ({ name, tasks: scored.filter(({ scorers }) => scorers.has(name)).length }))
+      .sort((left, right) => right.tasks - left.tasks || left.name.localeCompare(right.name));
+    const named = namedIn(title);
+    const scorer = candidates.find(({ name }) => name === named)?.name ?? candidates[0]?.name;
     if (scorer === undefined) continue;
     const files = entries.filter(({ status }) => status !== 'D').map(({ file }) => file).sort();
     changes.push({
-      change: { state: 'landed', scorer, commit, title, at, files, tasks: scored.filter((entry) => entry.scorer === scorer).map(({ file }) => file).sort() },
+      change: { state: 'landed', scorer, commit, title, at, files, tasks: scored.filter(({ scorers }) => scorers.has(scorer)).map(({ file }) => file).sort() },
       revisions: [commit, ...parents.split(' ').slice(1)],
     });
   }
@@ -219,6 +230,11 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
       return status !== undefined && file !== undefined && status !== 'D' ? [{ status, file }] : [];
     });
     const tasks = entries.filter(({ status, file }) => status === 'A' && TASK_FILE.test(file)).map(({ file }) => file).sort();
+    // A proposal squash- or rebase-merged leaves its branch apart from the default branch, which has its tasks as they are.
+    if (tasks.length > 0) {
+      const landed = await execCommand('git', ['diff', '--quiet', 'HEAD', head, '--', ...tasks], { cwd: config.repo.localPath, timeoutMs: 10_000 }).catch(() => undefined);
+      if (landed?.code === 0) return undefined;
+    }
     const sources = new Map((await Promise.all(tasks.map(async (file) => [await sourceAt(config, { commit: head, file }), file] as const)))
       .flatMap(([source, file]) => (source === undefined ? [] : [[source, file] as const])));
     return {
@@ -233,11 +249,17 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
 /**
  * The newest of `runs` whose pulled arm installed one of `revisions`: the run a job pinned to the change, as
  * `benchmark run --team-ref` pins a pull request. An arm on a named ref, such as the default branch, is the baseline a
- * run compares against, so a later run whose baseline has the change proves another one.
+ * run compares against, so a later run whose baseline has the change proves another one. A landed change also takes
+ * the newest pulled run before `landedAt` that had every task it added: its pull request's, when a squash or a rebase
+ * left the branch's head out of the default branch.
  */
-function proofOf(runs: readonly BenchmarkRunInput[], revisions: readonly string[]): Proof | undefined {
+function proofOf(runs: readonly BenchmarkRunInput[], { revisions, tasks, landedAt }: { revisions: readonly string[]; tasks: readonly string[]; landedAt?: string }): Proof | undefined {
+  const ids = tasks.map((file) => path.posix.basename(file, '.yaml'));
+  const ranBefore = (run: BenchmarkRunInput): boolean => landedAt !== undefined && ids.length > 0 && Date.parse(run.startedAt) <= Date.parse(landedAt)
+    && ids.every((id) => run.benchmark.tasks.some((task) => task.id === id))
+    && !run.benchmark.arms.some(({ team }) => team.kind !== 'pulled' && 'revision' in team && revisions.includes(team.revision));
   const run = runs
-    .filter(({ benchmark }) => benchmark.arms.some(({ team }) => team.kind === 'pulled' && revisions.includes(team.revision)))
+    .filter((candidate) => candidate.benchmark.arms.some(({ team }) => team.kind === 'pulled' && (revisions.includes(team.revision) || ranBefore(candidate))))
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))[0];
   if (run === undefined) return undefined;
   const armOf = (key: string): ProofArm | undefined => {
@@ -320,11 +342,15 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
   const [digest, labels] = await Promise.all([DigestFailures.read(config, { now, refresh }), readScorerLabels(config, { refresh: false })]);
   const rubricLabels = await rubricLabelsOf(config, labels.map(({ label }) => label));
   const summaries = ScorerResults.of({ labels, query: { windowDays: DigestFailures.WINDOW_DAYS }, now, rubricLabels });
-  const scorerOf = new Map(labels.flatMap(({ label }) => (label.passed ? [] : [[canonicalJson(label.subject), label.scorer] as const])));
+  const scorersOf = new Map<string, Set<string>>();
+  for (const { label } of labels) {
+    if (label.passed) continue;
+    const subject = canonicalJson(label.subject);
+    scorersOf.set(subject, new Set([...scorersOf.get(subject) ?? [], label.scorer]));
+  }
   const starts = digest.failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
-  const [proposed, landed, runs, setup, loop, present, target] = await Promise.all([
+  const [proposed, runs, setup, loop, present, target] = await Promise.all([
     proposedChanges(config, { refresh }),
-    landedChanges(config, { since: new Date(now.getTime() - CHANGE_DAYS * DAY_MS), scorerOf }),
     benchmarkRuns(config, { refresh: false }),
     setupOf(config),
     loopRuns(config),
@@ -333,8 +359,14 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
   ]);
   const asked = [...new Set([...summaries.scorers.map(({ scorer }) => scorer), ...proposed.map(({ change }) => change.scorer)])].sort();
   const listed = await historiesOf(config, { scorers: asked, target, refresh });
-  // The tasks a run for the scorer reads: the default branch's, and those its open proposal adds, as plan clones it.
-  const pulled = digest.failures.flatMap((entry) => (entry.task === undefined ? [] : [[canonicalJson(entry.failure.subject), entry.task] as const]));
+  const namedIn = (title: string): string | undefined => {
+    const numbers = new Set([...title.matchAll(/#(\d+)\b/g)].map(([, number]) => number));
+    return asked.find((scorer) => title.includes(SelfImprovement.branchOf(scorer))
+      || (listed?.get(scorer) ?? []).some(({ state, url }) => state === 'merged' && numbers.has(/\/(\d+)$/.exec(url)?.[1] ?? '')));
+  };
+  const landed = await landedChanges(config, { since: new Date(now.getTime() - CHANGE_DAYS * DAY_MS), scorersOf, namedIn });
+  // The tasks a run of the command reads: its suite's on the default branch, and those its open proposal adds, as plan clones it.
+  const pulled = digest.failures.flatMap((entry) => (entry.task?.startsWith(`${SelfImprovement.SUITE}/tasks/`) ? [[canonicalJson(entry.failure.subject), entry.task] as const] : []));
   const tasksOf = (scorer: string) => new Map([...pulled, ...proposed.find(({ change }) => change.scorer === scorer)?.sources ?? []]);
   const scorers = summaries.scorers.flatMap(({ scorer, defaultCohort, cohorts }): ScorerLoop[] => {
     const cohort = cohorts.find(({ id }) => id === defaultCohort);
@@ -355,7 +387,7 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
     }];
   });
   const proven = <T extends Exclude<Change, ClosedChange>>(change: T, revisions: readonly string[]): T => {
-    const proof = proofOf(runs, revisions);
+    const proof = proofOf(runs, { revisions, tasks: change.tasks, ...change.state === 'landed' ? { landedAt: change.at } : {} });
     return proof === undefined ? change : { ...change, proof };
   };
   const withImpact = await Promise.all(landed.map(async ({ change, revisions }): Promise<Change> => {
