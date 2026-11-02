@@ -96,7 +96,7 @@ const DefinitionOnlySchema = z.object({ definition: z.object({ name: z.string().
  */
 export type RecordedAgent = AgentObservation | z.infer<typeof DefinitionOnlySchema>;
 
-export function isNameShaped(value: string): boolean {
+export function isRecordableName(value: string): boolean {
   return NAME.test(value);
 }
 
