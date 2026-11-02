@@ -538,6 +538,35 @@ steps:
 
 `role` 写在打开或沿用副本的提示词步骤上，写在 `workflow` 步骤上（作用于其中的步骤），或写在 `defaults` 中；优先级见[以团队角色运行步骤](workflow.md#以团队角色运行步骤)。pull 会以 `bad_role` 拒绝：命令步骤上的 `role`、不在任何副本中运行的提示词步骤上的 `role`、以不同于副本的角色沿用副本的步骤，以及没有任何副本中的步骤采用的 `role` 或 `defaults.role`。以下情况步骤会以 `role_unavailable` 失败并说明原因：没有 teamai 的项目安装管理该检出目录，`manifest/roles.yaml` 未声明该角色，某个工具的知识会落在副本之外，或副本的 pull 没有按该角色交付（例如另一个 pull 占着团队的锁）。修复原因后重试该步骤。只有声明了 [`can.role`](#要求和限制) 并用 `next --prepare` 请求的驱动才会接这个步骤，这样角色由 teamai 交付。运行按 teamai 交付的内容记录 `agent.team.selection.stepRole`，从不采用驱动报告的值。
 
+`for_each` 步骤可以让每一项以自己的角色运行：`role: "{{ item.role }}"`。下面的评审把 UI 改动交给前端评审，把 API 改动交给代码评审：
+
+```yaml
+schemaVersion: v1alpha1
+name: review-parts
+description: Review each part of the change as the role that knows it.
+inputs:
+  parts: [{ path: string, role: string }]
+steps:
+  - id: review
+    for_each: inputs.parts
+    role: "{{ item.role }}"
+    workspace: new
+    prompt: Review the change to {{ item.path }} and write what must be fixed in REVIEW.md.
+```
+
+```sh
+teamai workflow start review-parts --driver local --inputs '{"parts":[{"path":"web/","role":"frontend"},{"path":"api/","role":"review"}]}'
+```
+
+`review[0]` 在自己的副本中运行，得到 `frontend` 交付的内容；`review[1]` 在另一个副本中运行，得到 `review` 交付的内容。运行文件中每一项的步骤都记录它运行时的角色：
+
+```json
+{ "id": "review[0]", "status": "succeeded", "agent": { "team": { "selection": { "stepRole": "frontend", … } }, … } }
+{ "id": "review[1]", "status": "succeeded", "agent": { "team": { "selection": { "stepRole": "review", … } }, … } }
+```
+
+角色模板只读取当前项，并且只能写在绑定了项的地方。pull 只把它当作模板检查；每一项的租约检查它给出的值。模板给出的不是字符串（例如数字，或缺少 `role`）时，该项会在工具启动前以 `role_unavailable` 失败；`manifest/roles.yaml` 未声明的角色也一样。以另一个角色沿用该项副本的步骤会在租约时以 `role_unavailable` 失败；跨两个角色恢复会话（`session.from`，或循环再次带回的 `session: continue`）的步骤会以 `bad_session` 失败。
+
 ### 以团队角色运行克隆
 
 克隆步骤可以使用 `manifest/roles.yaml` 中的另一个角色运行，而不是你的角色。例如，让代码审查步骤知道审查者知道的内容：

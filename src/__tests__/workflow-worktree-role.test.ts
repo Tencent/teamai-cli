@@ -61,9 +61,10 @@ function git(args: string[], cwd: string): string {
 
 /**
  * A self-mode project whose member has role frontend, delivering to `tools`, its team declaring roles frontend and
- * review with a skill each and the `rules` given, and a started run of `yaml`, whose steps run on the first tool.
+ * review with a skill each and the `rules` given, and a started run of `yaml` with `inputs`, whose steps run on the
+ * first tool.
  */
-async function roleWorkspace(yaml: string, options: { tools: readonly string[]; rules?: Record<string, string> }): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+async function roleWorkspace(yaml: string, options: { tools: readonly string[]; rules?: Record<string, string>; inputs?: unknown }): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-worktree-role-')));
   dirs.push(root);
   const workspace = path.join(root, 'workspace');
@@ -109,7 +110,7 @@ async function roleWorkspace(yaml: string, options: { tools: readonly string[]; 
   if (!config) throw new Error('project config was not found');
   config.workflows = { tools: { default: options.tools[0] ?? 'claude' }, max_parallel: 1 };
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
+  const started = await startRun(config, 'build', options.inputs ?? {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
 }
@@ -157,6 +158,43 @@ describe('a prompt step that runs with a role in a worktree copy', () => {
     expect(skill).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: expect.arrayContaining(['role']) }] } } });
     expect(own).toMatchObject({ data: { wait: { held: [{ step: 'review', missing: ['prepare'] }] } } });
     expect(prepared).toMatchObject({ data: { lease: { step: 'review', role: 'review' } } });
+  });
+
+  it("records for each for_each item an external driver prepared and reported the role teamai delivered into the item's copy, not the team the report names", async () => {
+    const { config, runId } = await roleWorkspace(`schemaVersion: v1alpha1
+name: build
+description: Review each part of the change as the role that knows it.
+inputs:
+  parts: [{ path: string, role: string }]
+steps:
+  - id: review
+    for_each: inputs.parts
+    role: "{{ item.role }}"
+    workspace: new
+    prompt: Review the change to {{ item.path }}.
+`, { tools: ['claude'], inputs: { parts: [{ path: 'web/', role: 'frontend' }, { path: 'api/', role: 'review' }] } });
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const driver = { kind: 'external', machine: 'ci', workspace: '/work', can: { workspace: ['read-only' as const, 'new' as const, 'continue' as const], role: true } };
+    const Leased = z.object({ data: z.object({ lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number(), role: z.string() }) }) });
+    // What the driver says it ran on: the member's selection, at a revision teamai did not deliver.
+    const reported = { tool: { name: 'claude' }, team: { revision: 'f'.repeat(40), localChanges: false, selection: { scope: 'project' as const, primaryRole: 'frontend', additionalRoles: [] } } };
+
+    const leased: Array<{ step: string; role: string }> = [];
+    for (let at = 0; at < 2; at += 1) {
+      const { lease } = Leased.parse(await client.next(runId, { driver, running: [] }, { prepare: true })).data;
+      leased.push({ step: lease.step, role: lease.role });
+      await client.report(runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, tool: 'claude', session: `s${at}`, agent: reported });
+    }
+
+    expect(leased).toEqual([{ step: 'review[0]', role: 'frontend' }, { step: 'review[1]', role: 'review' }]);
+    const run = await readRun(config, RunIdSchema.parse(runId));
+    if (typeof run !== 'object') throw new Error(`run ${run}`);
+    const recorded = Object.fromEntries(['review[0]', 'review[1]'].map((id) => {
+      const step = run.steps.find((state) => state.id === id);
+      const team = step && 'agent' in step ? step.agent?.team : undefined;
+      return [id, { stepRole: team?.selection?.stepRole, reportedRevision: team?.revision === reported.team.revision }];
+    }));
+    expect(recorded).toEqual({ 'review[0]': { stepRole: 'frontend', reportedRevision: false }, 'review[1]': { stepRole: 'review', reportedRevision: false } });
   });
 
   it('starts its session in a copy that holds the delivery, so the session start runs no pull there', async () => {

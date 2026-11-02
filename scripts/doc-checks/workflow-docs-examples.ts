@@ -389,10 +389,12 @@ for (const page of PAGES) {
           continue;
         }
 
-        // Some inputs, such as the `after` of a for_each item, are read only when the first step is leased.
+        // Some inputs, such as the `after` of a for_each item, are read only when the first step is leased. It asks as
+        // the local driver does, taking a step's role and preparing its copy, so an example whose first step has a role leases.
         const next = await leaseNext(config, String(started.data.run), driver, {
-          can: { workspace: ['read-only', 'new', 'continue'] },
+          can: { workspace: ['read-only', 'new', 'continue'], role: true },
           base: { ref: 'main', commit: 'fixture-base' },
+          prepare: true,
         });
 
         if (!('data' in next) || !next.data.lease)

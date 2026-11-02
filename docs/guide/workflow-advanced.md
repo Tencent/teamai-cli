@@ -538,6 +538,35 @@ steps:
 
 `role` goes on a prompt step that opens or continues a copy, on a `workflow` step for the steps inside it, or in `defaults`; [Run a step as a team role](workflow.md#run-a-step-as-a-team-role) has the precedence. Pull refuses, as `bad_role`, a `role` on a command step, on a prompt step that runs in no copy, on a step continuing a copy with a role other than the copy's, and a `role` or `defaults.role` no step in a copy takes. A step fails `role_unavailable`, and says why, when no project install of teamai governs the checkout, when `manifest/roles.yaml` does not declare the role, when a tool's knowledge would land outside the copy, or when the copy's pull did not deliver for the role, for example because another pull held the team's lock. Retry the step once the cause is fixed. Only a driver that declares [`can.role`](#requirements-and-limits) and asks `next --prepare` takes the step, so that teamai delivers the role. The run records `agent.team.selection.stepRole` from what teamai delivered, never from what a driver reports.
 
+A `for_each` step can run each item with its own role: `role: "{{ item.role }}"`. A review that sends the UI change to the frontend reviewers and the API change to the code reviewers:
+
+```yaml
+schemaVersion: v1alpha1
+name: review-parts
+description: Review each part of the change as the role that knows it.
+inputs:
+  parts: [{ path: string, role: string }]
+steps:
+  - id: review
+    for_each: inputs.parts
+    role: "{{ item.role }}"
+    workspace: new
+    prompt: Review the change to {{ item.path }} and write what must be fixed in REVIEW.md.
+```
+
+```sh
+teamai workflow start review-parts --driver local --inputs '{"parts":[{"path":"web/","role":"frontend"},{"path":"api/","role":"review"}]}'
+```
+
+`review[0]` runs in a copy of its own with what `frontend` delivers, and `review[1]` in another with what `review` delivers. Each item's step in the run file records the role it ran with:
+
+```json
+{ "id": "review[0]", "status": "succeeded", "agent": { "team": { "selection": { "stepRole": "frontend", … } }, … } }
+{ "id": "review[1]", "status": "succeeded", "agent": { "team": { "selection": { "stepRole": "review", … } }, … } }
+```
+
+A role template reads only the item, and only where an item is bound. Pull checks it as a template; each item's lease checks what it gives. An item whose template gives no string, such as a number or a missing `role`, fails `role_unavailable` before its tool launches, and so does a role that `manifest/roles.yaml` does not declare. A step that continues the item's copy with another role fails `role_unavailable` at its lease, and a step that resumes a session, `session.from` or a `session: continue` a loop brings back, across two roles fails `bad_session`.
+
 ### Run a clone as a team role
 
 A clone step can run with a role from `manifest/roles.yaml` other than yours, such as a review step that should know what reviewers know:

@@ -2,7 +2,7 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  findTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
+  findTemplate, itemRoleTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
 } from './template.js';
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
@@ -826,14 +826,18 @@ function parseBody(
       // `workflow` step's is the role of the steps inside it. Where a role reaches a copy is checked on the whole tree
       // (`roleDiagnostics`); only what no enclosing step changes is checked here.
       const runsPrompt = promptPair !== undefined || promptFilePair !== undefined;
+      // Where an item is bound, a role may be a template of it, which the lease of each item checks as it checks an id.
+      const roleTemplate = role !== undefined && bindsItem && !TOKEN.test(role) ? itemRoleTemplate(role) : undefined;
 
       const roleProblem = !rolePair ? undefined
-        : role === undefined || !TOKEN.test(role) ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
+        : role === undefined || !TOKEN.test(role) && !roleTemplate ? bindsItem
+          ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}`
+          : `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
           : typeof workspace === 'object' ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 
-      const roleRefused = roleProblem ?? (role === undefined ? undefined : undeclaredRole(stepLabel, role, files));
+      const roleRefused = roleProblem ?? (role === undefined || roleTemplate ? undefined : undeclaredRole(stepLabel, role, files));
 
       if (rolePair && roleRefused !== undefined) {
         diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleRefused), code: 'bad_role' });

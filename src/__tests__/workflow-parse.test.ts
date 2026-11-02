@@ -2038,6 +2038,78 @@ steps:
   });
 });
 
+describe('a role per for_each item', () => {
+  const REVIEW_PARTS = `schemaVersion: v1alpha1
+name: build
+description: Review each part of the change as the role that knows it.
+inputs:
+  parts: [{ path: string, role: string }]
+steps:
+  - id: review
+    for_each: inputs.parts
+    role: "{{ item.role }}"
+    workspace: new
+    prompt: Review the change to {{ item.path }}.
+`;
+
+  it('keeps a role template that reads the item, which the lease of each item resolves', () => {
+    const result = parse(REVIEW_PARTS);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps[0]?.role).toBe('{{ item.role }}');
+  });
+
+  it('refuses a role template that reads more than the item, and one where no item is bound', () => {
+    expect(rejected(REVIEW_PARTS.replace('{{ item.role }}', '{{ inputs.role }}'))).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:9: field "steps[0].role": step "review" role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}' },
+    ]);
+    expect(rejected(REVIEW_PARTS.replace('    for_each: inputs.parts\n', ''))).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:8: field "steps[0].role": step "review" role must be the id of a role in manifest/roles.yaml, such as review' },
+    ]);
+  });
+
+  it('leaves a copy or a session across a role template and an id to the lease, which knows what the template gives', () => {
+    const header = `schemaVersion: v1alpha1
+name: build
+description: Review each part as the role that knows it, then sum it up as a reviewer.
+inputs:
+  parts: [{ path: string, role: string }]
+steps:
+  - id: review
+    for_each: inputs.parts
+`;
+    const continued = `${header}    role: "{{ item.role }}"
+    workspace: new
+    workflow:
+      steps:
+        - id: look
+          prompt: Review the change to {{ item.path }}.
+        - id: sum
+          needs: [look]
+          role: review
+          workspace: continue
+          prompt: Sum up the review.
+`;
+    const resumed = `${header}    workflow:
+      steps:
+        - id: look
+          role: "{{ item.role }}"
+          workspace: new
+          prompt: Review the change to {{ item.path }}.
+        - id: sum
+          needs: [look]
+          role: review
+          workspace: new
+          session: { from: look }
+          prompt: Sum up the review.
+`;
+    for (const yaml of [continued, resumed]) {
+      const result = parse(yaml);
+      expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    }
+  });
+});
+
 describe('finally', () => {
   const problems = (content: string): string[] => {
     const result = parse(content);

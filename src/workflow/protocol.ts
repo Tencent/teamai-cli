@@ -395,11 +395,28 @@ async function withPreparedClone(config: LocalConfig, runId: RunId, report: Repo
   // A worktree copy that runs with a role: the team is what teamai delivered there, whatever role the driver names.
   const attempt = AttemptIdSchema.safeParse(report.attempt);
 
-  if (leased && branch === undefined && stepRoleOf(run, leased.id) !== undefined && attempt.success) {
+  if (leased && branch === undefined && attempt.success) {
+    const stepRole = stepRoleOf(run, leased.id);
     const { team: _reported, ...sent } = report.agent ?? {};
-    const team = await preparedCopyTeam({ config, run: runId, attempt: attempt.data, tool });
 
-    return { ...report, agent: { ...sent, ...(team ? { team } : {}) } };
+    switch (stepRole.kind) {
+      case 'role': {
+        const team = await preparedCopyTeam({ config, run: runId, attempt: attempt.data, tool });
+
+        return { ...report, agent: { ...sent, ...(team ? { team } : {}) } };
+      }
+
+      case 'none':
+        break;
+      case 'unrenderable':
+        // teamai cannot tell the role, and the driver's team would read as the member's, so the pass records none.
+        return { ...report, agent: sent };
+      default: {
+        const unhandled: never = stepRole;
+
+        return unhandled;
+      }
+    }
   }
 
   const made = branch === undefined ? undefined : await preparedClone(config, runId, branch);

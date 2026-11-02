@@ -144,7 +144,7 @@ describe('the workflow a benchmark plan prints', () => {
     expect(stepDefinitions(run)('trials.r1.t01.flow.workflow')).toMatchObject({ workspace: 'continue' });
     for (const step of ['trials.r1.t01.flow.workflow.plan', 'trials.r1.t01.flow.workflow.fix', 'trials.r1.t01.flow.check']) {
       expect(stepDefinitions(run)(step), step).toBeDefined();
-      expect(stepRoleOf(run, step), step).toBe('review');
+      expect(stepRoleOf(run, step), step).toEqual({ kind: 'role', role: 'review' });
     }
   });
 

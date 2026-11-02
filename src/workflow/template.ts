@@ -179,6 +179,18 @@ export function templatePaths(template: Template): ExpressionPath[] {
   return templateExpressions(template).flatMap(expressionPaths);
 }
 
+/**
+ * A step `role` written as a template that reads only the item its `for_each` instance runs for, such as
+ * `{{ item.role }}`, which the lease of each item renders. Undefined for any other role, such as an id.
+ */
+export function itemRoleTemplate(role: string): Template | undefined {
+  const parsed = parseTemplate(role, true);
+
+  if (!parsed.ok || parsed.template.every((part) => typeof part === 'string') || templateWithPaths(parsed.template).length > 0) return undefined;
+
+  return templatePaths(parsed.template).every((path) => path.root === 'item') ? parsed.template : undefined;
+}
+
 /** Every `with` value a template reads, in source order. */
 export function templateWithPaths(template: Template): WithPath[] {
   return template.flatMap((part) => (isRead(part) && 'path' in part ? [part.path] : []));

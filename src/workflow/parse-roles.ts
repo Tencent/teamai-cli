@@ -8,6 +8,7 @@ import type { Node } from 'yaml';
 import { isSeq } from 'yaml';
 import { isYamlNode, locate, valueNode, type ParseContext } from './parse-context.js';
 import { stepWorkflow, type WorkflowDefaults, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
+import { itemRoleTemplate } from './template.js';
 import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, type RoleLevel, type StepCopy } from './workspace.js';
 
 /** A step on the way to a step: its label, and, in this file, its field and YAML mapping. */
@@ -39,6 +40,11 @@ interface RoleSource {
   field: string;
   unconsumed: string;
   consumed: boolean;
+}
+
+/** Whether `role`, as parse kept it, is a template of the item it runs for rather than an id. */
+function isRoleTemplate(role: string | undefined): boolean {
+  return role !== undefined && itemRoleTemplate(role) !== undefined;
 }
 
 /** The `bad_role` and `bad_session` diagnostics of the roles of `workflow`, the file whose YAML mapping is `root`. */
@@ -75,12 +81,15 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     if (source) source.consumed = true;
   };
 
-  /** What a step runs with, as `levels` reach it, or `unknown` in a copy that a step running this file opens. */
+  /**
+   * What a step runs with, as `levels` reach it, or `unknown` in a copy that a step running this file opens, or that runs
+   * with a role template, which each item's lease renders.
+   */
   const runsWith = (levels: readonly Level[]): StepCopy['runsWith'] | { kind: 'unknown' } => {
     const copy = copyOf(levels);
     const last = levels.at(-1);
 
-    if (copy) return copy.runsWith;
+    if (copy) return copy.runsWith.kind === 'role' && isRoleTemplate(copy.runsWith.role) ? { kind: 'unknown' } : copy.runsWith;
 
     return last && resolveMode(last.step, levels.slice(0, -1).map((level) => level.step)) === 'continue' ? { kind: 'unknown' } : { kind: 'member' };
   };
@@ -145,8 +154,10 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     // The copy runs with its opener's role whatever a step there resolves, and a conflict is reported once, as such.
     consume(levels);
     consume(levels.slice(0, copy.opener + 1));
+    // Whether a role template agrees with the copy's is known once a lease renders it for an item.
+    const templated = isRoleTemplate(resolvedRoleOf(levels)?.role) || copy.runsWith.kind === 'role' && isRoleTemplate(copy.runsWith.role);
 
-    if (copyRoleConflict(levels)) conflictAt(levels, copy, caller);
+    if (!templated && copyRoleConflict(levels)) conflictAt(levels, copy, caller);
   };
 
   /**

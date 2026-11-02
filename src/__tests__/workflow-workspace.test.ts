@@ -4079,7 +4079,8 @@ steps:
     };
 
     expect(Object.fromEntries(['plan', 'read', 'review.fix', 'change.look', 'change.again'].map((step) => [step, stepRoleOf(run, step)]))).toEqual({
-      plan: 'spec', read: undefined, 'review.fix': 'review', 'change.look': 'spec', 'change.again': 'audit',
+      plan: { kind: 'role', role: 'spec' }, read: { kind: 'none' }, 'review.fix': { kind: 'role', role: 'review' },
+      'change.look': { kind: 'role', role: 'spec' }, 'change.again': { kind: 'role', role: 'audit' },
     });
   });
 });
