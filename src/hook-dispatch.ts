@@ -19,8 +19,11 @@ import { log } from './utils/logger.js';
 
 // ─── Public types ───────────────────────────────────────
 
-/** A hook's STDIN payload: the JSON object the host wrote. */
-export const HookStdinSchema = JsonObjectSchema;
+/**
+ * A hook's STDIN payload: the JSON object the host wrote. A number too large for a double, which JSON.parse reads as
+ * Infinity, reads as null, as JSON writes it, so the rest of the payload is kept.
+ */
+export const HookStdinSchema = z.preprocess((payload) => JSON.parse(JSON.stringify(payload) ?? 'null'), JsonObjectSchema);
 
 export type HookStdin = z.infer<typeof HookStdinSchema>;
 
