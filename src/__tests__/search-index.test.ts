@@ -60,6 +60,19 @@ describe('parseLearningDoc', () => {
       error.mockRestore();
     }
   });
+
+  it.each([
+    ['a list', '- tag'],
+    ['a string', 'just text'],
+    ['null', 'null'],
+  ])('keeps the body of a document whose frontmatter is %s, with no metadata', (_kind, frontmatter) => {
+    const doc = parseLearningDoc(`---\n${frontmatter}\n---\nRetry the flaky test once.\n`, 'flaky.md');
+
+    expect(doc).toEqual({
+      meta: { title: undefined, author: undefined, date: undefined, tags: undefined },
+      bodyExcerpt: 'Retry the flaky test once.\n',
+    });
+  });
 });
 
 describe('tokenize', () => {

@@ -318,8 +318,9 @@ export { tokenize, wordSegments, MAX_TOKENIZE_CHARS };
 
 /**
  * The frontmatter fields a learning document's index entry reads. A field of
- * the wrong type reads as absent; `Tags` is the comma-separated spelling read
- * when `tags` is not a list.
+ * the wrong type reads as absent, and so does every field of a frontmatter that
+ * is not a mapping; `Tags` is the comma-separated spelling read when `tags` is
+ * not a list.
  */
 const LearningFrontmatterSchema = z.object({
   title: z.string().optional().catch(undefined),
@@ -328,7 +329,7 @@ const LearningFrontmatterSchema = z.object({
   tags: z.array(z.string().nullable().catch(null)).transform((tags) => tags.filter((tag) => tag !== null))
     .optional().catch(undefined),
   Tags: z.string().optional().catch(undefined),
-});
+}).catch({});
 
 /**
  * Parse a learning document's frontmatter and body.
