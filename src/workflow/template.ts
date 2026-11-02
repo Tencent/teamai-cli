@@ -1,6 +1,6 @@
 /**
  * Workflow templates inside prompt text, `env` values and every string inside a `with` value: a `{{ … }}` that starts
- * with `inputs.`, `steps.`, `with.` or, where an item is bound, `item`, after any "!" or "(", or that calls `length`,
+ * with `inputs.`, `steps.`, `with.`, `run.` or, where an item is bound, `item`, after any "!" or "(", or that calls `length`,
  * `any`, `all` or `filter` on one of those, or any function on a step field. It reads one path, or evaluates an
  * expression as an `if` does. Any other `{{ … }}` is plain text, so prompts about GitHub Actions, Jinja, Vue or an
  * Ansible loop stay as written.
@@ -65,8 +65,8 @@ function syntax(paths: string): Syntax {
   return { template, recognized: new RegExp(`(?<!\\$)${template.source}`, 'g'), path: new RegExp(`^(?:${paths})`) };
 }
 
-/** `inputs.`, `steps.` or `with.`, then anything up to the closing braces. */
-const PATHS = String.raw`(?:inputs|steps|with)\.[^{}]*?`;
+/** `inputs.`, `steps.`, `with.` or `run.`, then anything up to the closing braces. */
+const PATHS = String.raw`(?:inputs|steps|with|run)\.[^{}]*?`;
 
 /**
  * `item` is a root only where an item is bound: in the templates of a `for_each` step and of the workflow each item
@@ -90,7 +90,7 @@ const BRACES = new RegExp(`(?<!\\$)${ANY_BRACES.source}`, 'g');
 /** `\{{`: a literal `{{`. Only the backslash is dropped, and nothing after it is read as a template. */
 const ESCAPED = '\\{{';
 
-const WITH_MESSAGE = 'with is read only as one path, such as with.<name>; an expression reads only inputs, steps and item';
+const WITH_MESSAGE = 'with is read only as one path, such as with.<name>; an expression reads only inputs, steps, item and run.id';
 
 /**
  * A template-like `{{ … }}` in `text` as written, if any; used to reject one where text is never rendered, such as

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { evaluateExpression, expressionPaths, isTruthy, parseExpression, type ExpressionContext } from '../workflow/expression.js';
 
 const context: ExpressionContext = {
+  run: { id: 'r0123456789abcdef' },
   steps: {
     check: { outcome: 'failed' },
     review: {
@@ -97,6 +98,7 @@ describe('workflow expressions', () => {
     ['all(steps.review.outputs.matrix, length(.) == 2)', true],
     ['any(steps.review.outputs.matrix, .[1] == 4)', true],
     ['any(steps.review.outputs.tags, . == steps.copy.outputs.tags[1])', true],
+    ["run.id == 'r0123456789abcdef'", true],
   ])('evaluates %s to %s', (source, expected) => {
     expect(evaluate(source)).toBe(expected);
   });
@@ -120,8 +122,10 @@ describe('workflow expressions', () => {
     ['any(inputs.xs, . < .5)', 20, 'numbers need a leading digit, as in 0.5'],
     ['all(inputs.xs, any(.ys, . == .25))', 30, 'numbers need a leading digit, as in 0.5'],
     ["['a']", 2, 'the only array literal is []'],
-    ['env.HOME', 1, '"env" is not readable; an expression reads only inputs, steps and item'],
-    ['github.ref', 1, '"github" is not readable; an expression reads only inputs, steps and item'],
+    ['env.HOME', 1, '"env" is not readable; an expression reads only inputs, steps, item and run.id'],
+    ['github.ref', 1, '"github" is not readable; an expression reads only inputs, steps, item and run.id'],
+    ['run.name', 1, '"run.name" is not readable; an expression reads only run.id of the run'],
+    ['run', 1, '"run" is not readable; an expression reads only run.id of the run'],
     ["contains(steps.review.outputs.tags, 'a')", 1, '"contains" is not a function; the functions are length, any, all and filter'],
     ['inputs.list(1)', 12, 'unexpected "("'],
     ['any(steps.review.outputs.tags, true) < 1', 1, 'compares any(...) with <, but it is not a number'],
@@ -136,7 +140,7 @@ describe('workflow expressions', () => {
     ['all(steps.review.outputs.tags, true, false)', 1, 'all is called as all(list, predicate)'],
     [".path == 'a.ts'", 1, '".path" reads the current element, which exists only inside the predicate of any, all or filter'],
     ['length(.) == 1', 8, '"." reads the current element, which exists only inside the predicate of any, all or filter'],
-    ['process.env.SECRET', 1, '"process" is not readable; an expression reads only inputs, steps and item'],
+    ['process.env.SECRET', 1, '"process" is not readable; an expression reads only inputs, steps, item and run.id'],
     ['steps.check', 1, '"steps.check" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results or steps.<id>.branches'],
     ['steps.check.status', 1, '"steps.check.status" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results or steps.<id>.branches'],
     ['steps.check.outcome.text', 1, '"steps.check.outcome.text" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results or steps.<id>.branches'],

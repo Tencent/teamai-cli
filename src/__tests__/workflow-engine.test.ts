@@ -4496,6 +4496,33 @@ describe('the model a prompt step lease carries', () => {
   });
 });
 
+describe('run.id', () => {
+  it('reads the id of the root run in a step, an if, and every step of the workflows a step runs', async () => {
+    const { config, runId } = await startTree({
+      check: workflow('check', `  - id: label
+    command: node label.js
+    env:
+      RUN: "{{ run.id }}"
+`),
+      build: graph(`  - id: tag
+    command: node tag.js
+    env:
+      RUN: "run {{ run.id }}"
+  - id: check
+    needs: [tag]
+    if: run.id != ''
+    workflow: check
+`),
+    }, 'build');
+
+    const tag = leaseIn(await leaseNext(config, runId, driverA));
+    expect(tag).toMatchObject({ step: 'tag', env: { RUN: `run ${runId}` } });
+    await reportAttempt(config, runId, { attempt: tag.attempt, revision: tag.revision, outcome: 'success', driver: driverA });
+
+    expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { lease: { step: 'check.label', env: { RUN: runId } } } });
+  });
+});
+
 describe('the tool a prompt step names', () => {
   const REVIEW_AND_LINT = graph(`  - id: review
     prompt: Review it.
