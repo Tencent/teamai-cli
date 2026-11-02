@@ -958,8 +958,8 @@ export interface StepCopy<TRole extends StepRoleSpec = StepRoleSpec> {
 
 /**
  * The copy the last of `levels` runs in: one it opens, else the one the nearest enclosing step opened, as
- * `planWorkspace` places it. Undefined when it runs in no copy: a step reading the member's checkout, or a `continue`
- * step no enclosing step opens a copy for.
+ * `planWorkspace` places it. Undefined when it runs in no copy: a step reading the member's checkout, a step in the team
+ * workspace, or a `continue` step no enclosing step opens a copy for.
  */
 export function copyOf<TRole extends StepRoleSpec>(levels: readonly RoleLevel<TRole>[]): StepCopy<TRole> | undefined {
   const last = levels.at(-1);
@@ -967,6 +967,8 @@ export function copyOf<TRole extends StepRoleSpec>(levels: readonly RoleLevel<TR
   if (!last) return undefined;
   const ancestors = levels.slice(0, -1).map((level) => level.step);
   const mode = resolveMode(last.step, ancestors);
+
+  if (mode === 'team') return undefined;
   const opener = mode === 'new' || mode === 'clone' ? levels.length - 1 : ancestors.findLastIndex((ancestor) => opensCopy(ancestor));
   const opening = levels.slice(0, opener + 1);
   const opens = opening.at(-1);

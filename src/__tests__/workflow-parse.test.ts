@@ -1770,6 +1770,23 @@ steps:
       'workflows/build.yaml:20: field "steps[3].workspace": step "scored" workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed',
     ]);
   });
+
+  it('rejects a role on a step in the team workspace, which runs with no role\'s knowledge', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Tidy the team's rules.
+steps:
+  - id: tidy
+    role: review
+    workspace: { team: {} }
+    prompt: Tidy the rules.
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:6: field "steps[0].role": step "tidy" has role review but runs in the team workspace, which takes no role\'s knowledge; remove role',
+    ]);
+  });
 });
 
 describe('role on a clone step', () => {
