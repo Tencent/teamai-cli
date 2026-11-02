@@ -29,6 +29,8 @@ const run = promisify(execFile);
 
 /** teamai's default workflow that `teamai self-improvement run` starts, unless the team pushed its own of that name. */
 const WORKFLOW = 'teamai-self-improvement';
+/** The suite a run puts its regression tasks in unless `--suite` names another. */
+const SUITE = 'benchmarks/regressions';
 /** The prefix of the branch every run proposes on. */
 const BRANCH_PREFIX = 'teamai/self-improvement/';
 
@@ -119,15 +121,20 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return (await run('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
 }
 
-/** A fresh clone of the team repo at `<data home>/self-improvement/<scorer>`, on `branch` when origin has it. */
-async function checkout(config: LocalConfig, { scorer, branch }: { scorer: string; branch: string }): Promise<{ dir: string; hasProposal: boolean }> {
+/**
+ * A fresh clone of the team repo at `<data home>/self-improvement/<scorer>`, on `branch` when origin has it, with the
+ * default branch merged in, so the run edits the files as they are now. A proposal that conflicts with it is refused.
+ */
+async function checkout(config: LocalConfig, { scorer, branch }: { scorer: string; branch: string }): Promise<{ kind: 'ready'; dir: string; hasProposal: boolean } | { kind: 'conflict' }> {
   const dir = path.join(getDataHome(config), 'self-improvement', scorer);
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(path.dirname(dir), { recursive: true });
   await run('git', ['clone', '-q', config.repo.remote, dir]);
   const hasProposal = await git(dir, ['ls-remote', '--heads', 'origin', `refs/heads/${branch}`]) !== '';
-  if (hasProposal) await git(dir, ['checkout', '-q', '-B', branch, `origin/${branch}`]);
-  return { dir, hasProposal };
+  if (!hasProposal) return { kind: 'ready', dir, hasProposal };
+  await git(dir, ['checkout', '-q', '-B', branch, `origin/${branch}`]);
+  const merged = await run('git', ['-c', 'user.name=teamai', '-c', 'user.email=teamai@localhost', 'merge', '-q', '--no-edit', 'origin/HEAD'], { cwd: dir }).then(() => true, () => false);
+  return merged ? { kind: 'ready', dir, hasProposal } : { kind: 'conflict' };
 }
 
 function refuse(code: string, message: string): void {
@@ -156,6 +163,10 @@ async function plan(scorer: string, { suite }: { suite: string }): Promise<void>
   }
   const branch = branchOf(scorer);
   const clone = await checkout(config, { scorer, branch });
+  if (clone.kind === 'conflict') {
+    refuse('proposal_conflict', `${branch} conflicts with the team repo's default branch, so a run cannot update it. Merge the default branch into ${branch} and push it, or delete ${branch} to start over.`);
+    return;
+  }
   const team = isSelfMode(config) ? path.join(clone.dir, '.teamai') : clone.dir;
   const { failures } = await DigestFailures.read(config);
   const starts = failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
@@ -197,7 +208,9 @@ async function propose({ team, branch }: { team: string; branch: string }): Prom
   }
   await git(team, ['fetch', '-q', 'origin', base]);
   await git(team, ['add', '-A']);
-  const changed = (await git(team, ['diff', '--cached', '--relative', '--name-status', '--no-renames', 'FETCH_HEAD'])).split('\n').filter(Boolean)
+  // Against where the proposal left the default branch: a file only the default branch changed since is not proposed back.
+  const since = await git(team, ['merge-base', 'HEAD', 'FETCH_HEAD']);
+  const changed = (await git(team, ['diff', '--cached', '--relative', '--name-status', '--no-renames', since])).split('\n').filter(Boolean)
     .map((line) => line.split('\t'));
   const files = changed.flatMap(([status, file]) => (file !== undefined && (status === 'A' || status === 'M') ? [file] : []));
   const deleted = changed.flatMap(([status, file]) => (file !== undefined && status === 'D' ? [file] : []));
@@ -215,4 +228,4 @@ async function propose({ team, branch }: { team: string; branch: string }): Prom
   await pushFile({ file: files.map((file) => path.join(team, file)), path: files, branch });
 }
 
-export const SelfImprovement = { WORKFLOW, BRANCH_PREFIX, pick, isReady, commandOf, plan, propose, branchOf, commitsIn } as const;
+export const SelfImprovement = { WORKFLOW, SUITE, BRANCH_PREFIX, pick, isReady, commandOf, plan, propose, branchOf, commitsIn } as const;

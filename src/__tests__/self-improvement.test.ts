@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const pushed = vi.hoisted(() => ({ calls: [] as Array<{ path: string[]; branch: string }> }));
+vi.mock('../push-file.js', () => ({
+  pushFile: async ({ path: paths, branch }: { path: string[]; branch: string }) => { pushed.calls.push({ path: paths, branch }); },
+}));
 import type { DigestFailure } from '../digest-failures.js';
 import { SelfImprovement } from '../self-improvement.js';
 import { canonicalJson } from '../utils/canonical-json.js';
@@ -100,6 +105,40 @@ describe('proposing a change', () => {
     cwd, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.co', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.co' },
   }).toString().trim();
+
+  it('proposes what the proposal and this run changed, never reverting what the default branch changed since', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-improvement-propose-')));
+    roots.push(root);
+    const origin = path.join(root, 'origin.git');
+    const team = path.join(root, 'team');
+    const other = path.join(root, 'other');
+    git(root, 'init', '-q', '--bare', '-b', 'main', origin);
+    git(root, 'clone', '-q', origin, team);
+    fs.mkdirSync(path.join(team, 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(team, 'rules/style.md'), 'v1\n');
+    git(team, 'add', '-A');
+    git(team, 'commit', '-qm', 'base');
+    git(team, 'push', '-q', 'origin', 'main');
+    git(team, 'checkout', '-q', '-b', 'teamai/self-improvement/review-quality');
+    fs.mkdirSync(path.join(team, 'skills/review'), { recursive: true });
+    fs.writeFileSync(path.join(team, 'skills/review/SKILL.md'), 'read the diff\n');
+    git(team, 'add', '-A');
+    git(team, 'commit', '-qm', 'proposal');
+    git(team, 'push', '-q', 'origin', 'teamai/self-improvement/review-quality');
+    git(root, 'clone', '-q', origin, other);
+    fs.writeFileSync(path.join(other, 'rules/style.md'), 'v2\n');
+    fs.writeFileSync(path.join(other, 'rules/new.md'), 'new\n');
+    git(other, 'add', '-A');
+    git(other, 'commit', '-qm', 'main moves on');
+    git(other, 'push', '-q', 'origin', 'main');
+    fs.mkdirSync(path.join(team, 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(team, 'agents/reviewer.md'), 'reviewer\n');
+    pushed.calls.length = 0;
+
+    await SelfImprovement.propose({ team, branch: 'teamai/self-improvement/review-quality' });
+
+    expect(pushed.calls).toEqual([{ path: ['agents/reviewer.md', 'skills/review/SKILL.md'], branch: 'teamai/self-improvement/review-quality' }]);
+  });
 
   it('refuses a regression task the suite cannot run, naming it, and pushes nothing', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-improvement-propose-')));
