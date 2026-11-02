@@ -8,12 +8,9 @@ import { channelsOf, TOOL_IDS, TOOLS, type ToolId } from '../tools.js';
  * while teamai hooks expect CLI-style names like `Bash`, `Grep`.
  */
 
-/** A tool name as one source writes it → the name teamai uses. */
-interface ToolNameTable {
-  readonly [name: string]: string;
-}
-
-const IDE_TO_CLI: ToolNameTable = {
+/** A tool name as one source writes it → the name teamai uses. A `Map`, so a name
+ *  such as `constructor` is not looked up on `Object.prototype`. */
+const IDE_TO_CLI = new Map(Object.entries({
   execute_command: 'Bash',
   search_content: 'Grep',
   write_to_file: 'Write',
@@ -25,22 +22,22 @@ const IDE_TO_CLI: ToolNameTable = {
   task: 'Task',
   skill: 'Skill',
   read_skill: 'Skill', // Muse Code
-};
+}));
 
 export function normalizeToolName(name: string): string {
-  return IDE_TO_CLI[name] ?? name;
+  return IDE_TO_CLI.get(name) ?? name;
 }
 
 // oxlint-disable-next-line teamai/tool-facts -- aliases: a tool left out is its own agent type, the right default for a new tool
-const AGENT_TYPE_ALIASES: ToolNameTable = {
+const AGENT_TYPE_ALIASES = new Map(Object.entries({
   tcodex: 'codex',
   'codex-internal': 'codex',
   tclaude: 'claude',
   'claude-internal': 'claude',
-} satisfies Partial<Record<ToolId, ToolId>>;
+} satisfies Partial<Record<ToolId, ToolId>>));
 
 export function normalizeAgentType(name: string): string {
-  return AGENT_TYPE_ALIASES[name] ?? name;
+  return AGENT_TYPE_ALIASES.get(name) ?? name;
 }
 
 /**

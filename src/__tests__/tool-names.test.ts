@@ -1,6 +1,6 @@
 // -*- coding: utf-8 -*-
 import { describe, it, expect } from 'vitest';
-import { normalizeToolName } from '../utils/tool-names.js';
+import { normalizeAgentType, normalizeToolName } from '../utils/tool-names.js';
 
 describe('normalizeToolName', () => {
   it('maps IDE-style names to CLI-style', () => {
@@ -27,5 +27,14 @@ describe('normalizeToolName', () => {
   it('passes through unknown names unchanged', () => {
     expect(normalizeToolName('SomeNewTool')).toBe('SomeNewTool');
     expect(normalizeToolName('')).toBe('');
+  });
+});
+
+describe('names that are Object.prototype keys', () => {
+  it('pass through instead of resolving to a built-in', () => {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(normalizeToolName(name)).toBe(name);
+      expect(normalizeAgentType(name)).toBe(name);
+    }
   });
 });
