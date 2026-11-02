@@ -312,7 +312,7 @@ function pathspecMatches(spec: readonly string[], file: readonly string[]): bool
 }
 
 /** The work a task was made from: a session, or a workflow pass, as a score label names its subject. */
-const TaskSourceSchema = z.union([SessionSubjectSchema.strict(), RunSubjectSchema.strict()], {
+export const TaskSourceSchema = z.union([SessionSubjectSchema.strict(), RunSubjectSchema.strict()], {
   error: 'source names where the task came from: a session, { platform, sessionId }, or a workflow pass, { runId, step, pass }',
 });
 export type TaskSource = z.infer<typeof TaskSourceSchema>;

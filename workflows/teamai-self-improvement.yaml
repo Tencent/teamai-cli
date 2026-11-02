@@ -1,0 +1,38 @@
+schemaVersion: v1alpha1
+name: teamai-self-improvement
+description: Improve the team's harness from a scorer's repeated failures - change the assets teamai delivers so that work like the failing one passes, add one regression task per failure, and propose it all as one pull request that the next run updates. Its prompt step needs a sandbox.
+invoke: deny
+inputs: { scorer: string, suite: string }
+steps:
+  - id: plan
+    command: teamai self-improvement plan "$SCORER" --suite "$SUITE"
+    env: { SCORER: "{{ inputs.scorer }}", SUITE: "{{ inputs.suite }}" }
+    output: { team: string, branch: string, failures: [json], covered: [string], refused: [json] }
+  - id: improve
+    needs: [plan]
+    if: length(steps.plan.outputs.failures) >= 2 || (length(steps.plan.outputs.failures) >= 1 && length(steps.plan.outputs.covered) >= 1)
+    permissions: unattended
+    requires: { isolation: sandbox, strict: true }
+    prompt: |
+      Improve the team's harness so that the scorer {{ inputs.scorer }} stops failing.
+      The team repo is checked out at {{ steps.plan.outputs.team }}, on the open proposal's branch when there is one.
+      The scorer's rubric is {{ steps.plan.outputs.team }}/scorers/{{ inputs.scorer }}.md.
+      Failures to fix, newest first: {{ steps.plan.outputs.failures }}
+      Regression tasks the proposal already has, keep them: {{ steps.plan.outputs.covered }}
+      Each failure has the label its judge gave, what the work ran as (agent, and the team skills it used), the commit it started at (start.commit),
+      and, for a session, the learnings that name it: read each one at its path.
+      1. Find what the failures share. Change the team's assets in {{ steps.plan.outputs.team }} so that work like this passes the rubric. Any asset
+         teamai delivers may change: skills, rules, agents, prompts, hooks, MCP servers, models, env, the team culture (claudemd), docs and workflows.
+         Change the scorer only when the failures show its rubric is wrong. Never change application code.
+      2. For each failure, write {{ steps.plan.outputs.team }}/{{ inputs.suite }}/tasks/<id>.yaml, where <id> is letters, digits, "-" or "_", with:
+         schemaVersion v1alpha1; title, what went wrong in a few words; prompt, the request the work was given, as its learnings or its workflow
+         step describe it, without the fix; startingCommit, its start.commit; successCriteria, what the rubric's passing label asks of this work,
+         in one or two sentences, or instead check: { run: <command> } when a test command in the project shows it; source, its failure.subject
+         exactly as given.
+      3. Return verdict proposed when you changed an asset and wrote the tasks, or skip when the failures share no cause an asset can fix.
+    output: { verdict: proposed | skip }
+  - id: propose
+    needs: [plan, improve]
+    if: steps.improve.outputs.verdict == 'proposed'
+    command: teamai self-improvement propose --team "$TEAM" --branch "$BRANCH"
+    env: { TEAM: "{{ steps.plan.outputs.team }}", BRANCH: "{{ steps.plan.outputs.branch }}" }

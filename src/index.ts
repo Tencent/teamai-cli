@@ -948,6 +948,41 @@ workflowCmd
     await workflowCancel(run, step);
   });
 
+const selfImprovementCmd = program
+  .command('self-improvement')
+  .description('Improve the team\'s harness from a scorer\'s repeated failures: change the assets teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request that the next run updates. run starts the workflow teamai-self-improvement, teamai\'s default or the team\'s file of that name, whose plan and propose steps run the other commands.');
+
+selfImprovementCmd
+  .command('run <scorer>')
+  .description('Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team\'s workflows/teamai-self-improvement.yaml replaces teamai\'s default, and must take inputs scorer and suite. The default improves only from two failures or more of the scorer in the last 30 days, or one more for an open proposal, and its prompt step needs a sandbox. Prints the run\'s done envelope.')
+  .option('--suite <dir>', 'The suite the regression tasks go in, which the team repo\'s default branch must have', 'benchmarks/regressions')
+  .option('--driver <kind>', 'The driver that runs it: local (default), or skill')
+  .option('--tools <list>', 'The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude')
+  .option('--sandbox', 'With --driver local, declare this machine a sandbox for this process, where the prompt step, which edits files without asking, may run. workflows.sandbox in config declares it for every process.')
+  .action(async (scorer: string, cmdOpts: { suite: string; driver?: string; tools?: string; sandbox?: boolean }) => {
+    const { selfImprovementRun } = await import('./workflow-commands.js');
+    await selfImprovementRun(scorer, cmdOpts);
+  });
+
+selfImprovementCmd
+  .command('plan <scorer>')
+  .description('The workflow\'s first step: clone the team repo into the data home, on teamai/self-improvement/<scorer> when origin has that branch, and print one JSON object: team, that checkout (its .teamai/ in single-repo mode); branch; failures, the scorer\'s failures digest --json lists that a task can start from (a recorded start commit this checkout has, and no task of --suite in the clone names its subject), each subject once, newest first; covered, the tasks of --suite that already name a failure; and refused, each other failure with why: tracked_changes, not_recorded or not_in_checkout.')
+  .requiredOption('--suite <dir>', 'The suite whose tasks count as covering a failure, such as benchmarks/regressions')
+  .action(async (scorer: string, cmdOpts: { suite: string }) => {
+    const { SelfImprovement } = await import('./self-improvement.js');
+    await SelfImprovement.plan(scorer, cmdOpts);
+  });
+
+selfImprovementCmd
+  .command('propose')
+  .description('The workflow\'s last step: push every file the team checkout --team adds or changes against the default branch on its origin to --branch, in one pull request, as teamai push --file --path --branch does, so an open pull request of that branch is updated. A deleted file is not proposed, and is named on stderr.')
+  .requiredOption('--team <dir>', 'The team checkout plan printed as team')
+  .requiredOption('--branch <branch>', 'The branch plan printed as branch')
+  .action(async (cmdOpts: { team: string; branch: string }) => {
+    const { SelfImprovement } = await import('./self-improvement.js');
+    await SelfImprovement.propose(cmdOpts);
+  });
+
 const benchmarkCmd = program
   .command('benchmark')
   .description('Run a benchmark suite, and the commands its run\'s steps run. run starts the workflow teamai-benchmark, teamai\'s default or the team\'s file of that name, whose plan, check and report steps run the other commands; try needs no run.');

@@ -15,6 +15,7 @@
 - [高级工作流](guide/zh-CN/workflow-advanced.md) — 并行步骤、循环、`for_each`、到达结局时取消未完成的步骤、表达式参考
 - [评分器](guide/zh-CN/scorers.md) — `scorers/*.md` 里评判工作流步骤的评分标准
 - [Benchmark](guide/zh-CN/benchmarks.md) — `benchmarks/` 里用你自己的任务比较工具和模型的套件，以及它们的 CI 任务
+- [自我改进](guide/zh-CN/self-improvement.md) — `teamai self-improvement run`：把评分器反复判定的失败变成一个修改 harness、加上回归任务的 PR，并在每个工具上证明它
 - [团队上下文](guide/zh-CN/knowledge.md) — learnings、代码知识图谱、teamwiki、CI
 - [团队文化](guide/zh-CN/team-culture.md) — 注入到每个 Agent 的公司与团队文化
 - [Dashboard](guide/zh-CN/dashboard.md) — 本地看板与会话存档

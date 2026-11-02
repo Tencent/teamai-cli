@@ -1297,3 +1297,35 @@ export async function benchmarkTry(file: string): Promise<void> {
 
 /** The workflow `teamai benchmark run` starts: teamai's default, or the team's file of the same name. */
 const BENCHMARK_WORKFLOW = 'teamai-benchmark';
+const SELF_IMPROVEMENT_WORKFLOW = 'teamai-self-improvement';
+
+/**
+ * `teamai self-improvement run <scorer>`: starts the workflow `teamai-self-improvement`, the team's or teamai's default,
+ * with inputs scorer and suite, on the local driver unless `--driver` names another, as `benchmark run` starts its own.
+ */
+export async function selfImprovementRun(scorer: string, options: { suite: string; driver?: string; tools?: string; sandbox?: boolean }): Promise<void> {
+  setStderrOnly(true);
+  const loaded = await readyStartConfig(SELF_IMPROVEMENT_WORKFLOW);
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
+  const { config, secrets } = loaded;
+  const workflow = await loadCachedWorkflow(config, SELF_IMPROVEMENT_WORKFLOW);
+  if (!workflow) {
+    const conflict = await namespaceConflictOf(config, SELF_IMPROVEMENT_WORKFLOW);
+    writeEnvelope({ error: conflict === undefined ? workflowNotFound(SELF_IMPROVEMENT_WORKFLOW) : { code: 'workflow_namespace_conflict', message: conflict } }, secrets);
+    return;
+  }
+  if (workflow.source === 'team') {
+    const missing = ['scorer', 'suite'].filter((input) => workflow.definition.inputs?.[input] === undefined);
+    if (missing.length > 0) {
+      writeEnvelope({ error: { code: 'invalid_inputs', message: `The team's ${workflow.relativePath} replaces teamai's self-improvement workflow and takes no input ${missing.join(' or ')}, so teamai self-improvement run cannot give it the scorer and the suite. Add inputs: { scorer: string, suite: string } to it, or remove it to run teamai's default.` } }, secrets);
+      return;
+    }
+    log.info(`Running the team's ${workflow.relativePath}, which replaces teamai's self-improvement workflow.`);
+  }
+  await startWorkflow(SELF_IMPROVEMENT_WORKFLOW, {
+    driver: options.driver ?? 'local', inputs: JSON.stringify({ scorer, suite: options.suite }), ...(options.tools !== undefined ? { tools: options.tools } : {}), ...(options.sandbox ? { sandbox: true } : {}),
+  });
+}

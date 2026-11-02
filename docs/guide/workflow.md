@@ -666,6 +666,7 @@ teamai ships workflows a team gets without writing them:
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
 | `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
+| `teamai-self-improvement` | changes the team's assets from a scorer's repeated failures and adds one regression task per failure, as one pull request the next run updates, through [`teamai self-improvement run`](self-improvement.md). Inputs: `scorer`, `suite` | always |
 | `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team with `teamai push --file --path`. Inputs: `session`, `source`, `suite`, `start`, `solution` | always |
 
 A team file with the same name replaces a default:

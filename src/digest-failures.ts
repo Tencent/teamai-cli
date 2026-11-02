@@ -65,7 +65,8 @@ async function tasksBySource(config: LocalConfig): Promise<Map<string, string>> 
   return tasks;
 }
 
-async function failures(config: LocalConfig, now = new Date()): Promise<DigestFailuresView> {
+/** The failures of the last 30 days, as `digest --json` prints them. */
+async function read(config: LocalConfig, now = new Date()): Promise<DigestFailuresView> {
   const labels = await readScorerLabels(config);
   const [rubricLabels, learnings, tasks] = await Promise.all([rubricLabelsOf(config, labels.map(({ label }) => label)), learningsBySession(config), tasksBySource(config)]);
   const view = ScorerResults.failures({ labels, windowDays: WINDOW_DAYS, now, rubricLabels });
@@ -82,7 +83,7 @@ async function failures(config: LocalConfig, now = new Date()): Promise<DigestFa
 /** Prints the digest's JSON envelope on stdout, and only that. */
 async function print(): Promise<void> {
   const config = await detectProjectConfig(undefined, undefined, { dryRun: true }) ?? (await requireInit({ dryRun: true })).localConfig;
-  console.log(JSON.stringify({ data: await failures(config) }));
+  console.log(JSON.stringify({ data: await read(config) }));
 }
 
-export const DigestFailures = { print } as const;
+export const DigestFailures = { read, print } as const;

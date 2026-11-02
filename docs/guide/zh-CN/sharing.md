@@ -395,7 +395,7 @@ teamai models switch tokenhub
 
 ## 把一个文件推送到确切路径
 
-`teamai push --file <本地文件> --path <团队路径>` 把一个文件按字节原样提议到一个团队路径，作为拉取请求。团队 clone 里的其他改动都不会加入，也不会改写或移动它：
+`teamai push --file <本地文件> --path <团队路径>` 把一个文件按字节原样提议到一个团队路径，作为拉取请求。重复这一对参数，就能在一个拉取请求里提议多个文件：每个 `--file` 对应同一位置的 `--path`。团队 clone 里的其他改动都不会加入，也不会改写或移动它：
 
 ```console
 $ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
@@ -403,6 +403,13 @@ $ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/ref
 
 $ teamai push --file ./review.md --path scorers/review.md
 ✔ Pull Request created: https://github.com/acme/team/pull/78
+
+$ teamai push --file ./reviewer.md --path agents/reviewer.md \
+    --file /tmp/missed-null-check.yaml --path benchmarks/fix-auth/tasks/missed-null-check.yaml --branch teamai/improve/review-quality
+✔ Pull Request created: https://github.com/acme/team/pull/79
+
+$ teamai push --file ./reviewer.md --path agents/reviewer.md --file /tmp/missed-null-check.yaml   # one --path short
+✖ Each --file needs its own --path: 2 --file and 1 --path were given, paired in order.
 
 $ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml   # the same bytes again
 ℹ No changes to push: benchmarks/fix-auth/tasks/refresh-race.yaml already holds these bytes on main.
@@ -417,14 +424,15 @@ $ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/ref
 ✖ --path names the destination, so it cannot be combined with --skill, --role, --project, --shared, --all or --carried.
 ```
 
-[teamai-session-to-task](benchmarks.md#把会话变成任务) 就是这样提议它起草的任务文件。
+[teamai-session-to-task](benchmarks.md#把会话变成任务) 就是这样提议它起草的任务文件，[`teamai self-improvement`](self-improvement.md) 也这样提议它修改的资产和回归任务。
 
 | 参数 | 结果 |
 | --- | --- |
 | `--file` 和 `--path` | 从默认分支新建分支，把该文件推送到该路径，不再询问，并像 `push` 一样开拉取请求。团队 clone 的文件、index 和分支保持原样。 |
-| 只给其中一个 | 拒绝：两者必须一起用。 |
+| 只给其中一个，或两者数量不同 | 拒绝：每个 `--file` 都有自己的 `--path`。 |
+| 同一个 `--path` 给了两次 | 拒绝：每个目标路径只给一次。 |
 | 同时给 `--skill`、`--role`、`--project`、`--shared`、`--all` 或 `--carried` | 拒绝，如上。 |
-| 同时给 `--branch` | 推送到该分支（不能是默认分支）。该分支已有打开的拉取请求时，会以默认分支加上这个文件重建它，并更新那个拉取请求，而不是新开一个：修改文件后再运行同一条命令即可。重建后只含这个文件，之前推送到该分支的其他文件会离开该拉取请求。远端已有但没有打开的拉取请求的分支会被拒绝，其提交保持不变。 |
+| 同时给 `--branch` | 推送到该分支（不能是默认分支）。该分支已有打开的拉取请求时，会以默认分支加上这些文件重建它，并更新那个拉取请求，而不是新开一个：修改文件后再运行同一条命令即可。重建后只含这次推送列出的文件，之前推送到该分支、这次没有列出的文件会离开该拉取请求。远端已有但没有打开的拉取请求的分支会被拒绝，其提交保持不变。 |
 | `--path` 不在 `skills/`、`rules/`、`scorers/`、`benchmarks/` 或 teamai 拉取的其他目录下、含 `..`，或经过团队仓库中的符号链接 | 拒绝。 |
 | `--path` 在 `benchmarks/` 下 | 必须是默认分支上某个套件的任务。 |
 
