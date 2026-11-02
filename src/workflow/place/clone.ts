@@ -20,7 +20,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { observeCheckout, PreparedAgentSchema, type PreparedAgent } from '../../agent-observation.js';
 import { resolveCliEntry } from '../../builtin-hooks.js';
-import { recordCheckoutRole, withCheckoutRole, type CheckoutRoleWrite } from '../../checkout-roles.js';
+import { recordCheckoutRole, withCheckoutRole } from '../../checkout-roles.js';
 import { loadTeamConfig, saveLocalConfigForScope } from '../../config.js';
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
@@ -46,7 +46,7 @@ import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { cloneBranchOf } from '../workspace.js';
-import { copyKnowledgePaths, roleCopyRefusal, roleDeliveryGap } from './role-copy.js';
+import { cloneRoleProblem, copyKnowledgePaths, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
 import { commitWithout } from './team-without.js';
 import { AGENT_PATHS, boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
 
@@ -565,36 +565,19 @@ async function installTeam(input: {
   };
 
   const { role } = lease;
-  const unavailable = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
+  const undelivered = (forRole: string, gap: CloneRoleGap): WorkflowFailure => roleNotDeliveredFailure({ role: forRole, step: lease.step, notDelivered: { copy: 'clone', gap } });
 
   if (role !== undefined) {
     const declaration = await roleDeclaration(teamClone, role);
 
-    switch (declaration.kind) {
-      case 'declared':
-        break;
-      case 'undeclared':
-        return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": manifest/roles.yaml at team revision ${revision} does not declare it, so the clone would get no role's knowledge. Add the role to manifest/roles.yaml at that revision, or run the step with a role it declares.`);
-      case 'missing':
-        return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": team revision ${revision} has no manifest/roles.yaml, so it declares no role and the clone would get no role's knowledge. Add manifest/roles.yaml declaring the role at that revision, or run the step without a role.`);
-      case 'unreadable':
-        return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": manifest/roles.yaml at team revision ${revision} cannot be read (${declaration.error}). Fix it at that revision, or run the step on another revision.`);
-      default: {
-        const unhandled: never = declaration;
-
-        return unhandled;
-      }
-    }
+    if (declaration.kind !== 'declared') return undelivered(role, { kind: 'undeclared', declaration, revision });
   }
 
   const teamConfig = await loadTeamConfig(teamClone);
 
   if (role !== undefined) {
     // Without a teamai.yaml that parses, where the clone's knowledge would land is unknown, so nothing is delivered.
-    if (!teamConfig) {
-      return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": teamai.yaml at team revision ${revision} is missing or does not parse, so where the clone's knowledge would land is unknown. Fix teamai.yaml at that revision, or run the step on another revision.`);
-    }
-
+    if (!teamConfig) return undelivered(role, { kind: 'no_team_config', revision });
     const refused = await roleCopyRefusal({ team: teamConfig, install: config, role });
 
     if (refused) return refused;
@@ -608,9 +591,8 @@ async function installTeam(input: {
 
   if (role !== undefined) {
     const recorded = await recordCheckoutRole({ config, checkout: anchors.workspaceRoot, role });
-    const why = recordedRoleProblem(recorded);
 
-    if (why !== undefined) return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": ${why}`);
+    if (recorded.kind !== 'recorded') return undelivered(role, { kind: 'role_file', written: recorded });
   }
 
   await createProjectToolRoots({ config, tools });
@@ -631,13 +613,13 @@ async function installTeam(input: {
 
     return role === undefined
       ? failed(`teamai pull --team-ref ${pulling.slice(0, 7)} exited ${pulled.code}: ${tail}`)
-      : unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": its teamai pull --team-ref ${pulling.slice(0, 7)} exited ${pulled.code}: ${tail}`);
+      : undelivered(role, { kind: 'pull_exited', ref: pulling.slice(0, 7), code: pulled.code, output: tail });
   }
 
   if (role !== undefined) {
-    const why = await roleDeliveryProblem({ install: config, tools, role });
+    const refused = await cloneRoleProblem({ install: config, step: lease.step, role, tools });
 
-    if (why !== undefined) return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": ${why}`);
+    if (refused) return refused;
   }
 
   try {
@@ -656,40 +638,6 @@ async function installTeam(input: {
   if (without) installed.without = without;
 
   return installed;
-}
-
-/** Why a write of the clone's role did not record it, or undefined when it did. */
-function recordedRoleProblem(written: CheckoutRoleWrite): string | undefined {
-  switch (written.kind) {
-    case 'recorded': return undefined;
-    case 'busy': return `another teamai held ${written.lock} too long. Start the workflow again, as a run with a clone cannot be retried.`;
-    case 'unreadable': return `${written.file} cannot be read (${written.error}). Delete it, then start the workflow again, as a run with a clone cannot be retried.`;
-    default: {
-      const unhandled: never = written;
-
-      return unhandled;
-    }
-  }
-}
-
-/**
- * Why the clone's own install, `install` as every teamai in the clone loads it, did not deliver role `role` to each of
- * `tools`, or undefined when it did: its checkout record holds a complete delivery made for that role.
- */
-export async function roleDeliveryProblem(input: { install: LocalConfig; tools: readonly string[]; role: string }): Promise<string | undefined> {
-  const gap = await roleDeliveryGap(input);
-
-  switch (gap?.kind) {
-    case undefined: return undefined;
-    case 'not_loaded': return `the clone's install does not load it (it loads ${gap.loaded ?? 'no role'}). Start the workflow again, as a run with a clone cannot be retried.`;
-    case 'incomplete': return `its pull did not record a complete delivery for ${gap.tool} (${gap.gap}). Start the workflow again, as a run with a clone cannot be retried.`;
-    case 'other_role': return `its pull delivered for ${gap.delivered ?? 'the member\'s roles'} instead. Start the workflow again, as a run with a clone cannot be retried.`;
-    default: {
-      const unhandled: never = gap;
-
-      return unhandled;
-    }
-  }
 }
 
 /** The root, then the receipt that names it. rm retries a busy file, as Windows reports one still being closed. */

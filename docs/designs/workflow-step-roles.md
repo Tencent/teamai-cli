@@ -69,9 +69,9 @@ workflow next --prepare, driver.can.role                         engine.ts offer
        roles.yaml at the clone's team revision declares the role? roleCopyRefusal
        recordCheckoutRole in the clone's own partition
        child `teamai pull --team-ref <rev>` under HOME=<root>/h   exit ≠ 0 → role_unavailable
-       roleDeliveryProblem; removeGitHook; recordConfigOverlay
+       cloneRoleProblem; removeGitHook; recordConfigOverlay
 local driver promptReport                                        drivers/local/local-driver.ts
-  worktreeRoleProblem / roleDeliveryProblem again                else role_unavailable
+  worktreeRoleProblem / cloneRoleProblem again                   else role_unavailable
   launch the tool in the copy with TEAMAI_WORKFLOW_ATTEMPT
 while the step runs, in the copy
   session hooks load the copy's config → the role's rules and instructions

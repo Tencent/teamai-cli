@@ -121,7 +121,7 @@ export type RoleDeliveryGap =
  * Why `install`, the config of a copy as every teamai in it loads it, did not get role `role` for each of `tools`, or
  * undefined when it did: it loads the role, and its checkout record holds a complete delivery made for that role.
  */
-export async function roleDeliveryGap(input: { install: LocalConfig; tools: readonly string[]; role: string }): Promise<RoleDeliveryGap | undefined> {
+async function roleDeliveryGap(input: { install: LocalConfig; tools: readonly string[]; role: string }): Promise<RoleDeliveryGap | undefined> {
   const loaded = await withCheckoutRole(input.install);
 
   if (loaded.stepRole !== input.role) return { kind: 'not_loaded', loaded: loaded.stepRole };
@@ -148,32 +148,101 @@ type WorktreeRoleGap =
   | { kind: 'pull'; delivery: Exclude<PullDelivery, 'delivered' | 'unchanged'> }
   | RoleDeliveryGap;
 
-/** The failure of step `step`, whose worktree copy `dir` did not get role `role` for `gap`. Retrying the step prepares it again. */
-function worktreeRoleFailure(input: { gap: WorktreeRoleGap; role: string; step: string; dir: string }): WorkflowFailure {
-  const { gap, role, step, dir } = input;
+/** Why a clone did not get its step's role: one of the checks its setup and launch make, at the team revision it installs. */
+export type CloneRoleGap =
+  | { kind: 'no_install' }
+  | { kind: 'no_team_config'; revision: string }
+  | { kind: 'undeclared'; declaration: Exclude<RoleDeclaration, { kind: 'declared' }>; revision: string }
+  | { kind: 'role_file'; written: Exclude<CheckoutRoleWrite, { kind: 'recorded' }> }
+  | { kind: 'pull_exited'; ref: string; code: number; output: string }
+  | RoleDeliveryGap;
+
+/**
+ * Why step `step` runs without its role `role`, by the copy that should hold it: a worktree `dir`, which retrying the
+ * step prepares again; a clone, which a run cannot retry, so its fix is to start the workflow again; or none, as a lease
+ * from another teamai names no copy.
+ */
+export type RoleNotDelivered =
+  | { copy: 'worktree'; dir: string; gap: WorktreeRoleGap }
+  | { copy: 'clone'; gap: CloneRoleGap }
+  | { copy: 'none' };
+
+/** The `role_unavailable` failure of step `step`, which runs without role `role` for `notDelivered`. */
+export function roleNotDeliveredFailure(input: { role: string; step: string; notDelivered: RoleNotDelivered }): WorkflowFailure {
+  const { role, step, notDelivered } = input;
   const failed = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
+
+  switch (notDelivered.copy) {
+    case 'worktree':
+      return failed(worktreeRoleMessage({ role, step, dir: notDelivered.dir, gap: notDelivered.gap }));
+    case 'clone':
+      return failed(cloneRoleMessage({ role, step, gap: notDelivered.gap }));
+    case 'none':
+      return failed(`Role ${role} was not delivered for step "${step}": its lease names no copy for teamai to deliver the role into. Update teamai, then retry the step.`);
+    default: {
+      const unhandled: never = notDelivered;
+
+      return unhandled;
+    }
+  }
+}
+
+/** Why the worktree copy `dir` of step `step` did not get role `role`, and how to retry the step. */
+function worktreeRoleMessage(input: { role: string; step: string; dir: string; gap: WorktreeRoleGap }): string {
+  const { role, step, dir, gap } = input;
 
   switch (gap.kind) {
     case 'no_project_install':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": no project install of teamai governs ${dir}, and only one delivers a step's role. Run teamai init in the project, then retry the step.`);
+      return `Role ${role} was not delivered into the copy for step "${step}": no project install of teamai governs ${dir}, and only one delivers a step's role. Run teamai init in the project, then retry the step.`;
     case 'no_team_config':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": teamai.yaml in the team repo is missing or does not parse (${gap.repo}), so where the copy's knowledge would land is unknown. Run teamai pull in ${dir} to see why, fix teamai.yaml, then retry the step.`);
+      return `Role ${role} was not delivered into the copy for step "${step}": teamai.yaml in the team repo is missing or does not parse (${gap.repo}), so where the copy's knowledge would land is unknown. Run teamai pull in ${dir} to see why, fix teamai.yaml, then retry the step.`;
     case 'undeclared':
-      return undeclaredRoleFailure({ declaration: gap.declaration, role, step });
+      switch (gap.declaration.kind) {
+        case 'undeclared':
+          return `Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo does not declare it (it declares ${gap.declaration.ids.join(', ') || 'no role'}), so the copy would get no role's knowledge. Add the role to manifest/roles.yaml, push it and run teamai pull, or give the step a role it declares, then retry the step.`;
+        case 'missing':
+          return `Role ${role} was not delivered into the copy for step "${step}": the team repo has no manifest/roles.yaml, so it declares no role and the copy would get no role's knowledge. Add manifest/roles.yaml declaring the role, push it and run teamai pull, or run the step without a role, then retry the step.`;
+        case 'unreadable':
+          return `Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo cannot be read (${gap.declaration.error}). Fix it, push it and run teamai pull, then retry the step.`;
+        default: {
+          const unhandled: never = gap.declaration;
+
+          return unhandled;
+        }
+      }
+
     case 'role_file':
-      return gap.written.kind === 'busy'
-        ? failed(`Role ${role} was not delivered into the copy for step "${step}": another teamai held ${gap.written.lock} too long. Retry the step.`)
-        : failed(`Role ${role} was not delivered into the copy for step "${step}": ${gap.written.file} cannot be read (${gap.written.error}). Delete it, then retry the step.`);
+      switch (gap.written.kind) {
+        case 'busy':
+          return `Role ${role} was not delivered into the copy for step "${step}": another teamai held ${gap.written.lock} too long. Retry the step.`;
+        case 'unreadable':
+          return `Role ${role} was not delivered into the copy for step "${step}": ${gap.written.file} cannot be read (${gap.written.error}). Delete it, then retry the step.`;
+        default: {
+          const unhandled: never = gap.written;
+
+          return unhandled;
+        }
+      }
+
     case 'pull':
-      return gap.delivery === 'skipped'
-        ? failed(`Role ${role} was not delivered into the copy for step "${step}": its pull was skipped, as another teamai held the team's sync lock past the wait, so the copy may hold what an earlier pull delivered. Retry the step once that pull ends.`)
-        : failed(`Role ${role} was not delivered into the copy for step "${step}": its pull did not deliver everything. Run teamai pull in ${dir} to see why, fix it, then retry the step.`);
+      switch (gap.delivery) {
+        case 'skipped':
+          return `Role ${role} was not delivered into the copy for step "${step}": its pull was skipped, as another teamai held the team's sync lock past the wait, so the copy may hold what an earlier pull delivered. Retry the step once that pull ends.`;
+        case 'failed':
+          return `Role ${role} was not delivered into the copy for step "${step}": its pull did not deliver everything. Run teamai pull in ${dir} to see why, fix it, then retry the step.`;
+        default: {
+          const unhandled: never = gap.delivery;
+
+          return unhandled;
+        }
+      }
+
     case 'not_loaded':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": teamai in ${dir} loads ${gap.loaded ?? 'no role'} for it, as something changed checkout-roles.json since setup. Retry the step.`);
+      return `Role ${role} was not delivered into the copy for step "${step}": teamai in ${dir} loads ${gap.loaded ?? 'no role'} for it, as something changed checkout-roles.json since setup. Retry the step.`;
     case 'incomplete':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": its pull did not record a complete delivery for ${gap.tool} (${gap.gap}). Run teamai pull in ${dir} to see why, fix it, then retry the step.`);
+      return `Role ${role} was not delivered into the copy for step "${step}": its pull did not record a complete delivery for ${gap.tool} (${gap.gap}). Run teamai pull in ${dir} to see why, fix it, then retry the step.`;
     case 'other_role':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": its last pull delivered for ${gap.delivered ?? 'the member\'s roles'} instead. Retry the step.`);
+      return `Role ${role} was not delivered into the copy for step "${step}": its last pull delivered for ${gap.delivered ?? 'the member\'s roles'} instead. Retry the step.`;
     default: {
       const unhandled: never = gap;
 
@@ -182,20 +251,53 @@ function worktreeRoleFailure(input: { gap: WorktreeRoleGap; role: string; step: 
   }
 }
 
-/** The failure of step `step`, whose worktree copy cannot get role `role` because of what the team's roles.yaml says. */
-function undeclaredRoleFailure(input: { declaration: Exclude<RoleDeclaration, { kind: 'declared' }>; role: string; step: string }): WorkflowFailure {
-  const { declaration, role, step } = input;
-  const failed = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
+/** Why the clone of step `step` did not get role `role`, and how to run it again, as a run with a clone cannot be retried. */
+function cloneRoleMessage(input: { role: string; step: string; gap: CloneRoleGap }): string {
+  const { role, step, gap } = input;
 
-  switch (declaration.kind) {
+  switch (gap.kind) {
+    case 'no_install':
+      return `Role ${role} was not delivered into the clone for step "${step}": teamai prepared no clone with a team install on this machine. Start the workflow again, as a run with a clone cannot be retried.`;
+    case 'no_team_config':
+      return `Role ${role} was not delivered into the clone for step "${step}": teamai.yaml at team revision ${gap.revision} is missing or does not parse, so where the clone's knowledge would land is unknown. Fix teamai.yaml at that revision, or run the step on another revision.`;
     case 'undeclared':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo does not declare it (it declares ${declaration.ids.join(', ') || 'no role'}), so the copy would get no role's knowledge. Add the role to manifest/roles.yaml, push it and run teamai pull, or give the step a role it declares, then retry the step.`);
-    case 'missing':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": the team repo has no manifest/roles.yaml, so it declares no role and the copy would get no role's knowledge. Add manifest/roles.yaml declaring the role, push it and run teamai pull, or run the step without a role, then retry the step.`);
-    case 'unreadable':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo cannot be read (${declaration.error}). Fix it, push it and run teamai pull, then retry the step.`);
+      switch (gap.declaration.kind) {
+        case 'undeclared':
+          return `Role ${role} was not delivered into the clone for step "${step}": manifest/roles.yaml at team revision ${gap.revision} does not declare it, so the clone would get no role's knowledge. Add the role to manifest/roles.yaml at that revision, or run the step with a role it declares.`;
+        case 'missing':
+          return `Role ${role} was not delivered into the clone for step "${step}": team revision ${gap.revision} has no manifest/roles.yaml, so it declares no role and the clone would get no role's knowledge. Add manifest/roles.yaml declaring the role at that revision, or run the step without a role.`;
+        case 'unreadable':
+          return `Role ${role} was not delivered into the clone for step "${step}": manifest/roles.yaml at team revision ${gap.revision} cannot be read (${gap.declaration.error}). Fix it at that revision, or run the step on another revision.`;
+        default: {
+          const unhandled: never = gap.declaration;
+
+          return unhandled;
+        }
+      }
+
+    case 'role_file':
+      switch (gap.written.kind) {
+        case 'busy':
+          return `Role ${role} was not delivered into the clone for step "${step}": another teamai held ${gap.written.lock} too long. Start the workflow again, as a run with a clone cannot be retried.`;
+        case 'unreadable':
+          return `Role ${role} was not delivered into the clone for step "${step}": ${gap.written.file} cannot be read (${gap.written.error}). Delete it, then start the workflow again, as a run with a clone cannot be retried.`;
+        default: {
+          const unhandled: never = gap.written;
+
+          return unhandled;
+        }
+      }
+
+    case 'pull_exited':
+      return `Role ${role} was not delivered into the clone for step "${step}": its teamai pull --team-ref ${gap.ref} exited ${gap.code}: ${gap.output}`;
+    case 'not_loaded':
+      return `Role ${role} was not delivered into the clone for step "${step}": the clone's install does not load it (it loads ${gap.loaded ?? 'no role'}). Start the workflow again, as a run with a clone cannot be retried.`;
+    case 'incomplete':
+      return `Role ${role} was not delivered into the clone for step "${step}": its pull did not record a complete delivery for ${gap.tool} (${gap.gap}). Start the workflow again, as a run with a clone cannot be retried.`;
+    case 'other_role':
+      return `Role ${role} was not delivered into the clone for step "${step}": its pull delivered for ${gap.delivered ?? 'the member\'s roles'} instead. Start the workflow again, as a run with a clone cannot be retried.`;
     default: {
-      const unhandled: never = declaration;
+      const unhandled: never = gap;
 
       return unhandled;
     }
@@ -219,12 +321,23 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; role
   if (role === undefined) {
     const cleared = project ? await clearCheckoutRole({ config: project, checkout: dir }) : { kind: 'recorded' as const };
 
-    if (cleared.kind === 'busy') return { code: 'role_unavailable', message: `The role an earlier step ran with in the copy for step "${step}" could not be cleared: another teamai held ${cleared.lock} too long, and the step would run with that role. Retry the step.` };
+    switch (cleared.kind) {
+      case 'recorded':
+        return { paths };
+      // Every teamai that loads an unreadable checkout-roles.json runs with no role (`withCheckoutRole`), as this step must.
+      case 'unreadable':
+        return { paths };
+      case 'busy':
+        return { code: 'role_unavailable', message: `The role an earlier step ran with in the copy for step "${step}" could not be cleared: another teamai held ${cleared.lock} too long, and the step would run with that role. Retry the step.` };
+      default: {
+        const unhandled: never = cleared;
 
-    return { paths };
+        return unhandled;
+      }
+    }
   }
 
-  const refused = (gap: WorktreeRoleGap): WorkflowFailure => worktreeRoleFailure({ gap, role, step, dir });
+  const refused = (gap: WorktreeRoleGap): WorkflowFailure => roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'worktree', dir, gap } });
 
   if (!project) return refused({ kind: 'no_project_install' });
   const declaration = await roleDeclaration(project.repo.localPath, role);
@@ -251,15 +364,41 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; role
  */
 export async function worktreeRoleProblem(input: { dir: string; step: string; role: string; tools: readonly string[]; delivery?: PullDelivery }): Promise<WorkflowFailure | undefined> {
   const { dir, step, role, tools, delivery } = input;
-  const refused = (gap: WorktreeRoleGap): WorkflowFailure => worktreeRoleFailure({ gap, role, step, dir });
+  const refused = (gap: WorktreeRoleGap): WorkflowFailure => roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'worktree', dir, gap } });
 
-  if (delivery === 'skipped' || delivery === 'failed') return refused({ kind: 'pull', delivery });
+  switch (delivery) {
+    case 'skipped':
+    case 'failed':
+      return refused({ kind: 'pull', delivery });
+    case undefined:
+    case 'delivered':
+    case 'unchanged':
+      break;
+    default: {
+      const unhandled: never = delivery;
+
+      return unhandled;
+    }
+  }
+
   const install = await detectProjectConfig(dir);
 
   if (install?.scope !== 'project') return refused({ kind: 'no_project_install' });
   const gap = await roleDeliveryGap({ install, tools: tools.length > 0 ? tools : install.enabledAgents ?? [], role });
 
   return gap && refused(gap);
+}
+
+/**
+ * Why step `step` must not run in its clone with role `role` on `tools`, or undefined when it may: `install`, the clone's
+ * own install as every teamai in the clone loads it, delivered the role, and its record says so for each tool. Checked
+ * as the clone's setup ends and again right before launch.
+ */
+export async function cloneRoleProblem(input: { install: LocalConfig; step: string; role: string; tools: readonly string[] }): Promise<WorkflowFailure | undefined> {
+  const { install, step, role, tools } = input;
+  const gap = await roleDeliveryGap({ install, tools, role });
+
+  return gap && roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'clone', gap } });
 }
 
 /**
@@ -274,7 +413,18 @@ export async function releaseWorktreeRole(dir: string): Promise<void> {
   await fs.rm(getProjectSearchIndexPath(install), { force: true });
   const cleared = await clearCheckoutRole({ config: install, checkout: dir });
 
-  if (cleared.kind === 'busy') log.warn(`The role of workflow copy ${dir} stays recorded: another teamai held ${cleared.lock} too long. A later copy at that path clears it.`);
-
-  if (cleared.kind === 'unreadable') log.warn(`The role of workflow copy ${dir} stays recorded: ${cleared.file} cannot be read (${cleared.error}). Delete it.`);
+  switch (cleared.kind) {
+    case 'recorded':
+      break;
+    case 'busy':
+      log.warn(`The role of workflow copy ${dir} stays recorded: another teamai held ${cleared.lock} too long. A later copy at that path clears it.`);
+      break;
+    case 'unreadable':
+      log.warn(`The role of workflow copy ${dir} stays recorded: ${cleared.file} cannot be read (${cleared.error}). Delete it.`);
+      break;
+    default: {
+      const unhandled: never = cleared;
+      void unhandled;
+    }
+  }
 }

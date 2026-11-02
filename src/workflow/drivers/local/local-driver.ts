@@ -34,7 +34,7 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
-import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, roleDeliveryProblem, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
+import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
@@ -242,12 +242,15 @@ function stepTool({ agent, tool }: Pick<WorkflowStep, 'agent' | 'tool'>, config:
   return { ok: true, tool: undefined, warnings: passed.map((skipped) => `${skipped.source} is "${skipped.named}", which cannot run a workflow step.`) };
 }
 
+/** The tool a prompt step launches here, with the warnings its pick logs, or why it launches none. */
+type LaunchChoice = { ok: true; tool: LaunchTool; warnings: string[] } | { ok: false; failure: WorkflowFailure; tool?: string; warnings: string[] };
+
 /**
  * The tool teamai launches for prompt step `step` here, as {@link stepTool} picks it with `--tools` `flags`, or why
  * none: no tool is configured, or the one picked is not one teamai launches, which `tool` then names. `warnings` says
  * which of the member's tools gave way, for the step that launches to log.
  */
-export function launchToolFor(step: Pick<WorkflowStep, 'agent' | 'tool'>, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: LaunchTool; warnings: string[] } | { ok: false; failure: WorkflowFailure; tool?: string; warnings: string[] } {
+export function launchToolFor(step: Pick<WorkflowStep, 'agent' | 'tool'>, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): LaunchChoice {
   const choice = stepTool(step, config, flags, members);
 
   if (!choice.ok) return { ...choice, warnings: [] };
@@ -413,6 +416,7 @@ async function promptReport(
   archive: SessionArchive,
   signal: AbortSignal,
   mode: RunMode,
+  staged: LaunchChoice | undefined,
 ): Promise<ReportBody> {
   const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
     const unrestored = await abandonPlace({ config, lock, attempt: lease.attempt });
@@ -425,7 +429,8 @@ async function promptReport(
     return body;
   };
 
-  const choice = launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config));
+  // A role lease's place was staged for its launch tool, which launches it; others pick theirs now.
+  const choice = staged ?? launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config));
 
   for (const warning of choice.warnings) log.warn(warning);
 
@@ -438,16 +443,16 @@ async function promptReport(
   const prepared = clone !== undefined ? await preparedClone(config, lock.run, clone) : undefined;
 
   // The copy was checked as it was prepared; it is checked again right before launch, as something may have pulled since.
-  if (lease.role !== undefined && clone !== undefined) {
-    const why = prepared?.install
-      ? await roleDeliveryProblem({ install: prepared.install, tools: [selected], role: lease.role })
-      : 'teamai prepared no clone with a team install on this machine. Start the workflow again, as a run with a clone cannot be retried.';
+  if (lease.role !== undefined) {
+    const { role, step } = lease;
 
-    if (why !== undefined) return giveUp({ code: 'role_unavailable', message: `Role ${lease.role} was not delivered into the clone for step "${lease.step}": ${why}` }, selected);
-  } else if (lease.role !== undefined) {
-    const refused = lease.cwd !== undefined
-      ? await worktreeRoleProblem({ dir: lease.cwd, step: lease.step, role: lease.role, tools: [selected] })
-      : { code: 'role_unavailable', message: `Role ${lease.role} was not delivered for step "${lease.step}": its lease names no copy for teamai to deliver the role into. Update teamai, then retry the step.` };
+    const refused = clone !== undefined
+      ? prepared?.install
+        ? await cloneRoleProblem({ install: prepared.install, step, role, tools: [selected] })
+        : roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'clone', gap: { kind: 'no_install' } } })
+      : lease.cwd !== undefined
+        ? await worktreeRoleProblem({ dir: lease.cwd, step, role, tools: [selected] })
+        : roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'none' } });
 
     if (refused !== undefined) return giveUp(refused, selected);
   }
@@ -1028,7 +1033,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           if (failure) return unstaged(lease, failure);
           interactiveIgnores = ignored;
 
-          return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode);
+          return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode, launch);
         })() });
       }
 

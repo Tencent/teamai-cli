@@ -40,9 +40,9 @@ export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: stri
   return here !== null && here !== there ? cwd : checkout;
 }
 
-export { attemptCloneHome, cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, roleDeliveryProblem, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
+export { attemptCloneHome, cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
 
-export { worktreeRoleProblem } from './role-copy.js';
+export { cloneRoleProblem, roleNotDeliveredFailure, worktreeRoleProblem } from './role-copy.js';
 
 /**
  * The place key two attempts of one driver must not share: the copy of the lease's branch, its clone, else the checkout.
@@ -560,7 +560,7 @@ async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { p
   let unrestored: string | undefined;
 
   // A copy's role goes before the copy does, as its entry is keyed by the copy's real path. A clone's goes with its root.
-  if (place.role !== 'clone' && place.role !== 'checkout') await releaseWorktreeRole(dir);
+  if (isWorktreeCopy(place)) await releaseWorktreeRole(dir);
 
   if (place.role === 'clone') await removeClone(config, record.run, place.workspace.branch);
   else if (record.adopted && place.role !== 'checkout') {
@@ -821,6 +821,23 @@ export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; 
   return left(unrestored);
 }
 
+/** Whether `place` is a worktree copy, a reader's or a writer's, which runs with its own role, rather than the checkout or a clone. */
+function isWorktreeCopy(place: Extract<PlaceRecord, { place: unknown }>['place']): boolean {
+  switch (place.role) {
+    case 'reader':
+    case 'writer':
+      return true;
+    case 'checkout':
+    case 'clone':
+      return false;
+    default: {
+      const unhandled: never = place;
+
+      return unhandled;
+    }
+  }
+}
+
 /**
  * The team a prompt of `tool` gets in the worktree copy `attempt` was prepared in, as teamai reads it from the copy's own
  * pull record, the role it was delivered for included. Undefined when the attempt has no such copy, or it has no record.
@@ -829,7 +846,7 @@ export async function preparedCopyTeam(input: { config: LocalConfig; run: RunId;
   const read = await readPlaceRecord(input.config, input.run, input.attempt);
   const recorded = read.kind === 'found' && read.record.phase !== 'opening' ? read.record : undefined;
 
-  if (recorded === undefined || recorded.place.role === 'checkout' || recorded.place.role === 'clone') return undefined;
+  if (recorded === undefined || !isWorktreeCopy(recorded.place)) return undefined;
   const install = await detectProjectConfig(recorded.dir).catch(() => null);
 
   if (install?.scope !== 'project') return undefined;
@@ -850,7 +867,7 @@ export async function releasePlace(input: { config: LocalConfig; lock: RunLock; 
   const read = await readPlaceRecord(input.config, input.lock.run, input.attempt);
   const recorded = read.kind === 'found' ? read.record : undefined;
 
-  if (!recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout' || recorded.place.role === 'clone') return 'left';
+  if (!recorded || recorded.phase === 'opening' || !isWorktreeCopy(recorded.place)) return 'left';
   // The role it ran with goes with the copy, and from a place the host made, which it leaves.
   await releaseWorktreeRole(recorded.dir);
 
