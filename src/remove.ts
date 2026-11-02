@@ -18,7 +18,9 @@ export async function remove(
   names: string[],
   options: RemoveOptions,
 ): Promise<void> {
-  if (!REMOVABLE_TYPES.includes(type as ResourceType)) {
+  const removable = REMOVABLE_TYPES.find((supported) => supported === type);
+
+  if (removable === undefined) {
     log.error(`Unsupported resource type: ${type}. Supported types: ${REMOVABLE_TYPES.join(', ')}`);
 
     return;
@@ -47,7 +49,7 @@ export async function remove(
   // below can reset a clone with unpushed commits (#900).
   if (options.dryRun || localConfig.repo.kind === 'self') {
     const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, PreviewFetchError, DirtyPreviewError } = await import('./utils/reports-branch.js');
-    const body = (checkoutConfig: LocalConfig) => removeCore(type, names, options, checkoutConfig, teamConfig);
+    const body = (checkoutConfig: LocalConfig) => removeCore(removable, names, options, checkoutConfig, teamConfig);
 
     try {
       if (options.dryRun) {
@@ -71,12 +73,12 @@ export async function remove(
     return;
   }
 
-  await removeCore(type, names, options, localConfig, teamConfig);
+  await removeCore(removable, names, options, localConfig, teamConfig);
 }
 
-function refuseUnrefreshedRemoval(names: string[], error: unknown): void {
+function refuseUnrefreshedRemoval(names: string[], cause: unknown): void {
   log.error(
-    `The team repo could not be refreshed (${error instanceof Error ? error.message : String(error)}), so what "${names.join(', ')}" `
+    `The team repo could not be refreshed (${cause instanceof Error ? cause.message : String(cause)}), so what "${names.join(', ')}" `
     + 'names cannot be resolved against the current default branch. Nothing was removed. '
     + 'Fix the pull (run `teamai pull` to see why) and retry.',
   );
@@ -84,7 +86,7 @@ function refuseUnrefreshedRemoval(names: string[], error: unknown): void {
 }
 
 async function removeCore(
-  type: string,
+  type: ResourceType,
   names: string[],
   options: RemoveOptions,
   localConfig: LocalConfig,
@@ -133,7 +135,7 @@ async function removeCore(
     return;
   }
 
-  const handler = getHandler(type as ResourceType);
+  const handler = getHandler(type);
 
   // Verify which resources exist
   const teamItems = await handler.scanTeamForPull(teamConfig, localConfig);
