@@ -162,8 +162,12 @@ export type ReadGate =
   | { readonly kind: 'claude-mcp-approval'; readonly config: string; readonly settings: string; readonly checkout: string }
   /** `config`: the project's .codebuddy/settings.local.json (`CODEBUDDY_PROJECT_CONFIG_DIR` moves it), the only file CodeBuddy Code reads approvals from. */
   | { readonly kind: 'codebuddy-mcp-approval'; readonly config: string; readonly checkout: string }
-  /** `config`: the Cursor CLI's directory of per-project state, `~/.cursor/projects`. */
-  | { readonly kind: 'cursor-mcp-approval'; readonly config: string; readonly checkout: string };
+  /**
+   * `projects`: the Cursor CLI's per-project state (`CURSOR_DATA_DIR` moves
+   * it from ~/.cursor); `cliConfig`: the file it writes on any run, whose
+   * absence means the member is on the Cursor IDE alone.
+   */
+  | { readonly kind: 'cursor-mcp-approval'; readonly projects: string; readonly cliConfig: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -654,8 +658,14 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
         const dir = moved ? host.path.resolve(install.projectRoot, moved) : host.path.join(install.projectRoot, '.codebuddy');
         return { kind, config: host.path.join(dir, 'settings.local.json'), checkout: install.projectRoot };
       }
-      case 'cursor-mcp-approval':
-        return { kind, config: rootsOf('cursor', user, host).declared('home', '.cursor/projects'), checkout: install.projectRoot };
+      case 'cursor-mcp-approval': {
+        // Cursor CLI 2026.10.21 cursor-config paths: a blank variable counts as unset.
+        const home = rootsOf('cursor', user, host).declared('home', '.cursor');
+        const data = host.env.CURSOR_DATA_DIR?.trim() ? host.env.CURSOR_DATA_DIR : home;
+        const xdg = host.env.XDG_CONFIG_HOME?.trim() ? host.path.join(host.env.XDG_CONFIG_HOME, 'cursor') : home;
+        const config = host.env.CURSOR_CONFIG_DIR?.trim() ? host.env.CURSOR_CONFIG_DIR : xdg;
+        return { kind, projects: host.path.join(data, 'projects'), cliConfig: host.path.join(config, 'cli-config.json'), checkout: install.projectRoot };
+      }
       case 'qoder-folder-trust':
       case 'qoder-mcp-approval':
         return { kind, config: rootsOf('qoder', user, host).declared('home', '.qoder/settings.json'), checkout: install.projectRoot };

@@ -4,6 +4,7 @@
  * servers. `locate` declares each gate (`ReadGate`); this module evaluates
  * it. Read-only: it never grants a verdict.
  */
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import semver from 'semver';
 import { getAgentVersion } from './agent-version.js';
@@ -385,17 +386,18 @@ async function codebuddyMcpApproval(gate: Extract<ReadGate, { kind: 'codebuddy-m
  * Cursor CLI 2026.10.21 keeps a project's verdicts in
  * `<config>/<slug of the real git root>/`: `mcp-disabled.json` lists the names
  * it never loads or asks about again, and `mcp-approvals.json` holds
- * `<name>-<hash>`, the hash over the server as parsed with the env of the
- * shell Cursor runs in. doctor cannot redo that hash, so it reads names: a
- * declined server, and, once the CLI has approved anything here, a server it
- * has no approval for. An approval of an earlier definition still counts, and
- * the Cursor IDE's own approvals are not read.
+ * `<name>-<16 hex>`: sha256 of `{ path: <root>, server: <entry> }` as JSON,
+ * over the root's `.cursor/mcp.json` entry. With no approvals file the CLI
+ * approves nothing; until the CLI has run on this machine (its
+ * `cli-config.json`) the member is taken to be on the Cursor IDE, whose own
+ * approvals are not read. An entry reading `${...}` is hashed resolved with
+ * the env of the shell Cursor runs in, so any approval of its name counts.
  */
 async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
   const cause = `${held.summary}, but the Cursor CLI loads a project's servers only once you approve them`;
   const { resolveAnchors } = await import('./utils/git.js');
   const root = (await resolveAnchors(gate.checkout))?.workspaceRoot ?? await realFilePath(gate.checkout);
-  const dir = path.join(gate.config, root.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, ''));
+  const dir = path.join(gate.projects, root.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, ''));
   const lists: Record<'disabled' | 'approvals', Set<string> | null> = { disabled: null, approvals: null };
   for (const [key, file] of [['disabled', 'mcp-disabled.json'], ['approvals', 'mcp-approvals.json']] as const) {
     const raw = await readFileSafe(path.join(dir, file));
@@ -406,9 +408,19 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
       return unreadable({ cause, file: path.join(dir, file), reason: `does not parse (${error instanceof Error ? error.message : String(error)})`, question: 'the Cursor CLI approved these servers' });
     }
   }
-  const { disabled, approvals } = lists;
-  const approved = (name: string): boolean =>
-    [...approvals ?? []].some((entry) => entry.startsWith(`${name}-`) && /^[0-9a-f]{16}$/.test(entry.slice(name.length + 1)));
+  const { disabled } = lists;
+  const cliHasRun = await readFileSafe(gate.cliConfig) !== null;
+  const approvals = lists.approvals ?? (cliHasRun ? new Set<string>() : null);
+  const project = await readJsonObject(path.join(root, '.cursor', 'mcp.json'));
+  const servers = project.kind === 'ok' ? fieldOf(project.value, 'mcpServers') : undefined;
+  const approved = (name: string): boolean => {
+    const server = fieldOf(servers, name);
+    if (server !== undefined && !JSON.stringify(server).includes('${')) {
+      const hash = createHash('sha256').update(JSON.stringify({ path: root, server })).digest('hex').slice(0, 16);
+      return approvals?.has(`${name}-${hash}`) === true;
+    }
+    return [...approvals ?? []].some((entry) => entry.startsWith(`${name}-`) && /^[0-9a-f]{16}$/.test(entry.slice(name.length + 1)));
+  };
   const rejected = held.names.filter((name) => disabled?.has(name));
   const pending = approvals === null ? [] : held.names.filter((name) => !rejected.includes(name) && !approved(name));
   const enable = (names: readonly string[]): string => names.map((name) => `\`cursor-agent mcp enable ${name}\``).join(', ');

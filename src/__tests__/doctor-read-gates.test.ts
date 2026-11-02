@@ -3,6 +3,7 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -661,13 +662,40 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(found?.fix).toContain('issues waits for approval');
     });
 
-    it('passes once the CLI holds an approval for the server', async () => {
-      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), ['issues-ab198a3220d3e501']);
+    // Cursor CLI 2026.10.21 approves `<name>-<16 hex>`: sha256 of JSON.stringify({ path: <project root>, server: <its .cursor/mcp.json entry> }).
+    const cursorKey = (name: string, server: object): string =>
+      `${name}-${createHash('sha256').update(JSON.stringify({ path: projectRoot, server })).digest('hex').slice(0, 16)}`;
+
+    it('passes once the CLI approved the server as the project defines it now', async () => {
+      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', { command: 'issues-server' })]);
 
       expect(await (await check(APPROVAL))?.check()).toBe(true);
     });
 
-    it('passes while the CLI keeps no state for the project, as for a member on the Cursor IDE', async () => {
+    it('fails when the approval is for an earlier definition of the server, which the CLI asks about again', async () => {
+      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', { command: 'old-issues-server' })]);
+
+      const found = await check(APPROVAL);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('issues waits for approval');
+    });
+
+    it('takes any approval of the name for a server whose definition reads the shell env, which the CLI hashes resolved', async () => {
+      await fse.outputJson(path.join(projectRoot, '.cursor', 'mcp.json'), { mcpServers: { issues: { command: 'issues-server', env: { TOKEN: '${env:ISSUES_TOKEN}' } } } });
+      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), ['issues-5b6d737cb9790349']);
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('fails with no approvals for the project once the CLI has run on this machine', async () => {
+      await fse.outputJson(path.join(homeDir, '.cursor', 'cli-config.json'), { version: 1 });
+
+      const found = await check(APPROVAL);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('issues waits for approval');
+    });
+
+    it('passes while the CLI has never run on this machine, as for a member on the Cursor IDE', async () => {
       expect(await (await check(APPROVAL))?.check()).toBe(true);
     });
   });
