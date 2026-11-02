@@ -44,6 +44,7 @@ const dirs: string[] = [];
 
 afterEach(() => {
   pullLock.held = false;
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -325,6 +326,11 @@ steps:
     fs.mkdirSync(path.join(hermesSkills, 'mine'), { recursive: true });
     fs.writeFileSync(path.join(hermesSkills, 'mine', 'SKILL.md'), '---\nname: mine\ndescription: The member\'s own.\n---\nMine.\n');
     const { config, workspace, runId } = await roleWorkspace(yaml, { tools: ['claude', 'hermes'] });
+    // The driver offers a step that names its tool only a tool on PATH; the fake tool stands in for the session.
+    const bin = path.join(path.dirname(workspace), 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
     const snapshot = (): Record<string, string> => Object.fromEntries(fs.readdirSync(hermesSkills, { recursive: true, encoding: 'utf8' })
       .filter((entry) => fs.statSync(path.join(hermesSkills, entry)).isFile())
       .sort()
