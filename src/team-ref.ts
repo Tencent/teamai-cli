@@ -6,19 +6,22 @@ import type { GlobalOptions, LocalConfig } from './types.js';
 export type ResolvedTeamRef = { ref: string; kind: 'branch' | 'tag' | 'commit'; commit: string };
 
 export class TeamRefError extends Error {
-  constructor(ref: string, branches: string[]) {
+  constructor(ref: string, readonly branches: string[]) {
     super(`Team ref "${ref}" is not a branch, tag or commit of the team repo that holds teamai.yaml. Branches: ${branches.join(', ')}. Push it, or check the name.`);
     this.name = 'TeamRefError';
   }
 }
 
-export function teamRefBlocker(project: LocalConfig | null, user: LocalConfig | null): { message: string } | null {
-  if (!project) return { message: '--team-ref needs a teamai workspace here. Run teamai init --scope workspace here first.' };
+/** Why a workspace cannot be pinned to one team revision. Each caller words it for the command it runs. */
+export type TeamRefBlock = 'no_workspace' | 'user_scope' | 'self' | 'http';
+
+export function teamRefBlocker(project: LocalConfig | null, user: LocalConfig | null): { block: TeamRefBlock; message: string } | null {
+  if (!project) return { block: 'no_workspace', message: '--team-ref needs a teamai workspace here. Run teamai init --scope workspace here first.' };
   if (project.inheritUserScope || (user && remotesMatch(project.repo.remote, user.repo.remote))) {
-    return { message: '--team-ref pins one workspace, but this team also reaches it through user scope, where every workspace shares one copy. Remove the user-scope install, or turn off inheritUserScope, to pin a workspace.' };
+    return { block: 'user_scope', message: '--team-ref pins one workspace, but this team also reaches it through user scope, where every workspace shares one copy. Remove the user-scope install, or turn off inheritUserScope, to pin a workspace.' };
   }
-  if (project.repo.kind === 'self') return { message: "--team-ref does not apply in single-repo mode: the project's own commit decides which team assets it has." };
-  if (project.repo.kind === 'http') return { message: '--team-ref needs a git team repo. This team is served over HTTP.' };
+  if (project.repo.kind === 'self') return { block: 'self', message: "--team-ref does not apply in single-repo mode: the project's own commit decides which team assets it has." };
+  if (project.repo.kind === 'http') return { block: 'http', message: '--team-ref needs a git team repo. This team is served over HTTP.' };
   return null;
 }
 

@@ -14,6 +14,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import { isNameShaped, type RecordedAgent } from '../agent-observation.js';
 import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
@@ -26,6 +27,7 @@ import type { RunMode } from '../launch-context.js';
 import type { RunOrigin } from '../default-workflows.js';
 import { uniqueOutcomes, type WorkOutcome } from '../outcomes.js';
 import { stepDefinitions } from './scope.js';
+import { isIsolated } from './workspace.js';
 import { snapshotPath } from './snapshot.js';
 import { installOwner, runLockPath } from './store.js';
 import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
@@ -44,6 +46,7 @@ const RECORDED_FAILURES = [
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
   ...LIMIT_FAILURES,
   'delivery_failed', 'protected_path',
+  'trial_prepare_failed', 'clone_prepare_failed',
 ] as const;
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 
@@ -117,6 +120,8 @@ export type WorkflowRunRecord = {
   iterations?: number;
   /** The pull requests the run delivered, in the order they first appeared. Public on a public team repo; absent when it delivered none. */
   prs?: string[];
+  /** The run opens a clone, so it stays on the machine that started it, and its steps are measurements in no workflow total. */
+  isolated?: true;
   username: string;
   publishedAt: string;
 };
@@ -135,6 +140,14 @@ export const RECORDS_DIR = 'workflows/runs';
 /** A record's path on the reports branch, keyed by run id. */
 export function recordPath(runId: string): string {
   return `${RECORDS_DIR}/${runId}.json`;
+}
+
+/** The directory on the reports branch that holds every benchmark record, one per benchmark run. */
+export const BENCHMARK_RECORDS_DIR = 'benchmarks/runs';
+
+/** A benchmark record's path on the reports branch, keyed by run id, so writing it again replaces it. */
+export function benchmarkRecordPath(runId: string): string {
+  return `${BENCHMARK_RECORDS_DIR}/${runId}.json`;
 }
 
 function iso(date: Date): string {
@@ -162,6 +175,7 @@ export function buildStartRecord(
     phase: 'start',
     ...(run.runMode ? { runMode: run.runMode } : {}),
     ...(run.origin ? { origin: run.origin } : {}),
+    ...(isIsolated(run) ? { isolated: true as const } : {}),
     // A start record may have no driver yet (a remote driver leases later);
     // the end record always carries the driver that completed the run.
     // Kind only: the workspace is a banned local path and the hostname is
@@ -265,6 +279,7 @@ export function buildEndRecord(
     // bounded history length (their true count is unknowable now).
     iterations: run.settledCount ?? run.settledAttempts.length,
     ...(prs.length ? { prs } : {}),
+    ...(isIsolated(run) ? { isolated: true as const } : {}),
   };
 }
 
@@ -362,6 +377,55 @@ function pendingPath(config: LocalConfig, record: WorkflowRunRecord): string {
   return path.join(pendingDir(config), `${record.run}.${record.phase}.json`);
 }
 
+/** Benchmark records wait apart from run records: they are another kind, which no stats total reads. */
+function pendingBenchmarksDir(config: LocalConfig): string {
+  return path.join(pendingDir(config), 'benchmarks');
+}
+
+/** What the queue reads of a benchmark record: its run. The rest is the benchmark module's, and is published as it is. */
+const QueuedBenchmarkSchema = z.object({ run: z.string().min(1) }).passthrough();
+type QueuedBenchmark = z.infer<typeof QueuedBenchmarkSchema>;
+
+/**
+ * Queues `record`, the benchmark record of run `record.run`, for publication at its own key, when the member's
+ * recording allows publication. True once it is in the queue; false with usage reporting off. Queueing it again
+ * replaces it, so a report that runs twice queues one record.
+ */
+export async function queueBenchmarkRecord(config: LocalConfig, record: QueuedBenchmark, secrets: Record<string, string>): Promise<boolean> {
+  if (!await isRecordingEnabled(config)) return false;
+  const dir = pendingBenchmarksDir(config);
+  await fs.mkdir(dir, { recursive: true });
+  const target = path.join(dir, `${record.run}.json`);
+  await fs.writeFile(`${target}.tmp`, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
+  await fs.rename(`${target}.tmp`, target);
+  return true;
+}
+
+/** The runs whose benchmark record waits in this machine's queue: a copy in the reports checkout may not be on its origin yet. */
+export async function pendingBenchmarkRuns(config: LocalConfig): Promise<Set<string>> {
+  return new Set((await pendingBenchmarks(config)).map(({ record }) => record.run));
+}
+
+/** The queued benchmark records, each with the file that holds it. A file that does not read as one is left for its next write. */
+async function pendingBenchmarks(config: LocalConfig): Promise<Array<{ file: string; text: string; record: QueuedBenchmark }>> {
+  const dir = pendingBenchmarksDir(config);
+  const files = (await fs.readdir(dir).catch((): string[] => [])).filter((file) => file.endsWith('.json')).sort();
+  const read = await Promise.all(files.map(async (file) => {
+    const text = await fs.readFile(path.join(dir, file), 'utf-8').catch(() => undefined);
+    const parsed = text === undefined ? undefined : QueuedBenchmarkSchema.safeParse(parseJson(text));
+    return text !== undefined && parsed?.success ? [{ file: path.join(dir, file), text, record: parsed.data }] : [];
+  }));
+  return read.flat();
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Queue a record for (re)publication; the write is atomic per file. */
 export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflowRunRecord, secrets: Record<string, string>): Promise<void> {
   const dir = pendingDir(config);
@@ -416,6 +480,11 @@ async function dequeue(config: LocalConfig, record: WorkflowRunRecord): Promise<
   }
 }
 
+/** Removes a delivered benchmark record from the queue, unless it was queued again with other content meanwhile. */
+async function dequeueBenchmark({ file, text }: { file: string; text: string }): Promise<void> {
+  if (await fs.readFile(file, 'utf-8').catch(() => undefined) === text) await fs.rm(file, { force: true });
+}
+
 /** Whether a drain delivered the records it took, and when it did not, why they are still queued. */
 export type RecordDelivery = { state: 'published' } | { state: 'pending'; reason: string };
 
@@ -430,7 +499,8 @@ export type RecordDelivery = { state: 'published' } | { state: 'pending'; reason
  */
 export async function publishPendingRecords(config: LocalConfig, options: { run?: string } = {}): Promise<RecordDelivery> {
   const queued = (await pendingRecords(config)).filter((record) => options.run === undefined || record.run === options.run);
-  if (queued.length === 0) return { state: 'published' };
+  const benchmarks = (await pendingBenchmarks(config)).filter(({ record }) => options.run === undefined || record.run === options.run);
+  if (queued.length === 0 && benchmarks.length === 0) return { state: 'published' };
   const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
   const install = (await installOwner(config)).id;
   const outcome = await updateReports(config, async (worktree) => {
@@ -495,17 +565,30 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
       await fs.writeFile(path.join(worktree, statsRel), YAML.stringify(mergedStats), 'utf-8');
       files.push(statsRel);
     }
+    // A benchmark record replaces what its key holds, and folds into no stats total.
+    for (const { record, text } of benchmarks) {
+      const rel = benchmarkRecordPath(record.run);
+      await fs.mkdir(path.join(worktree, path.dirname(rel)), { recursive: true });
+      await fs.writeFile(path.join(worktree, rel), text, 'utf-8');
+      files.push(rel);
+    }
+    const counts = [
+      ...(byRun.size > 0 ? [`${byRun.size} workflow run record${byRun.size === 1 ? '' : 's'}`] : []),
+      ...(benchmarks.length > 0 ? [`${benchmarks.length} benchmark record${benchmarks.length === 1 ? '' : 's'}`] : []),
+    ];
     return {
       files: [...new Set(files)],
-      message: `[teamai] Publish ${byRun.size} workflow run record${byRun.size === 1 ? '' : 's'}`,
+      message: `[teamai] Publish ${counts.join(' and ')}`,
     };
   });
   switch (outcome.status) {
     case 'published':
     case 'already-present': {
       for (const record of queued) await dequeue(config, record);
+      for (const benchmark of benchmarks) await dequeueBenchmark(benchmark);
       const remaining = new Set(await fs.readdir(pendingDir(config)).catch(() => []));
-      return queued.some((record) => remaining.has(path.basename(pendingPath(config, record))))
+      const remainingBenchmarks = new Set((await pendingBenchmarks(config)).map(({ file }) => file));
+      return queued.some((record) => remaining.has(path.basename(pendingPath(config, record)))) || benchmarks.some(({ file }) => remainingBenchmarks.has(file))
         ? { state: 'pending', reason: 'a record of the same run was still queued after they were delivered' }
         : { state: 'published' };
     }
@@ -589,7 +672,8 @@ export function mergeWorkflowStats(
   }
   let { runs = 0, succeeded = 0, failed = 0, totalDurationMs = 0 } = current;
   const fold = (record: WorkflowRunRecord, sign: 1 | -1): void => {
-    if (record.username !== username) return;
+    // An isolated run's steps are measurements, not workflow outcomes, so it is in no workflow total.
+    if (record.username !== username || record.isolated === true) return;
     runs += sign;
     if (record.status === 'succeeded') succeeded += sign;
     if (record.status === 'failed') failed += sign;

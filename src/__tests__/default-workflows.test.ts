@@ -58,14 +58,14 @@ describe('default workflows', () => {
     const shipped = await loadCachedWorkflow(config, 'teamai-share-session');
     expect(shipped).toMatchObject({ source: 'default', relativePath: 'workflows/teamai-share-session.yaml', definition: { name: 'teamai-share-session', invoke: 'ask' } });
     expect(shipped?.teamRevision).toBeUndefined();
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'default']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'default']]);
     expect(await loadCachedWorkflow(config, 'session-close')).toBeNull();
 
     writeWorkflow(config, 'teamai-share-session', workflow('teamai-share-session'));
     await syncWorkflowDefinitions(config);
 
     expect(await loadCachedWorkflow(config, 'teamai-share-session')).toMatchObject({ source: 'team', definition: { steps: [{ command: 'node compile.js' }] } });
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'team']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'team']]);
   });
 
   it('share several learnings with one approval, then share the session with teamai-share-session', async () => {

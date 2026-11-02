@@ -7,7 +7,7 @@ import { EXTRAS_BASE_TOOL, type ToolName } from '../resources/agent-format.js';
 import { AGENT_TOOLS, isToolId, TOOLS, type Support, type ToolDescriptor } from '../tools.js';
 import { DEFAULT_TOOL_PATHS, scopedToolPaths, TeamaiConfigSchema, type ToolId } from '../types.js';
 import { CODEX_TOOL_IDS, normalizeAgentType } from '../utils/tool-names.js';
-import { LAUNCH_ADAPTERS } from '../tool-launch/adapters.js';
+import { LAUNCH_ADAPTERS, type LaunchAdapter } from '../tool-launch/adapters.js';
 import type { LaunchTool } from '../tool-launch/tools.js';
 
 const TOOL_IDS = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId);
@@ -120,6 +120,14 @@ describe('TOOLS features', () => {
 
   it('marks workflows built exactly for the tools whose launch adapter runs steps', () => {
     expect(TOOL_IDS.filter((tool) => builds(TOOLS[tool].features.workflows))).toEqual(TOOL_IDS.filter((tool) => hasProfile(tool, 'step')));
+  });
+
+  it('marks unattended prompts built exactly for the tools whose step adapter knows an unattended mode', () => {
+    const unattended = (tool: ToolId) => {
+      const adapter: LaunchAdapter | undefined = TOOLS[tool].launch === 'none' ? undefined : LAUNCH_ADAPTERS[TOOLS[tool].launch];
+      return adapter?.step !== undefined && adapter.step.unattended !== 'none';
+    };
+    expect(TOOL_IDS.filter((tool) => builds(TOOLS[tool].features.unattended))).toEqual(TOOL_IDS.filter(unattended));
   });
 
   it("marks teamai's own AI calls built exactly for the tools teamai launches", () => {

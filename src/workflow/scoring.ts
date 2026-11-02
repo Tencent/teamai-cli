@@ -1,7 +1,9 @@
 /**
  * Judge work for workflow passes (#1085). Nothing is queued: open work is computed from the run files, the scorers each
  * run pinned, the label store and the attempt store on every `teamai score --next`. The engine never calls this module,
- * and this module never writes a run file, so scoring cannot move a run's counts, tokens, failure or end time.
+ * and this module never writes a run file, so scoring cannot move a run's counts, tokens, failure or end time. A run whose
+ * steps require their scorers waits for their entries to settle before it ends (scoring-entries.ts), and the local
+ * driver judges its own run's entries through `judgeRunEntries`.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -11,7 +13,7 @@ import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import {
-  AttemptStore, isRunAttempt, newAttemptId, rawOutputPath, scoresDir, type AttemptRecord, type JudgeDriver, type JudgeFailureCode, type LeasedAttempt, type LeasedRunAttempt,
+  AttemptStore, isRunAttempt, JUDGE_FAILURES, newAttemptId, rawOutputPath, scoresDir, type AttemptRecord, type JudgeDriver, type JudgeFailureCode, type LeasedAttempt, type LeasedRunAttempt,
   type LeasedSessionAttempt, type RunAttempt, type ScoreRequest, type SessionAttempt, type SucceededAttempt,
 } from '../scorers/attempts.js';
 import { batchesScorers, JudgeAnswerSchema, verdictsOf } from '../scorers/batch.js';
@@ -39,56 +41,13 @@ import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../sco
 import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidencePlan } from './scoring-evidence.js';
+import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
-import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
 import { stepDefinitions } from './scope.js';
-import { agentPassOf, agentSucceeded } from './step-state.js';
 import { parseStepPath } from './step-path.js';
 import { installOwner, isRunId, readRun, runsDir } from './store.js';
-import type { InlineWorkflow, RunState, WorkflowDefinition, WorkflowEnvelope, WorkflowStep } from './types.js';
+import { isWorkflowFile, workflowRunBy, type InlineWorkflow, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowStep } from './types.js';
 
-/** A succeeded pass of a step that lists scorers this run pinned. */
-interface ScorablePass {
-  subject: RunSubject;
-  scorers: string[];
-}
-
-/** Whether this install settled `pass`: its stamp, or, for a pass settled before stamps, a run no other install handed over. */
-export function settledHere(run: RunState, pass: RunPass, install: string): boolean {
-  return pass.installId === undefined ? run.publication === undefined : pass.installId === install;
-}
-
-/**
- * The passes a judge can judge: passes of prompt and workflow steps whose agent succeeded, delivering or not, and of a
- * `for_each` step only its items.
- */
-function judgeablePasses(run: RunState): Array<{ pass: RunPass; definition: WorkflowStep }> {
-  const definitionOf = stepDefinitions(run);
-  return runPasses(run, agentPassOf).flatMap((pass) => {
-    const definition: WorkflowStep | undefined = definitionOf(pass.step);
-    if (!agentSucceeded(pass) || !definition) return [];
-    if (definition.forEach && parseStepPath(pass.step).at(-1)?.index === undefined) return [];
-    return [{ pass, definition }];
-  });
-}
-
-/**
- * The passes of `run` this install may judge: judgeable passes of steps that list a scorer the run pinned. A prompt pass
- * belongs to the install that settled it; a workflow pass to the install that settled its first child that has a
- * stamp. Sampling is left to the caller.
- */
-export function scoredPasses(run: RunState, install: string): ScorablePass[] {
-  const all = runPasses(run, agentPassOf);
-  const pinned = run.scorers ?? {};
-  return judgeablePasses(run).flatMap(({ pass, definition }) => {
-    const scorers = (definition.scorers?.names ?? []).filter((name) => Object.hasOwn(pinned, name));
-    if (scorers.length === 0) return [];
-    const owner = definition.workflow === undefined ? pass
-      : firstSettled(passesWithin(run, all, pass.step, pass.pass).filter((child) => child.installId !== undefined));
-    if (!settledHere(run, owner ?? pass, install)) return [];
-    return [{ subject: { runId: run.id, step: pass.step, pass: pass.pass }, scorers }];
-  });
-}
 
 /** What a driver says when it asks for judge work. */
 export interface JudgeRequest {
@@ -135,7 +94,9 @@ const SubmitPayloadSchema = z.object({
 type SubmitPayload = z.infer<typeof SubmitPayloadSchema>;
 export type JudgeSubmission =
   | { driver: JudgeDriver; outcome: 'success'; answer: NonNullable<SubmitPayload['answer']>; judge?: SubmitPayload['judge'] }
-  | { driver: JudgeDriver; outcome: 'released' | 'failed'; judge?: SubmitPayload['judge'] };
+  | { driver: JudgeDriver; outcome: 'released'; judge?: SubmitPayload['judge'] }
+  /** `code` is the local judge's own failure, set in process only: the submitted JSON has no field for it. */
+  | { driver: JudgeDriver; outcome: 'failed'; code?: JudgeFailureCode; judge?: SubmitPayload['judge'] };
 
 function issueText(issues: z.ZodIssue[]): string {
   const issue = issues[0];
@@ -192,24 +153,18 @@ async function recentRuns(config: LocalConfig, now: string, kept: ReadonlySet<st
     .filter((run) => run.status === 'running' || kept.has(run.id) || Date.parse(run.updatedAt) + ENTRY_WINDOW_MS > Date.parse(now));
 }
 
-function sameSubject(label: ScoreLabel, scorer: string, sourceHash: string, subject: RunSubject): boolean {
-  return label.source === 'workflow' && label.scorer === scorer && label.rubric.sourceHash === sourceHash
-    && label.subject.runId === subject.runId && label.subject.step === subject.step && label.subject.pass === subject.pass;
-}
-
 /** `defaults.scorers.batch` in effect at a step: that of the workflow file it is in, else of the one around that. */
 function workflowBatch(run: RunState, step: string): boolean | undefined {
   let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
   let batch = run.definition.defaults?.scorers?.batch;
-  for (const { id } of parseStepPath(step).slice(0, -1)) {
+  let prefix = '';
+  for (const segment of step.split('.').slice(0, -1)) {
+    const id = parseStepPath(segment)[0]?.id ?? segment;
     const parent: WorkflowStep | undefined = workflow?.steps.find((candidate) => candidate.id === id);
-    if (typeof parent?.workflow === 'string') {
-      const named: WorkflowDefinition | undefined = run.workflows?.[parent.workflow];
-      batch = named?.defaults?.scorers?.batch ?? batch;
-      workflow = named;
-    } else {
-      workflow = parent?.workflow;
-    }
+    workflow = parent && workflowRunBy(run, parent, prefix);
+    // A workflow file, named or admitted, sets its own; an inline workflow keeps the one around it.
+    if (workflow && isWorkflowFile(workflow)) batch = workflow.defaults?.scorers?.batch ?? batch;
+    prefix = `${prefix}${segment}.`;
   }
   return batch;
 }
@@ -241,12 +196,17 @@ async function scoreEntries(config: LocalConfig, now: string, teamBatch: boolean
     const requested = requests.filter((request) => request.subject.runId === run.id)
       .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt) || left.scorer.localeCompare(right.scorer))
       .flatMap((request) => entryOf(request.scorer, request.pin, request.subject, request));
-    const sampled = scoredPasses(run, install).flatMap(({ subject, scorers }) => scorers.flatMap((scorer) => {
-      const pin = run.scorers?.[scorer];
-      const definition = pin && pinnedDefinition(scorer, pin);
-      if (!pin || !definition || !isSampled(scorer, subject, definition.samplingRate)) return [];
-      return entryOf(scorer, pin, subject);
-    }));
+    const definitionOf = stepDefinitions(run);
+    // Every pass of a step whose scorers have `sampling: all` is judged, until its steps end and freeze the verdicts.
+    const sampled = scoredPasses(run, install).flatMap(({ subject, scorers }) => {
+      const all = definitionOf(subject.step)?.scorers?.sampling === 'all';
+      return all && verdictsFrozen(run) ? [] : scorers.flatMap((scorer) => {
+        const pin = run.scorers?.[scorer];
+        const definition = pin && pinnedDefinition(scorer, pin);
+        if (!pin || !definition || !(all || isSampled(scorer, subject, definition.samplingRate))) return [];
+        return entryOf(scorer, pin, subject);
+      });
+    });
     return [...sampled.filter((entry) => !requested.some((request) => request.id === entry.id)), ...requested];
   });
 }
@@ -911,6 +871,10 @@ async function settleJudgeLease<T extends { kind: string }>(
       return settle(leased);
     }
     const { run } = leased;
+    if (verdictsFrozen(run) && leased.members.some(({ attempt }) => stepDefinitions(run)(attempt.subject.step)?.scorers?.sampling === 'all')) {
+      for (const { attempt } of leased.members) await AttemptStore.write(config, { ...attempt, status: 'released', settledAt: now });
+      return error('entry_closed', `Run ${run.id} froze this entry's verdict when its steps ended, so the answer was not recorded.`);
+    }
     for (const { attempt } of leased.members) {
       const requestedAt = (await AttemptStore.request(config, attempt.entry))?.requestedAt;
       const state = entryState({ labels: [], attempts: await AttemptStore.ofEntry(config, attempt.entry), subjectChangedAt: run.updatedAt, requestedAt, now });
@@ -1076,7 +1040,7 @@ async function returnJudgeLease(config: LocalConfig, ref: string, submission: Ex
       const settled = { settledAt: now, ...usageOnHead(submission, members, attempt) };
       const next: AttemptRecord = submission.outcome === 'released'
         ? { ...attempt, ...settled, status: 'released' }
-        : { ...attempt, ...settled, status: 'failed', code: 'judge_failed' };
+        : { ...attempt, ...settled, status: 'failed', code: submission.code ?? 'judge_failed' };
       await AttemptStore.write(config, next);
     }
     return { kind: 'returned', status: submission.outcome };
@@ -1190,7 +1154,7 @@ async function closeSessionLease(config: LocalConfig, members: JudgedMembers<Ses
  */
 export async function judgeLease(
   config: LocalConfig, ref: string, driver: JudgeDriver,
-  { clock = () => new Date().toISOString(), publish = true, group }: { clock?: () => string; publish?: boolean; group?: string } = {},
+  { clock = () => new Date().toISOString(), publish = true, group, signal }: { clock?: () => string; publish?: boolean; group?: string; signal?: AbortSignal } = {},
 ): Promise<SettledLease> {
   const key = parseLeaseRef(ref);
   const attempt = key && await AttemptStore.get(config, key.entry, key.attempt);
@@ -1219,7 +1183,7 @@ export async function judgeLease(
     const refused = await claimSessionJudge(config, lease.members, ref, clock());
     if (refused) return refused;
   }
-  const result = await runLocalJudge({ tool: attempt.judge.tool, model: attempt.judge.model, evidence, schema: answerSchema(rubrics), isolation, ...(group !== undefined ? { group } : {}) });
+  const result = await runLocalJudge({ tool: attempt.judge.tool, model: attempt.judge.model, evidence, schema: answerSchema(rubrics), isolation, ...(group !== undefined ? { group } : {}), ...(signal ? { signal } : {}) });
   const verdicts = result.ok ? verdictsOf(members, (member) => member.definition, result.answer) : undefined;
   if (!result.ok || !verdicts?.ok) {
     const spent = result.ok ? result.judge.usage : result.usage;
@@ -1261,6 +1225,91 @@ export async function runJudgeLease(config: LocalConfig, ref: string, value: unk
   const parsed = z.object({ driver: DriverSchema }).safeParse(value);
   if (!parsed.success) return error('invalid_json', issueText(parsed.error.issues));
   return settledAnswer(config, ref, await judgeLease(config, ref, parsed.data.driver, options));
+}
+
+/** Why this install cannot judge at all, or undefined. */
+async function scoringOff(config: LocalConfig): Promise<string | undefined> {
+  const unavailable = scoringUnavailable(config);
+  if (unavailable) return unavailable;
+  const scoring = await scopeScoring(config);
+  return scoring.ok ? undefined : scoring.reason;
+}
+
+/**
+ * Why this machine cannot judge with `scorers`, or undefined: scoring is off in this scope, the team's scoring settings
+ * cannot be read, no judge tool is on PATH, or no judge tool here runs a scorer's model.
+ */
+export async function judgeUnavailable(config: LocalConfig, scorers: Record<string, PinnedScorer>): Promise<string | undefined> {
+  const off = await scoringOff(config);
+  if (off) return off;
+  const tools = installedJudgeTools([]);
+  if (tools.length === 0) return 'No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy.';
+  const aliases = await loadModelAliases(config);
+  for (const [name, pin] of Object.entries(scorers)) {
+    const definition = pinnedDefinition(name, pin);
+    if (!definition) return `This teamai cannot read scorer ${name}. Update teamai.`;
+    const chosen = chooseJudgeModel(aliases, definition, tools);
+    if (!chosen.ok) return chosen.message;
+  }
+  return undefined;
+}
+
+/** What one round of the local judge loop did. */
+export type RunJudging =
+  | { kind: 'settled'; count: number }
+  /** Entries stay open that no judge on this machine can settle; the message says why and what to do. */
+  | { kind: 'skipped'; message: string }
+  /** Another process holds the attempts lock. */
+  | { kind: 'busy' }
+  /** `signal` stopped the judge: its lease and the entries left open settle when the run's timeout passes. */
+  | { kind: 'stopped' };
+
+/**
+ * The local driver's judge loop: judges the open entries of `runId`'s `sampling: all` scorers with this machine's judge
+ * tools, leasing only those entries, as `scoreOnDemand` judges a pass. A judge that fails is submitted failed at once, so
+ * its entry settles now instead of when its lease lapses. Any other driver may still judge them with
+ * `teamai score --next`.
+ */
+export async function judgeRunEntries(config: LocalConfig, runId: string, cwd: string, signal?: AbortSignal): Promise<RunJudging> {
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') return { kind: 'settled', count: 0 };
+  const open = (await verdictEntries(config, run, new Date().toISOString())).filter(isUnsettled);
+  if (open.length === 0) return { kind: 'settled', count: 0 };
+  const skipped = (reason: string): RunJudging => ({
+    kind: 'skipped',
+    message: `${open.length} judge entries of run ${runId} need a judge this machine cannot run (${reason}). Judge them with teamai score --next on an install that can, or they settle unscored when the run's timeout passes.`,
+  });
+  const off = await scoringOff(config);
+  if (off) return skipped(off);
+  const [tool, ...tools] = installedJudgeTools(open.flatMap(({ subject }) => evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? [])));
+  if (!tool) return skipped('no judge tool is on PATH');
+  const driver = driverIdentity('local', cwd);
+  const entries = open.map(({ scorer, subject }) => entryIdOf(scorer, subject));
+  let count = 0;
+  for (;;) {
+    if (signal?.aborted) return { kind: 'stopped' };
+    const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'verified', tools: [tool, ...tools] }, running: [], entries: { source: 'workflow', ids: entries } }, new Date().toISOString());
+    if (taken.kind === 'busy') return taken;
+    count += taken.closed.length;
+    if (taken.kind === 'idle') {
+      if (count > 0) return { kind: 'settled', count };
+      return skipped(taken.skipped.map((entry) => entry.message).join(' ') || (taken.leased > 0 ? 'another driver holds their judge leases' : 'no judge here meets the isolation they need'));
+    }
+    const judged = await judgeLease(config, taken.lease.ref, driver, signal ? { signal } : {});
+    // A judge stopped by the signal did not fail: its lease is left for the timeout.
+    if (signal?.aborted) return { kind: 'stopped' };
+    if (!('error' in judged)) {
+      count += judged.attempts.length;
+      continue;
+    }
+    if (judged.error.code === 'busy') return { kind: 'busy' };
+    const { subject } = taken.lease;
+    log.warn(`The judge of ${'step' in subject ? subject.step : subject.sessionId} failed, so its entry settles unscored: ${judged.error.message}`);
+    const code = JUDGE_FAILURES.find((failure) => failure === judged.error.code);
+    const failed = await submitJudgeLease(config, taken.lease.ref, { driver, outcome: 'failed', ...(code ? { code } : {}) });
+    if ('error' in failed) return failed.error.code === 'busy' ? { kind: 'busy' } : skipped(failed.error.message);
+    count += 1;
+  }
 }
 
 /** What `teamai score --run <id> --step <path> [--pass <n>] --scorer <name>… [--queue] [--batch]` asks for. */

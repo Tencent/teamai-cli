@@ -101,7 +101,7 @@ sharing:
 .teamai/mcp/mcp.yaml
 ```
 
-`teamai push` sends every distributed resource type — skills, rules, agents, docs, env, hooks, mcp, models, claudemd, learnings, wiki, workflows, prompts, and scorers — with `--project` and `--role` namespace placement.
+`teamai push` sends every distributed resource type — skills, rules, agents, docs, env, hooks, mcp, models, claudemd, learnings, wiki, workflows, prompts, scorers, and benchmarks — with `--project` and `--role` namespace placement.
 
 ### Git permissions
 
@@ -154,6 +154,8 @@ A role is a member's job, such as frontend. Someone who sets that role receives 
 A project is the service they are working on. After this directory is set to that project, it also receives the resources the project lists.
 
 `knowledge` covers rules and shared instructions (`claudemd/`). A project can also declare learnings, env, hooks, mcp, models, docs, and wiki on its own.
+
+Benchmark suites follow `resources.benchmarks`. `benchmarks/<suite>/` goes to everyone. Once a role or project lists `<ns>`, `benchmarks/<ns>/<suite>/` goes only to members who have `<ns>` active, and `benchmarks/<ns>/` holds suites, not a `suite.yaml` of its own.
 
 ```yaml
 # manifest/roles.yaml

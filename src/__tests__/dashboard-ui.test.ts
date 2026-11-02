@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getDashboardHtml } from '../dashboard-html.js';
 import { renderDashboardReport } from '../viz-render.js';
 import { dashboardMessages } from '../dashboard/locales.js';
+import { benchmarksClient } from '../dashboard/benchmarks-client.js';
 import { scorersClient } from '../dashboard/scorers-client.js';
 import { summarizeSessionCosts, type DailySessionSnapshot } from '../session-trends.js';
 import type { VizData } from '../viz.js';
@@ -100,6 +101,17 @@ describe('unified dashboard', () => {
     const headings = [...scorersClient.matchAll(/\[((?:'[A-Z][A-Z ,]+',?)+)\]/g)].flatMap((match) => [...(match[1] ?? '').matchAll(/'([^']+)'/g)].map((heading) => heading[1] ?? ''));
     const all = [...new Set([...literals, ...dimensions, ...headings])];
     expect(all.length).toBeGreaterThan(60);
+    expect(all.filter((text) => !Object.hasOwn(dashboardMessages, text))).toEqual([]);
+  });
+
+  it('adds a Benchmarks page that reads /api/benchmarks, whose every label has a zh-CN translation (#1180)', () => {
+    const html = getDashboardHtml(3721);
+    expect(html).toContain("benchmarks: 'Benchmarks'");
+    expect(html).toContain("apiQuery('/api/benchmarks',params)");
+    const literals = [...benchmarksClient.matchAll(/\b(?:label|t)\('((?:[^'\\]|\\.)+)'\)/g)].map((match) => (match[1] ?? '').replace(/\\'/g, "'"));
+    const headings = [...benchmarksClient.matchAll(/\[((?:'[A-Z][A-Z ,×]+',?)+)\]/g)].flatMap((match) => [...(match[1] ?? '').matchAll(/'([^']+)'/g)].map((heading) => heading[1] ?? ''));
+    const all = [...new Set([...literals, ...headings])];
+    expect(all.length).toBeGreaterThan(40);
     expect(all.filter((text) => !Object.hasOwn(dashboardMessages, text))).toEqual([]);
   });
 

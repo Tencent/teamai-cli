@@ -34,8 +34,11 @@ export { ceilingOf, isLeft, listOf, localReason, stepNeeds } from './preflight.j
 /** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
 export type SkillCall =
   | { kind: 'describe'; name: string; tool?: ToolId }
-  /** `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`. */
-  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: ToolId }
+  /**
+   * `judge: false`: `--no-judge`, which leaves the scored steps unjudged here. `hitl`: `--hitl`, or `--auto-approve`.
+   * `timeoutMs`: `--timeout`, which bounds the run as the workflow's own timeout does.
+   */
+  | { kind: 'start'; name: string; answers: { parallel?: number; confirmed: boolean; hitl?: HitlMode; judge?: false }; inputs: unknown; tool?: ToolId; timeoutMs?: number }
   /**
    * `resume --driver skill`: this session drives a run another machine published; `claim` which runs it takes from
    * teamai-reports, `any` with `--claim`, `offered` for the run `--next` picked. `confirmed`: `--confirmed`, the agent's
@@ -268,7 +271,7 @@ export function parseSkillResume(options: unknown, env: NodeJS.ProcessEnv): Omit
  */
 export function parseSkillCall(
   raw:
-    | { kind: 'start'; name: string; options: unknown }
+    | { kind: 'start'; name: string; options: unknown; timeoutMs?: number }
     | { kind: 'next' | 'resume' | 'report'; run: string; options: unknown }
     | { kind: 'respond'; run: string; step: string; choice: string; options: unknown },
   env: NodeJS.ProcessEnv,
@@ -286,7 +289,7 @@ export function parseSkillCall(
     const hitl = hitlOf(options.data, env);
     if ('error' in hitl) return hitl;
     return {
-      kind: 'start', name: raw.name, inputs, ...tool,
+      kind: 'start', name: raw.name, inputs, ...tool, ...(raw.timeoutMs !== undefined ? { timeoutMs: raw.timeoutMs } : {}),
       answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...hitl, ...(judge === false ? { judge } : {}) },
     };
   }
@@ -403,6 +406,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const planned = taken.start;
   const started = await context.client.start(description.name, {
     ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
+    ...(call.timeoutMs !== undefined ? { timeout: call.timeoutMs } : {}),
   });
   if ('error' in started) {
     // No literal for a refusal no other answer fixes: a new describe would only lead back to it.

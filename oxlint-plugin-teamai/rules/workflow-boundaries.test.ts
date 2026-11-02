@@ -44,3 +44,7 @@ rule.valid('follows a shared TSX dependency without crossing the local driver', 
   'src/workflow/attempt-marker.ts': `export { guide as attempt } from '../guide.js';`,
   'src/guide.tsx': `export const guide = <span />;`,
 } });
+rule.invalid('rejects a workflow module import of a benchmark module', `import { plan } from '../benchmark/plan.js';`, undefined, { filename: 'src/workflow/engine.ts' });
+rule.valid('allows the engine to reach the place entry', `import { place } from './place/place.js';`, { filename: 'src/workflow/engine.ts' });
+rule.invalid('rejects a benchmark entry from a module it does not name', `import { startBenchmark } from './benchmark/start.js';`, undefined, { filename: 'src/pull.ts' });
+rule.valid('allows a benchmark entry from the module it names', `import { startBenchmark } from './benchmark/start.js';`, { filename: 'src/workflow-commands.ts' });

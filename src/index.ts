@@ -815,7 +815,9 @@ workflowCmd
   .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs. With --driver skill: only default=<tool>, the tool this coding session works in, which judges its scored steps and which its steps\' models resolve for when teamai installs agents for it. Pass it when the describe reply says the session names no tool')
   .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person')
   .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.')
-  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean }) => {
+  .option('--timeout <duration>', 'The longest the run may take, such as 30m or 2h: its steps stop and it fails with timeout once the shorter of this and the workflow\'s own timeout passes. Its finally steps still run after.')
+  .option('--sandbox', 'With --driver local, declare this machine a sandbox for this process: a disposable host such as a CI runner or container, where benchmark trials and steps that need sandbox isolation may run. workflows.sandbox in config declares it for every process.')
+  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean; sandbox?: boolean; timeout?: string }) => {
     const { workflowStart } = await import('./workflow-commands.js');
     await workflowStart(name, cmdOpts);
   });
@@ -823,10 +825,10 @@ workflowCmd
 workflowCmd
   .command('next <run>')
   .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
-  .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically')
+  .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team assets and runs setup, and answers the lease with cwd, where the driver runs the step. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true. While a scorer with sampling: all still judges, the run waits for it: wait carries judging, the number of judge entries still open, which teamai score --next on this install judges.')
   .option('--attempt <attempt>', 'With --prepare: prepare this attempt, which an earlier next leased this driver, instead of taking a new lease. wrong_attempt when the run no longer leases it to the driver. With --driver skill: the attempt of a place action, with --adopt')
   .option('--adopt <dir>', 'With --prepare --attempt: prepare the attempt in <dir>, a place the host made: a clean worktree of this repository on the lease\'s workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it')
-  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation. An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
+  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt\'s turn at the lease limits). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
   .option('--driver <kind>', 'skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next')
   .option('--wait', 'With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.')
   .option('--takeover', 'With --driver skill: drive the run from this coding session instead of the one that drives it. Run it only when the person agrees, after an orchestrator_active answer')
@@ -841,7 +843,7 @@ workflowCmd
 workflowCmd
   .command('report <run>')
   .description('Report the outcome of a leased step. Prints a JSON envelope.')
-  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver')
+  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver. A prompt step\'s report also sends tool, the tool the driver launched, and durationMs (milliseconds around the tool launch) and cost ({"amount":0.12,"unit":"USD"}, only as the tool stated it) when known, and limit (timeout, budget or max_turns) when a limit in its lease\'s limits stopped the tool.')
   .option('--driver <kind>', 'skill: report an attempt of a run the current coding session drives, as its turn printed the command')
   .option('--attempt <id>', 'With --driver skill: the attempt to report')
   .option('--model-unavailable', 'With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable')
@@ -864,7 +866,7 @@ workflowCmd
 
 workflowCmd
   .command('retry <run> <step>')
-  .description('Retry a leased or stopped step, or a HITL request to answer it again, with a new pass and revision. A failed pull request delivery is retried in the same pass, without running the step again. Reopen its dependent steps and a settled run; keep earlier passes. After reopening, run resume or let your driver poll next. Prints one JSON envelope.')
+  .description('Retry a leased or stopped step, or a HITL request to answer it again, with a new pass and revision. A failed pull request delivery is retried in the same pass, without running the step again. Reopen its dependent steps and a settled run; keep earlier passes. After reopening, run resume or let your driver poll next. An isolated run, such as a benchmark run, cannot be retried; start a new one. Prints one JSON envelope.')
   .action(async (run: string, step: string) => {
     const { workflowRetry } = await import('./workflow-commands.js');
     await workflowRetry(run, step);
@@ -882,14 +884,15 @@ workflowCmd
   .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default: with --driver local in this process, with --driver skill for this run. A required approval still goes to the person')
   .option('--claim', 'Take the published run over from the install that owns it, replacing this machine\'s copy and releasing its leases')
   .option('--confirmed', 'The person agreed to continue this run, as the confirm_needed answer asked. From an agent session, a run of an invoke: ask workflow continues only with it, with any driver; teamai takes the agent\'s word for it. In an unattended run (TEAMAI_MODE=unattended or CI) an agent cannot continue a run of an invoke: ask workflow, with or without it')
-  .action(async (run: string | undefined, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; next?: boolean }) => {
+  .option('--sandbox', 'Declare this machine a sandbox for this process: a disposable host such as a CI runner or container, where benchmark trials and steps that need sandbox isolation may run. workflows.sandbox in config declares it for every process.')
+  .action(async (run: string | undefined, options: { driver?: string; parallel?: string; hitl?: string; judge?: boolean; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; next?: boolean; sandbox?: boolean }) => {
     const { workflowResume } = await import('./workflow-commands.js');
     await workflowResume(run, options);
   });
 
 workflowCmd
   .command('publish <run>')
-  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run published from a checkout of its business repository (origin) is also offered: the first workflow resume --next in a checkout of that repository claims it, and any claim, or the owner's own workflow resume, takes the offer away, so two runners never take one run. Publish once you stop driving the run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses a run with records not yet on teamai-reports, or with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
+  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run published from a checkout of its business repository (origin) is also offered: the first workflow resume --next in a checkout of that repository claims it, and any claim, or the owner's own workflow resume, takes the offer away, so two runners never take one run. Publish once you stop driving the run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses an isolated run, such as a benchmark run, a run with records not yet on teamai-reports, or one with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
   .option('--sessions', "Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine")
   .action(async (run: string, options: { sessions?: boolean }) => {
     const { workflowPublish } = await import('./workflow-commands.js');
@@ -902,6 +905,57 @@ workflowCmd
   .action(async (run: string, step?: string) => {
     const { workflowCancel } = await import('./workflow-commands.js');
     await workflowCancel(run, step);
+  });
+
+const benchmarkCmd = program
+  .command('benchmark')
+  .description('Run a benchmark suite, and the commands its run\'s steps run. run starts the workflow teamai-benchmark, teamai\'s default or the team\'s file of that name, whose plan, check and report steps run the other commands; try needs no run.');
+
+benchmarkCmd
+  .command('run <suite>')
+  .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team"} ("member" with --member-aliases) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases only when it declares that input. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or its report failed or was cancelled; a record still pending publication never changes the exit code.')
+  .option('--driver <kind>', 'The driver that runs it: local (default), or skill')
+  .option('--sandbox', 'With --driver local, declare this machine a sandbox for this process, where the trials, which need strict sandbox isolation, may run. workflows.sandbox in config declares it for every process.')
+  .option('--member-aliases', 'Resolve each arm\'s model alias with your own ~/.teamai/models/aliases.yaml over the team\'s models/aliases.yaml, which alone resolves them otherwise: starts the workflow with input aliases member instead of team. The results table and the record show member as the source of a model your file decided.')
+  .option('--fail-on-regression', 'Also exit 1 when an arm\'s pass rate dropped by more than chance against the newest earlier succeeded run of the suite published on teamai-reports with the same tasks and arms, trials paired by task and repetition as the dashboard\'s Compare pairs them. With no such run, print a notice and leave the exit code alone.')
+  .action(async (suite: string, cmdOpts: { driver?: string; sandbox?: boolean; memberAliases?: boolean; failOnRegression?: boolean }) => {
+    const { benchmarkRun } = await import('./workflow-commands.js');
+    await benchmarkRun(suite, cmdOpts);
+  });
+
+benchmarkCmd
+  .command('try <task-file>')
+  .description('Try one task file before it joins a suite, in a checkout of the suite\'s repo: setup and the check run at startingCommit, where the check must fail, and at source.fix, if set, with the protected paths as startingCommit has them, where it must pass. Reads the task file, the suite.yaml two directories up from it and the files its check.add entries name in that suite directory, needs no teamai init, and creates no run. Exits non-zero naming the commit and the cause when either goes the wrong way.')
+  .action(async (file: string) => {
+    const { benchmarkTry } = await import('./workflow-commands.js');
+    await benchmarkTry(file);
+  });
+
+benchmarkCmd
+  .command('plan <suite>')
+  .description('The first step of a benchmark run: freeze the team revision this checkout last pulled, fetch every commit a trial reads into the commit cache, and print {"definition":{"definition","workflows","scorers","teamRevision"},"plan"}, the workflow the run\'s trials step runs and the plan its check and report steps read. Refuses a run with no timeout, or a longer one than the suite\'s: start it with workflow start --timeout.')
+  .option('--aliases <whose>', 'Whose aliases resolve the arms\' model aliases: team (default), the team\'s models/aliases.yaml, or member, your ~/.teamai/models/aliases.yaml over the team\'s')
+  .action(async (suite: string, cmdOpts: { aliases?: string }) => {
+    const { benchmarkPlan } = await import('./workflow-commands.js');
+    await benchmarkPlan(suite, cmdOpts);
+  });
+
+benchmarkCmd
+  .command('report')
+  .description('The finally step of a benchmark run: classify the trials of the plan the run measured, write the run\'s benchmark record into its run directory and, when usage reporting allows, publish it to teamai-reports, and print {"text","table"}. The text ends with record: pending while the record waits for publication. Refuses a run whose plan this teamai cannot read.')
+  .action(async () => {
+    const { benchmarkReport } = await import('./workflow-commands.js');
+    await benchmarkReport();
+  });
+
+benchmarkCmd
+  .command('check')
+  .description('Run the check of the benchmark step this process runs as, in its clone: the files check.add names, then the task\'s check. Prints {"result":"passed"|"failed"|"could_not_run"} and exits 0 once the check ran; exits 1 when it could not set the check up. Refuses a run whose plan this teamai cannot read.')
+  .option('--baseline', 'The check of a task\'s baseline, on its starting commit')
+  .option('--trial', 'The check of a trial, after its prompt, with the protected paths put back as the starting commit has them first')
+  .action(async (cmdOpts: { baseline?: boolean; trial?: boolean }) => {
+    const { benchmarkCheck } = await import('./workflow-commands.js');
+    await benchmarkCheck(cmdOpts);
   });
 
 program

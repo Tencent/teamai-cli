@@ -16,15 +16,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { RunOriginSchema, type RunOrigin } from '../default-workflows.js';
+import { readRecordedAgent } from '../agent-observation.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
 import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
+import { benchmarkRecordFile, BenchmarkRunRecordSchema } from '../benchmark/result.js';
+import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmark/table.js';
 import { locateStep } from '../workflow/engine.js';
-import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
+import { benchmarkRecordPath, buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { PublishedRuns, type PublishedRun, type Taker } from '../workflow-published-runs.js';
-import { installOwner, isRunId, readRun, readRuns } from '../workflow/store.js';
+import { installOwner, isRunId, readRun, readRuns, runsDir } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { StepHitl, RunState } from '../workflow/types.js';
 import { HttpError } from './http.js';
@@ -39,7 +42,7 @@ const RUN_LIMIT = 50;
 type ReadRecord = Pick<WorkflowRunRecord,
   'run' | 'workflow' | 'alias' | 'sourceHash' | 'teamRevision' | 'origin' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
   & { steps?: StepEntry[]; prs?: unknown[] };
-type StepEntry = Pick<NonNullable<WorkflowRunRecord['steps']>[number], 'step' | 'pass' | 'outcome' | 'tokens'>
+type StepEntry = Pick<NonNullable<WorkflowRunRecord['steps']>[number], 'step' | 'pass' | 'outcome' | 'tokens' | 'agent'>
   & { answer?: { choice: string; channel: string }; outcomes?: unknown[] };
 
 const TokensSchema: z.ZodType<TokenUsage> = z.object({ input: z.number().optional(), output: z.number().optional(), cachedInput: z.number().optional() });
@@ -73,6 +76,7 @@ const RecordSchema: z.ZodType<ReadRecord> = z.object({
     pass: z.number(),
     outcome: z.enum(['success', 'failed', 'timeout', 'cancelled']).optional(),
     tokens: TokensSchema.optional(),
+    agent: z.unknown().transform(readRecordedAgent).optional(),
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
     outcomes: z.array(z.unknown()).optional().catch(undefined),
   })).optional(),
@@ -138,7 +142,8 @@ interface StepRow {
 /** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
 type ScoringTotal = Awaited<ReturnType<typeof LabelStore.scoringTotal>>;
 
-export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal };
+/** `benchmark` holds an ended benchmark run's tables, as the CLI prints them. */
+export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal; benchmark?: BenchmarkCells };
 
 /** A run handed over on teamai-reports: offered while `offer` is set, else held by its owner, who claimed it or resumed it. `isMine`: this install owns it. */
 export type HandoffRow = PublishedRun & { isMine: boolean };
@@ -275,9 +280,23 @@ export async function listHandoffs(config: LocalConfig): Promise<HandoffRow[]> {
   return runs.map((run) => ({ ...run, isMine: run.owner.id === self.id }));
 }
 
-function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): RunDetail {
+/**
+ * The tables of the benchmark record in `file`, which a run has once its `teamai benchmark report` wrote it. A record
+ * this version cannot read leaves the run shown, without its tables.
+ */
+async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> {
+  try {
+    const parsed = BenchmarkRunRecordSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+    return parsed.success ? { benchmark: benchmarkCells(benchmarkTable({ benchmark: parsed.data })) } : {};
+  } catch {
+    return {};
+  }
+}
+
+function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
   const live = new Map(run.steps.map((state) => [`${state.id}#${state.pass ?? 1}`, state]));
-  const steps = (localRecord(run).steps ?? []).map((entry) => {
+  const record = localRecord(run);
+  const steps = (record.steps ?? []).map((entry) => {
     const state = live.get(`${entry.step}#${entry.pass}`);
     const hitl = state?.status === 'waiting' ? locateStep(run, state.id)?.step.hitl : undefined;
     const gate = hitl ? { kind: hitl.kind, options: hitl.options, required: hitl.required } : undefined;
@@ -294,12 +313,13 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
   if (source === 'local') {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') return undefined;
-    const [records, scores, scoring] = await Promise.all([
+    const [records, scores, scoring, benchmark] = await Promise.all([
       runRecordStates(config, run.status === 'running' ? [] : [run]),
       LabelStore.ofRuns(config, [runId], { published: false }),
       LabelStore.scoringTotal(config, runId, 'local'),
+      benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
     ]);
-    return localDetail(run, localRow(run, records), scores.get(runId), scoring);
+    return { ...localDetail(run, localRow(run, records), scores.get(runId), scoring), ...benchmark };
   }
   if (usesBranchWorktree(config)) {
     // The history refreshes the checkout; a detail only checks it is this repository's.
@@ -308,15 +328,17 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
   }
   const record = await readRecord(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`));
   if (!record) return undefined;
-  const [scores, scoring] = await Promise.all([
+  const [scores, scoring, benchmark] = await Promise.all([
     LabelStore.ofRuns(config, [runId], { published: true }),
     LabelStore.scoringTotal(config, runId, 'published'),
+    benchmarkOf(path.join(getReportsDir(config), benchmarkRecordPath(runId))),
   ]);
   const passes = scores.get(runId);
   return {
     run: reportedRow(record),
     steps: (record.steps ?? []).map((entry) => stepRow(entry, entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped', passes)),
     scoring,
+    ...benchmark,
   };
 }
 

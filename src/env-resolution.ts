@@ -422,9 +422,11 @@ export interface WorkflowEnv {
 
 /**
  * The team env a workflow step can be given on this machine, and what masking hides. A key nothing here declares takes
- * its value from the environment, as a CI job's token does.
+ * its value from the environment, as a CI job's token does. The environment is read once, so a value that changes
+ * while the team env resolves is both given and masked as it was read.
  */
-export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
+export async function resolveWorkflowEnv(localConfig: LocalConfig, live: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
+  const env = { ...live };
   const values = new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
   if (!resolvesTeamEnv(localConfig)) {
     return { facts: { declared: new Set(), secrets: new Set(), present: new Set(values.keys()) }, values, secrets: collectEnvSecrets(env) };

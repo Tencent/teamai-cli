@@ -92,7 +92,7 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
-`samplingRate` 决定评判哪些成功的执行轮次，在每台机器上结果相同。`workflow next` 从不分发评审任务。`--lease <ref>` 在本机用租约选定的工具、以[受限配置](#隔离)评判，并像任意 driver 的答案一样结算租约。评审失败时租约保持打开。
+`samplingRate` 决定评判哪些成功的执行轮次，在每台机器上结果相同。`workflow next` 从不分发评审任务。`--lease <ref>` 在本机用租约选定的工具、以[受限配置](#隔离)评判，并像任意 driver 的答案一样结算租约。评审失败时租约保持打开。`scorers` 设置了 `sampling: all` 的步骤是例外：它的评分器评判每个成功的执行轮次，运行会等它们完成后才运行 `finally` 步骤并结束，在此期间 `workflow next` 返回带 `judging`（仍未结算的评判条目）的 `wait`。本地驱动自己评判它们，并立即结算失败的评审；其他驱动的轮次在运行它们的安装上用 `teamai score --next` 评判。[基准测试](benchmarks.md)就是这样评判它的 trial。
 
 标签记录 `used.skills`，即该轮次或其子 agent 加载过的团队技能。判定方式与[会话](#为会话评分)相同，依据该轮次开始时检出目录中由 teamai 交付并未经修改的技能。`workflow:` 步骤的标签列出其子轮次记录的全部技能。若子轮次都未记录，标签没有 `used`。
 
@@ -319,7 +319,7 @@ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended
 
 | 评判对象 | 由谁决定 |
 |---|---|
-| 工作流步骤的 pass | 步骤的 `scorers`，按每个评分器的 `samplingRate` 抽样。与 `sessions` 无关。 |
+| 工作流步骤的 pass | 步骤的 `scorers`，按每个评分器的 `samplingRate` 抽样，或在 `sampling: all` 下评判每个 pass。与 `sessions` 无关。 |
 | 已捕获的会话：你的会话，或 `CI`、`TEAMAI_MODE` 任务中不是由 teamai 启动的会话 | 该会话运行模式对应的 `sessions`，由每个设置了 `sessions: true` 的评分器按其 `samplingRate` 抽样评判。 |
 | teamai 启动的会话，例如工作流步骤或评审 | 不评判。它不写捕获记录，它的步骤按 pass 评判。 |
 | teamai 读不到会话的工具（例如 Pi）的会话 | 不评判。对发布或评判策略不是 `off` 的每种模式，`teamai doctor` 会列出团队启用的每个这类工具。按默认值，两种模式都会列出。 |
@@ -350,7 +350,7 @@ $ teamai score --drain
 1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按六小时规则。
 2. 评判本机能评判的每个未完成的评审项：抽样的步骤 pass，以及策略允许的抽样会话，受 `daily_limit` 限制。本机有另一个评审过程（例如后台评审）正在运行时，它不评判任何评审项，并会说明这一点。等那个过程结束后再运行一次 drain。
 3. 像 `score --push` 一样发布每个待发布的标签，并像 `teamai pull` 一样发布运行当时没能发布的工作流运行记录。
-4. 当前模式的 `publish` 为 `auto` 时，把该模式下已结束、尚未归档的已捕获会话，以及在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。
+4. 当前模式的 `publish` 为 `auto` 时，把该模式下已结束、尚未归档的已捕获会话，以及在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。
 5. 像 `teamai pull` 一样把用量上报到 `stats/<member>.yaml`，让临时 runner 的计数到达团队。
 6. 输出剩下的工作：评分器固定的模型本机没有评审工具能运行（`judge_model_unavailable`），或本机达不到其隔离要求的评审项；本机没有安装评审工具时，是所有未完成的评审项。它们等待其他 driver 的 `score --next`。
 
@@ -430,4 +430,4 @@ Judge tools here: claude 2.1.308 (Claude Code) is verified, codebuddy 2.3.0 is b
 | `<dataHome>/sessions/captures/` | 每个会话启动时的运行配置，由会话启动 hook 写入。会话文件消失一天后删除。 |
 | `teamai-reports` 上的 `scores/<member>/<YYYY-MM>.jsonl` | 已发布的标签，每个评分器、评分标准、评分对象和评审类型只保留最新一条。推送成功前标签留在 `<dataHome>/scores/pending/`；关闭用量上报时一直留在那里。 |
 
-标签从不进入运行或它的记录。工作流运行页面显示每一轮的标签，以及评审开销，与运行本身的 token 分开统计。本机的运行统计每一次评审尝试；成员发布的运行只统计产生了标签的评审。仪表盘的[评分器页面](dashboard.md#评分器scorers)按时间和配置显示每个评分器的通过率。
+标签从不进入工作流运行或它的记录。基准测试运行在结束时冻结每个 trial 的评判结果，其记录携带 trial 的结果，而不是标签。工作流运行页面显示每一轮的标签，以及评审开销，与运行本身的 token 分开统计。本机的运行统计每一次评审尝试；成员发布的运行只统计产生了标签的评审。仪表盘的[评分器页面](dashboard.md#评分器scorers)按时间和配置显示每个评分器的通过率。

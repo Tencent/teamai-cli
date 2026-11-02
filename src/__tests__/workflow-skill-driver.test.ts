@@ -1070,6 +1070,23 @@ steps:
     }]) } } });
   });
 
+  it('starts a run whose step names an exact model in a session that names no tool, as none is needed to resolve it', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: { name: claude-opus-4-1 }') }, { tool: null });
+    roots.push(harness.root);
+    expect(await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false, judge: false }, inputs: undefined })).toMatchObject({ data: { turn: { status: 'driving' } } });
+  });
+
+  it('a step with an exact model dispatches it as written, even once a session whose host names no tool takes the run over', async () => {
+    const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: { name: claude-opus-4-1, effort: high }') }, { tool: null });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'review', answers: { confirmed: false }, inputs: undefined, tool: 'claude' });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: undefined })).toMatchObject({ data: { turn: { run } } });
+    expect(await harness.call({ kind: 'choose', run, choice: 'h1' }, { session: undefined }))
+      .toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1', effort: 'high' } }] } } });
+  });
+
   it('a resume that names the tool gives it back to a run a session with no tool took over, and its steps then resolve their model for it', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { tool: null });
     roots.push(harness.root);

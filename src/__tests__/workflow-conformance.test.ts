@@ -4,10 +4,14 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, JUDGE_PROFILES, runConformanceScenario, speaksAsDriverUnderTest, type ConformanceClient } from '../workflow/conformance-interpreter.js';
+import { benchmarkConformanceScenarios } from '../benchmark/conformance.js';
 import { workflowConformanceScenarios } from '../workflow/conformance/run.js';
 import { RunIdSchema } from '../workflow/store.js';
 import { inProcessConformanceRunner, normalized } from './helpers/in-process-conformance.js';
 import { fakeJudge, skillHarness } from './helpers/skill-harness.js';
+
+/** Every protocol scenario: the engine's, and the benchmark trials' over it. */
+const SCENARIOS = [...workflowConformanceScenarios, ...benchmarkConformanceScenarios];
 
 const dirs: string[] = [];
 
@@ -18,7 +22,7 @@ afterEach(() => {
 });
 
 describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance in process as %s', (profile) => {
-  for (const scenario of workflowConformanceScenarios) {
+  for (const scenario of SCENARIOS) {
     it(scenario.name, async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-conformance-'));
       dirs.push(root);
@@ -30,7 +34,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance in process as %
 
 // The CLI suites run a scenario that speaks only as other drivers under one profile; this holds them to that.
 describe('a protocol scenario that does not speak as the driver under test', () => {
-  const independent = workflowConformanceScenarios.filter((scenario) => !speaksAsDriverUnderTest(scenario));
+  const independent = SCENARIOS.filter((scenario) => !speaksAsDriverUnderTest(scenario));
 
   it('exists, so the check below checks something', () => {
     expect(independent.length).toBeGreaterThan(0);
@@ -48,6 +52,7 @@ describe('a protocol scenario that does not speak as the driver under test', () 
       const { client } = runner;
       const sending: ConformanceClient = {
         start: (...args) => { sent.push(['start', args]); return client.start(...args); },
+        startBenchmark: (...args) => { sent.push(['startBenchmark', args]); return client.startBenchmark(...args); },
         next: (...args) => { sent.push(['next', args]); return client.next(...args); },
         report: (...args) => { sent.push(['report', args]); return client.report(...args); },
         respond: (...args) => { sent.push(['respond', args]); return client.respond(...args); },

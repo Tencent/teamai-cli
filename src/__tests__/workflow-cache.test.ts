@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { stepWorkflow } from '../workflow/types.js';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -1667,8 +1668,8 @@ steps:
 `);
     await syncWorkflowDefinitions(config);
     const first = await loadCachedWorkflow(config, 'build');
-    const inline = first?.definition.steps[1]?.workflow;
-    expect(typeof inline === 'object' && inline.steps[0]).toMatchObject({
+    const inline = first?.definition.steps[1] && stepWorkflow(first.definition.steps[1]);
+    expect(inline?.kind === 'inline' && inline.workflow.steps[0]).toMatchObject({
       promptFile: 'prompts/fix.md',
       prompt: 'Fix {{ inputs.title }} after {{ steps.plan.outcome }}, {{ with.note }}.',
     });

@@ -24,7 +24,7 @@ steps:
 
 `schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and exactly one action: `command`, `prompt`, `prompt_file`, or `workflow`. A step can omit the action when it has `end`, `approve`, or `choose`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
 
-Local command steps read stdout and stderr as UTF-8. Non-ASCII JSON string values are preserved in stored outputs and when later steps read them.
+Local command steps read stdout and stderr as UTF-8. Non-ASCII JSON string values are preserved in stored outputs and when later steps read them. A command that runs `teamai` runs the teamai that drives the step.
 
 A prompt step can set `model`: an alias from `models/aliases.yaml` or a model name, without spaces or templates. `defaults: { model: fast }` at the top of a file sets one for its prompt steps. A prompt step runs on the first of these that is set:
 
@@ -52,6 +52,8 @@ steps:
     prompt: Review the change.
     scorers: { names: [review-quality], batch: false }
 ```
+
+`scorers: { names: [review-quality], sampling: all }` judges every succeeded pass, whatever each scorer's `samplingRate`, and the run waits for those judges before its [`finally` steps](workflow-advanced.md#finally-steps) and its end. See [A run and its judge](scorers.md#a-run-and-its-judge).
 
 Every step after the first lists the steps it waits for in `needs`. `needs: []` starts another branch with no dependency. Each `next` leases the first step in the file whose needs are done. `--driver local` runs one step at a time unless `workflows.max_parallel` is above 1. A step is skipped when a step it needs failed, or when every step it needs was skipped. A skipped step never runs. A failure does not stop other branches. When nothing is left to run, the run ends `failed` if any step failed, otherwise `succeeded`. A missing `needs`, a `needs` id that is not a step, or a cycle makes the file invalid. A missing `needs` also leaves the workflow with nothing to run, even when an older version was valid.
 
@@ -165,6 +167,21 @@ An agent-specific entry wins over `default`. `claude`, `claude-internal`, `tclau
 teamai workflow start build --driver local
 teamai workflow start build --driver local --tools default=agy   # every step on Antigravity CLI
 ```
+
+A prompt step can name its own tool, and an exact model:
+
+```yaml
+schemaVersion: v1alpha1
+name: second-opinion
+description: Review the change on another tool, on an exact model.
+steps:
+  - id: review
+    prompt: Review the change.
+    tool: codex
+    model: { name: gpt-5.5, effort: high }
+```
+
+`tool:` wins over `--tools`, `workflows.tools`, `TEAMAI_AI_TOOL` and `ai.tool`. A driver is leased the step only when it lists the tool in `driver.can.tools`. With `--driver local`, a step whose tool cannot be launched here fails `tool_unavailable`. `model: { name, effort }` runs exactly that model and effort, never resolved through `models/aliases.yaml`; a string `model` stays an alias or a model name.
 
 `--driver local` runs a step with no `workspace` in the current checkout, unless an enclosing step opened a workspace. A command there is read-only: if it exits 0 and changed repository files, their permissions, a symlink target, the destination of a staged rename, a file inside a dirty submodule, the index, or HEAD, the step fails and leaves that change in place. This includes a change inside an existing untracked directory; leaving that directory unchanged does not fail the step. A step with `workspace: new` changes files on its own branch. See [Workspaces](#workspaces). Steps that share the current checkout run one at a time. Steps in different worktrees run together up to [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel). Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. The driver calls the same `next` and `report` operations shown below:
 
@@ -440,7 +457,7 @@ Any claim takes the offer away: `--next`, `resume <run>` on a machine without th
 
 With [usage reporting](reporting.md) on, every run publishes a privacy-preserving record to the team's `teamai-reports` branch: once when it starts and once when it ends. With it off, nothing is published and the envelopes carry no `record`. Records live in `workflows/runs/<run id>.json`, keyed by run id, so a retried publication updates the same record instead of adding a copy.
 
-A record carries only: the run id, workflow name, its `alias` when its definition has one, `sourceHash`, optional `teamRevision`, `origin` (the team's definition, or a [default](#default-workflows) and the teamai version that shipped it), phase (`start` or `end`), driver kind, the run mode it started in (`runMode`), status, the end the run reached (when it reached one), the failure code of a run that failed without reaching an end, when it is a code teamai sets, such as `loop_exhausted` for a loop that ran out or `tool_unavailable` when the local driver cannot find the tool (never its message), start and end times, duration, per-step entries (step path such as `check.classify`, agent, tool, model, outcome, tokens, the pass's `runMode` when its driver sent one on `next`, and what the pass delivered (`outcomes`: the commit shas on its branch, the pull request delivered for it, and the ids of the learnings `teamai contribute` recorded in its attempt) — a mixed-agent run records each step's own fields; `tool` is kept only when it is one of the local driver's tools, and `model` is the name the driver reported, kept only when it is shaped like a model name), summary step counts (succeeded, failed, skipped, cancelled), the cumulative settled-attempt count, the pull requests the run delivered (`prs`), and the publishing username. `sourceHash` identifies the exact workflow and prompt bytes that ran. `teamRevision` is present only when one remote-reachable team commit stores those exact bytes for the parent and every child workflow; local or unpushed edits and mixed cached revisions leave it out. Every entry has its `pass` number, and a step that a loop ran more than once has one entry per pass. An item of a `for_each` counts the times that item ran, so its `pass` can be lower than its step's when an earlier pass had fewer items. A cancelled step's entry has the outcome `cancelled`, and a skipped step's has none. The counts cover each step once, as the run ended. Steps of a sub-workflow that never started are not counted. Prompts, command text, input values, `env` values, outputs, diffs, secret values, local workspace paths, session ids, and hostnames have no field to land in — the record is built from an allowlist, not filtered from the run state.
+A record carries only: the run id, workflow name, its `alias` when its definition has one, `sourceHash`, optional `teamRevision`, `origin` (the team's definition, or a [default](#default-workflows) and the teamai version that shipped it), phase (`start` or `end`), driver kind, the run mode it started in (`runMode`), status, the end the run reached (when it reached one), the failure code of a run that failed without reaching an end, when it is a code teamai sets, such as `loop_exhausted` for a loop that ran out or `tool_unavailable` when the local driver cannot find the tool (never its message), start and end times, duration, per-step entries (step path such as `check.classify`, agent, tool, model, outcome, tokens, the pass's `runMode` when its driver sent one on `next`, and what the pass delivered (`outcomes`: the commit shas on its branch, the pull request delivered for it, and the ids of the learnings `teamai contribute` recorded in its attempt) — a mixed-agent run records each step's own fields; `tool` is kept only when it is one of the local driver's tools, and `model` is the name the driver reported, kept only when it is shaped like a model name), summary step counts (succeeded, failed, skipped, cancelled), the cumulative settled-attempt count, the pull requests the run delivered (`prs`), `isolated: true` for an [isolated run](workflow-advanced.md#isolated-runs), and the publishing username. `sourceHash` identifies the exact workflow and prompt bytes that ran. `teamRevision` is present only when one remote-reachable team commit stores those exact bytes for the parent and every child workflow; local or unpushed edits and mixed cached revisions leave it out. Every entry has its `pass` number, and a step that a loop ran more than once has one entry per pass. An item of a `for_each` counts the times that item ran, so its `pass` can be lower than its step's when an earlier pass had fewer items. A cancelled step's entry has the outcome `cancelled`, and a skipped step's has none. The counts cover each step once, as the run ended. Steps of a sub-workflow that never started are not counted. Prompts, command text, input values, `env` values, outputs, diffs, secret values, local workspace paths, session ids, and hostnames have no field to land in — the record is built from an allowlist, not filtered from the run state.
 
 An entry's `agent` is what that pass ran as, as observed. It holds the step's `agent:` definition and how the tool got it (`main` when the tool reads its own agent file, `prompt` when the instructions are prepended), the tool and its version, the model and effort the launch asked for and the model the tool reported, the team commit the checkout last pulled and whether a delivered file was edited since, the project commit, the TeamAI version, and the driver kind. A value nobody observed is left out. `fingerprint` hashes the definition, tool, model, effort and team commit, so two passes with the same fingerprint ran with the same recorded parts. It is left out when the model or the team commit is unknown, or a delivered file was edited. A pass nothing observed, and a record from an older TeamAI, carry only the definition's name. While a step runs, the tool it starts, and any session that tool starts in the same checkout, skips the session-start pull when the checkout's last pull delivered completely to that tool, so the step keeps the team commit it records.
 
@@ -448,6 +465,14 @@ An entry's `agent` is what that pass ran as, as observed. It holds the step's `a
 
 ```text
 jq -r 'select((.prs // []) | index("<url>")) | .run' workflows/runs/*.json
+```
+
+A [benchmark run](benchmarks.md) also writes a benchmark record, `benchmarks/runs/<run id>.json`, so the comparison can be rebuilt after the suite has changed. Its `report` step writes it into the run's directory on this machine, and publishes it with usage reporting on, as the run's own records go: queued, and retried on the next `teamai pull` when publication fails. It holds the suite's name and `sourceHash`, the repetitions, `limits`, the suite's [trial limits](benchmarks.md#trial-limits) when it set them, the baseline team revision, each scorer that judges its trials with its rubric `sourceHash` (`scorers`: the suite's, and `teamai:correctness:<task>` for each task judged by success criteria), each task's id, starting commit, `sourceHash` and `baseline`, each arm's name, tool, team (`pulled`, `none`, a ref or `without` paths, with its revision), `workflow` (name and `sourceHash`) for an arm that runs one, and the model and effort its model alias resolved to for its tool at that revision, with their `source`: `team`, or `member` under `benchmark run --member-aliases`. `skillChanges` lists the team skills each arm adds, removes or changes. It has one entry per planned trial: task, arm, repetition, order, the trial's step, its `result`, `limit` when a trial limit ended its prompt, `unenforced`, the trial limits its driver did not enforce, the prompt's `durationMs` (around the tool launch only), `tokens` and `cost` (`{ amount, unit }`), only as the tool stated them, each with `complete: false` when a prompt of a workflow arm stated none, `used`, each team skill the trial loaded (`loaded`, or `unknown` when a prompt that did not load it went unobserved), and `scoringCost` (`{ amount, unit, complete }`), what this install's judges of the trial stated they cost, failed ones included, with `complete: false` when one stated none. It also holds `schemaVersion`, `run`, the run's `outcome` before its `finally` steps, `teamaiVersion`, `startedAt`, `finishedAt`, `username`, and `workflow`, the `teamai-benchmark` workflow that ran (`name`, `origin` and `sourceHash`). `baseline` is what the task's check did on a fresh clone of its starting commit, before any trial: `valid` when it failed there, as a task expects, `invalid` when it passed, `could_not_run` when it could not run, `not_run` when no driver ran it, and `not_needed` for a task judged by success criteria. Only the trials of a `valid` task run. A result is `passed` or `failed` when the task's check ran to a verdict, `error` when the trial or its check could not finish, `passed` or `failed` for a task judged by success criteria by the correctness label its judge gave, `unscored` when that judge failed or the run ended first, and `not_run` for a trial that never started. The suite's scorers judge every trial, whatever their `samplingRate`, before `report` runs. A trial result never becomes the run's status or a step outcome, and a benchmark run counts in no workflow total.
+
+A benchmark run's plan is frozen when it starts: editing the suite and pulling during the run changes nothing it runs. A trial cancelled before a driver leased it is `not_run`, and one cancelled after is `error`. To compute each arm's pass rate from the benchmark record alone, as the table prints it, run this in a checkout of the team repo's `teamai-reports` branch:
+
+```text
+jq -r '. as $b | $b.arms[] | .name as $arm | [$b.trials[] | select(.arm == $arm)] | (map(select(.result == "passed")) | length) as $passed | "\($arm) \($passed / length * 100 | round)% (\($passed)/\(length))"' benchmarks/runs/<run id>.json
 ```
 
 The operation that settles the run queues its end record under the run lock and publishes it after releasing that lock. Retry updates the same record path when the run ends again. Answer entries publish choice, channel, and agent only; notes, answer timestamps, and answer driver identities stay local. A publication that fails — no remote, a busy reports lock, a rejected push — is queued in this scope's data directory and retried on the next `teamai pull`. The `start` and `next` envelopes then carry `record: pending` instead of `record: published`. The run itself is unaffected: a machine that dies after starting a run leaves it visible as started but not ended.
@@ -532,7 +557,7 @@ After the start, every reply is a turn: the actions for the agent, the steps tha
 
 `teamai skill get workflow` prints the instructions the agent follows. `teamai workflow <command> --help` lists every option.
 
-The skill driver declares `env: "commands"` (see [Requirements and limits](workflow-advanced.md#requirements-and-limits)). A command step and setup get their `requires.env` keys as with the local driver. A prompt step with `requires.env` waits, because TeamAI scopes team env only in the processes it starts. The driver never declares `tokens`, `max_turns`, or `network`, since no host reports a child's tokens or turns to TeamAI. A headless prompt step under a `budget` waits, so a run-level `budget` holds every headless prompt step of the run. `max_turns` and `requires.network: false` are listed in `unenforced`. A worktree is not a sandbox: `requires.isolation: sandbox` is listed in `unenforced` too.
+The skill driver declares `env: "commands"` (see [Requirements and limits](workflow-advanced.md#requirements-and-limits)). A command step and setup get their `requires.env` keys as with the local driver. A prompt step with `requires.env` waits, because TeamAI scopes team env only in the processes it starts. The driver never declares `tokens`, `max_turns`, or `network`, since no host reports a child's tokens or turns to TeamAI, nor `unattended`, so a prompt step with `permissions: unattended` waits. A headless prompt step under a `budget` waits, so a run-level `budget` holds every headless prompt step of the run. `max_turns` and `requires.network: false` are listed in `unenforced`. A worktree is not a sandbox: `requires.isolation: sandbox` is listed in `unenforced` too.
 
 When a step that waits for env or a budget works in a workspace that an earlier step of the run opens, describe sends the whole run to the local driver, for the person to start in their own terminal. Otherwise the session runs what it can. Once only waiting steps are left, it hands the run to the person, who continues it with `teamai workflow resume <run>` in their own terminal. The local driver runs its prompt steps with the headless tool that `workflows.tools` in local config names, or that `--tools` picks. When none of `TEAMAI_AI_TOOL`, `workflows.tools.default` and either `ai.tool` names a tool, the local start and the `resume` command the session gives carry `--tools default=<the session's tool>`.
 
@@ -568,12 +593,13 @@ When a step lists [scorers](scorers.md) and the confined judge of the session's 
 
 ## Default workflows
 
-teamai ships two workflows a team gets without writing them. Both start with `teamai-`, so you can tell them from the team's:
+teamai ships workflows a team gets without writing them:
 
 | Workflow | What it does | Its skill appears |
 |---|---|---|
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
+| `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
 
 A team file with the same name replaces a default:
 
@@ -599,6 +625,8 @@ For one name, the first runnable version wins: the project's team file, then the
 ```text
 ⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect
 ```
+
+The exception is a name that two namespaces you receive both define: it has no runnable version, and a start of it is refused with `workflow_namespace_conflict`, naming both files.
 
 `teamai-share-learnings` runs `teamai-share-session` with its five inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same five with the same types, even the ones it ignores:
 

@@ -3107,8 +3107,8 @@ async function syncWorkflows(
   localConfig: LocalConfig, teamConfig: TeamaiConfig, dryRun: boolean, scopeLabel: string, recorder?: DeliveryRecorder,
 ): Promise<void> {
   try {
-    const { syncWorkflowDefinitions } = await import('./workflow/cache.js');
-    await syncWorkflowDefinitions(localConfig, { dryRun, scopeLabel });
+    const { syncTeamDefinitions } = await import('./benchmark/suite-cache.js');
+    await syncTeamDefinitions(localConfig, { dryRun, scopeLabel });
     if (dryRun) return;
     const { deployWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
     await deployWorkflowSkills({ teamConfig, localConfig, recorder });

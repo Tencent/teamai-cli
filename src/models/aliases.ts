@@ -65,6 +65,11 @@ const RESERVED_ALIASES = ['strong', 'fast'] as const;
  */
 const NATIVE_MODEL_ALIASES: ReadonlySet<string> = new Set(['opus', 'sonnet', 'haiku', 'fable', 'inherit', 'default', 'auto', 'lite']);
 
+/** Whether `model` is one of a tool's own model aliases, which names no model id a tool's report can be compared with. */
+export function isNativeModelAlias(model: string): boolean {
+  return NATIVE_MODEL_ALIASES.has(model);
+}
+
 const OPTION_FIELDS: ReadonlySet<string> = new Set(['model', 'effort']);
 
 /** Repo-relative path of the root team aliases file; a namespace's is `models/<ns>/aliases.yaml`. */

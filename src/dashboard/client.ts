@@ -1,3 +1,4 @@
+import { benchmarksClient } from './benchmarks-client.js';
 import { scorersClient } from './scorers-client.js';
 import { improvementClient } from './improvement-client.js';
 import { handoffView } from './handoff-view.js';
@@ -18,8 +19,8 @@ const t = text => language === 'zh-CN' ? (Object.hasOwn(messages,text) ? message
 const e = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const label = text => e(t(text));
 const escapeHtml = e;
-const pageNames = { overview: 'Overview', execution: 'Sessions', tokens: 'Tokens & Cost', workflows: 'Workflow Runs', scorers: 'Scorers', context: 'Knowledge Base', resources: 'Resources', distribution: 'Distribution', improvement: 'Improvement Center' };
-const navGroups = [[null,['overview']],['Execution',['execution','tokens','workflows','scorers']],['Context',['context','resources','distribution']],['Improvement',['improvement']]];
+const pageNames = { overview: 'Overview', execution: 'Sessions', tokens: 'Tokens & Cost', workflows: 'Workflow Runs', scorers: 'Scorers', benchmarks: 'Benchmarks', context: 'Knowledge Base', resources: 'Resources', distribution: 'Distribution', improvement: 'Improvement Center' };
+const navGroups = [[null,['overview']],['Execution',['execution','tokens','workflows','scorers','benchmarks']],['Context',['context','resources','distribution']],['Improvement',['improvement']]];
 const statusNames = { running:'Working', waiting_for_input:'Your turn', error:'Error', idle:'Idle', stopped:'Ended' };
 let page = Object.hasOwn(pageNames,location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let sessions = [], haveSessions = false, connected = false, trends = null, kb = null;
@@ -40,7 +41,7 @@ function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope
 function workspaceOptions() { $('workspace').innerHTML='<button><selectedcontent></selectedcontent></button>'+workspaces.map(w=>'<option value="'+e(w.id)+'">'+workspaceLabel(w)+'</option>').join('');$('workspace').value=workspaceId;const w=workspaces.find(w=>w.id===workspaceId);$('workspace-root').textContent=w?w.root:''; }
 const icons = {
  overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
- execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',tokens:'<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .8-3 2s1.3 1.7 3 2 3 .8 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6v2M12 16v2"/>',workflows:'<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 6h2a4 4 0 0 1 4 4v.5M8.5 18h2a4 4 0 0 0 4-4v-.5"/>',scorers:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/><path d="M14.5 7.5l2 2 4-4"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',resources:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',distribution:'<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
+ execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',tokens:'<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .8-3 2s1.3 1.7 3 2 3 .8 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6v2M12 16v2"/>',workflows:'<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 6h2a4 4 0 0 1 4 4v.5M8.5 18h2a4 4 0 0 0 4-4v-.5"/>',scorers:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/><path d="M14.5 7.5l2 2 4-4"/>',benchmarks:'<path d="M3 20h18"/><rect x="5" y="11" width="3" height="6" rx=".5"/><rect x="10.5" y="6" width="3" height="11" rx=".5"/><rect x="16" y="9" width="3" height="8" rx=".5"/><path d="M4 4l5 2 5-2 6 3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',resources:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',distribution:'<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
 };
 const icon = key => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'+icons[key]+'</svg>';
 const link = (key, text) => '<button class="link" data-page="'+key+'">'+label(text)+' →</button>';
@@ -270,11 +271,15 @@ function gate(s) {
  return '<div class="resource"><h3 data-verbatim>'+e(s.step)+'</h3><p>'+label(s.gate.kind==='approve'?'Approve':'Choose')+' · '+label('Pass')+' '+number(s.pass)+(s.gate.required?' · <span class="amber">'+label('Required: a person must answer')+'</span>':'')+'</p><div class="actions">'
   +s.gate.options.map(choice=>'<button class="primary" data-answer-step="'+e(s.step)+'" data-answer-pass="'+e(s.pass)+'" data-answer-choice="'+e(choice)+'"'+(answering?' disabled':'')+' data-verbatim>'+e(choice)+'</button>').join('')+'</div></div>';
 }
+// A benchmark cell is the CLI's own text, kept as printed; only the column names the table fixes are translated.
+function textTable(t, named) { return '<div class="table-scroll"><table><thead><tr>'+t.header.map((x,i)=>'<th>'+(i<named?label(x):'<span data-verbatim>'+e(x)+'</span>')+'</th>').join('')+'</tr></thead><tbody>'+t.rows.map(r=>'<tr>'+r.map(c=>'<td data-verbatim>'+e(c)+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>'; }
+function benchmarkHtml(b) { return textTable(b.results,Infinity)+textTable(b.usage,Infinity)+textTable(b.matrix,1)+(b.invalid?textTable(b.invalid,Infinity):'')+(b.skills?textTable(b.skills,Infinity):'')+'<p>'+label(b.caption)+'</p>'; }
 function runDetailHtml(d) {
  const r=d.run, local=r.source==='local', gates=d.steps.filter(s=>s.gate), counts=r.stepCounts;
  return '<div class="caption">'+label(local?'Local run':'Team-reported run')+'</div><h2 id="detailTitle" data-verbatim>'+e(r.alias||r.workflow)+'</h2><div class="tag">'+(r.alias?'<span data-verbatim>'+e(r.workflow)+'</span> · ':'')+'<span data-verbatim>'+e(r.run)+'</span> · '+label(runStatusNames[r.status]||r.status)+'</div>'
   +(gates.length?detailSection('Waiting for an answer','<p>'+label('Read the question where the driver of this run asks it. The dashboard does not show HITL messages, because they can include step outputs.')+'</p>'+gates.map(gate).join('')+(answering?'<p role="status">'+label('Answering…')+'</p>':'')+(answerError?'<p class="amber" role="alert">'+e(answerError)+'</p>':'')):(answerError?'<p class="amber" role="alert">'+e(answerError)+'</p>':''))
   +detailSection('Run','<p>'+label('Driver')+': <span data-verbatim>'+e(r.driver||'—')+'</span> · '+label('End')+': <span data-verbatim>'+e(r.end||'—')+'</span><br>'+label('Started')+': '+e(when(r.startedAt))+(r.endedAt?'<br>'+label('Ended')+': '+e(when(r.endedAt)):'')+'<br>'+label('Duration')+': '+runDurationHtml(r)+' · '+label('Tokens')+': '+number(r.tokens)+(local?'':'<br>'+label('Member')+': <span data-verbatim>'+e(r.username)+'</span>')+'</p><p>'+label('Definition')+': '+revision(r)+'</p>'+(counts?'<p>'+number(counts.total)+' '+label('Steps')+' · '+number(counts.succeeded)+' '+label('Succeeded')+' · '+number(counts.failed)+' '+label('Failed')+' · '+number(counts.skipped)+' '+label('Skipped')+' · '+number(counts.cancelled)+' '+label('Cancelled')+'</p>':'')+(r.prs.length?'<p>'+label('Pull requests')+': '+prLinks(r)+'</p>':'')+(r.learnings.length?'<p>'+label('Learnings')+': <span class="outcomes">'+learningTags(r)+'</span></p>':''))
+  +(d.benchmark?detailSection('Benchmark results',benchmarkHtml(d.benchmark)):'')
   +detailSection('Steps','<div class="table-scroll"><table><thead><tr>'+['STEP','PASS','STATUS','Tokens','ANSWER','SCORES','OUTCOMES'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+d.steps.map(s=>'<tr><td data-verbatim>'+e(s.step)+'</td><td>'+number(s.pass)+'</td><td>'+runStatus(s.status)+'</td><td>'+(s.tokens?number((s.tokens.input||0)+(s.tokens.output||0)):'—')+'</td><td>'+(s.answer?'<span data-verbatim>'+e(s.answer.choice)+'</span><small data-verbatim>'+e(s.answer.channel)+'</small>':'—')+'</td><td>'+(s.scores?.length?s.scores.map(x=>'<span class="'+(x.passed?'good':'amber')+'" data-verbatim>'+e(x.scorer)+': '+e(x.label)+'</span>').join('<br>'):'—')+'</td><td>'+outcomesHtml(s.outcomes)+'</td></tr>').join('')+'</tbody></table></div>'+(d.scoring&&d.scoring.judged?'<p>'+label('Scoring')+': '+number(d.scoring.judged)+' '+label('judged')+' · '+label('Tokens')+': '+number(d.scoring.inputTokens+d.scoring.outputTokens)+'</p>':''))
   +'<p class="label">'+label('The dashboard shows only what a run record publishes: never prompts, inputs, outputs, or HITL messages.')+'</p>';
 }
@@ -316,6 +321,7 @@ function localizeReport() {
  }
 }
 ${scorersClient}
+${benchmarksClient}
 ${improvementClient}
 function render() {
  const focus=document.activeElement;
@@ -326,7 +332,7 @@ function render() {
  $('nav').innerHTML=navGroups.map(([group,keys])=>(group?'<div class="nav-group">'+label(group)+'</div>':'')+keys.map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('')).join('');
  $('title').textContent=t(pageNames[page]);$('crumb').textContent=t(pageNames[page]);
  document.querySelector('.filters').hidden=page!=='execution';
- $('view').innerHTML=({overview,execution,tokens:tokensPage,workflows:workflowRuns,scorers:scorersPage,context:knowledge,resources,distribution,improvement})[page]();tickRunDurations();
+ $('view').innerHTML=({overview,execution,tokens:tokensPage,workflows:workflowRuns,scorers:scorersPage,benchmarks:benchmarksPage,context:knowledge,resources,distribution,improvement})[page]();tickRunDurations();
  localizeReport();connection();
  document.querySelectorAll('#kb-content details').forEach(d=>{if(opened.includes([...d.parentElement.children].indexOf(d)))d.open=true;});
  document.querySelectorAll('#view details[data-imp-key]').forEach(d=>{if(impOpened.includes(d.dataset.impKey))d.open=true;});
@@ -518,7 +524,7 @@ document.addEventListener('click',event=>{
  if(run)showRun(run.dataset.runSource,run.dataset.run);
  if(answer)answerGate(answer.dataset.answerStep,answer.dataset.answerPass,answer.dataset.answerChoice);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='sharing')loadSharing();else if(retry.dataset.retry==='member-settings')loadMemberSettingsPanel();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='tokens')loadTokens();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='outcomes')loadOutcomes();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='sharing')loadSharing();else if(retry.dataset.retry==='member-settings')loadMemberSettingsPanel();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else if(retry.dataset.retry==='workflows')loadWorkflows();else if(retry.dataset.retry==='run')loadRunDetail();else if(retry.dataset.retry==='tokens')loadTokens();else if(retry.dataset.retry==='scorers'){scorerError='';loadScorers();}else if(retry.dataset.retry==='benchmarks'){benchError='';loadBenchmarks();}else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
  const copy=event.target.closest('[data-copy]');
  if(copy)copyCommand(copy);
  if(event.target.closest('[data-preview-button]'))previewSelection();
@@ -537,7 +543,7 @@ function switchWorkspace(id) {
  memberSettings=null;memberSettingsError=false;memberSettingsLoading=false;
  dist=null;distError=false;distLoading=false;distDraft=null;preview=null;previewError='';previewing=false;saving=false;saveError='';savedNote='';
  workflows=null;workflowsHtml='';workflowsError=false;workflowsLoading=false;runKey=null;runDetail=null;answering='';answerError='';
- resetScorers();
+ resetScorers();resetBenchmarks();
  resetTokens();
  skills=null;skillsError=false;skillsLoading=false;skillBusy='';skillFilterDelivery='';skillFilterNamespace='';skillFilterAgent='';
  $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadOutcomes();loadKb();loadSharing();loadMemberSettingsPanel();loadRules();loadSkills();

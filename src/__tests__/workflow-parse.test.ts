@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { stepWorkflow } from '../workflow/types.js';
 import { formatDiagnostic, parseWorkflow } from '../workflow/parse.js';
 
 const FILE = 'workflows/build.yaml';
@@ -625,8 +626,8 @@ steps:
     if (!result.ok) return;
     expect(result.definition.loop).toEqual({ while: "steps.probe.outputs.status != 'ready' && inputs.target != ''", maxIterations: 5 });
     expect(result.definition.steps[1]?.break).toBe("steps.probe.outputs.status == 'gone'");
-    const retry = result.definition.steps[2]?.workflow;
-    expect(typeof retry === 'object' ? retry.loop : undefined).toEqual({ maxIterations: 2 });
+    const retry = result.definition.steps[2] && stepWorkflow(result.definition.steps[2]);
+    expect(retry?.kind === 'inline' ? retry.workflow.loop : undefined).toEqual({ maxIterations: 2 });
   });
 
   it('rejects a break inside the range of a step loop', () => {
@@ -873,6 +874,87 @@ describe('expressions in templates', () => {
   });
 });
 
+describe('step tool', () => {
+  it('keeps a prompt step tool as written', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    tool: codex
+  - id: review
+    needs: [plan]
+    prompt: Review it.
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.tool)).toEqual(['codex', undefined]);
+  });
+
+  it('rejects a tool off a prompt step, and a tool that is not a name', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: compile
+    command: npm run build
+    tool: codex
+  - id: plan
+    needs: [compile]
+    prompt: Plan it.
+    tool: "{{ inputs.tool }}"
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].tool": tool is only allowed on a prompt or prompt_file step',
+      'workflows/build.yaml:11: field "steps[1].tool": tool must be the id of a tool, such as claude or codex, written as is',
+    ]);
+  });
+});
+
+describe('exact step model', () => {
+  it('keeps an exact model as written', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    model: { name: gpt-5.1-codex, effort: high }
+  - id: review
+    needs: [plan]
+    prompt: Review it.
+    model: { name: claude-opus-4.1 }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.model)).toEqual([{ name: 'gpt-5.1-codex', effort: 'high' }, { name: 'claude-opus-4.1' }]);
+  });
+
+  it('rejects an exact model without a name, or with a key or a value it does not take', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: review
+    prompt: Review it.
+    model: { effort: high }
+  - id: ship
+    needs: [review]
+    prompt: Ship it.
+    model: { name: opus, effort: very high, speed: fast }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].model": model must be an alias or a model name, or { name, effort? } with the exact model',
+      'workflows/build.yaml:11: field "steps[1].model": model must be an alias or a model name, or { name, effort? } with the exact model',
+    ]);
+  });
+});
+
 describe('step model and defaults', () => {
   it('reports model on a command or workflow step, with the file and step', () => {
     const result = parse(`schemaVersion: v1alpha1
@@ -1016,6 +1098,115 @@ steps:
     expect(result.definition.steps[0]?.requires).toEqual({ network: true, isolation: 'sandbox' });
   });
 
+  it('refuses a step under a strict sandbox whose requires.env names a credential the sandbox withholds', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  requires: { isolation: sandbox, strict: true }
+steps:
+  - id: plan
+    prompt: Plan it.
+    requires: { env: [GH_TOKEN] }
+  - id: ship
+    needs: [plan]
+    workflow:
+      steps:
+        - id: push
+          command: git push
+          requires: { env: [NPM_TOKEN, SSH_AUTH_SOCK] }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:9: field "steps[0].requires.env": steps[0].requires.env names GH_TOKEN, which the strict sandbox it runs in withholds from every step. Remove it from requires.env, or drop strict.',
+      'workflows/build.yaml:16: field "steps[1].workflow.steps[0].requires.env": steps[1].workflow.steps[0].requires.env names SSH_AUTH_SOCK, which the strict sandbox it runs in withholds from every step. Remove it from requires.env, or drop strict.',
+    ]);
+  });
+
+  it('refuses a strict sandbox in defaults whose requires.env names a credential the sandbox withholds', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  requires: { isolation: sandbox, strict: true, env: [GH_TOKEN] }
+steps:
+  - id: plan
+    prompt: Plan it.
+`);
+    expect(result.ok ? [] : result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:5: field "defaults.requires.env": defaults.requires.env names GH_TOKEN, which the strict sandbox it runs in withholds from every step. Remove it from requires.env, or drop strict.',
+    ]);
+  });
+
+  it('refuses a step under a strict sandbox that runs a workflow file whose requires.env names a credential the sandbox withholds', () => {
+    const check = parse(`schemaVersion: v1alpha1
+name: check
+description: Check it.
+defaults:
+  requires: { env: [GH_TOKEN] }
+steps:
+  - id: lint
+    command: npm run lint
+  - id: push
+    needs: [lint]
+    command: git push
+    requires: { env: [NPM_TOKEN, SSH_AUTH_SOCK] }
+`, 'workflows/check.yaml');
+    if (!check.ok) throw new Error(check.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'check' ? check.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Build, then check.
+steps:
+  - id: compile
+    command: npm run build
+  - id: check
+    needs: [compile]
+    workflow: check
+    requires: { isolation: sandbox, strict: true }
+`, files);
+    expect(result.ok ? [] : result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:9: field "steps[1].workflow": steps[1].workflow runs workflow "check", whose defaults.requires.env names GH_TOKEN, which the strict sandbox it runs in withholds from every step. Remove it from requires.env, or drop strict.',
+      'workflows/build.yaml:9: field "steps[1].workflow": steps[1].workflow runs workflow "check", whose steps[1].requires.env names SSH_AUTH_SOCK, which the strict sandbox it runs in withholds from every step. Remove it from requires.env, or drop strict.',
+    ]);
+  });
+
+  it('accepts a step under a strict sandbox that runs workflow files calling each other', () => {
+    const named = (name: string, runs: string) => parse(`schemaVersion: v1alpha1
+name: ${name}
+description: Run ${runs}.
+steps:
+  - id: next
+    workflow: ${runs}
+`, `workflows/${name}.yaml`);
+    const ping = named('ping', 'pong');
+    const pong = named('pong', 'ping');
+    if (!ping.ok || !pong.ok) throw new Error('ping and pong must parse');
+    const files = { runnable: (name: string) => (name === 'ping' ? ping.definition : name === 'pong' ? pong.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Build, then ping.
+steps:
+  - id: ping
+    workflow: ping
+    requires: { isolation: sandbox, strict: true }
+`, files);
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a credential in requires.env under a sandbox that is not strict', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    requires: { isolation: sandbox, env: [GH_TOKEN] }
+`);
+    expect(result.ok).toBe(true);
+  });
+
   it('reports a requires key this version does not know as unknown_key, a value of the wrong type, and requires on a step with no action', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -1035,7 +1226,7 @@ ends: { shipped: succeeded }
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
-      'workflows/build.yaml:5: field "defaults.requires": defaults.requires must map network, isolation, env to values',
+      'workflows/build.yaml:5: field "defaults.requires": defaults.requires must map network, isolation, env, strict to values',
       expect.stringMatching(/^workflows\/build\.yaml:9: field "steps\[0\]\.requires\.network": steps\[0\]\.requires\.network: .*boolean.*string$/),
       expect.stringMatching(/field "steps\[0\]\.requires\.isolation": steps\[0\]\.requires\.isolation: .*"none".*"worktree".*"sandbox"/),
       expect.stringContaining('field "steps[1].requires": step "done" has no action'),
@@ -1132,7 +1323,7 @@ steps:
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
       'workflows/build.yaml:4: field "budget.tokens": budget.tokens must be a positive whole number of tokens',
-      'workflows/build.yaml:8: field "steps[0].budget": step "plan" budget is only allowed on a workflow step; a workflow spends it over all its steps',
+      'workflows/build.yaml:8: field "steps[0].budget": step "plan" budget is only allowed on a workflow step, or on a prompt step with on_limit: end_turn',
     ]));
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[1].budget.dollars', code: 'unknown_key' }));
   });
@@ -1202,6 +1393,109 @@ steps:
     ]));
   });
 
+  it('reads permissions: unattended on a prompt step, and reports another value or the key on another step', () => {
+    const ok = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    permissions: unattended
+`);
+    expect(ok.ok && ok.definition.steps[0]?.permissions).toBe('unattended');
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    permissions: ask
+  - id: check
+    needs: [plan]
+    command: echo check
+    permissions: unattended
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:7: field "steps[0].permissions": step "plan" permissions must be unattended, which lets the tool edit and run commands without asking',
+      'workflows/build.yaml:11: field "steps[1].permissions": step "check" permissions is only allowed on a prompt or prompt_file step',
+    ]));
+  });
+
+  it('reads on_limit on a prompt step with a limit, a budget on that prompt, and on_limit on a workflow step with a timeout', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    timeout: 2m
+    budget: { tokens: 5000 }
+    on_limit: end_turn
+  - id: check
+    needs: [plan]
+    workflow: check
+    timeout: 10m
+    on_limit: end_turn
+  - id: ship
+    needs: [check]
+    prompt: Ship it.
+    max_turns: 3
+    on_limit: fail
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.onLimit)).toEqual(['end_turn', 'end_turn', 'fail']);
+    expect(result.definition.steps[0]?.budget).toEqual({ tokens: 5000 });
+  });
+
+  it('reports on_limit on a step it cannot end, without a limit, with a value this version does not know, or on a for_each step, and a prompt budget without end_turn', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    on_limit: end_turn
+  - id: check
+    needs: [plan]
+    command: echo check
+    timeout: 1m
+    on_limit: end_turn
+  - id: review
+    needs: [check]
+    prompt: Review it.
+    timeout: 1m
+    on_limit: stop
+  - id: ship
+    needs: [review]
+    workflow: ship
+    max_turns: 3
+    on_limit: end_turn
+  - id: tidy
+    needs: [ship]
+    prompt: Tidy it.
+    budget: { tokens: 10 }
+  - id: each
+    needs: [tidy]
+    for_each: [a, b]
+    workflow: ship
+    timeout: 1m
+    on_limit: end_turn
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:7: field "steps[0].on_limit": step "plan" on_limit needs a timeout, max_turns or budget to end the turn at',
+      'workflows/build.yaml:12: field "steps[1].on_limit": step "check" on_limit is only allowed on a prompt, prompt_file or workflow step',
+      'workflows/build.yaml:17: field "steps[2].on_limit": step "review" on_limit must be end_turn or fail',
+      'workflows/build.yaml:22: field "steps[3].on_limit": step "ship" on_limit on a workflow step needs a timeout or budget, which its prompts spend',
+      'workflows/build.yaml:26: field "steps[4].budget": step "tidy" budget is only allowed on a workflow step, or on a prompt step with on_limit: end_turn',
+      'workflows/build.yaml:32: field "steps[5].on_limit": step "each" on_limit is not allowed on a for_each step',
+    ]));
+  });
+
   it('reports defaults on an inline workflow, which carries none', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -1253,6 +1547,20 @@ steps:
     ]);
   });
 
+  it('lists a generated scorer, whose name holds a colon, beside a team one', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Fix it.
+steps:
+  - id: fix
+    prompt: Fix it.
+    scorers: { names: [quality, "teamai:correctness:fix"], sampling: all }
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps[0]?.scorers?.names).toEqual(['quality', 'teamai:correctness:fix']);
+  });
+
   it('reports scorers on a command step, an empty or repeated list, a name that is not a token, and a bad batch', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -1285,6 +1593,55 @@ steps:
     ]);
   });
 
+  it('reads sampling: all, which judges every pass, and refuses any other sampling', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    scorers: { names: [quality], sampling: all }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps[0]?.scorers).toEqual({ names: ['quality'], sampling: 'all' });
+
+    const refused = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    scorers: { names: [quality], sampling: 50 }
+`);
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].scorers.sampling": sampling must be all, which judges every pass; leave it out to use each scorer\'s samplingRate',
+    ]);
+  });
+
+  it('reports a long form without names, and a name that is not a scalar', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    scorers: { sampling: all }
+  - id: review
+    needs: [plan]
+    prompt: Review it.
+    scorers: [[quality]]
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].scorers": scorers must list scorer names, as [name, …] or { names: [name, …], batch: true }',
+      'workflows/build.yaml:11: field "steps[1].scorers": scorer names must be a token, the name of a file in scorers/',
+    ]);
+  });
+
   it('reports an unknown key under scorers and defaults.scorers as unknown_key', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -1301,6 +1658,425 @@ steps:
     expect(result.diagnostics).toEqual([
       expect.objectContaining({ field: 'defaults.scorers.every', code: 'unknown_key' }),
       expect.objectContaining({ field: 'steps[0].scorers.sample', code: 'unknown_key' }),
+    ]);
+  });
+});
+
+describe('clone place', () => {
+  const COMMIT = 'c'.repeat(40);
+  const REVISION = 'd'.repeat(40);
+
+  it('keeps a clone place as written', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Try it in clean clones.
+steps:
+  - id: bare
+    workspace: { clone: { commit: ${COMMIT}, team: { treatment: none } } }
+    workflow:
+      steps:
+        - id: work
+          prompt: Do it.
+  - id: pulled
+    needs: []
+    workspace:
+      clone:
+        commit: ${COMMIT}
+        repo: https://git.example.com/acme/app.git
+        team: { revision: ${REVISION}, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: { without: [lint] } }
+    command: npm test
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.workspace)).toEqual([
+      { clone: { commit: COMMIT, team: { treatment: 'none' } } },
+      { clone: { commit: COMMIT, repo: 'https://git.example.com/acme/app.git', team: { revision: REVISION, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: { without: ['lint'] } } } },
+    ]);
+  });
+
+  it('rejects a clone place without a full commit, or a team none with a revision', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Try it in clean clones.
+steps:
+  - id: short
+    workspace: { clone: { commit: abc123, team: { treatment: none } } }
+    command: npm test
+  - id: revised
+    needs: []
+    workspace: { clone: { commit: ${COMMIT}, team: { revision: ${REVISION}, treatment: none } } }
+    command: npm test
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:6: field "steps[0].workspace": step "short" workspace must be read-only, new, continue, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+      'workflows/build.yaml:10: field "steps[1].workspace": step "revised" workspace must be read-only, new, continue, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+    ]);
+  });
+});
+
+describe('finally', () => {
+  const problems = (content: string): string[] => {
+    const result = parse(content);
+    return result.ok ? [] : result.diagnostics.map(formatDiagnostic);
+  };
+
+  it('keeps finally steps beside the steps, and lets the outputs read them', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build, then report.
+steps:
+  - id: compile
+    command: npm run build
+finally:
+  - id: report
+    command: node report.js
+    output: { text: string }
+  - id: notify
+    needs: [report]
+    if: steps.report.outcome == 'succeeded'
+    command: node notify.js
+    env: { TEXT: "{{ steps.report.outputs.text }}" }
+outputs:
+  text: steps.report.outputs.text
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.id)).toEqual(['compile']);
+    expect(result.definition.finally?.map((step) => step.id)).toEqual(['report', 'notify']);
+  });
+
+  it('refuses a finally step that does more than run a read-only command', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Build, then report.
+steps:
+  - id: compile
+    command: npm run build
+finally:
+  - id: review
+    prompt: Review it.
+  - id: push
+    needs: []
+    command: git push
+    workspace: new
+`)).toEqual([
+      'workflows/build.yaml:9: field "finally[0].prompt": a finally step runs a read-only command, so it carries only id, needs, if, command, env, output, timeout',
+      'workflows/build.yaml:13: field "finally[1].workspace": a finally step runs a read-only command, so it carries only id, needs, if, command, env, output, timeout',
+    ]);
+  });
+
+  it('runs finally only at the top level, with ids of its own', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Build, then report.
+steps:
+  - id: compile
+    command: npm run build
+  - id: inner
+    needs: [compile]
+    workflow:
+      steps:
+        - id: work
+          command: npm test
+      finally:
+        - id: tidy
+          command: rm -rf tmp
+finally:
+  - id: compile
+    command: node report.js
+`)).toEqual([
+      'workflows/build.yaml:13: field "steps[1].workflow.finally": step "inner" runs an inline workflow, which carries only steps, outputs, ends, and loop',
+      'workflows/build.yaml:17: field "finally": finally step id "compile" is also a step in steps',
+    ]);
+  });
+
+  it('refuses a step that runs a workflow file with finally steps, which only a run of that file runs', () => {
+    const report = parse(`schemaVersion: v1alpha1
+name: report
+description: Report, then tidy.
+steps:
+  - id: write
+    command: node report.js
+finally:
+  - id: tidy
+    command: rm -rf tmp
+`, 'workflows/report.yaml');
+    if (!report.ok) throw new Error(report.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'report' ? report.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Build, then report.
+steps:
+  - id: compile
+    command: npm run build
+  - id: report
+    needs: [compile]
+    workflow: report
+`, files);
+    expect(result.ok ? [] : result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:9: field "steps[1].workflow": step "report" runs workflow "report", which has finally steps; only a run of that workflow runs them, so start it with teamai workflow start',
+    ]);
+  });
+
+  it('lets a finally step read the inputs and the finally steps it needs, never the steps', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Build, then report.
+inputs: { title: string }
+steps:
+  - id: compile
+    command: npm run build
+    output: { log: string }
+finally:
+  - id: report
+    command: node report.js
+    output: { text: string }
+    env: { TITLE: "{{ inputs.title }}", LOG: "{{ steps.compile.outputs.log }}" }
+  - id: notify
+    needs: [report]
+    command: node notify.js
+    env: { TEXT: "{{ steps.report.outputs.text }}" }
+`)).toEqual([
+      'workflows/build.yaml:13: field "finally[0].env.LOG": step "report" env.LOG reads steps.compile, which is not a step it needs, directly or through its needs',
+    ]);
+  });
+});
+
+describe('workflow and json outputs', () => {
+  const problems = (content: string): string[] => {
+    const result = parse(content);
+    return result.ok ? [] : result.diagnostics.map(formatDiagnostic);
+  };
+
+  it('keeps a workflow field and an opaque json field, which the outputs may pass whole, and reads their names in a union as literals', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Plan, then report.
+steps:
+  - id: plan
+    command: node plan.js
+    output: { definition: workflow, plan: json, notes: [json], phase: "workflow | json" }
+outputs:
+  plan: steps.plan.outputs.plan
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps[0]?.output).toEqual({
+      type: 'object', fields: {
+        definition: { type: 'workflow' }, plan: { type: 'json' }, notes: { type: 'array', items: { type: 'json' } }, phase: { type: 'enum', values: ['workflow', 'json'] },
+      },
+    });
+  });
+
+  it('refuses a read into a json or workflow field', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan, then act.
+steps:
+  - id: plan
+    command: node plan.js
+    output: { definition: workflow, plan: json }
+  - id: act
+    needs: [plan]
+    if: steps.plan.outputs.plan.ready == true
+    command: node act.js
+    env: { NAME: "{{ steps.plan.outputs.definition.definition }}" }
+`)).toEqual([
+      'workflows/build.yaml:12: field "steps[1].env.NAME": step "act" env.NAME reads steps.plan.outputs.definition.definition, which is not in the output step "plan" declares',
+      'workflows/build.yaml:10: field "steps[1].if": step "act" if reads steps.plan.outputs.plan.ready, which is not in the output step "plan" declares',
+    ]);
+  });
+
+  it('takes a workflow only as one field of a step output, and neither type as an input', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan.
+inputs: { suite: json, bundle: workflow }
+steps:
+  - id: whole
+    command: node plan.js
+    output: workflow
+  - id: nested
+    needs: []
+    command: node plan.js
+    output: { group: { definition: workflow }, list: [workflow] }
+  - id: twice
+    needs: []
+    command: node plan.js
+    output: { first: workflow, second: workflow }
+`)).toEqual([
+      'workflows/build.yaml:4: field "inputs.suite": an input cannot be json; only a step output can',
+      'workflows/build.yaml:4: field "inputs.bundle": an input cannot be a workflow; only a field of a step output can',
+      'workflows/build.yaml:8: field "steps[0].output": a workflow is only a field of a step output, such as output: { definition: workflow }',
+      'workflows/build.yaml:12: field "steps[1].output.group.definition": a workflow is only a field of a step output, such as output: { definition: workflow }',
+      'workflows/build.yaml:12: field "steps[1].output.list[]": a workflow is only a field of a step output, such as output: { definition: workflow }',
+      'workflows/build.yaml:16: field "steps[2].output.second": a step output has at most one workflow field; "first" is one already',
+    ]);
+  });
+});
+
+describe('workflow: { from }', () => {
+  const problems = (content: string): string[] => {
+    const result = parse(content);
+    return result.ok ? [] : result.diagnostics.map(formatDiagnostic);
+  };
+
+  it('runs the workflow output of a step it needs', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Plan, then run the plan.
+steps:
+  - id: plan
+    command: node plan.js
+    output: { definition: workflow, plan: json }
+  - id: trials
+    needs: [plan]
+    workflow: { from: plan }
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    const trials = result.definition.steps[1];
+    expect(trials && stepWorkflow(trials)).toEqual({ kind: 'from', step: 'plan' });
+  });
+
+  it('refuses a from that names no step it needs, or one without a workflow output, or with other keys', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan, then run the plan.
+steps:
+  - id: plan
+    command: node plan.js
+    output: { definition: workflow }
+  - id: notes
+    needs: []
+    command: node notes.js
+    output: { text: string }
+  - id: unneeded
+    needs: [notes]
+    workflow: { from: plan }
+  - id: untyped
+    needs: [notes]
+    workflow: { from: notes }
+  - id: extra
+    needs: [plan]
+    workflow: { from: plan, steps: [] }
+`)).toEqual([
+      'workflows/build.yaml:20: field "steps[4].workflow": step "extra" workflow must be the name of a workflow in workflows/, an inline workflow, or { from: <step> }',
+      'workflows/build.yaml:14: field "steps[2].workflow.from": step "unneeded" workflow.from names "plan", which is not a step it needs',
+      'workflows/build.yaml:17: field "steps[3].workflow.from": step "untyped" workflow.from names "notes", whose output has no workflow field',
+    ]);
+  });
+
+  it('refuses a from on the first step, which needs no step', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Run a plan first.
+steps:
+  - id: trials
+    workflow: { from: plan }
+  - id: plan
+    needs: []
+    command: node plan.js
+    output: { definition: workflow }
+`)).toEqual([
+      'workflows/build.yaml:6: field "steps[0].workflow.from": step "trials" workflow.from names "plan", which is not a step it needs',
+    ]);
+  });
+
+  it('refuses a workflow output on a step that can run more than once', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan in a loop and per item.
+steps:
+  - id: plan
+    command: node plan.js
+    output: { definition: workflow }
+  - id: check
+    needs: [plan]
+    command: node check.js
+    loop: { back_to: plan, max_iterations: 2 }
+  - id: each
+    needs: []
+    for_each: "[]"
+    command: node plan.js
+    output: { definition: workflow }
+`)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].output": step "plan" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
+      'workflows/build.yaml:16: field "steps[2].output": step "each" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
+    ]);
+  });
+
+  it('refuses a workflow output on a step of an inline workflow that a loop around it runs again', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan inside a looping workflow and a looping step range.
+loop:
+  while: "steps.inner.outputs.done != 'yes'"
+  max_iterations: 2
+steps:
+  - id: inner
+    workflow:
+      outputs: { done: steps.plan.outputs.definition }
+      steps:
+        - id: plan
+          command: node plan.js
+          output: { definition: workflow }
+`)).toEqual([
+      'workflows/build.yaml:14: field "steps[0].workflow.steps[0].output": step "plan" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
+    ]);
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan inside a step loop.
+steps:
+  - id: inner
+    workflow:
+      steps:
+        - id: plan
+          command: node plan.js
+          output: { definition: workflow }
+  - id: check
+    needs: [inner]
+    command: node check.js
+    loop: { back_to: inner, max_iterations: 2 }
+`)).toEqual([
+      'workflows/build.yaml:10: field "steps[0].workflow.steps[0].output": step "plan" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
+    ]);
+  });
+
+  it('refuses a workflow file that outputs a workflow, run by a step that a loop runs again or runs per item', () => {
+    const planner = parseWorkflow('workflows/planner.yaml', `schemaVersion: v1alpha1
+name: planner
+description: Plan.
+steps:
+  - id: plan
+    command: node plan.js
+    output: { definition: workflow }
+`, { runnable: () => null, cycle: () => undefined });
+    if (!planner.ok) throw new Error(planner.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'planner' ? planner.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Plan in a loop and per item.
+steps:
+  - id: again
+    workflow: planner
+  - id: check
+    needs: [again]
+    command: node check.js
+    loop: { back_to: again, max_iterations: 2 }
+  - id: each
+    needs: []
+    for_each: "[]"
+    workflow: planner
+  - id: once
+    needs: []
+    workflow: planner
+`, files);
+    expect(result.ok ? [] : result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:6: field "steps[0].workflow": step "again" runs workflow "planner", whose step "plan" outputs a workflow, so it runs once; step "again" may not repeat in a loop or run per item of a for_each',
+      'workflows/build.yaml:14: field "steps[2].workflow": step "each" runs workflow "planner", whose step "plan" outputs a workflow, so it runs once; step "each" may not repeat in a loop or run per item of a for_each',
     ]);
   });
 });

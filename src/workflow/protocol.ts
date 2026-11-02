@@ -1,5 +1,7 @@
 /** The workflow protocol in process: the calls behind `workflow start`, `next`, `report`, `respond`, `retry` and `cancel`, for every driver. */
+import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
@@ -16,15 +18,17 @@ import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
 import { carriedRun, claimOffered, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
-  abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparePlace, releasePlace, runPlaceSetup, type PlaceLease, type PlacePrepared,
+  abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparePlace, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
+  type PlacePrepared,
   type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance, type Via } from './run-controls.js';
 import { nextJudgeLease, parseJudgeRequest, runJudgeLease, verifiedScorers } from './scoring.js';
+import { stepDefinitions } from './scope.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
-import { deliveryProblem } from './workspace.js';
+import { cloneBranchOf, deliveryProblem } from './workspace.js';
 import { headCommit } from './worktree.js';
 
 /**
@@ -79,9 +83,10 @@ export interface WorkflowClient {
   /**
    * Starts `name` with `inputs`, from `checkout` when given: the run's workspaces start from its HEAD. A `caller`
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
-   * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`.
+   * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`. `alone`: what the local driver,
+   * the run's only driver, gives strict requirements; a step it could never take refuses the start, `requirement_unmet`.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -337,7 +342,33 @@ export type HostPlacePrepared =
 /** `mode`: the run mode the lease keeps, as its driver's `next` sent it. */
 type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[]; mode?: RunMode };
 
-/** What every driver fails a lease of run `run` with when this teamai cannot read the place it names, as a newer one writes. */
+/**
+ * `report` with what teamai knows of a prompt it prepared a clone for, whatever the driver says of it: the team revision
+ * and project commit it observed of the clone, and the exact model and effort the step asked for. So the step records
+ * what its tool ran on. Unchanged when the report names no tool, or the attempt runs in no clone this machine prepared.
+ */
+async function withPreparedClone(config: LocalConfig, runId: RunId, report: ReportInput): Promise<ReportInput> {
+  if (report.tool === undefined && report.agent?.tool?.name === undefined) return report;
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') return report;
+  const leased = run.steps.find((step) => step.status === 'leased' && step.attempt === report.attempt);
+  const branch = leased ? cloneBranchOf(run, leased.id) : undefined;
+  const made = branch === undefined ? undefined : await preparedClone(config, runId, branch);
+  if (!leased || !made) return report;
+  const { team, project } = made.prepared;
+  const asked = stepDefinitions(run)(leased.id)?.model;
+  const model = typeof asked === 'object' ? asked : undefined;
+  const sent = report.agent;
+  return {
+    ...report,
+    agent: {
+      ...sent, ...(team ? { team } : {}), ...(project ? { project } : {}),
+      ...(model ? { model: { ...sent?.model, requested: model.name } } : {}),
+      ...(model?.effort ? { effort: { ...sent?.effort, requested: model.effort } } : {}),
+    },
+  };
+}
+
 export function unreadablePlace(run: RunId): WorkflowFailure {
   return { code: 'workspace_base', message: `Run ${run} leased a place this teamai cannot read. Update teamai.` };
 }
@@ -416,7 +447,8 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       if (leased.kind === 'failed') return leased;
       const { lease, root } = leased;
       const { workspace } = lease;
-      if (workspace?.mode !== 'new' && workspace?.mode !== 'continue') {
+      // A clone is teamai's to make, never the host's.
+      if ((workspace?.mode !== 'new' && workspace?.mode !== 'continue') || workspace.clone !== undefined) {
         const placed = await placeLeased(config, lock, leased);
         return placed.kind === 'refused' ? { kind: 'failed', failure: placed.failure } : placed;
       }
@@ -430,12 +462,15 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
     setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, env, ...(signal ? { signal } : {}) }),
-    start: async (name, { inputs, checkout, caller }) => {
+    start: async (name, { inputs, checkout, caller, timeout, alone }) => {
       const cached = await loadCachedWorkflow(config, name);
       const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
-      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, runMode: caller.mode, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}) });
+      return startRun(config, name, inputs ?? {}, {
+        secrets: env.secrets, runMode: caller.mode, ...(checkout !== undefined ? { checkout } : {}), ...(base ? { base } : {}), ...(timeout !== undefined ? { timeout } : {}),
+        ...(alone ? { alone } : {}),
+      });
     },
     runVersion: async (runId) => {
       const run = await readRun(config, runId);
@@ -449,14 +484,20 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const run = RunIdSchema.safeParse(runId);
       const prepare = options?.prepare;
       if (prepare === undefined || !run.success) return withIgnored(await lease(), parsed.ignored);
-      return withIgnored(await withRunLock(config, run.data, async (lock) => (prepare === true
-        ? prepareLeased({ config, lock, driver, env, answer: await lease() })
-        : prepareAttempt({ config, lock, driver, env, next, ...prepare })), { waitMs: 0 }), parsed.ignored);
+      return withIgnored(await withRunLock(config, run.data, async (lock) => {
+        const answer = prepare === true ? await prepareLeased({ config, lock, driver, env, answer: await leaseNext(config, runId, driver, { ...next, env, prepare: true }) })
+            : await prepareAttempt({ config, lock, driver, env, next, ...prepare });
+        // A clone whose steps all settled is not needed any more.
+        await sweepClones(config, lock.run);
+        return answer;
+      }, { waitMs: 0 }), parsed.ignored);
     },
     report: async (runId, body, options) => {
       const parsed = parseReport(body);
       if (typeof parsed === 'string') return { error: { code: 'invalid_report', message: parsed } };
-      return withIgnored(await managedReport({ config, runId, report: parsed.report, secrets: env.secrets, lock: options?.lock }), parsed.ignored);
+      const run = RunIdSchema.safeParse(runId);
+      const report = run.success ? await withPreparedClone(config, run.data, parsed.report) : parsed.report;
+      return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock }), parsed.ignored);
     },
     respond: async (runId, step, choice, { via, ...answer }) => {
       if (via.kind === 'skill') return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via) });
@@ -537,7 +578,7 @@ async function prepareAttempt(input: {
   const run = await readRun(config, lock.run);
   if (typeof run !== 'object') return { error: { code: 'run_unreadable', message: `Run ${lock.run} cannot be read, so attempt ${attempt} was not prepared` } };
   const running = run.steps.flatMap((step) => (step.status === 'leased' && step.lease.attempt !== attempt ? [step.lease.attempt] : []));
-  const answer = await leaseNext(config, lock.run, driver, { ...next, env, running, canTakeLease: false });
+  const answer = await leaseNext(config, lock.run, driver, { ...next, env, running, canTakeLease: false, prepare: true });
   if (!('data' in answer) || answer.data.done !== undefined) return answer;
   const leased = LeaseIdSchema.safeParse(answer.data.lease);
   if (!leased.success || leased.data.attempt !== attempt) {
@@ -602,6 +643,9 @@ export async function managedReport(input: { config: LocalConfig; runId: string;
   return lock ? settle(lock) : withRunLock(config, run.data, settle, { waitMs: 0 });
 }
 
+/** What an accepted report answers of the step it settled. */
+const AcceptedSchema = z.object({ step: z.object({ outcome: z.string() }) });
+
 async function settleManaged(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; report: ReportInput; secrets: Record<string, string> }): Promise<WorkflowEnvelope> {
   const { config, lock, attempt, report, secrets } = input;
   // Checked first, so finishing the place does not commit for an attempt the run would refuse.
@@ -617,8 +661,14 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
   }
   const end: StepEnd = { outcome: report.outcome, ...(report.message !== undefined ? { message: report.message } : {}), ...(report.failure ? { failure: report.failure } : {}) };
   const finished = await finishPlace({ config, lock, attempt, end, secrets });
-  const body = { ...report, ...finished };
+  // A limit goes only with a step that succeeded: a failure to keep its work replaces both.
+  const { limit, ...unlimited } = report;
+  const body = { ...unlimited, ...finished, ...(limit !== undefined && finished.outcome === 'success' ? { limit } : {}) };
+  const staged = await stagePassEvidence({ config, lock, attempt, report: body });
   const answer = await reportAttempt(config, lock.run, body, secrets);
+  const outcome = AcceptedSchema.safeParse('data' in answer ? answer.data : undefined).data?.step.outcome;
+  // No judge reads the evidence of a pass that did not succeed, and nothing else removes it.
+  if (staged !== undefined && outcome !== 'success') await fs.rm(staged, { recursive: true, force: true, maxRetries: 3 });
   if ('data' in answer && answer.data.cleanup === true) await releasePlace({ config, lock, attempt });
   return answer;
 }

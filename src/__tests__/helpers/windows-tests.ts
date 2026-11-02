@@ -4,6 +4,9 @@
  * rejects POSIX-only constructs in these files during lint.
  */
 export const WINDOWS_TESTS = [
+  'src/__tests__/benchmark-check.test.ts',
+  'src/__tests__/benchmark-table.test.ts',
+  'src/__tests__/benchmark-trials.test.ts',
   'src/__tests__/buddy-windows-cwd.test.ts',
   'src/__tests__/builtin-hooks.test.ts',
   'src/__tests__/codex-hook-rules.test.ts',
@@ -30,6 +33,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/locate.test.ts',
   'src/__tests__/pi-adapter.test.ts',
   'src/__tests__/qoder-cn.test.ts',
+  'src/__tests__/shell-command.test.ts',
   'src/__tests__/skill-use.test.ts',
   'src/__tests__/tool-roots.test.ts',
   'src/__tests__/tools-channels.test.ts',

@@ -268,6 +268,8 @@ export type ToolFeatures = {
   readonly env: Support;
   /** The local driver (`teamai workflow start --driver local`) runs prompt steps on the tool. */
   readonly workflows: Support;
+  /** The local driver runs a prompt step with `permissions: unattended` in the tool's own mode for editing and running commands without asking. */
+  readonly unattended: Support;
   /** The recall skill and its session-start reminder. */
   readonly recall: Support;
   /** The tool's skill calls are recorded for usage stats. */
@@ -375,6 +377,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '✓v',
+      unattended: '✓v',
       recall: '✓v',
       stats: '✓v',
       tokens: '✓v',
@@ -416,6 +419,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '✓t',
+      unattended: '✓d',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       tokens: '✓v',
@@ -444,6 +448,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       tokens: '✓t',
@@ -468,6 +473,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       tokens: '✓t',
@@ -495,6 +501,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       tokens: '✓t',
@@ -523,6 +530,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       tokens: '✓t',
@@ -569,6 +577,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: { cell: '+s', note: 'Cursor IDE: —' },
+      unattended: '?',
       recall: { cell: '✗v', note: 'Cursor IDE: ✓v' },
       stats: { cell: '✓v', note: 'Cursor IDE: ✓t' },
       tokens: { cell: '+d', note: 'usage is in the Cursor account dashboard only' },
@@ -620,6 +629,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '+s',
+      unattended: '?',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       tokens: { cell: '✓t', note: 'one request per model from the session.shutdown totals, priced without long-prompt rates; not run' },
@@ -655,6 +665,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐s',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       tokens: '✓t',
@@ -693,6 +704,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐s',
       stats: '✓s',
       tokens: { cell: '◐t', note: 'Qoder bills credits and can write zero token counts' },
@@ -731,6 +743,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐s',
       stats: '✓s',
       tokens: { cell: '◐t', note: 'Qoder bills credits and can write zero token counts' },
@@ -769,6 +782,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐d',
       stats: '?',
       tokens: '?',
@@ -810,6 +824,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '?',
       stats: '?',
       tokens: '?',
@@ -849,6 +864,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '?',
       stats: '?',
       tokens: '?',
@@ -888,6 +904,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '+s',
+      unattended: '?',
       recall: '✓s',
       stats: '✓s',
       tokens: '?',
@@ -933,6 +950,7 @@ export const TOOLS = {
     features: {
       env: '✓s',
       workflows: '+s',
+      unattended: '?',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       tokens: '✓t',
@@ -971,6 +989,7 @@ export const TOOLS = {
     features: {
       env: '✓s',
       workflows: '+v',
+      unattended: '?',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       tokens: '✓t',
@@ -1030,6 +1049,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓d',
+      unattended: '✓d',
       recall: '✓s',
       stats: '✓v',
       tokens: '✓t',
@@ -1067,6 +1087,7 @@ export const TOOLS = {
     features: {
       env: '◐d',
       workflows: '+d',
+      unattended: '?',
       recall: '✓s',
       stats: '+s',
       tokens: { cell: '+s', note: 'no Stop hook reaches the dashboard' },
@@ -1101,6 +1122,7 @@ export const TOOLS = {
     features: {
       env: '◐s',
       workflows: '+s',
+      unattended: '?',
       recall: '✓v',
       stats: '+s',
       tokens: { cell: '+s', note: 'no Stop hook reaches the dashboard' },
@@ -1131,6 +1153,7 @@ export const TOOLS = {
     features: {
       env: '✗s',
       workflows: '+s',
+      unattended: '?',
       recall: '✓s',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       tokens: { cell: '+s', note: 'zstd session files need a newer Node than 20' },
@@ -1182,6 +1205,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '✓t',
       stats: '?',
       tokens: '✓t',
@@ -1248,6 +1272,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓d',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       tokens: '✓v',
@@ -1294,6 +1319,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '+v',
+      unattended: '?',
       recall: '✓t',
       stats: '✓v',
       tokens: '✓t',
@@ -1336,6 +1362,7 @@ export const TOOLS = {
     features: {
       env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
       workflows: '✓v',
+      unattended: '✓d',
       recall: '✓v',
       stats: '✓v',
       tokens: { cell: '◐v', note: 'agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced' },

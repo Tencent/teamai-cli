@@ -7,12 +7,17 @@ export interface TokenUsage {
   cachedInput?: number;
 }
 
-/** What a tool's stdout says about its run: the result it printed, the model, the session, and the tokens it billed. */
+/** What a tool's stdout says about its run: the result it printed, the model, the session, the tokens it billed and what it said they cost. */
 export interface ToolReport {
   output?: unknown;
   model?: string;
   session?: string;
   tokens?: TokenUsage;
+  cost?: { amount: number; unit: string };
+  /** Whether the run ended at the turn cap it was launched with: Claude's `error_max_turns` result. */
+  reachedMaxTurns?: boolean;
+  /** Whether stdout ended before the tool's final result, so it holds only what the tool said as it started. */
+  unfinished?: boolean;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -21,13 +26,18 @@ function finiteNumber(value: unknown): number | undefined {
 
 function claudeStdout(stdout: string): ToolReport | null {
   const events = jsonRecords(stdout);
-  const record = events.findLast((event) => event.type === 'result');
-  if (!record) return null;
-  const usage = record.usage as Record<string, unknown> | undefined;
   // The `init` event names the session's model. `modelUsage` keys every model the session billed, a side call's and a
   // subagent's included, so it cannot tell which one ran the step (#1176).
   const init = events.find((event) => event.type === 'system' && event.subtype === 'init');
   const model = typeof init?.model === 'string' ? init.model : undefined;
+  const record = events.findLast((event) => event.type === 'result');
+  if (!record) {
+    // A Claude stopped before its final result still named its model and session as it started.
+    const session = typeof init?.session_id === 'string' ? init.session_id : undefined;
+    if (model === undefined && session === undefined) return null;
+    return { unfinished: true, ...(model !== undefined ? { model } : {}), ...(session !== undefined ? { session } : {}) };
+  }
+  const usage = record.usage as Record<string, unknown> | undefined;
   let output: unknown;
   if (typeof record.result === 'string') {
     try {
@@ -38,10 +48,13 @@ function claudeStdout(stdout: string): ToolReport | null {
   } else if (record.result !== undefined) {
     output = record.result;
   }
+  const cost = finiteNumber(record.total_cost_usd);
   return {
     ...(output !== undefined ? { output } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(typeof record.session_id === 'string' ? { session: record.session_id } : {}),
+    ...(cost !== undefined && cost >= 0 ? { cost: { amount: cost, unit: 'USD' } } : {}),
+    ...(record.subtype === 'error_max_turns' ? { reachedMaxTurns: true } : {}),
     ...(usage ? {
       tokens: {
         ...(finiteNumber(usage.input_tokens) !== undefined ? { input: finiteNumber(usage.input_tokens) } : {}),
@@ -115,6 +128,9 @@ function absorbMetadata(record: Record<string, unknown>, found: ToolReport, dept
   if (record.type === 'turn.completed' || record.type === 'step_finish' || record.type === 'step-finish') {
     const tokens = tokenUsage(record);
     if (tokens) found.tokens = addTokens(found.tokens, tokens);
+    // OpenCode states each step's cost in USD.
+    const cost = finiteNumber(record.cost);
+    if (cost !== undefined && cost >= 0) found.cost = { amount: (found.cost?.amount ?? 0) + cost, unit: 'USD' };
   }
   if (depth >= 4) return;
   for (const key of ['item', 'part', 'properties', 'info'] as const) {
@@ -126,7 +142,7 @@ function absorbMetadata(record: Record<string, unknown>, found: ToolReport, dept
 export function readToolMetadata(stdout: string): ToolReport | null {
   const found: ToolReport = {};
   for (const record of jsonRecords(stdout)) absorbMetadata(record, found, 0);
-  if (!found.model && !found.session && !found.tokens) return null;
+  if (!found.model && !found.session && !found.tokens && !found.cost) return null;
   return found;
 }
 
@@ -170,6 +186,50 @@ function agyStdout(stdout: string): ToolReport | null {
     ...(model !== undefined ? { model } : {}),
     ...(result.conversation_id ? { session: result.conversation_id } : {}),
     ...(tokens ? { tokens } : {}),
+  };
+}
+
+/**
+ * Counts what a tool billed while its stdout streams, fed one line at a time, and returns the total so far: Claude's
+ * messages once each, at the usage the `message_delta` of `--include-partial-messages` states as a message ends, since
+ * its assistant events repeat the usage of the message's start and it states a run's total only in its final result;
+ * Codex's finished turns and OpenCode's finished steps, as `toolStdout` adds them up.
+ */
+export function tokenMeter(adapter: LaunchAdapterId): (line: string) => TokenUsage | undefined {
+  if (adapter === 'claude') {
+    const messages = new Map<string, TokenUsage>();
+    // The sum over `messages` of each count, and how many of them state it, kept as each message's usage changes.
+    const totals = { input: { sum: 0, stated: 0 }, output: { sum: 0, stated: 0 }, cachedInput: { sum: 0, stated: 0 } };
+    const keys = ['input', 'output', 'cachedInput'] as const;
+    const count = (usage: TokenUsage | undefined, sign: 1 | -1): void => {
+      for (const key of keys) {
+        const value = usage?.[key];
+        if (value === undefined) continue;
+        totals[key].sum += sign * value;
+        totals[key].stated += sign;
+      }
+    };
+    let current: string | undefined;
+    return (line) => {
+      for (const record of jsonRecords(line)) {
+        const event = record.type === 'stream_event' ? asRecord(record.event) : undefined;
+        const started = event?.type === 'message_start' ? asRecord(event.message) : undefined;
+        if (typeof started?.id === 'string') current = started.id;
+        const usage = started ? tokenUsage(started) : event?.type === 'message_delta' ? tokenUsage(event) : undefined;
+        if (current === undefined || !usage) continue;
+        count(messages.get(current), -1);
+        count(usage, 1);
+        messages.set(current, usage);
+      }
+      const tokens: TokenUsage = {};
+      for (const key of keys) if (totals[key].stated > 0) tokens[key] = totals[key].sum;
+      return Object.keys(tokens).length > 0 ? tokens : undefined;
+    };
+  }
+  const found: ToolReport = {};
+  return (line) => {
+    for (const record of jsonRecords(line)) absorbMetadata(record, found, 0);
+    return found.tokens;
   };
 }
 

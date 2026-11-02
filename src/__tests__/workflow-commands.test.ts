@@ -396,6 +396,37 @@ steps:
     expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} sign, then continue the run with teamai workflow resume ${runId}`));
   });
 
+  it('points a failed isolated run at a new run, as its steps do not run again', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), `schemaVersion: v1alpha1
+name: planned
+description: Plan, then run the plan.
+steps:
+  - id: plan
+    command: node -e "process.exit(1)"
+    output: { definition: workflow }
+  - id: trials
+    needs: [plan]
+    workflow: { from: plan }
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('planned', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(printed).toContainEqual(expect.stringMatching(/Step "plan" failed/));
+    expect(printed).toContainEqual(expect.stringContaining('Start a new run: teamai workflow start planned'));
+    expect(printed.filter((line) => line.includes('teamai workflow retry'))).toEqual([]);
+  });
+
   it('names the item that failed, not the fan-out step that failed because of it', async () => {
     const config = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1

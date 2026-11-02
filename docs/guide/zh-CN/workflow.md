@@ -24,7 +24,7 @@ steps:
 
 `schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且只能使用 `command`、`prompt`、`prompt_file`、`workflow` 中的一种动作。带有 `end`、`approve` 或 `choose` 的步骤可以省略动作。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
 
-本地命令步骤以 UTF-8 读取 stdout 和 stderr。JSON 字符串中的非 ASCII 文本会原样保存到输出中，后续步骤读取时也保持原文。
+本地命令步骤以 UTF-8 读取 stdout 和 stderr。JSON 字符串中的非 ASCII 文本会原样保存到输出中，后续步骤读取时也保持原文。运行 `teamai` 的命令运行的是驱动该步骤的那个 teamai。
 
 提示词步骤可以设置 `model`：`models/aliases.yaml` 中的别名或模型名，不能含空格或模板。文件顶层的 `defaults: { model: fast }` 为其中的提示词步骤设置模型。提示词步骤使用以下第一个已设置的模型：
 
@@ -52,6 +52,8 @@ steps:
     prompt: Review the change.
     scorers: { names: [review-quality], batch: false }
 ```
+
+`scorers: { names: [review-quality], sampling: all }` 评判每一个成功的 pass，不管每个评分器的 `samplingRate`，运行会等这些评判完成后才运行它的 [`finally` 步骤](workflow-advanced.md#finally-步骤)并结束。见[一次运行和它的评审](scorers.md#一次运行和它的评审)。
 
 第一个步骤之后的每个步骤都要用 `needs` 列出它等待的步骤。`needs: []` 表示另起一个没有依赖的分支。每次 `next` 租出文件中第一个依赖都已完成的步骤。`--driver local` 一次运行一个步骤，除非 `workflows.max_parallel` 大于 1。某个依赖失败，或所有依赖都被跳过时，该步骤会被跳过。被跳过的步骤不会运行。一个步骤失败不会停止其他分支。没有可运行的步骤时，只要有步骤失败，运行结果就是 `failed`，否则是 `succeeded`。缺少 `needs`、`needs` 中的 id 不是本工作流的步骤，或依赖成环，都会让该文件无效。缺少 `needs` 时，即使之前有有效版本，该工作流也没有可运行版本。
 
@@ -165,6 +167,21 @@ workflows:
 teamai workflow start build --driver local
 teamai workflow start build --driver local --tools default=agy   # 所有步骤都在 Antigravity CLI 上运行
 ```
+
+提示词步骤可以指定自己的工具，以及一个确切的模型：
+
+```yaml
+schemaVersion: v1alpha1
+name: second-opinion
+description: Review the change on another tool, on an exact model.
+steps:
+  - id: review
+    prompt: Review the change.
+    tool: codex
+    model: { name: gpt-5.5, effort: high }
+```
+
+`tool:` 优先于 `--tools`、`workflows.tools`、`TEAMAI_AI_TOOL` 和 `ai.tool`。只有在 `driver.can.tools` 中列出该工具的驱动才会租到这个步骤。使用 `--driver local` 时，工具无法在本机启动的步骤以 `tool_unavailable` 失败。`model: { name, effort }` 运行的就是这个模型和 effort，从不经过 `models/aliases.yaml` 解析；字符串形式的 `model` 仍是别名或模型名。
 
 `--driver local` 在当前检出目录里运行没有 `workspace` 的步骤，除非外层步骤打开了工作区。这里的命令是只读的：退出码为 0，且改了仓库文件、文件权限、符号链接目标、已暂存重命名的新路径、已脏子模块里的文件、暂存区或 HEAD 时，步骤失败，改动留在原地。已有未跟踪目录里的文件变化也算；该目录保持不变时，步骤不会因此失败。`workspace: new` 的步骤在自己的分支上改文件。见[工作区](#工作区)。共用当前检出目录的步骤一次只运行一个。不同工作树里的步骤可以一起运行，上限是 [`workflows.max_parallel`](workflow-advanced.md#并行运行本地命令)。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。驱动调用的 `next` 和 `report` 与下面相同：
 
@@ -440,7 +457,7 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 
 开启[使用统计上报](reporting.md)时，每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。关闭后不发布任何记录，返回中也不带 `record`。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 
-记录只包含：run id、工作流名、定义里有别名时的 `alias`、`sourceHash`、可选的 `teamRevision`、`origin`（团队的定义，或[默认工作流](#默认工作流)及发布它的 teamai 版本）、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`），以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
+记录只包含：run id、工作流名、定义里有别名时的 `alias`、`sourceHash`、可选的 `teamRevision`、`origin`（团队的定义，或[默认工作流](#默认工作流)及发布它的 teamai 版本）、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`）、[隔离运行](workflow-advanced.md#隔离运行)的 `isolated: true`，以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
 
 条目的 `agent` 是该 pass 实际运行时观察到的组合：步骤的 `agent:` 定义及工具如何拿到它（工具自己读取 agent 文件时为 `main`，指令拼接到提示词前时为 `prompt`）、工具及其版本、启动时请求的模型和 effort、工具报告的模型、检出最近一次 pull 的团队提交以及之后是否改过已下发的文件、项目提交、TeamAI 版本和驱动的 kind。没有观察到的值不写。`fingerprint` 对定义、工具、模型、effort 和团队提交做哈希，fingerprint 相同的两个 pass 记录下来的这些部分相同。模型或团队提交未知，或改过已下发的文件时，不写 `fingerprint`。没有任何观察的 pass，以及旧版 TeamAI 写的记录，只带定义的名称。步骤运行期间，如果该检出最近一次 pull 已完整下发到步骤启动的工具，该工具以及它在同一检出中启动的会话都会跳过会话开始时的 pull，步骤因此保持它记录的团队提交。
 
@@ -448,6 +465,14 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 
 ```text
 jq -r 'select((.prs // []) | index("<url>")) | .run' workflows/runs/*.json
+```
+
+[benchmark 运行](benchmarks.md)还会写一条 benchmark 记录 `benchmarks/runs/<run id>.json`，套件改动后仍能重建对比。它的 `report` 步骤把记录写到本机上该运行的目录中，并在使用统计上报开启时像运行自己的记录一样发布它：先排队，发布失败时在下一次 `teamai pull` 时重试。它包含套件的名称和 `sourceHash`、重复次数、套件设置了 [trial 限制](benchmarks.md#trial-限制)时的 `limits`、基线团队修订、评判其 trial 的每个评分器及其评分标准的 `sourceHash`（`scorers`：套件的评分器，以及每个按成功标准评判的任务的 `teamai:correctness:<task>`）、每个任务的 id、起始提交、`sourceHash` 和 `baseline`、每个 arm 的名称、工具、团队（`pulled`、`none`、一个 ref 或 `without` 路径，以及它的修订）、运行工作流的 arm 的 `workflow`（名称和 `sourceHash`），以及它的模型别名在该修订上为它的工具解析出的模型和 effort 及其 `source`：`team`，或在 `benchmark run --member-aliases` 下为 `member`。`skillChanges` 列出每个 arm 新增、去掉或改变的团队 skill。每个计划的 trial 有一条条目：任务、arm、重复序号、顺序、trial 的步骤、它的 `result`、trial 限制结束了其 prompt 时的 `limit`、其驱动没有执行的 trial 限制 `unenforced`、prompt 的 `durationMs`（只计工具启动前后）、`tokens` 和 `cost`（`{ amount, unit }`），只按工具自己声明的写，工作流 arm 中有 prompt 未声明时各自带 `complete: false`，`used`：trial 加载的每个团队 skill（`loaded`，或者没加载它的 prompt 未被观察到时为 `unknown`），以及 `scoringCost`（`{ amount, unit, complete }`）：本安装上评判该 trial 的评判者声明的成本，含失败的评判；有评判未声明成本时 `complete: false`。它还包含 `schemaVersion`、`run`、运行在其 `finally` 步骤之前的 `outcome`、`teamaiVersion`、`startedAt`、`finishedAt`、`username`，以及 `workflow`：运行的 `benchmark` 工作流（`name`、`origin` 和 `sourceHash`）。`baseline` 是在任何 trial 之前，任务的 check 在其起始提交的全新克隆上的结果：在那里失败（任务本应如此）为 `valid`，通过为 `invalid`，没能运行为 `could_not_run`，没有驱动运行它为 `not_run`，按成功标准评判的任务为 `not_needed`。只有 `valid` 任务的 trial 会运行。任务的 check 跑出判定时，结果为 `passed` 或 `failed`；trial 或它的 check 没能完成时为 `error`；按成功标准评判的任务按评判者给出的正确性标签为 `passed` 或 `failed`，评判失败或运行先结束时为 `unscored`；从未开始的 trial 为 `not_run`。套件的评分器在 `report` 运行之前评判每一个 trial，不管其 `samplingRate`。trial 结果从不成为运行的状态或步骤的 outcome，benchmark 运行也不计入任何工作流总量。
+
+benchmark 运行在启动时冻结计划：运行期间修改套件并 pull，不会改变它运行的任何内容。驱动租用之前被取消的 trial 为 `not_run`，租用之后被取消的为 `error`。要只从 benchmark 记录算出每个 arm 的通过率（与表格打印的一致），在团队仓库 `teamai-reports` 分支的检出中运行：
+
+```text
+jq -r '. as $b | $b.arms[] | .name as $arm | [$b.trials[] | select(.arm == $arm)] | (map(select(.result == "passed")) | length) as $passed | "\($arm) \($passed / length * 100 | round)% (\($passed)/\(length))"' benchmarks/runs/<run id>.json
 ```
 
 结束运行的操作在锁内排队保存结束记录，在释放锁后发布。发布失败时——没有远端、reports 锁被占用、push 被拒——记录会进入当前 scope 数据目录的本地队列，在下一次 `teamai pull` 时重试。此时 `start`、`next` 的返回会带 `record: pending` 而不是 `record: published`。运行本身不受影响：一台机器在运行开始后崩溃，该运行会以"已开始未结束"的状态保持可见。
@@ -532,7 +557,7 @@ TeamAI 从宿主设置的会话变量得知会话所用的工具。找不到时�
 
 `teamai skill get workflow` 打印 agent 遵循的指令。`teamai workflow <command> --help` 列出所有选项。
 
-skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md#要求和限制)）。命令步骤和 setup 像在本地驱动中一样获得各自的 `requires.env` 键。带 `requires.env` 的提示词步骤会等待，因为 TeamAI 只在自己启动的进程中限定团队 env。该驱动从不声明 `tokens`、`max_turns` 或 `network`，因为没有宿主会把子 agent 的 token 或轮次报告给 TeamAI。处于 `budget` 下的无头提示词步骤会等待，所以运行级的 `budget` 会让该运行的所有无头提示词步骤等待。`max_turns` 和 `requires.network: false` 会列入 `unenforced`。worktree 不是 sandbox：`requires.isolation: sandbox` 也会列入 `unenforced`。
+skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md#要求和限制)）。命令步骤和 setup 像在本地驱动中一样获得各自的 `requires.env` 键。带 `requires.env` 的提示词步骤会等待，因为 TeamAI 只在自己启动的进程中限定团队 env。该驱动从不声明 `tokens`、`max_turns` 或 `network`，因为没有宿主会把子 agent 的 token 或轮次报告给 TeamAI；也从不声明 `unattended`，所以带 `permissions: unattended` 的提示词步骤会等待。处于 `budget` 下的无头提示词步骤会等待，所以运行级的 `budget` 会让该运行的所有无头提示词步骤等待。`max_turns` 和 `requires.network: false` 会列入 `unenforced`。worktree 不是 sandbox：`requires.isolation: sandbox` 也会列入 `unenforced`。
 
 当一个因 env 或 budget 而等待的步骤，在同一次运行中较早步骤打开的工作区里工作时，describe 会把整个运行交给本地驱动，由本人在自己的终端启动。否则会话先运行它能运行的部分。只剩等待的步骤时，它把运行交给本人，由本人在自己的终端用 `teamai workflow resume <run>` 继续。本地驱动用本地配置中 `workflows.tools` 指定的、或 `--tools` 选择的无头工具运行提示词步骤。`TEAMAI_AI_TOOL`、`workflows.tools.default` 和两处 `ai.tool` 都没有指定工具时，会话给出的本地启动命令和 `resume` 命令会带上 `--tools default=<会话的工具>`。
 
@@ -568,12 +593,13 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 ## 默认工作流
 
-teamai 自带两个工作流，团队不用自己编写就能使用。它们都以 `teamai-` 开头，方便和团队的工作流区分：
+teamai 自带一些工作流，团队不用自己编写就能使用：
 
 | 工作流 | 作用 | 它的 skill 何时出现 |
 |---|---|---|
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
+| `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
 
 团队写一个同名文件就会取代默认工作流：
 
@@ -599,6 +625,8 @@ $ teamai list workflows
 ```text
 ⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect
 ```
+
+例外是你接收的两个命名空间都定义了的名字：它没有可运行版本，启动它会以 `workflow_namespace_conflict` 拒绝，并指出两个文件。
 
 `teamai-share-learnings` 用它的五个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session`（或别名为 `teamai-share-session` 的团队工作流）要声明同样的五个输入，类型也相同，用不到的也要声明：
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { detectProjectConfig, loadTeamConfig } from './config.js';
 import { KNOWN_AGENTS } from './known-agents.js';
-import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot } from './types.js';
+import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot, type LocalConfig } from './types.js';
 import { ensureDir, pathExists } from './utils/fs.js';
 import { checkoutForProjectAnchor, resolveAnchors } from './utils/git.js';
 import { log } from './utils/logger.js';
@@ -50,11 +50,13 @@ function resolveSkillsPath(
 export async function createProjectToolRoots(options: {
   cwd?: string;
   tools?: readonly string[];
+  /** The project config to seed for, when `cwd` would not find it: a benchmark trial's, which lives under its own HOME. */
+  config?: LocalConfig;
 } = {}): Promise<void> {
   const requested = options.tools && normalizeIds(options.tools);
   if (requested?.length === 0) return;
 
-  const projectConfig = await detectProjectConfig(options.cwd);
+  const projectConfig = options.config ?? await detectProjectConfig(options.cwd);
   if (!projectConfig) return;
 
   const enabled = projectConfig.enabledAgents ?? [];

@@ -24,6 +24,7 @@ const handlers: Record<ResourceType, ResourceHandler> = {
   workflows: new RepoResourceHandler('workflows', 'workflows', (f) => f.endsWith('.yaml')),
   prompts: new RepoResourceHandler('prompts', 'prompts'),
   scorers: new RepoResourceHandler('scorers', 'scorers'),
+  benchmarks: new RepoResourceHandler('benchmarks', 'benchmarks'),
 };
 
 export function getHandler(type: ResourceType): ResourceHandler {

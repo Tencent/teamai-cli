@@ -87,6 +87,10 @@ describe('parseScorer', () => {
     expect(problems('scorers/.hidden.md', VALID)).toEqual(['scorers/.hidden.md: the file name must be a token such as review-quality.md']);
   });
 
+  it('rejects a file named like a generated scorer, with a colon', () => {
+    expect(problems('scorers/teamai:correctness:fix.md', VALID)).toEqual(['scorers/teamai:correctness:fix.md: the file name must be a token such as review-quality.md']);
+  });
+
   it('rejects a name ending in .md, which --scorer would take for a file', () => {
     expect(problems('scorers/v1.md.md', VALID)).toEqual(['scorers/v1.md.md: a scorer\'s name cannot end in .md, since teamai score --scorer reads such a value as a scorer file']);
   });

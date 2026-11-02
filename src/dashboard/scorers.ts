@@ -57,13 +57,13 @@ export function parseScorerQuery(params: URLSearchParams): ScorerQuery {
   };
 }
 
-/** What a run record holds that the view reads: each pass's agent, and whether the run was a benchmark (#1180). */
+/** What a run record holds that the view reads: each pass's agent, and whether the run was isolated (#1180). */
 const RecordSchema = z.object({
   steps: z.array(z.object({ step: z.string(), pass: z.number(), agent: z.unknown().optional() })).optional(),
-  benchmark: z.unknown().optional(),
+  isolated: z.literal(true).optional(),
 });
 
-type RunAgents = { source: 'local' | 'reported'; isBenchmark: boolean; agents: Map<string, RecordedAgent> };
+type RunAgents = { source: 'local' | 'reported'; isIsolated: boolean; agents: Map<string, RecordedAgent> };
 type PublishedRecord = z.infer<typeof RecordSchema>;
 
 const passKey = (step: string, pass: number) => `${step}#${pass}`;
@@ -89,9 +89,12 @@ async function runAgents(config: LocalConfig, runId: string, { isLocal, team }: 
     return recorded ? [[passKey(step, pass), recorded] as const] : [];
   }));
   const [local, published] = await Promise.all([isLocal ? readRun(config, runId) : undefined, team.record(runId)]);
-  const isBenchmark = published?.benchmark !== undefined;
-  if (typeof local === 'object') return { source: 'local', isBenchmark, agents: read(buildEndRecord(local, local.driver, '').steps) };
-  return published ? { source: 'reported', isBenchmark, agents: read(published.steps) } : undefined;
+  const isolatedRecord = (record: PublishedRecord): boolean => record.isolated === true;
+  if (typeof local === 'object') {
+    const record = buildEndRecord(local, local.driver, '');
+    return { source: 'local', isIsolated: isolatedRecord(record) || (published !== undefined && isolatedRecord(published)), agents: read(record.steps) };
+  }
+  return published ? { source: 'reported', isIsolated: isolatedRecord(published), agents: read(published.steps) } : undefined;
 }
 
 /**
@@ -304,7 +307,7 @@ export async function scorerResults({ config, query, now = new Date(), events, r
       return [{ label, author, ...label.agent ? { agent: label.agent } : {}, ...sessionName ? { sessionName } : {} }];
     }
     const run = runs.get(label.subject.runId);
-    if (run?.isBenchmark) return [];
+    if (run?.isIsolated) return [];
     const agent = run?.agents.get(passKey(label.subject.step, label.subject.pass));
     return [{ label, author, ...agent ? { agent } : {}, ...run ? { runSource: run.source } : {} }];
   });

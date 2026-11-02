@@ -87,6 +87,7 @@ export const HAND_DECLARED_RESOURCE_TYPES = [
   'workflows',
   'prompts',
   'scorers',
+  'benchmarks',
 ] as const;
 
 export type HandDeclaredResourceType = typeof HAND_DECLARED_RESOURCE_TYPES[number];
@@ -122,6 +123,7 @@ export const HandDeclaredNamespacesShape = {
   workflows: OptionalNamespaceList,
   prompts: OptionalNamespaceList,
   scorers: OptionalNamespaceList,
+  benchmarks: OptionalNamespaceList,
 } satisfies Record<HandDeclaredResourceType, z.ZodOptional<z.ZodArray<z.ZodType<string>>>>;
 
 /**

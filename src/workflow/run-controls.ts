@@ -1,10 +1,11 @@
 import type { LocalConfig } from '../types.js';
+import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
 import {
   error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
-import { evaluateExpression, isTruthy } from './expression.js';
+import { evaluateExpression, isRecord, isTruthy } from './expression.js';
 import { isItem, itemsAfter, itemsOf } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
@@ -13,6 +14,7 @@ import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
+import { isIsolated } from './workspace.js';
 
 async function controlRun(
   config: LocalConfig,
@@ -27,8 +29,10 @@ async function controlRun(
     const before = JSON.stringify(run);
     checkout = run.driver?.workspace ?? checkout;
     const finish = async (result: WorkflowResult): Promise<void> => {
+      const finished = await finishRun(config, run, now, result, secrets, run.driver);
+      if (finished.kind === 'finalizing') return;
       runSettled = true;
-      queued = await finishRun(config, run, now, result, secrets, run.driver);
+      queued = finished.queued;
     };
     const opEnvelope = await operation(run, now, finish);
     return { envelope: opEnvelope, save: JSON.stringify(run) !== before };
@@ -205,7 +209,7 @@ export async function cancelRun(config: LocalConfig, runId: string, secrets: Rec
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
       if ('outcome' in reconciled) {
         await finish(reconciled);
-        return settledRunError(run);
+        if (run.status !== 'running') return settledRunError(run);
       }
     }
     let changed: string[];
@@ -341,9 +345,28 @@ function retryInstance(run: RunState, state: StepState, now: string): void {
   repend(state);
 }
 
+/**
+ * The command that starts a run like `run`: `teamai benchmark run <suite>` for the benchmark workflow, which plans its
+ * suite and sets its timeout, else `teamai workflow start <name>` with the run's inputs.
+ */
+export function restartCommand(run: RunState): string {
+  const inputs = isRecord(run.inputs) ? run.inputs : {};
+  if (run.name !== 'teamai-benchmark' || typeof inputs.suite !== 'string') {
+    return `teamai workflow start ${run.name}${Object.keys(inputs).length > 0 ? ` --inputs ${shellQuoteValue(JSON.stringify(inputs))}` : ''}`;
+  }
+  return `teamai benchmark run ${inputs.suite}${inputs.aliases === 'member' ? ' --member-aliases' : ''}`;
+}
+
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, secrets, async (run, now, finish) => {
+    if (isIsolated(run)) {
+      return error('not_retryable', `Run ${run.id} is isolated: it runs only on the machine that started it, and a step that ran again would change what it already admitted or measured. Start a new run: ${restartCommand(run)}`);
+    }
+    if (run.finalizing) return error('not_retryable', `Run ${run.id} is running its finally steps; retry a step once the run ends`);
+    if (run.definition.finally?.some((item) => item.id === step)) {
+      return error('not_retryable', `Step "${step}" is a finally step, which runs again when the run ends again; retry a step of the run`);
+    }
     // A run this reconcile finds ended, by its timeout or budget too, is reopened by the retry like a settled one.
     let ended = run.status !== 'running';
     if (!ended) {

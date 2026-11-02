@@ -30,14 +30,18 @@ export function controlsYaml(steps: string): string {
   return `schemaVersion: v1alpha1\nname: build\ndescription: Exercise manual controls.\nsteps:\n${steps}\n`;
 }
 
-export interface ConformanceScenario {
+/**
+ * A benchmark suite as files: `benchmarks/<name>/suite.yaml` and `tasks/<task>.yaml`, where `{{startingCommit}}` in a
+ * task stands for the commit the runner's project starts at. The interpreter never touches the disk.
+ */
+export interface BenchmarkSuiteFiles {
   name: string;
-  workflowName: string;
-  yaml: string;
-  /** Other workflow files the scenario runs, by name. */
-  workflows?: Record<string, string>;
-  /** Variables in the environment of every teamai process the scenario runs. */
-  env?: Record<string, string>;
+  suite: string;
+  tasks: Record<string, string>;
+}
+
+interface ScenarioBase {
+  name: string;
   operations: ConformanceOperation[];
   /** Expected fields in the persisted run after all operations. */
   expectState?: Record<string, unknown>;
@@ -67,6 +71,21 @@ export function bothSkillProfiles<T>(refusal: T): { skill: T; 'skill-bare': T } 
   return { skill: refusal, 'skill-bare': refusal };
 }
 
+export interface WorkflowScenario extends ScenarioBase {
+  workflowName: string;
+  yaml: string;
+  /** Other workflow files the scenario runs, by name. */
+  workflows?: Record<string, string>;
+  /** Variables in the environment of every teamai process the scenario runs. */
+  env?: Record<string, string>;
+}
+
+export interface BenchmarkScenario extends ScenarioBase {
+  benchmark: BenchmarkSuiteFiles;
+}
+
+export type ConformanceScenario = WorkflowScenario | BenchmarkScenario;
+
 /**
  * The kinds of driver a scenario speaks as. Each sends the driver identity of its `kind`, so a lease one holds is
  * another kind's to the rest, and each declares what it can do in `driver.can`. A local driver's `hitl` comes from the
@@ -82,7 +101,7 @@ export const DRIVER_PROFILES = {
   /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next`. */
   skill: {
     kind: 'skill',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false },
   },
   /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
   'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
@@ -173,14 +192,24 @@ export type ConformanceClient = Pick<WorkflowClient, 'next' | 'report' | 'retry'
   // `checkout` is the in-process start's: the CLI always starts from its cwd.
   start: (name: string, options?: { driver?: StartDriver; confirmed?: boolean; env?: Record<string, string>; checkout?: string }) => Promise<WorkflowEnvelope>;
   respond: (runId: string, step: string, choice: string, options: { note?: string; pass?: number; json?: unknown; env?: Record<string, string> }) => Promise<WorkflowEnvelope>;
+  /**
+   * Starts a benchmark run of the suite the runner made from the scenario's files, and runs its plan step, so its trials
+   * wait for a driver. Every runner implements it, so no runner skips the trial scenarios.
+   */
+  startBenchmark: (suite: string) => Promise<WorkflowEnvelope>;
 };
 
 /**
  * The in-process client as a scenario's. `start` is the protocol's start whichever driver it names, since every driver
  * starts through it; `respond` answers as a process without a terminal would; both with `env` added to this one's.
+ * `startBenchmark` starts a benchmark run, which the protocol does not; without it, every suite is not found.
  */
-export function inProcessConformanceClient(client: WorkflowClient): ConformanceClient {
+export function inProcessConformanceClient(
+  client: WorkflowClient,
+  startBenchmark: ConformanceClient['startBenchmark'] = async (suite) => ({ error: { code: 'benchmark_not_found', message: `No benchmark suite "${suite}" in this client` } }),
+): ConformanceClient {
   return {
+    startBenchmark,
     start: (name, { env, confirmed, checkout } = {}) => client.start(name, {
       ...(checkout !== undefined ? { checkout } : {}), caller: { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true, mode: resolveRunMode({ ...process.env, ...env }) },
     }),
@@ -252,7 +281,7 @@ export function speaksAsDriverUnderTest(scenario: ConformanceScenario): boolean 
 export async function runConformanceScenario(scenario: ConformanceScenario, runner: ConformanceRunner, profile: DriverProfile): Promise<void> {
   const { client, expect } = runner;
   const speaker = (as: DriverProfile | undefined): DriverProfile => (standsForDriverUnderTest(as) ? profile : as);
-  const started = await client.start(scenario.workflowName);
+  const started = 'benchmark' in scenario ? await client.startBenchmark(scenario.benchmark.name) : await client.start(scenario.workflowName);
   if ('error' in started) throw new Error(started.error.message);
   const runId = String(started.data.run);
   const leases = new Map<string, SavedLease>();
@@ -339,7 +368,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         break;
       case 'start': {
         const { workflow, driver, confirmed, env } = operation;
-        expect(await client.start(workflow ?? scenario.workflowName, { driver, confirmed, env })).toMatchObject(operation.expect);
+        expect(await client.start(workflow ?? ('workflowName' in scenario ? scenario.workflowName : scenario.benchmark.name), { driver, confirmed, env })).toMatchObject(operation.expect);
         break;
       }
       case 'respond': {
@@ -376,7 +405,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   }
   if (refusal && !refused) throw new Error(`The scenario says ${profile} refuses it at ${refusal.at}, but no next saved as ${refusal.at} ran`);
   if (!refused) await expectEnd(scenario, runner, runId, leases);
-  const secrets = Object.entries(scenario.env ?? {});
+  const secrets = Object.entries('benchmark' in scenario ? {} : scenario.env ?? {});
   if (secrets.length === 0) return;
   const stored = JSON.stringify(await runner.readRun(runId));
   const record = JSON.stringify(await runner.readEndRecord(runId)) ?? '';

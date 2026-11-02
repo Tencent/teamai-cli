@@ -10,9 +10,11 @@ import path from 'node:path';
 import type { RunMode } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { runPasses, type RunPass } from '../workflow/loop.js';
-import { localRuns, settledHere } from '../workflow/scoring.js';
+import { localRuns } from '../workflow/scoring.js';
+import { settledHere } from '../workflow/scoring-entries.js';
 import { installOwner } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
+import { isIsolated } from '../workflow/workspace.js';
 import { AgentSession, recordedToolRoots, sessionKey, type ToolRootsLookup } from './agent-session.js';
 import { archiveSessions, pushSession, type ArchiveSessionRef } from './archive.js';
 import { SessionCaptures } from './captures.js';
@@ -132,7 +134,8 @@ type UnrecordedPass = { pass: RunPass; key: PublishedKey };
  * unless this data home recorded it already.
  */
 async function unrecordedSteps(config: LocalConfig, mode: RunMode): Promise<Array<{ run: RunState; passes: UnrecordedPass[] }>> {
-  const ended = (await localRuns(config)).filter((run) => run.status !== 'running' && (run.runMode ?? 'attended') === mode);
+  // An isolated run stays on the machine that started it, and so do its steps' sessions.
+  const ended = (await localRuns(config)).filter((run) => run.status !== 'running' && !isIsolated(run) && (run.runMode ?? 'attended') === mode);
   if (ended.length === 0) return [];
   const install = (await installOwner(config)).id;
   const runs: Array<{ run: RunState; passes: UnrecordedPass[] }> = [];

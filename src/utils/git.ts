@@ -1575,9 +1575,14 @@ export type HeadState = { head: string; dirty: boolean };
  * commands may need.
  */
 export async function getHeadState(cwd: string, abort?: AbortSignal): Promise<HeadState | null> {
-  const out = await createGit(cwd, abort).raw([
-    '--no-optional-locks', 'status', '--porcelain=v2', '--branch', '--untracked-files=no',
-  ]);
+  return headStateOf(await createGit(cwd, abort).raw([...HEAD_STATUS]));
+}
+
+/** The `git status` arguments `getHeadState` runs, for a caller that runs git its own way. */
+export const HEAD_STATUS = ['--no-optional-locks', 'status', '--porcelain=v2', '--branch', '--untracked-files=no'] as const;
+
+/** `getHeadState` from the output of `git` with `HEAD_STATUS`. */
+export function headStateOf(out: string): HeadState | null {
   const lines = out.split('\n').filter(Boolean);
   const head = lines.find((l) => l.startsWith('# branch.oid '))?.slice('# branch.oid '.length).trim();
   if (!head || head === '(initial)') return null;
