@@ -9,19 +9,31 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { z } from 'zod';
 
+import { JsonValueSchema, type JsonValue } from './types.js';
 import { log } from './utils/logger.js';
 
 // ─── 类型 ────────────────────────────────────────────────
 
-export type Risk = 'high' | 'medium' | 'low';
+const RISKS = ['high', 'medium', 'low'] as const;
+
+export type Risk = typeof RISKS[number];
+
+const PendingReviewPayloadSchema = z.record(z.string(), JsonValueSchema);
+
+export type PendingReviewPayload = z.infer<typeof PendingReviewPayloadSchema>;
 
 export interface PendingReviewItem {
     id: string;
     ts: string;
-    kind: 'codebase-section' | 'domain-drift' | 'multi-source-conflict';
+    /**
+     * Written as 'codebase-section', 'domain-drift' or 'multi-source-conflict'.
+     * A loaded kind stays a plain string so an entry from a newer CLI survives a later save.
+     */
+    kind: string;
     target: { file: string; section?: string };
-    payload: Record<string, unknown>;
+    payload: PendingReviewPayload;
     source: string;
     risk: Risk;
 }
@@ -79,38 +91,46 @@ export function inferRisk(target: { file: string; section?: string }): Risk {
 
 // ─── 旧 schema 归一化 ────────────────────────────────────
 
-interface LegacyRecord {
-    ts?: string;
-    type?: string;
-    file?: string;
-    section?: string;
-    source?: string;
-    content?: string;
-    [key: string]: unknown;
-}
+const OptionalTextSchema = z.string().optional().catch(undefined);
+
+/** One stored line: the current schema (has `kind`) or the legacy iwiki-dual shape (type / file / section / content). */
+const StoredReviewLineSchema = z.object({
+    kind: OptionalTextSchema,
+    id: OptionalTextSchema,
+    ts: OptionalTextSchema,
+    target: z.object({ file: OptionalTextSchema, section: OptionalTextSchema }).optional().catch(undefined),
+    payload: PendingReviewPayloadSchema.optional().catch(undefined),
+    source: OptionalTextSchema,
+    risk: z.enum(RISKS).optional().catch(undefined),
+    type: OptionalTextSchema,
+    file: OptionalTextSchema,
+    section: OptionalTextSchema,
+    content: OptionalTextSchema,
+});
 
 /**
  * 将旧格式条目归一化为新 schema。
  * 若条目已是新 schema（含 kind 字段），直接返回。
  */
-function normalizeItem(raw: Record<string, unknown>): PendingReviewItem | null {
-    const legacy = raw as LegacyRecord;
+function normalizeItem(raw: JsonValue): PendingReviewItem | null {
+    const legacy = StoredReviewLineSchema.safeParse(raw).data;
+
+    if (!legacy) return null;
 
     // 新 schema 判断：含 kind 字段
-    if (typeof raw['kind'] === 'string') {
-        const item = raw as Partial<PendingReviewItem>;
-        const file = item.target?.file ?? '';
-        const section = item.target?.section;
-        const ts = item.ts ?? new Date().toISOString();
+    if (legacy.kind !== undefined) {
+        const file = legacy.target?.file ?? '';
+        const section = legacy.target?.section;
+        const ts = legacy.ts ?? new Date().toISOString();
 
         return {
-            id: item.id ?? computeReviewId(file, section, ts),
+            id: legacy.id ?? computeReviewId(file, section, ts),
             ts,
-            kind: item.kind ?? 'codebase-section',
+            kind: legacy.kind,
             target: { file, section },
-            payload: item.payload ?? {},
-            source: item.source ?? '',
-            risk: item.risk ?? inferRisk({ file, section }),
+            payload: legacy.payload ?? {},
+            source: legacy.source ?? '',
+            risk: legacy.risk ?? inferRisk({ file, section }),
         };
     }
 
@@ -163,10 +183,10 @@ export async function loadPendingReview(cwd: string): Promise<PendingReviewItem[
 
         if (!trimmed) continue;
 
-        let parsed: Record<string, unknown>;
+        let parsed: JsonValue;
 
         try {
-            parsed = JSON.parse(trimmed) as Record<string, unknown>;
+            parsed = JSON.parse(trimmed);
         } catch (err) {
             log.debug(`[review-store] 跳过损坏行: ${trimmed.slice(0, 80)} — ${String(err)}`);
             continue;

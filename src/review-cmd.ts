@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import chalk from 'chalk';
 import fs from 'fs-extra';
+import { z } from 'zod';
 
 import { patchManagedSection } from './section-patcher.js';
 import type { GlobalOptions } from './types.js';
@@ -109,9 +110,9 @@ function renderShow(item: PendingReviewItem): void {
         console.log(`    section: ${item.target.section}`);
     }
 
-    const content = item.payload['content'];
+    const content = z.string().safeParse(item.payload['content']).data;
 
-    if (typeof content === 'string' && content) {
+    if (content) {
         console.log(`  ${chalk.cyan('content')}:`);
         const lines = content.split('\n').slice(0, 20);
 
@@ -207,7 +208,8 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         }
 
         if (jsonMode) {
-            console.log(JSON.stringify({ results, skipped: skipped.map((s) => s.id), ...(dryRun ? { dryRun: true } : {}) }));
+            // JSON.stringify drops an undefined dryRun, so the key appears only in dry runs (same below).
+            console.log(JSON.stringify({ results, skipped: skipped.map((s) => s.id), dryRun: dryRun ? true : undefined }));
 
             return;
         }
@@ -256,7 +258,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         log.warn(`[review] not found: id="${idArg}"`);
 
         if (jsonMode) {
-            console.log(JSON.stringify({ ok: false, reason: `not found: id="${idArg}"`, ...(dryRun ? { dryRun: true } : {}) }));
+            console.log(JSON.stringify({ ok: false, reason: `not found: id="${idArg}"`, dryRun: dryRun ? true : undefined }));
         }
 
         return;
@@ -267,7 +269,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         if (!dryRun) await removePendingReview(cwd, idArg);
 
         if (jsonMode) {
-            console.log(JSON.stringify({ ok: true, action: 'reject', id: idArg, ...(dryRun ? { dryRun: true } : {}) }));
+            console.log(JSON.stringify({ ok: true, action: 'reject', id: idArg, dryRun: dryRun ? true : undefined }));
 
             return;
         }
@@ -286,7 +288,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         }
 
         if (jsonMode) {
-            console.log(JSON.stringify({ ok: result.ok, reason: result.reason, id: idArg, ...(dryRun ? { dryRun: true } : {}) }));
+            console.log(JSON.stringify({ ok: result.ok, reason: result.reason, id: idArg, dryRun: dryRun ? true : undefined }));
 
             return;
         }
