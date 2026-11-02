@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import { z } from 'zod';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -15,7 +16,7 @@ import { log } from './utils/logger.js';
 import type {
   UserStats, UserModeStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig, RequestCostMetrics, UserVotesV2,
 } from './types.js';
-import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree } from './types.js';
+import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree, JsonValueSchema } from './types.js';
 import { filterEventsByScope, runsOfLog } from './dashboard-scope.js';
 import {
   creditedPrompts, interventionsEntry, promptTokensEntry, readOwnerCredits, recordSessionOwners, reportedBeyondShared, reportedSize,
@@ -79,6 +80,8 @@ async function readExistingStats(statsPath: string): Promise<UserStats | null> {
     const content = await readFileSafe(statsPath);
 
     if (!content) return null;
+    // SAFETY: stats/<user>.yaml is written only by this module, from a merged UserStats; a file without the
+    // username and skills every such write carries is dropped below.
     const parsed = YAML.parse(content) as UserStats;
 
     if (parsed?.username && parsed?.skills) return parsed;
@@ -247,10 +250,15 @@ async function readSnapshot<T>(
     if (sharedTime) await fs.promises.utimes(own, sharedTime, sharedTime);
   } catch (e) {
     // Seeded again next time: the shared file is not written any more.
-    log.debug(`Could not seed ${own}: ${(e as Error).message}`);
+    log.debug(`Could not seed ${own}: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return seed;
+}
+
+/** A snapshot file's entries; a file that does not hold a JSON object holds none. */
+function snapshotEntries<T>(parsed: Record<string, T> | null): Record<string, T> {
+  return parsed !== null && z.looseObject({}).safeParse(parsed).success ? parsed : {};
 }
 
 export async function readReportedInterventions(config: LocalConfig | undefined, persist = true, ownerState?: SessionOwnerState): Promise<ReportedInterventions> {
@@ -259,14 +267,14 @@ export async function readReportedInterventions(config: LocalConfig | undefined,
     take: takeInterventions(await sharedCoverage(events)),
   }), persist, ownerState);
 
-  return parsed && typeof parsed === 'object' ? parsed : {};
+  return snapshotEntries(parsed);
 }
 
 async function writeReportedInterventions(data: ReportedInterventions, config: LocalConfig | undefined): Promise<void> {
   try {
     await writeJson(scopeSnapshotPath('interventions', config), data);
   } catch (e) {
-    log.error(`Failed to persist reported interventions: ${(e as Error).message}`);
+    log.error(`Failed to persist reported interventions: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -352,7 +360,7 @@ function takeDaily(covered: (runId: string) => boolean): TakeReported<DailySessi
 export function computeInterventionDelta(
   current: Map<string, { interrupt: number; toolReject: number; correction: number }>,
   reported: ReportedInterventions,
-): { delta: UserInterventionStats; nextReported: ReportedInterventions } {
+) {
   const delta: UserInterventionStats = { sessions: 0, interrupt: 0, toolReject: 0, correction: 0 };
   const nextReported: ReportedInterventions = {};
 
@@ -403,14 +411,14 @@ export async function readReportedPromptTokens(config: LocalConfig | undefined, 
     take: takePromptTokens,
   }), persist, ownerState);
 
-  return parsed && typeof parsed === 'object' ? parsed : {};
+  return snapshotEntries(parsed);
 }
 
 async function writeReportedPromptTokens(data: ReportedPromptTokens, config: LocalConfig | undefined): Promise<void> {
   try {
     await writeJson(scopeSnapshotPath('prompt-tokens', config), data);
   } catch (e) {
-    log.error(`Failed to persist reported prompt/token snapshot: ${(e as Error).message}`);
+    log.error(`Failed to persist reported prompt/token snapshot: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -429,22 +437,29 @@ function segmentKey(transcript: string): string {
   return createHash('sha256').update(transcript).digest('hex').slice(0, 16);
 }
 
+/** A snapshot entry's reported rollouts as a file holds them. */
+const StoredSegmentsSchema = z.object({ segments: z.record(z.string(), JsonValueSchema) });
+
+/** A stored rollout's fields beyond its prompts, tokens and interventions: 0, none and false for what it does not hold. */
+const StoredSegmentFieldsSchema = z.object({
+  durationMs: z.number().catch(0),
+  requestDaily: JsonValueSchema.optional(),
+  failed: z.boolean().catch(false),
+}).catch({ durationMs: 0, requestDaily: undefined, failed: false });
+
 /** The reported rollouts of a snapshot entry read from a file; empty when it holds none. */
-function reportedSegments(entry: unknown): ReportedSegments {
+function reportedSegments(entry: ReportedPromptTokens[string]): ReportedSegments {
   const segments: ReportedSegments = {};
+  const stored = StoredSegmentsSchema.safeParse(entry);
 
-  if (!entry || typeof entry !== 'object' || !('segments' in entry) || !entry.segments || typeof entry.segments !== 'object') {
-    return segments;
-  }
+  if (!stored.success) return segments;
 
-  for (const [key, segment] of Object.entries(entry.segments)) {
+  for (const [key, segment] of Object.entries(stored.data.segments)) {
     const iv = interventionsEntry(segment);
-    const durationMs: unknown = segment && typeof segment === 'object' && 'durationMs' in segment ? segment.durationMs : 0;
+    const { durationMs, requestDaily, failed } = StoredSegmentFieldsSchema.parse(segment);
     segments[key] = {
       ...promptTokensEntry(segment), interrupt: iv.interrupt, toolReject: iv.toolReject, correction: iv.correction,
-      durationMs: typeof durationMs === 'number' ? durationMs : 0,
-      requestDaily: parseRequestDaily(segment && typeof segment === 'object' && 'requestDaily' in segment ? segment.requestDaily : undefined),
-      failed: !!segment && typeof segment === 'object' && 'failed' in segment && segment.failed === true,
+      durationMs, requestDaily: parseRequestDaily(requestDaily), failed,
     };
   }
 
@@ -571,7 +586,7 @@ export function computePromptTokenDelta(
   current: Map<string, SessionMetrics>,
   reported: ReportedPromptTokens,
   dropped: Map<string, DroppedRollout[]> = droppedRollouts(current, reported, {}, {}),
-): { delta: PromptTokenDelta; nextReported: ReportedPromptTokens } {
+) {
   const delta: PromptTokenDelta = { prompts: 0, tokens: emptyTokenUsage() };
   const nextReported: ReportedPromptTokens = {};
 
@@ -602,7 +617,10 @@ export function computePromptTokenDelta(
 
     delta.prompts += Math.max(0, prompts - (prev?.prompts ?? 0));
     delta.tokens = addTokenUsage(delta.tokens, tokenDelta(tokens, prev?.tokens));
-    nextReported[sid] = { prompts, tokens, ...(segments ? { segments } : {}) };
+    const entry: ReportedPromptTokens[string] = { prompts, tokens };
+
+    if (segments) entry.segments = segments;
+    nextReported[sid] = entry;
   }
 
   return { delta, nextReported };
@@ -617,7 +635,7 @@ export function withDroppedRollouts(
   interventions: Map<string, ReportedInterventions[string]>,
   daily: Map<string, DailySessionSnapshot>,
   dropped: Map<string, DroppedRollout[]>,
-): { interventions: Map<string, ReportedInterventions[string]>; daily: Map<string, DailySessionSnapshot> } {
+) {
   const nextInterventions = new Map(interventions);
   const nextDaily = new Map(daily);
 
@@ -660,7 +678,7 @@ export function mergePromptTokenStats(
   existingPrompts: number | undefined,
   existingTokens: TokenUsage | undefined,
   delta: PromptTokenDelta,
-): { prompts: number; tokens: TokenUsage } {
+) {
   return {
     prompts: (existingPrompts ?? 0) + delta.prompts,
     tokens: addTokenUsage(existingTokens, delta.tokens),
@@ -725,13 +743,13 @@ async function creditSplitRuns(
   const credits = ownerCredits ?? await readOwnerCredits();
 
   for (const [runId, runEvents] of byRun) {
-    const homes = new Set(runEvents.flatMap((e) => (typeof e.dataHome === 'string' ? [e.dataHome] : [])));
+    const homes = new Set(runEvents.flatMap((e) => (e.dataHome === undefined ? [] : [e.dataHome])));
     // Its parts' events are gone: the credit the owners file seeded from their snapshots.
     const credit = homes.size < 2 ? credits.get(runId) : undefined;
 
     if (credit) {
       // Placed by the transcript where it can tell what the parts overlapped.
-      const transcripts = runEvents.flatMap((e) => (typeof e.transcriptPath === 'string' ? [e.transcriptPath] : []));
+      const transcripts = runEvents.flatMap((e) => (e.transcriptPath === undefined ? [] : [e.transcriptPath]));
       const prompts = (await creditedPrompts(credit, transcripts)) ?? credit.promptTokens.prompts;
       result.changed = raiseToCredit(result, runId, {
         promptTokens: { ...credit.promptTokens, prompts },
@@ -747,7 +765,7 @@ async function creditSplitRuns(
     const counted = new Set<DashboardEvent>();
 
     for (const home of homes) {
-      const snapshot = await readJson<Record<string, unknown>>(snapshotPathIn(home, 'prompt-tokens'));
+      const snapshot = await readJson<ReportedPromptTokens>(snapshotPathIn(home, 'prompt-tokens'));
       const target = reportedSize(snapshot?.[id]);
 
       if (!snapshot || !Object.hasOwn(snapshot, id)) continue;
@@ -962,7 +980,7 @@ export function adoptBareKeys<T>(
   current: Record<string, T>,
   take: TakeReported<T>,
   source: 'scope' | 'shared' = 'scope',
-): Record<string, T> {
+) {
   const legacyRuns = new Map<string, string[]>();
   const recorded = new Set<string>();
   const seen = new Set<string>();
@@ -974,7 +992,7 @@ export function adoptBareKeys<T>(
 
     if (recorded.has(id) || !Object.hasOwn(reported, id)) continue;
 
-    if (typeof runDataHomeKey === 'string' || (source === 'shared' && typeof dataHome === 'string')) {
+    if (runDataHomeKey !== undefined || (source === 'shared' && dataHome !== undefined)) {
       recorded.add(id);
       continue;
     }
@@ -1056,6 +1074,9 @@ function changedCounters(existing: UserModeStats | undefined, delta: UsageDelta)
 
 /** What one usage report did: pushed the new counts, found none to push, or did not push them (skipped or failed). */
 export type UsageReportOutcome = 'reported' | 'nothing' | 'unreported';
+
+/** The vote deltas a report staged, confirmed as synced once it is pushed. */
+type StagedVotes = { syncedDeltas?: UserVotesV2['deltas'] };
 
 /**
  * Reports this scope's usage data to the team repo.
@@ -1168,7 +1189,7 @@ export async function reportUsage(
 
     const writeReportFiles = async (
       writeRoot: string,
-      votesStaged: { syncedDeltas?: UserVotesV2['deltas'] },
+      votesStaged: StagedVotes,
     ): Promise<void> => {
       // The team's shared-skill catalog for the #1055 privacy filter. Always
       // enumerated from repoPath (the default-branch checkout): writeRoot may
@@ -1234,7 +1255,7 @@ export async function reportUsage(
           }
         }
       } catch (e) {
-        log.error(`Vote staging skipped: ${(e as Error).message}`);
+        log.error(`Vote staging skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
     };
 
@@ -1255,7 +1276,7 @@ export async function reportUsage(
 
     const { updateReports } = await import('./utils/reports-branch.js');
     const { isPublished } = await import('./utils/branch-worktree.js');
-    const votesStaged: { syncedDeltas?: UserVotesV2['deltas'] } = {};
+    const votesStaged: StagedVotes = {};
 
     const result = await updateReports(reportsConfig, async (wt, { onDelivered }) => {
       filesToPush.length = 0;
@@ -1326,10 +1347,10 @@ export async function reportUsage(
     try {
       await restoreStats?.();
     } catch (restoreError) {
-      log.error(`Could not restore report stats after failure: ${(restoreError as Error).message}`);
+      log.error(`Could not restore report stats after failure: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
     }
 
-    log.error(`Auto-report skipped: ${(e as Error).message}`);
+    log.error(`Auto-report skipped: ${e instanceof Error ? e.message : String(e)}`);
 
     return 'unreported';
   }
