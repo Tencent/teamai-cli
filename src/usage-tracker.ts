@@ -7,6 +7,7 @@ import {
   DEFAULT_TOOL_PATHS,
   getDataHome,
   getTeamaiHomeDir,
+  HookPayloadSchema,
   SKILL_NAME_REGEX,
   type JsonValue,
   type LocalConfig,
@@ -412,7 +413,7 @@ async function readStdin(): Promise<string> {
  * written before hook-dispatch call until a pull replaces them.
  */
 export async function track(rawToolName: string, toolInput: string, tool?: string): Promise<void> {
-  let input: unknown;
+  let input: JsonValue;
 
   try {
     input = JSON.parse(toolInput);
@@ -426,7 +427,7 @@ export async function track(rawToolName: string, toolInput: string, tool?: strin
 
   if (!config) return;
   const { creditToolCall } = await import('./skill-use.js');
-  await creditToolCall({ tool_name: rawToolName, tool_input: input }, tool ?? 'claude', config);
+  await creditToolCall(HookPayloadSchema.parse({ tool_name: rawToolName, tool_input: input }), tool ?? 'claude', config);
 }
 
 /** A hook payload from STDIN, or null when there is none or it is not a JSON object. */
