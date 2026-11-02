@@ -227,7 +227,7 @@ function resolveCodebuddyShell(): string | null {
  * what git shells out to (a credential helper, ssh) and go last. Git-for-
  * Windows layout, i.e. the same for any host that bundles one.
  */
-function gitPathDirs(root: string): { first: string[]; last: string[] } {
+function gitPathDirs(root: string) {
   return {
     first: [path.join(root, 'cmd')],
     last: [path.join(root, 'usr', 'bin'), path.join(root, 'mingw64', 'bin')],
@@ -275,8 +275,7 @@ export function ensureBundledRuntimeOnPath(platform: NodeJS.Platform = process.p
   }
 
   const roots = BUNDLED_GIT_RESOLVERS
-    .map(resolve => resolve().find(root => fs.existsSync(path.join(root, 'cmd', 'git.exe'))))
-    .filter((root): root is string => root !== undefined);
+    .flatMap(resolve => resolve().find(root => fs.existsSync(path.join(root, 'cmd', 'git.exe'))) ?? []);
 
   if (roots.length === 0) {
     log.debug('bundled runtime: no bundled git to add to PATH');
