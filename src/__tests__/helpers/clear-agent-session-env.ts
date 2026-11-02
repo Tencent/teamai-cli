@@ -39,6 +39,12 @@ for (const name of GIT_REPOSITORY_ENV) {
   delete process.env[name];
 }
 
+// A member who installed teamai's env loader exports BASH_ENV, so every bash a
+// test starts (a command step, a hook, a git that is a script) would source
+// their real ~/.teamai loader, route the test's directory, and run git for it.
+// A test that needs a BASH_ENV sets it.
+delete process.env.BASH_ENV;
+
 // Writing Codex hooks makes teamai run `codex app-server` to trust them (#955),
 // which would edit the developer's real Codex config. Shadow any `codex` on
 // PATH with one that exits at once, so every test file — and the CLIs it
