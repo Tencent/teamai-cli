@@ -345,7 +345,10 @@ export function renderCodexBlock(def: McpServerDef): string {
   if (Object.keys(env).length) {
     lines.push('');
     lines.push(`[mcp_servers.${def.name}.env]`);
-    for (const [k, v] of Object.entries(env)) lines.push(`${k} = ${q(v)}`);
+    for (const [k, v] of Object.entries(env)) {
+      const key = k.length > 0 && !/[^A-Za-z0-9_-]/.test(k) ? k : q(k);
+      lines.push(`${key} = ${q(v)}`);
+    }
   }
   return lines.join('\n') + '\n';
 }

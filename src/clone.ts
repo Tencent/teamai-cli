@@ -160,22 +160,22 @@ function resolveCloneAuth(
     if (forceSsh || isSshUrl(url)) {
         cloneUrl = isSshUrl(url) ? url : convertHttpToSsh(url);
         cloneMethod = 'ssh';
-        log.debug(`shallowClone: 使用 SSH 克隆 ${cloneUrl}`);
+        log.debug(`shallowClone: cloning over SSH ${cloneUrl}`);
     } else if (forceAnonymous) {
         cloneUrl = url;
         cloneMethod = 'https-anonymous';
-        log.debug(`shallowClone: forceAnonymous=true，匿名 HTTPS 克隆 ${url}`);
+        log.debug(`shallowClone: forceAnonymous=true; cloning over anonymous HTTPS ${url}`);
     } else if (provider === 'github') {
         const token = getGitHubToken();
         if (token) {
             cloneUrl = url;
             extraAuthHeader = buildAuthHeader(token);
             cloneMethod = 'https-token';
-            log.debug(`shallowClone: 使用 HTTPS+token 克隆 github 仓库`);
+            log.debug('shallowClone: cloning GitHub repository over HTTPS with token');
         } else {
             cloneUrl = url;
             cloneMethod = 'https-anonymous';
-            log.debug(`shallowClone: 使用匿名 HTTPS 克隆 github 仓库`);
+            log.debug('shallowClone: cloning GitHub repository over anonymous HTTPS');
         }
     } else if (provider === 'tgit') {
         // TGit 的 git 协议只认 gf 登录的 OAuth token（oauth2:<token>@ 嵌入 URL）；
@@ -185,11 +185,11 @@ function resolveCloneAuth(
         if (authed) {
             cloneUrl = authed;
             cloneMethod = 'https-token';
-            log.debug(`shallowClone: 使用 HTTPS+OAuth token 克隆 tgit 仓库`);
+            log.debug('shallowClone: cloning TGit repository over HTTPS with OAuth token');
         } else {
             cloneUrl = httpsUrl;
             cloneMethod = 'https-anonymous';
-            log.debug(`shallowClone: 无 TGit OAuth token，尝试匿名 HTTPS 克隆`);
+            log.debug('shallowClone: no TGit OAuth token; trying anonymous HTTPS');
         }
     } else if (provider === 'gitlab') {
         // GitLab: PAT 走 HTTP Basic（用户名固定 oauth2）。用 http.extraHeader 注入，
@@ -199,11 +199,11 @@ function resolveCloneAuth(
             cloneUrl = url;
             extraAuthHeader = buildAuthHeader(token, 'oauth2');
             cloneMethod = 'https-token';
-            log.debug(`shallowClone: 使用 HTTPS+token 克隆 gitlab 仓库`);
+            log.debug('shallowClone: cloning GitLab repository over HTTPS with token');
         } else {
             cloneUrl = url;
             cloneMethod = 'https-anonymous';
-            log.debug(`shallowClone: 无 GITLAB_TOKEN，尝试匿名 HTTPS 克隆`);
+            log.debug('shallowClone: no GITLAB_TOKEN; trying anonymous HTTPS');
         }
     } else if (provider === 'gitcode') {
         // GitCode: PAT 走 HTTP Basic（用户名固定 oauth2），用 http.extraHeader 注入，
@@ -215,16 +215,16 @@ function resolveCloneAuth(
         if (token) {
             extraAuthHeader = buildAuthHeader(token, 'oauth2');
             cloneMethod = 'https-token';
-            log.debug(`shallowClone: 使用 HTTPS+token 克隆 gitcode 仓库`);
+            log.debug('shallowClone: cloning GitCode repository over HTTPS with token');
         } else {
             cloneMethod = 'https-anonymous';
-            log.debug(`shallowClone: 无 GITCODE_TOKEN，尝试匿名 HTTPS 克隆`);
+            log.debug('shallowClone: no GITCODE_TOKEN; trying anonymous HTTPS');
         }
     } else {
         // 其他 provider 依赖 Git 自身的 credential helper / ~/.netrc。
         cloneUrl = url.replace(/^http:\/\//, 'https://');
         cloneMethod = 'https-anonymous';
-        log.debug(`shallowClone: 使用 HTTPS (Git credential helper / ~/.netrc) 克隆 ${provider} 仓库`);
+        log.debug(`shallowClone: cloning ${provider} repository over HTTPS (Git credential helper / ~/.netrc)`);
     }
 
     return { cloneUrl, cloneMethod, extraAuthHeader };
@@ -304,7 +304,7 @@ export async function shallowClone(
         branch = 'HEAD';
     }
 
-    log.debug(`shallowClone 完成：sha=${sha.slice(0, 8)}, branch=${branch}, method=${cloneMethod}`);
+    log.debug(`shallowClone complete: sha=${sha.slice(0, 8)}, branch=${branch}, method=${cloneMethod}`);
     return { sha, branch, cloneMethod };
 }
 

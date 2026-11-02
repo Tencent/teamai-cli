@@ -68,6 +68,27 @@ describe('shallowClone — windowsHide', () => {
       expect(options.windowsHide).toBe(true);
     }
     expect(result.cloneMethod).toBe('https-anonymous');
+    const debugLines = vi.mocked(log.debug).mock.calls.map(([message]) => String(message));
+    expect(debugLines).toContain(
+      'shallowClone: cloning git repository over HTTPS (Git credential helper / ~/.netrc)',
+    );
+    expect(debugLines).toContain(
+      'shallowClone complete: sha=, branch=, method=https-anonymous',
+    );
+    expect(debugLines.join('\n')).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it('reports an explicitly anonymous clone in English', async () => {
+    await shallowClone(
+      'https://example.com/org/repo.git',
+      path.join(tmp, 'anonymous-repo'),
+      'git',
+      { forceAnonymous: true },
+    );
+
+    expect(log.debug).toHaveBeenCalledWith(
+      'shallowClone: forceAnonymous=true; cloning over anonymous HTTPS https://example.com/org/repo.git',
+    );
   });
 });
 

@@ -63,7 +63,7 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
       const source = parsed.data['source'] ?? parsed.data['repo_url'];
 
       if (!source) {
-        result.skipped.push(`${slug}: 无 source/repo_url 字段`);
+        result.skipped.push(`${slug}: missing source/repo_url field`);
         continue;
       }
 
@@ -93,7 +93,8 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
     console.log(JSON.stringify({ status: 'done', ...result }, null, 2));
   } else {
     if (result.migrated.length > 0) {
-      log.success(`已迁移 ${result.migrated.length} 个仓库到 teamwiki/ 格式`);
+      const noun = result.migrated.length === 1 ? 'repository' : 'repositories';
+      log.success(`migrated ${result.migrated.length} ${noun} to teamwiki/ format`);
       for (const m of result.migrated) {
         console.log(chalk.green(`  ✓ ${m}`));
       }

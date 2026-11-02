@@ -341,6 +341,8 @@ servers:
 
 密钥写 `${VAR}`，并在 `env/secrets.yaml` 里声明。只给一个项目时，写到 `mcp/<ns>/mcp.yaml`。
 
+stdio server 的 `env` 键在 Codex TOML 中保持原样：`HTTP.PROXY` 是一个变量，`ProgramFiles(x86)` 等名称会自动加引号。
+
 ZCode 的 server 写入 `~/.zcode/cli/config.json` 或项目的 `.zcode/config.json`，位于 `mcp.servers` 下。这基于 3.16.2 源码，尚未认证 3.15.1。Pull 只从 `~/.agents/mcp.json` 移走未被修改的 teamai 条目。原生配置中有 server 后，桌面应用不再读取该备用文件，doctor 会列出其中的其他 server。
 
 Antigravity 的用户级 server 写入 `~/.gemini/config/mcp_config.json`。项目级 server 它只从插件读取，所以 teamai 把它们写成一个插件：

@@ -361,7 +361,7 @@ async function listedFilePath(target: AgentAdapter, sessionId: string, cwd: stri
 async function listPlatform(platform: string, cwd: string | undefined, toolRoots: ToolRoots, archived: boolean): Promise<AgentSessionList> {
   const adapter = adapterFor(platform, 'read', toolRoots);
   if ('code' in adapter) return { sessions: [], failures: [adapter] };
-  if (!adapter.isReady()) {
+  if (!adapter.isReady(cwd)) {
     const message = `${platform} is not installed or its session storage directory was not found.`;
     return { sessions: [], failures: [{ code: 'tool_unavailable', platform, message }] };
   }

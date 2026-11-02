@@ -77,7 +77,7 @@ function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } 
         return { type: 'page', id: pageMatch[1] };
     }
     throw new Error(
-        `无法识别 iWiki 输入格式："${trimmed}"。请输入纯数字 Space ID 或含 /p/ 的页面 URL。`,
+        `Unrecognized iWiki input: "${trimmed}". Enter a numeric Space ID or a page URL containing /p/.`,
     );
 }
 
@@ -98,7 +98,7 @@ async function downloadDocuments(
             if (result.status === 'fulfilled') {
                 documents.push(result.value);
             } else {
-                log.warn(`下载文档失败，已跳过: ${String(result.reason)}`);
+                log.warn(`Failed to download document; skipped: ${String(result.reason)}`);
             }
         }
     }
@@ -257,7 +257,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
     const token = opts.token ?? process.env['TAI_PAT_TOKEN'];
     if (!token) {
         throw new Error(
-            '请设置 TAI_PAT_TOKEN 环境变量（获取地址：https://tai.it.woa.com/user/pat）',
+            'Set the TAI_PAT_TOKEN environment variable (create one at https://tai.it.woa.com/user/pat).',
         );
     }
 
@@ -277,7 +277,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
     }
 
     if (pages.length === 0) {
-        log.warn('iWiki 双路：未找到任何页面');
+        log.warn('iWiki dual import: No pages found.');
         return { sectionsUpdated: [], pendingReview: false };
     }
 
@@ -285,7 +285,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
     const documents = await downloadDocuments(client, pages);
 
     if (documents.length === 0) {
-        log.warn('iWiki 双路：所有文档下载失败');
+        log.warn('iWiki dual import: All document downloads failed.');
         return { sectionsUpdated: [], pendingReview: false };
     }
 
@@ -298,7 +298,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
     try {
         aiOutput = JSON.parse(jsonStr) as Partial<AiSectionOutput>;
     } catch (err) {
-        log.warn(`iWiki 双路：AI 输出非 JSON，跳过全部章节。错误：${String(err)}`);
+        log.warn(`iWiki dual import: AI output is not valid JSON; skipped all sections. Error: ${String(err)}`);
         return { sectionsUpdated: [], pendingReview: false };
     }
 
@@ -338,7 +338,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
         for (const sectionKey of sections) {
             const body = aiOutput[sectionKey] ?? '';
             if (!body) {
-                log.warn(`iWiki 双路：章节 "${sectionKey}" 内容为空，跳过`);
+                log.warn(`iWiki dual import: Section "${sectionKey}" is empty; skipped.`);
                 continue;
             }
             content = replaceManagedSection(content, sectionKey, body, source, ts);
@@ -354,7 +354,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
                 updatedSections.push(sectionKey);
             }
         }
-        log.info(`[dry-run] 将更新章节：${updatedSections.join(', ')}`);
+        log.info(`[dry-run] Sections to update: ${updatedSections.join(', ')}`);
     }
 
     return { sectionsUpdated: updatedSections, pendingReview: false };
