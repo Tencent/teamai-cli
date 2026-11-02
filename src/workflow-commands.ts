@@ -915,6 +915,10 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
     return;
   }
   const { config, secrets } = loaded;
+  if (options.failOnRegression && options.driver === 'skill') {
+    writeEnvelope({ error: { code: 'invalid_arguments', message: `--fail-on-regression needs --driver local: with --driver skill the coding session drives the run after this command returns, so it has no ended run to compare. Run with --driver local, or without --fail-on-regression.` } }, secrets);
+    return;
+  }
   const memberAliases = options.memberAliases === true;
   // The plan step decides unattended trials from the step that runs its plan; refusals do not depend on it.
   const preflight = await planBenchmark(config, suite, { checkout: process.cwd(), memberAliases, unattended: false });
@@ -984,7 +988,7 @@ function regressionLines(regression: Regression, suite: string): string[] {
   }
 }
 
-/** `teamai benchmark try <task-file>`: whether a task's check tells its fix from no change. Needs no init and no run. */
+/** `teamai benchmark try <task-file>`: whether a task's check tells its solution from no change. Needs no init and no run. */
 export async function benchmarkTry(file: string): Promise<void> {
   setStderrOnly(true);
   writeEnvelope(await tryBenchmarkTask(file, { checkout: process.cwd(), signal: interruptSignal(), progress: (line) => log.info(line) }), collectEnvSecrets());

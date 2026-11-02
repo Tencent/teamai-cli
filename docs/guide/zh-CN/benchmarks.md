@@ -477,7 +477,7 @@ $ teamai benchmark run fix-auth --sandbox --fail-on-regression
 Arm "claude" passed 4/9 paired trials, against 8/9 in run r1c0d9e2f4b6a8c7d: a drop of 44 points, with a 95% interval of -73 to -16 points.
 ```
 
-`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，并且任务和 arm 相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，运行以 1 退出。仍在本机等待的记录不参与比较。没有这样的运行时，它打印一条提示，不改变退出码。
+`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，并且任务和 arm 相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，运行以 1 退出。仍在本机等待的记录不参与比较。没有这样的运行时，它打印一条提示，不改变退出码。它需要本地驱动：使用 `--driver skill` 时，命令返回之后才由编码会话驱动运行，所以命令会拒绝这个参数。
 
 ## 在 CI 中运行
 

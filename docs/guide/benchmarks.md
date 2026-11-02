@@ -477,7 +477,7 @@ $ teamai benchmark run fix-auth --sandbox --fail-on-regression
 Arm "claude" passed 4/9 paired trials, against 8/9 in run r1c0d9e2f4b6a8c7d: a drop of 44 points, with a 95% interval of -73 to -16 points.
 ```
 
-`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and the run exits 1 when an arm's pass rate dropped by more than chance. Records still waiting on this machine are not compared. With no such run, it prints a notice and leaves the exit code alone.
+`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and the run exits 1 when an arm's pass rate dropped by more than chance. Records still waiting on this machine are not compared. With no such run, it prints a notice and leaves the exit code alone. It needs the local driver: with `--driver skill` the coding session drives the run after the command returns, so the command refuses the flag.
 
 ## Run in CI
 

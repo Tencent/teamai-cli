@@ -28,6 +28,17 @@ function stopFixing(fixture: BenchmarkFixture): void {
 }
 
 describe('benchmark run --fail-on-regression', () => {
+  it('is refused with --driver skill, which this command does not wait for, before any run starts', async () => {
+    const fixture = await fixtureOfThree();
+
+    const result = await fixture.teamai(['benchmark', 'run', 'fix', '--driver', 'skill', '--fail-on-regression']);
+
+    expect(result.code, said(result)).toBe(1);
+    expect(JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '{}')).toMatchObject({ error: { code: 'invalid_arguments',
+      message: '--fail-on-regression needs --driver local: with --driver skill the coding session drives the run after this command returns, so it has no ended run to compare. Run with --driver local, or without --fail-on-regression.' } });
+    expect(fixture.runIds()).toEqual([]);
+  }, 120_000);
+
   it('passes with a notice when no earlier run compares, then exits 1 when every trial that passed before fails', async () => {
     const fixture = await fixtureOfThree();
 
