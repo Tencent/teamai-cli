@@ -1,5 +1,6 @@
 import path from 'node:path';
 import YAML from 'yaml';
+import type { JsonValue } from './types.js';
 import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {
@@ -56,35 +57,36 @@ export type ResourceNamespaces = Record<RoleResourceType | 'learnings', string[]
 /** Every type a role or project can namespace, in the order resolution walks them. */
 export const NAMESPACED_RESOURCE_TYPES = [...ROLE_RESOURCE_TYPES, ...HAND_DECLARED_RESOURCE_TYPES] as const;
 
-function validateManifestShape(raw: unknown): RolesManifest {
-  if (!raw || typeof raw !== 'object') {
+/**
+ * A roles manifest as roles.yaml holds it, or one built in memory, checked with the same rules; throws on the first
+ * problem. The structure checks come first so each gets its own message before the schema runs.
+ */
+function checkRolesManifest(raw: JsonValue | RolesManifest): RolesManifest {
+  if (!(raw instanceof Object)) {
     throw new Error('Invalid roles manifest: expected an object');
   }
 
-  const candidate = raw as Record<string, unknown>;
-  const roles = candidate.roles;
+  const roles = Array.isArray(raw) ? undefined : raw.roles;
 
   if (!Array.isArray(roles) || roles.length === 0) {
     throw new Error('Invalid roles manifest: roles must be a non-empty array');
   }
 
-  const entries: unknown[] = roles;
-
-  for (const role of entries) {
-    if (!role || typeof role !== 'object') {
+  for (const role of roles) {
+    if (!(role instanceof Object)) {
       throw new Error('Invalid roles manifest: every role must be an object');
     }
 
     const id = 'id' in role && role.id != null ? String(role.id) : '<unknown>';
     const resources = 'resources' in role ? role.resources : undefined;
 
-    if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
+    if (!(resources instanceof Object) || Array.isArray(resources)) {
       throw new Error(`Invalid roles manifest: role ${id} is missing resources`);
     }
 
     // Accept 'learnings' for backward compatibility but only validate active types
     const ALLOWED_RESOURCE_KEYS = new Set<string>([...NAMESPACED_RESOURCE_TYPES, 'learnings']);
-    warnUnknownResourceKeys(resources, ALLOWED_RESOURCE_KEYS, 'roles', `role ${id}`);
+    warnUnknownResourceKeys(Object.keys(resources), ALLOWED_RESOURCE_KEYS, 'roles', `role ${id}`);
   }
 
   const manifest = parseManifest(RolesManifestSchema, raw, 'roles');
@@ -138,15 +140,15 @@ export async function loadRolesManifest(repoPath: string): Promise<RolesManifest
   }
 
   return parseManifestOnce(manifestPath, content, (text) => {
-    let raw: unknown;
+    let raw: JsonValue;
 
     try {
       raw = YAML.parse(text);
     } catch (error) {
-      throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`, { cause: error });
+      throw new Error(`Invalid roles manifest YAML: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
 
-    return validateManifestShape(raw);
+    return checkRolesManifest(raw);
   });
 }
 
@@ -171,7 +173,7 @@ export async function loadRolesManifestIfPresent(repoPath: string): Promise<Role
 
 export async function saveRolesManifest(repoPath: string, manifest: RolesManifest): Promise<void> {
   // Re-validate before writing to prevent persisting invalid manifests
-  validateManifestShape(manifest);
+  checkRolesManifest(manifest);
 
   const manifestDir = path.join(repoPath, 'manifest');
   const manifestPath = path.join(manifestDir, 'roles.yaml');
@@ -227,7 +229,7 @@ export function resolveRoleResourceNamespaces(input: {
     const out: string[] = [];
 
     for (const role of resolvedRoles) {
-      for (const namespace of (role.resources as Record<string, string[] | undefined>)[type] ?? []) {
+      for (const namespace of role.resources[type] ?? []) {
         if (seen.has(namespace)) continue;
         seen.add(namespace);
         out.push(namespace);

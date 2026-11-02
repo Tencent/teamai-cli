@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { expandHome } from './utils/fs.js';
 import { z } from 'zod';
+import type { JsonValue } from './types.js';
 import { warnOnce } from './utils/warn-once.js';
 
 /**
@@ -134,12 +135,12 @@ export const HandDeclaredNamespaceFields = {
  * load several times per pull. Never throws.
  */
 export function warnUnknownResourceKeys(
-  resources: object,
+  resourceKeys: readonly string[],
   allowed: ReadonlySet<string>,
   kind: 'projects' | 'roles',
   owner: string,
 ): void {
-  for (const key of Object.keys(resources)) {
+  for (const key of resourceKeys) {
     if (allowed.has(key)) continue;
     warnOnce(
       `manifest/${kind}.yaml: ${owner} declares unknown resource type "${key}", which this CLI ignores. `
@@ -180,7 +181,7 @@ export function fallbackNamespaceError(ids: string[], source: string): string | 
  * it do: one line naming the offending entry. A raw ZodError reaches the CLI as
  * an object dump, which tells an admin nothing about which line to edit.
  */
-export function parseManifest<S extends z.ZodType>(schema: S, raw: unknown, kind: ManifestKind): z.infer<S> {
+export function parseManifest<S extends z.ZodType>(schema: S, raw: JsonValue | z.output<S>, kind: ManifestKind): z.infer<S> {
   const parsed = schema.safeParse(raw);
 
   if (parsed.success) return parsed.data;
@@ -239,14 +240,14 @@ export async function readManifestFile(manifestPath: string, kind: ManifestKind)
   try {
     content = await fs.readFile(resolvedPath, 'utf-8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       const dangling = await danglingLinkOnPath(resolvedPath);
 
       if (!dangling) return null;
       throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${dangling} is a symbolic link with no target. Point the link at the manifest file, or replace the link with the file itself.`, { cause: error });
     }
 
-    throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${(error as Error).message}. Make it a readable file, then retry.`, { cause: error });
+    throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${error instanceof Error ? error.message : String(error)}. Make it a readable file, then retry.`, { cause: error });
   }
 
   if (content.trim() === '') throw emptyManifestError(kind, resolvedPath);
@@ -273,7 +274,12 @@ const parsedManifests = new Map<string, { content: string; manifest: unknown }>(
 export function parseManifestOnce<T>(manifestPath: string, content: string, parse: (content: string) => T): T {
   const known = parsedManifests.get(manifestPath);
 
-  if (known?.content === content) return structuredClone(known.manifest as T);
+  if (known?.content === content) {
+    // SAFETY: a manifest path names one file kind (projects.yaml, roles.yaml, members.yaml) that only its loader parses,
+    // so the manifest cached for it came from this same `parse` and is a T.
+    return structuredClone(known.manifest as T);
+  }
+
   const manifest = parse(content);
   parsedManifests.set(manifestPath, { content, manifest: structuredClone(manifest) });
 

@@ -7,7 +7,7 @@ import {
   HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespaceFields, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
-import type { LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig } from './types.js';
 
 /**
  * Project resource types. Unlike roles, `learnings` is an ACTIVE dimension here:
@@ -76,34 +76,36 @@ export type TeamProject = z.infer<typeof ProjectSchema>;
 
 export type ProjectsManifest = z.infer<typeof ProjectsManifestSchema>;
 
-function validateManifestShape(raw: unknown): ProjectsManifest {
-  if (!raw || typeof raw !== 'object') {
+/**
+ * A projects manifest as projects.yaml holds it, or one built in memory, checked with the same rules; throws on the
+ * first problem. The structure checks come first so each gets its own message before the schema runs.
+ */
+function checkProjectsManifest(raw: JsonValue | ProjectsManifest): ProjectsManifest {
+  if (!(raw instanceof Object)) {
     throw new Error('Invalid projects manifest: expected an object');
   }
 
-  const candidate = raw as Record<string, unknown>;
-  const projects = candidate.projects;
+  const projects = Array.isArray(raw) ? undefined : raw.projects;
 
   if (projects !== undefined && !Array.isArray(projects)) {
     throw new Error('Invalid projects manifest: projects must be an array');
   }
 
-  const entries: unknown[] = projects ?? [];
-
-  for (const project of entries) {
-    if (!project || typeof project !== 'object') {
+  for (const project of projects ?? []) {
+    if (!(project instanceof Object)) {
       throw new Error('Invalid projects manifest: every project must be an object');
     }
 
     const id = 'id' in project && project.id != null ? String(project.id) : '<unknown>';
     const resources = 'resources' in project ? project.resources : undefined;
 
-    if (resources !== undefined && (typeof resources !== 'object' || Array.isArray(resources))) {
+    // A null `resources` passes here and is the schema's to judge.
+    if (resources !== undefined && resources !== null && (!(resources instanceof Object) || Array.isArray(resources))) {
       throw new Error(`Invalid projects manifest: project ${id} has invalid resources`);
     }
 
     if (resources) {
-      warnUnknownResourceKeys(resources, new Set<string>(ALL_PROJECT_RESOURCE_TYPES), 'projects', `project ${id}`);
+      warnUnknownResourceKeys(Object.keys(resources), new Set<string>(ALL_PROJECT_RESOURCE_TYPES), 'projects', `project ${id}`);
     }
   }
 
@@ -150,26 +152,26 @@ export async function loadProjectsManifest(repoPath: string): Promise<ProjectsMa
   }
 
   return parseManifestOnce(manifestPath, content, (text) => {
-    let raw: unknown;
+    let raw: JsonValue;
 
     try {
       raw = YAML.parse(text);
     } catch (error) {
-      throw new Error(`Invalid projects manifest YAML: ${(error as Error).message}`, { cause: error });
+      throw new Error(`Invalid projects manifest YAML: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
 
-    return validateManifestShape(raw);
+    return checkProjectsManifest(raw);
   });
 }
 
 /** Validate a manifest built in memory with the same checks a load applies; throws on the first problem. */
-export function validateProjectsManifest(manifest: unknown): ProjectsManifest {
-  return validateManifestShape(manifest);
+export function validateProjectsManifest(manifest: ProjectsManifest): ProjectsManifest {
+  return checkProjectsManifest(manifest);
 }
 
 export async function saveProjectsManifest(repoPath: string, manifest: ProjectsManifest): Promise<void> {
   // Re-validate before writing to prevent persisting invalid manifests
-  validateManifestShape(manifest);
+  checkProjectsManifest(manifest);
 
   const manifestDir = path.join(repoPath, 'manifest');
   const manifestPath = path.join(manifestDir, 'projects.yaml');

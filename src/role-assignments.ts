@@ -1,5 +1,6 @@
 import path from 'node:path';
 import YAML from 'yaml';
+import type { JsonValue } from './types.js';
 import { z } from 'zod';
 import { caseFoldKey, emptyManifestError, parseManifest, parseManifestOnce, readManifestFile } from './manifest-schema.js';
 import { getDefaultBranch, getFileContentAtRev, getHeadCommit } from './utils/git.js';
@@ -54,8 +55,8 @@ export class RoleAssignmentsNotFoundError extends Error {
   }
 }
 
-function validateAssignments(raw: unknown): RoleAssignments {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+function validateAssignments(raw: JsonValue): RoleAssignments {
+  if (!(raw instanceof Object) || Array.isArray(raw)) {
     throw new Error('Invalid members manifest: expected an object');
   }
 
@@ -128,12 +129,12 @@ export async function loadRoleAssignments(repoPath: string, repo: { kind?: strin
   if (content === null) throw new RoleAssignmentsNotFoundError(where);
 
   return parseManifestOnce(manifestPath, content, (text) => {
-    let raw: unknown;
+    let raw: JsonValue;
 
     try {
       raw = YAML.parse(text);
     } catch (error) {
-      throw new Error(`Invalid members manifest YAML: ${(error as Error).message}`, { cause: error });
+      throw new Error(`Invalid members manifest YAML: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
 
     return validateAssignments(raw);
@@ -153,6 +154,12 @@ export async function loadRoleAssignmentsIfPresent(repoPath: string, repo: { kin
   }
 }
 
+/** The roles a member holds, and whether the file lists them or they fell back to `default`. */
+export interface AssignedRoles {
+  roles: string[];
+  source: 'assigned' | 'default';
+}
+
 /**
  * The roles the team assigned to `username`, primary first. A member the file
  * does not list gets `default`, which is usually no roles at all.
@@ -163,7 +170,7 @@ export async function loadRoleAssignmentsIfPresent(repoPath: string, repo: { kin
 export function resolveAssignedRoles(
   manifest: RoleAssignments,
   username: string,
-): { roles: string[]; source: 'assigned' | 'default' } {
+): AssignedRoles {
   const listed = Object.prototype.hasOwnProperty.call(manifest.members, username)
     ? manifest.members[username]
     : undefined;
