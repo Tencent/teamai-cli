@@ -269,7 +269,7 @@ export async function collectEvidence(
       if (found.status !== 'done') { gaps.add('transcript_not_found'); continue; }
 
       content = true;
-      const judged = judgedTranscript(found, { session: SESSION_MAX_CHARS, subagent: SUBAGENT_MAX_CHARS });
+      const judged = judgedTranscript(found, { session: SESSION_MAX_CHARS, subagent: SUBAGENT_MAX_CHARS }, mask);
 
       for (const gap of judged.gaps) gaps.add(gap);
       await fs.mkdir(path.join(tmp, 'transcripts'), { recursive: true });

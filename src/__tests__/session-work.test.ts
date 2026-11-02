@@ -18,6 +18,9 @@ import { parseLeaseRef } from '../scorers/entry.js';
 import { parseScoreLabels } from '../scorers/label.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
+import type { Session } from '../session-flow/ir.js';
+import { judgeSession } from '../session-flow/session-work.js';
+import { redact } from '../utils/redact.js';
 import { scoreSession } from '../session-flow/scoring.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { nextJudgeLease, runJudgeLease, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
@@ -368,5 +371,46 @@ describe('a finished session as judge work', () => {
       const config = await namespaced(...selections);
       expect(data(await nextJudgeLease(config, request(), NOW))).toEqual(IDLE);
     });
+  });
+});
+
+describe('the transcript a judge reads', () => {
+  const withCommand = (command: string): Session => ({
+    sessionId: SESSION, title: 'log in', cwd: '/tmp/proj', platform: 'claude-code', createdAt: NOW, updatedAt: NOW,
+    messages: [{ role: 'assistant', content: [{ type: 'tool_call', toolName: 'bash', callId: 'toolu_1', arguments: { command } }], timestamp: NOW }],
+  });
+
+  it('masks a key=value secret written as JSON inside a tool argument string', () => {
+    const judged = judgeSession({
+      platform: 'claude-code', found: { session: withCommand(`curl -d '{"password": "Tr0ub4dorAndHorse9"}' https://x`) },
+      captures: [], mask: (text) => redact(text),
+    });
+
+    expect(judged.body).not.toContain('Tr0ub4dorAndHorse9');
+    expect(judged.body).toContain('<REDACTED:kv>');
+  });
+
+  it('masks a known secret with a quote or backslash inside a tool argument string', () => {
+    const secret = 'p@ss"w0rd\\x9';
+    const judged = judgeSession({
+      platform: 'claude-code', found: { session: withCommand(`PGPASSWORD='${secret}' psql`) },
+      captures: [], mask: (text) => redact(text, { envSecrets: { DB_PASSWORD: secret } }),
+    });
+
+    expect(judged.body).not.toContain('w0rd');
+    expect(judged.body).toContain('<REDACTED:DB_PASSWORD>');
+  });
+
+  it('masks a known secret with a quote or backslash used as an argument key', () => {
+    const secret = 'p@ss"w0rd\\x9';
+    const session = withCommand('psql');
+    session.messages[0].content[0] = { type: 'tool_call', toolName: 'db', callId: 'toolu_1', arguments: { [secret]: 'login' } };
+    const judged = judgeSession({
+      platform: 'claude-code', found: { session },
+      captures: [], mask: (text) => redact(text, { envSecrets: { DB_PASSWORD: secret } }),
+    });
+
+    expect(judged.body).not.toContain('w0rd');
+    expect(judged.body).toContain('<REDACTED:DB_PASSWORD>');
   });
 });
