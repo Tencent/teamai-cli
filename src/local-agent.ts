@@ -10,6 +10,7 @@ import { detachChild } from './utils/exec.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import {
   ensureDir,
+  errnoCode,
   fileHash,
   listDirs,
   listFilesRecursive,
@@ -377,11 +378,6 @@ const ExecFailureSchema = z.object({
 /** The message of a caught error; a thrown non-Error reads as its string form. */
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-/** Whether a caught error is Node's report that the path does not exist. */
-function isMissingPath(cause: unknown): boolean {
-  return cause instanceof Error && 'code' in cause && cause.code === 'ENOENT';
 }
 
 function modelAgentKind(tool: string | undefined): ModelAgentKind | undefined {
@@ -2313,7 +2309,7 @@ export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Prom
       // failures — permission errors, unreachable network mounts — must NOT
       // delete a still-valid binding, or the server's full-sync snapshot
       // would drop that workspace's resources.
-      if (isMissingPath(error)) {
+      if (errnoCode(error) === 'ENOENT') {
         delete config.workspaceBindings[workspacePath];
         changed = true;
       } else {
@@ -3890,7 +3886,7 @@ async function writeModelJson(filePath: string, data: JsonValue): Promise<void> 
       targetPath = await fs.promises.realpath(filePath);
     }
   } catch (error) {
-    if (!isMissingPath(error)) throw error;
+    if (errnoCode(error) !== 'ENOENT') throw error;
   }
 
   // Set the temp file's mode before the atomic rename. A post-rename chmod

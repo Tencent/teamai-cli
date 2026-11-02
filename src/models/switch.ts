@@ -8,7 +8,7 @@ import { withoutTomlBom } from '../utils/toml.js';
 import { getUserHome } from '../utils/home.js';
 import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
 import { toolHome } from '../tool-home.js';
-import { pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
+import { errnoCode, pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';
@@ -39,11 +39,6 @@ const JsonObjectSchema = z.record(z.string(), JsonValueSchema);
 /** The message of a caught error, which fs, JSON and YAML raise as an `Error`. */
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-/** Whether a caught error is Node's report that the path does not exist. */
-function isMissingPath(cause: unknown): boolean {
-  return cause instanceof Error && 'code' in cause && cause.code === 'ENOENT';
 }
 
 /**
@@ -221,7 +216,7 @@ async function readOptionalFile(file: string): Promise<string | null> {
   try {
     return await fs.promises.readFile(file, 'utf8');
   } catch (error) {
-    if (isMissingPath(error)) return null;
+    if (errnoCode(error) === 'ENOENT') return null;
     throw error;
   }
 }
@@ -379,7 +374,7 @@ async function writableTarget(file: string): Promise<string> {
       ? await fs.promises.realpath(file)
       : file;
   } catch (error) {
-    if (isMissingPath(error)) return file;
+    if (errnoCode(error) === 'ENOENT') return file;
     throw error;
   }
 }
