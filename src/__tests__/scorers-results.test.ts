@@ -293,6 +293,24 @@ describe('what decided workflow labels', () => {
     expect(selected?.failing.labels.map((failing) => failing.decidedBy)).toEqual(['ci', 'ci']);
   });
 
+  it('counts a label a stage decided in the measurement of every model judge of its rubric, though no model ran for it', () => {
+    // A stage label names the judge the lease chose, which never reported a model; the judge's own labels did.
+    const byStage = { ...delivered('ci', false, 9), judge: { kind: 'model' as const, tool: 'claude', model: { requested: 'haiku' }, isolation: 'verified' as const, access: 'read' as const } };
+    const byCodex = { ...delivered('judge', true, 10), judge: { kind: 'model' as const, tool: 'codex', model: { reported: 'gpt-5.1-codex' }, isolation: 'verified' as const, access: 'read' as const } };
+    const view = ScorerResults.of({ labels: [...labels, viewed(byStage), viewed(byCodex)], query: { windowDays: 30 }, now: NOW });
+
+    expect(view.scorers[0]?.cohorts.map((cohort) => `${cohort.judge.kind === 'model' ? cohort.judge.tool : 'human'} ${cohort.stats.n}`).sort()).toEqual(['claude 9', 'codex 6']);
+    const codex = view.scorers[0]?.cohorts.find((cohort) => cohort.judge.kind === 'model' && cohort.judge.tool === 'codex')?.id;
+    expect(ScorerResults.of({ labels: [...labels, viewed(byStage), viewed(byCodex)], query: { windowDays: 30, cohort: codex }, now: NOW }).selected?.decided?.rows
+      .map((row) => `${row.by} ${row.stats.n}`)).toEqual(['ci 3', 'check 1', 'protected 1', 'judge 1']);
+  });
+
+  it('keeps labels a stage decided as their own measurement while no judge labelled the rubric', () => {
+    const view = ScorerResults.of({ labels: [delivered('ci', false, 1), delivered('protected', false, 2)].map((label) => viewed(label)), query: { windowDays: 30 }, now: NOW });
+
+    expect(view.scorers[0]?.cohorts.map((cohort) => cohort.stats.n)).toEqual([2]);
+  });
+
   it('says nothing of stages for session labels, which a judge always decides', () => {
     expect(ScorerResults.of({ labels: [viewed(sessionLabel())], query: { windowDays: 30 }, now: NOW }).selected).not.toHaveProperty('decided');
   });

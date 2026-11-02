@@ -253,6 +253,16 @@ function identityOf(label: ScoreLabel): { cohort: CohortIdentity; key: string } 
   return identity;
 }
 
+/** A workflow label that a check, CI or protected-path stage decided before any judge ran (#1247). */
+function isDecidedByStage(label: ScoreLabel): boolean {
+  return label.source === 'workflow' && label.decidedBy !== undefined && label.decidedBy !== 'judge';
+}
+
+/** Whether two cohorts measure the same scorer, rubric, source and run mode, whatever judged them. */
+function sameRubric(left: CohortIdentity, right: CohortIdentity): boolean {
+  return left.scorer === right.scorer && left.rubric.sourceHash === right.rubric.sourceHash && left.source === right.source && left.runMode === right.runMode;
+}
+
 function cohortOf(label: ScoreLabel): CohortIdentity {
   const identity = {
     scorer: label.scorer,
@@ -524,11 +534,19 @@ export const ScorerResults = {
 
     const kept = current(labels);
     const byCohort = new Map<string, { cohort: CohortIdentity; all: ViewedLabel[] }>();
-    for (const entry of kept) {
-      const { cohort } = identityOf(entry.label);
+    const add = (cohort: CohortIdentity, entry: ViewedLabel) => {
       const group = byCohort.get(cohort.id) ?? { cohort, all: [] };
       group.all.push(entry);
       byCohort.set(cohort.id, group);
+    };
+    for (const entry of kept) if (!isDecidedByStage(entry.label)) add(identityOf(entry.label).cohort, entry);
+    // A stage decides the same way whichever judge reads what passes it, so its labels count in every model judge's
+    // measurement of their rubric, and stand alone only while no judge labelled it.
+    for (const entry of kept.filter(({ label }) => isDecidedByStage(label))) {
+      const own = identityOf(entry.label).cohort;
+      const judged = [...byCohort.values()].filter(({ cohort }) => cohort.judge.kind === 'model' && sameRubric(cohort, own));
+      if (judged.length === 0) add(own, entry);
+      for (const { cohort } of judged) add(cohort, entry);
     }
 
     const byScorer = new Map<string, Array<{ summary: CohortSummary; all: ViewedLabel[] }>>();
