@@ -1,5 +1,8 @@
 import path from 'node:path';
 import { writeFile, mkdir } from 'node:fs/promises';
+
+import { z } from 'zod';
+
 import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
@@ -22,12 +25,20 @@ export interface EnrichResult {
   repoKeywords: string[];
 }
 
-interface ModuleAIResult {
-  domain: string;
-  responsibilities: string[];
-  layer: string;
-  summary: string;
-}
+const ModuleAIResultSchema = z.object({
+  domain: z.string(),
+  responsibilities: z.array(z.string()).optional().catch(undefined),
+  layer: z.string(),
+  summary: z.string().optional().catch(undefined),
+});
+
+type ModuleAIResult = z.infer<typeof ModuleAIResultSchema>;
+
+const DomainAIResultSchema = z.object({
+  domain: z.string(),
+  description: z.string().optional().catch(undefined),
+  keywords: z.array(z.string()).optional().catch(undefined),
+});
 
 function sanitizeForPrompt(text: string): string {
   return text.replace(/[\n\r]/g, ' ').replace(/[<>]/g, '').slice(0, 200);
@@ -77,13 +88,13 @@ ${modules}
 {"domain": "域名", "description": "一句话描述", "keywords": ["关键词1", "关键词2"]}`;
 }
 
-function parseJSON<T>(raw: string): T | null {
+function parseJSON<T>(raw: string, schema: z.ZodType<T>): T | null {
   const match = raw.match(/\{[\s\S]*\}/);
 
   if (!match) return null;
 
   try {
-    return JSON.parse(match[0]) as T;
+    return schema.safeParse(JSON.parse(match[0])).data ?? null;
   } catch {
     return null;
   }
@@ -183,14 +194,17 @@ export function buildFallbackManifest(ctx: {
       .slice(0, 5)
       .map(f => `${f.name} (${f.file}:${f.lineStart})`);
 
-    return {
+    const component: ManifestComponentV2 = {
       slug: name,
       docPath: `evidence/code/${ctx.project}/${name}.md`,
       title: name,
       category: 'component',
       confidence: 'EXTRACTED',
-      ...(entrypoints.length > 0 ? { entrypoints } : {}),
     };
+
+    if (entrypoints.length > 0) component.entrypoints = entrypoints;
+
+    return component;
   });
 
   return {
@@ -231,7 +245,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
   const tasks = moduleEntries.map(([moduleName, moduleFacts]) => ({
     prompt: buildModulePrompt(moduleName, moduleFacts, ctx.interfaceInventory),
     parse: (raw: string) => {
-      const result = parseJSON<ModuleAIResult>(raw);
+      const result = parseJSON(raw, ModuleAIResultSchema);
 
       return result ? { name: moduleName, result } : null;
     },
@@ -244,7 +258,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
     moduleResults = results.filter((r): r is { name: string; result: ModuleAIResult } => r !== null);
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.warn(`enrichWithAI: module analysis failed (non-blocking): ${(e as Error).message}`);
+    log.warn(`enrichWithAI: module analysis failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }
@@ -267,7 +281,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
     const domainTasks = [{
       prompt: domainPrompt,
       parse: (raw: string) => {
-        return parseJSON<{ domain: string; description: string; keywords: string[] }>(raw);
+        return parseJSON(raw, DomainAIResultSchema);
       },
     }];
 
@@ -275,7 +289,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
 
     if (domainResult) {
       repoDomain = domainResult.domain;
-      repoDescription = domainResult.description;
+      repoDescription = domainResult.description ?? '';
       repoKeywords = domainResult.keywords ?? [];
       const apiCount = ctx.interfaceInventory.entries.reduce((sum, e) => sum + e.count, 0);
       domains = [{ name: repoDomain, components: moduleResults.map(m => m.name), apiCount }];
@@ -307,7 +321,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
     // their real relation and source in `detail` ("<RELATION> → <target> (code-ast)");
     // regex heuristic facts carry a raw source line, so they keep the defaults.
     const moduleImports = ctx.facts.filter(f => f.kind === 'relation' && f.file.startsWith(name + '/'));
-    const targetEdges = new Map<string, { relation: string; source: ManifestEdgeSource }>();
+    const targetEdges = new Map<string, EdgeProvenance>();
 
     for (const imp of moduleImports) {
       const resolved = resolveImportToModule(imp.file, imp.name);
@@ -350,6 +364,11 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
   return { manifest, domains, repoDomain, repoDescription, repoKeywords };
 }
 
+export interface EdgeProvenance {
+  relation: string;
+  source: ManifestEdgeSource;
+}
+
 /**
  * Parse edge relation and source from a relation fact's detail string.
  *
@@ -357,7 +376,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
  * (regex heuristic facts, whose detail is a raw source line) falls back to a
  * DEPENDS_ON / code-heuristic default.
  */
-export function parseEdgeProvenance(detail: string): { relation: string; source: ManifestEdgeSource } {
+export function parseEdgeProvenance(detail: string): EdgeProvenance {
   if (detail.includes('(code-ast)')) {
     const relation = detail.startsWith('REFERENCES')
       ? 'REFERENCES'
@@ -379,7 +398,7 @@ export function parseEdgeProvenance(detail: string): { relation: string; source:
  * dependency (DEPENDS_ON) is the canonical module-level relation and wins,
  * keeping the edge consistent with the "imports from" reason.
  */
-export function edgeProvenanceRank(provenance: { relation: string; source: ManifestEdgeSource }): number {
+export function edgeProvenanceRank(provenance: EdgeProvenance): number {
   if (provenance.source !== 'code-ast') {
     return 0;
   }

@@ -1,6 +1,9 @@
 import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+
+import { z } from 'zod';
+
 import { pathExists } from './utils/fs.js';
 import { CallError, callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
@@ -22,42 +25,71 @@ export interface DeepEnrichResult {
   missingArchitecture: boolean;
 }
 
-interface ProgressState {
-  project: string;
-  phase: 'pending' | 'components' | 'architecture' | 'graph' | 'ai-graph' | 'index-enhance' | 'done';
-  componentsDone: string[];
-  componentsPending: string[];
-  startedAt: string;
-  updatedAt: string;
+const PROGRESS_PHASES = ['pending', 'components', 'architecture', 'graph', 'ai-graph', 'index-enhance', 'done'] as const;
+
+/** `_review/progress.json`, written only by saveProgress. */
+const ProgressStateSchema = z.object({
+  project: z.string(),
+  phase: z.enum(PROGRESS_PHASES),
+  componentsDone: z.array(z.string()),
+  componentsPending: z.array(z.string()),
+  startedAt: z.string(),
+  updatedAt: z.string(),
+});
+
+type ProgressState = z.infer<typeof ProgressStateSchema>;
+
+const OptionalTextSchema = z.string().optional().catch(undefined);
+const OptionalTextListSchema = z.array(z.string()).optional().catch(undefined);
+
+const ManifestComponentSchema = z.object({
+  slug: z.string(),
+  title: OptionalTextSchema,
+  responsibilities: OptionalTextListSchema,
+  category: OptionalTextSchema,
+  entrypoints: OptionalTextListSchema,
+  interfaces: OptionalTextListSchema,
+  errorCodeRanges: OptionalTextListSchema,
+});
+
+type ManifestComponent = z.infer<typeof ManifestComponentSchema>;
+
+const ManifestEdgeSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  relation: OptionalTextSchema,
+  protocol: OptionalTextSchema,
+  confidence: OptionalTextSchema,
+  weight: z.number().optional().catch(undefined),
+  reason: OptionalTextSchema,
+  evidenceRefs: OptionalTextListSchema,
+});
+
+type ManifestEdge = z.infer<typeof ManifestEdgeSchema>;
+
+/** A list whose malformed elements are skipped rather than failing the whole manifest. */
+function lenientList<T>(element: z.ZodType<T>) {
+  return z.array(element.nullable().catch(null))
+    .transform((list) => list.flatMap((entry) => (entry === null ? [] : [entry])))
+    .optional()
+    .catch(undefined);
 }
 
-interface ManifestComponent {
-  slug: string;
-  title?: string;
-  responsibilities?: string[];
-  category?: string;
-  entrypoints?: string[];
-  interfaces?: string[];
-  errorCodeRanges?: string[];
-}
+/** The evidence `_manifest.json`; a field of the wrong type reads as absent. */
+const ManifestSchema = z.object({
+  project: OptionalTextSchema,
+  generatedAt: OptionalTextSchema,
+  components: lenientList(ManifestComponentSchema),
+  edges: lenientList(ManifestEdgeSchema),
+});
 
-interface ManifestEdge {
-  from: string;
-  to: string;
-  relation?: string;
-  protocol?: string;
-  confidence?: string;
-  weight?: number;
-  reason?: string;
-  evidenceRefs?: string[];
-}
+type Manifest = z.infer<typeof ManifestSchema>;
 
-interface Manifest {
-  project?: string;
-  generatedAt?: string;
-  components?: ManifestComponent[];
-  edges?: ManifestEdge[];
-}
+/** The evidence `_domains.json`; a field of the wrong type reads as absent. */
+const DomainsFileSchema = z.object({
+  keywords: OptionalTextListSchema,
+  description: OptionalTextSchema,
+});
 
 // ─── 上下文加载 ─────────────────────────────────────────────
 
@@ -93,7 +125,7 @@ async function assertSafeOutputDir(dir: string): Promise<void> {
       }
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
   }
 }
 
@@ -130,7 +162,7 @@ async function loadContext(evidenceDir: string): Promise<EnrichContext> {
   let manifest: Manifest = {};
 
   try {
-    manifest = JSON.parse(manifestRaw) as Manifest;
+    manifest = ManifestSchema.parse(JSON.parse(manifestRaw));
   } catch {
     log.debug('deep-enrich: failed to parse _manifest.json');
   }
@@ -172,32 +204,14 @@ function progressPath(evidenceDir: string): string {
   return path.join(evidenceDir, PROGRESS_PATH_SUBDIR, PROGRESS_FILENAME);
 }
 
-const VALID_PHASES = new Set<string>([
-  'pending', 'components', 'architecture', 'graph',
-  'ai-graph', 'index-enhance', 'done',
-]);
-
-function isValidProgressState(v: unknown, project: string): v is ProgressState {
-  if (typeof v !== 'object' || v === null) return false;
-  const s = v as Record<string, unknown>;
-
-  return (
-    s['project'] === project &&
-    typeof s['phase'] === 'string' &&
-    VALID_PHASES.has(s['phase']) &&
-    Array.isArray(s['componentsDone']) &&
-    Array.isArray(s['componentsPending'])
-  );
-}
-
 async function loadProgress(evidenceDir: string, project: string, allComponents: string[]): Promise<ProgressState> {
   const p = progressPath(evidenceDir);
 
   try {
     const raw = await readFile(p, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
+    const parsed = ProgressStateSchema.safeParse(JSON.parse(raw)).data;
 
-    if (isValidProgressState(parsed, project)) return parsed;
+    if (parsed?.project === project) return parsed;
   } catch {
     // 不存在或解析失败，创建新的
   }
@@ -699,7 +713,7 @@ async function runPhaseComponents(
       };
     });
 
-    let results: string[];
+    let results: Array<string | null>;
 
     try {
       results = await callToolParallel(tasks, { launchedBy: 'deep-enrich', concurrency: BATCH });
@@ -721,9 +735,9 @@ async function runPhaseComponents(
           try {
             return (await callTool(tasks[idx].prompt, { launchedBy: 'deep-enrich' })).text;
           } catch (componentError) {
-            log.warn(`deep-enrich[${project}]: Skipping component ${batch[idx].slug}: ${(componentError as Error).message}`);
+            log.warn(`deep-enrich[${project}]: Skipping component ${batch[idx].slug}: ${componentError instanceof Error ? componentError.message : String(componentError)}`);
 
-            return null as unknown as string;
+            return null;
           }
         }),
       );
@@ -738,7 +752,7 @@ async function runPhaseComponents(
       try {
         assertSafeResourceName(comp.slug);
       } catch (e) {
-        log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${comp.slug}": ${(e as Error).message}`);
+        log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${comp.slug}": ${e instanceof Error ? e.message : String(e)}`);
         continue;
       }
 
@@ -780,7 +794,7 @@ async function runPhaseArchitecture(
     content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${(e as Error).message}`);
+    log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${e instanceof Error ? e.message : String(e)}`);
 
     return;
   }
@@ -866,7 +880,12 @@ sequenceDiagram
 `;
 }
 
-function graphConfidence(edge: ManifestEdge): { label: 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'; score: number } {
+interface GraphConfidence {
+  label: 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
+  score: number;
+}
+
+function graphConfidence(edge: ManifestEdge): GraphConfidence {
   // A missing label is not evidence. Keep it explicitly ambiguous instead of
   // manufacturing an extracted relationship (or using the forbidden 0.5 default).
   const label = edge.confidence === 'EXTRACTED' || edge.confidence === 'INFERRED' || edge.confidence === 'AMBIGUOUS'
@@ -874,7 +893,7 @@ function graphConfidence(edge: ManifestEdge): { label: 'EXTRACTED' | 'INFERRED' 
     : 'AMBIGUOUS';
 
   const fallback = label === 'EXTRACTED' ? 1 : label === 'INFERRED' ? 0.8 : 0.3;
-  const score = typeof edge.weight === 'number' && edge.weight > 0 && edge.weight <= 1 ? edge.weight : fallback;
+  const score = edge.weight !== undefined && edge.weight > 0 && edge.weight <= 1 ? edge.weight : fallback;
 
   return { label, score };
 }
@@ -1132,7 +1151,7 @@ async function runPhaseAiGraph(
     }
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${(e as Error).message}`);
+    log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { g5Generated, g6Generated: g6HasEdges };
@@ -1168,9 +1187,9 @@ async function runPhaseIndexEnhance(
   let description = '';
 
   try {
-    const domains = JSON.parse(domainsJson) as { keywords?: string[]; description?: string };
-    keywords = domains.keywords ?? [];
-    description = domains.description ?? '';
+    const domains = DomainsFileSchema.safeParse(JSON.parse(domainsJson)).data;
+    keywords = domains?.keywords ?? [];
+    description = domains?.description ?? '';
   } catch { /* no _domains.json */ }
 
   // router.md: 检查当前项目是否已有条目，无则追加
@@ -1250,7 +1269,7 @@ async function removeIfExists(filePath: string): Promise<void> {
   try {
     await unlink(filePath);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    if (!(err instanceof Error && 'code' in err && err.code === 'ENOENT')) throw err;
   }
 }
 
