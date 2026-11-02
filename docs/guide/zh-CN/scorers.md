@@ -119,7 +119,7 @@ JSON
 | `access` | 评审者能做什么：`answer`（不用工具）、`read`（读取证据）或 `full`（任意工具，默认值）。标签会记录该值。 |
 | `tools` | 按你的偏好排序。首个能解析评分器模型的工具胜出。 |
 
-评分器未列出的标签会被拒绝，租约保持打开。`running` 列出你仍在评判的租约，从而续期；租约在领取或续期 30 分钟后过期。不要把评审租约放进 `workflow next` 的 `running`：它会回答 `judge_lease`，且不做任何改动。`run` 是一个运行 id，只领取该运行的工作流 pass，从不领取会话。`canTakeLease: false` 只续期 `running`，不领取任何租约。所有字段见 `teamai score --help`。
+回答中的 `decided` 列出在查找租约时，某个阶段为[交付的合并请求](#为交付的工作评分)给出的标签；它们不需要评审者。评分器未列出的标签会被拒绝，租约保持打开。`running` 列出你仍在评判的租约，从而续期；租约在领取或续期 30 分钟后过期。不要把评审租约放进 `workflow next` 的 `running`：它会回答 `judge_lease`，且不做任何改动。`run` 是一个运行 id，只领取该运行的工作流 pass，从不领取会话。`canTakeLease: false` 只续期 `running`，不领取任何租约。所有字段见 `teamai score --help`。
 
 你的 driver 在上报一个轮次时写明它加载过的团队技能，该轮次的标签会带上它们：
 
@@ -132,11 +132,87 @@ $ teamai workflow report r3f9… --json '{"attempt":"…","revision":3,"outcome"
 ## 按需评分
 
 ```console
-$ teamai score --run r3f9… --step review --scorer review-quality                     # 在本机评判最近一次成功的执行
+$ teamai score --run r3f9… --scorer review-quality                                   # 唯一列出它的步骤，最近一次成功的执行
 $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --queue     # 交给任意 driver 的 --next
 ```
 
-不应用抽样，失败或过期的评审任务会重新打开。运行固定过的评分器使用固定的评分标准；`teamai pull` 缓存的其他评分器使用当前版本。不加 `--queue` 时，运行 PATH 上首个可用的评审工具，优先使用执行该轮的工具。未知的运行、步骤、执行轮次或评分器会失败，并列出存在的值。若本机没有评审工具能运行某个评分器的模型，该评分器以 `judge_model_unavailable` 失败并保持打开。错误的 `labels` 列出其他评分器已生成的标签。
+运行中只有一个有成功执行的步骤列出该评分器时，`--step` 可以省略；否则错误会列出可选的步骤。不应用抽样，失败或过期的评审任务会重新打开。运行固定过的评分器使用固定的评分标准；`teamai pull` 缓存的其他评分器使用当前版本。不加 `--queue` 时，运行 PATH 上首个可用的评审工具，优先使用执行该轮的工具。未知的运行、步骤、执行轮次或评分器会失败，并列出存在的值。若本机没有评审工具能运行某个评分器的模型，该评分器以 `judge_model_unavailable` 失败并保持打开。错误的 `labels` 列出其他评分器已生成的标签。
+
+某轮执行的提交或记录的会话已不在本机时，评审前就会失败，不写入任何标签：
+
+```console
+$ teamai score --run r3f9… --scorer delivered
+{"error":{"code":"evidence_missing","message":"Pass 1 of step change in run r3f9… cannot be scored: claude-code session 6f1c2a0e-… of change#1 is no longer on this machine. Restore it, or score another pass. No label was written."}}
+```
+
+## 为交付的工作评分
+
+带 `deliver: pr` 的步骤以合并请求的形式把工作交给评审。该步骤上的评分器评判这个合并请求，并且在任何评审者运行之前，有三个阶段可以直接判定标签。
+
+```yaml
+# workflows/ship-issue.yaml
+inputs: { issue: number }
+steps:
+  - id: read-issue
+    prompt: Read issue {{ inputs.issue }} and return its title and body.
+    output: { title: string, body: string }
+  - id: change
+    needs: [read-issue]
+    prompt: Make the change the issue asks for.
+    workspace: new
+    deliver: pr
+    scorers: [delivered]
+```
+
+`scorers/delivered.md`：
+
+```markdown
+---
+labels:
+  - { value: complete, score: 1, description: Delivers what the issue asked and nothing else. }
+  - { value: partial, score: 0.5, description: Delivers part of what was asked. }
+  - { value: off-target, score: 0, description: Delivers something other than what was asked. }
+passingScore: 1
+check:
+  run: npm test
+  protect: [test/**, package.json]
+---
+Judge whether the pull request delivers what the issue asked, and only that.
+```
+
+各阶段按以下顺序运行，第一个未通过的阶段做出判定：
+
+| 阶段 | 何时未通过 | `decidedBy` |
+|---|---|---|
+| 评分器检查 | 在交付提交的全新克隆中，先把 `protect` 路径恢复为工作开始时的样子，再运行 `check.run`，退出码非零。为了通过而修改 `test/` 的代理无法以这种方式通过。 | `check` |
+| 合并请求 CI | 交付提交的 CI 失败。GitHub：任一检查运行失败、超时或需要操作，或提交状态为失败。GitLab：最新的流水线失败。 | `ci` |
+| 受保护路径 | 该轮修改了运行保护的路径，步骤以 `protected_path` 失败，没有交付任何内容。 | `protected` |
+
+未通过时的标签是低于 `passingScore` 的最高标签，此例中为 `partial`。不启动评审者，不消耗 token。所有阶段都通过时，或者 CI 仍在运行、没有任何检查、源仓库不在 GitHub 或 GitLab 上时，由评审者判定，标签记为 `"decidedBy":"judge"`。没有 `check` 的评分器跳过该阶段。
+
+交付步骤的评审者还会读取运行的输入（`inputs.json`）和每个步骤的输出，从而把合并请求与 `read-issue` 返回的 issue 进行对比。
+
+`teamai score --run r3f9… --scorer delivered` 发布的一个 CI 失败标签：
+
+```json
+{"scorer":"delivered","label":"partial","score":0.5,"passed":false,"source":"workflow",
+ "subject":{"runId":"r3f9…","step":"change","pass":1},"decidedBy":"ci",
+ "evidenceHash":"sha256:8ddbddc64a7180bc866ce3fc0da3e5ad940854e7855a51b0318851f932737ba1",
+ "judge":{"kind":"model","tool":"claude",…},…}
+```
+
+`evidenceHash` 标识标签读取的证据。同一轮执行的两个标签哈希相同，说明读取的是同一份工作；如果标签不同，变化的是评分标准或评审者，而不是工作。阶段发现的内容（检查的退出码、CI 结果）只保存在命令输出中指明的本地 reasoning 文件里。由于没有评审者运行，标签没有 `usage`。
+
+无法运行的检查（例如本机没有该命令，或运行超时）不写入标签。修复检查后，再次为该轮评分：
+
+```console
+$ teamai score --run r3f9… --scorer delivered
+{"error":{"code":"check_could_not_run","message":"The check of scorer delivered, `npm test`, could not run on commit 4be1c0d… (not_found). Fix the check, then run this command again. No label was written."}}
+```
+
+`score --next` 以 `check_could_not_run` 关闭该条目，并附上同样的原因。带 `check` 的评分器从不与其他评分器[批量评审](#批量评审)，因为它的检查单独运行。同一步骤交付了两个合并请求的两轮执行各得一个标签，以 `subject.pass` 区分。
+
+[评分器页面](dashboard.md#评分器scorers)显示每个阶段判定了多少标签。
 
 ## 为会话评分
 
