@@ -2,19 +2,21 @@
  * The Benchmarks page of the dashboard client (#1180), embedded in `dashboardClient`'s closure after the Scorers page,
  * whose helpers it uses: `$`, `e`, `t`, `label`, `number`, `when`, `read`, `save`, `apiQuery`, `errorPanel`, `render`,
  * `page`, `workspaceGeneration`, `pct`, `short`, `sparkline`, `kpiCard` and `meter`. Every value from the API is escaped
- * with `e`. A run opens through the Workflow Runs dialog.
+ * with `e`. A run opens through the Workflow Runs dialog. An arm with a role shows that role's production pass rate, from
+ * `/api/scorers` grouped by role in the Scorers page's window and measurement (`scorerQuery`), and opens that group with
+ * `openScorers`.
  */
 import { BENCHMARK_WINDOWS } from '../benchmark/history.js';
 
 export const benchmarksClient = `
-let benchData=null, benchError='', benchLoading=false, benchHtml='', benchRequest=0, benchAxis='tokens', benchDimension='', benchComparison='', benchConfig='', benchRevision='';
+let benchData=null, benchError='', benchLoading=false, benchHtml='', benchRequest=0, benchAxis='tokens', benchDimension='', benchComparison='', benchConfig='', benchRevision='', benchProduction=null;
 const savedBenchView=read('teamai-dashboard-benchmark-view','arms');
 let benchView=['arms','compare','team'].includes(savedBenchView)?savedBenchView:'arms';
 const benchWindows=${JSON.stringify(BENCHMARK_WINDOWS.map(String))};
 const savedBenchWindow=read('teamai-dashboard-benchmark-window','90');
 let benchQuery={window:benchWindows.includes(savedBenchWindow)?savedBenchWindow:'90',suite:''};
 function resetSelection(){benchComparison='';benchConfig='';benchRevision='';}
-function resetBenchmarks(){benchData=null;benchError='';benchLoading=false;benchHtml='';benchQuery={...benchQuery,suite:''};resetSelection();}
+function resetBenchmarks(){benchData=null;benchError='';benchLoading=false;benchHtml='';benchProduction=null;benchQuery={...benchQuery,suite:''};resetSelection();}
 const passOf=r=>r&&r.planned?r.passed/r.planned:null;
 const rateCell=r=>r&&r.planned?pct(r.passed/r.planned)+' <small>'+number(r.passed)+'/'+number(r.planned)+'</small>':'<span class="muted">—</span>';
 const armColor=i=>'var(--arm'+(i%12+1)+')';
@@ -54,10 +56,32 @@ function benchKpis(sel){
   +kpiCard(label('Last run'),'<span class="kpi-date">'+e(when(last.startedAt))+'</span>',last.username?'<span data-verbatim>'+e(last.username)+'</span>':'')
   +'</div>';
 }
+function productionQuery(){ const q={window:scorerQuery.window,groupBy:'role'}; if(scorerQuery.scorer)q.scorer=scorerQuery.scorer; if(scorerQuery.cohort)q.cohort=scorerQuery.cohort; return q; }
+async function loadBenchProduction(){
+ const params=productionQuery(), key=JSON.stringify(params), generation=workspaceGeneration, current=()=>generation===workspaceGeneration&&benchProduction&&benchProduction.key===key;
+ benchProduction={key,state:'loading'};
+ try{
+  const response=await fetch(apiQuery('/api/scorers',params),{signal:AbortSignal.timeout(30000)});
+  const data=await response.json().catch(()=>null);
+  if(current())benchProduction=response.ok&&data?{key,state:'ready',data}:{key,state:'error'};
+ }catch{if(current())benchProduction={key,state:'error'};}
+ finally{if(current()&&page==='benchmarks'){const html=benchmarksPage();if(html!==benchHtml){benchHtml=html;render();}}}
+}
+function productionGroup(role){ const sel=benchProduction&&benchProduction.data&&benchProduction.data.selected; return sel&&sel.groups?sel.groups.find(g=>g.kind==='value'&&g.value===role):undefined; }
+function armProduction(a){
+ if(!a.role)return '';
+ const p=benchProduction, head='<span>'+label('In production')+':</span> ';
+ if(!p||p.state==='loading')return '<div class="arm-production">'+head+'<span class="muted">…</span></div>';
+ if(p.state==='error')return '<div class="arm-production">'+head+'<span class="muted">'+label('Could not load scorer results.')+'</span></div>';
+ const days=number(Number(p.data.window?p.data.window.days:scorerQuery.window))+' '+label('days'), g=productionGroup(a.role);
+ if(!g)return '<div class="arm-production">'+head+'<span class="muted">'+label('no labels for this role')+' · '+days+'</span></div>';
+ return '<div class="arm-production" title="'+e(t('In production')+': '+p.data.selected.cohort.scorer)+'">'+head+'<b>'+pct(g.stats.rate)+'</b> <small>'+number(g.stats.passed)+'/'+number(g.stats.n)+'<span class="production-scorer"> · <span data-verbatim>'+e(p.data.selected.cohort.scorer)+'</span></span> · '+days+'</small> <button class="link" type="button" data-bench-production="'+e(a.role)+'">'+label('Scorers')+' ↗</button></div>';
+}
 function armBars(sel){
  const arms=sel.arms.filter(a=>a.pooled);
+ if(page==='benchmarks'&&arms.some(a=>a.role)&&(!benchProduction||benchProduction.key!==JSON.stringify(productionQuery())))loadBenchProduction();
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate by arm')+'</h2><span class="label">'+label('Pooled over the runs of the current suite version. The line is the 95% interval: two arms whose lines overlap are not told apart by these runs.')+'</span></div><div class="arm-bars">'
-  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label('runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label('deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div></div>';}).join('')
+  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label('runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label('deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+armProduction(a)+'</div>';}).join('')
   +'</div></section>';
 }
 function historyChart(sel){
@@ -311,9 +335,11 @@ function setBenchQuery(changes){ if(changes.suite!==undefined&&changes.suite!==b
 document.addEventListener('change',event=>{ if(event.target.id==='bench-window')setBenchQuery({window:event.target.value}); });
 document.addEventListener('click',event=>{
  const suite=event.target.closest('[data-bench-suite]'), axis=event.target.closest('[data-bench-axis]'), view=event.target.closest('[data-bench-view]');
- const dimension=event.target.closest('[data-bench-dimension]'), comparison=event.target.closest('[data-bench-comparison]'), config=event.target.closest('[data-bench-config]'), revision=event.target.closest('[data-bench-revision]');
+ const production=event.target.closest('[data-bench-production]'), dimension=event.target.closest('[data-bench-dimension]'), comparison=event.target.closest('[data-bench-comparison]'), config=event.target.closest('[data-bench-config]'), revision=event.target.closest('[data-bench-revision]');
  const rerender=()=>{if(page==='benchmarks')render();};
- if(suite)setBenchQuery({suite:suite.dataset.benchSuite});
+ const productionOf=production&&productionGroup(production.dataset.benchProduction);
+ if(productionOf){const sel=benchProduction.data.selected;openScorers({window:String(benchProduction.data.window.days),scorer:sel.cohort.scorer,cohort:sel.cohort.id,groupBy:'role',group:productionOf.key});}
+ else if(suite)setBenchQuery({suite:suite.dataset.benchSuite});
  else if(axis&&!axis.disabled){benchAxis=axis.dataset.benchAxis;rerender();}
  else if(view){benchView=view.dataset.benchView;save('teamai-dashboard-benchmark-view',benchView);rerender();}
  else if(dimension){benchDimension=dimension.dataset.benchDimension;benchComparison='';rerender();}

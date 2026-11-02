@@ -361,6 +361,29 @@ export function agentHarnessOf(agent: RecordedAgent | undefined): AgentHarness |
   };
 }
 
+/** A part of the harness that differs between two passes; without `from` or `to` when that pass recorded none. */
+export type HarnessChange =
+  | { part: 'tool' | 'model' | 'effort' | 'teamRevision'; from?: string; to?: string }
+  | { part: 'role'; from?: AgentHarness['role']; to?: AgentHarness['role'] };
+
+const fromTo = <TValue>(from: TValue | undefined, to: TValue | undefined) => ({ ...from !== undefined ? { from } : {}, ...to !== undefined ? { to } : {} });
+const roleText = (role: AgentHarness['role']): string => (role ? `${role.of}:${role.names.join(',')}` : '');
+
+/** What differs from the harness `before` to `after`, in the order the harness line names the parts. */
+export function harnessChanges(before: AgentHarness, after: AgentHarness): HarnessChange[] {
+  const changes: HarnessChange[] = [];
+
+  for (const part of ['tool', 'model', 'effort'] as const) {
+    if (before[part] !== after[part]) changes.push({ part, ...fromTo(before[part], after[part]) });
+  }
+
+  if (roleText(before.role) !== roleText(after.role)) changes.push({ part: 'role', ...fromTo(before.role, after.role) });
+
+  if (before.teamRevision !== after.teamRevision) changes.push({ part: 'teamRevision', ...fromTo(before.teamRevision, after.teamRevision) });
+
+  return changes;
+}
+
 /** A published entry's `agent`: the string of a record written before #1176 (empty for none), an observation, or only a definition. */
 const RecordedAgentFieldSchema = z
   .union([

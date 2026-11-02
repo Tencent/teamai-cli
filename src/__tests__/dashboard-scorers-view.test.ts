@@ -41,26 +41,57 @@ const LABELS: ViewedLabel[] = [
   viewed('ana', label('r0000000000000004', 'implement', { passed: false, scoredAt: '2026-10-24T10:00:00.000Z' })),
 ];
 
-/** The Scorers page as the dashboard renders `labels` grouped by `groupBy`, in `language`, with every message key it asked for. */
-async function renderPage(labels: ViewedLabel[], { groupBy = 'role', language = 'en' }: { groupBy?: string; language?: 'en' | 'zh-CN' } = {}): Promise<{ html: string; keys: string[] }> {
-  const view = { configured: true, ...ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role' }, now: NOW }) };
+/**
+ * The Scorers page as the dashboard renders `labels` grouped by role, the grouping saved as `groupBy`, in `language`: its
+ * HTML, every message key it asked for, each query it sent, and `click`, which clicks the first element an attribute
+ * names and renders the page again. The server answers each query with the failing labels of the group it names.
+ */
+async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'en' }: { groupBy?: string; language?: 'en' | 'zh-CN' } = {}) {
+  const viewOf = (url: string) => {
+    const group = new URLSearchParams(url.split('?')[1]).get('group');
+    return { configured: true, ...ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role', ...(group ? { failing: { group } } : {}) }, now: NOW }) };
+  };
   const keys: string[] = [];
   const t = (text: string): string => {
     keys.push(text);
     return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? messages[text] ?? text : text;
   };
   const e = (value: unknown): string => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const queries: string[] = [];
+  const clicks: Array<(event: { target: { closest: (selector: string) => unknown } }) => void> = [];
   const scope = {
     t, e, label: (text: string) => e(t(text)), number: (value: number) => new Intl.NumberFormat('en').format(value), when: (value: string) => value,
     read: (key: string, fallback: string) => (key === 'teamai-dashboard-scorer-group' ? groupBy : fallback), save: () => undefined, $: () => undefined,
-    apiQuery: (route: string) => route, errorPanel: (text: string) => text, render: () => undefined, page: 'scorers', workspaceGeneration: 0,
-    fetch: async () => ({ ok: true, json: async () => view }), document: { addEventListener: () => undefined },
+    apiQuery: (route: string, params: Record<string, string>) => `${route}?${new URLSearchParams(params)}`, errorPanel: (text: string) => text, render: () => undefined, page: 'scorers', workspaceGeneration: 0,
+    fetch: async (url: string) => {
+      queries.push(url);
+      return { ok: true, json: async () => viewOf(url) };
+    },
+    document: { addEventListener: (type: string, listener: (typeof clicks)[number]) => (type === 'click' ? clicks.push(listener) : undefined) },
   };
   const page = new Function(...Object.keys(scope), `${agentHarnessView}\n${scorersClient}\nreturn { scorersPage, loadScorers };`)(...Object.values(scope)) as {
     scorersPage: () => string; loadScorers: () => Promise<void>;
   };
   await page.loadScorers();
-  return { html: page.scorersPage(), keys };
+  let html = page.scorersPage();
+  /** Clicks the first element of the page that `attribute` names, with the value the page gave it. */
+  const click = async (attribute: string) => {
+    const escaped = new RegExp(`${attribute}="([^"]*)"`).exec(html)?.[1];
+    if (escaped === undefined) throw new Error(`The page has no ${attribute}`);
+    const value = escaped.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    const dataset = { [attribute.replace(/^data-/, '').replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase())]: value };
+    const target = { closest: (selector: string) => (selector === `[${attribute}]` ? { dataset } : null) };
+    for (const listener of clicks) listener({ target });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    html = page.scorersPage();
+    return html;
+  };
+  return { html, keys, queries, click };
+}
+
+async function renderPage(labels: ViewedLabel[], options: { groupBy?: string; language?: 'en' | 'zh-CN' } = {}): Promise<{ html: string; keys: string[] }> {
+  const { html, keys } = await openPage(labels, options);
+  return { html, keys };
 }
 
 const text = (html: string): string => html.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
@@ -114,6 +145,38 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
 
     expect([...(row ?? '').matchAll(/<td[^>]*data-label="([^"]+)"/g)].map(([, name]) => name)).toEqual(['SCORED', 'AUTHOR', 'LABEL', 'HARNESS', 'PLATFORM', 'SKILLS', 'OPEN']);
     expect(section).toContain('class="session-table failing-labels"');
+  });
+
+  it("sums a selected group's failing labels by harness above the list, and splits at a harness's team revision from it", async () => {
+    const later = ranAs({ tool: 'claude', model: 'claude-review-2', revision: MEMBER, stepRole: 'review' });
+    const labels = [
+      ...LABELS,
+      viewed('cy', label('r0000000000000005', 'review', { passed: false, scoredAt: '2026-10-28T09:00:00.000Z', agent: later })),
+      viewed('cy', label('r0000000000000006', 'review', { passed: false, scoredAt: '2026-10-28T10:00:00.000Z', agent: later })),
+    ];
+    const review = JSON.stringify(['value', 'review', null, false]);
+    const { html: grouped, click, queries } = await openPage(labels);
+    expect(grouped).not.toContain('harness-failures');
+    const html = await click('data-scorer-group');
+    const failing = html.split('<section').find((part) => part.includes('<h2>Failing labels ')) ?? '';
+    const summary = /<div class="harness-failures">.*?<\/div>/s.exec(failing)?.[0] ?? '';
+
+    expect(failing).toMatch(/<div class="harness-failures">.*<table/s);
+    expect(summary).toContain('<h3>Failures by harness</h3>');
+    expect([...summary.matchAll(/<li>(.*?)<\/li>/gs)].map(([, row]) => text(row ?? ''))).toEqual([
+      '2 failing claude · claude-review-2 · high · review step role · bbbbbbb',
+      '1 failing claude · claude-review-1 · high · review step role · aaaaaaa',
+    ]);
+    expect(summary).toContain(`<button class="link" type="button" data-scorer-split="${MEMBER}" title="Split at team commit ${MEMBER}"`);
+
+    const split = await click('data-scorer-split');
+    expect(new URLSearchParams(queries.at(-1)?.split('?')[1]).get('commit')).toBe(MEMBER);
+    expect(new URLSearchParams(queries.at(-1)?.split('?')[1]).get('group')).toBe(review);
+    expect(split).toContain(`id="scorer-commit" name="commit" autocomplete="off" spellcheck="false" placeholder="commit SHA" value="${MEMBER}"`);
+
+    const chinese = await openPage(labels, { language: 'zh-CN' });
+    expect(await chinese.click('data-scorer-group')).toContain('<h3>按 Harness 汇总的失败</h3>');
+    expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 
   it('translates every label the role groups and the failing list ask for', async () => {

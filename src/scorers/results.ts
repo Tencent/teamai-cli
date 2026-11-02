@@ -159,6 +159,9 @@ export type FailingLabel = { author: string; scoredAt: string; label: string; sk
  */
 export type Decided = { rows: Array<{ by: Decider | 'not recorded'; key: string; stats: Stats }>; beforeJudge: number };
 
+/** How many failing labels judged work that ran with one harness; without `harness` when the work recorded none. */
+export type HarnessFailures = { harness?: AgentHarness; failed: number };
+
 /**
  * The friction reminder per session run on this machine (#1182): `hinted` from the member's contribute state, by
  * session id, for the member's sessions that started in the last `days`. A session missing from `hinted` has no state
@@ -221,8 +224,11 @@ export type SelectedCohort = {
   groupBy?: Dimension;
   groups?: Group[];
   split?: Split;
-  /** The newest failing labels the query asked for, and how many it matches. */
-  failing: { labels: FailingLabel[]; total: number };
+  /**
+   * The newest failing labels the query asked for, and how many it matches. With a group selected, `byHarness` counts
+   * all of them by the harness each ran with, the most failures first: whether one harness causes them.
+   */
+  failing: { labels: FailingLabel[]; total: number; byHarness?: HarnessFailures[] };
   /** Only for a workflow cohort whose labels recorded what decided them. */
   decided?: Decided;
   /** Only for a session cohort on a dashboard that read this machine's reminder state: the sessions of the last `days`. */
@@ -455,6 +461,21 @@ function decided(labels: readonly ViewedLabel[]): Decided | undefined {
     rows: [...rows, ...unrecorded.length > 0 ? [{ by: 'not recorded' as const, key: NOT_RECORDED_KEY, stats: stats(unrecorded) }] : []],
     beforeJudge: labels.filter((entry) => isStageDecider(byOf(entry))).length,
   };
+}
+
+/** `failing` by harness, the most failures first; of two harnesses failing as often, the one that failed last first. */
+function failuresByHarness(failing: readonly ViewedLabel[]): HarnessFailures[] {
+  const counts = new Map<string, HarnessFailures>();
+
+  for (const entry of failing) {
+    const harness = agentHarnessOf(entry.agent);
+    const key = canonicalJson(harness ?? null);
+    const count = counts.get(key) ?? { ...harness ? { harness } : {}, failed: 0 };
+    count.failed += 1;
+    counts.set(key, count);
+  }
+
+  return [...counts.values()].sort((left, right) => right.failed - left.failed);
 }
 
 /** The reminder table of a session cohort: each session counts once, under the label of this cohort it has. */
@@ -738,6 +759,9 @@ export const ScorerResults = {
       .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
 
     const stageBreakdown = summary.source === 'workflow' ? decided(counted) : undefined;
+    const failingList: SelectedCohort['failing'] = { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length };
+
+    if (groupBy && group !== undefined) failingList.byHarness = failuresByHarness(failing);
 
     const selected: SelectedCohort = {
       cohort: { ...summary, values: valueCounts(counted) },
@@ -746,7 +770,7 @@ export const ScorerResults = {
       groupBy: groupBy || undefined,
       groups: groupBy ? groups(counted, groupBy, split?.sideOf) : undefined,
       split: split ? { commit: split.commit, ...splitStats(counted, split.sideOf) } : undefined,
-      failing: { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length },
+      failing: failingList,
     };
 
     if (stageBreakdown) selected.decided = stageBreakdown;

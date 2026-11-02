@@ -27,6 +27,7 @@ function render(steps: Step[], language: 'en' | 'zh-CN' = 'en'): { html: string;
 }
 
 const REVISION = 'c'.repeat(40);
+const text = (html: string): string => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 const STEPS: Step[] = [
   { step: 'plan', pass: 1, status: 'succeeded', tokens: { input: 900, output: 274 }, scores: [{ scorer: 'review-quality', label: 'partial', passed: false }],
     harness: { tool: 'claude', model: 'claude-sonnet-5-5', role: { of: 'step', names: ['spec'] }, teamRevision: REVISION } },
@@ -46,6 +47,34 @@ describe("a run's Steps", () => {
   it('switches to cards by the width of the drawer, not of the window', () => {
     expect(dashboardStyles).toContain('.card-table{container-type:inline-size}');
     expect(dashboardStyles).toMatch(/@container\(max-width:760px\)\{[^@]*\.run-steps thead[^{]*\{display:none\}/);
+  });
+
+  it('flags a pass whose harness changed since the previous pass of its step, naming each change', () => {
+    const review = (pass: number, model: string, extra: Partial<Step> = {}): Step => ({
+      step: 'review', pass, status: 'failed', harness: { tool: 'claude', model, role: { of: 'step', names: ['review'] }, teamRevision: REVISION }, ...extra,
+    });
+    const passes = [
+      review(1, 'claude-sonnet-5-5'),
+      review(2, 'claude-opus-5-5', { harnessChanges: [{ part: 'model', from: 'claude-sonnet-5-5', to: 'claude-opus-5-5' }] }),
+      review(3, 'claude-opus-5-5', { harnessChanges: [
+        { part: 'effort', to: 'high' },
+        { part: 'role', from: { of: 'step', names: ['review'] }, to: { of: 'member', names: ['frontend'] } },
+        { part: 'teamRevision', from: REVISION, to: 'd'.repeat(40) },
+      ] }),
+    ];
+    const { html } = render(passes);
+    const changed = [...html.matchAll(/<tr>(.*?)<\/tr>/gs)].slice(1).map(([, row]) => [...(row ?? '').matchAll(/<li>(.*?)<\/li>/gs)].map(([, change]) => text(change ?? '')));
+
+    expect(changed).toEqual([
+      [],
+      ['model changed: claude-sonnet-5-5 → claude-opus-5-5'],
+      ['effort changed: not recorded → high', 'role changed: review step role → frontend member role', 'team revision changed: ccccccc → ddddddd'],
+    ]);
+    expect(html).toContain('<ul class="harness-changed">');
+
+    const chinese = render(passes, 'zh-CN');
+    expect(chinese.html).toContain('<li><b>模型已变:</b>');
+    expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 
   it('names each card part in Chinese', () => {

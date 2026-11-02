@@ -1,8 +1,8 @@
 /**
  * The Scorers page of the dashboard client (#1182), embedded in `dashboardClient`'s closure, whose helpers it uses:
  * `$`, `e`, `t`, `label`, `number`, `when`, `json`, `read`, `save`, `apiQuery`, `errorPanel`, `render`, `page`,
- * `workspaceGeneration` and `agentHarness`. Every value from the API is escaped with `e`. A workflow row opens its run
- * through the Workflow Runs dialog.
+ * `workspaceGeneration`, `agentHarness` and `harnessParts`. Every value from the API is escaped with `e`. A workflow row
+ * opens its run through the Workflow Runs dialog. Another page opens this one on a group with `openScorers`.
  */
 import type { Decider } from '../scorers/label.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, FAILING_PAGE, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
@@ -136,9 +136,16 @@ function agreementPanel(sel){
   +list+how+'</section>';
 }
 function harnessCell(h){ return h?agentHarness(h):'<span class="harness muted">'+label('Harness not recorded')+'</span>'; }
+function splitButton(revision){ return '<button class="link" type="button" data-scorer-split="'+e(revision)+'" title="'+e(t('Split at team commit')+' '+revision)+'" data-verbatim>'+short(revision)+'</button>'; }
+function harnessFailures(byHarness){
+ if(!byHarness||!byHarness.length)return '';
+ return '<div class="harness-failures"><h3>'+label('Failures by harness')+'</h3><ul>'+byHarness.map(f=>'<li><b class="amber">'+number(f.failed)+' '+label('failing')+'</b> '
+  +(f.harness?'<span class="harness">'+harnessParts(f.harness).concat(f.harness.teamRevision?['<span class="harness-part">'+splitButton(f.harness.teamRevision)+'</span>']:[]).join(' · ')+'</span>':'<span class="harness muted">'+label('Harness not recorded')+'</span>')+'</li>').join('')+'</ul></div>';
+}
 function failingPanel(sel){
  const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided, heads=['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['HARNESS','PLATFORM','SKILLS','OPEN']);
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
+  +harnessFailures(sel.failing.byHarness)
   +(rows.length?'<div class="table-scroll card-table"><table class="session-table failing-labels"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +rows.map(r=>'<tr>'+[e(when(r.scoredAt)),'<span data-verbatim>'+e(r.author)+'</span>','<span class="amber" data-verbatim>'+e(r.label)+'</span>'].concat(staged?[deciderText(r.decidedBy||'not recorded')]:[],[harnessCell(r.harness),'<span data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</span>',r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—',subjectCell(r)]).map((cell,i)=>'<td data-label="'+e(t(heads[i]))+'">'+cell+'</td>').join('')+'</tr>').join('')
   +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> '+(rows.length<failingMax?'<button class="link" data-scorer-more>'+label('Show more')+'</button>':'<span class="label">'+label('Pick a group or a shorter window to list the rest.')+'</span>')+'</div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
@@ -192,6 +199,8 @@ async function loadScorers(){
  finally{if(current()){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}}}}
 }
 function setScorerQuery(changes){ scorerQuery={...scorerQuery,group:'',failing:'',...changes}; save('teamai-dashboard-scorer-window',scorerQuery.window); save('teamai-dashboard-scorer-group',scorerQuery.groupBy); loadScorers(); }
+/** Opens the Scorers page on \`changes\`, such as a role group another page links to, with no commit split. */
+function openScorers(changes){ scorerData=null;scorerError='';scorerCommitDraft='';setScorerQuery({commit:'',...changes});location.hash='scorers'; }
 document.addEventListener('change',event=>{
  if(event.target.id==='scorer-window')setScorerQuery({window:event.target.value});
  else if(event.target.id==='scorer-group')setScorerQuery({groupBy:event.target.value});
@@ -199,8 +208,9 @@ document.addEventListener('change',event=>{
 document.addEventListener('input',event=>{ if(event.target.id==='scorer-commit')scorerCommitDraft=event.target.value; });
 document.addEventListener('submit',event=>{ if(!event.target.closest('[data-scorer-form]'))return; event.preventDefault(); scorerCommitDraft=$('scorer-commit').value.trim(); setScorerQuery({commit:scorerCommitDraft}); });
 document.addEventListener('click',event=>{
- const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]'), decided=event.target.closest('[data-decided]');
+ const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]'), decided=event.target.closest('[data-decided]'), split=event.target.closest('[data-scorer-split]');
  if(decided){const again=scorerQuery.groupBy==='decidedBy'&&scorerQuery.group===decided.dataset.decided; save('teamai-dashboard-scorer-group','decidedBy'); scorerQuery={...scorerQuery,groupBy:'decidedBy',failing:'',group:again?'':decided.dataset.decided}; loadScorers();}
+ else if(split){scorerCommitDraft=split.dataset.scorerSplit;setScorerQuery({commit:scorerCommitDraft,group:scorerQuery.group});}
  else if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
  else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
  else if(group)setScorerQuery({group:scorerQuery.group===group.dataset.scorerGroup?'':group.dataset.scorerGroup});

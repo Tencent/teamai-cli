@@ -156,6 +156,32 @@ describe('scorer results', () => {
       expect(groups(labels, 'tool')).toEqual(['claude n=4', 'not recorded n=1']);
     });
 
+    it("sums a selected group's failing labels by the harness each ran with, the most failures first, past the listed page", () => {
+      const REV_B = 'b'.repeat(40);
+      const ranAs = ({ model, effort, revision, role }: { model: string; effort?: string; revision: string; role: string }) => observed({
+        model: { reported: model }, ...(effort ? { effort: { requested: effort } } : {}),
+        team: { revision, localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [], stepRole: role } },
+      });
+      const failed = (agent: RecordedAgent) => viewed(sessionLabel({ passed: false, label: 'poor', score: 0 }), { agent });
+      const sonnet = ranAs({ model: 'claude-sonnet-5-5', effort: 'high', revision: REV_A, role: 'spec' });
+      const labels = [
+        failed(sonnet),
+        failed(ranAs({ model: 'claude-opus-5-5', revision: REV_B, role: 'spec' })),
+        failed(sonnet),
+        viewed(sessionLabel(), { agent: sonnet }),
+        failed(ranAs({ model: 'claude-opus-5-5', revision: REV_B, role: 'review' })),
+      ];
+      const spec = JSON.stringify(['value', 'spec', null, false]);
+      const failing = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role', failing: { group: spec, limit: 1 } }, now: NOW }).selected?.failing;
+
+      expect(failing?.labels).toHaveLength(1);
+      expect(failing?.byHarness).toEqual([
+        { harness: { tool: 'claude', model: 'claude-sonnet-5-5', effort: 'high', role: { of: 'step', names: ['spec'] }, teamRevision: REV_A }, failed: 2 },
+        { harness: { tool: 'claude', model: 'claude-opus-5-5', role: { of: 'step', names: ['spec'] }, teamRevision: REV_B }, failed: 1 },
+      ]);
+      expect(ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role' }, now: NOW }).selected?.failing).not.toHaveProperty('byHarness');
+    });
+
     it('counts a label under every skill it used, and one that used none under none', () => {
       const labels = [
         viewed(sessionLabel({ used: { skills: ['tdd', 'review'] } })),

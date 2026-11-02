@@ -16,7 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { RunOriginSchema, type RunOrigin } from '../default-workflows.js';
-import { agentHarnessOf, readRecordedAgent, type AgentHarness } from '../agent-observation.js';
+import { agentHarnessOf, harnessChanges, readRecordedAgent, type AgentHarness, type HarnessChange } from '../agent-observation.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
@@ -151,6 +151,8 @@ interface StepRow {
   outcomes?: WorkOutcome[];
   /** What the pass ran as, when its record observed a tool. */
   harness?: AgentHarness;
+  /** What changed in `harness` since the previous pass of the step that recorded one, when anything did. */
+  harnessChanges?: HarnessChange[];
 }
 
 /** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
@@ -248,6 +250,25 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
   if (harness) row.harness = harness;
 
   return row;
+}
+
+/** `steps` with what changed in each pass's harness since the previous pass of its step that recorded one. */
+function withHarnessChanges(steps: StepRow[]): StepRow[] {
+  return steps.map((row) => {
+    if (!row.harness) return row;
+    let previous: AgentHarness | undefined;
+    let previousPass = 0;
+
+    for (const other of steps) {
+      if (other.step !== row.step || !other.harness || other.pass >= row.pass || other.pass < previousPass) continue;
+      previous = other.harness;
+      previousPass = other.pass;
+    }
+
+    const changes = previous ? harnessChanges(previous, row.harness) : [];
+
+    return changes.length > 0 ? { ...row, harnessChanges: changes } : row;
+  });
 }
 
 /** A local run as the record it will publish; a running run has no end time yet. */
@@ -369,7 +390,7 @@ function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string
     return stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), scores, gate);
   });
 
-  return { run: row, steps, scoring };
+  return { run: row, steps: withHarnessChanges(steps), scoring };
 }
 
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */
@@ -411,7 +432,7 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
 
   return {
     run: reportedRow(record),
-    steps: (record.steps ?? []).map((entry) => stepRow(entry, entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped', passes)),
+    steps: withHarnessChanges((record.steps ?? []).map((entry) => stepRow(entry, entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped', passes))),
     scoring,
     ...benchmark,
   };
