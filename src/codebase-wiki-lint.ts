@@ -2,10 +2,16 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import chalk from 'chalk';
+import { z } from 'zod';
 
 import { pathExists } from './utils/fs.js';
 import type { LintAssetGraph } from './lint-asset-graph.js';
-import type { GraphIndex } from './wiki-engine/adapters/index.js';
+
+/** The parts of graph-index.json the lint counts; a field of the wrong type reads as absent. */
+const LintedGraphSchema = z.object({
+  nodes: z.array(z.object({ slug: z.string().optional().catch(undefined) })),
+  edges: z.array(z.object({ from: z.string().optional().catch(undefined), to: z.string().optional().catch(undefined) })),
+});
 
 export type WikiLintSeverity = 'high' | 'medium' | 'low' | 'info';
 
@@ -63,7 +69,7 @@ export async function lintTeamwiki(opts: {
 
   // Check graph-index.json exists
   const graphPath = path.join(wikiRoot, '.indices', 'graph-index.json');
-  let graph: GraphIndex | null = null;
+  let graph: z.infer<typeof LintedGraphSchema> | null = null;
 
   if (!await pathExists(graphPath)) {
     addIssue({
@@ -75,7 +81,7 @@ export async function lintTeamwiki(opts: {
   } else {
     try {
       const raw = await readFile(graphPath, 'utf-8');
-      graph = JSON.parse(raw) as GraphIndex;
+      graph = LintedGraphSchema.parse(JSON.parse(raw));
     } catch {
       addIssue({
         severity: 'high',
@@ -187,7 +193,7 @@ export async function lintTeamwiki(opts: {
   let graphHealth: { nodeCount: number; edgeCount: number; orphanNodes: number; connectivity: number } | null = null;
 
   if (graph) {
-    const connectedNodes = new Set<string>();
+    const connectedNodes = new Set<string | undefined>();
 
     for (const edge of graph.edges) {
       connectedNodes.add(edge.from);

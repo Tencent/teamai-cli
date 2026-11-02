@@ -26,18 +26,18 @@ type LanguageExtractor = (files: CodeCollectedFile[], context?: ExtractorContext
 /**
  * Registry mapping language identifiers to their specialized extractors.
  */
-const EXTRACTOR_REGISTRY: Record<string, LanguageExtractor> = {
-  typescript: extractTypescript,
-  javascript: extractTypescript, // JS uses the same TS extractor (compatible patterns)
-  go: extractGo,
-  python: extractPython,
-  java: extractJava,
-  rust: extractRust,
-  scala: extractScala,
-  swift: extractSwift,
-  toml: extractToml,
-  sql: extractSql,
-};
+const EXTRACTOR_REGISTRY = new Map<string, LanguageExtractor>([
+  ["typescript", extractTypescript],
+  ["javascript", extractTypescript], // JS uses the same TS extractor (compatible patterns)
+  ["go", extractGo],
+  ["python", extractPython],
+  ["java", extractJava],
+  ["rust", extractRust],
+  ["scala", extractScala],
+  ["swift", extractSwift],
+  ["toml", extractToml],
+  ["sql", extractSql],
+]);
 
 /**
  * Dispatch extraction to the appropriate language-specific extractor.
@@ -46,7 +46,7 @@ const EXTRACTOR_REGISTRY: Record<string, LanguageExtractor> = {
  * Falls back to an empty array for unsupported languages (json, yaml, text, etc.).
  */
 export function extractForLanguage(language: string, files: CodeCollectedFile[], context?: ExtractorContext): CodeFact[] {
-  const extractor = EXTRACTOR_REGISTRY[language];
+  const extractor = EXTRACTOR_REGISTRY.get(language);
 
   if (!extractor) {
     return [];
@@ -59,7 +59,7 @@ export function extractForLanguage(language: string, files: CodeCollectedFile[],
  * Returns the list of languages with registered extractors.
  */
 export function supportedLanguages(): string[] {
-  return Object.keys(EXTRACTOR_REGISTRY);
+  return [...EXTRACTOR_REGISTRY.keys()];
 }
 
 export { extractGo } from "./go.js";

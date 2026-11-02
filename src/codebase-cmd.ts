@@ -2,12 +2,16 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 import chalk from 'chalk';
+import { z } from 'zod';
 
 import type { GlobalOptions } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
+
+/** The component list of an evidence `_manifest.json`, which deep enrichment needs at least one of. */
+const EvidenceComponentsSchema = z.object({ components: z.array(z.unknown()).optional().catch(undefined) });
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -136,7 +140,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         try {
             assertWithinRoot(codeRoot, evidenceDir);
         } catch (e) {
-            console.log((e as Error).message);
+            console.log(e instanceof Error ? e.message : String(e));
             process.exitCode = 1;
 
             return;
@@ -152,11 +156,9 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         let componentCount = 0;
 
         try {
-            const manifest = JSON.parse(await readFile(path.join(evidenceDir, '_manifest.json'), 'utf-8')) as {
-                components?: unknown;
-            };
+            const manifest = EvidenceComponentsSchema.parse(JSON.parse(await readFile(path.join(evidenceDir, '_manifest.json'), 'utf-8')));
 
-            componentCount = Array.isArray(manifest.components) ? manifest.components.length : 0;
+            componentCount = manifest.components?.length ?? 0;
         } catch {
             componentCount = 0;
         }

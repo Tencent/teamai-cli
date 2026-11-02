@@ -6,10 +6,11 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 
 import { createGit, repoIdentity } from './utils/git.js';
 import type { SourceAnchor } from './code-knowledge-recall.js';
-import { isCodeFile } from './wiki-engine/code-knowledge/code-collector.js';
+import { isCodeFile, SourceManifestSchema, type SourceManifest } from './wiki-engine/code-knowledge/code-collector.js';
 import { safeIgnore } from './wiki-engine/core/wiki-protocol.js';
 
 export type SourceFreshness = 'current' | 'stale' | 'missing' | 'unknown';
@@ -20,29 +21,15 @@ export interface CodebaseFreshnessResult {
   sources?: SourceAnchor[];
 }
 
-interface ManifestFile {
-  relativePath: string;
-  sha256: string;
-}
-
-interface SourceManifest {
-  project?: string;
-  repoIdentity?: string;
-  repoUrl?: string;
-  sourceSubdir?: string;
-  lastScan?: string;
-  files?: ManifestFile[];
-}
+const ErrnoSchema = z.object({ code: z.string() });
 
 interface CheckoutIdentity {
   root: string;
   remotes: Set<string>;
 }
 
-function errorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
-
-  return typeof error.code === 'string' ? error.code : undefined;
+function errorCode(cause: unknown): string | undefined {
+  return ErrnoSchema.safeParse(cause).data?.code;
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -68,19 +55,19 @@ function safeRelativePath(value: string, allowEmpty = false): string | null {
 }
 
 function manifestRepoIdentity(manifest: SourceManifest): string | null {
-  if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) {
+  if (manifest.repoIdentity?.trim()) {
     return manifest.repoIdentity.trim();
   }
 
-  if (typeof manifest.repoUrl === 'string' && manifest.repoUrl.trim()) {
+  if (manifest.repoUrl?.trim()) {
     return repoIdentity(manifest.repoUrl);
   }
 
   return null;
 }
 
-function validLastScan(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' && Number.isFinite(Date.parse(value))
+function validLastScan(value: string | undefined): string | undefined {
+  return value !== undefined && value.trim() !== '' && Number.isFinite(Date.parse(value))
     ? value
     : undefined;
 }
@@ -96,10 +83,9 @@ async function currentCheckout(cwd: string): Promise<CheckoutIdentity | null> {
 
     return {
       root,
-      remotes: new Set(remotes
-        .map((remote) => remote.refs.fetch)
-        .filter((url): url is string => typeof url === 'string' && url.trim() !== '')
-        .map((url) => repoIdentity(url))),
+      remotes: new Set(remotes.flatMap((remote) => (
+        remote.refs.fetch.trim() !== '' ? [repoIdentity(remote.refs.fetch)] : []
+      ))),
     };
   } catch {
     return null;
@@ -128,14 +114,12 @@ async function readManifest(
       return { state: 'invalid' };
     }
 
-    const parsed: unknown = JSON.parse(await readFile(actualPath, 'utf8'));
+    const parsed = SourceManifestSchema.safeParse(JSON.parse(await readFile(actualPath, 'utf8')));
 
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { state: 'invalid' };
-    const value = parsed as SourceManifest;
+    // A manifest without a file list holds no baseline.
+    if (!parsed.success || parsed.data.files === undefined) return { state: 'invalid' };
 
-    if (!Array.isArray(value.files)) return { state: 'invalid' };
-
-    return { state: 'ok', manifest: value };
+    return { state: 'ok', manifest: parsed.data };
   } catch (error) {
     if (errorCode(error) !== 'ENOENT') return { state: 'invalid' };
 
@@ -150,7 +134,13 @@ async function readManifest(
   }
 }
 
-async function evidenceCodebaseCount(wikiRoot: string): Promise<{ count: number; slug?: string } | null> {
+/** How many codebases a teamwiki holds evidence for, and the slug of the only one. */
+interface EvidenceCodebases {
+  count: number;
+  slug?: string;
+}
+
+async function evidenceCodebaseCount(wikiRoot: string): Promise<EvidenceCodebases | null> {
   try {
     const evidenceRoot = path.join(wikiRoot, 'evidence', 'code');
     const actualRoot = await realpath(evidenceRoot);
@@ -159,7 +149,11 @@ async function evidenceCodebaseCount(wikiRoot: string): Promise<{ count: number;
     const entries = await readdir(actualRoot, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
 
-    return { count: dirs.length, ...(dirs.length === 1 ? { slug: dirs[0]?.name } : {}) };
+    const counted: EvidenceCodebases = { count: dirs.length };
+
+    if (dirs.length === 1) counted.slug = dirs[0]?.name;
+
+    return counted;
   } catch {
     return null;
   }
@@ -255,10 +249,19 @@ async function checkOneSource(
   checkout: CheckoutIdentity,
 ): Promise<SourceAnchor> {
   const lastScan = validLastScan(manifest.lastScan);
-  const unknown = (): SourceAnchor => ({ ...source, freshness: 'unknown', ...(lastScan ? { lastScan } : {}) });
+
+  const withFreshness = (freshness: SourceFreshness): SourceAnchor => {
+    const anchor: SourceAnchor = { ...source, freshness };
+
+    if (lastScan) anchor.lastScan = lastScan;
+
+    return anchor;
+  };
+
+  const unknown = (): SourceAnchor => withFreshness('unknown');
   const identity = manifestRepoIdentity(manifest);
 
-  const subdir = typeof manifest.sourceSubdir === 'string'
+  const subdir = manifest.sourceSubdir !== undefined
     ? safeRelativePath(manifest.sourceSubdir, true)
     : null;
 
@@ -289,7 +292,7 @@ async function checkOneSource(
   const baseline = new Map<string, string | null>();
 
   for (const file of manifest.files ?? []) {
-    if (!file || typeof file.relativePath !== 'string' || typeof file.sha256 !== 'string') continue;
+    if (!file) continue;
     const filePath = safeRelativePath(file.relativePath);
 
     if (filePath) {
@@ -307,7 +310,7 @@ async function checkOneSource(
     actualPath = await realpath(candidate);
   } catch (error) {
     if (errorCode(error) === 'ENOENT' && await safelyAbsent(candidate, repoRoot)) {
-      return { ...source, freshness: 'missing', ...(lastScan ? { lastScan } : {}) };
+      return withFreshness('missing');
     }
 
     return unknown();
@@ -331,11 +334,7 @@ async function checkOneSource(
     const content = await readFile(actualPath, 'utf8');
     const actualHash = createHash('sha256').update(content).digest('hex');
 
-    return {
-      ...source,
-      freshness: actualHash === expectedHash ? 'current' : 'stale',
-      ...(lastScan ? { lastScan } : {}),
-    };
+    return withFreshness(actualHash === expectedHash ? 'current' : 'stale');
   } catch {
     return unknown();
   }
@@ -386,8 +385,11 @@ export async function annotateCodebaseSourceFreshness(
 
       if (!checkout) {
         const lastScan = validLastScan(manifest.lastScan);
+        const anchor: SourceAnchor = { ...source, freshness: 'unknown' };
 
-        return Promise.resolve({ ...source, freshness: 'unknown' as const, ...(lastScan ? { lastScan } : {}) });
+        if (lastScan) anchor.lastScan = lastScan;
+
+        return Promise.resolve(anchor);
       }
 
       return checkOneSource(source, manifest, checkout);

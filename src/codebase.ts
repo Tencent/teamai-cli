@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import { callTool, isOverrideInvalid } from './tool-launch/call.js';
 import { createGit } from './utils/git.js';
@@ -11,6 +12,26 @@ import { log } from './utils/logger.js';
 import type { CodebaseSuggestion, LintIssue, LintReport } from './types.js';
 
 /** 文件扫描截断上限（字符数）。 */
+/** A learning's frontmatter tags; a tag that is not a string reads as undefined. */
+const LearningTagsSchema = z.array(z.string().optional().catch(undefined));
+
+const LintIssueSchema = z.object({
+  severity: z.enum(['high', 'medium', 'low']),
+  category: z.enum(['contradiction', 'outdated', 'orphan', 'missing']),
+  location: z.string(),
+  description: z.string(),
+  suggestion: z.string(),
+}) satisfies z.ZodType<LintIssue>;
+
+/** The lint reply the AI writes; a malformed issue is dropped, and a missing summary takes the default. */
+const LintReplySchema = z.object({
+  summary: z.string().optional().catch(undefined),
+  issues: z.array(LintIssueSchema.nullable().catch(null))
+    .transform((issues) => issues.filter((issue) => issue !== null))
+    .optional()
+    .catch(undefined),
+});
+
 const FILE_TREE_MAX_CHARS = 5000;
 
 /** 架构文档读取上限（字符数）。 */
@@ -218,13 +239,11 @@ async function gatherLearningsContext(opts: {
           const filePath = path.join(learningsDir, entry);
           const raw = fs.readFileSync(filePath, 'utf-8');
           const parsed = matter(raw);
-          const tags: unknown = parsed.data['tags'];
+          const tags = LearningTagsSchema.safeParse(parsed.data['tags']).data ?? [];
 
-          if (Array.isArray(tags)) {
-            for (const tag of tags) {
-              if (typeof tag === 'string') {
-                tagFreq[tag] = (tagFreq[tag] ?? 0) + 1;
-              }
+          for (const tag of tags) {
+            if (tag !== undefined) {
+              tagFreq[tag] = (tagFreq[tag] ?? 0) + 1;
             }
           }
 
@@ -509,11 +528,11 @@ export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
       throw new Error('未找到 JSON 对象');
     }
 
-    const parsed = JSON.parse(jsonMatch[0]) as { summary?: string; issues?: LintIssue[] };
+    const parsed = LintReplySchema.parse(JSON.parse(jsonMatch[0]));
 
     return {
-      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
-      summary: typeof parsed.summary === 'string' ? parsed.summary : '检查完成',
+      issues: parsed.issues ?? [],
+      summary: parsed.summary ?? '检查完成',
     };
   } catch (err) {
     if (isOverrideInvalid(err)) throw err;

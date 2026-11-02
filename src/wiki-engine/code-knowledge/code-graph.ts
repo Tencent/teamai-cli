@@ -15,17 +15,15 @@ import {
  * Edges: DEPENDS_ON edges from relation facts (internal imports only).
  */
 export function buildCodeGraph(facts: CodeFact[]): GraphIndex {
-  const nodes: GraphNode[] = facts
-    .filter((fact) => fact.kind !== "relation")
-    .map((fact) => ({
-      slug: `${fact.kind}/${fact.name}`,
-      type: mapFactKindToCategory(fact.kind),
-      confidence: fact.confidence === "EXTRACTED" ? "EXTRACTED" as const : "INFERRED" as const,
-      title: fact.name,
-      domain: path.dirname(fact.file).split('/')[0] || undefined,
-    }));
+  const nodes: GraphNode[] = facts.flatMap((fact) => (fact.kind === "relation" ? [] : [{
+    slug: `${fact.kind}/${fact.name}`,
+    type: mapFactKindToCategory(fact.kind),
+    confidence: fact.confidence === "EXTRACTED" ? "EXTRACTED" as const : "INFERRED" as const,
+    title: fact.name,
+    domain: path.dirname(fact.file).split('/')[0] || undefined,
+  }]));
 
-  const nodeFiles = new Set(facts.filter(f => f.kind !== "relation").map(f => f.file));
+  const nodeFiles = new Set(facts.flatMap((f) => (f.kind === "relation" ? [] : [f.file])));
 
   const edges: GraphEdge[] = facts
     .filter((fact) => fact.kind === "relation" && !isMetadataRelation(fact.name))

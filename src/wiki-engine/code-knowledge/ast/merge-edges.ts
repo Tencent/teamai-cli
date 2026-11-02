@@ -10,7 +10,7 @@ function factKey(fact: CodeFact): string {
  */
 export function mergeCodeFacts(astFacts: CodeFact[], heuristicFacts: CodeFact[]): CodeFact[] {
   const astRelationLines = new Set(
-    astFacts.filter((f) => f.kind === "relation").map((f) => `${f.file}:${f.lineStart}`)
+    astFacts.flatMap((f) => (f.kind === "relation" ? [`${f.file}:${f.lineStart}`] : []))
   );
 
   const astKeys = new Set(astFacts.map(factKey));

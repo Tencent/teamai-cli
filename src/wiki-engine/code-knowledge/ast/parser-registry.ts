@@ -5,7 +5,9 @@ import { Language, Parser, Query } from "web-tree-sitter";
 
 import { GO_AST_QUERY_SOURCE, PYTHON_AST_QUERY_SOURCE, SWIFT_AST_QUERY_SOURCE, TS_AST_QUERY_SOURCE } from "./queries.js";
 
-export type GrammarVariant = "typescript" | "tsx" | "python" | "go" | "swift";
+const GRAMMAR_VARIANTS = ["typescript", "tsx", "python", "go", "swift"] as const;
+
+export type GrammarVariant = (typeof GRAMMAR_VARIANTS)[number];
 
 const require = createRequire(import.meta.url);
 
@@ -71,7 +73,7 @@ async function initAst(): Promise<void> {
   });
   parserInstance = new Parser();
 
-  for (const variant of Object.keys(GRAMMAR_WASM) as GrammarVariant[]) {
+  for (const variant of GRAMMAR_VARIANTS) {
     const language = await Language.load(require.resolve(GRAMMAR_WASM[variant]));
     languages.set(variant, language);
     queries.set(variant, new Query(language, QUERY_SOURCE[variant]));

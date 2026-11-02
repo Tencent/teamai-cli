@@ -1,5 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import {
   loadGraphIndex,
   saveGraphIndex,
@@ -124,6 +125,9 @@ function isExpectedSelfLoop(edge: GraphEdge): boolean {
     && !!edge.source && REPAIRABLE_CODE_EDGE_SOURCES.has(edge.source);
 }
 
+/** The timestamp of a saved graph-index.json, the one field a rewrite may change alone. */
+const SavedGraphStampSchema = z.object({ generatedAt: z.string() });
+
 /**
  * Whether graph-index.json already holds `graph` apart from `generatedAt`, so a
  * run that finds nothing new leaves the file, and a team repo gets no commit.
@@ -132,11 +136,11 @@ async function graphUnchanged(wikiRoot: string, graph: GraphIndex): Promise<bool
   const raw = await readFile(path.join(wikiRoot, '.indices', 'graph-index.json'), 'utf8').catch(() => null);
 
   if (raw === null) return false;
-  const saved: unknown = JSON.parse(raw);
+  const saved = SavedGraphStampSchema.safeParse(JSON.parse(raw));
 
-  if (typeof saved !== 'object' || saved === null || !('generatedAt' in saved) || typeof saved.generatedAt !== 'string') return false;
+  if (!saved.success) return false;
 
-  return JSON.stringify({ ...graph, generatedAt: saved.generatedAt }, null, 2) === raw;
+  return JSON.stringify({ ...graph, generatedAt: saved.data.generatedAt }, null, 2) === raw;
 }
 
 async function loadReconciliationBase(wikiRoot: string): Promise<GraphIndex> {
@@ -210,7 +214,7 @@ async function exists(p: string): Promise<boolean> {
 
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === MISSING_PATH_ERROR_CODE) return false;
+    if (error instanceof Error && 'code' in error && error.code === MISSING_PATH_ERROR_CODE) return false;
     throw error;
   }
 }

@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { z } from "zod";
 
 import { safeIgnore, toPosix } from "../core/wiki-protocol.js";
 
@@ -24,6 +25,36 @@ const GIT_EXEC_OPTIONS = { windowsHide: true } as const;
  */
 export const CODE_COLLECTION_VERSION = 2;
 
+/** A file entry of source-manifest.json; a malformed one reads as null. */
+const SourceManifestFileSchema = z.object({
+  relativePath: z.string(),
+  sha256: z.string(),
+  language: z.string().optional().catch(undefined),
+}).nullable().catch(null);
+
+/** An MR an import ingested, as source-manifest.json records it. */
+const IngestedMrSchema = z.looseObject({ url: z.string(), headSha: z.string().optional(), at: z.string() });
+
+/**
+ * source-manifest.json, the baseline an import writes beside its evidence. Every reader treats it as untrusted: a
+ * field of the wrong type reads as absent. `project` is compared as it is, so a non-string never names a codebase.
+ */
+export const SourceManifestSchema = z.object({
+  version: z.number().optional().catch(undefined),
+  headSha: z.string().optional().catch(undefined),
+  project: z.unknown().optional(),
+  repoUrl: z.string().optional().catch(undefined),
+  repoIdentity: z.string().optional().catch(undefined),
+  sourceSubdir: z.string().optional().catch(undefined),
+  localRootHash: z.string().optional().catch(undefined),
+  branch: z.string().optional().catch(undefined),
+  lastScan: z.string().optional().catch(undefined),
+  files: z.array(SourceManifestFileSchema).optional().catch(undefined),
+  ingestedMrs: z.array(IngestedMrSchema).optional().catch(undefined),
+});
+
+export type SourceManifest = z.infer<typeof SourceManifestSchema>;
+
 export interface CodeCollectedFile {
   path: string;
   relativePath: string;
@@ -34,18 +65,18 @@ export interface CodeCollectedFile {
   repo?: string;
 }
 
-export const KEY_FILE_PATTERNS: Record<string, RegExp[]> = {
-  go: [/main\.go$/, /cmd\/.*\.go$/, /handler.*\.go$/, /server\.go$/, /router\.go$/],
-  python: [/main\.py$/, /app\.py$/, /server\.py$/, /routes?\.py$/, /models?\.py$/],
-  java: [/Application\.java$/, /Controller\.java$/, /Service\.java$/],
-  typescript: [/index\.ts$/, /server\.ts$/, /app\.ts$/, /router\.ts$/],
-  rust: [/main\.rs$/, /lib\.rs$/, /mod\.rs$/],
-  swift: [/main\.swift$/, /App\.swift$/, /Package\.swift$/],
-  scala: [/Main\.scala$/, /App\.scala$/]
-};
+export const KEY_FILE_PATTERNS = new Map<string, RegExp[]>([
+  ["go", [/main\.go$/, /cmd\/.*\.go$/, /handler.*\.go$/, /server\.go$/, /router\.go$/]],
+  ["python", [/main\.py$/, /app\.py$/, /server\.py$/, /routes?\.py$/, /models?\.py$/]],
+  ["java", [/Application\.java$/, /Controller\.java$/, /Service\.java$/]],
+  ["typescript", [/index\.ts$/, /server\.ts$/, /app\.ts$/, /router\.ts$/]],
+  ["rust", [/main\.rs$/, /lib\.rs$/, /mod\.rs$/]],
+  ["swift", [/main\.swift$/, /App\.swift$/, /Package\.swift$/]],
+  ["scala", [/Main\.scala$/, /App\.scala$/]]
+]);
 
 export function isKeyFile(relativePath: string, language: string): boolean {
-  const patterns = KEY_FILE_PATTERNS[language];
+  const patterns = KEY_FILE_PATTERNS.get(language);
 
   if (!patterns) return false;
 
@@ -160,17 +191,17 @@ function isTestPath(filePath: string): boolean {
   return /(^|\/|\\)(test|tests|__tests__|fixtures)(\/|\\)|\.test\.|\.spec\./u.test(filePath);
 }
 
+const LANGUAGE_BY_EXTENSION = new Map<string, string>([
+  [".ts", "typescript"], [".tsx", "typescript"], [".js", "javascript"], [".jsx", "javascript"],
+  [".py", "python"], [".go", "go"], [".rs", "rust"], [".java", "java"], [".swift", "swift"], [".scala", "scala"],
+  [".json", "json"], [".yaml", "yaml"], [".yml", "yaml"],
+  [".toml", "toml"], [".sql", "sql"], [".conf", "toml"], [".ini", "toml"],
+]);
+
 function languageFor(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
 
-  const map: Record<string, string> = {
-    ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript",
-    ".py": "python", ".go": "go", ".rs": "rust", ".java": "java", ".swift": "swift", ".scala": "scala",
-    ".json": "json", ".yaml": "yaml", ".yml": "yaml",
-    ".toml": "toml", ".sql": "sql", ".conf": "toml", ".ini": "toml",
-  };
-
-  return map[ext] ?? "text";
+  return LANGUAGE_BY_EXTENSION.get(ext) ?? "text";
 }
 
 export async function gitCommit(root: string): Promise<string | undefined> {

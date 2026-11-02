@@ -29,8 +29,8 @@ import {
   formatAstStatsSummary,
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
-import type { CodeCollectedFile } from './wiki-engine/code-knowledge/code-collector.js';
-import { CODE_COLLECTION_VERSION } from './wiki-engine/code-knowledge/code-collector.js';
+import type { CodeCollectedFile, SourceManifest } from './wiki-engine/code-knowledge/code-collector.js';
+import { CODE_COLLECTION_VERSION, SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 import type { ExtractorContext } from './wiki-engine/code-knowledge/extractors/index.js';
 import { SCALA_DECL_PREFIX, SCALA_WILDCARD_PREFIX } from './wiki-engine/code-knowledge/extractors/index.js';
 import { isMetadataRelation } from './wiki-engine/code-knowledge/code-extractors.js';
@@ -666,9 +666,16 @@ interface SourceRepositoryMetadata {
   localRootHash?: string;
 }
 
-interface StoredSourceManifest extends SourceRepositoryMetadata {
-  project?: string;
-  files?: Array<{ relativePath: string; sha256: string; language?: string }>;
+/** source-manifest.json as an import writes it. */
+interface WrittenSourceManifest {
+  version: number;
+  lastScan: string;
+  project: string;
+  files: Array<{ relativePath: string; sha256: string; language?: string }>;
+  sourceSubdir?: string;
+  localRootHash?: string;
+  headSha?: string;
+  repoUrl?: string;
   repoIdentity?: string;
   branch?: string;
   ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
@@ -690,33 +697,29 @@ function sanitizeRepoUrl(url: string): string {
   }
 }
 
-async function readStoredSourceManifest(filePath: string): Promise<StoredSourceManifest | null> {
+async function readStoredSourceManifest(filePath: string): Promise<SourceManifest | null> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(filePath, 'utf8'));
-
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as StoredSourceManifest
-      : null;
+    return SourceManifestSchema.safeParse(JSON.parse(await readFile(filePath, 'utf8'))).data ?? null;
   } catch {
     return null;
   }
 }
 
 function manifestMatchesSource(
-  manifest: StoredSourceManifest | null,
+  manifest: SourceManifest | null,
   project: string,
   source: SourceRepositoryMetadata,
-): manifest is StoredSourceManifest {
+): manifest is SourceManifest {
   if (!manifest || source.sourceSubdir === undefined) return false;
 
   if (manifest.project !== project || manifest.sourceSubdir !== source.sourceSubdir) return false;
 
   if (source.repoIdentity) {
-    if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) {
+    if (manifest.repoIdentity?.trim()) {
       return manifest.repoIdentity.trim() === source.repoIdentity;
     }
 
-    if (typeof manifest.repoUrl !== 'string' || !manifest.repoUrl.trim()) return false;
+    if (!manifest.repoUrl?.trim()) return false;
 
     try {
       return repoIdentity(manifest.repoUrl) === source.repoIdentity;
@@ -729,11 +732,11 @@ function manifestMatchesSource(
   // git root it was read from is the only stable statement of "this source". A
   // manifest that names a remote was written by a checkout that had one and
   // says nothing about this directory, so it cannot serve as its baseline.
-  if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) return false;
+  if (manifest.repoIdentity?.trim()) return false;
 
-  if (typeof manifest.repoUrl === 'string' && manifest.repoUrl.trim()) return false;
+  if (manifest.repoUrl?.trim()) return false;
 
-  return typeof source.localRootHash === 'string'
+  return source.localRootHash !== undefined
     && source.localRootHash !== ''
     && manifest.localRootHash === source.localRootHash;
 }
@@ -776,10 +779,11 @@ export async function sourceRepositoryMetadata(
   localRootHash ??= createHash('sha256').update(await realpath(root)).digest('hex');
 
   if (!remoteUrl) {
-    return {
-      ...(sourceSubdir !== undefined ? { sourceSubdir } : {}),
-      localRootHash,
-    };
+    const local: SourceRepositoryMetadata = {};
+
+    if (sourceSubdir !== undefined) local.sourceSubdir = sourceSubdir;
+
+    return { ...local, localRootHash };
   }
 
   const safeUrl = sanitizeRepoUrl(remoteUrl);
@@ -787,12 +791,11 @@ export async function sourceRepositoryMetadata(
 
   // Keep the historical repoUrl field for status output, after removing
   // credentials, and store strict identity separately for freshness checks.
-  return {
-    repoUrl: safeUrl,
-    repoIdentity: identity,
-    ...(sourceSubdir !== undefined ? { sourceSubdir } : {}),
-    localRootHash,
-  };
+  const remote: SourceRepositoryMetadata = { repoUrl: safeUrl, repoIdentity: identity };
+
+  if (sourceSubdir !== undefined) remote.sourceSubdir = sourceSubdir;
+
+  return { ...remote, localRootHash };
 }
 
 /**
@@ -1178,7 +1181,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
       if (isOverrideInvalid(e)) throw e;
 
       if (!opts.json) {
-        console.log(chalk.dim(`  [AI enrich skipped: ${(e as Error).message}]`));
+        console.log(chalk.dim(`  [AI enrich skipped: ${e instanceof Error ? e.message : String(e)}]`));
       }
     }
   }
@@ -1278,15 +1281,12 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
     try {
       const oldManifestRaw = await readFile(incrementalManifestPath, 'utf-8');
 
-      const oldManifest = JSON.parse(oldManifestRaw) as {
-        files?: Array<{ relativePath: string; sha256: string; language?: string }>;
-      };
-
+      const oldManifest = SourceManifestSchema.parse(JSON.parse(oldManifestRaw));
       const changedSet = new Set([...changedFiles, ...deletedFiles]);
 
-      const unchanged = (oldManifest.files ?? [])
-        .filter((f) => !changedSet.has(f.relativePath))
-        .map((f) => ({ relativePath: f.relativePath, sha256: f.sha256, language: f.language ?? '' }));
+      const unchanged = (oldManifest.files ?? []).flatMap((f) => (f && !changedSet.has(f.relativePath)
+        ? [{ relativePath: f.relativePath, sha256: f.sha256, language: f.language ?? '' }]
+        : []));
 
       allManifestFiles = [...unchanged, ...allManifestFiles];
     } catch { /* 无旧 manifest，只用当前的 */ }
@@ -1304,7 +1304,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
 
   const headSha = collectionManifest.commit;
 
-  const manifestObject: Record<string, unknown> = {
+  const manifestObject: WrittenSourceManifest = {
     version: CODE_COLLECTION_VERSION,
     lastScan: new Date().toISOString(),
     project,
@@ -1331,7 +1331,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
   if (branch && (sameSource || opts.branch)) manifestObject.branch = branch;
   // P5: record ingested MR (upsert by url) when invoked via --from-mr
   let ingestedMrs = sameSource ? prevIngestedMrs : [];
-  const sourceMrUrls = typeof opts.sourceMrUrl === 'string' ? [opts.sourceMrUrl] : (opts.sourceMrUrl ?? []);
+  const sourceMrUrls = [opts.sourceMrUrl ?? []].flat();
 
   if (sourceMrUrls.length > 0) {
     const at = new Date().toISOString();
@@ -1371,9 +1371,10 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
       written: manifestSource !== 'none',
       source: manifestSource,
       components: manifestComponentCount,
-      ...(manifestNote ? { note: manifestNote } : {}),
     },
   };
+
+  if (manifestNote) result.manifest.note = manifestNote;
 
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));

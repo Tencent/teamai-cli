@@ -1,7 +1,7 @@
 import { readFile, writeFile, stat, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { CODE_COLLECTION_VERSION, collectCode, gitCommit, gitDiffNameStatus, isWorkingTreeClean } from "./code-collector.js";
+import { CODE_COLLECTION_VERSION, collectCode, gitCommit, gitDiffNameStatus, isWorkingTreeClean, SourceManifestSchema } from "./code-collector.js";
 import type { CodeFact } from "./code-extractors.js";
 import type { InterfaceInventory } from "../interface-scanner.js";
 
@@ -20,11 +20,7 @@ export async function detectCodeIncrementalChanges(
   sourceSubdir?: string,
 ): Promise<CodeIncrementalChange> {
   const previous = (await exists(manifestPath))
-    ? (JSON.parse(await readFile(manifestPath, "utf8")) as {
-        headSha?: string;
-        version?: number;
-        files?: Array<{ relativePath: string; sha256: string }>;
-      })
+    ? SourceManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")))
     : { files: [] };
 
   const oldSha = previous.headSha;
@@ -66,13 +62,12 @@ export async function detectCodeIncrementalChanges(
   // Honors the caller's --max-files: a default-capped scan against a larger
   // prior extraction would classify the tail as deleted and prune it.
   const current = await collectCode({ root, maxFiles });
-  const previousByPath = new Map((previous.files ?? []).map((file) => [file.relativePath, file.sha256]));
+  const previousByPath = new Map((previous.files ?? []).flatMap((file) => (file ? [[file.relativePath, file.sha256]] : [])));
   const currentByPath = new Map(current.manifest.files.map((file) => [file.relativePath, file.sha256]));
   const added = [...currentByPath.keys()].filter((file) => !previousByPath.has(file)).sort();
 
   const changed = [...currentByPath.entries()]
-    .filter(([file, sha]) => previousByPath.has(file) && previousByPath.get(file) !== sha)
-    .map(([file]) => file)
+    .flatMap(([file, sha]) => (previousByPath.has(file) && previousByPath.get(file) !== sha ? [file] : []))
     .sort();
 
   const deleted = [...previousByPath.keys()].filter((file) => !currentByPath.has(file)).sort();
@@ -133,6 +128,8 @@ export async function loadFactsCache(indicesDir: string): Promise<CodeFact[]> {
 
   try {
     const raw = await readFile(cachePath, 'utf-8');
+    // SAFETY: saveFactsCache is the only writer of this cache file, and it writes a CodeFact[]; a file that is not an
+    // array is treated as no cache below.
     const parsed = JSON.parse(raw) as CodeFact[];
 
     return Array.isArray(parsed) ? parsed : [];
@@ -151,6 +148,8 @@ export async function loadInterfacesCache(indicesDir: string): Promise<Interface
 
   try {
     const raw = await readFile(cachePath, 'utf-8');
+    // SAFETY: saveInterfacesCache is the only writer of this cache file, and it writes an InterfaceInventory; a file
+    // without entries is treated as no cache below.
     const parsed = JSON.parse(raw) as InterfaceInventory;
 
     return parsed?.entries ? parsed : { entries: [], scannedAt: '' };

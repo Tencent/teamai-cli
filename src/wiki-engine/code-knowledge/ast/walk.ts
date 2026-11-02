@@ -176,15 +176,19 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
           swiftShadowedNames === undefined ? [] : swiftShadowedNamesAt(callNode, swiftShadowedNames);
 
         const enclosedByType = variant === "swift" && isInsideSwiftTypeBody(callNode);
-        callSites.push({
+
+        const site: AstCallSite = {
           fromFile: file.relativePath,
           line,
           calleeText,
           receiver,
-          ...(localBindings.length > 0 ? { localBindings } : {}),
-          ...(enclosedByType ? { enclosedByType } : {}),
           confidence: "INFERRED"
-        });
+        };
+
+        if (localBindings.length > 0) site.localBindings = localBindings;
+
+        if (enclosedByType) site.enclosedByType = enclosedByType;
+        callSites.push(site);
         continue;
       }
 

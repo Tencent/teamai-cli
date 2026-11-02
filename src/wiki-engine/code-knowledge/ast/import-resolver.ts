@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 
 import { toPosix } from "../../core/wiki-protocol.js";
 
@@ -23,6 +24,14 @@ export interface ResolvedImport {
   candidates?: string[];
 }
 
+/** The tsconfig.json fields path resolution reads. */
+const TsconfigSchema = z.object({
+  compilerOptions: z.object({
+    baseUrl: z.string().nullish(),
+    paths: z.record(z.string(), z.array(z.string())).nullish(),
+  }).nullish(),
+});
+
 const tsconfigCache = new Map<string, TsconfigPathsConfig | null>();
 
 /** Find nearest tsconfig.json upward from a file directory. */
@@ -42,9 +51,7 @@ export async function loadTsconfigPaths(
     const configPath = path.join(dir, "tsconfig.json");
 
     try {
-      const raw = JSON.parse(await readFile(configPath, "utf8")) as {
-        compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
-      };
+      const raw = TsconfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
 
       const configDir = path.dirname(configPath);
       const baseUrl = raw.compilerOptions?.baseUrl ?? ".";
@@ -231,7 +238,13 @@ async function resolvePathsMapping(
   return undefined;
 }
 
-function moduleExtensions(fromFile: string): { extensions: string[]; indexSuffixes: string[] } {
+/** The file extensions and directory index files an import specifier may resolve to. */
+interface ModuleExtensions {
+  extensions: string[];
+  indexSuffixes: string[];
+}
+
+function moduleExtensions(fromFile: string): ModuleExtensions {
   if (fromFile.endsWith(".py")) {
     return { extensions: EXTENSIONS_PY, indexSuffixes: INDEX_SUFFIXES_PY };
   }
