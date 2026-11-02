@@ -4,6 +4,7 @@
  * `workspaceGeneration`. Every value from the API is escaped with `e`. A workflow row opens its run through the
  * Workflow Runs dialog.
  */
+import type { Decider } from '../scorers/label.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, FAILING_PAGE, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
 
 /** The name the page gives each dimension, in English; `label` translates it. */
@@ -17,6 +18,16 @@ const DIMENSION_NAMES: Record<Dimension, string> = {
   tag: 'Tag',
   fingerprint: 'Fingerprint',
   skill: 'Skill used',
+  decidedBy: 'Decided by',
+};
+
+/** The name the page gives each stage that decides a workflow label (#1247), in English; `label` translates it. */
+const DECIDER_NAMES: Record<Decider | 'not recorded', string> = {
+  check: 'Scorer check',
+  ci: 'Pull request CI',
+  protected: 'Protected paths',
+  judge: 'Judge',
+  'not recorded': 'Not recorded',
 };
 
 export const scorersClient = `
@@ -24,6 +35,9 @@ let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerR
 const failingPage=${FAILING_PAGE}, failingMax=${FAILING_MAX};
 const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
 const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
+const deciderNames=${JSON.stringify(DECIDER_NAMES)};
+const deciderText=by=>'<span class="decider decider-'+e(by.replace(' ','-'))+'">'+label(deciderNames[by]||by)+'</span>';
+const deciderKey=by=>by==='not recorded'?JSON.stringify(['not recorded']):JSON.stringify(['value',by,null,false]);
 const savedWindow=read('teamai-dashboard-scorer-window','30'), savedGroup=read('teamai-dashboard-scorer-group','');
 let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',scorer:'',cohort:'',groupBy:Object.hasOwn(scorerDimensions,savedGroup)?savedGroup:'',commit:'',group:'',failing:''};
 function resetScorers(){scorerCommitDraft='';scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:'',group:'',failing:''};}
@@ -68,7 +82,7 @@ function cohortPicker(data, sel){
   +r.list.map(c=>'<button class="chip'+(c.id===sel.cohort.id?' active':'')+'" data-cohort="'+e(c.id)+'" aria-pressed="'+(c.id===sel.cohort.id)+'">'+(c.source==='session'?label('Session labels'):label('Workflow labels'))+' · '+runModeText(c.runMode)+' · '+judgeText(c.judge)+' <b>'+number(c.stats.n)+'</b></button>').join('')+'</div></div>').join('')+'</div>';
 }
 function meter(rate){ return '<span class="meter" aria-hidden="true"><span style="width:'+(rate==null?0:Math.round(rate*100))+'%"></span></span>'; }
-function groupName(g){ if(g.kind==='none')return label('None'); if(g.kind==='not recorded')return '<span class="muted">'+label('Not recorded')+'</span>'; const long=['teamRevision','fingerprint'].includes(scorerData.selected.groupBy); return '<span data-verbatim title="'+e(g.value)+'">'+(long?short(g.value):e(g.value))+'</span>'+(g.isReported===false?' <small>'+label('requested')+'</small>':'')+(g.localChanges?' <small class="amber">'+label('local changes')+'</small>':''); }
+function groupName(g){ if(g.kind==='none')return label('None'); if(g.kind==='not recorded')return '<span class="muted">'+label('Not recorded')+'</span>'; if(scorerData.selected.groupBy==='decidedBy')return deciderText(g.value); const long=['teamRevision','fingerprint'].includes(scorerData.selected.groupBy); return '<span data-verbatim title="'+e(g.value)+'">'+(long?short(g.value):e(g.value))+'</span>'+(g.isReported===false?' <small>'+label('requested')+'</small>':'')+(g.localChanges?' <small class="amber">'+label('local changes')+'</small>':''); }
 function groupsPanel(sel){
  if(!sel.groups)return '';
  const split=!!sel.split;
@@ -76,6 +90,18 @@ function groupsPanel(sel){
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('By')+' '+label(scorerDimensions[sel.groupBy])+' <span class="count">'+number(sel.groups.length)+'</span></h2><span class="label">'+label('A label that lists two values counts under both. Select a row to list its failing labels.')+'</span></div><div class="table-scroll"><table class="session-table scorer-groups"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +sel.groups.map(g=>'<tr class="'+(scorerQuery.group===g.key?'selected-row':'')+'"><td><button class="link" data-scorer-group="'+e(g.key)+'" aria-pressed="'+(scorerQuery.group===g.key)+'">'+groupName(g)+'</button></td><td>'+number(g.stats.n)+'</td><td>'+number(g.stats.passed)+'</td><td>'+number(g.stats.failed)+'</td><td>'+meter(g.stats.rate)+' '+pct(g.stats.rate)+'</td>'+(split?['before','after','notRecorded'].map(side=>'<td>'+pct(g.split[side].rate)+' <small>'+number(g.split[side].n)+'</small></td>').join(''):'')+'</tr>').join('')
   +'</tbody></table></div></section>';
+}
+function decidedPanel(sel){
+ const d=sel.decided;
+ if(!d)return '';
+ const n=sel.cohort.stats.n, judged=d.rows.find(r=>r.by==='judge');
+ const selected=by=>scorerQuery.groupBy==='decidedBy'&&scorerQuery.group===deciderKey(by);
+ return '<section class="panel sessions decided"><div class="panelhead"><h2>'+label('What decided these labels')+'</h2><span class="label">'+label('A delivered pull request is decided by the first stage that fails it: the scorer check, the pull request CI, then the protected-path refusal. The judge only reads work every stage passed.')+'</span></div>'
+  +'<div class="kpis">'+kpiCard(label('Decided before the judge'),pct(n?d.beforeJudge/n:null),number(d.beforeJudge)+' / '+number(n)+' '+label('labels')+' · '+label('no judge call'))
+  +kpiCard(label('Judge pass rate'),pct(judged?judged.stats.rate:null),judged?number(judged.stats.n)+' '+label('labels reached the judge'):label('No label reached the judge'))+'</div>'
+  +'<div class="table-scroll"><table class="session-table compact"><thead><tr>'+['DECIDED BY','LABELS','PASSED','FAILED','SHARE'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +d.rows.map(r=>'<tr class="'+(selected(r.by)?'selected-row':'')+'"><td><button class="link" data-decided="'+e(deciderKey(r.by))+'" aria-pressed="'+selected(r.by)+'">'+deciderText(r.by)+'</button></td><td>'+number(r.stats.n)+'</td><td>'+number(r.stats.passed)+'</td><td>'+number(r.stats.failed)+'</td><td>'+meter(n?r.stats.n/n:null)+' '+pct(n?r.stats.n/n:null)+'</td></tr>').join('')
+  +'</tbody></table></div><p class="scorer-hint">'+label('Select a stage to list its failing labels. Many labels decided by CI or a check point at the work, not the rubric; fix those first.')+'</p></section>';
 }
 function valuesPanel(sel){
  if(!sel.cohort.values.length)return '';
@@ -111,10 +137,10 @@ function agreementPanel(sel){
   +list+how+'</section>';
 }
 function failingPanel(sel){
- const rows=sel.failing.labels, total=sel.failing.total;
+ const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided;
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
-  +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL','PLATFORM','SKILLS','OPEN'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td><td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subjectCell(r)+'</td></tr>').join('')
+  +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['PLATFORM','SKILLS','OPEN']).map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td>'+(staged?'<td>'+deciderText(r.decidedBy||'not recorded')+'</td>':'')+'<td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subjectCell(r)+'</td></tr>').join('')
   +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> '+(rows.length<failingMax?'<button class="link" data-scorer-more>'+label('Show more')+'</button>':'<span class="label">'+label('Pick a group or a shorter window to list the rest.')+'</span>')+'</div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
 }
 function remindersPanel(sel){
@@ -148,7 +174,7 @@ function scorersPage(){
  return (scorerError?'<div class="error-panel" role="alert"><p>'+e(scorerError)+'</p></div>':'')
   +'<div class="statusline"><span>'+label('Window')+': '+e(when(w.from))+' – '+e(when(w.to))+'</span><span>'+label('Counted by when labels were scored, not when the work happened.')+'</span><span>'+label('Pass or fail as each label stored it.')+'</span></div>'
   +scorerSummary(scorerData)+scorerControls(scorerData)
-  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.cohort.stats)+agreementPanel(sel)+valuesPanel(sel)+(sel.split?splitCards(sel.split):'')
+  +(sel?'<h2 class="section-label"><span data-verbatim>'+e(sel.cohort.scorer)+'</span> <span class="tag">'+(sel.cohort.source==='session'?label('Session labels'):label('Workflow labels'))+'</span></h2>'+kpis(sel.cohort.stats)+decidedPanel(sel)+agreementPanel(sel)+valuesPanel(sel)+(sel.split?splitCards(sel.split):'')
    +'<section class="panel trend-panel"><div class="panelhead"><h2>'+label('Weekly pass rate')+'</h2><span class="label">'+cohortText(sel.cohort)+'</span></div>'+trendChart(sel.cohort.trend)+'</section>'
    +groupsPanel(sel)+failingPanel(sel)+remindersPanel(sel):'')
   +note;
@@ -173,8 +199,9 @@ document.addEventListener('change',event=>{
 document.addEventListener('input',event=>{ if(event.target.id==='scorer-commit')scorerCommitDraft=event.target.value; });
 document.addEventListener('submit',event=>{ if(!event.target.closest('[data-scorer-form]'))return; event.preventDefault(); scorerCommitDraft=$('scorer-commit').value.trim(); setScorerQuery({commit:scorerCommitDraft}); });
 document.addEventListener('click',event=>{
- const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]');
- if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
+ const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]'), decided=event.target.closest('[data-decided]');
+ if(decided){const again=scorerQuery.groupBy==='decidedBy'&&scorerQuery.group===decided.dataset.decided; save('teamai-dashboard-scorer-group','decidedBy'); scorerQuery={...scorerQuery,groupBy:'decidedBy',failing:'',group:again?'':decided.dataset.decided}; loadScorers();}
+ else if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
  else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
  else if(group)setScorerQuery({group:scorerQuery.group===group.dataset.scorerGroup?'':group.dataset.scorerGroup});
  else if(event.target.closest('[data-scorer-more]'))setScorerQuery({group:scorerQuery.group,failing:String(Math.min(scorerData.selected.failing.labels.length+failingPage,failingMax))});
