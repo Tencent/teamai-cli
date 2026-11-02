@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
 import { GITLAB_HOST } from './repo-url.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
-import type { PullRequestRef } from '../types.js';
+import type { CiStatus, CommitRef, PullRequestRef } from '../types.js';
 
 /**
  * GitLab REST API client (API v4).
@@ -412,6 +412,28 @@ export async function gitlabFindOpenMr({ repo, source, target, timeoutMs }: Pull
   }
   if (hostOf(found.web_url) !== hostOf(gitlabBaseUrl())) throw new Error('GitLab answered the open merge request lookup with a URL on another host.');
   return found.web_url;
+}
+
+const PipelinesSchema = z.array(z.object({ status: z.string() }));
+const PIPELINE_RUNNING = ['created', 'waiting_for_resource', 'preparing', 'pending', 'running', 'scheduled', 'manual'];
+
+/**
+ * How the CI of a commit went on GitLab: its newest pipeline. A canceled or skipped one says nothing of the commit, as
+ * no pipeline does.
+ */
+export async function gitlabCommitPipelines({ repo, commit, timeoutMs }: CommitRef): Promise<CiStatus> {
+  const token = requireToken();
+  const query = new URLSearchParams({ sha: commit, order_by: 'id', sort: 'desc', per_page: '1' });
+  const response = await fetch(`${gitlabApiBase()}/projects/${encodeURIComponent(repo)}/pipelines?${query}`, {
+    headers: authHeaders(token), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`GitLab answered the commit pipelines lookup with HTTP ${response.status}. Check the token's access to the project.`);
+  const pipelines = PipelinesSchema.safeParse(await response.json().catch(() => undefined));
+  if (!pipelines.success) throw new Error('GitLab answered the commit pipelines lookup with data TeamAI cannot read.');
+  const status = pipelines.data[0]?.status;
+  if (status === 'success') return 'passed';
+  if (status === 'failed') return 'failed';
+  return status !== undefined && PIPELINE_RUNNING.includes(status) ? 'pending' : 'none';
 }
 
 function hostOf(url: string): string | undefined {

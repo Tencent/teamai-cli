@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { log } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
 import { isInteractive } from '../../utils/prompt.js';
-import type { PullRequestRef } from '../types.js';
+import type { CiStatus, CommitRef, PullRequestRef } from '../types.js';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -639,22 +639,57 @@ const GhPullSchema = z.object({
 export async function ghFindOpenPull({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
   const owner = repo.split('/')[0] ?? repo;
   const query = new URLSearchParams({ state: 'open', head: `${owner}:${source}`, base: target, per_page: '100' });
-  const pulls = z.array(GhPullSchema).safeParse(await ghApiGet(`repos/${repo}/pulls?${query}`, timeoutMs));
-  if (!pulls.success) throw new Error('GitHub answered the open pull request lookup with data TeamAI cannot read.');
+  const pulls = z.array(GhPullSchema).safeParse(await ghApiGet(`repos/${repo}/pulls?${query}`, timeoutMs, OPEN_LOOKUP));
+  if (!pulls.success) throw new Error(unreadable(OPEN_LOOKUP));
   const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
   return pulls.data.find((pull) => pull.state === 'open' && pull.head.ref === source && pull.base.ref === target
     && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name))?.html_url;
 }
 
-async function ghApiGet(path: string, timeoutMs: number): Promise<unknown> {
+const CheckRunsSchema = z.object({
+  total_count: z.number(),
+  check_runs: z.array(z.object({ status: z.string(), conclusion: z.string().nullable() })),
+});
+const CombinedStatusSchema = z.object({ state: z.string(), total_count: z.number() });
+/** Conclusions that fail a check run. A cancelled or stale run says nothing of the commit, as a skipped or neutral one passes it. */
+const FAILED_CONCLUSIONS = ['failure', 'timed_out', 'action_required', 'startup_failure'];
+const PASSED_CONCLUSIONS = ['success', 'neutral', 'skipped'];
+
+/**
+ * How the CI of a commit went on GitHub: its check runs (Actions and apps) and its combined commit status. Any failed one
+ * fails it; else any still running, or more check runs than one page shows, leaves it pending; else any that passed
+ * passes it; else it has none.
+ */
+export async function ghCommitChecks({ repo, commit, timeoutMs }: CommitRef): Promise<CiStatus> {
+  const [runsAnswer, statusAnswer] = await Promise.all([
+    ghApiGet(`repos/${repo}/commits/${commit}/check-runs?per_page=100`, timeoutMs, CHECKS_LOOKUP),
+    ghApiGet(`repos/${repo}/commits/${commit}/status`, timeoutMs, CHECKS_LOOKUP),
+  ]);
+  const runs = CheckRunsSchema.safeParse(runsAnswer);
+  const status = CombinedStatusSchema.safeParse(statusAnswer);
+  if (!runs.success || !status.success) throw new Error(unreadable(CHECKS_LOOKUP));
+  const conclusions = runs.data.check_runs.map((run) => (run.status === 'completed' ? run.conclusion ?? 'unknown' : 'running'));
+  const statuses = status.data.total_count > 0 ? [status.data.state] : [];
+  if (conclusions.some((conclusion) => FAILED_CONCLUSIONS.includes(conclusion)) || statuses.some((state) => state === 'failure' || state === 'error')) return 'failed';
+  if (conclusions.includes('running') || statuses.includes('pending') || runs.data.total_count > runs.data.check_runs.length) return 'pending';
+  return conclusions.some((conclusion) => PASSED_CONCLUSIONS.includes(conclusion)) || statuses.includes('success') ? 'passed' : 'none';
+}
+
+/** One GitHub read, as its failures name it: what gh could not do, and the lookup GitHub answered. */
+interface GhLookup { gh: string; name: string }
+const OPEN_LOOKUP: GhLookup = { gh: 'look up open pull requests', name: 'the open pull request lookup' };
+const CHECKS_LOOKUP: GhLookup = { gh: 'read the checks of the commit', name: 'the commit checks lookup' };
+const unreadable = (lookup: GhLookup): string => `GitHub answered ${lookup.name} with data TeamAI cannot read.`;
+
+async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Promise<unknown> {
   const ghPath = getGhPath();
   if (ghPath) {
     const result = await ghSpawn(ghPath, ['api', path], { timeoutMs, env: { GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' } });
-    if (result.status !== 0) throw new Error('gh could not look up open pull requests. Check gh auth status and its access to the repository.');
+    if (result.status !== 0) throw new Error(`gh could not ${lookup.gh}. Check gh auth status and its access to the repository.`);
     try {
       return JSON.parse(result.stdout);
     } catch {
-      throw new Error('GitHub answered the open pull request lookup with data TeamAI cannot read.');
+      throw new Error(unreadable(lookup));
     }
   }
   const token = getGitHubToken();
@@ -664,11 +699,11 @@ async function ghApiGet(path: string, timeoutMs: number): Promise<unknown> {
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!response.ok) throw new Error(`GitHub answered the open pull request lookup with HTTP ${response.status}. Check the token's access to the repository.`);
+  if (!response.ok) throw new Error(`GitHub answered ${lookup.name} with HTTP ${response.status}. Check the token's access to the repository.`);
   try {
     return await response.json();
   } catch {
-    throw new Error('GitHub answered the open pull request lookup with data TeamAI cannot read.');
+    throw new Error(unreadable(lookup));
   }
 }
 

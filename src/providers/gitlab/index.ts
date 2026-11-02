@@ -7,6 +7,7 @@ import {
   gitlabRepoClone,
   gitlabCreateRepo,
   gitlabMrCreate,
+  gitlabCommitPipelines,
   gitlabFindOpenMr,
   GitLabRepoNotFoundError,
 } from './gitlab-api.js';
@@ -23,7 +24,7 @@ import type { MRData } from '../../types.js';
  */
 export class GitLabProvider implements GitProvider {
   readonly name = 'gitlab';
-  readonly pullRequests: PullRequestLookup = { findOpen: gitlabFindOpenMr };
+  readonly pullRequests: PullRequestLookup = { findOpen: gitlabFindOpenMr, checks: gitlabCommitPipelines };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitLabRepoInput(input);
