@@ -59,7 +59,7 @@ const RETIRED_SKILL_HOOK_KEY = 'Hook dispatch post-tool-use Skill';
  * The OpenCode plugin before #1221 renamed `skill` to `Skill`, and a running
  * OpenCode keeps the loaded plugin until it restarts. Drop after one release.
  */
-const LEGACY_PLUGIN_SKILL_CALL: Readonly<Record<string, string>> = { opencode: 'Skill' };
+const LEGACY_PLUGIN_SKILL_CALL = new Map([['opencode', 'Skill']]);
 
 const NAME = `${SKILL_NAME_CHARS}+`;
 const SKILL_MD = /[\\/]([^\\/]+)[\\/]SKILL\.md$/i;
@@ -68,9 +68,20 @@ const SKILL_URI = /^skill:\/\/([^/]+)\/?$/;
 /** The block Pi's `_expandSkillCommand` puts first in the prompt: `<skill name="X" location="FILE">`. */
 const PI_SKILL_BLOCK = new RegExp(`^<skill name="(${NAME})" location="([^"\n]+)">`);
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? { ...value } : null;
-}
+/** A hook event as the host sends it on stdin, typed as the hook-input helpers that read it take it. */
+type HookEvent = Parameters<typeof classifyToolCall>[0];
+
+/** A string field of an event, absent when it holds anything else. */
+const TextFieldSchema = z.string().optional().catch(undefined);
+
+/** The PostToolUse fields skill use reads itself: a name that is not a string reads as '', an input that is not an object as null. */
+const ToolEventSchema = z.object({
+  tool_name: z.string().catch(''),
+  tool_input: z.record(z.string(), z.unknown()).nullable().catch(null),
+});
+
+/** A read call's `path`, the form OMP's `read skill://<name>` takes. */
+const ReadPathSchema = z.object({ path: z.string() });
 
 function skillLoadOf(tool: string): SkillLoad | undefined {
   return isToolId(tool) ? TOOLS[tool].skillLoad : undefined;
@@ -83,7 +94,7 @@ function isSkillCall(tool: string, hostName: string): boolean {
 
   if (load === 'unknown') return false;
 
-  return load.calls.some((call) => call.name === hostName) || LEGACY_PLUGIN_SKILL_CALL[tool] === hostName;
+  return load.calls.some((call) => call.name === hostName) || LEGACY_PLUGIN_SKILL_CALL.get(tool) === hostName;
 }
 
 /**
@@ -94,9 +105,8 @@ type ToolCallSkills = { readonly loaded: SkillCandidate[]; readonly named: Skill
 
 const NO_SKILLS: ToolCallSkills = { loaded: [], named: [] };
 
-function toolCallSkills(stdin: Record<string, unknown>, tool: string): ToolCallSkills {
-  const hostName = typeof stdin.tool_name === 'string' ? stdin.tool_name : '';
-  const input = asObject(stdin.tool_input);
+function toolCallSkills(stdin: HookEvent, tool: string): ToolCallSkills {
+  const { tool_name: hostName, tool_input: input } = ToolEventSchema.parse(stdin);
 
   if (!hostName || !input) return NO_SKILLS;
 
@@ -112,7 +122,8 @@ function toolCallSkills(stdin: Record<string, unknown>, tool: string): ToolCallS
   const call = classifyToolCall(stdin, tool);
 
   if (call.status === 'failure') return NO_SKILLS;
-  const uri = call.category === 'read' && typeof input.path === 'string' ? SKILL_URI.exec(input.path.trim()) : null;
+  const read = call.category === 'read' ? ReadPathSchema.safeParse(input) : undefined;
+  const uri = read?.success ? SKILL_URI.exec(read.data.path.trim()) : null;
 
   if (uri) return { loaded: [{ skill: uri[1] }], named: [] };
 
@@ -122,11 +133,11 @@ function toolCallSkills(stdin: Record<string, unknown>, tool: string): ToolCallS
   const cwd = resolveHookCwd(stdin);
   const named = namedReads(call.command, { powershell: normalizeToolName(hostName).toLowerCase() === 'powershell', home: getUserHome() });
 
-  return { loaded: [], named: skillReads(named.map((file) => resolvePath(file, cwd))), ...(call.output === undefined ? {} : { output: call.output }) };
+  return { loaded: [], named: skillReads(named.map((file) => resolvePath(file, cwd))), output: call.output };
 }
 
 /** The skills one PostToolUse payload shows loaded, before the existence gate: a named read counts when its output shows it. */
-function toolCallCandidates(stdin: Record<string, unknown>, tool: string): SkillCandidate[] {
+function toolCallCandidates(stdin: HookEvent, tool: string): SkillCandidate[] {
   const { loaded, named, output } = toolCallSkills(stdin, tool);
 
   return [...loaded, ...named.filter((candidate) => showsSkill(output, candidate.skill))];
@@ -158,7 +169,7 @@ function promptFormsOf(tool: string): readonly PromptForm[] {
   if (load === undefined || load === 'unknown') return ['/name'];
   const form = load.promptForm ?? '/name';
 
-  return typeof form === 'string' ? [form] : form;
+  return [form].flat();
 }
 
 /** The skills a prompt mentions, before the existence gate. */
@@ -221,16 +232,14 @@ function stringOf(literal: string | undefined): string | undefined {
   if (literal === undefined) return undefined;
 
   try {
-    const value: unknown = JSON.parse(literal);
-
-    return typeof value === 'string' ? value : undefined;
+    return TextFieldSchema.parse(JSON.parse(literal));
   } catch {
     return undefined;
   }
 }
 
 /** The commands a Codex code-mode script passes as string literals, each as its hook sends it, as `Bash`. */
-function codeModeEvents(script: string, cwd: string): Array<Record<string, unknown>> {
+function codeModeEvents(script: string, cwd: string): HookEvent[] {
   return [...script.matchAll(CODE_MODE_CALL)].flatMap((call) => {
     const properties = new Map([...call[1].matchAll(STRING_PROPERTY)].map((property) => [property[1], property[2]]));
     const command = stringOf(properties.get('cmd'));
@@ -240,8 +249,8 @@ function codeModeEvents(script: string, cwd: string): Array<Record<string, unkno
 }
 
 /** Where a Codex command runs: its `workdir`, relative to the session's cwd, or that cwd. */
-function inWorkdir(cwd: string, workdir: unknown): string {
-  return typeof workdir === 'string' && workdir.trim() ? path.resolve(cwd, workdir) : cwd;
+function inWorkdir(cwd: string, workdir: string | undefined): string {
+  return workdir?.trim() ? path.resolve(cwd, workdir) : cwd;
 }
 
 /**
@@ -255,18 +264,23 @@ function inWorkdir(cwd: string, workdir: unknown): string {
 function blockCandidates(message: Message, block: ContentBlock, cwd: string, output: string | undefined, tool: string): SkillCandidate[] {
   if (block.type === 'tool_call') {
     const input = block.arguments;
+    const script = TextFieldSchema.parse(input.input);
 
-    if (block.toolName === 'exec' && typeof input.input === 'string') {
-      return codeModeEvents(input.input, cwd).flatMap((event) => {
+    if (block.toolName === 'exec' && script !== undefined) {
+      return codeModeEvents(script, cwd).flatMap((event) => {
         const { loaded, named } = toolCallSkills(event, tool);
 
         return [...loaded, ...named];
       }).filter((candidate) => showsSkill(output, candidate.skill));
     }
 
-    const toolInput = typeof input.cmd === 'string' && input.command === undefined ? { ...input, command: input.cmd } : input;
+    const cmd = TextFieldSchema.parse(input.cmd);
+    const toolInput = cmd !== undefined && input.command === undefined ? { ...input, command: cmd } : input;
+    const event: HookEvent = { tool_name: block.toolName, tool_input: toolInput, cwd: inWorkdir(cwd, TextFieldSchema.parse(input.workdir)) };
 
-    return skillCandidates({ tool_name: block.toolName, tool_input: toolInput, cwd: inWorkdir(cwd, input.workdir), ...(output === undefined ? {} : { tool_response: output }) }, tool);
+    if (output !== undefined) event.tool_response = output;
+
+    return skillCandidates(event, tool);
   }
 
   const prompt = typedIn(message, block);
@@ -275,7 +289,7 @@ function blockCandidates(message: Message, block: ContentBlock, cwd: string, out
 }
 
 /** The candidates that name an installed skill, each once. */
-async function installedSkills(candidates: SkillCandidate[], stdin: Record<string, unknown>, tool: string, config: LocalConfig, source: 'prompt' | 'tool-call'): Promise<string[]> {
+async function installedSkills(candidates: SkillCandidate[], stdin: HookEvent, tool: string, config: LocalConfig, source: 'prompt' | 'tool-call'): Promise<string[]> {
   const named = candidates.filter((c) => isValidSkillName(c.skill));
 
   if (!named.length) return [];
@@ -308,8 +322,10 @@ async function installedSkills(candidates: SkillCandidate[], stdin: Record<strin
  * The skills one hook event shows loaded, before any check that they exist: a tool call as PostToolUse sends it, or a
  * prompt as UserPromptSubmit sends it.
  */
-export function skillCandidates(event: Record<string, unknown>, tool: string): SkillCandidate[] {
-  return typeof event.prompt === 'string' ? promptCandidates(event.prompt, tool) : toolCallCandidates(event, tool);
+export function skillCandidates(event: HookEvent, tool: string): SkillCandidate[] {
+  const prompt = TextFieldSchema.parse(event.prompt);
+
+  return prompt !== undefined ? promptCandidates(prompt, tool) : toolCallCandidates(event, tool);
 }
 
 /**
@@ -360,10 +376,12 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
   const teamSkillInfo = await Promise.all(kept.map(async ([name, [file]]): Promise<[string, DeliveredSkillInfo]> => {
     const { data, valid } = splitFrontmatter(await readFileSafe(file) ?? '');
 
-    return [name, {
-      ...await deliveredNamespace({ repo, rev, delivered, dest: path.dirname(file), dirs: sources.get(name) ?? [] }),
-      ...(valid && typeof data.description === 'string' ? { description: data.description.trim() } : {}),
-    }];
+    const info = await deliveredNamespace({ repo, rev, delivered, dest: path.dirname(file), dirs: sources.get(name) ?? [] });
+    const description = valid ? TextFieldSchema.parse(data.description) : undefined;
+
+    if (description !== undefined) info.description = description.trim();
+
+    return [name, info];
   }));
 
   return { teamSkills: Object.fromEntries(kept), teamSkillInfo: Object.fromEntries(teamSkillInfo) };
@@ -374,7 +392,7 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
  * `skills/<namespace>/<name>` otherwise, as `collectTeamRepoSkills` reads the tree.
  */
 function teamSkillDirs(files: readonly string[]): Map<string, string[]> {
-  const dirs = new Set(files.filter((file) => path.posix.basename(file) === 'SKILL.md').map((file) => path.posix.dirname(file)));
+  const dirs = new Set(files.flatMap((file) => (path.posix.basename(file) === 'SKILL.md' ? [path.posix.dirname(file)] : [])));
   const byName = new Map<string, string[]>();
 
   for (const dir of dirs) {
@@ -458,11 +476,11 @@ export function usedSkills(
  * The host's own turn id, read the same way on both events: Codex and Muse
  * send `turn_id`, Claude Code `prompt_id`, Cursor and CodeBuddy `generation_id`.
  */
-function hostTurnKey(stdin: Record<string, unknown>): string | undefined {
+function hostTurnKey(stdin: HookEvent): string | undefined {
   for (const field of ['turn_id', 'prompt_id', 'generation_id']) {
-    const value = stdin[field];
+    const turnId = TextFieldSchema.parse(stdin[field]);
 
-    if (typeof value === 'string' && value) return value;
+    if (turnId) return turnId;
   }
 
   return undefined;
@@ -472,7 +490,7 @@ function hostTurnKey(stdin: Record<string, unknown>): string | undefined {
  * The session a claim belongs to, or undefined when the host sent none: a
  * `pid-` id is deriveSessionId's fallback, which differs between hook runs.
  */
-function claimSessionId(stdin: Record<string, unknown>): string | undefined {
+function claimSessionId(stdin: HookEvent): string | undefined {
   const sessionId = deriveSessionId(stdin);
 
   return sessionId.startsWith('pid-') ? undefined : sessionId;
@@ -499,7 +517,7 @@ function claimsPath(sessionId: string): string {
 /** A prompt-submit and the detached post-tool-use hooks of its turn can claim at once. */
 const CLAIMS_LOCK_WAIT = { attempts: 20, delayMs: 50 };
 
-async function claimTurnSlots(stdin: Record<string, unknown>, skills: string[], source: 'prompt' | 'tool-call'): Promise<{ usage: string[]; webhooks: string[] }> {
+async function claimTurnSlots(stdin: HookEvent, skills: string[], source: 'prompt' | 'tool-call'): Promise<{ usage: string[]; webhooks: string[] }> {
   const opensTurn = source === 'prompt';
   const unchecked = { usage: skills, webhooks: opensTurn ? [] : skills };
   const sessionId = claimSessionId(stdin);
@@ -565,7 +583,7 @@ async function toolCallTrackingDisabled(config: LocalConfig): Promise<boolean> {
 }
 
 /** Record tool-call usage and separately claim the skills to notify in the background. */
-export async function creditToolCall(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<string[]> {
+export async function creditToolCall(stdin: HookEvent, tool: string, config: LocalConfig): Promise<string[]> {
   const candidates = toolCallCandidates(stdin, tool);
 
   if (!candidates.length || await toolCallTrackingDisabled(config)) return [];
@@ -580,8 +598,8 @@ export async function creditToolCall(stdin: Record<string, unknown>, tool: strin
  * mentions. A host that sends its own turn id needs no stamp, so a prompt
  * that names no installed skill there touches no file.
  */
-export async function creditPromptMentions(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<void> {
-  const prompt = typeof stdin.prompt === 'string' ? stdin.prompt : '';
+export async function creditPromptMentions(stdin: HookEvent, tool: string, config: LocalConfig): Promise<void> {
+  const prompt = TextFieldSchema.parse(stdin.prompt) ?? '';
   const skills = await installedSkills(promptCandidates(prompt, tool), stdin, tool, config, 'prompt');
 
   if (!skills.length && hostTurnKey(stdin) !== undefined) return;
