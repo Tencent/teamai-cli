@@ -1,7 +1,11 @@
 import path from 'node:path';
+
+import { z } from 'zod';
+
 import { readFileSafe, writeFile, pathExists, listDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
+import { JsonValueSchema } from '../types.js';
 import type { JsonValue } from '../types.js';
 
 // ─── Marketplace refresh ────────────────────────────────
@@ -28,6 +32,13 @@ interface MarketplacePlugin {
   strict?: boolean;
   [key: string]: JsonValue | undefined;
 }
+
+/**
+ * What the refresh needs from the file: an object whose `plugins` is a list of
+ * objects. Only checked; the refresh edits the parsed file itself, so a write
+ * keeps the keys and their order as the team wrote them.
+ */
+const MarketplaceFileSchema = z.looseObject({ plugins: z.array(z.record(z.string(), JsonValueSchema)) });
 
 interface MarketplaceJson {
   name: string;
@@ -88,7 +99,7 @@ export async function refreshMarketplace(repoPath: string): Promise<boolean> {
     return false;
   }
 
-  if (!Array.isArray(marketplace.plugins)) return false;
+  if (!MarketplaceFileSchema.safeParse(marketplace).success) return false;
 
   // Collect current skill names from skills/ directory (flat layout only,
   // namespaced skills are not registered in marketplace)
