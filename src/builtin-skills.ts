@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { pathExists, remove } from './utils/fs.js';
+import { errnoCode, pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
@@ -19,16 +19,6 @@ import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
-import { z } from 'zod';
-
-const ErrnoErrorSchema = z.object({ code: z.string() });
-
-/** The error code (`ENOENT`, `EEXIST`, ...) a failed fs or process call carries, or undefined when the thrown value has none. */
-function errnoCode(cause: unknown): string | undefined {
-  const parsed = ErrnoErrorSchema.safeParse(cause);
-
-  return parsed.success ? parsed.data.code : undefined;
-}
 
 // ─── Built-in skills deployment ──────────────────────────
 //

@@ -59,7 +59,8 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-vi.mock('../utils/fs.js', () => ({
+vi.mock('../utils/fs.js', async (importOriginal) => ({
+  errnoCode: (await importOriginal<typeof import('../utils/fs.js')>()).errnoCode,
   expandHome: (p: string) => p.replace('~', '/home/test'),
   ensureDir: vi.fn(() => Promise.resolve()),
 }));

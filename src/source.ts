@@ -21,6 +21,7 @@ import {
   ensureDir,
   fileHash,
   listFilesRecursive,
+  errnoCode,
 } from './utils/fs.js';
 import { getHandler } from './resources/index.js';
 import {
@@ -101,15 +102,6 @@ async function listSourceNames(): Promise<string[]> {
     if (errnoCode(error) === 'ENOENT') return [];
     throw error;
   }
-}
-
-const ErrnoErrorSchema = z.object({ code: z.string() });
-
-/** The error code (`ENOENT`, ...) a failed fs call carries, or undefined when the thrown value has none. */
-function errnoCode(cause: unknown): string | undefined {
-  const parsed = ErrnoErrorSchema.safeParse(cause);
-
-  return parsed.success ? parsed.data.code : undefined;
 }
 
 function getSourceRepoId(source: SourceConfig): string {

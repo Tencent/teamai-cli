@@ -10,7 +10,7 @@ import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigFor
 import { resolveEffectiveUpdatePolicy } from './update-policy.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { log } from './utils/logger.js';
-import { expandHome, ensureDir } from './utils/fs.js';
+import { errnoCode, expandHome, ensureDir } from './utils/fs.js';
 import { getTeamaiHomeDir, getUpdateLockPath, JsonValueSchema, type LocalConfig } from './types.js';
 import { askConfirmation, isInteractive } from './utils/prompt.js';
 
@@ -254,15 +254,6 @@ export function isCacheValid(lastCheck: string | null, ttlMs: number = CACHE_TTL
  * later took over after ours went stale.
  */
 const heldLockOwners = new Map<string, string>();
-
-const ErrnoErrorSchema = z.object({ code: z.string() });
-
-/** The error code (`ENOENT`, `EPERM`, ...) a failed fs or process call carries, or undefined when the thrown value has none. */
-function errnoCode(cause: unknown): string | undefined {
-  const parsed = ErrnoErrorSchema.safeParse(cause);
-
-  return parsed.success ? parsed.data.code : undefined;
-}
 
 /** The `version` of the package.json an update installed, as written. */
 const InstalledPackageSchema = z.object({ version: JsonValueSchema.optional() });

@@ -6,8 +6,8 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { z } from 'zod';
 
+import { errnoCode } from './utils/fs.js';
 import { createGit, repoIdentity } from './utils/git.js';
 import type { SourceAnchor } from './code-knowledge-recall.js';
 import { isCodeFile, SourceManifestSchema, type SourceManifest } from './wiki-engine/code-knowledge/code-collector.js';
@@ -21,15 +21,9 @@ export interface CodebaseFreshnessResult {
   sources?: SourceAnchor[];
 }
 
-const ErrnoSchema = z.object({ code: z.string() });
-
 interface CheckoutIdentity {
   root: string;
   remotes: Set<string>;
-}
-
-function errorCode(cause: unknown): string | undefined {
-  return ErrnoSchema.safeParse(cause).data?.code;
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -121,7 +115,7 @@ async function readManifest(
 
     return { state: 'ok', manifest: parsed.data };
   } catch (error) {
-    if (errorCode(error) !== 'ENOENT') return { state: 'invalid' };
+    if (errnoCode(error) !== 'ENOENT') return { state: 'invalid' };
 
     try {
       // lstat distinguishes a truly absent manifest from a dangling symlink.
@@ -129,7 +123,7 @@ async function readManifest(
 
       return { state: 'invalid' };
     } catch (lstatError) {
-      return errorCode(lstatError) === 'ENOENT' ? { state: 'missing' } : { state: 'invalid' };
+      return errnoCode(lstatError) === 'ENOENT' ? { state: 'missing' } : { state: 'invalid' };
     }
   }
 }
@@ -209,7 +203,7 @@ async function safelyAbsent(candidate: string, repoRoot: string): Promise<boolea
 
     return false;
   } catch (error) {
-    if (errorCode(error) !== 'ENOENT') return false;
+    if (errnoCode(error) !== 'ENOENT') return false;
   }
 
   let ancestor = path.dirname(candidate);
@@ -221,7 +215,7 @@ async function safelyAbsent(candidate: string, repoRoot: string): Promise<boolea
 
       return ancestorStat.isDirectory() && isWithin(repoRoot, actual);
     } catch (error) {
-      if (errorCode(error) !== 'ENOENT') return false;
+      if (errnoCode(error) !== 'ENOENT') return false;
 
       try {
         // lstat succeeds for a dangling symlink, whose realpath failure must
@@ -230,7 +224,7 @@ async function safelyAbsent(candidate: string, repoRoot: string): Promise<boolea
 
         return false;
       } catch (lstatError) {
-        if (errorCode(lstatError) !== 'ENOENT') return false;
+        if (errnoCode(lstatError) !== 'ENOENT') return false;
       }
     }
 
@@ -309,7 +303,7 @@ async function checkOneSource(
   try {
     actualPath = await realpath(candidate);
   } catch (error) {
-    if (errorCode(error) === 'ENOENT' && await safelyAbsent(candidate, repoRoot)) {
+    if (errnoCode(error) === 'ENOENT' && await safelyAbsent(candidate, repoRoot)) {
       return withFreshness('missing');
     }
 
