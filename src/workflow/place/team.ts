@@ -31,8 +31,13 @@ export function teamKeyOf(branch: string): string {
   return `team:${branch}`;
 }
 
+/** Where the clones of the team repo `run`'s steps run in live, one per branch. */
+export function teamClonesOf(config: LocalConfig, run: string): string {
+  return path.join(runsDir(config), run, 'team');
+}
+
 function teamRoot(config: LocalConfig, run: RunId, branch: string): string {
-  return path.join(runsDir(config), run, 'team', createHash('sha256').update(branch).digest('hex').slice(0, 8));
+  return path.join(teamClonesOf(config, run), createHash('sha256').update(branch).digest('hex').slice(0, 8));
 }
 
 /** Removes the clone of `branch` that a step of `run` ran in. */

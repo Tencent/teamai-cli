@@ -143,6 +143,8 @@ describe('a step in the team workspace, run through the real CLI', () => {
       message: expect.stringMatching(/^Step "edit" left team files teamai pull would reject, so nothing was pushed to teamai\/notes\/alpha:\nworkflows\/broken\.yaml:\d+: /),
     });
     expect(branchHead()).toBe(before);
+    // The clone the failed step ran in goes once its run ended.
+    expect(fs.existsSync(path.join(fixture.dataHome(), 'workflows', 'runs', refused.run, 'team'))).toBe(false);
   }, 120_000);
 
   it('pushes nothing teamai pull would not place, and names each file with why', async () => {

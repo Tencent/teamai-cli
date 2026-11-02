@@ -49,6 +49,7 @@ import type { RunState, WorkflowFailure } from '../types.js';
 import { cloneBranchOf } from '../workspace.js';
 import { cloneRoleProblem, copyKnowledgePaths, launchedTools, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
 import { commitWithout } from './team-without.js';
+import { teamClonesOf } from './team.js';
 import { AGENT_PATHS, boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
 
 /**
@@ -355,7 +356,8 @@ export function cloneEnv(withhold: readonly string[]): ReturnType<typeof stepEnv
 /**
  * Removes the root and the receipt of every clone that no longer needs them: its run is not running, or no step that
  * runs in it is still to settle. Every step there that settled had its evidence staged then. The evidence a report
- * staged for a pass there that did not succeed goes too, as no judge reads it. `runId` limits it to one run. A receipt this teamai cannot read is kept.
+ * staged for a pass there that did not succeed goes too, as no judge reads it. The clones of the team repo a run's steps
+ * ran in go once it is not running, as a step that failed there kept its own. `runId` limits it to one run. A receipt this teamai cannot read is kept.
  */
 export async function sweepClones(config: LocalConfig, runId?: string): Promise<void> {
   const root = runsDir(config);
@@ -366,6 +368,13 @@ export async function sweepClones(config: LocalConfig, runId?: string): Promise<
 
   for (const id of runs) {
     const dir = path.join(root, id, 'clones');
+    const teamClones = teamClonesOf(config, id);
+
+    if (await fs.stat(teamClones).then(() => true, () => false)) {
+      const read = await readRun(config, id);
+
+      if (read === 'missing' || read === 'corrupt' || read.status !== 'running') await fs.rm(teamClones, { recursive: true, force: true });
+    }
 
     for (const name of (await fs.readdir(dir).catch((): string[] => [])).filter((entry) => entry.endsWith('.json'))) {
       const file = path.join(dir, name);
