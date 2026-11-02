@@ -162,7 +162,7 @@ export function repeatedNames<T>(
     byName.set(name, [...(byName.get(name) ?? []), sourceOf(item)]);
   }
 
-  return [...byName].filter(([, sources]) => sources.length > 1).map(([name, sources]) => [name, sources.sort()]);
+  return [...byName].flatMap(([name, sources]): Array<[string, string[]]> => (sources.length > 1 ? [[name, sources.sort()]] : []));
 }
 
 function conflictBetween<T>(

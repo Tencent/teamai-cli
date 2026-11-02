@@ -100,7 +100,7 @@ export async function createProjectToolRoots(options: {
 }
 
 function normalizeIds(tools: readonly string[]): string[] {
-  return [...new Set(tools.map((tool) => tool.trim()).filter(Boolean))];
+  return [...new Set(tools.flatMap((tool) => tool.trim() || []))];
 }
 
 /** Tools (known or named in teamai.yaml toolPaths) whose root exists in the main checkout of `checkout`. */

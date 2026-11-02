@@ -158,6 +158,14 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
 
 // ─── roles list ─────────────────────────────────────────
 
+/** What `roles list --json` reports: every role held, the primary one, the rest, and where they come from. */
+export interface EffectiveRoles {
+    roles: string[];
+    primaryRole: string | null;
+    additionalRoles: string[];
+    source: RoleSource;
+}
+
 /**
  * This member's effective roles and where they come from.
  *
@@ -168,12 +176,7 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
  * A team hook that bounds an agent by role reads this (`roles list --json`)
  * rather than the member's config file, whose path and shape are teamai's own.
  */
-export function effectiveRoles(localConfig: LocalConfig): {
-    roles: string[];
-    primaryRole: string | null;
-    additionalRoles: string[];
-    source: RoleSource;
-} {
+export function effectiveRoles(localConfig: LocalConfig): EffectiveRoles {
     const primaryRole = localConfig.primaryRole ?? null;
     const additionalRoles = primaryRole ? (localConfig.additionalRoles ?? []) : [];
 

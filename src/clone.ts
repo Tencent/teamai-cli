@@ -147,6 +147,13 @@ async function gitCmd(
     return stdout.trim();
 }
 
+/** The URL a clone uses, how it authenticates, and the header that carries a token. */
+interface CloneAuth {
+    cloneUrl: string;
+    cloneMethod: CloneResult['cloneMethod'];
+    extraAuthHeader?: string;
+}
+
 /**
  * The URL and auth a clone of `url` uses: SSH, an `http.extraHeader` token, or
  * the URL as given for Git's own credential helper. Shared with
@@ -156,7 +163,7 @@ function resolveCloneAuth(
     url: string,
     provider: string,
     opts: { forceSsh: boolean; forceAnonymous: boolean },
-): { cloneUrl: string; cloneMethod: CloneResult['cloneMethod']; extraAuthHeader?: string } {
+): CloneAuth {
     const { forceSsh, forceAnonymous } = opts;
     let cloneUrl = url;
     let cloneMethod: CloneResult['cloneMethod'];
@@ -403,7 +410,7 @@ export async function remoteHeadSha(
     const timeoutMs = opts?.timeoutMs ?? 60_000;
     const cachedRepoPath = opts?.cachedRepoPath;
     let ref = 'HEAD';
-    let auth: { cloneUrl: string; extraAuthHeader?: string };
+    let auth: Omit<CloneAuth, 'cloneMethod'>;
 
     if (cachedRepoPath) {
         let branch = await gitCmd(['rev-parse', '--abbrev-ref', 'HEAD'], cachedRepoPath, timeoutMs);

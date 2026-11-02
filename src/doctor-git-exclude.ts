@@ -123,7 +123,7 @@ async function keptTrackedCopies(projectRoot: string, delivered: Record<string, 
     return file;
   };
 
-  return [...new Set(inside.filter((file) => tracked.has(path.relative(projectRoot, file).split(path.sep).join('/'))).map(named))].sort();
+  return [...new Set(inside.flatMap((file) => (tracked.has(path.relative(projectRoot, file).split(path.sep).join('/')) ? [named(file)] : [])))].sort();
 }
 
 const FIRST = 5;

@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 
 import type { GlobalOptions } from './types.js';
-import { getCacheStatus, gcCache, parsePositiveInteger } from './utils/cache-index.js';
+import { getCacheStatus, gcCache, parsePositiveInteger, type GcOptions } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 
 // ─── Types ───────────────────────────────────────────────
@@ -149,11 +149,12 @@ async function runGc(opts: CacheCmdOptions): Promise<void> {
         if (staleDays === undefined) return;
     }
 
-    const gcOpts = {
-        ...(maxBytes !== undefined ? { maxBytes } : {}),
-        ...(staleDays !== undefined ? { staleDays } : {}),
-        dryRun: opts.dryRun,
-    };
+    const gcOpts: GcOptions = {};
+
+    if (maxBytes !== undefined) gcOpts.maxBytes = maxBytes;
+
+    if (staleDays !== undefined) gcOpts.staleDays = staleDays;
+    gcOpts.dryRun = opts.dryRun;
 
     const result = await gcCache(gcOpts);
 
