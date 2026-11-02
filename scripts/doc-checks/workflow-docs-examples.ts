@@ -19,20 +19,24 @@ import { knownSecrets } from '../../src/env-resolution.js';
 import { parseSuite, type SourceFile } from '../../src/benchmark/suite.js';
 
 const ROOT = process.cwd();
-const GUIDE = path.join(ROOT, 'docs', 'guide');
 
-// docs/guide/**/workflow*.md, so a new page or language is checked by default. fs.globSync needs Node 22; CI runs Node 20.
-function guidePages(name: RegExp): string[] {
+// docs/<dir>/**/<name>, so a new page or language is checked by default. fs.globSync needs Node 22; CI runs Node 20.
+function docPages(dir: string, name: RegExp): string[] {
   return fs
-    .readdirSync(GUIDE, { recursive: true, encoding: 'utf8' })
+    .readdirSync(path.join(ROOT, 'docs', dir), { recursive: true, encoding: 'utf8' })
     .filter((file) => name.test(path.basename(file)))
-    .map((file) => path.posix.join('docs/guide', file.split(path.sep).join('/')))
+    .map((file) => path.posix.join('docs', dir, file.split(path.sep).join('/')))
     .sort();
 }
+
+const guidePages = (name: RegExp): string[] => docPages('guide', name);
 
 const PAGES = guidePages(/^workflow.*\.md$/);
 const SCORER_PAGES = guidePages(/^scorers.*\.md$/);
 const BENCHMARK_PAGES = guidePages(/^benchmarks.*\.md$/);
+
+/** Every other guide page and design note: a workflow example there passes pull too, though the page need not show one. */
+const OTHER_PAGES = [...guidePages(/\.md$/), ...docPages('designs', /\.md$/)].filter((page) => !PAGES.includes(page) && !SCORER_PAGES.includes(page));
 
 interface Example {
   label: string;
@@ -158,8 +162,9 @@ function writeExamples(page: string, config: LocalConfig) {
 
     if (!isWorkflow(value)) continue;
 
-    // A scorer page also shows the `steps:` of a workflow, unnamed, to show where `scorers` goes; it pulls only whole files.
-    if (SCORER_PAGES.includes(page) && value.name === undefined) continue;
+    // Beside the workflow pages, a page may show the `steps:` of a workflow, unnamed, to show where a key goes; only
+    // whole files are pulled.
+    if (!PAGES.includes(page) && value.name === undefined) continue;
     const file = `workflows/${String(value.name)}.yaml`;
     const twin = byFile.get(file);
 
@@ -262,13 +267,23 @@ await check(
   cleanup,
 );
 
-for (const page of [...PAGES, ...SCORER_PAGES]) {
+await check(
+  'checks the workflow examples of the other guide pages and the design notes',
+  () => {
+    assert.ok(OTHER_PAGES.includes('docs/guide/benchmarks.md'));
+    assert.ok(OTHER_PAGES.includes('docs/designs/workflow-step-roles.md'));
+  },
+  cleanup,
+);
+
+for (const page of [...PAGES, ...SCORER_PAGES, ...OTHER_PAGES]) {
   await check(
     `${page}: each yaml block parses, and its complete workflows pass pull unless the page shows their failure`,
     async () => {
       const config = teamRepo();
       const { byFile, failures } = writeExamples(page, config);
-      assert.ok((byFile.size ?? 0) > 0, `${page} has no complete workflow example`);
+
+      if (!OTHER_PAGES.includes(page)) assert.ok((byFile.size ?? 0) > 0, `${page} has no complete workflow example`);
 
       // An example may be invalid only to show a failure: the page prints its exact diagnostic as review output.
       const shown = new Set(
