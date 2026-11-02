@@ -251,13 +251,14 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
  * `benchmark run --team-ref` pins a pull request. An arm on a named ref, such as the default branch, is the baseline a
  * run compares against, so a later run whose baseline has the change proves another one. A squash- or rebase-merged
  * change has its request's head among `revisions` when the host stated it: no other run is taken for its proof. The run
- * has each regression task the change adds, so another suite's run of the same revision is not taken for it.
+ * is of the suite of each regression task the change adds and has that task, so another suite's run of the same
+ * revision is not taken for it. A suite is named after its directory.
  */
 function proofOf(runs: readonly BenchmarkRunInput[], { revisions, tasks }: { revisions: readonly string[]; tasks: readonly string[] }): Proof | undefined {
-  const ids = tasks.map((file) => path.posix.basename(file, '.yaml'));
+  const added = tasks.map((file) => ({ suite: path.posix.basename(path.posix.dirname(path.posix.dirname(file))), id: path.posix.basename(file, '.yaml') }));
   const run = runs
     .filter((candidate) => candidate.benchmark.arms.some(({ team }) => team.kind === 'pulled' && revisions.includes(team.revision))
-      && ids.every((id) => candidate.benchmark.tasks.some((task) => task.id === id)))
+      && added.every(({ suite, id }) => candidate.benchmark.suite.name === suite && candidate.benchmark.tasks.some((task) => task.id === id)))
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))[0];
   if (run === undefined) return undefined;
   const armOf = (key: string): ProofArm | undefined => {
@@ -370,10 +371,11 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
   };
   const landed = await landedChanges(config, { since: new Date(now.getTime() - CHANGE_DAYS * DAY_MS), scorersOf, proposalOf });
   // The tasks a run of the command reads: its suite's on the default branch, and those its open proposal adds, as plan clones it.
+  const isPlanned = (file: string): boolean => file.startsWith(`${SelfImprovement.SUITE}/tasks/`);
   const pulled = suites.flatMap(({ tasks }) => tasks.flatMap(({ source, relativePath }) => (
-    source && relativePath.startsWith(`${SelfImprovement.SUITE}/tasks/`) ? [[canonicalJson(source), relativePath] as const] : []
+    source && isPlanned(relativePath) ? [[canonicalJson(source), relativePath] as const] : []
   )));
-  const tasksOf = (scorer: string) => new Map([...pulled, ...proposed.find(({ change }) => change.scorer === scorer)?.sources ?? []]);
+  const tasksOf = (scorer: string) => new Map([...pulled, ...[...proposed.find(({ change }) => change.scorer === scorer)?.sources ?? []].filter(([, file]) => isPlanned(file))]);
   const scorers = summaries.scorers.flatMap(({ scorer, defaultCohort, cohorts }): ScorerLoop[] => {
     const cohort = cohorts.find(({ id }) => id === defaultCohort);
     if (!cohort) return [];

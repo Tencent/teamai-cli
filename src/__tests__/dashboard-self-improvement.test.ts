@@ -400,11 +400,32 @@ describe('dashboard self-improvement', () => {
     publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
     const main = git(repo, 'rev-parse', 'HEAD');
     publishBenchmark(config, { run: 'r00000000000000a1', main, pulled: head, trials: { 'skipped-the-diff': { main: 'failed', pulled: 'passed' } } });
-    publishBenchmark(config, { run: 'r00000000000000a2', main, pulled: head, suite: 'web-smoke', startedAt: '2026-03-19T15:00:00.000Z', trials: { 'home-page-loads': { main: 'passed', pulled: 'passed' } } });
+    // Another suite with a task of the same name, run later on the same head.
+    publishBenchmark(config, { run: 'r00000000000000a2', main, pulled: head, suite: 'web-smoke', startedAt: '2026-03-19T15:00:00.000Z', trials: { 'skipped-the-diff': { main: 'passed', pulled: 'passed' } } });
 
     const view = await selfImprovementView({ config, now: NOW, refresh: true });
 
     expect(view.changes).toEqual([expect.objectContaining({ state: 'proposed', proof: expect.objectContaining({ run: 'r00000000000000a1', suite: 'regressions' }) })]);
+  });
+
+  it('counts as covered only the proposal\'s tasks in the suite its command plans', async () => {
+    const start = project();
+    const { config, origin } = team(start.dir);
+    const elsewhere = path.join(root, 'proposer');
+    git(root, 'clone', '-q', origin, elsewhere);
+    git(elsewhere, 'checkout', '-q', '-b', 'teamai/self-improvement/review-quality');
+    write(path.join(elsewhere, 'benchmarks/web-regressions/tasks/skipped-the-diff.yaml'), [
+      'schemaVersion: v1alpha1', 'title: skipped-the-diff', 'prompt: Review the change.', `startingCommit: ${start.commit}`,
+      'successCriteria: Reads the whole diff.', 'source: { platform: claude, sessionId: new-1 }', '',
+    ].join('\n'));
+    git(elsewhere, 'add', '-A');
+    git(elsewhere, 'commit', '-q', '-m', 'A task in another suite');
+    git(elsewhere, 'push', '-q', 'origin', 'teamai/self-improvement/review-quality');
+    publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: true });
+
+    expect(view.scorers).toEqual([expect.objectContaining({ startable: 1, covered: [] })]);
   });
 
   it('finds the jobs that run and prove the loop in GitLab CI too', async () => {
