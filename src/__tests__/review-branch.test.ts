@@ -652,6 +652,17 @@ steps:
     });
   });
 
+  it('fails a shared workflow a role overrides, for members whose assigned roles roles.yaml no longer declares', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], workflows: [ops] }\n');
+    await fse.outputFile(path.join(repoDir, 'manifest', 'members.yaml'), 'version: 1\nmembers:\n  alice: [ops]\ndefault: [retired]\n');
+    await writeWorkflow(repoDir, 'release', MISSING_PROMPT);
+    await fse.outputFile(path.join(repoDir, 'workflows', 'ops', 'release.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toContainEqual(expect.objectContaining({ level: 'fail', path: 'workflows/release.yaml' }));
+  });
+
   it('passes a shared workflow whose prompt only a role\'s namespace holds, in a team that assigns no roles', async () => {
     await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], prompts: [ops] }\n');
     await fse.outputFile(path.join(repoDir, 'prompts', 'ops', 'release.md'), 'Write the release notes.\n');
