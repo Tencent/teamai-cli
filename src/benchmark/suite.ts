@@ -16,6 +16,7 @@ import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { CheckRunSchema, isRelativePath, RepoPathSchema, segmentPattern } from '../workflow/check.js';
+import { RoleIdSchema } from '../roles.js';
 import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.js';
 
 /** The project the tasks start from. A URL, never a local path or a URL with credentials: it travels in plan and record. */
@@ -102,6 +103,8 @@ const ArmValuesSchema = z.object({
   team: TeamValueSchema.optional(),
   /** A team workflow each trial runs on the task, as its input `task`, instead of one prompt. Absent: one prompt. */
   workflow: WorkflowNameSchema.optional(),
+  /** The team role each trial's clone runs with: its knowledge, with the member's hooks, MCP, env and models. Absent: the member's. */
+  role: RoleIdSchema.optional(),
 }).strict();
 
 export type ArmValues = z.infer<typeof ArmValuesSchema>;
@@ -118,6 +121,7 @@ const MatrixSchema = z.object({
   model: z.array(z.string().min(1)).nonempty().optional(),
   team: z.array(TeamValueSchema).nonempty().optional(),
   workflow: z.array(WorkflowNameSchema).nonempty().optional(),
+  role: z.array(RoleIdSchema).nonempty().optional(),
 }).strict() satisfies z.ZodType<{ [Key in ArmKey]?: Array<NonNullable<ArmValues[Key]>> }>;
 
 type Matrix = z.infer<typeof MatrixSchema>;
@@ -182,6 +186,12 @@ const SuiteFileSchema = z.object({
     }
 
     seen.add(arm.name);
+    const resolved = { role: arm.role ?? suite.defaults.role, team: arm.team ?? suite.defaults.team ?? PULLED };
+
+    if (isRoleWithoutTeam(resolved)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['arms', index], message: `arm "${arm.name}" has role ${resolved.role} and team none; ${ROLE_NEEDS_TEAM}` });
+    }
+
     const changed = changedKeys(suite.defaults, arm);
 
     if (changed.length > 1) {
@@ -207,17 +217,19 @@ function matrixArms(defaults: ArmValues, matrix: Matrix): Arm[] {
   const models = matrix.model ?? [defaults.model];
   const teams = matrix.team ?? [defaults.team ?? PULLED];
   const workflows = matrix.workflow ?? [defaults.workflow];
+  const roles = matrix.role ?? [defaults.role];
 
-  return tools.flatMap((tool) => models.flatMap((model) => teams.flatMap((team) => workflows.map((workflow): Arm => {
+  return tools.flatMap((tool) => models.flatMap((model) => teams.flatMap((team) => workflows.flatMap((workflow) => roles.map((role): Arm => {
     const segments = [
       ...(tools.length > 1 ? [tool] : []),
       ...(models.length > 1 && model !== undefined ? [model] : []),
       ...(teams.length > 1 ? [teamSegment(team)] : []),
       ...(workflows.length > 1 && workflow !== undefined ? [workflow] : []),
+      ...(roles.length > 1 && role !== undefined ? [role] : []),
     ];
 
-    return definedFields<Arm>({ name: segments.map(nameSegment).join('-'), tool, model, team, workflow });
-  }))));
+    return definedFields<Arm>({ name: segments.map(nameSegment).join('-'), tool, model, team, workflow, role });
+  })))));
 }
 
 function teamSegment(team: TeamChoice): string {
@@ -241,12 +253,22 @@ function nameSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]+/g, '-');
 }
 
+const ROLE_NEEDS_TEAM = 'a role selects team assets, so an arm with a role needs a team; remove role, or give the arm another team';
+
+/** Whether `arm` names a role but runs without team assets, which have nothing for the role to select. */
+function isRoleWithoutTeam(arm: Pick<Arm, 'role' | 'team'>): arm is Pick<Arm, 'team'> & { role: string } {
+  return arm.role !== undefined && arm.team.kind === 'none';
+}
+
 /** Why `matrix` makes no usable set of arms, or undefined when it does. */
 function matrixProblem(defaults: ArmValues, matrix: Matrix): string | undefined {
-  if (!ARM_KEYS.some((key) => (matrix[key]?.length ?? 0) > 1)) return 'the matrix varies no key; list two values or more under tool, model, team or workflow';
+  if (!ARM_KEYS.some((key) => (matrix[key]?.length ?? 0) > 1)) return 'the matrix varies no key; list two values or more under tool, model, team, workflow or role';
   const arms = matrixArms(defaults, matrix);
 
   if (arms.length > MAX_MATRIX_ARMS) return `the matrix makes ${arms.length} arms; a suite has 1 to ${MAX_MATRIX_ARMS}`;
+  const bare = arms.find(isRoleWithoutTeam);
+
+  if (bare !== undefined) return `the matrix makes arm "${bare.name}", with role ${bare.role} and team none; ${ROLE_NEEDS_TEAM}`;
   const names = new Set<string>();
 
   for (const { name } of arms) {
@@ -438,6 +460,8 @@ export interface Arm {
   team: TeamChoice;
   /** The team workflow its trials run on each task; absent: one prompt. */
   workflow?: string;
+  /** The team role its trials' clones run with; absent: the member's roles. */
+  role?: string;
 }
 
 export interface Suite {

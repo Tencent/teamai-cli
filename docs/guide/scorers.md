@@ -89,7 +89,7 @@ $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspac
   "evidence":"…/scores/evidence/a91c0d7e0/","prompt":"…/prompt.md","answer":{"schema":{…}},
   "submit":"teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin"}}}
 $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
-{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
+{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
 ```
 
 `samplingRate` picks the succeeded passes to judge, the same way on every machine. `workflow next` never hands out judge work. `--lease <ref>` judges here with the tool the lease names, in a [confined profile](#isolation), and settles the lease like any driver's answer. A failed judge leaves the lease open. A step whose `scorers` sets `sampling: all` is the exception: its scorers judge every succeeded pass, and the run waits for them before its `finally` steps and its end, while `workflow next` answers `wait` with `judging`, the judge entries still open. The local driver judges them itself and settles a failed judge at once; another driver's are judged with `teamai score --next` on the install that ran them. A [benchmark](benchmarks.md) judges its trials this way.
@@ -97,6 +97,70 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 The label records `used.skills`, the team skills the pass or its subagents loaded, found as for [a session](#score-a-session) from what the checkout held as teamai delivered it when the pass started. A `workflow:` step's label lists every skill its child passes recorded, and has no `used` when none of them recorded one.
 
 The evidence directory holds `evidence.json`, `prompt.md`, `diff.patch` when a range was recorded, `repo/` (tracked files at the judged commit, symlink targets stored as text), `transcripts/` (with readable subagents) and `outputs.json`. Every file is redacted, including the values of the secrets the team declares in `env/secrets.yaml`. A tracked file that is not text is left out and listed under `omitted`. Missing evidence is listed as gap codes. It is removed when the lease settles or lapses.
+
+### The harness a label judged
+
+Every label also records `agent`, the harness the judged work ran with. Here the fix runs with your role and the review runs as a reviewer, and one scorer judges both:
+
+```yaml
+# workflows/fix-and-review.yaml
+schemaVersion: v1alpha1
+name: fix-and-review
+description: Fix the issue with your role, then review and finish the fix as a reviewer.
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix what the issue reports.
+    scorers: [review-quality]
+  - id: review
+    needs: [fix]
+    role: review
+    workspace: new
+    prompt: Review the fix, then fix what is still wrong.
+    scorers: [review-quality]
+```
+
+After `teamai workflow start fix-and-review --driver local`, the review pass's label in `<dataHome>/scores/labels.jsonl` reads (one line, wrapped here):
+
+```text
+{"scorer":"review-quality","label":"partial","score":0.5,"passed":false,"source":"workflow",
+ "subject":{"runId":"r3f9…","step":"review","pass":1},
+ "agent":{"v":1,"tool":{"name":"claude","version":"2.1.308"},"model":{"requested":"claude-sonnet-4-6"},
+  "team":{"revision":"62432de…","localChanges":false,
+   "selection":{"scope":"project","primaryRole":"frontend","additionalRoles":[],"stepRole":"review"}},
+  "project":{"commit":"9e1b…","dirty":false},"teamai":"0.22.0","driver":"local","fingerprint":"5c0d…"},
+ "judge":{"kind":"model","tool":"claude",…},"scoredAt":"2026-10-27T10:00:00.000Z"}
+```
+
+`stepRole: review` is the role the step ran with; `primaryRole` is yours. The `fix` label has no `stepRole`.
+
+- A prompt step's label carries its pass's `agent` as the run recorded it, also when the pass recorded no model and so no `fingerprint`.
+- A `workflow:` step's label carries the `agent` of its first prompt pass when all its prompt passes agree on tool, model, effort, definition and team. Command passes are left out. When they do not agree, as when the items of a `for_each` run with different roles, the label has no `agent`.
+- A session label carries the `agent` its captures agree on, compared the same way.
+- The judge never sees `agent`. It is not part of the label's key, so a rescore still replaces the label it rescored.
+
+On the dashboard's [Scorers page](dashboard.md#scorers), **Group by** `Role` counts each label under `stepRole` when its pass ran with one, else under `primaryRole`, so the review step shows beside the member steps:
+
+```text
+By Role
+VALUE            LABELS  PASSED  FAILED  PASS RATE
+frontend member  14      11      3       79%
+review step      12      7       5       58%
+Not recorded     3       2       1       67%
+```
+
+Beside each role, `step` means its labels ran with a step's role, `member` with the member's, and `both` some of each.
+
+**Failing labels** names the harness of each label and opens its run while the run is still listed. Select a group to list only its own:
+
+```text
+SCORED      AUTHOR  LABEL    HARNESS                                                     PLATFORM      SKILLS  OPEN
+10/27/2026  bob     partial  claude · claude-sonnet-4-6 · review step role · 62432de     Workflow run  —       r3f9… ↗  review #1
+10/26/2026  ana     bad      codex · gpt-5 · frontend member role · 62432de              Workflow run  —       r1a2… Run not found  fix #1
+10/20/2026  ana     bad      Harness not recorded                                        Workflow run  —       r0c7… Run not found  fix #1
+```
+
+The harness comes from the label, so it stays after the run file is deleted. `Harness not recorded` means that neither the label nor the run's record has an `agent`: a label written by an older teamai whose run is gone, a `workflow:` step whose prompt passes disagree, or a session whose captures disagree. In **By Role**, such a label counts under `Not recorded`, as does one whose `agent` names no team.
 
 ## Any driver
 
@@ -108,7 +172,7 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin <<'JSON'
 {"driver":{"kind":"t3","machine":"m1","workspace":"/work"},"outcome":"success",
  "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"claude"}}
 JSON
-{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
+{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
 ```
 
 With `run`, `score --next` finds the run's scope by its id, so a driver can ask from the run's worktree or from outside the checkout the run started in, and judge and submit its lease from there too. To judge one session by id, lease it with [`score --session`](#with-your-own-judge).

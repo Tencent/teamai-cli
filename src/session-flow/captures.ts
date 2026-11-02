@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
+import { AgentObservationSchema, observeCheckout, sameHarness, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
 import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
@@ -131,11 +131,11 @@ async function atStart(config: LocalConfig, tool: string, payload: HookStdin, en
   }
 }
 
-/** The observation `agent` settles to with `version` as its tool's version. */
+/** The observation `agent` settles to with `version` as its tool's version, keeping the definition it ran as. */
 function withToolVersion(agent: AgentObservation, version: string): AgentObservation {
-  const { tool, model, effort, team, project } = agent;
+  const { definition, tool, model, effort, team, project } = agent;
 
-  return settleObservation({ agent: { tool: { ...tool, version }, model, effort, team, project }, tool: tool.name, driver: { kind: agent.driver } }, undefined) ?? agent;
+  return settleObservation({ agent: { definition, tool: { ...tool, version }, model, effort, team, project }, tool: tool.name, driver: { kind: agent.driver } }, definition?.name) ?? agent;
 }
 
 const LOCK_ATTEMPTS = 50;
@@ -358,8 +358,8 @@ async function platformsOf(config: LocalConfig, sessionId: string): Promise<stri
 
 /**
  * The agent a label of the session carries: the observation every capture holds, compared by the parts a fingerprint
- * compares (tool, model, effort, team), with the first capture's project and CLI. A capture marked `teamChanged` leaves
- * out the team, and so the fingerprint, and the captures are then compared without it. Captures that differ, or none,
+ * compares (definition, tool, model, effort, team), with the first capture's project and CLI. A capture marked
+ * `teamChanged` leaves out the team, and so the fingerprint, and the captures are then compared without it. Captures that differ, or none,
  * give no agent. `reportedModel` is the one model the session's messages name, if they name one.
  */
 function agentOf(captures: readonly SessionCapture[], reportedModel: string | undefined): AgentObservation | undefined {
@@ -367,16 +367,15 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
 
   if (!first) return undefined;
   const teamChanged = captures.some((capture) => capture.teamChanged);
-  const compared = ({ tool, model, effort, team }: AgentObservation) => ({ tool, model, effort, team: teamChanged ? undefined : team });
 
-  if (rest.some((capture) => !isDeepStrictEqual(compared(capture.agent), compared(first.agent)))) return undefined;
-  const { tool, model, effort, team, project, teamai, driver } = first.agent;
+  if (rest.some((capture) => !sameHarness(capture.agent, first.agent, { comparesTeam: !teamChanged }))) return undefined;
+  const { definition, tool, model, effort, team, project, teamai, driver } = first.agent;
 
   const settled = settleObservation({
-    agent: { tool, model: reportedModel ? { ...model, reported: reportedModel } : { ...model }, effort, team: teamChanged ? undefined : team, project },
+    agent: { definition, tool, model: reportedModel ? { ...model, reported: reportedModel } : { ...model }, effort, team: teamChanged ? undefined : team, project },
     tool: tool.name,
     driver: { kind: driver },
-  }, undefined);
+  }, definition?.name);
 
   return settled && { ...settled, teamai };
 }

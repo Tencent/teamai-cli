@@ -68,9 +68,9 @@ export type PooledRate = PassRate & { low: number; high: number; runs: number };
 export type PooledArm = PooledRate & Pick<ArmResults, 'deviations' | 'notVerified'> & { usage: Omit<ArmUsage, 'arm'> };
 
 /**
- * One arm as a configuration: its name, tool, model, effort and team choice. An arm whose model changed between runs is
- * two series, since its runs measured two things. A pulled team that moved to another revision stays one series, as the
- * suite asked for whatever the team pulled: the runs table marks the change.
+ * One arm as a configuration: its name, tool, model, effort, team choice, workflow and role. An arm whose model changed
+ * between runs is two series, since its runs measured two things. A pulled team that moved to another revision stays one
+ * series, as the suite asked for whatever the team pulled: the runs table marks the change.
  */
 export interface ArmSeries {
   key: string;
@@ -81,6 +81,8 @@ export interface ArmSeries {
   team: TeamChoice;
   /** The team workflow the arm's trials ran instead of one prompt. */
   workflow?: string;
+  /** The team role the arm's trial clones ran with; absent: the member's roles. */
+  role?: string;
   /** In the newest run of the suite. */
   isCurrent: boolean;
   /** Over the runs of the current version; absent for a configuration none of them ran. */
@@ -109,7 +111,7 @@ export interface TaskView {
 }
 
 /** What two arms of the current version differ in: exactly one of these, so the difference has one cause. */
-export const ARM_DIMENSIONS = ['team', 'tool', 'model', 'workflow'] as const;
+export const ARM_DIMENSIONS = ['team', 'tool', 'model', 'workflow', 'role'] as const;
 
 export type ArmDimension = (typeof ARM_DIMENSIONS)[number];
 
@@ -134,7 +136,7 @@ export interface ArmComparison {
   tasks: Array<{ task: string; from: PassRate; to: PassRate }>;
 }
 
-/** A tool, model, effort and workflow, whatever the team: one line of the team changes chart. */
+/** A tool, model, effort, workflow and role, whatever the team: one line of the team changes chart. */
 export interface TeamConfig {
   key: string;
   tool: string;
@@ -142,6 +144,8 @@ export interface TeamConfig {
   effort?: string;
   /** The team workflow the arm runs; absent: the trial's own prompt. */
   workflow?: string;
+  /** The team role the arm's clones run with; absent: the member's roles. */
+  role?: string;
 }
 
 /**
@@ -221,8 +225,8 @@ function beats(left: PassRate, right: PassRate): boolean {
   return left.passed * right.planned > right.passed * left.planned;
 }
 
-/** The Wilson score interval of `passed` out of `planned`, planned above 0. */
-function wilson({ passed, planned }: PassRate) {
+/** The 95% Wilson score interval of `passed` out of `planned`, planned above 0: a benchmark arm's, and a Scorers group's. */
+export function wilson({ passed, planned }: PassRate) {
   const p = passed / planned;
   const z2 = Z * Z;
   const denominator = 1 + z2 / planned;
@@ -232,12 +236,14 @@ function wilson({ passed, planned }: PassRate) {
   return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
 }
 
-function armKey({ name, tool, model, effort, team, workflow }: Pick<Arm, 'name' | 'tool' | 'model' | 'effort' | 'team' | 'workflow'>): string {
-  return JSON.stringify([name, tool, model ?? null, effort ?? null, teamChoiceOf(team), workflow?.name ?? null]);
+/** An arm's identity across runs. The role joins it only when set, so an arm without one keeps the key it had before roles. */
+function armKey({ name, tool, model, effort, team, workflow, role }: Pick<Arm, 'name' | 'tool' | 'model' | 'effort' | 'team' | 'workflow' | 'role'>): string {
+  return JSON.stringify([name, tool, model ?? null, effort ?? null, teamChoiceOf(team), workflow?.name ?? null, ...(role !== undefined ? [role] : [])]);
 }
 
-function configKey({ tool, model, effort, workflow }: Pick<Arm, 'tool' | 'model' | 'effort' | 'workflow'>): string {
-  return JSON.stringify([tool, model ?? null, effort ?? null, workflow?.name ?? null]);
+/** A configuration whatever its team, for the team changes chart; the role joins it only when set, as in `armKey`. */
+function configKey({ tool, model, effort, workflow, role }: Pick<Arm, 'tool' | 'model' | 'effort' | 'workflow' | 'role'>): string {
+  return JSON.stringify([tool, model ?? null, effort ?? null, workflow?.name ?? null, ...(role !== undefined ? [role] : [])]);
 }
 
 /** What the suite asked of an arm's team, without the commit start resolved it to. */
@@ -347,6 +353,7 @@ function armsOf({ runs, current, newest }: SuiteRuns): ArmSeries[] {
 
     return definedFields<ArmSeries>({
       key, arm: arm.name, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, team: teamChoiceOf(arm.team), workflow: arm.workflow?.name,
+      role: arm.role,
       isCurrent: order.includes(key),
       pooled: pooled.planned > 0 ? { ...pooled, ...wilson(pooled), runs: pooledRuns, deviations, notVerified, usage: usageOf(pooledTrials) } : undefined,
       points,
@@ -400,6 +407,7 @@ function dimensionOf(left: Arm, right: Arm): ArmDimension | undefined {
     tool: left.tool !== right.tool,
     model: JSON.stringify(requestedModel(left)) !== JSON.stringify(requestedModel(right)),
     workflow: (left.workflow?.name ?? null) !== (right.workflow?.name ?? null),
+    role: (left.role ?? null) !== (right.role ?? null),
   } satisfies Record<ArmDimension, boolean>;
 
   const [only, ...more] = ARM_DIMENSIONS.filter((dimension) => differs[dimension]);
@@ -497,7 +505,7 @@ function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
     for (const arm of benchmark.arms) {
       if (arm.team.kind !== 'pulled' && arm.team.kind !== 'ref') continue;
       const key = configKey(arm);
-      configs.set(key, definedFields<TeamConfig>({ key, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, workflow: arm.workflow?.name }));
+      configs.set(key, definedFields<TeamConfig>({ key, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, workflow: arm.workflow?.name, role: arm.role }));
       const revision = revisions.get(arm.team.revision) ?? { firstRunAt: startedAt, byConfig: new Map() };
       const config = revision.byConfig.get(key) ?? { runs: new Set<string>(), trials: [] };
       config.runs.add(run);
@@ -562,8 +570,8 @@ function runRow(input: BenchmarkRunInput): RunRow {
 
 /**
  * `current` against the newest of `earlier` that started before it, ended `succeeded`, and ran the same suite, the same
- * tasks by source hash, and the same arms: each arm's name, tool, model, effort, workflow and team choice, never the
- * revision a team resolved to. Each arm's trials pair by task and repetition, as Compare pairs two arms of one run.
+ * tasks by source hash, and the same arms: each arm's name, tool, model, effort, workflow, role and team choice, never
+ * the revision a team resolved to. Each arm's trials pair by task and repetition, as Compare pairs two arms of one run.
  */
 export function regressionOf(current: BenchmarkRunInput, earlier: readonly BenchmarkRunInput[]): Regression {
   const taskVersions = ({ tasks }: BenchmarkRecord): string => JSON.stringify(tasks.map(({ id, sourceHash }) => [id, sourceHash]).sort());

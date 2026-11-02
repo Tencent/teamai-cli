@@ -1,18 +1,38 @@
 import fs from 'node:fs/promises';
+import type { PullDelivery, PullOutcome } from '../../pull.js';
 import { pathExists } from '../../utils/fs.js';
+import type { Executor } from '../requirements.js';
 import type { WorkflowFailure } from '../types.js';
 import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig } from '../worktree.js';
+import { setUpWorktreeRole, worktreeRoleProblem } from './role-copy.js';
 
 /**
  * Puts the base agent configuration at `configCommit` over the copy `dir` of `root`, with the branch's own files kept
  * in `saved`, then delivers the team's assets into it. The delivery is recorded as part of the overlay, so it is not
  * the step's edit. With `resume`, it finishes an overlay a killed process left, over the files it kept in `saved`.
+ * Step `step` runs there with the lease's `role` when it has one, delivered for its `tool`: a copy whose pull did not
+ * deliver that role gets the branch's files back, and the step fails.
  */
-export async function applyOverlay({ root, dir, configCommit, saved, resume }: { root: string; dir: string; configCommit: string; saved: string; resume?: true }): Promise<WorkflowFailure | undefined> {
-  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { resume } : {});
+export async function applyOverlay({ root, dir, configCommit, saved, resume, step, executor, role, tool }: {
+  root: string; dir: string; configCommit: string; saved: string; resume?: true; step: string; executor: Executor; role?: string; tool?: string;
+}): Promise<WorkflowFailure | undefined> {
+  const set = await setUpWorktreeRole({ dir, step, executor, role, tool });
+
+  if ('code' in set) return set;
+  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { paths: set.paths, resume } : { paths: set.paths });
 
   if (!applied.ok) return { code: 'base_config', message: applied.message };
-  await deliverTeamAssets(dir);
+  const delivery = await deliverTeamAssets(dir);
+  const refused = role !== undefined ? await worktreeRoleProblem({ dir, step, role, tools: set.tools, delivery }) : undefined;
+
+  if (refused && role !== undefined) {
+    const unrestored = await restoreOverlay({ dir, configCommit, saved, unfinished: true });
+
+    if (!unrestored) return refused;
+
+    return { ...refused, message: `Role ${role} was not delivered into the copy for step "${step}", and the branch's agent files were not put back: ${unrestored}. Fix what git reported and copy those files into ${dir}, then retry the step. Why the role was not delivered: ${refused.message}` };
+  }
+
   await recordConfigOverlay(dir, saved);
 
   return undefined;
@@ -42,15 +62,20 @@ export function unrestoredConfig(reason: string, dir: string): string {
 /**
  * Gives a workflow worktree the skills, rules, agents and MCP a new worktree of this checkout gets. It runs after the
  * base agent files are in place and before their overlay is recorded, so the delivered files are not the step's edits.
+ * The base agent files replaced what an earlier step's pull delivered into a copy it continues, while the copy's record
+ * still holds that delivery, so the pull delivers in full rather than take the fast path. Answers what it did.
  */
-async function deliverTeamAssets(dir: string): Promise<void> {
+async function deliverTeamAssets(dir: string): Promise<PullDelivery> {
   const exitCode = process.exitCode;
 
   try {
     const { createProjectToolRoots } = await import('../../project-agent-root.js');
     await createProjectToolRoots({ cwd: dir });
     const { pull } = await import('../../pull.js');
-    await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: 'always', cwd: dir });
+    const result: PullOutcome = { completed: false };
+    await pull({ silent: true, inline: true, force: true, gitHook: 'post-checkout', prepareCheckout: 'always', cwd: dir }, result);
+
+    return result.delivery ?? 'failed';
   } finally {
     process.exitCode = exitCode;
   }

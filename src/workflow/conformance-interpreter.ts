@@ -98,7 +98,7 @@ export type ConformanceScenario = WorkflowScenario | BenchmarkScenario;
  */
 export const DRIVER_PROFILES = {
   /** The in-process driver `workflow start --driver local` and `workflow resume` run. */
-  local: { kind: 'local', can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true, setup: true } },
+  local: { kind: 'local', can: { workspace: ['read-only', 'new', 'continue'], env: true, tokens: true, max_turns: true, setup: true, role: true } },
   /** An agent session that runs the protocol itself, with a person in the chat. */
   session: { kind: 'session', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
@@ -106,7 +106,7 @@ export const DRIVER_PROFILES = {
   /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next`. */
   skill: {
     kind: 'skill',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
   },
   /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
   'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },

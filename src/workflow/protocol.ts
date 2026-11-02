@@ -19,7 +19,7 @@ import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
 import { carriedRun, claimOffered, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
-  abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparePlace, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
+  abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparedCopyTeam, preparePlace, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
   type PlacePrepared,
   type StepEnd,
 } from './place/place.js';
@@ -30,7 +30,7 @@ import { StepModelSchema } from './step-model.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
-import { cloneBranchOf, deliveryProblem } from './workspace.js';
+import { cloneBranchOf, deliveryProblem, stepRoleOf } from './workspace.js';
 import { headCommit } from './worktree.js';
 
 /**
@@ -379,17 +379,50 @@ export type HostPlacePrepared =
 type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[]; mode?: RunMode };
 
 /**
- * `report` with what teamai knows of a prompt it prepared a clone for, whatever the driver says of it: the team revision
- * and project commit it observed of the clone, and the exact model and effort the step asked for. So the step records
- * what its tool ran on. Unchanged when the report names no tool, or the attempt runs in no clone this machine prepared.
+ * `report` with what teamai knows of a prompt it prepared a copy for, whatever the driver says of it: in a clone, the team
+ * revision and project commit it observed of the clone, and the exact model and effort the step asked for; in a worktree
+ * copy that runs with a role, the team it delivered there. So the step records what its tool ran on. Unchanged when the
+ * report names no tool, or the attempt runs in no such copy this machine prepared.
  */
-async function withPreparedClone(config: LocalConfig, runId: RunId, report: ReportInput): Promise<ReportInput> {
-  if (report.tool === undefined && report.agent?.tool?.name === undefined) return report;
+async function withPreparedCopy(config: LocalConfig, runId: RunId, report: ReportInput): Promise<ReportInput> {
+  const tool = report.tool ?? report.agent?.tool?.name;
+
+  if (tool === undefined) return report;
   const run = await readRun(config, runId);
 
   if (run === 'missing' || run === 'corrupt') return report;
   const leased = run.steps.find((step) => step.status === 'leased' && step.attempt === report.attempt);
   const branch = leased ? cloneBranchOf(run, leased.id) : undefined;
+  // A worktree copy that runs with a role: the team is what teamai delivered there, whatever role the driver names.
+  const attempt = AttemptIdSchema.safeParse(report.attempt);
+
+  if (leased && branch === undefined && attempt.success) {
+    const stepRole = stepRoleOf(run, leased.id);
+    const { team: _reported, ...sent } = report.agent ?? {};
+
+    switch (stepRole.kind) {
+      case 'role': {
+        const team = await preparedCopyTeam({ config, run: runId, attempt: attempt.data, tool });
+        const agent: NonNullable<ReportInput['agent']> = { ...sent };
+
+        if (team) agent.team = team;
+
+        return { ...report, agent };
+      }
+
+      case 'none':
+        break;
+      case 'unrenderable':
+        // teamai cannot tell the role, and the driver's team would read as the member's, so the pass records none.
+        return { ...report, agent: sent };
+      default: {
+        const unhandled: never = stepRole;
+
+        return unhandled;
+      }
+    }
+  }
+
   const made = branch === undefined ? undefined : await preparedClone(config, runId, branch);
 
   if (!leased || !made) return report;
@@ -575,7 +608,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       if (isRefusal(parsed)) return { error: { code: 'invalid_report', message: parsed } };
       const run = RunIdSchema.safeParse(runId);
-      const report = run.success ? await withPreparedClone(config, run.data, parsed.report) : parsed.report;
+      const report = run.success ? await withPreparedCopy(config, run.data, parsed.report) : parsed.report;
 
       return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock }), parsed.ignored);
     },

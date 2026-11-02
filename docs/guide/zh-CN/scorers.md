@@ -89,7 +89,7 @@ $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspac
   "evidence":"…/scores/evidence/a91c0d7e0/","prompt":"…/prompt.md","answer":{"schema":{…}},
   "submit":"teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin"}}}
 $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
-{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
+{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
 ```
 
 `samplingRate` 决定评判哪些成功的执行轮次，在每台机器上结果相同。`workflow next` 从不分发评审任务。`--lease <ref>` 在本机用租约选定的工具、以[受限配置](#隔离)评判，并像任意 driver 的答案一样结算租约。评审失败时租约保持打开。`scorers` 设置了 `sampling: all` 的步骤是例外：它的评分器评判每个成功的执行轮次，运行会等它们完成后才运行 `finally` 步骤并结束，在此期间 `workflow next` 返回带 `judging`（仍未结算的评判条目）的 `wait`。本地驱动自己评判它们，并立即结算失败的评审；其他驱动的轮次在运行它们的安装上用 `teamai score --next` 评判。[基准测试](benchmarks.md)就是这样评判它的 trial。
@@ -97,6 +97,70 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 标签记录 `used.skills`，即该轮次或其子 agent 加载过的团队技能。判定方式与[会话](#为会话评分)相同，依据该轮次开始时检出目录中由 teamai 交付并未经修改的技能。`workflow:` 步骤的标签列出其子轮次记录的全部技能。若子轮次都未记录，标签没有 `used`。
 
 证据目录包含 `evidence.json`、`prompt.md`、有记录范围时的 `diff.patch`、`repo/`（被评判提交中的跟踪文件，符号链接的目标以文本保存）、`transcripts/`（包含可读取的子代理）和 `outputs.json`。所有文件都经过脱敏，团队在 `env/secrets.yaml` 中声明的密钥值也会被遮蔽。不是文本的跟踪文件不会写入，并列在 `omitted` 里。缺失证据以 gap 代码列出。租约结算或过期后删除证据。
+
+### 标签评判的 Harness
+
+每个标签还记录 `agent`，即被评判的工作运行时的 Harness。下例中修复用你的角色运行，审查以审查者身份运行，同一个评分器评判两者：
+
+```yaml
+# workflows/fix-and-review.yaml
+schemaVersion: v1alpha1
+name: fix-and-review
+description: Fix the issue with your role, then review and finish the fix as a reviewer.
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix what the issue reports.
+    scorers: [review-quality]
+  - id: review
+    needs: [fix]
+    role: review
+    workspace: new
+    prompt: Review the fix, then fix what is still wrong.
+    scorers: [review-quality]
+```
+
+运行 `teamai workflow start fix-and-review --driver local` 后，审查轮次在 `<dataHome>/scores/labels.jsonl` 中的标签如下（原为一行，此处折行）：
+
+```text
+{"scorer":"review-quality","label":"partial","score":0.5,"passed":false,"source":"workflow",
+ "subject":{"runId":"r3f9…","step":"review","pass":1},
+ "agent":{"v":1,"tool":{"name":"claude","version":"2.1.308"},"model":{"requested":"claude-sonnet-4-6"},
+  "team":{"revision":"62432de…","localChanges":false,
+   "selection":{"scope":"project","primaryRole":"frontend","additionalRoles":[],"stepRole":"review"}},
+  "project":{"commit":"9e1b…","dirty":false},"teamai":"0.22.0","driver":"local","fingerprint":"5c0d…"},
+ "judge":{"kind":"model","tool":"claude",…},"scoredAt":"2026-10-27T10:00:00.000Z"}
+```
+
+`stepRole: review` 是步骤运行时的角色，`primaryRole` 是你的角色。`fix` 的标签没有 `stepRole`。
+
+- prompt 步骤的标签带有运行记录中该轮次的 `agent`，轮次没有记录模型、因而没有 `fingerprint` 时也一样。
+- `workflow:` 步骤的标签在其所有 prompt 轮次的工具、模型、effort、定义和团队都一致时，带有第一个 prompt 轮次的 `agent`。command 轮次不计入。不一致时标签没有 `agent`，例如 `for_each` 的各项以不同角色运行。
+- 会话标签带有其捕获记录一致的 `agent`，比较方式相同。
+- 评审者看不到 `agent`。它不属于标签的键，所以重新评分仍会替换被重评的标签。
+
+在仪表盘的[评分器页面](dashboard.md#评分器scorers)，**分组依据**选`角色`时，轮次带 `stepRole` 的标签计入 `stepRole`，否则计入 `primaryRole`，因此审查步骤和成员步骤并列显示：
+
+```text
+按 角色
+值               标签数  通过  未通过  通过率
+frontend 成员    14      11    3       79%
+review 步骤      12      7     5       58%
+未记录           3       2     1       67%
+```
+
+角色旁的 `步骤` 表示它的标签以步骤的角色运行，`成员` 表示以成员的角色运行，`两者` 表示两种都有。
+
+**未通过的标签**列出每个标签的 Harness，运行仍在列表中时可打开该运行。选择一个分组只列出该组的标签：
+
+```text
+评分时间    作者  标签     HARNESS                                                     平台        技能  打开
+10/27/2026  bob   partial  claude · claude-sonnet-4-6 · review 步骤角色 · 62432de      工作流运行  —     r3f9… ↗  review #1
+10/26/2026  ana   bad      codex · gpt-5 · frontend 成员角色 · 62432de                 工作流运行  —     r1a2… 未找到运行  fix #1
+10/20/2026  ana   bad      未记录 Harness                                              工作流运行  —     r0c7… 未找到运行  fix #1
+```
+
+Harness 来自标签本身，所以运行文件删除后仍然保留。`未记录 Harness` 表示标签和运行记录都没有 `agent`：旧版 teamai 写入、且运行已不存在的标签，prompt 轮次不一致的 `workflow:` 步骤，或捕获记录不一致的会话。在**按 角色**中，这类标签计入`未记录`，`agent` 没有团队信息的标签也一样。
 
 ## 任意 driver
 
@@ -108,7 +172,7 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin <<'JSON'
 {"driver":{"kind":"t3","machine":"m1","workspace":"/work"},"outcome":"success",
  "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"claude"}}
 JSON
-{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
+{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
 ```
 
 带 `run` 时，`score --next` 按运行 id 找到运行的 scope，所以 driver 可以在运行的工作树里或运行起始检出目录之外请求，并在那里评审和提交租约。要按 id 评审一个会话，用 [`score --session`](#用自己的评审者) 租出它。

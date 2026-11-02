@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { AgentObservationSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -61,7 +62,8 @@ const Settled = { settledAt: z.string() };
 
 const Verdict = {
   labelId: z.string().min(1),
-  verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1), decidedBy: z.enum(DECIDERS).optional() }),
+  /** What the label says, and the harness it judged when it names one, for the answer to the submit. */
+  verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1), agent: AgentObservationSchema.optional(), decidedBy: z.enum(DECIDERS).optional() }),
 };
 
 /** A workflow attempt names no source, as every attempt file written before session attempts did. */

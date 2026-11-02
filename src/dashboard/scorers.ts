@@ -1,8 +1,8 @@
 /**
  * The dashboard's Scorers page (#1182): pass rates of the score labels on `teamai-reports` and on this machine, through
  * `ScorerResults`. This module reads what the counting needs and nothing else: labels, the `agent` of the pass a
- * workflow label judges from its run record, the name of an archived session, this team clone's ancestry for a commit
- * split, and this machine's friction reminder state. It never reads a judge's reasoning, a prompt, a transcript or a
+ * workflow label judges from its run record when the label carries none, the name of an archived session, this team
+ * clone's ancestry for a commit split, and this machine's friction reminder state. It never reads a judge's reasoning, a prompt, a transcript or a
  * diff, and its answer carries no native session id.
  */
 import fs from 'node:fs/promises';
@@ -376,7 +376,8 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     const run = runs.get(label.subject.runId);
 
     if (run?.isIsolated) return [];
-    const agent = run?.agents.get(passKey(label.subject.step, label.subject.pass));
+    // The label's own agent outlives the run file; a label written before labels carried one reads the run's.
+    const agent = label.agent ?? run?.agents.get(passKey(label.subject.step, label.subject.pass));
 
     const entry: ViewedLabel = { label, author };
 

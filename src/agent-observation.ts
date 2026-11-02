@@ -12,6 +12,7 @@
  * `agent` of records written before.
  */
 import crypto from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { getAgentVersion } from './agent-version.js';
 import { getCurrentVersion } from './package-info.js';
@@ -82,11 +83,19 @@ export const ReportedAgentSchema = z.object({
   tool: z.object({ name: z.string().optional(), version: z.string().optional() }).optional(),
   model: z.object({ requested: z.string().optional(), reported: z.string().optional(), alias: z.string().optional() }).optional(),
   effort: z.object({ requested: z.string().optional(), reported: z.string().optional() }).optional(),
-  team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
+  // The role a workflow copy ran with is teamai's to say, from the clone it prepared: a driver's is dropped.
+  team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.omit({ stepRole: true }).optional() }).optional(),
   project: z.object({ commit: z.string(), dirty: z.boolean() }).optional(),
 });
 
 export type ReportedAgent = z.infer<typeof ReportedAgentSchema>;
+
+/** What teamai observed in a clone it prepared, as its receipt keeps it: a report's fields, and the role the clone ran with. */
+export const PreparedAgentSchema = ReportedAgentSchema.extend({
+  team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
+});
+
+export type PreparedAgent = z.infer<typeof PreparedAgentSchema>;
 
 const DefinitionOnlySchema = z.object({ definition: z.object({ name: z.string().min(1) }) });
 
@@ -141,8 +150,11 @@ export async function observeLaunch(launch: ToolLaunch): Promise<ReportedAgent> 
   return { ...observed, ...checkout };
 }
 
-/** What `observeLaunch` reads from the checkout and the pull record, without running the tool for its version. */
-export async function observeCheckout(launch: ToolLaunch): Promise<ReportedAgent> {
+/**
+ * What `observeLaunch` reads from the checkout and the pull record, without running the tool for its version: teamai's
+ * own reading, so it keeps the role a workflow copy was delivered for.
+ */
+export async function observeCheckout(launch: ToolLaunch): Promise<PreparedAgent> {
   const { teamDelivery } = await import('./pull.js');
 
   const [delivery, head] = await Promise.all([
@@ -314,6 +326,90 @@ export const parseReportedAgent = ReportedAgentFieldSchema.parse;
 
 function article(type: string): string {
   return /^[aeiou]/.test(type) ? `an ${type}` : `a ${type}`;
+}
+
+/**
+ * The agent harness a recorded agent names, as a result shows it: the tool, the model and effort it reported or else
+ * asked for, the role its knowledge came from, and the team revision delivered. `role.of` is `step` when the step ran
+ * with a role of its own in a workflow copy, `member` when it ran with the member's roles.
+ */
+export type AgentHarness = {
+  tool: string;
+  model?: string;
+  effort?: string;
+  role?: { of: 'step' | 'member'; names: string[] };
+  teamRevision?: string;
+};
+
+/** The harness `agent` names, or undefined when it observed no tool, as a record written before #1176. */
+export function agentHarnessOf(agent: RecordedAgent | undefined): AgentHarness | undefined {
+  if (!agent || !('tool' in agent)) return undefined;
+  const model = agent.model?.reported ?? agent.model?.requested;
+  const effort = agent.effort?.reported ?? agent.effort?.requested;
+  const selection = agent.team?.selection;
+  const memberRoles = selection ? [...selection.primaryRole !== undefined ? [selection.primaryRole] : [], ...selection.additionalRoles] : [];
+
+  const role = selection?.stepRole !== undefined
+    ? { of: 'step' as const, names: [selection.stepRole] }
+    : memberRoles.length > 0 ? { of: 'member' as const, names: memberRoles } : undefined;
+
+  const harness: AgentHarness = { tool: agent.tool.name };
+
+  if (model !== undefined) harness.model = model;
+
+  if (effort !== undefined) harness.effort = effort;
+
+  if (role) harness.role = role;
+
+  if (agent.team) harness.teamRevision = agent.team.revision;
+
+  return harness;
+}
+
+/**
+ * Whether two observations ran one harness: the same tool (its version included), model, effort, definition and team,
+ * whoever's CLI and driver ran it, wherever. Without `comparesTeam`, the team is left out, as for session captures one
+ * of which saw the team change.
+ */
+export function sameHarness(left: AgentObservation, right: AgentObservation, { comparesTeam = true }: { comparesTeam?: boolean } = {}): boolean {
+  const parts = ({ tool, model, effort, definition, team }: AgentObservation) => ({ tool, model, effort, definition, team: comparesTeam ? team : undefined });
+
+  return isDeepStrictEqual(parts(left), parts(right));
+}
+
+/** A part of the harness that differs between two passes; without `from` or `to` when that pass recorded none. */
+export type HarnessChange =
+  | { part: 'tool' | 'model' | 'effort' | 'teamRevision'; from?: string; to?: string }
+  | { part: 'role'; from?: AgentHarness['role']; to?: AgentHarness['role'] };
+
+/** The two ends of a changed part, each absent when its pass recorded none. */
+type ChangeEnds<TValue> = { from?: TValue; to?: TValue };
+
+function fromTo<TValue>(from: TValue | undefined, to: TValue | undefined): ChangeEnds<TValue> {
+  const ends: ChangeEnds<TValue> = {};
+
+  if (from !== undefined) ends.from = from;
+
+  if (to !== undefined) ends.to = to;
+
+  return ends;
+}
+
+const roleText = (role: AgentHarness['role']): string => (role ? `${role.of}:${role.names.join(',')}` : '');
+
+/** What differs from the harness `before` to `after`, in the order the harness line names the parts. */
+export function harnessChanges(before: AgentHarness, after: AgentHarness): HarnessChange[] {
+  const changes: HarnessChange[] = [];
+
+  for (const part of ['tool', 'model', 'effort'] as const) {
+    if (before[part] !== after[part]) changes.push({ part, ...fromTo(before[part], after[part]) });
+  }
+
+  if (roleText(before.role) !== roleText(after.role)) changes.push({ part: 'role', ...fromTo(before.role, after.role) });
+
+  if (before.teamRevision !== after.teamRevision) changes.push({ part: 'teamRevision', ...fromTo(before.teamRevision, after.teamRevision) });
+
+  return changes;
 }
 
 /** A published entry's `agent`: the string of a record written before #1176 (empty for none), an observation, or only a definition. */

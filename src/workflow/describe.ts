@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
-import { opensCopy, resolveMode, runsInCheckout } from './workspace.js';
+import { copyOf, opensCopy, resolveMode, roleLevelOf, runsInCheckout, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
  * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, and a
@@ -120,6 +120,9 @@ interface Scope {
   copy?: string;
   /** The `defaults.model` in effect, as the engine's scope keeps it. */
   defaultModel?: string;
+  /** The steps around it as the engine resolves a step's role from them, outermost first, and the `defaults.role` in effect. */
+  roleLevels: RoleLevel[];
+  defaultRole?: string;
 }
 
 /** Whether `step` leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
@@ -171,6 +174,9 @@ export function describeWorkflow(input: {
     const hasContract = !runsInCheckout(step, scope.ancestors);
     const requires = mergeRequirements(scope.requires, step.requires);
     const executor = step.command !== undefined ? 'command' : 'prompt';
+    // The role of the copy it runs in, as the engine's `stepRoleOf` finds it; a role template stands for its item's role.
+    const runsWith = copyOf([...scope.roleLevels, roleLevelOf(step, scope.defaultRole)])?.runsWith;
+    const role = runsWith?.kind === 'role' ? writtenRole(runsWith.role) : undefined;
     const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
     const run: Facts['runs'][number] = { step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])] };
 
@@ -180,8 +186,9 @@ export function describeWorkflow(input: {
     facts.runs.push(run);
 
     const negotiation = negotiate({
-      // Whether the driver calls next --prepare is not part of its can: a step in a clone is described as a driver with clone takes it.
-      step: path, executor, requires, prepare: false, clone: false,
+      // Whether the driver calls next --prepare is not part of its can: a step in a clone, or with a role, is described as a
+      // driver with clone, or with role, takes it.
+      step: path, executor, requires, prepare: role !== undefined, clone: false, role,
       interactive: step.interactive === true, hasContract, envKeys: Object.keys(step.env ?? {}), runEnvKeys, budgeted: step.prompt !== undefined && scope.budgeted,
       maxTurns: step.maxTurns, setup: hasContract ? scope.setup : undefined,
       tool: step.tool,
@@ -269,6 +276,7 @@ export function describeWorkflow(input: {
         const named = runs?.kind === 'named' ? workflows[runs.name] : undefined;
         const setup = named?.setup ?? scope.setup;
         const defaultModel = named?.defaults?.model ?? scope.defaultModel;
+        const defaultRole = named?.defaults?.role ?? scope.defaultRole;
         const limits = [step.forEach ? undefined : step.budget, named?.budget].flatMap((budget) => (budget ? [budget.tokens] : []));
 
         if (limits.length > 0) facts.budgets.push({ step: path, tokens: Math.min(...limits) });
@@ -279,6 +287,8 @@ export function describeWorkflow(input: {
           setup,
           copy: opensCopy(step) ? path : scope.copy,
           defaultModel,
+          roleLevels: [...scope.roleLevels, roleLevelOf(step, scope.defaultRole)],
+          defaultRole,
         });
       } else if (step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined) {
         own = 1;
@@ -308,6 +318,8 @@ export function describeWorkflow(input: {
     prefix: '', ancestors: [], requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
     setup: definition.setup,
     defaultModel: definition.defaults?.model,
+    roleLevels: [],
+    defaultRole: definition.defaults?.role,
   };
 
   // The finally steps run under the same scope once the steps settled, never beside them.

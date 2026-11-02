@@ -1,6 +1,7 @@
 /**
  * Real CLI: an arm's `team` decides the team assets its trials get: the revision this checkout pulled, none, another
- * revision of the team repo, or the pulled revision without some of its paths.
+ * revision of the team repo, or the pulled revision without some of its paths. An arm's `role` decides which role's
+ * knowledge its trials' clones get.
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -258,6 +259,82 @@ describe('benchmark arm team', () => {
     expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
       code: 'arm_team_unclean',
       message: 'Arm "bare" runs without team assets, and this machine\'s user-scope teamai install delivers team assets to claude in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.',
+    } });
+    expect(fixture.runIds()).toEqual([]);
+  }, 120_000);
+});
+
+describe('benchmark arm role', () => {
+  const ROLES = 'version: 1\nroles:\n  - id: frontend\n    resources: { knowledge: [frontend], skills: [frontend] }\n  - id: review\n    resources: { knowledge: [review], skills: [review] }\n';
+  const ROLE_TEAM = {
+    'manifest/roles.yaml': ROLES,
+    'skills/frontend/fe-only/SKILL.md': SKILL('fe-only'),
+    'skills/review/rv-only/SKILL.md': SKILL('rv-only'),
+  };
+  const ROLE_SUITE = suite('  role: frontend\narms:\n  - name: frontend\n  - name: review\n    role: review\n');
+
+  it("gives each arm's clones its role's skills, and records the role each trial's clone ran with", async () => {
+    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'], role: 'frontend', suite: ROLE_SUITE, team: ROLE_TEAM });
+    fixtures.push(fixture);
+
+    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
+
+    expect(ran.code, said(ran)).toBe(0);
+    const done = z.object({ run: z.string(), outputs: z.object({ text: z.string() }).passthrough() }).passthrough().parse(envelope(ran).data?.done);
+    const runId = done.run;
+    expect(done.outputs.text).toContain('| Arm | Tool | Model (source) | Role | Planned |');
+    expect(done.outputs.text).toContain('| review | claude | tool default (team) | review | 1 | 1 |');
+    const record = z.object({
+      arms: z.array(z.object({ name: z.string(), role: z.string().optional() }).passthrough()),
+      trials: z.array(z.object({ arm: z.string(), order: z.number(), result: z.string(), agent: z.object({ team: z.object({ selection: z.object({ stepRole: z.string().optional() }).passthrough() }).passthrough() }).passthrough() }).passthrough()),
+    }).passthrough().parse(fixture.benchmarkRecord(runId));
+    expect(record.arms.map(({ name, role }) => ({ name, role }))).toEqual([{ name: 'frontend', role: 'frontend' }, { name: 'review', role: 'review' }]);
+    expect(record.trials.map(({ arm, result, agent }) => ({ arm, result, stepRole: agent.team.selection.stepRole }))).toEqual([
+      { arm: 'frontend', result: 'passed', stepRole: 'frontend' }, { arm: 'review', result: 'passed', stepRole: 'review' },
+    ]);
+    const orders = Object.fromEntries(record.trials.map(({ arm, order }) => [arm, order]));
+    const skills = (arm: string): string[] => (fixture.toolLaunches()[(orders[arm] ?? 0) - 1]?.paths ?? [])
+      .flatMap((file) => /^\.claude\/skills\/([^/]+)\/SKILL\.md$/.exec(file)?.[1] ?? []).filter((skill) => !skill.startsWith('teamai')).sort();
+    expect({ frontend: skills('frontend'), review: skills('review') }).toEqual({ frontend: ['fe-only'], review: ['rv-only'] });
+  }, 240_000);
+
+  it('refuses to start an arm whose role the team revision it runs on does not declare, and leaves no run', async () => {
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], role: 'frontend', team: ROLE_TEAM,
+      suite: suite('arms:\n  - name: now\n  - name: audit\n    role: audit\n'),
+    });
+    fixtures.push(fixture);
+
+    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
+
+    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
+      code: 'role_unavailable',
+      message: `Arm "audit" runs with role audit, which manifest/roles.yaml at team revision ${git(fixture.teamClone, ['rev-parse', '--short=7', 'HEAD'])} does not declare; it declares frontend, review. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.`,
+    } });
+    expect(fixture.runIds()).toEqual([]);
+  }, 120_000);
+
+  it('refuses to start an arm whose team revision has a manifest/roles.yaml that cannot be read, and leaves no run', async () => {
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], role: 'frontend', team: ROLE_TEAM,
+      suite: suite('  role: review\narms:\n  - name: now\n  - name: broken\n    team: broken-roles\n'),
+    });
+    fixtures.push(fixture);
+    // A team branch whose roles manifest lost its knowledge lists: pull refuses such a manifest.
+    const branch = path.join(fixture.tmp, 'broken-roles');
+    git(fixture.tmp, ['clone', '-q', fixture.teamOrigin, branch]);
+    fs.writeFileSync(path.join(branch, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { skills: [review] }\n');
+    git(branch, ['-c', 'user.name=Lead', '-c', 'user.email=lead@example.com', 'commit', '-qam', 'roles without knowledge']);
+    git(branch, ['push', '-q', 'origin', 'HEAD:refs/heads/broken-roles']);
+    const broken = git(branch, ['rev-parse', '--short=7', 'HEAD']);
+    const pulled = await fixture.teamai(['pull']);
+    expect(pulled.code, said(pulled)).toBe(0);
+
+    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
+
+    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
+      code: 'role_unavailable',
+      message: `Arm "broken" runs with role review, and manifest/roles.yaml at team revision ${broken} cannot be read: Invalid roles manifest: roles.0.resources.knowledge: Invalid input: expected array, received undefined. Fix manifest/roles.yaml on that revision, or run the arm on another team revision, push it, run teamai pull, and start again.`,
     } });
     expect(fixture.runIds()).toEqual([]);
   }, 120_000);

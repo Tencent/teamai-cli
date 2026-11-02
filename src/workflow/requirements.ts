@@ -124,8 +124,10 @@ const ENFORCEMENT = {
   tools: 'strict',
   /** A prompt step with `permissions: unattended`: the driver launches its tool in that tool's unattended mode. */
   unattended: 'strict',
-  /** A step in a clone is leased only through `next --prepare`, so teamai made its clone. Process-only. */
+  /** A step in a clone or with a role is leased only through `next --prepare`, so teamai made its copy. Process-only. */
   prepare: 'strict',
+  /** A step that runs with a team `role`: the driver runs it with what teamai delivered into its copy for that role. */
+  role: 'strict',
 } as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Floor | 'env', 'strict' | 'bestEffort'>;
 
 type Enforcement = typeof ENFORCEMENT;
@@ -155,6 +157,8 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  *   lease, and its pass records `on_limit` as not enforced.
  * - `unattended`: the driver launches a prompt leased with `permissions: 'unattended'` in its tool's own mode for
  *   editing and running commands without asking, and fails the step rather than launch a tool that has none.
+ * - `role`: the driver runs a step leased with `role` with what teamai delivered into its prepared copy for that role,
+ *   and starts nothing that delivers the member's own assets there instead.
  */
 export const CanSchema = z.object({
   hitl: z.boolean().optional(),
@@ -168,6 +172,7 @@ export const CanSchema = z.object({
   tools: z.array(z.string().min(1)).optional(),
   end_turn: z.boolean().optional(),
   unattended: z.boolean().optional(),
+  role: z.boolean().optional(),
 });
 
 export type DriverCan = z.infer<typeof CanSchema>;
@@ -376,6 +381,8 @@ export interface Offer {
   clone: boolean;
   /** The caller asked `next --prepare`. */
   prepare: boolean;
+  /** The team role the step's copy runs with: its clone's, or the step's own in a worktree copy. */
+  role?: string;
 }
 
 /** What a granted lease carries besides the step itself. */
@@ -432,7 +439,9 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
     ...(offer.unattended && !can.unattended ? ['unattended' as const] : []),
     ...(floor.isolation !== undefined && rank(floor.isolation) > rank(provided) ? ['isolation' as const] : []),
     ...(floor.network === false && !can.network ? ['network' as const] : []),
-    ...(offer.clone && !offer.prepare ? ['prepare' as const] : []),
+    // Only teamai delivers a role into a copy: one a driver makes itself gets the member's assets.
+    ...((offer.clone || offer.role !== undefined) && !offer.prepare ? ['prepare' as const] : []),
+    ...(offer.role !== undefined && !can.role ? ['role' as const] : []),
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),
     ...(offer.setup && !can.setup ? ['setup' as const] : []),
     // A strict sandbox keeps its strip list from every process of the step, which only a driver with `can.env: true` does.

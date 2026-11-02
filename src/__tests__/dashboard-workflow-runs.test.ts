@@ -273,6 +273,55 @@ describe('dashboard workflow runs', () => {
       ]);
     });
 
+    it("shows the harness each prompt pass ran with: its tool, model, effort, and the step's role or else the member's, with the team revision", async () => {
+      const config = scope('http');
+      const agent = (selection: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+        v: 1, tool: { name: 'claude', version: '2.1.301' }, teamai: '0.40.0', driver: 'local',
+        team: { revision: 'c'.repeat(40), localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: ['ops'], ...selection } }, ...extra,
+      });
+      publish(config, record('r0000000000000001', { steps: [
+        { step: 'plan', pass: 1, outcome: 'success', agent: agent({}, { model: { requested: 'claude-plan-1', reported: 'claude-plan-1-20261001' } }) },
+        { step: 'review', pass: 1, outcome: 'success', agent: agent({ stepRole: 'review' }, { model: { requested: 'claude-review-1' }, effort: { requested: 'high' } }) },
+        { step: 'build', pass: 1, outcome: 'success' },
+      ] }));
+
+      expect((await workflowRunDetail(config, 'reported', 'r0000000000000001'))?.steps.map((step) => [step.step, step.harness])).toEqual([
+        ['plan', { tool: 'claude', model: 'claude-plan-1-20261001', role: { of: 'member', names: ['frontend', 'ops'] }, teamRevision: 'c'.repeat(40) }],
+        ['review', { tool: 'claude', model: 'claude-review-1', effort: 'high', role: { of: 'step', names: ['review'] }, teamRevision: 'c'.repeat(40) }],
+        ['build', undefined],
+      ]);
+    });
+
+    it('says what changed in the harness of a pass since the previous pass of the same step', async () => {
+      const config = scope('http');
+      const agent = (model: string, extra: Record<string, unknown> = {}) => ({
+        v: 1, tool: { name: 'claude' }, teamai: '0.40.0', driver: 'local', model: { reported: model },
+        team: { revision: 'c'.repeat(40), localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [], stepRole: 'review' } }, ...extra,
+      });
+      publish(config, record('r0000000000000001', { steps: [
+        { step: 'review', pass: 1, outcome: 'failed', agent: agent('claude-sonnet-5-5') },
+        { step: 'plan', pass: 1, outcome: 'success', agent: agent('claude-opus-5-5') },
+        { step: 'review', pass: 2, outcome: 'failed', agent: agent('claude-opus-5-5') },
+        { step: 'review', pass: 3, outcome: 'failed', agent: agent('claude-opus-5-5') },
+        { step: 'review', pass: 4, outcome: 'success', agent: agent('claude-opus-5-5', {
+          effort: { requested: 'high' },
+          team: { revision: 'd'.repeat(40), localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [] } },
+        }) },
+      ] }));
+
+      expect((await workflowRunDetail(config, 'reported', 'r0000000000000001'))?.steps.map((step) => [`${step.step} #${step.pass}`, step.harnessChanges])).toEqual([
+        ['review #1', undefined],
+        ['plan #1', undefined],
+        ['review #2', [{ part: 'model', from: 'claude-sonnet-5-5', to: 'claude-opus-5-5' }]],
+        ['review #3', undefined],
+        ['review #4', [
+          { part: 'effort', to: 'high' },
+          { part: 'role', from: { of: 'step', names: ['review'] }, to: { of: 'member', names: ['frontend'] } },
+          { part: 'teamRevision', from: 'c'.repeat(40), to: 'd'.repeat(40) },
+        ]],
+      ]);
+    });
+
     it('carries no field a record holds outside what the page reads, and skips a record it cannot read', async () => {
       const config = scope('http');
       publish(config, record('r0000000000000001', { inputs: { ticket: 'TICKET-SECRET-42' }, workspace: '/private/work' }));

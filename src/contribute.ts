@@ -72,9 +72,9 @@ export async function rebuildIndexAfterContribute(localConfig: LocalConfig): Pro
   const activeLearningsNamespaces = await deliveredLearningsNamespaces(localConfig);
 
   const indexPath = getProjectSearchIndexPath(localConfig);
-  const { buildIndex, dropOtherCheckoutIndexes } = await import('./utils/search-index.js');
+  const { buildIndex, dropIndexesAfterSourceUpdate } = await import('./utils/search-index.js');
   const { deliveredIndexSources } = await import('./resources/desired.js');
-  await dropOtherCheckoutIndexes(localConfig);
+  await dropIndexesAfterSourceUpdate(localConfig);
   await buildIndex({
     // Without another repository's learnings checkout, if one sits where this
     // project's would (#808).

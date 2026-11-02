@@ -72,7 +72,7 @@ import {
   type DeliverySelection,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
-import { deliversEveryNamespace } from './resource-namespaces.js';
+import { deliversEveryNamespace, usesMemberFilters } from './resource-namespaces.js';
 import { reportEntryResolution } from './namespaced-entries.js';
 import { resetWarnOnce, warnOnce } from './utils/warn-once.js';
 import { describeNoLongerTeamaiOnly, describeUnknownTracking, judgeTeamaiOnlyFiles, keptOutByMcpExclude, type SharedFileJudgement } from './teamai-only-files.js';
@@ -456,7 +456,7 @@ export async function cleanupInactiveNamespaceSkills(
  * taken for one that writes alone.
  */
 async function writesSkillsAlone(tool: string, install: Install): Promise<boolean> {
-  const asProject: Install = { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false };
+  const asProject: Install = { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false, keepsKnowledgeInside: false };
   const dir = ownOf(await locate(tool, 'skills', asProject))?.path;
 
   return dir !== undefined && isWithin(dir, asProject.projectRoot);
@@ -1361,7 +1361,7 @@ function setChildren(record: CheckoutRecord, localConfig: LocalConfig): void {
 
 /** The selection `localConfig` makes a pull deliver for, as the checkout's record keeps it. */
 export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
-  const { scope, primaryRole, additionalRoles, roleAssignment, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
+  const { scope, primaryRole, additionalRoles, roleAssignment, stepRole, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
   const lists = Object.entries({ projects, subscribedTags, excludedSkills }).flatMap(([key, values]) => values ? [[key, [...values].sort()]] : []);
 
   const selection: DeliverySelection = { scope, additionalRoles: [...additionalRoles].sort(), ...Object.fromEntries(lists) };
@@ -1370,18 +1370,21 @@ export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
 
   if (roleAssignment) selection.rolesAssigned = true;
 
+  if (stepRole !== undefined) selection.stepRole = stepRole;
+
   if (inheritUserScope !== undefined) selection.inheritUserScope = inheritUserScope;
 
   return DeliverySelectionSchema.parse(selection);
 }
 
 /**
- * The part of a selection that manifest/members.yaml decides (#1186). The rest
- * changes only through commands that clear lastPullRev; an assignment arrives
- * with a fetch, so the fast path has to compare this itself.
+ * The part of a selection that manifest/members.yaml decides (#1186), and the
+ * role a workflow copy runs with. The rest changes only through commands that
+ * clear lastPullRev; an assignment arrives with a fetch, and a copy's role
+ * with no command at all, so the fast path has to compare these itself.
  */
-function assignedRolePart(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned'> {
-  return { primaryRole: selection.primaryRole, additionalRoles: [...selection.additionalRoles].sort(), rolesAssigned: selection.rolesAssigned ?? false };
+function rolesDeliveredFor(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned' | 'stepRole'> {
+  return { primaryRole: selection.primaryRole, additionalRoles: [...selection.additionalRoles].sort(), rolesAssigned: selection.rolesAssigned ?? false, stepRole: selection.stepRole };
 }
 
 /** Put `agentModels` on `record`, leaving the key out while there are none. */
@@ -1617,8 +1620,21 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
   }));
 }
 
+/**
+ * What a pull did for the checkout it ran in: `delivered` its selection,
+ * found it `unchanged` since its last delivery (the fast path), `skipped` it
+ * because another teamai held the partition's sync lock past the wait, or
+ * `failed` to deliver all of it.
+ */
+export type PullDelivery = 'delivered' | 'unchanged' | 'skipped' | 'failed';
+
+/** The out-param of `pull`: whether a scope really synced, and what the pull did for the checkout it ran in. */
+export type PullOutcome = { completed: boolean; delivery?: PullDelivery };
+
 type PullSyncResult = {
   completed: boolean;
+  /** A scope found its checkout delivered already, on the fast path. */
+  unchanged?: true;
   docsSyncFailed: boolean;
   agentModelsHeld: boolean;
   teamRepoFailed: boolean;
@@ -1985,9 +2001,9 @@ async function pullForScope(
       // An index already on disk follows the last source away (#1006): left
       // alone, it would keep serving what the member no longer receives.
       if (hasAnySource || effectiveCodebaseDir || await pathExists(indexPath)) {
-        const { buildIndex, dropOtherCheckoutIndexes } = await import('./utils/search-index.js');
+        const { buildIndex, dropIndexesAfterRebuild } = await import('./utils/search-index.js');
         // Other checkouts' indexes: this checkout's rebuild goes ahead without them.
-        await dropOtherCheckoutIndexes(localConfig)
+        await dropIndexesAfterRebuild(localConfig)
           .catch((cause: unknown) => log.warn(`[${scopeLabel}] Could not remove the search indexes of this project's other checkouts: ${unresolvedReason(cause)}. `
             + 'Recall there may return what you no longer receive until you fix the cause and run `teamai pull` in each.'));
 
@@ -2118,7 +2134,7 @@ async function pullForScope(
       // fast path before. A record without a selection is from an older CLI
       // and is read as unchanged.
       const sameRoles = checkout?.selection === undefined
-        || isDeepStrictEqual(assignedRolePart(checkout.selection), assignedRolePart(deliverySelection(localConfig)));
+        || isDeepStrictEqual(rolesDeliveredFor(checkout.selection), rolesDeliveredFor(deliverySelection(localConfig)));
 
       if (!sameRoles) log.debug(`[${scopeLabel}] The roles delivered for changed, syncing`);
 
@@ -2254,7 +2270,7 @@ async function pullForScope(
           await syncLearningsAndRebuildIndex();
           await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel, recorder);
 
-          if (result && result.delivery !== 'failed') result.delivery = 'complete';
+          if (result && result.delivery !== 'failed') { result.delivery = 'complete'; result.unchanged = true; }
 
           return;
         }
@@ -2271,7 +2287,7 @@ async function pullForScope(
   // every already-synced pull.
   if (modelCatalogHint) log.info(`[${scopeLabel}] ${modelCatalogHint}`);
 
-  const excludedSkills = new Set(localConfig.excludedSkills ?? []);
+  const excludedSkills = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);
 
   // What teamai last wrote into this checkout: a copy changed since is kept,
   // and this pull's writes are recorded when the state is saved (#822).
@@ -3580,9 +3596,10 @@ export async function pull(
    * a real (non-dry-run) sync. Left false on dry-run, the "Already synced" fast
    * path, and error/skip paths — so the CLI does not fire a misleading "Pull
    * Complete" webhook on those (#702 follow-up). Also false when any scope
-   * failed to sync docs or held an agent for its model (#830).
+   * failed to sync docs or held an agent for its model (#830). `delivery`
+   * is what the pull did for the checkout it ran in (`PullDelivery`).
    */
-  result?: { completed: boolean },
+  result?: PullOutcome,
 ): Promise<void> {
   if (options.teamRef !== undefined && options.dryRun) {
     const message = `--team-ref cannot be previewed: a dry run would show the workspace's current team revision, not "${options.teamRef}". Run teamai pull --team-ref ${options.teamRef} without --dry-run.`;
@@ -4173,7 +4190,12 @@ export async function pull(
       }
     }
 
-    if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
+    if (result) {
+      result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
+      result.delivery = [...contended].some((scope) => scope.scope === 'project') ? 'skipped'
+        : syncResult.delivery !== 'complete' ? 'failed'
+          : syncResult.unchanged ? 'unchanged' : 'delivered';
+    }
 
     const finishReportAndReleaseLocks = async () => {
       // Other pull stages save whole state snapshots. Record report outcomes

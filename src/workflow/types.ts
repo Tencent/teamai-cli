@@ -97,6 +97,14 @@ export interface WorkflowStep {
    * A prompt that omits it continues an enclosing `new`, `continue` or clone copy, or stays read-only.
    */
   workspace?: StepWorkspace;
+  /**
+   * The team role from `manifest/roles.yaml` the copy this step runs in gets: the role's skills, rules, agents and other
+   * knowledge, with the member's hooks, MCP, env and models. On a step that opens a copy, every step continuing that
+   * copy runs with it; on a `workflow` step, it is the role of each step inside that names none (`resolvedRoleOf`).
+   * Where an item is bound it may be a template of it, such as `{{ item.role }}`, which each item's lease renders. Kept
+   * as written, as run files and the cache store it; read it through `roleLevelOf`, which tells an id from a template.
+   */
+  role?: string;
   /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */
   deliver?: 'pr';
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
@@ -254,6 +262,8 @@ export interface WorkflowDefaults {
   scorers?: { batch: boolean };
   /** Requirements as if written on every step of the file. */
   requires?: Requirements;
+  /** The role of a step of the file that names none and runs inside no `workflow` step that names one. */
+  role?: string;
 }
 
 /** `scorers: [a, b]`, or `scorers: { names: [a, b], batch: true }`. Each name is a file in `scorers/`. */
@@ -323,15 +333,18 @@ export interface WorkflowDiagnostic {
    *   for the same reason, the kept copy would take a branch that can never match.
    * `bad_loop`: a `loop`, `break` or `for_each` pull rejects; the kept copy would run once the steps the author wrote
    *   to repeat or to run per item, or run on past the point the author wrote to stop at.
-   * `bad_session`: a `session.from` pull rejects; the kept copy would resume a step the author did not name.
+   * `bad_session`: a `session.from` pull rejects, one naming a step that runs with another role included; the kept copy
+   *   would resume a step the author did not name, or a session with the knowledge of another role.
    * `bad_workspace`: `workspace` is not read-only, new, or continue; the kept copy would run the step in the wrong place.
+   * `bad_role`: a step or `defaults` `role` pull rejects; the kept copy would run the step with the knowledge of a role
+   *   the author did not name, or without the one the author named.
    * `bad_delivery`: delivery is not PR creation on a writable branch; the kept copy would apply a different policy.
    * `bad_invoke`, `bad_alias`: the kept copy would let agents start the workflow, or start it by a name, the author
    *   changed.
    * `alias_conflict`: another workflow has the same alias, or takes it as its name. The workflow is cached and starts by
    *   name; only the alias starts nothing.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_role' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';

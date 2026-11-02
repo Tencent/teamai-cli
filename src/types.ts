@@ -1090,6 +1090,12 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
   children?: WorkspaceChildren;
   roleAssignment?: RoleAssignment;
   memberSettingsOverlay?: MemberSettingsOverlay;
+  /**
+   * The team role the workflow copy this config governs runs with, from `checkout-roles.json` in its data home
+   * (`withCheckoutRole`). Runtime-only: read on every load, never written to config.yaml. It decides the copy's
+   * knowledge (skills, rules, agents, docs, instructions, learnings, wiki); hooks, MCP, env and models stay the member's.
+   */
+  stepRole?: string;
 };
 
 /**
@@ -1221,6 +1227,8 @@ export const DeliverySelectionSchema = z.object({
   additionalRoles: z.array(z.string()),
   /** The roles came from manifest/members.yaml (#1186): holding none then filters, where a bare config does not. */
   rolesAssigned: z.boolean().optional(),
+  /** The team role the checkout, a workflow copy, runs with: its knowledge came from this role, not `primaryRole`'s. */
+  stepRole: z.string().optional(),
   projects: z.array(z.string()).optional(),
   subscribedTags: z.array(z.string()).optional(),
   excludedSkills: z.array(z.string()).optional(),
@@ -3446,6 +3454,11 @@ export function isSelfMode(localConfig: { repo: { kind?: string } }): boolean {
   return localConfig.repo.kind === 'self';
 }
 
+/** The tracked `.teamai/.gitignore` a self-mode checkout's pull may rewrite in place; undefined outside self mode. */
+export function selfModeGitignorePath(localConfig: Pick<LocalConfig, 'repo' | 'projectRoot'>): string | undefined {
+  return isSelfMode(localConfig) && localConfig.projectRoot ? path.join(localConfig.projectRoot, '.teamai', '.gitignore') : undefined;
+}
+
 /**
  * True when report dirs (`members/` `sessions/` `votes/` `stats/`) live on the
  * `teamai-reports` orphan branch instead of the default branch. HTTP backends
@@ -3553,10 +3566,16 @@ export function getDataHome(localConfig: LocalConfig): string {
  * The project-scope search index. Every checkout of a repo shares one data
  * home, but in self mode each checkout indexes its own branch's docs, rules
  * and skills, so the index is kept per checkout, the way managed MCP is
- * (#808). Elsewhere the knowledge is one clone, and so is the index.
+ * (#808). So is a workflow copy's that runs with a team role (`stepRole`):
+ * it indexes that role's knowledge, which the member does not receive.
+ * Elsewhere the knowledge is one clone, and so is the index.
  */
 export function getProjectSearchIndexPath(localConfig: LocalConfig): string {
   const dataHome = getDataHome(localConfig);
+
+  if (localConfig.stepRole !== undefined && localConfig.projectRoot !== undefined) {
+    return path.join(dataHome, 'workspaces', managedMcpWorkspaceId(localConfig.projectRoot), 'search-index.json');
+  }
 
   if (isSelfMode(localConfig)) {
     return path.join(dataHome, 'workspaces', managedMcpWorkspaceId(getBusinessRoot(localConfig)), 'search-index.json');
@@ -3673,6 +3692,15 @@ export function getConfigPath(scope: Scope, projectRoot?: string): string {
  */
 export function getStatePath(localConfig: LocalConfig): string {
   return path.join(getDataHome(localConfig), 'state.json');
+}
+
+/**
+ * The team role each workflow copy of the project runs with, by the copy's real path (`checkout-roles.json`). It
+ * lives in the data home, which every checkout of the project shares, and never in state.json, which several
+ * commands rewrite whole without a lock.
+ */
+export function getCheckoutRolesPath(localConfig: LocalConfig): string {
+  return path.join(getDataHome(localConfig), 'checkout-roles.json');
 }
 
 /**

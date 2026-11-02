@@ -360,6 +360,38 @@ describe('session captures (#1178)', () => {
     expect(after?.agent.fingerprint).not.toBe(before?.agent.fingerprint);
   });
 
+  describe('the agent definition a session ran as', () => {
+    const definition = { name: 'reviewer', applied: 'main' as const };
+
+    it('keeps the definition a capture recorded when the background pass adds the tool version', async () => {
+      const { config, project, rev, skill } = checkout();
+      await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
+      const captureId = await SessionCaptures.atStart(config, 'claude', start(project), {});
+      const file = path.join(config.dataHome ?? '', 'sessions', 'captures', 'claude-code', SESSION, `${captureId}.json`);
+      const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+      fs.writeFileSync(file, JSON.stringify({ ...written, agent: { ...written.agent, definition } }));
+      cleanups.push(fakeClaude(project, '2.1.308'));
+
+      await SessionCaptures.addToolVersion(config, 'claude', withCapture(start(project), captureId));
+
+      const [after] = await SessionCaptures.read(config, 'claude-code', SESSION);
+      expect(after?.agent).toMatchObject({ definition, tool: { name: 'claude', version: '2.1.308' } });
+    });
+
+    it('labels the session with the definition its captures agree on, and with no agent when they differ in it', async () => {
+      const { config, project, rev, skill } = checkout();
+      await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
+      await SessionCaptures.atStart(config, 'claude', start(project), {});
+      await SessionCaptures.atStart(config, 'claude', start(project, { source: 'resume' }), {});
+      const [first, second] = await SessionCaptures.read(config, 'claude-code', SESSION);
+      if (!first || !second) throw new Error('the session has two captures');
+      const ranAs = (capture: typeof first, name: string) => ({ ...capture, agent: { ...capture.agent, definition: { ...definition, name } } });
+
+      expect(SessionCaptures.agentOf([ranAs(first, 'reviewer'), ranAs(second, 'reviewer')], undefined)?.definition).toEqual(definition);
+      expect(SessionCaptures.agentOf([ranAs(first, 'reviewer'), ranAs(second, 'planner')], undefined)).toBeUndefined();
+    });
+  });
+
   it('marks every capture of the session teamChanged when its pull delivers a new revision, and none when it does not', async () => {
     const { config, project, rev, skill } = checkout();
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });

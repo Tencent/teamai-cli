@@ -2,12 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BenchmarkPlan } from '../benchmark/plan.js';
+import type { PinnedArmWorkflow } from '../benchmark/arm-workflow.js';
+import { compileBundle, trialsOf, type BenchmarkPlan } from '../benchmark/plan.js';
 import { planOfRun } from '../benchmark/run-plan.js';
 import type { LocalConfig } from '../types.js';
 import type { BenchmarkSuiteFiles } from '../workflow/conformance-interpreter.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { readRun } from '../workflow/store.js';
+import { stepRoleOf } from '../workflow/workspace.js';
 import type { RunState } from '../workflow/types.js';
 import { benchmarkRunConfig, frozenBenchmark, PLANNED_BENCHMARK, startBenchmarkRun } from './helpers/benchmark-fixture.js';
 
@@ -88,6 +90,68 @@ describe('the workflow a benchmark plan prints', () => {
     expect(stepDefinitions(run)('trials.baselines')).toBeUndefined();
     expect(stepDefinitions(run)('trials.r2.t01.a01.check')).toBeUndefined();
     expect(stepDefinitions(run)('trials.r2.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all' });
+  });
+
+  it("is admitted for arms that compare two roles, each trial's clone opened with its arm's role and the plan keeping it", async () => {
+    const { run, plan } = await plannedRun({
+      name: 'fix',
+      suite: 'schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults: { tool: claude, role: frontend }\narms: [{ name: frontend }, { name: review, role: review }]\nrepetitions: 1\ntimeout: 10m\n',
+      tasks: { t01: "schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Make the test pass.\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\n" },
+    });
+
+    expect(run.steps.find((step) => step.id === 'plan')).toMatchObject({ status: 'succeeded' });
+    expect(plan.arms.map(({ name, role }) => ({ name, role }))).toEqual([{ name: 'frontend', role: 'frontend' }, { name: 'review', role: 'review' }]);
+    expect(stepDefinitions(run)('trials.r1.t01.frontend')?.role).toBe('frontend');
+    expect(stepDefinitions(run)('trials.r1.t01.review')?.role).toBe('review');
+    // The role is the clone's: the steps continuing it name none of their own.
+    for (const step of ['trials.r1.t01.review.prompt', 'trials.r1.t01.review.check']) expect(stepDefinitions(run)(step), step).not.toHaveProperty('role');
+    expect(stepDefinitions(run)('trials.baselines.t01')).not.toHaveProperty('role');
+  });
+
+  it("runs every prompt of a workflow arm with a role in the clone its role opened", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-bundle-'));
+    dirs.push(root);
+    const config = benchmarkRunConfig(root);
+    const files: BenchmarkSuiteFiles = {
+      name: 'fix',
+      suite: 'schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults: { tool: claude, role: review }\narms: [{ name: flow }]\nrepetitions: 1\ntimeout: 10m\n',
+      tasks: { t01: "schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Make the test pass.\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\n" },
+    };
+    const frozen = await frozenBenchmark(config, files);
+    if (!('plan' in frozen)) throw new Error(JSON.stringify(frozen));
+    // The arm's workflow as start pins it: a plan step and a fix step, each a prompt that names no workspace of its own.
+    const key = 'plan-then-fix.0123456789ab';
+    const pinned: PinnedArmWorkflow = {
+      name: 'plan-then-fix', sourceHash: 'c'.repeat(64), key,
+      files: { [key]: { schemaVersion: 'v1alpha1', name: key, description: 'Plan, then fix.', inputs: { task: 'string' }, steps: [
+        { id: 'plan', prompt: 'Plan: {{ inputs.task }}', tool: 'claude' },
+        { id: 'fix', needs: ['plan'], prompt: 'Fix it.', tool: 'claude' },
+      ] } },
+    };
+    const arms = frozen.plan.arms.map((arm) => ({ ...arm, workflow: { name: pinned.name, sourceHash: pinned.sourceHash } }));
+    const [arm] = arms;
+    if (!arm) throw new Error('no arm');
+    const plan: BenchmarkPlan = { ...frozen.plan, arms: [arm], trials: trialsOf(frozen.committed.suite.tasks, arms, 1) };
+    const bundle = compileBundle(plan, frozen.committed, { armWorkflows: new Map([['flow', pinned]]), unattended: false });
+
+    const started = await startBenchmarkRun(config, files, { outputsOf: () => ({ definition: bundle, plan }) });
+    if ('error' in started) throw new Error(started.error.message);
+    const run = await readRun(config, String(started.data.run));
+    if (typeof run !== 'object') throw new Error(`run ${String(started.data.run)} cannot be read`);
+
+    expect(run.steps.find((step) => step.id === 'plan')).toMatchObject({ status: 'succeeded' });
+    expect(stepDefinitions(run)('trials.r1.t01.flow')?.role).toBe('review');
+    expect(stepDefinitions(run)('trials.r1.t01.flow.workflow')).toMatchObject({ workspace: 'continue' });
+    for (const step of ['trials.r1.t01.flow.workflow.plan', 'trials.r1.t01.flow.workflow.fix', 'trials.r1.t01.flow.check']) {
+      expect(stepDefinitions(run)(step), step).toBeDefined();
+      expect(stepRoleOf(run, step), step).toEqual({ kind: 'role', role: 'review' });
+    }
+  });
+
+  it('opens a role-less arm\'s clone with no role', async () => {
+    const { run } = await plannedRun(suiteOf({ arms: 2 }));
+
+    expect(stepDefinitions(run)('trials.r1.t01.a01')).not.toHaveProperty('role');
   });
 
   it('is refused by report and check once its plan is of a schemaVersion this teamai does not read', async () => {

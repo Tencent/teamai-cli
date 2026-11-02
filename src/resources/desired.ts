@@ -12,7 +12,7 @@ import {
   type NamespaceCandidate, type NamespaceConflict, type NamespaceOverride,
 } from '../namespace-resolver.js';
 import { placedResourcePath } from '../push-namespaces.js';
-import { resolveResourceNamespaces } from '../resource-namespaces.js';
+import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namespaces.js';
 import { loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { dirContentEqual, fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
@@ -337,8 +337,8 @@ export async function resolveDesiredSkills(
   if (members) return resolveWorkspaceSkills(teamConfig, localConfig, members);
   const handler = getHandler('skills');
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
-  const subscribedTags = localConfig.subscribedTags;
-  const excludedSkills = new Set(localConfig.excludedSkills ?? []);
+  const subscribedTags = usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined;
+  const excludedSkills = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);
 
   let directoryItems: ResourceItem[];
   let shadowed: ShadowedSkill[] = [];
@@ -418,7 +418,7 @@ export async function deliveredSkillSources(teamConfig: TeamaiConfig, localConfi
   const members = await deliveredMembers(localConfig);
 
   if (!members) return null;
-  const excluded = new Set(localConfig.excludedSkills ?? []);
+  const excluded = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);
   const sources = new Set<string>();
 
   for (const member of members) {
@@ -458,7 +458,7 @@ async function resolveWorkspaceSkills(
     sameContent: (a, b) => a.sourcePath === b.sourcePath || dirContentEqual(a.sourcePath, b.sourcePath),
   });
 
-  const excluded = new Set(localConfig.excludedSkills ?? []);
+  const excluded = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);
 
   for (const { name, first, second } of held) {
     // An excluded name is not held, so pull may take its copy out; saying it keeps one would be wrong.
@@ -599,7 +599,7 @@ export async function resolveDesiredRules(
   // The tag channel first: only a namespace rule this member receives
   // replaces the root rule of its name.
   const { included, skipped } = filterByTags(
-    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs), tagsConfig, localConfig.subscribedTags, 'rules',
+    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs), tagsConfig, usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined, 'rules',
   );
 
   if (!knowledgeNs) return { items: included, overrides: [], replaced: [], skippedByTags: skipped.length };

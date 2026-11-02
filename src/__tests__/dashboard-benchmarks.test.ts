@@ -90,6 +90,30 @@ describe('benchmarkHistory', () => {
     expect(view.selected?.runs.map(({ run }) => run)).toEqual(['rb0b00001']);
   });
 
+  it('lists each arm that ran with a role in the window, newest run first, across suites, for Scorers to link a role to', async () => {
+    /** A run of `suite` whose arms are named after the roles they ran with, and one without a role. */
+    const withRoles = (run: string, suite: string, roles: string[], startedAt: string) => {
+      const record = fixRecord(run, { startedAt });
+      const arm = (name: string, role?: string) => ({ name, tool: 'claude', source: 'team', team: { kind: 'pulled', revision: 'b'.repeat(40) }, ...(role ? { role } : {}) });
+      const arms = [arm('plain'), ...roles.map((role) => arm(role, role))];
+      fs.mkdirSync(path.dirname(recordFile(run)), { recursive: true });
+      fs.writeFileSync(recordFile(run), JSON.stringify({ ...record, suite: { ...record.suite, name: suite }, arms, trials: arms.map(({ name }, index) => ({ task: 'fix', arm: name, repetition: 1, order: index + 1, step: `trials.r1.fix.${name}.prompt`, result: 'passed' })) }));
+    };
+    const daysAgo = (days: number): string => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    withRoles('rb0b00001', 'review-sql', ['review', 'frontend'], daysAgo(2));
+    withRoles('rb0b00002', 'review-sql', ['review'], YESTERDAY);
+    withRoles('rb0b00003', 'spec-api', ['spec'], daysAgo(3));
+    withRoles('rb0b00004', 'old-suite', ['review'], daysAgo(60));
+
+    const view = await benchmarkHistory({ config, query: { windowDays: 30 }, now: NOW, refresh: false });
+
+    expect(view.roleArms).toEqual([
+      { role: 'review', suite: 'review-sql', arm: 'review' },
+      { role: 'frontend', suite: 'review-sql', arm: 'frontend' },
+      { role: 'spec', suite: 'spec-api', arm: 'spec' },
+    ]);
+  });
+
   it('reads a record again once it changed on disk', async () => {
     publish('rb0b00001', { result: 'failed' });
     expect((await benchmarkHistory({ config, query: { windowDays: 365 }, now: NOW, refresh: false })).selected?.runs[0]).toMatchObject({ passed: 0 });

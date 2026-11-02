@@ -2414,3 +2414,93 @@ steps:
     ]);
   });
 });
+
+describe('workflow cache: the role a clone step names', () => {
+  const COMMIT = 'c'.repeat(40);
+  const REVISION = 'd'.repeat(40);
+  const cloneStep = (role: string): string => `schemaVersion: v1alpha1
+name: review
+description: Review in a clean clone.
+steps:
+  - id: review
+    role: ${role}
+    workspace: { clone: { commit: ${COMMIT}, team: { revision: ${REVISION}, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled } } }
+    prompt: Review the change.
+`;
+
+  it("caches a clone step's role that the team pulled now does not declare: the clone installs its own team revision, whose roles.yaml its setup checks", async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    // The team renamed old-review to review after the revision the clone pins.
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    writeWorkflow(config, 'review', cloneStep('review'));
+    writeWorkflow(config, 'audit', cloneStep('old-review').replace('name: review', 'name: audit'));
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached.toSorted()).toEqual(['audit', 'review']);
+    expect(result.invalid).toEqual([]);
+  });
+
+  it("caches a role a pinned clone inherits from defaults.role or from the workflow step around it, which its setup checks too", async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    const clone = cloneStep('review').split('steps:\n')[1]?.replace('    role: review\n', '') ?? '';
+    writeWorkflow(config, 'defaulted', `schemaVersion: v1alpha1\nname: defaulted\ndescription: Review in a clean clone.\ndefaults:\n  role: old-review\nsteps:\n${clone}`);
+    writeWorkflow(config, 'enclosed', `schemaVersion: v1alpha1\nname: enclosed\ndescription: Review in a clean clone.\nsteps:\n  - id: outer\n    role: old-review\n    workflow:\n      steps:\n${clone.replace(/^/gm, '        ').trimEnd()}\n`);
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.invalid.map(formatDiagnostic)).toEqual([]);
+    expect(result.cached.toSorted()).toEqual(['defaulted', 'enclosed']);
+  });
+
+  it("caches a step that continues a pinned clone with the clone's role, which the team pulled now does not declare, as the clone's setup checks it", async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    writeWorkflow(config, 'continued', cloneStep('old-review').replace('name: review', 'name: continued')
+      .replace('    prompt: Review the change.\n', '    workflow:\n      steps:\n        - id: look\n          role: old-review\n          workspace: continue\n          prompt: Review the change.\n'));
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.invalid.map(formatDiagnostic)).toEqual([]);
+    expect(result.cached).toEqual(['continued']);
+  });
+
+  it("refuses a role the team pulled now does not declare where a step runs with that team: a new copy, one a workflow step's role reaches, or a clone and a copy that share defaults.role", async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    writeWorkflow(config, 'audit', 'schemaVersion: v1alpha1\nname: audit\ndescription: Audit the change.\nsteps:\n  - id: review\n    role: auditor\n    workspace: new\n    prompt: Review the change.\n');
+    const clone = cloneStep('review').split('steps:\n')[1]?.replace('    role: review\n', '') ?? '';
+    writeWorkflow(config, 'both', `schemaVersion: v1alpha1\nname: both\ndescription: Review twice.\ndefaults:\n  role: auditor\nsteps:\n${clone}  - id: again\n    needs: [review]\n    workspace: new\n    prompt: Review it again.\n`);
+    writeWorkflow(config, 'enclosed', 'schemaVersion: v1alpha1\nname: enclosed\ndescription: Audit the change.\nsteps:\n  - id: outer\n    role: auditor\n    workflow:\n      steps:\n        - id: review\n          workspace: new\n          prompt: Review the change.\n');
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual([]);
+    expect(result.invalid.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { code: 'bad_role', message: 'workflows/audit.yaml:6: field "steps[0].role": step "review" has role auditor, which manifest/roles.yaml does not declare; add it there, or name a role it declares: review' },
+      { code: 'bad_role', message: 'workflows/both.yaml:5: field "defaults.role": defaults has role auditor, which manifest/roles.yaml does not declare; add it there, or name a role it declares: review' },
+      { code: 'bad_role', message: 'workflows/enclosed.yaml:6: field "steps[0].role": step "outer" has role auditor, which manifest/roles.yaml does not declare; add it there, or name a role it declares: review' },
+    ]);
+  });
+
+  it('leaves unrunnable a clone step that runs a workflow file whose step continues the clone with another role', async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n  - id: spec\n    resources: { knowledge: [], skills: [spec] }\n');
+    writeWorkflow(config, 'review', `${cloneStep('review').replace('    prompt: Review the change.\n', '')}    workflow: look\n`);
+    writeWorkflow(config, 'look', 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change as a spec writer.\nsteps:\n  - id: look\n    role: spec\n    workspace: continue\n    prompt: Write the spec.\n');
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual(['look']);
+    expect(result.invalid.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([{
+      code: 'bad_role',
+      message: 'workflows/review.yaml:8: field "steps[0].workflow": step "review" runs workflow "look", whose step "look" has role spec but continues a clone, which runs with the role of the step that opens it; set role on that step',
+    }]);
+  });
+});

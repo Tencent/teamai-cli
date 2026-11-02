@@ -30,7 +30,7 @@ import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, lease
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
   deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
@@ -395,7 +395,7 @@ type LeaseAnswer = { lease: LeaseData };
 
 function leaseData(
   run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
-  { requires, envScope, maxTurns, setup }: Omit<Terms, 'unenforced' | 'limits'>, plan?: WorkspacePlan,
+  { requires, envScope, maxTurns, setup, role }: Omit<GrantedTerms, 'unenforced' | 'limits'>, plan?: WorkspacePlan,
 ): LeaseAnswer {
   const expiresAt = leaseDeadline(run, state);
 
@@ -426,6 +426,8 @@ function leaseData(
   if (definition.output) wire.output = definition.output;
 
   if (plan?.contract) wire.workspace = plan.contract;
+
+  if (role !== undefined) wire.role = role;
 
   if (plan?.session) wire.session = plan.session;
 
@@ -1394,16 +1396,41 @@ interface OfferContext {
   runEnvKeys: Set<string>;
 }
 
+/** Terms a driver was granted, with the team role the lease carries: absent without one. */
+type GrantedTerms = Terms & { role?: string };
+
+/** What `offerTerms` decides: `negotiate`'s answer, whose grant carries the role the lease names. */
+type OfferedTerms = Exclude<Negotiation, { kind: 'grant' }> | { kind: 'grant'; terms: GrantedTerms };
+
 /**
  * What the driver asking for step instance `id` is offered. Both places that hand out a lease ask here. Setup comes with
  * every lease on a copy, and the driver runs it when it creates the copy or the copy's setup never finished.
  */
 function offerTerms(
   run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext,
-): Negotiation {
+): OfferedTerms {
+  const stepRole = stepRoleOf(run, id);
+  let role: Pick<GrantedTerms, 'role'>;
+
+  switch (stepRole.kind) {
+    case 'role':
+      role = { role: stepRole.role };
+      break;
+    case 'none':
+      role = {};
+      break;
+    case 'unrenderable':
+      return { kind: 'fail', failure: stepRole.failure };
+    default: {
+      const unhandled: never = stepRole;
+
+      return unhandled;
+    }
+  }
+
   const endTurn = turnLimits(run, scope, step);
 
-  return negotiate({
+  const negotiation = negotiate({
     step: id,
     executor: step.command !== undefined ? 'command' : 'prompt',
     requires: mergeRequirements(scope.requires, step.requires),
@@ -1420,7 +1447,10 @@ function offerTerms(
     unattended: step.permissions === 'unattended',
     clone: plan?.contract?.mode !== 'read-only' && plan?.contract?.clone !== undefined,
     prepare: context.prepare,
+    ...role,
   }, context.can, context.allow, context.facts);
+
+  return negotiation.kind === 'grant' ? { kind: 'grant', terms: { ...negotiation.terms, ...role } } : negotiation;
 }
 
 /**
@@ -1786,7 +1816,17 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           });
 
           if (plan.defer) {
-            held.push({ step: state.id, reason: plan.defer.reason, missing: plan.defer.needs ? [`workspace.${plan.defer.needs}`] : [] });
+            const stepRole = stepRoleOf(run, state.id);
+
+            if (stepRole.kind === 'unrenderable') {
+              failStep(state, stepRole.failure, run.revision);
+              settledOne = true;
+              break;
+            }
+
+            // A driver that cannot give the step its role is told so too, as it would be held for it once it had the place.
+            const roleGap = stepRole.kind === 'role' && !can.role ? ['role' as const] : [];
+            held.push({ step: state.id, reason: plan.defer.reason, missing: [...plan.defer.needs ? [`workspace.${plan.defer.needs}` as const] : [], ...roleGap] });
             continue;
           }
 

@@ -11,6 +11,7 @@ import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noM
 import { pinScorers } from '../scorers/cache.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
+import { roleDeclaration, type RoleDeclaration } from '../roles.js';
 import { isAgentToolId } from '../tools.js';
 import type { LocalConfig } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
@@ -155,6 +156,9 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const unpublishable = [first.arm, ...rest].map(unpublishableArm).find((message) => message !== undefined);
 
   if (unpublishable !== undefined) return refuse(error('arm_unpublishable', unpublishable));
+  const undeclared = await undeclaredArmRole(config, [first.arm, ...rest]);
+
+  if (undeclared !== undefined) return refuse(error('role_unavailable', undeclared));
   const armWorkflows = new Map<string, PinnedArmWorkflow>();
   const arms: [PlannedArm, ...PlannedArm[]] = [first.arm, ...rest];
 
@@ -350,8 +354,10 @@ const NO_MODEL_FIX = {
  * written. An alias that gives the tool no model refuses the start. `source` is `member` when the member's own entry,
  * or their model switch, decided the model.
  */
-async function resolveArm({ name, tool, model }: Arm, team: ArmTeam, aliases: () => Promise<ModelAliases>): Promise<ArmResolution> {
-  if (model === undefined) return { ok: true, arm: { name, tool, source: 'team', team } };
+async function resolveArm({ name, tool, model, role }: Arm, team: ArmTeam, aliases: () => Promise<ModelAliases>): Promise<ArmResolution> {
+  const roleField = role !== undefined ? { role } : {};
+
+  if (model === undefined) return { ok: true, arm: { name, tool, source: 'team', team, ...roleField } };
   const loaded = await aliases();
   const alias = isModelAlias(loaded, model);
   // An alias maps only the tools teamai knows, so it gives any other tool no model; a model name passes as written.
@@ -363,7 +369,7 @@ async function resolveArm({ name, tool, model }: Arm, team: ArmTeam, aliases: ()
 
   const source = resolution.step === 'local' || resolution.step === 'switched' ? 'member' : 'team';
 
-  return { ok: true, arm: definedFields<PlannedArm>({ name, tool, model: resolution.model, alias: alias ? model : undefined, effort: resolution.effort, source, team }) };
+  return { ok: true, arm: definedFields<PlannedArm>({ name, tool, model: resolution.model, alias: alias ? model : undefined, effort: resolution.effort, source, team, ...roleField }) };
 }
 
 /**
@@ -383,6 +389,45 @@ function unpublishableArm(arm: PlannedArm): string | undefined {
     : 'Fix the suite or the team\'s models/aliases.yaml, push it, run teamai pull, and start again.';
 
   return `Arm "${arm.name}" has a ${field} that is not a plain name, such as a URL or a local path, and a benchmark record publishes it. ${fix}`;
+}
+
+/**
+ * Why an arm's role cannot be given to its trials, or undefined when every role is: manifest/roles.yaml at the team
+ * revision the arm runs on must declare it, as the trial's clone checks it again before its pull.
+ */
+async function undeclaredArmRole(config: LocalConfig, arms: readonly PlannedArm[]): Promise<string | undefined> {
+  const declared = new Map<string, Promise<RoleDeclaration | { failed: string }>>();
+
+  for (const { name, role, team } of arms) {
+    if (role === undefined || team.kind === 'none') continue;
+    const { revision } = team;
+    const roles = declared.get(revision) ?? withTeamRevision(config, revision, (at) => roleDeclaration(at.repo.localPath));
+    declared.set(revision, roles);
+    const read = await roles;
+
+    if ('failed' in read) {
+      return `Arm "${name}" runs with role ${role}, and team revision ${short(revision)} cannot be read: ${read.failed}. Run the arm on another team revision, push it, run teamai pull, and start again.`;
+    }
+
+    switch (read.kind) {
+      case 'declared':
+      case 'undeclared':
+        if (read.ids.includes(role)) continue;
+
+        return `Arm "${name}" runs with role ${role}, which manifest/roles.yaml at team revision ${short(revision)} does not declare; it declares ${read.ids.join(', ') || 'none'}. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.`;
+      case 'missing':
+        return `Arm "${name}" runs with role ${role}, and team revision ${short(revision)} has no manifest/roles.yaml to declare it. Add manifest/roles.yaml declaring the role, or remove the arm's role, push it, run teamai pull, and start again.`;
+      case 'unreadable':
+        return `Arm "${name}" runs with role ${role}, and manifest/roles.yaml at team revision ${short(revision)} cannot be read: ${read.error}. Fix manifest/roles.yaml on that revision, or run the arm on another team revision, push it, run teamai pull, and start again.`;
+      default: {
+        const unhandled: never = read;
+
+        return unhandled;
+      }
+    }
+  }
+
+  return undefined;
 }
 
 /** The model aliases the team files hold at `revision`, under the config's selection, and the member's over them when asked. */

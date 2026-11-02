@@ -325,6 +325,21 @@ describe('delivered selection of a workspace with children', () => {
     expect(desired.kind === 'resolved' && desired.items.map((item) => item.name).sort()).toEqual(['a-tool', 'b-tool', 'tagged']);
   });
 
+  it("delivers the skills of a role copy's role that the workspace or a child excludes, as the role defines them", async () => {
+    fs.writeFileSync(path.join(repo, 'manifest', 'roles.yaml'), YAML.stringify({ version: 1, roles: [{ id: 'review', resources: { skills: ['review'], knowledge: ['review'] } }] }));
+    skill(repo, 'review', 'rv-tool');
+    skill(repo, 'svc-a', 'a-tool');
+    repoChild(path.join(ws, 'svc-a'), { projects: ['svc-a'], excludedSkills: ['rv-tool'] });
+    repoChild(path.join(ws, 'svc-b'), { projects: ['svc-b'] });
+    const delivered = await readWorkspaceChildren({ ...workspace, excludedSkills: ['rv-tool'], stepRole: 'review' });
+
+    const desired = await resolveDesiredSkills(teamConfig, delivered, await buildRolePullContext(delivered));
+    const sources = await deliveredSkillSources(teamConfig, delivered);
+
+    expect(desired.kind === 'resolved' && desired.items.map((item) => item.name).sort()).toEqual(['a-tool', 'rv-tool']);
+    expect([...sources ?? []].map((source) => path.basename(source)).sort()).toEqual(['a-tool', 'rv-tool']);
+  });
+
   it('delivers one skill two children share once, and holds back only a name whose copies differ', async () => {
     skill(repo, 'svc-a', 'same');
     skill(repo, 'svc-b', 'same');

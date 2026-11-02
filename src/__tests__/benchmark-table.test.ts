@@ -175,6 +175,38 @@ describe('benchmark deviations', () => {
   });
 });
 
+describe('benchmark arm role', () => {
+  const REVIEW = { name: 'review', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM }, role: 'review' } as const;
+  const ranAs = (stepRole?: string) => ({ agent: { team: { revision: RUN_TEAM, localChanges: false, selection: { scope: 'project' as const, primaryRole: 'frontend', additionalRoles: [], ...(stepRole ? { stepRole } : {}) } } } });
+
+  it('counts a trial whose clone ran with another role than its arm as a deviation, and one with no role observed as not verified', () => {
+    const table = benchmarkTable(recordOf([REVIEW], [
+      ranAs('review'),
+      ranAs('frontend'),
+      ranAs(),
+      { agent: { team: { revision: RUN_TEAM, localChanges: false } } },
+    ]));
+
+    expect(table.results).toMatchObject([{ arm: 'review', planned: 4, deviations: 1, notVerified: 2 }]);
+  });
+
+  it("names each arm's role in a Role column once an arm runs with one, and a role-less arm's as the member's roles", () => {
+    const member = { name: 'member', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM } } as const;
+
+    const text = formatBenchmarkTable(benchmarkTable(recordOf([member, REVIEW], [{ arm: 'member' }, { arm: 'review', ...ranAs('review') }])));
+
+    expect(text).toContain('| Arm | Tool | Model (source) | Role | Planned |');
+    expect(text).toContain("| member | claude | tool default (team) | member's roles | 1 |");
+    expect(text).toContain('| review | claude | tool default (team) | review | 1 |');
+  });
+
+  it('prints no Role column when no arm runs with a role', () => {
+    const text = formatBenchmarkTable(benchmarkTable(recordOf([CLAUDE_ARM], [{}])));
+
+    expect(text).toContain('| Arm | Tool | Model (source) | Planned |');
+  });
+});
+
 describe('benchmark arm team', () => {
   const NONE = { name: 'bare', tool: 'claude', source: 'team', team: { kind: 'none' } } as const;
   const ABLATED: BenchmarkRecord['arms'][number] = { name: 'no-fixer', tool: 'claude', source: 'team', team: { kind: 'without', paths: ['rules/commits.md', 'skills/fixer'], revision: RUN_TEAM } };

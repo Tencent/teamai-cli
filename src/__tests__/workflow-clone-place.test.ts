@@ -24,12 +24,29 @@ import type { DriverCan } from '../workflow/requirements.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { branchName, WorkspaceContractSchema } from '../workflow/workspace.js';
 import { cloneHead, placeOf } from '../workflow/place/place.js';
+import { canFor } from '../workflow/drivers/skill/skill-driver.js';
+
+/** The teamai a clone's own pull runs, when a test gives it one: else the one running. */
+const childCli = vi.hoisted(() => ({ entry: undefined as string | undefined }));
+vi.mock('../builtin-hooks.js', async (original) => {
+  const actual = await original<typeof import('../builtin-hooks.js')>();
+  return { ...actual, resolveCliEntry: () => childCli.entry ?? actual.resolveCliEntry() };
+});
+
+/** What the clone's install gets when it records its role, when a test decides it: else what the role file says. */
+const roleWrite = vi.hoisted(() => ({ outcome: undefined as import('../checkout-roles.js').CheckoutRoleWrite | undefined }));
+vi.mock('../checkout-roles.js', async (original) => {
+  const actual = await original<typeof import('../checkout-roles.js')>();
+  return { ...actual, recordCheckoutRole: async (input: Parameters<typeof actual.recordCheckoutRole>[0]) => roleWrite.outcome ?? actual.recordCheckoutRole(input) };
+});
 
 _setDriverPollMs(20);
 
 const dirs: string[] = [];
 
 afterEach(() => {
+  childCli.entry = undefined;
+  roleWrite.outcome = undefined;
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -39,7 +56,7 @@ function git(args: string[], cwd: string): string {
 }
 
 /** A checkout with two commits, a team repo holding `yaml(first commit)`, and a started run of it. */
-async function fixture(yaml: (commit: string) => string, scorers: Record<string, string> = {}): Promise<{ config: LocalConfig; workspace: string; runId: string; first: string }> {
+async function fixture(yaml: (commit: string) => string, scorers: Record<string, string> = {}, team: Record<string, string> = {}): Promise<{ config: LocalConfig; workspace: string; runId: string; first: string }> {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-clone-place-')));
   dirs.push(root);
   const knowledge = path.join(root, 'knowledge');
@@ -68,6 +85,10 @@ async function fixture(yaml: (commit: string) => string, scorers: Record<string,
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml(first));
   fs.mkdirSync(path.join(knowledge, 'scorers'));
   for (const [name, text] of Object.entries(scorers)) fs.writeFileSync(path.join(knowledge, 'scorers', `${name}.md`), text);
+  for (const [file, text] of Object.entries(team)) {
+    fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
+    fs.writeFileSync(path.join(knowledge, file), text);
+  }
   await syncWorkflowDefinitions(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
@@ -181,6 +202,88 @@ describe('a clone place', () => {
     const answer = await client.next(runId, { driver: { ...driver, can: { ...can, workspace: ['read-only', 'new', 'continue'] } }, running: [] }, { prepare: true });
 
     expect(answer).toMatchObject({ data: { wait: { held: [{ step: 'trial.work', missing: ['workspace.clone'] }] } } });
+  });
+
+  it('holds a step in a clone that runs with a role from the skill driver, which cannot give a step a role', async () => {
+    const roles = { 'manifest/roles.yaml': 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n' };
+    const { config, runId } = await fixture((commit) => ROLE_CLONE(commit), {}, roles);
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await client.next(runId, { driver: { kind: 'skill', machine: 'session', workspace: '/work', can: canFor('h1') }, running: [] }, { prepare: true });
+
+    expect(answer).toMatchObject({ data: { wait: { held: [{ step: 'review.look', missing: expect.arrayContaining(['role']) }] } } });
+  });
+
+  it('holds a step in a clone that runs with a role from a driver that prepares clones but does not declare can.role', async () => {
+    const roles = { 'manifest/roles.yaml': 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n' };
+    const { config, runId } = await fixture((commit) => ROLE_CLONE(commit), {}, roles);
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await prepared(client, runId);
+
+    expect(answer).toMatchObject({ data: { wait: { held: [{ step: 'review.look', missing: ['role'] }] } } });
+  });
+
+  it('fails a step in a clone that runs with a role when the clone\'s own pull fails, rather than run it without the role', async () => {
+    const { config, runId, revision } = await roleRun();
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'broken-teamai.mjs');
+    fs.writeFileSync(childCli.entry, "process.stderr.write('the team repo could not be read'); process.exit(3);\n");
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await client.next(runId, { driver: { ...driver, can: { ...can, role: true } }, running: [] }, { prepare: true });
+
+    expect(answer).toMatchObject({ error: { code: 'role_unavailable', message: `Role review was not delivered into the clone for step "review.look": its teamai pull --team-ref ${revision.slice(0, 7)} exited 3: the team repo could not be read` } });
+  });
+
+  it('fails a step in a clone that runs with a role the pinned team revision does not declare, though the member\'s roles.yaml does', async () => {
+    const { config, runId, revision } = await roleRun({ committed: ['audit'], declared: ['audit', 'review'] });
+    // Refused before the clone's own pull, which says so if it is reached.
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'reached-teamai.mjs');
+    fs.writeFileSync(childCli.entry, "process.stderr.write('the pull ran'); process.exit(3);\n");
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await client.next(runId, { driver: { ...driver, can: { ...can, role: true } }, running: [] }, { prepare: true });
+    const run = await readRun(config, runId);
+
+    expect(answer).toMatchObject({ error: { code: 'role_unavailable', message: `Role review was not delivered into the clone for step "review.look": manifest/roles.yaml at team revision ${revision} does not declare it, so the clone would get no role's knowledge. Add the role to manifest/roles.yaml at that revision, or run the step with a role it declares.` } });
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review.look')).toMatchObject({ status: 'failed', failure: { code: 'role_unavailable' } });
+  });
+
+  it("fails a step in a clone that runs with a role when the pinned team revision's teamai.yaml does not parse, before the clone's own pull", async () => {
+    const { config, runId, revision } = await roleRun({ committed: ['review'], declared: ['review'], committedTeamYaml: 'team: [unclosed\n' });
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'reached-teamai.mjs');
+    fs.writeFileSync(childCli.entry, "process.stderr.write('the pull ran'); process.exit(3);\n");
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await client.next(runId, { driver: { ...driver, can: { ...can, role: true } }, running: [] }, { prepare: true });
+
+    expect(answer).toMatchObject({ error: { code: 'role_unavailable', message: `Role review was not delivered into the clone for step "review.look": teamai.yaml at team revision ${revision} is missing or does not parse, so where the clone's knowledge would land is unknown. Fix teamai.yaml at that revision, or run the step on another revision.` } });
+  });
+
+  it.each([
+    {
+      write: { kind: 'busy', lock: '/data/checkout-roles.json.lock' } as const,
+      said: 'another teamai held /data/checkout-roles.json.lock too long. Start the workflow again, as a run with a clone cannot be retried.',
+    },
+    {
+      write: { kind: 'unreadable', file: '/data/checkout-roles.json', error: 'Unexpected token' } as const,
+      said: '/data/checkout-roles.json cannot be read (Unexpected token). Delete it, then start the workflow again, as a run with a clone cannot be retried.',
+    },
+  ])('fails a step in a clone that runs with a role when its role file is $write.kind, and gives the clone up', async ({ write, said }) => {
+    const { config, runId } = await roleRun();
+    roleWrite.outcome = write;
+    // Refused before the clone's own pull, which says so if it is reached.
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'reached-teamai.mjs');
+    fs.writeFileSync(childCli.entry, "process.stderr.write('the pull ran'); process.exit(3);\n");
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await client.next(runId, { driver: { ...driver, can: { ...can, role: true } }, running: [] }, { prepare: true });
+    const run = await readRun(config, runId);
+    const clones = path.join(config.dataHome ?? '', 'workflows', 'runs', runId, 'clones');
+
+    expect(answer).toMatchObject({ error: { code: 'role_unavailable', message: `Role review was not delivered into the clone for step "review.look": ${said}` } });
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review.look')).toMatchObject({ status: 'failed', failure: { code: 'role_unavailable' } });
+    expect(fs.existsSync(clones) ? fs.readdirSync(clones) : []).toEqual([]);
   });
 
   it('fails a read-only step inside a clone, as a clone has no reader place', async () => {
@@ -413,6 +516,48 @@ ${head}steps:
           prompt: Check the file.
 `;
 const can: DriverCan = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', tools: [], setup: true };
+
+/** A clone of `commit` that runs with the review role, installing the team at a revision, and a prompt continuing it. */
+const ROLE_CLONE = (commit: string): string => `schemaVersion: v1alpha1
+name: build
+description: Review in a clean clone.
+steps:
+  - id: review
+    role: review
+    workspace: { clone: { commit: ${commit}, team: { revision: ${'d'.repeat(40)}, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled } } }
+    workflow:
+      steps:
+        - id: look
+          workspace: continue
+          prompt: Review the change.
+`;
+
+/** `roles.yaml` declaring `ids`. */
+function rolesYaml(ids: readonly string[]): string {
+  return `version: 1\nroles:\n${ids.map((id) => `  - id: ${id}\n    resources: { knowledge: [], skills: [${id}] }\n`).join('')}`;
+}
+
+/**
+ * A started run of ROLE_CLONE whose clone installs the team at a commit of the team repo: `committed` the roles
+ * manifest/roles.yaml declares at that revision, `declared` the roles it declares in the member's team repo now.
+ */
+async function roleRun(roles: { committed: readonly string[]; declared: readonly string[]; committedTeamYaml?: string } = { committed: ['review'], declared: ['review'] }): Promise<{ config: LocalConfig; runId: string; revision: string }> {
+  const teamYaml = 'team: acme\nrepo: https://git.example.com/acme/team.git\nprovider: git\n';
+  const team = { 'teamai.yaml': roles.committedTeamYaml ?? teamYaml, 'manifest/roles.yaml': rolesYaml(roles.committed) };
+  const { config, workspace, first } = await fixture(CLONED, {}, team);
+  const knowledge = config.repo.localPath;
+  git(['init', '-q', '-b', 'main'], knowledge);
+  git(['add', '-A'], knowledge);
+  git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'team'], knowledge);
+  const revision = git(['rev-parse', 'HEAD'], knowledge);
+  fs.writeFileSync(path.join(knowledge, 'manifest', 'roles.yaml'), rolesYaml(roles.declared));
+  fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), teamYaml);
+  fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), ROLE_CLONE(first).replace('d'.repeat(40), revision));
+  await syncWorkflowDefinitions(config);
+  const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
+  if ('error' in started) throw new Error(started.error.message);
+  return { config, runId: String(started.data.run), revision };
+}
 
 const SCORER = `---
 labels:

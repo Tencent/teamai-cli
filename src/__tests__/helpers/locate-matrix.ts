@@ -187,6 +187,7 @@ function installFor(row: MatrixRow, cell: Cell): Install {
     projectRoot: rootFor(cell.platform, cell.cwd),
     repo: row.install?.self ? 'self' : 'team',
     workspaceChildren: row.install?.workspaceChildren === true,
+    keepsKnowledgeInside: false,
   };
 }
 

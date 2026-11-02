@@ -34,7 +34,7 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
-import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, runPlaceSetup, sweepClones, type StepEnd } from '../../place/place.js';
+import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
@@ -242,12 +242,15 @@ function stepTool({ agent, tool }: Pick<WorkflowStep, 'agent' | 'tool'>, config:
   return { ok: true, tool: undefined, warnings: passed.map((skipped) => `${skipped.source} is "${skipped.named}", which cannot run a workflow step.`) };
 }
 
+/** The tool a prompt step launches here, with the warnings its pick logs, or why it launches none. */
+type LaunchChoice = { ok: true; tool: LaunchTool; warnings: string[] } | { ok: false; failure: WorkflowFailure; tool?: string; warnings: string[] };
+
 /**
  * The tool teamai launches for prompt step `step` here, as {@link stepTool} picks it with `--tools` `flags`, or why
  * none: no tool is configured, or the one picked is not one teamai launches, which `tool` then names. `warnings` says
  * which of the member's tools gave way, for the step that launches to log.
  */
-export function launchToolFor(step: Pick<WorkflowStep, 'agent' | 'tool'>, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): { ok: true; tool: LaunchTool; warnings: string[] } | { ok: false; failure: WorkflowFailure; tool?: string; warnings: string[] } {
+export function launchToolFor(step: Pick<WorkflowStep, 'agent' | 'tool'>, config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): LaunchChoice {
   const choice = stepTool(step, config, flags, members);
 
   if (!choice.ok) return { ...choice, warnings: [] };
@@ -299,15 +302,17 @@ const LocalLeaseSchema = LeaseWireSchema.or(z.preprocess((raw) => (isRecord(raw)
 
 /**
  * Gets the lease a place to run under `root`, with the team env resolved for it. `signal` stops setup, which
- * then fails, and the workspace it was preparing is removed.
+ * then fails, and the workspace it was preparing is removed. A prompt step's place is prepared for `launches`, the tool
+ * `promptReport` launches there, when the lease names none.
  */
-async function stageLease(lease: Lease, { config, lock, root, env, mode, signal }: {
+async function stageLease(lease: Lease, { config, lock, root, env, mode, signal, launches }: {
   config: LocalConfig;
   lock: RunLock;
   root: string;
   env: WorkflowEnv;
   mode: RunMode;
   signal?: AbortSignal;
+  launches?: string;
 }): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) return unreadablePlace(lock.run);
   // A lease is handed back to a driver after one of this run was killed: the setup or command that one left running
@@ -323,7 +328,10 @@ async function stageLease(lease: Lease, { config, lock, root, env, mode, signal 
     lease.processEnv = withRunningCli(process.env);
   }
 
-  const prepared = await preparePlace({ config, lock, root, lease: placeLeaseOf(lease) });
+  const placeLease = placeLeaseOf(lease);
+
+  if (lease.tool === undefined && launches !== undefined) placeLease.tool = launches;
+  const prepared = await preparePlace({ config, lock, root, lease: placeLease });
 
   if (prepared.kind !== 'prepared') return prepared.failure;
   lease.cwd = prepared.dir;
@@ -411,6 +419,7 @@ async function promptReport(
   archive: SessionArchive,
   signal: AbortSignal,
   mode: RunMode,
+  staged: LaunchChoice | undefined,
 ): Promise<ReportBody> {
   const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
     const unrestored = await abandonPlace({ config, lock, attempt: lease.attempt });
@@ -423,7 +432,8 @@ async function promptReport(
     return body;
   };
 
-  const choice = launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config));
+  // A role lease's place was staged for its launch tool, which launches it; others pick theirs now.
+  const choice = staged ?? launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config));
 
   for (const warning of choice.warnings) log.warn(warning);
 
@@ -434,6 +444,21 @@ async function promptReport(
   const contract = lease.workspace;
   const clone = contract && contract.mode !== 'read-only' && contract.clone ? contract.branch : undefined;
   const prepared = clone !== undefined ? await preparedClone(config, lock.run, clone) : undefined;
+
+  // The copy was checked as it was prepared; it is checked again right before launch, as something may have pulled since.
+  if (lease.role !== undefined) {
+    const { role, step } = lease;
+
+    const refused = clone !== undefined
+      ? prepared?.install
+        ? await cloneRoleProblem({ install: prepared.install, step, role, tools: [selected] })
+        : roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'clone', gap: { kind: 'no_install' } } })
+      : lease.cwd !== undefined
+        ? await worktreeRoleProblem({ dir: lease.cwd, step, role, tools: [selected] })
+        : roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'none' } });
+
+    if (refused !== undefined) return giveUp(refused, selected);
+  }
 
   const teamConfig = clone !== undefined
     ? prepared?.install
@@ -651,7 +676,7 @@ function rememberSecrets(seen: Record<string, string>, secrets: Record<string, s
  * one whose tool has none.
  */
 function localCan({ strict, hitl, tools }: { strict: StrictCan; hitl: boolean; tools: string[] }): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES], ...strict, tokens: true, max_turns: true, setup: true, tools, end_turn: true, unattended: true };
+  return { hitl, workspace: [...WORKSPACE_MODES], ...strict, tokens: true, max_turns: true, setup: true, tools, end_turn: true, unattended: true, role: true };
 }
 
 type StrictCan = Required<Pick<DriverCan, 'network' | 'isolation' | 'env'>>;
@@ -998,7 +1023,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
 
         if (maxParallel === 1) handle(STOP_SIGNALS);
         prompts.set(lease.attempt, { lease, controller, exit: (async () => {
-          const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal });
+          // A role copy is checked and delivered for the tool the step launches, so another tool the member enables does not refuse it.
+          const launch = lease.role !== undefined ? launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config)) : undefined;
+          const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal, launches: launch?.ok ? launch.tool : undefined });
 
           if (!startable(lease, controller.signal)) {
             await abandonPlace({ config, lock, attempt: lease.attempt });
@@ -1009,7 +1036,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           if (failure) return unstaged(lease, failure);
           interactiveIgnores = ignored;
 
-          return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode);
+          return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode, launch);
         })() });
       }
 

@@ -55,7 +55,7 @@ import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
 import { formatUnknownScorer, loadCachedWorkflow, loadWorkflowTree, type UnknownScorer } from './workflow/cache.js';
-import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow } from './workflow/parse.js';
+import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow, STEP_ROLE_SINCE } from './workflow/parse.js';
 import { stepModelUnavailableText } from './workflow/step-model.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './workflow/types.js';
 import { formatScorerDiagnostic } from './scorers/definition.js';
@@ -1207,7 +1207,7 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
         path: diagnostic.file,
         message: formatDiagnostic(diagnostic),
       })),
-      ...await invokeAliasFindings(repoDir),
+      ...await newerWorkflowKeyFindings(repoDir),
     ];
   } finally {
     setSilent(wasSilent);
@@ -1216,10 +1216,10 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
 }
 
 /**
- * A warning on each valid workflow file that sets `invoke` or `alias`: a member or CI job on an older CLI drops the
- * whole workflow, and nothing refuses that older CLI.
+ * A warning on each valid workflow file that sets `invoke`, `alias`, `defaults.role` or a step `role`: a member or CI
+ * job on an older CLI drops the whole workflow, and nothing refuses that older CLI.
  */
-async function invokeAliasFindings(repoDir: string): Promise<Finding[]> {
+async function newerWorkflowKeyFindings(repoDir: string): Promise<Finding[]> {
   const findings: Finding[] = [];
   const files = (await listRepoFilesRecursive(path.join(repoDir, 'workflows'))).filter((file) => file.endsWith('.yaml')).sort();
 
@@ -1231,16 +1231,49 @@ async function invokeAliasFindings(repoDir: string): Promise<Finding[]> {
     if (!parsed?.ok) continue;
     const keys = [parsed.definition.invoke !== undefined && 'invoke', parsed.definition.alias !== undefined && 'alias'].filter((key) => key !== false);
 
-    if (keys.length === 0) continue;
-    findings.push({
-      level: 'warn',
-      check: 'workflows',
-      path: relativePath,
-      message: `${relativePath} sets ${keys.join(' and ')}: teamai before ${INVOKE_ALIAS_SINCE} drops a workflow that sets invoke or alias, so members and CI jobs must run at least ${INVOKE_ALIAS_SINCE}.`,
-    });
+    if (keys.length > 0) {
+      findings.push({
+        level: 'warn',
+        check: 'workflows',
+        path: relativePath,
+        message: `${relativePath} sets ${keys.join(' and ')}: teamai before ${INVOKE_ALIAS_SINCE} drops a workflow that sets invoke or alias, so members and CI jobs must run at least ${INVOKE_ALIAS_SINCE}.`,
+      });
+    }
+
+    const roled = stepsWithRole([...parsed.definition.steps, ...parsed.definition.finally ?? []], '');
+
+    if (parsed.definition.defaults?.role !== undefined) {
+      findings.push({
+        level: 'warn',
+        check: 'workflows',
+        path: relativePath,
+        message: roled.length > 0
+          ? `${relativePath} sets defaults.role and role on step ${roled.join(', ')}: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`
+          : `${relativePath} sets defaults.role: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`,
+      });
+    } else if (roled.length > 0) {
+      findings.push({
+        level: 'warn',
+        check: 'workflows',
+        path: relativePath,
+        message: `${relativePath} sets role on step ${roled.join(', ')}: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a step role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`,
+      });
+    }
   }
 
   return findings;
+}
+
+/** The path of every step among `steps`, and the steps of the inline workflows they run, that sets `role`. */
+function stepsWithRole(steps: readonly WorkflowStep[], prefix: string): string[] {
+  return steps.flatMap((step) => {
+    const runs = stepWorkflow(step);
+
+    return [
+      ...(step.role !== undefined ? [`${prefix}${step.id}`] : []),
+      ...(runs?.kind === 'inline' ? stepsWithRole(runs.workflow.steps, `${prefix}${step.id}.`) : []),
+    ];
+  });
 }
 
 /** Every `scorers/scoring.yaml` and `scorers/<dir>/scoring.yaml` of the branch, active for anyone or not: what it cannot parse, a key or value it ignores, and an isolation teamai does not know. */

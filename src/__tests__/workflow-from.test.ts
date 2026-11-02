@@ -10,6 +10,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { retryStep } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
+import type { DriverCan } from '../workflow/requirements.js';
 import type { DriverIdentity } from '../workflow/types.js';
 
 const dirs: string[] = [];
@@ -102,6 +103,60 @@ describe('workflow: { from }', () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error(`run ${run}`);
     expect(run.admitted?.plan?.definition).toMatchObject({ steps: [{ id: 'one', env }, { id: 'two', env }] });
+  });
+});
+
+describe('a workflow output run in a copy with a role', () => {
+  const PLANNED_IN_ROLE_COPY = PLANNED.replace('    workflow: { from: plan }', '    role: review\n    workspace: new\n    workflow: { from: plan }');
+
+  const CAN: DriverCan = { workspace: ['read-only', 'new', 'continue'], role: true };
+  const WorkspaceLease = z.object({ data: z.object({ lease: z.object({
+    step: z.string(), attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }) }),
+  }) }) });
+
+  /** A run of `planned` in a role copy, its `plan` step settled with an output that admitted `definition`. */
+  async function admitted(definition: Record<string, unknown>): Promise<{ config: LocalConfig; runId: string }> {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n  - id: spec\n    resources: { knowledge: [], skills: [spec] }\n');
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), PLANNED_IN_ROLE_COPY);
+    await syncWorkflowDefinitions(config);
+    const started = await startRun(config, 'planned', {}, { secrets: await knownSecrets(config), base: { ref: 'main', commit: 'a'.repeat(40) } });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    await settle(config, runId, 'plan', { definition: { definition }, plan: {} });
+    return { config, runId };
+  }
+
+  it('fails a step of the output that continues the copy with another role, rather than run it with either', async () => {
+    const { config, runId } = await admitted({ ...GENERATED, steps: [{ id: 'look', role: 'spec', workspace: 'continue', prompt: 'Write the spec.' }] });
+
+    await leaseNext(config, runId, driver, { can: CAN, prepare: true });
+
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'trials.look')).toMatchObject({ status: 'failed', failure: {
+      code: 'role_unavailable',
+      message: 'step "trials.look" has role spec but continues the copy step "trials" opened with role review, which every step there runs with; remove role from step "trials.look", or set it on step "trials"',
+    } });
+  });
+
+  it('fails a step of the output that resumes the session of a step that ran with another role', async () => {
+    const { config, runId } = await admitted({ ...GENERATED, steps: [
+      { id: 'plan', role: 'spec', workspace: 'new', prompt: 'Write the plan.' },
+      { id: 'review', needs: ['plan'], workspace: 'continue', session: { from: 'plan' }, prompt: 'Review the plan.' },
+    ] });
+    const { lease } = WorkspaceLease.parse(await leaseNext(config, runId, driver, { can: CAN, prepare: true })).data;
+    const base = lease.workspace.base.commit;
+    await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, changes: { branch: lease.workspace.branch, base, from: base, to: base, commits: [] } });
+
+    await leaseNext(config, runId, driver, { can: CAN, prepare: true });
+
+    const run = await readRun(config, runId);
+    expect(lease.step).toBe('trials.plan');
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'trials.review')).toMatchObject({ status: 'failed', failure: {
+      code: 'bad_session',
+      message: 'step "trials.review" resumes "plan", which ran with role spec, while step "trials.review" runs with role review; a session goes on only with the knowledge it started with, so run both steps with one role, or start a new session',
+    } });
   });
 });
 

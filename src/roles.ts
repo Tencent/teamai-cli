@@ -46,6 +46,19 @@ export type TeamRole = z.infer<typeof RoleSchema>;
 export type RolesManifest = z.infer<typeof RolesManifestSchema>;
 
 /**
+ * A role id as a workflow step, `defaults.role` or a benchmark arm names one: a token such as `review`, which a copy
+ * runs with and a record publishes. `manifest/roles.yaml` itself takes any non-empty id.
+ */
+const ROLE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export const RoleIdSchema = z.string().regex(ROLE_ID, 'must be the id of a role in manifest/roles.yaml, such as review');
+
+/** Whether `value` is shaped like a role id a workflow or a benchmark names (`RoleIdSchema`). */
+export function isRoleId(value: string): boolean {
+  return ROLE_ID.test(value);
+}
+
+/**
  * Active resource namespaces after resolving roles ∪ projects. Both dimensions
  * contribute `learnings` (#1101). Kept as a superset of the role resource types
  * so role and project resolutions share one shape and can be unioned directly.
@@ -170,6 +183,36 @@ export async function loadRolesManifestIfPresent(repoPath: string): Promise<Role
     if (error instanceof RolesManifestNotFoundError) return null;
     throw error;
   }
+}
+
+/**
+ * Whether the team repo at `repoPath` declares a role, as its manifest/roles.yaml reads: `declared`; `undeclared`, with
+ * the ids it declares; `unreadable`, a manifest that exists but cannot be read or parsed, with the first line of why;
+ * `missing`, no manifest. `role` undefined asks for the declared ids alone, which `declared` then carries.
+ */
+export type RoleDeclaration =
+  | { kind: 'declared'; ids: readonly string[] }
+  | { kind: 'undeclared'; ids: readonly string[] }
+  | { kind: 'unreadable'; error: string }
+  | { kind: 'missing' };
+
+/** Whether `manifest/roles.yaml` in the team repo at `repoPath` declares `role`: see `RoleDeclaration`. */
+export async function roleDeclaration(repoPath: string, role?: string): Promise<RoleDeclaration> {
+  let manifest: RolesManifest | null;
+
+  try {
+    manifest = await loadRolesManifestIfPresent(repoPath);
+  } catch (error) {
+    // The first line names the problem and where; a YAML error's code frame follows it.
+    const message = error instanceof Error ? error.message : String(error);
+
+    return { kind: 'unreadable', error: message.split('\n')[0]?.trim() ?? message };
+  }
+
+  if (!manifest) return { kind: 'missing' };
+  const ids = listRoleIds(manifest);
+
+  return role === undefined || ids.includes(role) ? { kind: 'declared', ids } : { kind: 'undeclared', ids };
 }
 
 export async function saveRolesManifest(repoPath: string, manifest: RolesManifest): Promise<void> {

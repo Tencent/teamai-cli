@@ -23,7 +23,7 @@ import type { ScorerDefinition } from '../scorers/definition.js';
 import {
   ENTRY_WINDOW_MS, LEASE_TTL_MS, entryIdOf, entryState, hasLapsed, leaseRefOf, liveSessionLease, parseLeaseRef, type EntryState,
 } from '../scorers/entry.js';
-import { observedEffort, observedModel } from '../agent-observation.js';
+import { observedEffort, observedModel, sameHarness, type AgentObservation } from '../agent-observation.js';
 import {
   ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, sumUsage, type Isolation, type JudgeAccess, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel,
   type SessionSubject, type Decider,
@@ -42,6 +42,7 @@ import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidenceHash, evidencePlan, missingEvidence } from './scoring-evidence.js';
 import { decideBeforeJudge, failingLabel, judgedAlone } from './scoring-stages.js';
+import type { RunPass } from './loop.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
 import { stepDefinitions } from './scope.js';
@@ -988,15 +989,18 @@ type Returned = { kind: 'returned'; status: 'released' | 'failed' };
 
 type SubmittedLease = SettledLease | Returned;
 
-type LabelAnswer = Pick<SucceededAttempt, 'scorer' | 'subject' | 'labelId'> & Pick<SucceededAttempt['verdict'], 'label' | 'score' | 'passed' | 'decidedBy'> & { reasoning: string };
+type LabelAnswer = Pick<SucceededAttempt, 'scorer' | 'subject' | 'labelId'> & Pick<SucceededAttempt['verdict'], 'label' | 'score' | 'passed' | 'agent' | 'decidedBy'> & { reasoning: string };
 
 function labelAnswer(config: LocalConfig, attempt: SucceededAttempt): LabelAnswer {
-  const { label, score, passed, version, decidedBy } = attempt.verdict;
+  const { label, score, passed, version, agent, decidedBy } = attempt.verdict;
+  const judged: Pick<LabelAnswer, 'agent'> = {};
+
+  if (agent) judged.agent = agent;
   const decider: Pick<LabelAnswer, 'decidedBy'> = {};
 
   if (decidedBy) decider.decidedBy = decidedBy;
 
-  return { scorer: attempt.scorer, subject: attempt.subject, label, score, passed, ...decider, labelId: attempt.labelId, reasoning: reasoningPath(config, version) };
+  return { scorer: attempt.scorer, subject: attempt.subject, label, score, passed, ...judged, ...decider, labelId: attempt.labelId, reasoning: reasoningPath(config, version) };
 }
 
 /** `{ label }` for a lease of one scorer, `{ labels }` in the step's order for a batch. */
@@ -1253,6 +1257,20 @@ function toSucceeded(attempt: LeasedAttempt, settled: { settledAt: string; usage
 }
 
 /**
+ * What the judged passes ran as, which their label carries: the first observation of the prompt passes when each
+ * recorded one and all agree by value on tool, model, effort, definition and team, else none. A command pass runs no
+ * agent, so it is left out. The judge never reads it.
+ */
+function judgedAgent(run: RunState, judged: readonly RunPass[]): AgentObservation | undefined {
+  const definitionOf = stepDefinitions(run);
+  const [first, ...rest] = judged.flatMap((pass) => (definitionOf(pass.step)?.prompt === undefined ? [] : [pass.agent]));
+
+  if (!first) return undefined;
+
+  return rest.every((agent) => agent !== undefined && sameHarness(agent, first)) ? first : undefined;
+}
+
+/**
  * A success must name a label of each scorer it judges, else nothing is written and the lease stays open; TeamAI
  * computes the score and whether it passed. `local` is the local judge that ran, at the isolation it measured. A driver's
  * own judge has the access its lease declared, and ran the model and effort the lease named, as the driver reports it.
@@ -1273,7 +1291,11 @@ async function labelJudgeLease(
           const used = reported.length > 0 ? { skills: [...new Set(reported.flatMap((each) => each.skills))].sort() } : undefined;
           // The pass's mode, or the one every pass a workflow step ran agrees on: never the judge's.
           const runMode = agreedRunMode(judged.map((pass) => pass.runMode));
+          const agent = judgedAgent(lease.run, judged);
 
+          const observed: Pick<WorkflowLabel, 'agent'> = {};
+
+          if (agent) observed.agent = agent;
           const reportedUse: Pick<WorkflowLabel, 'used'> = {};
 
           if (used) reportedUse.used = used;
@@ -1284,7 +1306,7 @@ async function labelJudgeLease(
 
           if (hash) hashed.evidenceHash = hash;
 
-          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...reportedUse, judge, ...mode, decidedBy, ...hashed, scoredAt } };
+          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...observed, ...reportedUse, judge, ...mode, decidedBy, ...hashed, scoredAt } };
         } });
       }
 
@@ -1362,13 +1384,16 @@ async function labelMembers<T extends LeasedAttempt>({ config, submission, now, 
 
     if (!label.passed) log.info(shareFailedLabelHint(reasoningPath(config, version), sessionId));
 
+    const observed: Pick<SucceededAttempt['verdict'], 'agent'> = {};
+
+    if (label.agent) observed.agent = label.agent;
     const decided: Pick<SucceededAttempt['verdict'], 'decidedBy'> = {};
 
     if (label.source === 'workflow' && label.decidedBy) decided.decidedBy = label.decidedBy;
 
     const succeeded = toSucceeded(attempt, {
       settledAt: now, ...usageOnHead(submission, members, attempt), labelId: id,
-      verdict: { label: label.label, score: label.score, passed: label.passed, version, ...decided },
+      verdict: { label: label.label, score: label.score, passed: label.passed, version, ...observed, ...decided },
     });
 
     await AttemptStore.write(config, succeeded);

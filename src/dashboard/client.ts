@@ -2,6 +2,9 @@ import { benchmarksClient } from './benchmarks-client.js';
 import { scorersClient } from './scorers-client.js';
 import { improvementClient } from './improvement-client.js';
 import { handoffView } from './handoff-view.js';
+import { agentHarnessView } from './agent-harness-view.js';
+import { chartFitView } from './chart-fit-view.js';
+import { runStepsView } from './run-steps-view.js';
 import { sessionSharingView } from './session-sharing-view.js';
 import { memberSettingsView } from './member-settings-view.js';
 import { tokensView } from './tokens-view.js';
@@ -253,6 +256,8 @@ function runTable(rows, local) {
 function handoffsOf() { return workflows&&workflows.reported&&workflows.reported.state==='ok'?workflows.reported.handoffs||[]:[]; }
 function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.isMine?'':' · <span class="amber">'+label('Held by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
 ${handoffView}
+${agentHarnessView}
+${runStepsView}
 async function copyCommand(button) { try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent=t('Copied'); } catch { button.textContent=t('Select and copy'); } }
 function runPanel(title, source, rows, local, empty) { return '<section class="panel sessions"><div class="panelhead"><h2>'+label(title)+' <span class="count">'+number(rows.length)+'</span></h2><span class="tag">'+label(source)+'</span></div>'+(rows.length?runTable(rows,local):'<div class="empty"><p>'+label(empty)+'</p></div>')+'</section>'; }
 function workflowRuns() {
@@ -280,7 +285,7 @@ function runDetailHtml(d) {
   +(gates.length?detailSection('Waiting for an answer','<p>'+label('Read the question where the driver of this run asks it. The dashboard does not show HITL messages, because they can include step outputs.')+'</p>'+gates.map(gate).join('')+(answering?'<p role="status">'+label('Answering…')+'</p>':'')+(answerError?'<p class="amber" role="alert">'+e(answerError)+'</p>':'')):(answerError?'<p class="amber" role="alert">'+e(answerError)+'</p>':''))
   +detailSection('Run','<p>'+label('Driver')+': <span data-verbatim>'+e(r.driver||'—')+'</span> · '+label('End')+': <span data-verbatim>'+e(r.end||'—')+'</span><br>'+label('Started')+': '+e(when(r.startedAt))+(r.endedAt?'<br>'+label('Ended')+': '+e(when(r.endedAt)):'')+'<br>'+label('Duration')+': '+runDurationHtml(r)+' · '+label('Tokens')+': '+number(r.tokens)+(local?'':'<br>'+label('Member')+': <span data-verbatim>'+e(r.username)+'</span>')+'</p><p>'+label('Definition')+': '+revision(r)+'</p>'+(counts?'<p>'+number(counts.total)+' '+label('Steps')+' · '+number(counts.succeeded)+' '+label('Succeeded')+' · '+number(counts.failed)+' '+label('Failed')+' · '+number(counts.skipped)+' '+label('Skipped')+' · '+number(counts.cancelled)+' '+label('Cancelled')+'</p>':'')+(r.prs.length?'<p>'+label('Pull requests')+': '+prLinks(r)+'</p>':'')+(r.learnings.length?'<p>'+label('Learnings')+': <span class="outcomes">'+learningTags(r)+'</span></p>':''))
   +(d.benchmark?detailSection('Benchmark results',benchmarkHtml(d.benchmark)):'')
-  +detailSection('Steps','<div class="table-scroll"><table><thead><tr>'+['STEP','PASS','STATUS','Tokens','ANSWER','SCORES','OUTCOMES'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+d.steps.map(s=>'<tr><td data-verbatim>'+e(s.step)+'</td><td>'+number(s.pass)+'</td><td>'+runStatus(s.status)+'</td><td>'+(s.tokens?number((s.tokens.input||0)+(s.tokens.output||0)):'—')+'</td><td>'+(s.answer?'<span data-verbatim>'+e(s.answer.choice)+'</span><small data-verbatim>'+e(s.answer.channel)+'</small>':'—')+'</td><td>'+(s.scores?.length?s.scores.map(x=>'<span class="'+(x.passed?'good':'amber')+'" data-verbatim>'+e(x.scorer)+': '+e(x.label)+'</span>'+(x.decidedBy&&x.decidedBy!=='judge'?' '+deciderText(x.decidedBy):'')).join('<br>'):'—')+'</td><td>'+outcomesHtml(s.outcomes)+'</td></tr>').join('')+'</tbody></table></div>'+(d.scoring&&d.scoring.judged?'<p>'+label('Scoring')+': '+number(d.scoring.judged)+' '+label('judged')+' · '+label('Tokens')+': '+number(d.scoring.inputTokens+d.scoring.outputTokens)+'</p>':''))
+  +detailSection('Steps',runStepsTable(d.steps)+(d.scoring&&d.scoring.judged?'<p>'+label('Scoring')+': '+number(d.scoring.judged)+' '+label('judged')+' · '+label('Tokens')+': '+number(d.scoring.inputTokens+d.scoring.outputTokens)+'</p>':''))
   +'<p class="label">'+label('The dashboard shows only what a run record publishes: never prompts, inputs, outputs, or HITL messages.')+'</p>';
 }
 function renderRun() { if(!runDetail||!runKey||!$('session-dialog').open)return; const html=runDetailHtml(runDetail); if(html===runHtml)return; runHtml=html; const scroll=$('session-dialog').scrollTop; $('detail').innerHTML=html; tickRunDurations(); $('session-dialog').scrollTop=scroll; }
@@ -320,6 +325,7 @@ function localizeReport() {
   if(messages[text]) node.nodeValue=node.nodeValue.replace(text,t(text));
  }
 }
+${chartFitView}
 ${scorersClient}
 ${benchmarksClient}
 ${improvementClient}
@@ -340,6 +346,7 @@ function render() {
  else if(retryKey) document.querySelector('[data-retry="'+retryKey+'"]')?.focus({preventScroll:true});
  else if(runFocus) [...document.querySelectorAll('[data-run]')].find(el=>el.dataset.run===runFocus)?.focus({preventScroll:true});
  else if(fieldId){const field=$(fieldId);field?.focus({preventScroll:true});if(caret&&field?.setSelectionRange)field.setSelectionRange(caret[0],caret[1]);}
+ fitCharts();
 }
     // ─── Lightweight inline markdown parser ─────────────
     // Backtick char via hex escape (cannot use literal backtick inside TS template)
@@ -531,6 +538,7 @@ document.addEventListener('click',event=>{
  if(event.target.closest('[data-save-button]'))saveSelection();
 });
 $('title').tabIndex=-1;
+window.addEventListener('resize',fitCharts);
 window.addEventListener('hashchange',()=>{page=Object.hasOwn(pageNames,location.hash.slice(1))?location.hash.slice(1):'overview';render();$('title').focus();});
 $('session-dialog').addEventListener('close',()=>{const id=selectedSession;selectedSession=null;selectedSnapshot=null;runKey=null;runDetail=null;answerError='';const button=[...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===id);(button||focusBeforeDialog)?.focus({preventScroll:true});});
 function switchWorkspace(id) {

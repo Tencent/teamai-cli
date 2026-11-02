@@ -192,6 +192,7 @@ import {
   getConfigPath,
   getDataHome,
   installScopeName,
+  selfModeGitignorePath,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
@@ -1313,8 +1314,9 @@ export function migrateSelfModeGitignoreContent(content: string) {
  * a missing file, or an already-current file. Safe to call on every pull/push.
  */
 export async function migrateSelfModeGitignore(localConfig: LocalConfig): Promise<void> {
-  if (localConfig.repo.kind !== 'self' || !localConfig.projectRoot) return;
-  const gitignorePath = path.join(localConfig.projectRoot, '.teamai', '.gitignore');
+  const gitignorePath = selfModeGitignorePath(localConfig);
+
+  if (gitignorePath === undefined) return;
 
   try {
     const current = await readFileSafe(gitignorePath);

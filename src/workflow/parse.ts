@@ -2,7 +2,7 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  findTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
+  findTemplate, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
@@ -16,8 +16,10 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
+import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
+import { isRoleId } from '../roles.js';
 import type { StepModel } from './step-model.js';
 import { ClonePlaceSchema } from './clone.js';
 import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
@@ -29,9 +31,15 @@ import { sameEnvName } from '../resources/env-key.js';
  */
 export const INVOKE_ALIAS_SINCE = '0.28.0';
 
+/**
+ * The first release that reads a step's `role`. An older CLI refuses it as an unknown key and drops the workflow, which
+ * `review --branch` warns about.
+ */
+export const STEP_ROLE_SINCE = '0.29.0';
+
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
@@ -311,6 +319,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   }
 
   if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
+
+  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, steps }, ctx));
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   const header: Omit<WorkflowDefinition, 'schemaVersion' | 'name' | 'description' | 'steps' | 'finally'> = {};
@@ -811,6 +821,29 @@ function parseBody(
         });
       }
 
+      const rolePair = item.items.find((pair) => scalarString(pair.key) === 'role');
+      const role = scalarString(rolePair?.value)?.trim();
+      // A role is the knowledge of the copy a step works in, which the step that opens the copy resolves, and a
+      // `workflow` step's is the role of the steps inside it. Where a role reaches a copy is checked on the whole tree
+      // (`roleDiagnostics`); only what no enclosing step changes is checked here.
+      const runsPrompt = promptPair !== undefined || promptFilePair !== undefined;
+      // Where an item is bound, a role may be a template of it, which the lease of each item checks as it checks an id.
+      const roleSpec = role === undefined ? undefined : stepRoleSpec(role);
+
+      const roleProblem = !rolePair ? undefined
+        : roleSpec === undefined || !isAdmittedRole(roleSpec, bindsItem) ? bindsItem
+          ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}`
+          : `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
+          : workspace instanceof Object ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
+            : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
+              : undefined;
+
+      // Whether manifest/roles.yaml declares the role is checked where a copy takes it (`roleDiagnostics`): a clone's
+      // setup checks it at the team revision the clone pins.
+      if (rolePair && roleProblem !== undefined) {
+        diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleProblem), code: 'bad_role' });
+      }
+
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');
       const deliverPair = item.items.find((pair) => scalarString(pair.key) === 'deliver');
       const deliver = scalarString(deliverPair?.value)?.trim();
@@ -916,6 +949,8 @@ function parseBody(
         if (forEach) step.forEach = forEach;
 
         if (workspace) step.workspace = workspace;
+
+        if (role) step.role = role;
 
         if (deliver === 'pr') step.deliver = deliver;
 
@@ -1343,6 +1378,29 @@ function parseStepModel(node: Node | null | undefined, field: string, ctx: Parse
   return model;
 }
 
+/** Whether parse admits a step `role` read as `role`: an id shaped like one, or, where an item is bound, a template of it. */
+function isAdmittedRole(role: StepRoleSpec, bindsItem: boolean): boolean {
+  switch (role.kind) {
+    case 'id': return isRoleId(role.id);
+    case 'item_template': return bindsItem;
+    default: {
+      const unhandled: never = role;
+
+      return unhandled;
+    }
+  }
+}
+
+/** `defaults.role`: the id of a role, which `roleDiagnostics` checks against `manifest/roles.yaml` where steps take it. */
+function parseDefaultRole(node: Node | undefined, ctx: ParseContext): string | undefined {
+  const role = scalarString(node)?.trim();
+
+  if (role !== undefined && isRoleId(role)) return role;
+  ctx.diagnostics.push({ ...locate(ctx.file, ctx.lineCounter, node, 'defaults.role', 'defaults.role must be the id of a role in manifest/roles.yaml, such as review'), code: 'bad_role' });
+
+  return undefined;
+}
+
 function parseDefaults(node: Node | null | undefined, ctx: ParseContext): WorkflowDefaults | undefined {
   const { file, lineCounter, diagnostics } = ctx;
 
@@ -1355,18 +1413,20 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   let model: string | undefined;
   let scorers: { batch: boolean } | undefined;
   let requires: Requirements | undefined;
+  let role: string | undefined;
 
   for (const pair of node.items) {
     const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
     const key = scalarString(keyNode);
 
     if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
+    else if (key === 'role') role = parseDefaultRole(valueNode(node, 'role'), ctx);
     else if (key === 'scorers') scorers = parseDefaultScorers(valueNode(node, 'scorers'), ctx);
     else if (key === 'requires') requires = parseRequires(valueNode(node, 'requires'), 'defaults.requires', ctx);
     else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
   }
 
-  if (model === undefined && scorers === undefined && requires === undefined) return undefined;
+  if (model === undefined && scorers === undefined && requires === undefined && role === undefined) return undefined;
   const defaults: WorkflowDefaults = {};
 
   if (model !== undefined) defaults.model = model;
@@ -1374,6 +1434,8 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   if (scorers) defaults.scorers = scorers;
 
   if (requires) defaults.requires = requires;
+
+  if (role !== undefined) defaults.role = role;
 
   return defaults;
 }

@@ -7,7 +7,7 @@ import type { ArmTeam } from '../benchmark/terms.js';
 const NOW = new Date('2026-10-28T12:00:00Z');
 
 /** `team`: the pulled revision of the run when absent. */
-type Arm = { name: string; tool: string; model?: string; alias?: string; team?: ArmTeam; workflow?: { name: string; sourceHash: string } };
+type Arm = { name: string; tool: string; model?: string; alias?: string; team?: ArmTeam; workflow?: { name: string; sourceHash: string }; role?: string };
 const CLAUDE: Arm = { name: 'claude', tool: 'claude', model: 'claude-opus-5-5' };
 const CODEX: Arm = { name: 'codex', tool: 'codex' };
 
@@ -339,6 +339,27 @@ describe('BenchmarkHistory comparisons', () => {
     ]);
   });
 
+  it('compares two arms that differ only in role on the role, and never reads a tool and role difference as the tool', () => {
+    const arms: Arm[] = [
+      { name: 'claude-frontend', tool: 'claude', role: 'frontend' },
+      { name: 'claude-review', tool: 'claude', role: 'review' },
+      { name: 'codex-frontend', tool: 'codex', role: 'frontend' },
+      { name: 'codex-review', tool: 'codex', role: 'review' },
+    ];
+    const runs = [run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms, trials: { login: { 'claude-frontend': ['failed'], 'claude-review': ['passed'], 'codex-frontend': ['failed'], 'codex-review': ['passed'] } } })];
+
+    const { comparisons = [], arms: series = [] } = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected ?? {};
+    const nameOf = (key: string): string | undefined => series.find((arm) => arm.key === key)?.arm;
+
+    expect(comparisons.map(({ dimension, from, to }) => ({ dimension, from: nameOf(from), to: nameOf(to) }))).toEqual([
+      { dimension: 'tool', from: 'claude-frontend', to: 'codex-frontend' },
+      { dimension: 'tool', from: 'claude-review', to: 'codex-review' },
+      { dimension: 'role', from: 'claude-frontend', to: 'claude-review' },
+      { dimension: 'role', from: 'codex-frontend', to: 'codex-review' },
+    ]);
+    expect(series.map(({ arm, role }) => ({ arm, role }))).toEqual(arms.map(({ name, role }) => ({ arm: name, role })));
+  });
+
   it('gives a difference of paired trials its 95% interval, which reaches past zero only when the pairs do not tell the arms apart', () => {
     // Wilson bounds of 10/10 and 0/10 are 0.7225 and 0.2775, so the lower bound is 1 - sqrt(2) * 0.2775.
     expect(pairedDifference({ both: 0, toOnly: 10, fromOnly: 0, neither: 0 })).toEqual({ value: 1, low: expect.closeTo(0.6075, 3), high: 1 });
@@ -366,6 +387,45 @@ describe('BenchmarkHistory comparisons', () => {
     expect(changes?.revisions.map(({ revision, firstRunAt, configs }) => ({ revision, firstRunAt, configs: configs.map(({ runs: count, passed, planned, tasks }) => ({ runs: count, passed, planned, tasks })) }))).toEqual([
       { revision: first, firstRunAt: '2026-10-01T09:00:00Z', configs: [{ runs: 2, passed: 1, planned: 4, tasks: [{ task: 'login', passed: 1, planned: 4 }] }] },
       { revision: second, firstRunAt: '2026-10-10T09:00:00Z', configs: [{ runs: 1, passed: 2, planned: 2, tasks: [{ task: 'login', passed: 2, planned: 2 }] }] },
+    ]);
+  });
+
+  it('follows each role across team revisions as a line of its own, so two roles on one tool never pool', () => {
+    const [first, second] = ['1'.repeat(40), '2'.repeat(40)];
+    const roleArms = (revision: string): Arm[] => [
+      { name: 'frontend', tool: 'claude', role: 'frontend', team: { kind: 'pulled', revision } },
+      { name: 'review', tool: 'claude', role: 'review', team: { kind: 'pulled', revision } },
+    ];
+    const runs = [
+      run({ id: 'r1', startedAt: '2026-10-01T09:00:00Z', arms: roleArms(first), trials: { login: { frontend: ['failed'], review: ['passed'] } } }),
+      run({ id: 'r2', startedAt: '2026-10-10T09:00:00Z', arms: roleArms(second), trials: { login: { frontend: ['passed'], review: ['passed'] } } }),
+    ];
+
+    const changes = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected?.teamChanges;
+
+    expect(changes?.configs).toEqual([
+      { key: '["claude",null,null,null,"frontend"]', tool: 'claude', role: 'frontend' },
+      { key: '["claude",null,null,null,"review"]', tool: 'claude', role: 'review' },
+    ]);
+    expect(changes?.revisions.map(({ revision, configs }) => ({ revision, configs: configs.map(({ key, passed, planned }) => ({ key, passed, planned })) }))).toEqual([
+      { revision: first, configs: [{ key: '["claude",null,null,null,"frontend"]', passed: 0, planned: 1 }, { key: '["claude",null,null,null,"review"]', passed: 1, planned: 1 }] },
+      { revision: second, configs: [{ key: '["claude",null,null,null,"frontend"]', passed: 1, planned: 1 }, { key: '["claude",null,null,null,"review"]', passed: 1, planned: 1 }] },
+    ]);
+  });
+
+  it('keeps the keys of arms and configurations without a role as they were before roles', () => {
+    const [first, second] = ['1'.repeat(40), '2'.repeat(40)];
+    const runs = [
+      run({ id: 'r1', startedAt: '2026-10-01T09:00:00Z', arms: [{ ...CLAUDE, team: { kind: 'pulled', revision: first } }], trials: { login: { claude: ['passed'] } } }),
+      run({ id: 'r2', startedAt: '2026-10-10T09:00:00Z', arms: [{ ...CLAUDE, team: { kind: 'pulled', revision: second } }], trials: { login: { claude: ['passed'] } } }),
+    ];
+
+    const selected = BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }).selected;
+
+    expect(selected?.arms.map(({ key }) => key)).toEqual(['["claude","claude","claude-opus-5-5",null,{"kind":"pulled"},null]']);
+    expect(selected?.teamChanges.configs.map(({ key }) => key)).toEqual(['["claude","claude-opus-5-5",null,null]']);
+    expect(selected?.runs.map(({ arms }) => arms.map(({ key }) => key))).toEqual([
+      ['["claude","claude","claude-opus-5-5",null,{"kind":"pulled"},null]'], ['["claude","claude","claude-opus-5-5",null,{"kind":"pulled"},null]'],
     ]);
   });
 

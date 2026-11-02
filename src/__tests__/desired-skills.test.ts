@@ -208,6 +208,16 @@ describe('resolveDesiredSkills', () => {
     expect(items.map((i) => i.name)).toEqual(['shared-skill']);
   });
 
+  it("in a workflow copy that runs with a team role, applies neither the member's tags nor its exclusions", async () => {
+    localConfig.subscribedTags = ['ui'];
+    localConfig.excludedSkills = ['backend-skill'];
+    localConfig.stepRole = 'backend';
+
+    const { items } = resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['common', 'backend'])));
+
+    expect(items.map((i) => i.name).sort()).toEqual(['backend-skill', 'shared-skill']);
+  });
+
   it('without a role context, every skill in the repo is desired', async () => {
     const { items } = resolved(await resolveDesiredSkills(teamConfig, localConfig, null));
 

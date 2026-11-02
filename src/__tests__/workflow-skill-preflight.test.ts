@@ -268,6 +268,37 @@ describe('skill driver preflight', () => {
     expect(runCount(made)).toBe(0);
   });
 
+  it("routes a run whose steps run as a team role to a driver that delivers it, before any step runs on this one", async () => {
+    const made = await harness({ 'review-docs': `schemaVersion: v1alpha1
+name: review-docs
+description: Draft the notes, then check them, as the review role
+invoke: allow
+defaults:
+  role: review
+steps:
+  - id: docs
+    workspace: new
+    workflow:
+      steps:
+        - id: draft
+          prompt: Draft the release notes.
+        - id: check
+          needs: [draft]
+          prompt: Check the notes.
+` }, { teamFiles: { 'manifest/roles.yaml': 'version: 1\nroles:\n  - id: review\n    resources: { skills: [review] }\n' } });
+    expect(await made.call({ kind: 'describe', name: 'review-docs' })).toMatchObject({ data: { describe: {
+      workflow: { facts: { held: [{ step: 'docs.draft', missing: ['role'] }, { step: 'docs.check', missing: ['role'] }] } },
+      ask: {
+        kind: 'local',
+        reason: 'review-docs runs steps as a team role, which only a driver that declares can.role runs, as teamai must deliver the role into the copy each such step works in, and this driver does not. Start it with --driver local.',
+        start: 'teamai workflow start review-docs --driver local --tools default=claude',
+      },
+    } } });
+    expect(await made.call({ kind: 'start', name: 'review-docs', answers: { confirmed: false }, inputs: undefined }))
+      .toMatchObject({ error: { code: 'needs_local_driver', next: null } });
+    expect(runCount(made)).toBe(0);
+  });
+
   it('leaves the session tool out of a local start when TEAMAI_AI_TOOL names the tool steps run on', async () => {
     vi.stubEnv('TEAMAI_AI_TOOL', 'codex');
     const made = await harness({ 'release-docs': RELEASE_DOCS });

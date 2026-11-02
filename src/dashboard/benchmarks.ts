@@ -137,11 +137,19 @@ export interface TeamDiff {
   more: number;
 }
 
+/** An arm of a suite that ran with a team role: what the Scorers page links that role's production labels to. */
+export interface RoleArm {
+  role: string;
+  suite: string;
+  arm: string;
+}
+
 /**
  * `teamCommits` by revision, for each the clone has. `teamDiffs` by `<before>..<after>`, for each two revisions a tool and
- * model ran on in turn and the clone has both of.
+ * model ran on in turn and the clone has both of. `roleArms`: each arm of any suite that ran with a role in the window,
+ * from the newest run.
  */
-export type BenchmarkPage = BenchmarkHistoryView & { teamCommits: Record<string, TeamCommit>; teamDiffs: Record<string, TeamDiff> };
+export type BenchmarkPage = BenchmarkHistoryView & { teamCommits: Record<string, TeamCommit>; teamDiffs: Record<string, TeamDiff>; roleArms: RoleArm[] };
 
 const CHANGES_SHOWN = 40;
 const GIT_TIMEOUT_MS = 10_000;
@@ -190,7 +198,7 @@ function diffOf(clone: string, before: string, after: string): Promise<TeamDiff 
  * `view` with its team revisions in commit order when the team clone has every one, each named, and what changed between
  * each two revisions a tool and model ran on in turn.
  */
-async function withTeamCommits(config: LocalConfig, view: BenchmarkHistoryView): Promise<BenchmarkPage> {
+async function withTeamCommits(config: LocalConfig, view: BenchmarkHistoryView): Promise<Omit<BenchmarkPage, 'roleArms'>> {
   const revisions = view.selected?.teamChanges.revisions ?? [];
 
   if (!view.selected || revisions.length === 0) return { ...view, teamCommits: {}, teamDiffs: {} };
@@ -235,6 +243,23 @@ export async function benchmarkHistory({ config, query, now = new Date(), refres
   ]);
 
   const localIds = new Set(local.map(({ run }) => run));
+  const runs = [...local, ...reported.filter(({ run }) => !localIds.has(run))];
+  const view = BenchmarkHistory.of({ runs, query, now });
 
-  return withTeamCommits(config, BenchmarkHistory.of({ runs: [...local, ...reported.filter(({ run }) => !localIds.has(run))], query, now }));
+  return { ...await withTeamCommits(config, view), roleArms: roleArmsOf(runs, view.window) };
+}
+
+/** Each arm with a role in the runs `window` holds, newest run first, once per suite and arm name. */
+function roleArmsOf(runs: readonly BenchmarkRunInput[], { from, to }: BenchmarkHistoryView['window']): RoleArm[] {
+  const listed = new Map<string, RoleArm>();
+
+  for (const { benchmark } of runs.filter((run) => run.startedAt >= from && run.startedAt <= to).toSorted((left, right) => right.startedAt.localeCompare(left.startedAt))) {
+    for (const { name, role } of benchmark.arms) {
+      const key = JSON.stringify([benchmark.suite.name, name]);
+
+      if (role && !listed.has(key)) listed.set(key, { role, suite: benchmark.suite.name, arm: name });
+    }
+  }
+
+  return [...listed.values()];
 }

@@ -61,6 +61,11 @@ export interface WorkflowFiles {
   runnable(name: string): WorkflowDefinition | null;
   /** The workflows running `name` from this file passes through until it runs this file again, such as ship -> check -> ship. */
   cycle(name: string): string[] | undefined;
+  /**
+   * The role ids `manifest/roles.yaml` declares, which a step's `role` must name; none when the team repo has no roles
+   * manifest. Undefined when the sync could not read it: a lease checks the role then.
+   */
+  roles?: ReadonlySet<string>;
 }
 
 /** What a reader may read of the workflow a step runs, and how a message names that workflow. */

@@ -32,7 +32,7 @@ vi.mock('../utils/logger.js', () => {
 
 import { localAliasesPath } from '../models/aliases.js';
 import { reviewBranchDir, materializeRef, type BranchReview, type Finding } from '../review-branch.js';
-import { INVOKE_ALIAS_SINCE } from '../workflow/parse.js';
+import { INVOKE_ALIAS_SINCE, STEP_ROLE_SINCE } from '../workflow/parse.js';
 
 const BRANCH = 'teamai/push/tester/20260101-000000';
 
@@ -561,6 +561,63 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
       { level: 'warn', check: 'workflows', path: 'workflows/ship.yaml', message: `workflows/ship.yaml sets invoke and alias: ${since}` },
     ]));
     expect(review.counts).toEqual({ fail: 4, warn: 2, info: 0 });
+  });
+
+  it('warns that older CLIs drop a workflow with a step role, however deep the step is', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    await writeWorkflow(repoDir, 'review', `schemaVersion: v1alpha1
+name: review
+description: Review in a clean clone.
+steps:
+  - id: outer
+    workflow:
+      steps:
+        - id: review
+          role: review
+          workspace:
+            clone:
+              commit: ${'a'.repeat(40)}
+              team: { revision: ${'b'.repeat(40)}, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled }
+          command: echo review
+`);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toContainEqual({
+      level: 'warn', check: 'workflows', path: 'workflows/review.yaml',
+      message: `workflows/review.yaml sets role on step outer.review: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a step role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`,
+    });
+  });
+
+  it('warns that older CLIs drop a workflow that sets defaults.role, or a role on a workflow step', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    await writeWorkflow(repoDir, 'review', `schemaVersion: v1alpha1
+name: review
+description: Review the change as a reviewer.
+defaults:
+  role: review
+steps:
+  - id: change
+    workspace: new
+    prompt: Review the change.
+  - id: checks
+    needs: []
+    role: review
+    workflow:
+      steps:
+        - id: fix
+          workspace: new
+          prompt: Fix what the review found.
+`);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toContainEqual({
+      level: 'warn', check: 'workflows', path: 'workflows/review.yaml',
+      message: `workflows/review.yaml sets defaults.role and role on step checks: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`,
+    });
   });
 
   it('fails a workflow whose prompt file is missing', async () => {

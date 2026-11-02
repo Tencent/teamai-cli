@@ -242,6 +242,72 @@ steps:
     command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
 ```
 
+### 以团队角色运行步骤
+
+打开或沿用工作区的提示词步骤，可以用 `manifest/roles.yaml` 中你本人之外的角色运行。下例中，规划步骤知道规格撰写者知道的内容，评审步骤知道评审者知道的内容：
+
+```yaml
+schemaVersion: v1alpha1
+name: plan-and-review
+description: Plan a change as a spec writer, then review the plan as a reviewer.
+steps:
+  - id: plan
+    role: spec
+    workspace: new
+    prompt: Write the plan for the change in PLAN.md.
+  - id: review
+    needs: [plan]
+    role: review
+    workspace: new
+    prompt: Review PLAN.md and list what must change before anyone builds it.
+```
+
+用 `teamai workflow start plan-and-review --driver local` 运行它。每个步骤的 worktree 获得其角色和你的项目的 skill、规则、agent、文档、wiki 和经验，并保留你的 hook、MCP 服务器、env 和模型。你的检出目录和配置不会改变，每条分支只包含步骤自己的修改。运行记录在评审步骤上带有 `agent.team.selection.stepRole: review`，位于你的 `primaryRole` 旁边；仪表盘的运行视图把该角色标为步骤的角色。`role` 能写在哪里、步骤何时以 `role_unavailable` 失败，见[以团队角色运行步骤](workflow-advanced.md#以团队角色运行步骤)。
+
+在外层 `workflow` 步骤上为一组步骤设置一次角色，或在 `defaults` 中为整个文件设置。下例中，评审修复改动、评审修复结果并运行 lint，全部在一个以 `review` 运行的副本中进行：
+
+```yaml
+schemaVersion: v1alpha1
+name: review-fix
+description: Fix the change, review the fix and lint it, as a reviewer.
+steps:
+  - id: review
+    role: review
+    workflow:
+      steps:
+        - id: change
+          workspace: new
+          workflow:
+            steps:
+              - id: fix
+                prompt: Fix what the issue reports.
+              - id: look
+                needs: [fix]
+                workspace: continue
+                prompt: Review the fix and write what is still wrong in REVIEW.md.
+              - id: lint
+                needs: [look]
+                workspace: continue
+                command: npm run lint
+```
+
+`teamai workflow start review-fix --driver local` 在 `change` 打开的副本中运行 `fix`、`look` 和 `lint`，使用评审角色的知识：`lint` 看到的 skill 和规则与提示词步骤看到的相同。运行记录在 `review.change.fix` 和 `review.change.look` 上带有 `stepRole: review`。
+
+打开副本的步骤决定副本的角色，所有延续该副本的步骤都以它运行：
+
+| 打开副本的步骤 | 副本的角色 |
+|---|---|
+| 设置了 `role` | 该角色 |
+| 没有设置，但位于设置了 `role` 的 `workflow` 步骤中 | 最近的这类步骤的角色 |
+| 没有设置，外层也没有这类步骤 | 所在工作流文件的 `defaults.role`，否则是运行它的文件的 |
+| 以上都不是 | 你的角色 |
+
+打开自己副本的步骤可以使用另一个角色。不在任何副本中的步骤以你的角色运行。pull 会以 `bad_role` 拒绝以不同于副本的角色沿用副本的步骤，以及没有任何打开或沿用副本的步骤采用的 `role` 或 `defaults.role`；以 `bad_session` 拒绝在以不同角色运行的步骤之间使用的 `session.from`。在上例的 `look` 上加 `role: spec` 后，`teamai pull` 会显示：
+
+```text
+⚠ [workflows] workflows/review-fix.yaml:17: field "steps[0].workflow.steps[0].workflow.steps[1].role": step "look" has role spec but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "look", or set it on step "change"
+```
+
 ## 交付 PR
 
 在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。其中写自己分支的步骤，需要有后续步骤通过 `needs` 合并那条分支，或者自己设置 `deliver: pr`。否则交付以 `delivery_failed` 失败，因为 pull request 会漏掉那部分工作。`for_each` 步骤的每个 item 各自交付自己的分支。

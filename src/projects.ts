@@ -7,7 +7,7 @@ import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
   HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespaceFields, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
-import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
+import { loadRolesManifest, loadRolesManifestIfPresent, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
 import type { JsonValue, LocalConfig } from './types.js';
 
 /**
@@ -263,27 +263,41 @@ export function resolveProjectResourceNamespaces(input: {
  *
  * Returns `[]` when there is no manifest, no role or active project, or none of
  * them declares a learnings namespace (→ contribution lands at the shared root).
+ * A workflow copy that runs with a team role (`stepRole`) takes the learnings
+ * `STEP_ROLE_PURPOSE` gives it, and a role the manifest does not declare, or a
+ * manifest that cannot be read, throws rather than give it the shared root.
  */
 export async function resolveActiveLearningsNamespaces(
-  config: { repo: Pick<LocalConfig['repo'], 'localPath'> } & Partial<Pick<LocalConfig, 'projects' | 'primaryRole' | 'additionalRoles'>>,
+  config: { repo: Pick<LocalConfig['repo'], 'localPath'> } & Partial<Pick<LocalConfig, 'projects' | 'primaryRole' | 'additionalRoles' | 'stepRole'>>,
 ): Promise<string[]> {
   const repoPath = config.repo.localPath;
   const activeProjects = config.projects ?? [];
+  const { primaryRole, stepRole } = config;
 
-  // An unknown role or project id, or a manifest that does not parse, degrades
-  // to the shared root rather than throw.
-  const fromRoles = async (): Promise<string[]> => {
-    if (!config.primaryRole) return [];
+  // For the member, an unknown role or project id, or a manifest that does not
+  // parse, degrades to the shared root rather than throw.
+  const memberRoles = async (): Promise<ResourceNamespaces> => {
+    const none: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
+
+    if (!primaryRole) return none;
 
     try {
       const manifest = await loadRolesManifest(repoPath);
 
-      return resolveRoleResourceNamespaces({
-        manifest, primaryRole: config.primaryRole, additionalRoles: config.additionalRoles ?? [],
-      }).learnings;
+      return resolveRoleResourceNamespaces({ manifest, primaryRole, additionalRoles: config.additionalRoles ?? [] });
     } catch {
-      return [];
+      return none;
     }
+  };
+
+  const fromRoles = async (): Promise<string[]> => {
+    const member = await memberRoles();
+
+    if (stepRole === undefined) return member.learnings;
+    // Imported here: resource-namespaces.js imports this module.
+    const { withStepRoleKnowledge } = await import('./resource-namespaces.js');
+
+    return withStepRoleKnowledge(await loadRolesManifestIfPresent(repoPath), stepRole, member).learnings;
   };
 
   const fromProjects = async (): Promise<string[]> => {

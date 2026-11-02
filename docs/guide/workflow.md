@@ -242,6 +242,72 @@ steps:
     command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
 ```
 
+### Run a step as a team role
+
+A prompt step that opens or continues a workspace can run with a role from `manifest/roles.yaml` other than yours. Here a planning step knows what spec writers know, and a review step what reviewers know:
+
+```yaml
+schemaVersion: v1alpha1
+name: plan-and-review
+description: Plan a change as a spec writer, then review the plan as a reviewer.
+steps:
+  - id: plan
+    role: spec
+    workspace: new
+    prompt: Write the plan for the change in PLAN.md.
+  - id: review
+    needs: [plan]
+    role: review
+    workspace: new
+    prompt: Review PLAN.md and list what must change before anyone builds it.
+```
+
+Run it with `teamai workflow start plan-and-review --driver local`. Each step's worktree gets the skills, rules, agents, docs, wiki and learnings of its role and of your projects. It keeps your hooks, MCP servers, env and models. Your checkout and config do not change, and each branch holds only the step's own edits. The run record has `agent.team.selection.stepRole: review` on the review step, beside your `primaryRole`, and the dashboard's run view marks the role as the step's. See [Run a step as a team role](workflow-advanced.md#run-a-step-as-a-team-role) for where `role` goes and when a step fails `role_unavailable`.
+
+Set the role once for a group of steps on the `workflow` step around them, or for the whole file in `defaults`. Here a review fixes the change, reviews it, and lints it, all in one copy that runs as `review`:
+
+```yaml
+schemaVersion: v1alpha1
+name: review-fix
+description: Fix the change, review the fix and lint it, as a reviewer.
+steps:
+  - id: review
+    role: review
+    workflow:
+      steps:
+        - id: change
+          workspace: new
+          workflow:
+            steps:
+              - id: fix
+                prompt: Fix what the issue reports.
+              - id: look
+                needs: [fix]
+                workspace: continue
+                prompt: Review the fix and write what is still wrong in REVIEW.md.
+              - id: lint
+                needs: [look]
+                workspace: continue
+                command: npm run lint
+```
+
+`teamai workflow start review-fix --driver local` runs `fix`, `look` and `lint` in the copy `change` opens, with the review role's knowledge: `lint` sees the same skills and rules the prompts saw. The run record has `stepRole: review` on `review.change.fix` and `review.change.look`.
+
+The step that opens a copy decides its role, and every step continuing the copy runs with it:
+
+| The step that opens the copy | Its role |
+|---|---|
+| sets `role` | that role |
+| sets none, inside a `workflow` step that sets one | the nearest such step's role |
+| sets none, with no such step around it | `defaults.role` of its workflow file, else of the file that runs it |
+| none of these | your roles |
+
+A step that opens a copy of its own may name another role. A step outside any copy runs with your roles. Pull refuses, as `bad_role`, a step that continues a copy with a role other than the copy's, and a `role` or `defaults.role` that no step opening or continuing a copy takes; and, as `bad_session`, a `session.from` between steps that run with different roles. With `role: spec` added to `look` above, `teamai pull` says:
+
+```text
+⚠ [workflows] workflows/review-fix.yaml:17: field "steps[0].workflow.steps[0].workflow.steps[1].role": step "look" has role spec but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "look", or set it on step "change"
+```
+
 ## Deliver a PR
 
 Set `deliver: pr` on a step that writes a branch, and TeamAI opens a pull request from that branch once the step succeeds. It never merges it. A step writes a branch when it has `workspace: new` or `continue`, or when it is a prompt inside a workflow that opened one. A command that delivers must set `workspace`, since a command without one is read-only. A `workflow` step with `workspace: new` delivers its branch once, for all its steps. A step inside it that writes a branch of its own needs a later step that merges that branch through `needs`, or its own `deliver: pr`. Otherwise the delivery fails with `delivery_failed`, since the pull request would leave that work out. On a `for_each` step, each item delivers its own branch.

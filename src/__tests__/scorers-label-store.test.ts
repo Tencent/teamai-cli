@@ -83,6 +83,18 @@ describe('ScoreLabel', () => {
     expect(labelId(modelLabel('2026-10-22T12:00:00.000Z', 'bad'))).toBe(labelId(modelLabel('2026-10-22T11:00:00.000Z')));
     expect(parseScoreLabels('{"scorer":"q","rubric":{"sourceHash":"h"},"label":"x","score":1,"passed":true,"source":"workflow","subject":{"platform":"p","sessionId":"s"},"judge":{"kind":"human"},"scoredAt":"2026-10-22T10:00:00.000Z"}')).toEqual([]);
   });
+
+  it('reads back the agent a workflow label judged, and keys the label as it was keyed before labels carried one', () => {
+    const agent = {
+      v: 1 as const, tool: { name: 'claude' }, model: { requested: 'claude-review-1' }, teamai: '1.0.0', driver: 'local',
+      team: { revision: 'a'.repeat(40), localChanges: false, selection: { scope: 'project' as const, primaryRole: 'frontend', additionalRoles: [], stepRole: 'review' } },
+    };
+    const label: ScoreLabel = { ...modelLabel('2026-10-22T11:00:00.000Z'), judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' }, agent };
+
+    expect(parseScoreLabels(JSON.stringify(label))).toEqual([label]);
+    // The key of this label without `agent`, as the release before labels carried one computed it.
+    expect(labelId(label)).toBe('2edad399ba08d8ad48d1e9a6ac3fd495fc66d3802ab32f6e5b001367ddf943cd');
+  });
 });
 
 describe('LabelStore', () => {

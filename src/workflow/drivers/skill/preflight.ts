@@ -48,9 +48,16 @@ export function neededAnswers(description: WorkflowDescription): StartAnswer[] {
   ];
 }
 
-/** Why `description` must run with the local driver, or undefined when this driver runs it: its benchmark trials, or its local route. */
+/**
+ * Why `description` must run with the local driver, or undefined when this driver runs it: its steps that run as a team
+ * role, its benchmark trials, or its local route.
+ */
 export function localReason(description: WorkflowDescription): string | undefined {
   const { name, facts } = description;
+
+  if (facts.held.some((held) => held.missing.includes('role'))) {
+    return `${name} runs steps as a team role, which only a driver that declares can.role runs, as teamai must deliver the role into the copy each such step works in, and this driver does not. Start it with --driver local.`;
+  }
 
   if (facts.held.some((held) => held.missing.includes('prepare'))) {
     return `${name} is a benchmark, whose trials run only on a driver that declares a sandbox, and this driver does not. Add --sandbox on a machine that is one.`;

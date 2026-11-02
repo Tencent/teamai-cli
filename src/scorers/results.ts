@@ -4,7 +4,8 @@
  * summed. Pure: callers read the labels and what their subjects ran as, and this module only counts them.
  */
 import { createHash } from 'node:crypto';
-import type { AgentObservation, RecordedAgent } from '../agent-observation.js';
+import { agentHarnessOf, type AgentHarness, type AgentObservation, type RecordedAgent } from '../agent-observation.js';
+import { wilson } from '../benchmark/history.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { DECIDERS, isStageDecider, labelId, type Decider, type ScoreLabel } from './label.js';
@@ -14,7 +15,7 @@ export type ViewedLabel = {
   label: ScoreLabel;
   /** The member whose label file holds it. */
   author: string;
-  /** A session label's own `agent`, or the `agent` of the pass a workflow label judges. */
+  /** The label's own `agent`; for a workflow label written before labels carried one, the `agent` of the pass it judges. */
   agent?: RecordedAgent;
   /** The name of the pushed session a session label judges, when the team archive holds it. */
   sessionName?: string;
@@ -85,8 +86,10 @@ const DIMENSIONS: Record<Dimension, (entry: ViewedLabel) => GroupValue[] | undef
   definition: ({ agent }) => one(agent?.definition?.name),
   role: ({ agent }) => {
     const selection = observed(agent)?.team?.selection;
+    // A pass in a workflow copy ran with the copy's role, whatever the member's is.
+    const role = selection?.stepRole ?? selection?.primaryRole;
 
-    return selection ? many(selection.primaryRole ? [selection.primaryRole] : []) : undefined;
+    return selection ? many(role ? [role] : []) : undefined;
   },
   project: ({ agent }) => {
     const selection = observed(agent)?.team?.selection;
@@ -110,9 +113,16 @@ export type Side = 'before' | 'after';
 /** A cohort's labels split at a team commit. Labels on no revision this clone has are `notRecorded`. */
 export type Split = { commit: string; before: Stats; after: Stats; notRecorded: Stats };
 
-/** The labels of a cohort that recorded one value of a dimension, or none, or did not record it. */
-export type Group = { key: string; stats: Stats; split?: Omit<Split, 'commit'> } & (
-  | ({ kind: 'value' } & GroupValue)
+/** Whether a role group's labels ran with a workflow step's own role, the member's role, or some of each. */
+export type RoleOf = 'step' | 'member' | 'both';
+
+/**
+ * The labels of a cohort that recorded one value of a dimension, or none, or did not record it, with the 95% Wilson
+ * interval of their pass rate, as a benchmark arm's: what tells a role's production apart from its arm. A role group
+ * says where its role came from in `roleOf`.
+ */
+export type Group = { key: string; stats: Stats; interval: { low: number; high: number }; split?: Omit<Split, 'commit'> } & (
+  | ({ kind: 'value'; roleOf?: RoleOf } & GroupValue)
   | { kind: 'none' }
   | { kind: 'not recorded' }
 );
@@ -139,14 +149,23 @@ export type SubjectRef =
   | { source: 'session'; platform: string; sessionName?: string }
   | { source: 'workflow'; run: { id: string; step: string; pass: number; source?: 'local' | 'reported' } };
 
-/** A failing label as the view lists it: never its subject's native session id, reasoning or prompt. */
-export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; decidedBy?: Decider } & SubjectRef;
+/**
+ * A failing label as the view lists it, with the harness the judged work ran with when that was recorded: never its
+ * subject's native session id, reasoning or prompt.
+ */
+export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; decidedBy?: Decider; harness?: AgentHarness } & SubjectRef;
 
 /**
  * What decided a workflow cohort's labels (#1247): its labels per stage, the most first and those that recorded none
  * last, and how many a stage decided before any judge ran.
  */
 export type Decided = { rows: Array<{ by: Decider | 'not recorded'; key: string; stats: Stats }>; beforeJudge: number };
+
+/** How many failing labels judged work that ran with one harness; without `harness` when the work recorded none. */
+export type HarnessFailures = { harness?: AgentHarness; failed: number };
+
+/** The team revision a group's labels last passed on, and the one they failed on from then on. */
+export type RevisionChange = { lastPassed: string; firstFailed: string };
 
 /**
  * The friction reminder per session run on this machine (#1182): `hinted` from the member's contribute state, by
@@ -210,8 +229,12 @@ export type SelectedCohort = {
   groupBy?: Dimension;
   groups?: Group[];
   split?: Split;
-  /** The newest failing labels the query asked for, and how many it matches. */
-  failing: { labels: FailingLabel[]; total: number };
+  /**
+   * The newest failing labels the query asked for, and how many it matches. With a group selected, `byHarness` counts
+   * all of them by the harness each ran with, the most failures first: whether one harness causes them; and
+   * `revisionChange`, when the group's labels show one, names the team revision they started failing on.
+   */
+  failing: { labels: FailingLabel[]; total: number; byHarness?: HarnessFailures[]; revisionChange?: RevisionChange };
   /** Only for a workflow cohort whose labels recorded what decided them. */
   decided?: Decided;
   /** Only for a session cohort on a dashboard that read this machine's reminder state: the sessions of the last `days`. */
@@ -414,14 +437,16 @@ function subjectRef(entry: ViewedLabel): SubjectRef {
 
 function failingLabel(entry: ViewedLabel): FailingLabel {
   const { label } = entry;
+  const harness = agentHarnessOf(entry.agent);
 
   return {
     author: entry.author,
     scoredAt: label.scoredAt,
     label: label.label,
-    // Left undefined without skills or a recorded decider, so the JSON view leaves them out.
+    // Left undefined without skills, a recorded decider or a harness, so the JSON view leaves them out.
     skills: label.used?.skills.length ? label.used.skills : undefined,
     decidedBy: label.source === 'workflow' ? label.decidedBy : undefined,
+    harness,
     ...subjectRef(entry),
   };
 }
@@ -442,6 +467,43 @@ function decided(labels: readonly ViewedLabel[]): Decided | undefined {
     rows: [...rows, ...unrecorded.length > 0 ? [{ by: 'not recorded' as const, key: NOT_RECORDED_KEY, stats: stats(unrecorded) }] : []],
     beforeJudge: labels.filter((entry) => isStageDecider(byOf(entry))).length,
   };
+}
+
+/** `failing` by harness, the most failures first; of two harnesses failing as often, the one that failed last first. */
+function failuresByHarness(failing: readonly ViewedLabel[]): HarnessFailures[] {
+  const counts = new Map<string, HarnessFailures>();
+
+  for (const entry of failing) {
+    const harness = agentHarnessOf(entry.agent);
+    const key = canonicalJson(harness ?? null);
+    const count = counts.get(key) ?? (harness ? { harness, failed: 0 } : { failed: 0 });
+    count.failed += 1;
+    counts.set(key, count);
+  }
+
+  return [...counts.values()].sort((left, right) => right.failed - left.failed);
+}
+
+/**
+ * Where a group's labels turned from passing to failing, by the team revision each judged work ran on: only when, in
+ * the order they were scored, every label that recorded a revision passed up to one point and failed from it on, on
+ * revisions none of the passing ones ran on. Anything less clear names no revision, rather than a guess.
+ */
+function revisionChange(labels: readonly ViewedLabel[]): RevisionChange | undefined {
+  const ran = labels.flatMap((entry) => {
+    const revision = observed(entry.agent)?.team?.revision;
+
+    return revision === undefined ? [] : [{ revision, passed: entry.label.passed, at: entry.label.scoredAt }];
+  }).sort((left, right) => left.at.localeCompare(right.at));
+
+  const turn = ran.findIndex(({ passed }) => !passed);
+  const [passing, failing] = [ran.slice(0, turn), ran.slice(turn)];
+  const lastPassed = passing.at(-1), firstFailed = failing[0];
+
+  if (turn <= 0 || !lastPassed || !firstFailed || failing.some(({ passed }) => passed)) return undefined;
+  const passedOn = new Set(passing.map(({ revision }) => revision));
+
+  return failing.some(({ revision }) => passedOn.has(revision)) ? undefined : { lastPassed: lastPassed.revision, firstFailed: firstFailed.revision };
 }
 
 /** The reminder table of a session cohort: each session counts once, under the label of this cohort it has. */
@@ -485,15 +547,24 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
     }
   }
 
+  // A group holds at least one label, so its interval is always defined.
   const counts = (members: readonly ViewedLabel[]) => {
-    const counted: Pick<Group, 'stats' | 'split'> = { stats: stats(members) };
+    const counted: Pick<Group, 'stats' | 'interval' | 'split'> = {
+      stats: stats(members), interval: wilson({ passed: members.filter(({ label }) => label.passed).length, planned: members.length }),
+    };
 
     if (sideOf) counted.split = splitStats(members, sideOf);
 
     return counted;
   };
 
-  const counted: Group[] = [...values].map(([key, { value, labels: members }]) => ({ key, kind: 'value' as const, ...value, ...counts(members) }))
+  const counted: Group[] = [...values].map(([key, { value, labels: members }]) => {
+    const role: Pick<Extract<Group, { kind: 'value' }>, 'roleOf'> = {};
+
+    if (dimension === 'role') role.roleOf = roleOf(members);
+
+    return { key, kind: 'value' as const, ...value, ...role, ...counts(members) };
+  })
     .sort((left, right) => right.stats.n - left.stats.n || left.key.localeCompare(right.key));
 
   if (none.length > 0) counted.push({ key: NONE_KEY, kind: 'none', ...counts(none) });
@@ -501,6 +572,15 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
   if (notRecorded.length > 0) counted.push({ key: NOT_RECORDED_KEY, kind: 'not recorded', ...counts(notRecorded) });
 
   return counted;
+}
+
+/** Where the role of a role group's `labels` came from: the step's own role in a workflow copy, else the member's. */
+function roleOf(labels: readonly ViewedLabel[]): RoleOf {
+  const isStep = labels.map((entry) => observed(entry.agent)?.team?.selection?.stepRole !== undefined);
+
+  if (isStep.every(Boolean)) return 'step';
+
+  return isStep.some(Boolean) ? 'both' : 'member';
 }
 
 /** The values `labels` stored, as stored: the scorer file is never read to rename, add or reorder them. */
@@ -713,7 +793,13 @@ export const ScorerResults = {
     const failing = counted.filter((entry) => !entry.label.passed && inGroup(entry))
       .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
 
+    const change = groupBy && group !== undefined ? revisionChange(counted.filter(inGroup)) : undefined;
     const stageBreakdown = summary.source === 'workflow' ? decided(counted) : undefined;
+    const failingList: SelectedCohort['failing'] = { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length };
+
+    if (groupBy && group !== undefined) failingList.byHarness = failuresByHarness(failing);
+
+    if (change) failingList.revisionChange = change;
 
     const selected: SelectedCohort = {
       cohort: { ...summary, values: valueCounts(counted) },
@@ -722,7 +808,7 @@ export const ScorerResults = {
       groupBy: groupBy || undefined,
       groups: groupBy ? groups(counted, groupBy, split?.sideOf) : undefined,
       split: split ? { commit: split.commit, ...splitStats(counted, split.sideOf) } : undefined,
-      failing: { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length },
+      failing: failingList,
     };
 
     if (stageBreakdown) selected.decided = stageBreakdown;
