@@ -79,7 +79,8 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
       { at: '~/.copilot/hooks/teamai.json', when: 'always', key: HOOK_LIST },
       { at: '<root>/.github/hooks/teamai.json', when: 'workspaceUnder', key: HOOK_LIST },
     ],
-    source: 'resolveHookScope: a workspace takes the user hooks (#264), and the team hooks in the project file Copilot CLI loads from .github/hooks',
+    readGates: [{ kind: 'copilot-folder-trust', config: '~/.copilot/config.json', checkout: '<root>' }],
+    source: 'resolveHookScope: a workspace takes the user hooks (#264), and the team hooks in the project file Copilot CLI loads from .github/hooks in a trusted folder (Copilot CLI 1.0.105)',
   }),
   settings('copilot', 'project', '/copilot-home/hooks/teamai.json', '/copilot-home', {
     env: { COPILOT_HOME: '/copilot-home' },
@@ -88,10 +89,12 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
       { at: '/copilot-home/hooks/teamai.json', when: 'always', key: HOOK_LIST },
       { at: '<root>/.github/hooks/teamai.json', when: 'workspaceUnder', key: HOOK_LIST },
     ],
-    source: 'Copilot CLI 1.0.98: COPILOT_HOME moves the user hooks; the project file stays in the project',
+    readGates: [{ kind: 'copilot-folder-trust', config: '/copilot-home/config.json', checkout: '<root>' }],
+    source: 'Copilot CLI 1.0.98: COPILOT_HOME moves the user hooks and config.json; the project file stays in the project',
   }),
   selfSettings('copilot', '<root>/.github/hooks/teamai.json', '~/.copilot', 'workspaceUnder', {
-    source: `${SELF}: whether repo hooks wait for folder trust is not traced`,
+    readGates: [{ kind: 'copilot-folder-trust', config: '~/.copilot/config.json', checkout: '<root>' }],
+    source: `${SELF}: Copilot CLI 1.0.105 runs repo hooks only in a trusted folder (copilot -p, verified)`,
   }),
   settings('qoder', 'user', '~/.qoder/settings.json', '~/.qoder'),
   settings('qoder', 'user', '/qoder/settings.json', '/qoder', {

@@ -24,7 +24,7 @@ import {
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
 import { loadStateForScope } from './config.js';
-import { installOf, isInstalledFor, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
+import { installOf, isInstalledFor, locate, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost } from './tool-home.js';
@@ -1755,9 +1755,10 @@ export async function buildHookReadGateChecks(ctx: DoctorContext): Promise<Check
     const where = await locate(tool, 'hooks', install);
     // Only a hook file is gated; an adapter's directory is the tool's home.
     if (where.channel !== 'files' || !('format' in where) || where.readGates.length === 0) continue;
-    const own = writable(where);
-    if (own === null || !(await readFileSafe(own.path))?.includes(`teamai ${TEAMAI_HOOK_SUBCOMMANDS[0]}`)) continue;
-    checks.push(...await readGateChecks(where.readGates, { summary: `${own.path} holds teamai's hooks`, noun: 'hooks', names: [] }));
+    // A workspace's gates are on the project file it takes the team's hooks in, beside the user hooks.
+    const file = writable(where) === null ? null : workspaceHooksOf(where) ?? where.own;
+    if (file === null || !(await readFileSafe(file.path))?.includes(`teamai ${TEAMAI_HOOK_SUBCOMMANDS[0]}`)) continue;
+    checks.push(...await readGateChecks(where.readGates, { summary: `${file.path} holds teamai's hooks`, noun: 'hooks', names: [] }));
   }
   return checks;
 }

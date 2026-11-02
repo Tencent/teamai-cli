@@ -147,7 +147,9 @@ export type ReadGate =
    */
   | { readonly kind: 'pi-project-trust'; readonly config: string; readonly settings: string; readonly checkout: string }
   /** `config`: Muse's trust.json, whose entry for the real path of the checkout's git root decides. */
-  | { readonly kind: 'muse-workspace-trust'; readonly config: string; readonly checkout: string };
+  | { readonly kind: 'muse-workspace-trust'; readonly config: string; readonly checkout: string }
+  /** `config`: Copilot's config.json, whose `trustedFolders` covers the checkout or its main checkout. */
+  | { readonly kind: 'copilot-folder-trust'; readonly config: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -621,6 +623,8 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
       }
       case 'muse-workspace-trust':
         return { kind, config: rootsOf('muse', user, host).declared('home', '.config/muse/trust.json'), checkout: install.projectRoot };
+      case 'copilot-folder-trust':
+        return { kind, config: rootsOf('copilot', user, host).declared('home', '.copilot/config.json'), checkout: install.projectRoot };
       default: {
         const unhandled: never = kind;
         return unhandled;
@@ -1121,6 +1125,8 @@ async function locateHooks(tool: string, install: Install, host: Host): Promise<
     ...located,
     workspace: { kind: 'entry', path: file, key: HOOK_LIST_KEY },
     reads: located.reads === 'unknown' || reads === 'unknown' ? located.reads : [...located.reads, ...reads],
+    // The user hooks wait on nothing; these gate the project file.
+    readGates: await readGatesOf(hooks.workspace.readGates, install, host),
   };
 }
 

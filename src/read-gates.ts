@@ -8,7 +8,7 @@ import path from 'node:path';
 import type { ReadGate } from './locate.js';
 import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { realFilePath } from './git-exclude.js';
-import { readJsonObject } from './utils/fs.js';
+import { readFileSafe, readJsonObject, type JsonObjectRead } from './utils/fs.js';
 
 /**
  * What teamai holds in the gated place. `summary` opens the fix
@@ -30,6 +30,8 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return `Pi trusts this project, so it loads its team ${noun}`;
     case 'muse-workspace-trust':
       return `Muse Code trusts this project, so it loads its team ${noun}`;
+    case 'copilot-folder-trust':
+      return `Copilot CLI trusts this folder, so it loads its team ${noun}`;
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -49,6 +51,8 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       return piProjectTrust(gate, `${held.summary}, but Pi loads a project's ${held.noun} only in a trusted project`);
     case 'muse-workspace-trust':
       return museWorkspaceTrust(gate, `${held.summary}, but Muse Code loads a project's ${held.noun} only in a trusted workspace`);
+    case 'copilot-folder-trust':
+      return copilotFolderTrust(gate, `${held.summary}, but Copilot CLI loads a repository's ${held.noun} only in a trusted folder`);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -133,4 +137,50 @@ async function museWorkspaceTrust(gate: Extract<ReadGate, { kind: 'muse-workspac
     fix: `${cause}, and ${gate.config} has no decision for ${target}. Start \`muse\` in ${target} and choose "Trust and continue", `
       + `or ${grant}. Each worktree needs its own entry. Until then \`muse exec\` skips them.`,
   };
+}
+
+/**
+ * Copilot CLI 1.0.105: an entry of `trustedFolders` (or the older
+ * `trusted_folders`) covers its folder and every folder under it, by real
+ * path; a linked worktree takes its main checkout's trust. Copilot heads
+ * config.json with `//` comment lines.
+ */
+async function copilotFolderTrust(gate: Extract<ReadGate, { kind: 'copilot-folder-trust' }>, cause: string): Promise<ReadGateVerdict> {
+  const { resolveAnchors } = await import('./utils/git.js');
+  const root = await realFilePath(gate.checkout);
+  const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
+  const config = await readCommentedJsonObject(gate.config);
+  if (config.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${config.error})`, 'Copilot CLI');
+  const folders = config.kind === 'ok' ? [config.value.trustedFolders, config.value.trusted_folders].flatMap((list) => Array.isArray(list) ? list : []) : [];
+  for (const folder of folders) {
+    if (typeof folder !== 'string') continue;
+    const real = await realFilePath(folder);
+    if ([root, main].some((dir) => isAtOrUnder(dir, real))) return MET;
+  }
+  return {
+    met: false,
+    fix: `${cause}, and no folder in "trustedFolders" of ${gate.config} covers ${main}. Start \`copilot\` in ${main} and choose `
+      + `"Yes, and remember this folder for future sessions", or add ${JSON.stringify(main)} to "trustedFolders" in ${gate.config}. `
+      + 'Trusting the main checkout covers every worktree of it. Until then `copilot -p` skips them unless it runs with `--trust-folder`.',
+  };
+}
+
+function isAtOrUnder(dir: string, root: string): boolean {
+  const relative = path.relative(root, dir);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+/** A JSON object file that may open with `//` comment lines, as Copilot writes config.json. */
+async function readCommentedJsonObject(file: string): Promise<JsonObjectRead> {
+  const raw = await readFileSafe(file);
+  if (raw === null) return { kind: 'missing' };
+  const body = raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n');
+  try {
+    const value: unknown = JSON.parse(body);
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? { kind: 'ok', value: Object.fromEntries(Object.entries(value)) }
+      : { kind: 'invalid', error: 'not a JSON object' };
+  } catch (error) {
+    return { kind: 'invalid', error: error instanceof Error ? error.message : String(error) };
+  }
 }

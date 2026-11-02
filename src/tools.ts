@@ -122,7 +122,7 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
  * teamai wrote there: its trust in the project, or its approval of the
  * project's MCP servers. `read-gates.ts` evaluates each one.
  */
-export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust';
+export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust' | 'copilot-folder-trust';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -614,12 +614,13 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'copilot', reads: [{ base: 'home', path: '.copilot/mcp-config.json', evidence: 'verified' }] },
-      project: { format: 'copilot', reads: [{ base: 'project', path: '.github/mcp.json', when: 'workspaceUnder', evidence: 'verified' }] },
+      project: { format: 'copilot', reads: [{ base: 'project', path: '.github/mcp.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['copilot-folder-trust'] },
     },
     hooks: {
       user: { channel: 'settings', format: 'copilot', reads: [{ base: 'home', path: '.copilot/hooks/teamai.json', evidence: 'source' }] },
-      self: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }] },
-      workspace: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }] },
+      // Copilot 1.0.105 runs repo hooks only in a trusted folder (verified with `copilot -p`).
+      self: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['copilot-folder-trust'] },
+      workspace: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['copilot-folder-trust'] },
     },
     sessions: 'none',
     launch: 'copilot',

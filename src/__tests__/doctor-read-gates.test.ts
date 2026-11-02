@@ -264,4 +264,99 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(found?.fix).toContain(`${hooksFile} holds teamai's hooks`);
     });
   });
+  // Copilot CLI 1.0.105 keeps `trustedFolders` (and the older `trusted_folders`)
+  // in $COPILOT_HOME/config.json, a JSON file it heads with `//` comment lines.
+  // An entry covers its folder and every folder under it, by real path, and a
+  // linked worktree takes its main checkout's. Workspace MCP and repo hooks
+  // wait for it; `copilot -p` skips them.
+  describe('Copilot CLI folder trust', () => {
+    const MCP = 'Copilot CLI trusts this folder, so it loads its team MCP servers';
+    const configFile = (): string => path.join(homeDir, '.copilot', 'config.json');
+    const writeConfig = async (body: object): Promise<void> => {
+      await fse.outputFile(configFile(), `// User settings belong in settings.json.\n// This file is managed automatically.\n${JSON.stringify(body, null, 2)}\n`);
+    };
+
+    beforeEach(async () => {
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      await fse.ensureDir(path.join(homeDir, '.copilot'));
+      teamConfig.toolPaths = { copilot: { mcp: '.copilot/mcp-config.json', mcpProject: '.github/mcp.json' } };
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
+      await fse.outputJson(path.join(projectRoot, '.github', 'mcp.json'), { mcpServers: { issues: { type: 'local', command: 'issues-server', args: [], tools: ['*'] } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('copilot', true)]: [{ name: 'issues', hash: 'h' }] });
+    });
+
+    it('fails while no trusted folder covers the project, naming the folder to add', async () => {
+      await writeConfig({ firstLaunchAt: '2026-11-02T04:32:36.393Z' });
+
+      const found = await check(MCP);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${path.join(projectRoot, '.github', 'mcp.json')} holds team MCP servers (issues)`);
+      expect(found?.fix).toContain(`add "${projectRoot}" to "trustedFolders" in ${configFile()}`);
+    });
+
+    it.each([
+      ['the project', (): object => ({ trustedFolders: [projectRoot] })],
+      ['a folder above it', (): object => ({ trustedFolders: [tempDir] })],
+      ['the project, under the older key', (): object => ({ trusted_folders: [projectRoot] })],
+    ])('passes once config.json trusts %s', async (_label, body) => {
+      await writeConfig(body());
+
+      expect(await (await check(MCP))?.check()).toBe(true);
+    });
+
+    it('does not take a sibling folder that shares the name as a prefix', async () => {
+      await writeConfig({ trustedFolders: [`${projectRoot}-old`] });
+
+      expect(await (await check(MCP))?.check()).toBe(false);
+    });
+
+    it('passes in a linked worktree whose main checkout is trusted', async () => {
+      const git = (...args: string[]): void => {
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd: projectRoot });
+      };
+      git('commit', '-q', '--allow-empty', '-m', 'init');
+      const main = projectRoot;
+      const worktree = path.join(tempDir, 'web-app-review');
+      git('worktree', 'add', '-q', worktree);
+      Object.assign(localConfig, { projectRoot: worktree });
+      await fse.copy(path.join(main, '.github'), path.join(worktree, '.github'));
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), worktree), { [managedMcpManifestKey('copilot', true)]: [{ name: 'issues', hash: 'h' }] });
+      await writeConfig({ trustedFolders: [main] });
+
+      expect(await (await check(MCP))?.check()).toBe(true);
+    });
+
+    it('reads config.json from COPILOT_HOME', async () => {
+      const copilotHome = path.join(tempDir, 'copilot-home');
+      vi.stubEnv('COPILOT_HOME', copilotHome);
+      await writeConfig({ trustedFolders: [projectRoot] });
+
+      const found = await check(MCP);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(path.join(copilotHome, 'config.json'));
+    });
+
+    it('says the verdict is unknown when config.json does not parse', async () => {
+      await fse.outputFile(configFile(), '{ "trustedFolders": [\n');
+
+      const found = await check(MCP);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('whether Copilot CLI trusts this project is unknown');
+    });
+
+    it.each([
+      ['a workspace', { kind: 'git', localPath: '' }],
+      ['self mode', { kind: 'self', localPath: '' }],
+    ])('checks teamai\'s repo hooks in %s', async (_label, repo) => {
+      Object.assign(localConfig, { repo: { ...repo, localPath: repo.kind === 'self' ? projectRoot : repoPath, remote: 'owner/repo' } });
+      teamConfig.toolPaths = { copilot: { hooks: '.github/hooks/teamai.json' } };
+      const hooksFile = path.join(projectRoot, '.github', 'hooks', 'teamai.json');
+      await fse.outputJson(hooksFile, { version: 1, hooks: { sessionStart: [{ type: 'command', bash: 'teamai hook-dispatch session-start' }] } });
+      await writeConfig({});
+
+      const found = await check('Copilot CLI trusts this folder, so it loads its team hooks');
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${hooksFile} holds teamai's hooks`);
+    });
+  });
 });

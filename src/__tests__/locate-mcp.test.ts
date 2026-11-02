@@ -180,7 +180,8 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.copilot'],
     installed: { probe: '~/.copilot', met: true },
     reads: [{ at: '<root>/.github/mcp.json', key: ['mcpServers'], when: 'workspaceUnder' }],
-    source: 'Copilot CLI 1.0.98 mcp list, issue #1221 Matrix',
+    readGates: [{ kind: 'copilot-folder-trust', config: '~/.copilot/config.json', checkout: '<root>' }],
+    source: 'Copilot CLI 1.0.98 mcp list, issue #1221 Matrix; 1.0.105 mcp list shows workspace servers only in a trusted folder',
   },
   {
     tool: 'qoder', scope: 'user',
@@ -627,6 +628,7 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     existingDirs: ['<root>/.github/mcp.json'],
     installed: { probe: '~/.copilot', met: true },
     reads: [{ at: '<root>/.github/mcp.json', key: ['mcpServers'], when: 'workspaceUnder' }],
+    readGates: [{ kind: 'copilot-folder-trust', config: '~/.copilot/config.json', checkout: '<root>' }],
     source: 'Issue #628 Copilot existing MCP config install gate',
   },
   {
