@@ -77,10 +77,19 @@ describe('teamai digest --json', () => {
   beforeAll(async () => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-digest-json-e2e-')));
     const bare = path.join(root, 'team.git');
-    git(root, 'init', '-q', '--bare', bare);
+    git(root, 'init', '-q', '--bare', '-b', 'main', bare);
     commitBranch(root, bare, 'main', {
       'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`,
       'scorers/review-quality.md': SCORER,
+      'manifest/projects.yaml': 'version: 1\nprojects:\n  - id: infra\n    name: Infra\n    resources:\n      learnings: [k8s]\n',
+    });
+    const learning = (title: string, session?: string) => `---\ntitle: ${title}\n${session ? `session: { platform: claude-code, sessionId: ${session} }\n` : ''}---\n${title}.\n`;
+    commitBranch(root, bare, 'teamai-learnings', {
+      'learnings/pod-startup-timeouts-2026-10-24-k3x9q2.md': learning('Pod startup timeouts', '7c1e0000'),
+      'learnings/k8s/helm-values-2026-10-22-a8c1d0.md': learning('Helm values', '7c1e0000'),
+      'learnings/ops/pager-rota-2026-10-21-b7d2e1.md': learning('Pager rota', '7c1e0000'),
+      'learnings/unrelated-2026-10-20-c6e3f0.md': learning('Unrelated', 'ffff0000'),
+      'learnings/no-session-2026-10-19-d5f4a9.md': learning('No session'),
     });
     const labels = [
       sessionLabel('7c1e0000', { agent: agent('claude', { commit: START, dirty: false }) }),
@@ -103,7 +112,7 @@ describe('teamai digest --json', () => {
     git(app, 'init', '-q', '-b', 'main');
     fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = alice\n\temail = alice@example.com\n[url "file://${bare}"]\n\tinsteadOf = ${TEAM_URL}\n`);
     env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig') };
-    for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'workspace', '--force'], ['pull']]) {
+    for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'workspace', '--project', 'infra', '--force'], ['pull']]) {
       const result = await runCLI(command, app, env);
       expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
     }
@@ -137,6 +146,23 @@ describe('teamai digest --json', () => {
     ]);
     expect(failures[0]?.failure).toMatchObject({ author: 'bob', runMode: 'unattended', agent: { tool: { name: 'codex' } } });
     expect(result.stdout).not.toContain('rbe0c0000');
+  });
+
+  it('lists with each failing session the learnings that name it, namespaced ones it receives included, and none with a workflow pass', async () => {
+    const result = await runCLI(['digest', '--json'], app, env);
+    expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const failures = z.object({ data: z.object({ failures: z.array(z.object({ failure: z.object({ subject: z.record(z.string(), z.unknown()) }).passthrough(), learnings: z.array(z.object({ id: z.string(), path: z.string() })).optional() })) }) })
+      .parse(JSON.parse(result.stdout)).data.failures;
+    const [pass, judged, byHand, , dirty] = failures;
+    expect(pass && 'learnings' in pass).toBe(false);
+    expect(dirty?.learnings).toEqual([]);
+    expect(judged?.learnings?.map(({ id }) => id)).toEqual(['pod-startup-timeouts-2026-10-24-k3x9q2', 'k8s/helm-values-2026-10-22-a8c1d0']);
+    expect(byHand?.learnings).toEqual(judged?.learnings);
+    for (const { id, path: file } of judged?.learnings ?? []) {
+      expect(path.isAbsolute(file)).toBe(true);
+      expect(file.endsWith(path.join('learnings', `${id}.md`))).toBe(true);
+      expect(fs.readFileSync(file, 'utf8')).toContain('sessionId: 7c1e0000');
+    }
     expect(result.stdout.trim().split('\n')).toHaveLength(1);
   });
 });

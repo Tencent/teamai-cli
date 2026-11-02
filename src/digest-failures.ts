@@ -4,18 +4,61 @@
  * how it agrees with hand labels. It reads labels as the dashboard's Scorers page does, so a benchmark's labels are
  * left out, and it never reads a judge's reasoning, a prompt or a transcript.
  */
+import matter from 'gray-matter';
 import { detectProjectConfig, requireInit } from './config.js';
 import { readScorerLabels, rubricLabelsOf } from './dashboard/scorers.js';
-import { ScorerResults, type ScorerFailures } from './scorers/results.js';
+import { SessionSubjectSchema, type SessionSubject } from './scorers/label.js';
+import { ScorerResults, type Failure, type ScorerFailures } from './scorers/results.js';
 import type { LocalConfig } from './types.js';
+import { readFileSafe } from './utils/fs.js';
+import { indexableLearningsRoots, listLearningFiles } from './utils/learnings-roots.js';
+import { safeDeliveredLearningsNamespaces } from './workspace-children.js';
+
+/** A learning as a failure lists it: its id, its path under `learnings/` without `.md`, and the file it is read from. */
+export type LinkedLearning = { id: string; path: string };
+
+/** A failing session lists the learnings whose `session` names it, `[]` when none does; a workflow pass lists none. */
+export type DigestFailure = Failure & { learnings?: LinkedLearning[] };
+
+export type DigestFailuresView = Omit<ScorerFailures, 'failures'> & { failures: DigestFailure[] };
 
 /** The window failures are read over, in days of `scoredAt`: the dashboard's default. */
 const WINDOW_DAYS = 30;
 
-async function failures(config: LocalConfig, now = new Date()): Promise<ScorerFailures> {
+const sessionKey = ({ platform, sessionId }: SessionSubject) => `${platform}\0${sessionId}`;
+
+/**
+ * The learnings each session names in its frontmatter `session`, by session: every learning recall reads in this
+ * scope, the namespaces it receives included, each id once, the first root holding it winning.
+ */
+async function learningsBySession(config: LocalConfig): Promise<Map<string, LinkedLearning[]>> {
+  const [roots, namespaces] = await Promise.all([indexableLearningsRoots(config), safeDeliveredLearningsNamespaces(config, 'digest')]);
+  const bySession = new Map<string, LinkedLearning[]>();
+  for (const { file, absPath } of await listLearningFiles(roots, namespaces)) {
+    let data: unknown;
+    try {
+      ({ data } = matter(await readFileSafe(absPath) ?? ''));
+    } catch {
+      continue;
+    }
+    const session = SessionSubjectSchema.safeParse(typeof data === 'object' && data !== null && 'session' in data ? data.session : undefined);
+    if (!session.success) continue;
+    const linked = { id: file.split(/[\\/]/).join('/').replace(/\.md$/, ''), path: absPath };
+    bySession.set(sessionKey(session.data), [...bySession.get(sessionKey(session.data)) ?? [], linked]);
+  }
+  return bySession;
+}
+
+async function failures(config: LocalConfig, now = new Date()): Promise<DigestFailuresView> {
   const labels = await readScorerLabels(config);
-  const rubricLabels = await rubricLabelsOf(config, labels.map(({ label }) => label));
-  return ScorerResults.failures({ labels, windowDays: WINDOW_DAYS, now, rubricLabels });
+  const [rubricLabels, learnings] = await Promise.all([rubricLabelsOf(config, labels.map(({ label }) => label)), learningsBySession(config)]);
+  const view = ScorerResults.failures({ labels, windowDays: WINDOW_DAYS, now, rubricLabels });
+  return {
+    ...view,
+    failures: view.failures.map((entry) => (entry.failure.source === 'session'
+      ? { ...entry, learnings: learnings.get(sessionKey(entry.failure.subject)) ?? [] }
+      : entry)),
+  };
 }
 
 /** Prints the digest's JSON envelope on stdout, and only that. */
