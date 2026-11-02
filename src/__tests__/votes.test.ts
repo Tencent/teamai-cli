@@ -109,6 +109,31 @@ describe('loadUserVotes', () => {
     expect(result.deltas).toEqual({});
   });
 
+  it('saves a v2 file with its keys in the order they were read', async () => {
+    const filePath = path.join(tmpDir, 'user.yaml');
+    // A stage adds pendingSync to a file with no ledger; a later upvote appends upvotedSessions.
+    const content = [
+      'version: 2',
+      'votes: {}',
+      'deltas: {}',
+      'pendingSync:',
+      '  syncId: sync-1',
+      '  deltas: {}',
+      'upvotedSessions:',
+      '  session-1:',
+      '    docIds:',
+      '      - doc-a',
+      '    ts: 2026-06-01T00:00:00Z',
+      '    firstTs: 2026-06-01T00:00:00Z',
+      '',
+    ].join('\n');
+    fs.writeFileSync(filePath, content);
+
+    await saveUserVotes(filePath, await loadUserVotes(filePath));
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(content);
+  });
+
   it('auto-migrates v1 file on read', async () => {
     const v1: UserVotes = { votes: { 'doc-x': { at: '2026-06-01T00:00:00Z' } } };
     const filePath = path.join(tmpDir, 'user.yaml');

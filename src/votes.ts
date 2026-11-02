@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { parseYaml } from './utils/yaml.js';
 
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
+import { isJsonObject, type JsonValue } from './types.js';
 import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
 import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -181,7 +182,7 @@ async function parseUserVotes(votePath: string): Promise<{ data: UserVotesV2; mi
  * as {@link readUserVotes}.
  */
 function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: boolean } | null {
-  let parsed: unknown;
+  let parsed: JsonValue;
 
   try {
     parsed = parseYaml(content);
@@ -193,10 +194,11 @@ function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: 
   // parse builds fresh objects, so a writer incrementing the live counters
   // leaves the receipt alone.
   // The version decides the format: a v2 file that does not parse is never migrated as v1, which would reset its counters.
-  if (DeclaresV2Schema.safeParse(parsed).success) {
+  if (isJsonObject(parsed) && DeclaresV2Schema.safeParse(parsed).success) {
     const v2 = UserVotesV2Schema.safeParse(parsed);
 
-    return v2.success ? { data: v2.data, migrated: false } : null;
+    // Spread over the file's own keys, so a save writes them back in the order they were read.
+    return v2.success ? { data: { ...parsed, ...v2.data }, migrated: false } : null;
   }
 
   const v1 = UserVotesSchema.safeParse(parsed);
