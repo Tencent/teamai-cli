@@ -34,8 +34,8 @@ afterEach(() => {
   }
 });
 
-describe('all 14 placeable resource types and namespace axis mapping', () => {
-  it('covers all 14 distributed resource types in PLACEABLE_TYPES', () => {
+describe('all 15 placeable resource types and namespace axis mapping', () => {
+  it('covers all 15 distributed resource types in PLACEABLE_TYPES', () => {
     const expected = [
       'skills',
       'rules',
@@ -51,6 +51,7 @@ describe('all 14 placeable resource types and namespace axis mapping', () => {
       'workflows',
       'prompts',
       'scorers',
+      'benchmarks',
     ];
     expect([...PLACEABLE_TYPES].sort()).toEqual(expected.sort());
     for (const t of expected) {
@@ -73,6 +74,7 @@ describe('all 14 placeable resource types and namespace axis mapping', () => {
     expect(NAMESPACE_AXIS.workflows).toBe('workflows');
     expect(NAMESPACE_AXIS.prompts).toBe('prompts');
     expect(NAMESPACE_AXIS.scorers).toBe('scorers');
+    expect(NAMESPACE_AXIS.benchmarks).toBe('benchmarks');
   });
 });
 
@@ -93,6 +95,9 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
       // review --branch fails any other file under scorers/ but README.md.
       { type: 'scorers', path: 'scorers/accuracy.md', shared: true },
       { type: 'scorers', path: 'scorers/team-a/accuracy.md', shared: false },
+      // A suite is a directory: an undeclared benchmarks/<dir>/ is a shared suite.
+      { type: 'benchmarks', path: 'benchmarks/fix/suite.yaml', shared: true },
+      { type: 'benchmarks', path: 'benchmarks/team-a/fix/suite.yaml', shared: true },
       { type: 'models', path: 'models/config.json', shared: true },
       { type: 'models', path: 'models/team-a/config.json', shared: false },
       { type: 'wiki', path: 'wiki/home.md', shared: true },

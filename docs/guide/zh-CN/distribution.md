@@ -101,7 +101,7 @@ sharing:
 .teamai/mcp/mcp.yaml
 ```
 
-`teamai push` 发送所有分布式资源类型——skills、rules、agents、docs、env、hooks、mcp、models、claudemd、learnings、wiki、workflows、prompts、scorers——并按 `--project` 和 `--role` 做命名空间放置。
+`teamai push` 发送所有分布式资源类型——skills、rules、agents、docs、env、hooks、mcp、models、claudemd、learnings、wiki、workflows、prompts、scorers、benchmarks——并按 `--project` 和 `--role` 做命名空间放置。
 
 ### Git 权限
 
@@ -154,6 +154,8 @@ scripts:
 项目是正在做的服务。在当前目录设成这个项目后，会再收到项目上声明的资源。
 
 `knowledge` 包含 rules 和共享指令（`claudemd/`）。项目还可以单独声明 learnings、env、hooks、mcp、models、docs、wiki。
+
+基准测试套件按 `resources.benchmarks` 分发。`benchmarks/<suite>/` 发给所有人。某个角色或项目列出 `<ns>` 后，`benchmarks/<ns>/<suite>/` 只发给激活了 `<ns>` 的成员，`benchmarks/<ns>/` 下放套件，不能直接放 `suite.yaml`。
 
 ```yaml
 # manifest/roles.yaml

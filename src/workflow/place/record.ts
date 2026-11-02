@@ -23,10 +23,24 @@ const WriterRoleSchema = z.object({
 });
 
 /**
+ * A lease in the clone `workspace.clone` names, which commits there from `rangeFrom` and is never pushed. `created` when
+ * this attempt made the clone, so giving the attempt up gives the clone up too. Git there runs without `withhold`, and
+ * stops at `expiresAt`.
+ */
+const CloneRoleSchema = z.object({
+  role: z.literal('clone'),
+  workspace: WorkspaceContractSchema,
+  rangeFrom: z.string(),
+  withhold: z.array(z.string()),
+  created: z.literal(true).optional(),
+  expiresAt: z.string().optional(),
+});
+
+/**
  * How the attempt uses its place. The snapshot a reader is checked against is `before.json` beside the record, and the
  * branch's agent files kept while the base overlay is in place are in `overlay/`.
  */
-const PlaceRoleSchema = z.discriminatedUnion('role', [CheckoutRoleSchema, ReaderRoleSchema, WriterRoleSchema]);
+const PlaceRoleSchema = z.discriminatedUnion('role', [CheckoutRoleSchema, ReaderRoleSchema, WriterRoleSchema, CloneRoleSchema]);
 
 /** What finishing a place made of the step's end, masked: the report the attempt settles with. */
 export const PlaceFinishedSchema = z.object({

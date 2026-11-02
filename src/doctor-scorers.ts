@@ -11,7 +11,8 @@ import { RUN_MODES } from './launch-context.js';
 import { SessionPolicy, type PolicySource } from './session-flow/session-policy.js';
 import type { LocalConfig } from './types.js';
 import { isSilent, setSilent } from './utils/logger.js';
-import { formatUnknownScorer, syncWorkflowDefinitions } from './workflow/cache.js';
+import { syncTeamDefinitions } from './benchmark/suite-cache.js';
+import { formatUnknownScorer } from './workflow/cache.js';
 
 /** What scoring in this scope follows: its isolation, what decides session judging, and the problems with its settings. */
 async function scoringNotes(localConfig: LocalConfig, verified: readonly string[]): Promise<string[]> {
@@ -76,7 +77,7 @@ export async function scorerNotes(localConfig: LocalConfig, { resolveTool }: { r
   const wasSilent = isSilent();
   setSilent(true);
   try {
-    const result = await syncWorkflowDefinitions(localConfig, { dryRun: true });
+    const result = await syncTeamDefinitions(localConfig, { dryRun: true });
     const scored = result.scorers.cached.length > 0;
     const unavailable = scored ? scoringUnavailable(localConfig) : undefined;
     return [

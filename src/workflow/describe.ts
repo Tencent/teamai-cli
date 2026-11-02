@@ -1,6 +1,6 @@
 import { sameEnvName } from '../resources/env-key.js';
-import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type Missing, type Requirements, type Setup } from './requirements.js';
-import type { Invoke, OutputSchema, WorkflowDefinition, WorkflowSource, WorkflowStep } from './types.js';
+import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
+import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
 import { opensCopy, resolveMode, runsInCheckout } from './workspace.js';
 
 /**
@@ -39,7 +39,8 @@ function guardsOf(step: WorkflowStep, steps: WorkflowStep[], prefix: string): Ga
   if (step.command !== undefined) return { kind: 'command', line: commandLine(step.command) };
   if (step.interactive) return { kind: 'interactive' };
   if (step.prompt !== undefined || step.promptFile !== undefined) return { kind: 'prompt' };
-  if (step.workflow !== undefined) return { kind: 'workflow', ...(typeof step.workflow === 'string' ? { name: step.workflow } : {}) };
+  const child = stepWorkflow(step);
+  if (child) return { kind: 'workflow', ...(child.kind === 'named' ? { name: child.name } : {}) };
   if (step.end !== undefined) return { kind: 'end', end: step.end, ...(prefix !== '' ? { workflow: prefix.slice(0, -1) } : {}) };
   return { kind: 'none', waiting: steps.filter((other) => other.needs?.includes(step.id)).map((other) => `${prefix}${other.id}`) };
 }
@@ -60,8 +61,8 @@ export interface WorkflowDescription {
     /** Interactive prompt steps, by path: a person works in them with the agent. */
     interactive: string[];
     /**
-     * Prompt steps, by path, whose child runs a model resolved for the session's tool: the step's `model`, or the
-     * `defaults.model` in effect for a step that names no `agent`.
+     * Prompt steps, by path, whose child runs a model resolved for the session's tool: the step's `model` as written,
+     * or the `defaults.model` in effect for a step that names no `agent` or model. An exact model resolves for no tool.
      */
     modeled: string[];
     /** The most steps a run may have leased at once, at most `ceiling`. */
@@ -87,9 +88,9 @@ export interface WorkflowDescription {
     budgets: Array<{ step?: string; tokens: number }>;
     /**
      * Each step that runs a command or a prompt, by path, with what the machine that runs it needs: the `requires.env`
-     * keys of the step and its setup, and the agent of a prompt step, whose tool the driver picks.
+     * keys of the step and its setup, and the agent and `tool` of a prompt step, from which the driver picks its tool.
      */
-    runs: Array<{ step: string; executor: 'command' | 'prompt'; env: string[]; agent?: string }>;
+    runs: Array<{ step: string; executor: 'command' | 'prompt'; env: string[]; agent?: string; tool?: string }>;
     /** Steps the describing driver is held from, by path, with what it lacks, and the `requires.env` keys they need. */
     held: Array<{ step: string; missing: Missing[]; env: string[] }>;
     localRoute?: LocalRoute;
@@ -101,7 +102,7 @@ interface Scope {
   prefix: string;
   /** The workflow steps around it, outermost first. */
   ancestors: WorkflowStep[];
-  requires: Requirements;
+  requires: InEffect;
   budgeted: boolean;
   setup?: Setup;
   /** The step that opened the copy its steps work in, by path. */
@@ -114,7 +115,7 @@ interface Scope {
 function writes(step: WorkflowStep, ancestors: WorkflowStep[], childOf: (step: WorkflowStep) => { steps: WorkflowStep[] } | undefined): boolean {
   const child = childOf(step);
   if (child) return child.steps.some((inner) => writes(inner, [...ancestors, step], childOf));
-  return (step.prompt !== undefined || step.promptFile !== undefined || step.workspace === 'new' || step.workspace === 'continue') && resolveMode(step, ancestors) !== 'read-only';
+  return (step.prompt !== undefined || step.promptFile !== undefined || (step.workspace !== undefined && step.workspace !== 'read-only')) && resolveMode(step, ancestors) !== 'read-only';
 }
 
 /**
@@ -141,18 +142,22 @@ export function describeWorkflow(input: {
   };
   /** By the step that opened each copy: whether the driver takes a step in it, and the first step in it the driver is held from. */
   const copies = new Map<string, { taken: boolean; held?: { step: string; missing: LocalRoute['missing'] } }>();
-  const childOf = (step: WorkflowStep): { steps: WorkflowStep[] } | undefined => (typeof step.workflow === 'string' ? workflows[step.workflow] : step.workflow);
+  // Before a run, a `from` step's workflow does not exist yet.
+  const childOf = (step: WorkflowStep): { steps: WorkflowStep[] } | undefined => workflowRunBy({ workflows }, step, '');
   /** As the engine's `offerTerms` asks `negotiate`, so describe holds exactly what `next` would hold. */
   const offer = (step: WorkflowStep, path: string, scope: Scope): void => {
     const hasContract = !runsInCheckout(step, scope.ancestors);
     const requires = mergeRequirements(scope.requires, step.requires);
     const executor = step.command !== undefined ? 'command' : 'prompt';
     const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
-    facts.runs.push({ step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])], ...(executor === 'prompt' && step.agent !== undefined ? { agent: step.agent } : {}) });
+    facts.runs.push({ step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])], ...(executor === 'prompt' && step.agent !== undefined ? { agent: step.agent } : {}), ...(executor === 'prompt' && step.tool !== undefined ? { tool: step.tool } : {}) });
     const negotiation = negotiate({
-      step: path, executor, requires,
+      // Whether the driver calls next --prepare is not part of its can: a step in a clone is described as a driver with clone takes it.
+      step: path, executor, requires, prepare: false, clone: false,
       interactive: step.interactive === true, hasContract, envKeys: Object.keys(step.env ?? {}), runEnvKeys, budgeted: step.prompt !== undefined && scope.budgeted,
       ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}), ...(hasContract && scope.setup ? { setup: scope.setup } : {}),
+      ...(step.tool !== undefined ? { tool: step.tool } : {}),
+      unattended: step.permissions === 'unattended',
     }, can, allow, env);
     if (negotiation.kind === 'hold') facts.held.push({ step: path, missing: negotiation.missing, env: requires.env ?? [] });
     if (scope.copy === undefined || negotiation.kind === 'fail') return;
@@ -190,7 +195,7 @@ export function describeWorkflow(input: {
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
       if (step.interactive) facts.interactive.push(path);
-      if ((step.prompt !== undefined || step.promptFile !== undefined) && (step.model !== undefined || (step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
+      if ((step.prompt !== undefined || step.promptFile !== undefined) && (typeof step.model === 'string' || (step.model === undefined && step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
       if (step.scorers && step.scorers.names.length > 0) facts.scored.push({ step: path, scorers: step.scorers.names });
       if (step.deliver === 'pr') {
         const seen = new Set<string>();
@@ -200,7 +205,8 @@ export function describeWorkflow(input: {
       }
       let own = 0;
       if (child) {
-        const named = typeof step.workflow === 'string' ? workflows[step.workflow] : undefined;
+        const runs = stepWorkflow(step);
+        const named = runs?.kind === 'named' ? workflows[runs.name] : undefined;
         const setup = named?.setup ?? scope.setup;
         const defaultModel = named?.defaults?.model ?? scope.defaultModel;
         const limits = [step.forEach ? undefined : step.budget, named?.budget].flatMap((budget) => (budget ? [budget.tokens] : []));
@@ -216,6 +222,15 @@ export function describeWorkflow(input: {
       } else if (step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined) {
         own = 1;
         offer(step, path, scope);
+      } else if (stepWorkflow(step)?.kind === 'from') {
+        // Its workflow does not exist yet, but every step of it inherits what this one requires: a driver that lacks
+        // that is held from the step itself, as from a step that runs in a copy of its own.
+        const requires = mergeRequirements(scope.requires, step.requires);
+        const negotiation = negotiate({
+          step: path, executor: 'command', requires, prepare: true, clone: false,
+          interactive: false, hasContract: true, envKeys: [], runEnvKeys, budgeted: false, unattended: false,
+        }, can, allow, env);
+        if (negotiation.kind === 'hold') facts.held.push({ step: path, missing: negotiation.missing, env: requires.env ?? [] });
       }
       const level = Math.max(-1, ...(step.needs ?? []).map((need) => levels.get(need) ?? -1)) + 1;
       levels.set(step.id, level);
@@ -223,11 +238,13 @@ export function describeWorkflow(input: {
     }
     return Math.max(0, ...widths.map((width) => width ?? 0));
   };
-  facts.width = Math.min(ceiling, visit(definition.steps, {
+  const top: Scope = {
     prefix: '', ancestors: [], requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
     ...(definition.setup ? { setup: definition.setup } : {}),
     ...(definition.defaults?.model !== undefined ? { defaultModel: definition.defaults.model } : {}),
-  }));
+  };
+  // The finally steps run under the same scope once the steps settled, never beside them.
+  facts.width = Math.min(ceiling, Math.max(visit(definition.steps, top), visit(definition.finally ?? [], top)));
   const route = [...copies].find(([, copy]) => copy.taken && copy.held);
   if (route?.[1].held) facts.localRoute = { opener: route[0], held: route[1].held.step, missing: route[1].held.missing };
   const { name, description, alias, invoke, inputs } = definition;

@@ -316,9 +316,9 @@ async function dirExists(p: string): Promise<boolean> {
   }
 }
 
-/** Root dir holding every project partition: `~/.teamai/projects`. */
-export function projectsRootDir(): string {
-  return path.join(getUserHome(), '.teamai', 'projects');
+/** Root dir holding every project partition: `~/.teamai/projects`, or the one under `home`. */
+export function projectsRootDir(home = getUserHome()): string {
+  return path.join(home, '.teamai', 'projects');
 }
 
 /**

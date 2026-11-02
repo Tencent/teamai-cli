@@ -2,7 +2,8 @@
  * Real CLI: what a step requires reaches it, and nothing else does. A secret a step prints stays out of the run file,
  * the record, and the JSON the CLI prints; a missing key fails before the step runs; a step past its timeout ends
  * `timeout`; setup that leaves its key in `.npmrc` fails `setup_secret` before the step runs; a network requirement
- * the local driver cannot enforce is recorded as unenforced.
+ * the local driver cannot enforce is recorded as unenforced; a strict sandbox starts only on a declared sandbox, and
+ * keeps the member's credentials from the step.
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -18,6 +19,7 @@ const CLI = path.join(ROOT, 'dist', 'index.js');
 const SAFETY_TOKEN = 'fixture-workflow-safety-token-1082';
 const OTHER_TOKEN = 'fixture-workflow-other-token-1082';
 const SETUP_TOKEN = 'fixture-workflow-setup-token-1082';
+const GH_TOKEN = 'fixture-workflow-gh-token-1082';
 
 const EnvelopeSchema = z.object({ data: z.record(z.string(), z.unknown()).optional(), error: z.object({ code: z.string(), message: z.string() }).optional() });
 const DoneSchema = z.object({ data: z.object({ done: z.object({ run: z.string() }) }) });
@@ -106,6 +108,7 @@ describe('workflow requirements and limits (real CLI, #1082)', () => {
       WORKFLOW_SAFETY_TOKEN: SAFETY_TOKEN,
       WORKFLOW_OTHER_TOKEN: OTHER_TOKEN,
       WORKFLOW_SETUP_TOKEN: SETUP_TOKEN,
+      GH_TOKEN,
       GIT_AUTHOR_NAME: 'Fixture',
       GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
       GIT_COMMITTER_NAME: 'Fixture',
@@ -165,6 +168,12 @@ steps:
     requires: { network: false }
     command: node -e 'process.exit(0)'
 `);
+    workflow('sealed', `description: Run a step only in a sandbox.
+steps:
+  - id: sealed
+    requires: { isolation: sandbox, strict: true }
+    command: node -e 'require("fs").writeFileSync(${JSON.stringify(path.join(markers, 'sealed'))}, "ran"); console.log(JSON.stringify({gh:process.env.GH_TOKEN??null}))'
+`);
     const pulled = teamai('pull');
     expect(pulled.status, pulled.stderr).toBe(0);
   });
@@ -216,6 +225,23 @@ steps:
     const runId = runOf(started.stdout);
     expect(step(runId)).toMatchObject({ status: 'succeeded', unenforced: [{ requirement: 'network', asked: false }] });
     expect(JSON.parse(endRecord(runId))).toMatchObject({ steps: [{ step: 'offline', unenforced: [{ requirement: 'network', asked: false }] }] });
+  });
+
+  it('refuses to start a strict sandbox step on the local driver of a machine not declared a sandbox', () => {
+    const started = teamai('workflow', 'start', 'sealed', '--driver', 'local');
+    expect(started.status).toBe(1);
+    expect(envelope(started.stdout)).toEqual({ error: {
+      code: 'requirement_unmet',
+      message: 'Step "sealed" requires strict isolation, and the local driver here is not a sandbox. Run it in CI or a container, and declare it with --sandbox or workflows.sandbox: true.',
+    } });
+    expect(fs.existsSync(path.join(markers, 'sealed'))).toBe(false);
+  });
+
+  it('runs a strict sandbox step with --sandbox, keeping the member\'s credentials from it', () => {
+    const started = teamai('workflow', 'start', 'sealed', '--driver', 'local', '--sandbox');
+    expect(started.status, started.stderr).toBe(0);
+    const runId = runOf(started.stdout);
+    expect(step(runId)).toMatchObject({ status: 'succeeded', outputs: { gh: null } });
   });
 
   it('printed no secret value in any command output', () => {

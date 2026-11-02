@@ -3,9 +3,10 @@ import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import { RunModeSchema } from '../launch-context.js';
 import { WorkOutcomeSchema } from '../outcomes.js';
+import { JudgeUsageSchema } from '../scorers/label.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema } from './pr-url.js';
-import { UnenforcedSchema } from './requirements.js';
+import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
 import type { RunState, StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
@@ -45,7 +46,8 @@ const LeaseSessionSchema = SessionRefSchema.extend({ earlier: z.array(SessionRef
 
 const LeaseSchema: z.ZodType<StepLease> = z.object({
   attempt: z.string(), revision: z.number(), driver: DriverSchema, session: LeaseSessionSchema.optional(),
-  unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(), runMode: RunModeSchema.optional(),
+  unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(), leasedAt: z.string().optional(), runMode: RunModeSchema.optional(),
+  limits: TurnLimitsSchema.optional(),
 });
 
 export const ChangesSchema = z.object({
@@ -72,6 +74,10 @@ const report = {
   model: z.string().optional(),
   session: z.string().optional(),
   tokens: TokenUsageSchema.optional(),
+  /** Milliseconds around the tool launch only, as the driver measured it. */
+  durationMs: z.number().int().nonnegative().optional(),
+  /** What the tool stated the attempt cost, in its own unit. */
+  cost: JudgeUsageSchema.shape.cost,
   changes: ChangesSchema.optional(),
   read: ReadSchema.optional(),
   /**
@@ -89,6 +95,8 @@ const report = {
   runMode: RunModeSchema.optional(),
   /** What the attempt's own commands appended to its outcome file, such as a learning `contribute` recorded (#1387). */
   outcomes: z.array(WorkOutcomeSchema).optional().catch(undefined),
+  /** The limit that ended the prompt's turn under `on_limit: end_turn`. */
+  limit: LimitSchema.optional(),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 'cancelled']);
@@ -192,7 +200,11 @@ const WaitingSchema = StepBaseSchema.extend({ status: z.literal('waiting') });
  * `expiresAt`: when the step's `timeout`, or that of the workflow file it runs, ends it. `limitsFrom`: where the budget of
  * the workflow it runs counts from. Both are set when it starts.
  */
-const RunningSchema = StepBaseSchema.extend({ status: z.literal('running'), expiresAt: z.string().optional(), limitsFrom: LimitsFromSchema.optional() });
+const RunningSchema = StepBaseSchema.extend({
+  status: z.literal('running'), expiresAt: z.string().optional(), limitsFrom: LimitsFromSchema.optional(),
+  /** Under `on_limit: end_turn`: a prompt inside reached a limit its allowance set, so the allowance is spent. */
+  allowanceSpent: z.literal(true).optional(),
+});
 /** `delivering`: the agent succeeded and its work is on its branch; dependents wait until that branch has its pull request. */
 const DeliveringSchema = StepBaseSchema.extend({ status: z.literal('delivering'), ...settledFields, delivery: DeliverySchema });
 const SucceededSchema = StepBaseSchema.extend({
@@ -547,7 +559,9 @@ export function settled(step: StepState | undefined): step is Extract<StepState,
 /**
  * Stops every open step whose path `under` matches, in sub-workflows too: a leased step is cancelled and its attempt
  * stopped at `now` (`stopAttempt`), a running workflow step is cancelled, and a pending or waiting step is skipped. Used
- * by an end or break, cancel and retry, each with its own failure. Returns the ids this walk changed.
+ * by an end or break, cancel and retry, each with its own failure. While the run's `finally` steps run, only a cancel or
+ * the deadline stops them, and one not started yet is cancelled too: it was ended, not passed over. Returns the ids this
+ * walk changed.
  */
 export function stopWhere(run: RunState, under: (id: string) => boolean, failure: WorkflowFailure, settledAt: number, now: string): string[] {
   const changed: string[] = [];
@@ -557,7 +571,8 @@ export function stopWhere(run: RunState, under: (id: string) => boolean, failure
     switch (state.status) {
       case 'pending':
       case 'waiting':
-        skip(state, settledAt);
+        if (run.finalizing) cancel(state, failure, settledAt);
+        else skip(state, settledAt);
         break;
       case 'running':
       case 'delivering':

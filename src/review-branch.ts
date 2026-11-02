@@ -16,7 +16,7 @@
  * scanners (`scanTeamForPull`), the same manifest loaders, the same
  * `NAMESPACE_AXIS` mapping, the same agent parser and the same secret
  * scrubber — so a branch this command calls clean is one pull reads the same
- * way. Workflow and scorer files reuse `syncWorkflowDefinitions` with dry-run
+ * way. Workflow and scorer files reuse `syncTeamDefinitions` with dry-run
  * and an empty data home, and that check does not update this machine's
  * caches. It deliberately does not re-implement any of that.
  */
@@ -53,10 +53,11 @@ import { isIgnored, listFilesRecursive, pathExists, readFileIfExists, writeFile,
 import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
-import { formatUnknownScorer, loadCachedWorkflow, loadWorkflowTree, syncWorkflowDefinitions } from './workflow/cache.js';
+import { syncTeamDefinitions } from './benchmark/suite-cache.js';
+import { formatUnknownScorer, loadCachedWorkflow, loadWorkflowTree, type UnknownScorer } from './workflow/cache.js';
 import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow } from './workflow/parse.js';
 import { stepModelUnavailableText } from './workflow/step-model.js';
-import type { WorkflowDefinition, WorkflowStep } from './workflow/types.js';
+import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './workflow/types.js';
 import { formatScorerDiagnostic } from './scorers/definition.js';
 import { scorerModelUnavailableText } from './scorers/judge-model.js';
 import { loadCachedScorer, SCORING_FILE, syncScorerDefinitions, type CachedScorer } from './scorers/cache.js';
@@ -974,17 +975,36 @@ function reviewTreeConfig(repoDir: string, dataHome: string): LocalConfig {
   return { ...parsed, dataHome };
 }
 
-/** Invalid workflow and scorer files, and scorers a step lists that do not exist. Dry-run, so the call does not write a cache. */
-async function workflowFindings(repoDir: string): Promise<Finding[]> {
+/**
+ * Invalid workflow and scorer files, and scorers a step lists that do not exist. Dry-run, so the call does not write a
+ * cache. A workflow file any selection's pull rejects is one finding per message, however many selections receive it.
+ * A scorer is missing when no selection receives a valid scorer of that name: one selection's scorer may be another's gap.
+ */
+async function workflowFindings(repoDir: string, received: readonly Received[]): Promise<Finding[]> {
   const dataHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-workflows-'));
   const wasSilent = isSilent();
   setSilent(true);
   try {
-    const result = await syncWorkflowDefinitions(reviewTreeConfig(repoDir, dataHome), {
+    const result = await syncTeamDefinitions(reviewTreeConfig(repoDir, dataHome), {
       dryRun: true,
       everyNamespace: true,
       scopeLabel: 'review',
     });
+    const invalid = new Map<string, Finding>();
+    for (const diagnostic of [result, ...received].flatMap((sync) => sync.invalid)) {
+      const message = formatDiagnostic(diagnostic);
+      const key = JSON.stringify([diagnostic.file, message]);
+      if (!invalid.has(key)) invalid.set(key, { level: 'fail', check: 'workflows', path: diagnostic.file, message });
+    }
+    const known = new Set(received.flatMap((sync) => sync.scorers.map((scorer) => scorer.definition.name)));
+    const unknownScorers = new Map<string, Finding>();
+    for (const unknown of [result, ...received].flatMap((sync) => sync.unknownScorers)) {
+      if (known.has(unknown.scorer)) continue;
+      const message = formatUnknownScorer(unknown);
+      const key = JSON.stringify([unknown.file, message]);
+      // Pull runs such a step without the scorer; a branch under review should not ship the gap.
+      if (!unknownScorers.has(key)) unknownScorers.set(key, { level: 'fail', check: 'workflows', path: unknown.file, message });
+    }
     return [
       ...result.scorers.invalid.map((diagnostic): Finding => ({
         level: 'fail',
@@ -992,19 +1012,8 @@ async function workflowFindings(repoDir: string): Promise<Finding[]> {
         path: diagnostic.file,
         message: formatScorerDiagnostic(diagnostic),
       })),
-      ...result.invalid.map((diagnostic): Finding => ({
-        level: 'fail',
-        check: 'workflows',
-        path: diagnostic.file,
-        message: formatDiagnostic(diagnostic),
-      })),
-      // Pull runs such a step without the scorer; a branch under review should not ship the gap.
-      ...result.unknownScorers.map((unknown): Finding => ({
-        level: 'fail',
-        check: 'workflows',
-        path: unknown.file,
-        message: formatUnknownScorer(unknown),
-      })),
+      ...invalid.values(),
+      ...unknownScorers.values(),
       // Each still starts by name; the alias starts nothing, or another workflow.
       ...result.aliasConflicts.map((diagnostic): Finding => ({
         level: 'fail',
@@ -1092,33 +1101,41 @@ function promptSteps(
 ): Array<{ path: string; step: WorkflowStep; defaultModel: string | undefined }> {
   return definition.steps.flatMap((step) => {
     const stepPath = `${prefix}${step.id}`;
-    if (typeof step.workflow === 'object') return promptSteps(step.workflow, workflows, defaultModel, `${stepPath}.`, inherited);
-    if (step.workflow !== undefined) {
-      const runs: WorkflowDefinition | undefined = workflows[step.workflow];
+    const child = stepWorkflow(step);
+    if (child?.kind === 'inline') return promptSteps(child.workflow, workflows, defaultModel, `${stepPath}.`, inherited);
+    if (child?.kind === 'named') {
+      const runs: WorkflowDefinition | undefined = workflows[child.name];
       return runs && runs.defaults?.model === undefined && defaultModel !== undefined
         ? promptSteps(runs, workflows, defaultModel, `${stepPath}.`, true)
         : [];
     }
+    // What a `from` step runs exists only once its run admits it.
+    if (child?.kind === 'from') return [];
     if (step.prompt === undefined && step.promptFile === undefined) return [];
     return inherited && step.model !== undefined ? [] : [{ path: stepPath, step, defaultModel }];
   });
 }
 
 /**
- * The workflow files `config` runs, each with the workflow files it runs, as pull caches them and start loads them, and
- * the scorers it receives, as pull caches them.
+ * The workflow files `config` runs, each with the workflow files it runs, as pull caches them and start loads them, the
+ * scorers it receives, as pull caches them, and the workflow files its pull rejects.
  */
-async function receivedDefinitions(config: LocalConfig): Promise<{
+interface Received {
   workflows: Array<{ relativePath: string; definition: WorkflowDefinition; workflows: Record<string, WorkflowDefinition> }>;
   scorers: CachedScorer[];
-}> {
+  invalid: WorkflowDiagnostic[];
+  unknownScorers: UnknownScorer[];
+}
+
+async function receivedDefinitions(config: LocalConfig): Promise<Received> {
   const dataHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-models-'));
   const scratch = { ...config, dataHome };
   const wasSilent = isSilent();
   setSilent(true);
   try {
     const workflows = [];
-    for (const name of (await syncWorkflowDefinitions(scratch)).cached) {
+    const sync = await syncTeamDefinitions(scratch);
+    for (const name of sync.cached) {
       const cached = await loadCachedWorkflow(scratch, name);
       const tree = cached && await loadWorkflowTree(scratch, cached);
       if (cached && tree && !('failed' in tree)) workflows.push({ relativePath: cached.relativePath, definition: cached.definition, workflows: tree.workflows });
@@ -1128,7 +1145,7 @@ async function receivedDefinitions(config: LocalConfig): Promise<{
       const cached = await loadCachedScorer(scratch, name);
       if (cached) scorers.push(cached);
     }
-    return { workflows, scorers };
+    return { workflows, scorers, invalid: sync.invalid, unknownScorers: sync.unknownScorers };
   } finally {
     setSilent(wasSilent);
     await fse.remove(dataHome);
@@ -1187,8 +1204,8 @@ function agentCause(aliases: ModelAliases, spec: AgentSpec): string | undefined 
  * is checked on its own and a finding names the ones it is about. Member overrides, model switches and installed
  * tools are this machine's, so they play no part. A model name is never one.
  */
-async function modelFindings(repoDir: string, resources: ReviewResource[], readText: (p: string) => Promise<string | null>, roles: RolesManifest | null, projects: ProjectsManifest | null): Promise<Finding[]> {
-  const contexts = await modelContexts(repoDir, roles, projects);
+async function modelFindings(resources: ReviewResource[], readText: (p: string) => Promise<string | null>, received: ReadonlyMap<ModelContext, Received>): Promise<Finding[]> {
+  const contexts = [...received.keys()];
   const [unselected] = contexts;
   const failure = unselected && loadFailure(unselected.aliases);
   if (failure) return [{ level: 'fail', check: 'models', path: TEAM_ALIASES_FILE, message: failure }];
@@ -1225,7 +1242,6 @@ async function modelFindings(repoDir: string, resources: ReviewResource[], readT
     if (cause) fail(resource.relativePath, `Agent "${spec.name}" asks for model alias "${spec.model}", which ${cause}. Add one, or remove model from the agent.`);
   }
 
-  const received = new Map(await Promise.all(readable.map(async (context) => [context, await receivedDefinitions(context.config)] as const)));
   const steps = new Map<string, { relativePath: string; stepPath: string; own: boolean; model: string; contexts: ModelContext[] }>();
   for (const context of readable) {
     for (const { relativePath, definition, workflows } of received.get(context)?.workflows ?? []) {
@@ -1233,7 +1249,8 @@ async function modelFindings(repoDir: string, resources: ReviewResource[], readT
         const own = step.model !== undefined;
         // A run takes `defaults.model` unless the step's agent sets its own; an agent the branch does not have may set one.
         const model = step.model ?? defaultModel;
-        if (model === undefined) continue;
+        // An exact model resolves through no alias.
+        if (model === undefined || typeof model !== 'string') continue;
         if (!own && step.agent !== undefined) {
           const agent = agents.find(({ resource, spec }) => spec.name === step.agent && receives(context, resource.namespace));
           if (agent === undefined || agent.spec.model !== undefined) continue;
@@ -1278,6 +1295,9 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
   const resources = await scanResources(repoDir, index);
   const readText = makeTextReader();
   const skillFiles = await scannableSkillFiles(resources, readText);
+  // One pull per selection; the syncs share the logger's silent flag, so they run one at a time.
+  const received = new Map<ModelContext, Received>();
+  for (const context of await modelContexts(repoDir, roles, projects)) received.set(context, await receivedDefinitions(context.config));
 
   const findings: Finding[] = [
     ...await structureFindings(resources, index),
@@ -1288,10 +1308,10 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     ...await relationsFindings(resources, readText),
     ...pipedInstallFindings(skillFiles),
     ...await leakFindings(repoDir, resources, readText),
-    ...await workflowFindings(repoDir),
+    ...await workflowFindings(repoDir, [...received.values()]),
     ...await scoringSettingsFindings(repoDir, readText),
     ...await sessionsFindings(repoDir, readText),
-    ...await modelFindings(repoDir, resources, readText, roles, projects),
+    ...await modelFindings(resources, readText, received),
   ];
 
   const counts: Record<FindingLevel, number> = { fail: 0, warn: 0, info: 0 };

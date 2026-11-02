@@ -1,0 +1,32 @@
+schemaVersion: v1alpha1
+name: teamai-session-to-task
+description: Turn the work this session finished, such as a bug fix, a feature or a refactor, into a benchmark task, proposed to the team as a pull request. Use when the person asks to keep this session, fix or change as a benchmark task or add it to a benchmark suite.
+invoke: ask
+inputs: { session: string, source: string, suite: string, start: string, solution: string }
+steps:
+  - id: draft
+    interactive: true
+    prompt: |
+      Turn the work this {{ inputs.source }} session {{ inputs.session }} finished (a bug fix, a feature, a refactor) into one task of the benchmark suite in {{ inputs.suite }}.
+      Work it with the person. The task starts at commit {{ inputs.start }}; the solution, the commit that completes it, is {{ inputs.solution }} (empty when there is none).
+      Write the task file outside the repository, in the format of the files under {{ inputs.suite }}/tasks/:
+      schemaVersion v1alpha1; title; prompt, the bug or the request as the person first described it, without the solution;
+      startingCommit {{ inputs.start }}; when there is a solution, solutionCommit {{ inputs.solution }}; exactly one of check or successCriteria;
+      and source with platform {{ inputs.source }} and sessionId {{ inputs.session }}.
+      check has run, and protect listing every test, config, script and manifest the check reads.
+      When there is a solution, check also has add: every file under protect that the solution added or changed and the check reads
+      (tests, fixtures, helpers; git diff --name-only {{ inputs.start }} {{ inputs.solution }} lists the candidates), one path each, no globs.
+      The trial's agent never sees the add files, so it cannot fit its change to them.
+      Every add path must be a file at commit {{ inputs.solution }}; if one is not, tell the person to commit it and start teamai-session-to-task again, and return skip.
+      When an add file calls a function, file, option or export that commit {{ inputs.start }} lacks, name it and its signature in prompt,
+      so the task can be solved without seeing the test.
+      If the person decides the session is not a good task, return {"verdict":"skip","file":"","path":""}.
+      Otherwise return verdict draft, the file's path, and {{ inputs.suite }}/tasks/<task id>.yaml as path,
+      where the task id is letters, digits, "-" or "_".
+    output: { verdict: draft | skip, file: string, path: string }
+  - id: propose
+    needs: [draft]
+    if: steps.draft.outputs.verdict == 'draft'
+    approve: Propose {{ steps.draft.outputs.path }} to the team as a pull request?
+    command: teamai push --file "$FILE" --path "$TASK_PATH"
+    env: { FILE: "{{ steps.draft.outputs.file }}", TASK_PATH: "{{ steps.draft.outputs.path }}" }

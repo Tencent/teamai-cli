@@ -34,7 +34,8 @@ export type PlaceableType =
   | 'wiki'
   | 'workflows'
   | 'prompts'
-  | 'scorers';
+  | 'scorers'
+  | 'benchmarks';
 
 export const PLACEABLE_TYPES: readonly PlaceableType[] = [
   'skills',
@@ -51,6 +52,7 @@ export const PLACEABLE_TYPES: readonly PlaceableType[] = [
   'workflows',
   'prompts',
   'scorers',
+  'benchmarks',
 ];
 
 export function isPlaceableType(type: ResourceType | string): type is PlaceableType {
@@ -78,6 +80,7 @@ export const NAMESPACE_AXIS = {
   workflows: 'workflows',
   prompts: 'prompts',
   scorers: 'scorers',
+  benchmarks: 'benchmarks',
 } as const satisfies Record<PlaceableType, AllProjectResourceType>;
 
 /**
@@ -90,8 +93,10 @@ export const NAMESPACE_AXIS = {
  * - prompts resolve the same way at runtime: a workflow's `prompt_file:
  *   prompts/topic/note.md` looks for `prompts/<ns>/topic/note.md` in each active
  *   namespace and falls back to the shared `prompts/topic/note.md`.
+ * - benchmarks hold one directory per suite, so `benchmarks/<dir>/` is a
+ *   shared suite unless a role or project declares `<dir>` a namespace.
  */
-export const NESTED_PLACEABLE_TYPES: ReadonlySet<PlaceableType> = new Set<PlaceableType>(['docs', 'wiki', 'prompts']);
+export const NESTED_PLACEABLE_TYPES: ReadonlySet<PlaceableType> = new Set<PlaceableType>(['docs', 'wiki', 'prompts', 'benchmarks']);
 
 /** True for the types in `NESTED_PLACEABLE_TYPES`. */
 export function isNestedPlaceableType(type: PlaceableType): boolean {

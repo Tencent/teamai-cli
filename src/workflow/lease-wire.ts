@@ -1,6 +1,7 @@
 /** The lease `next` answers with, as `leaseData` in `engine.ts` writes it, parsed by every driver with one schema. */
 import { z } from 'zod';
-import { EnvScopeSchema, LeaseSetupSchema, RequirementsSchema } from './requirements.js';
+import { EnvScopeSchema, LeaseSetupSchema, RequirementsSchema, TurnLimitsSchema } from './requirements.js';
+import { StepModelSchema } from './step-model.js';
 import { AttemptIdSchema } from './store.js';
 import { WorkspaceContractSchema, type LeaseSession } from './workspace.js';
 
@@ -18,7 +19,12 @@ export const LeaseWireSchema = LeaseIdSchema.extend({
   env: z.record(z.string(), z.string()).optional(),
   prompt: z.string().optional(),
   agent: z.string().optional(),
-  model: z.string().optional(),
+  /** The tool the prompt step names, which this driver listed in `can.tools`. */
+  tool: z.string().optional(),
+  /** `unattended`: launch the prompt's tool in its mode for editing and running commands without asking (`can.unattended`). */
+  permissions: z.literal('unattended').optional(),
+  /** The step's `model`: as written, which the driver resolves, or the exact model, which it passes to the tool as is. */
+  model: z.union([z.string(), StepModelSchema]).optional(),
   /** The `defaults.model` in effect for a prompt step, as written. */
   defaultModel: z.string().optional(),
   output: z.unknown().optional(),
@@ -34,6 +40,8 @@ export const LeaseWireSchema = LeaseIdSchema.extend({
   envScope: EnvScopeSchema.optional(),
   /** The most agent turns the prompt's tool may take. */
   maxTurns: z.number().optional(),
+  /** The limits that end the prompt's turn, from its tool's launch, for a driver with `can.end_turn`. */
+  limits: TurnLimitsSchema.optional(),
   /** What to run in a worktree prepare creates, before the step. */
   setup: LeaseSetupSchema.optional(),
   /** When the engine cancels the lease. */

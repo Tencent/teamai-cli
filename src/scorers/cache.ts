@@ -92,10 +92,15 @@ export async function cachedScorerNames(config: LocalConfig): Promise<string[]> 
   return names.filter((_, index) => valid[index]);
 }
 
-/** The scorers among `names` that have a valid cached version, pinned as they are cached now. A name without one is left out (D19). */
+/**
+ * The scorers among `names` that have a valid cached version, pinned as they are cached now. A name without one is left
+ * out (D19), and so is a generated name, which holds a colon.
+ */
 export async function pinScorers(config: LocalConfig, names: Iterable<string>): Promise<Record<string, PinnedScorer>> {
   const pins: Record<string, PinnedScorer> = {};
   for (const name of new Set(names)) {
+    // A generated scorer, such as teamai:correctness:<task>, comes with the run that lists it; no scorer file has its name.
+    if (name.includes(':')) continue;
     const entry = await readCache(config, name);
     if (!entry || !(await loadCachedScorer(config, name))) continue;
     pins[name] = { sourceHash: entry.sourceHash, ...(entry.teamRevision ? { teamRevision: entry.teamRevision } : {}), relativePath: entry.relativePath, content: entry.content };

@@ -28,7 +28,7 @@ import { attemptDir, driverLockPath, readRun, RunIdSchema } from '../workflow/st
 import * as worktreeSnapshot from '../workflow/place/worktree-snapshot.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
-import { knownSecrets } from '../env-resolution.js';
+import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { recordGroup } from '../tool-launch/process-stop.js';
 
 _setDriverPollMs(20);
@@ -138,6 +138,26 @@ describe('local workflow prompt driver', () => {
     });
   });
 
+  it('records how long the tool ran and the cost it stated, and neither for a tool that never started', async () => {
+    const ran = await fixture();
+    const unstarted = await fixture();
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { started: true as const, exitCode: 0, output: { ok: true }, cost: { amount: 0.25, unit: 'USD' } };
+    }) };
+
+    await runLocalDriver(ran.config, ran.runId, ran.workspace, { adapter, toolPaths });
+    await runLocalDriver(unstarted.config, unstarted.runId, unstarted.workspace, { adapter: createLocalToolAdapter(undefined, () => null), toolPaths });
+
+    const stored = await readRun(ran.config, ran.runId);
+    const step = typeof stored === 'object' && stored.steps[0]?.status === 'succeeded' ? stored.steps[0] : undefined;
+    expect(step).toMatchObject({ cost: { amount: 0.25, unit: 'USD' }, durationMs: expect.any(Number) });
+    expect(step?.durationMs).toBeGreaterThanOrEqual(50);
+    const never = await readRun(unstarted.config, unstarted.runId);
+    expect(typeof never === 'object' && never.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'tool_unavailable' } });
+    expect(typeof never === 'object' && never.steps[0]).not.toHaveProperty('durationMs');
+  });
+
   it.each([
     [{}, 'attended'],
     [{ CI: '1' }, 'unattended'],
@@ -180,6 +200,27 @@ describe('local workflow prompt driver', () => {
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: flags });
 
     expect(tools).toEqual([ran]);
+  });
+
+  it('runs a prompt step on the tool it names, over --tools, workflows.tools and TEAMAI_AI_TOOL', async () => {
+    vi.stubEnv('TEAMAI_AI_TOOL', 'opencode');
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Review the project.
+steps:
+  - id: review
+    prompt: Review this project.
+    tool: claude
+`);
+    onTestFinished(fakeClaude(path.dirname(workspace), '2.1.301'));
+    config.workflows = { tools: { default: 'codex' } };
+    const tools: string[] = [];
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (tool: string) => { tools.push(tool); return { started: true as const, exitCode: 0 }; }) };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths, tools: { default: 'codex' } });
+
+    expect(tools).toEqual(['claude']);
   });
 
   it("fails a prompt step when the project's ai.tool names a tool teamai does not launch, naming its file", async () => {
@@ -987,6 +1028,43 @@ describe('local workflow driver concurrency', () => {
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
 
+  it.each([
+    ['in worktrees of their own', '    workspace: new\n', 2],
+    ['in the checkout they share', '', 1],
+  ] as const)('runs two headless prompts %s with max_parallel 2, at most %s at a time', async (_place, workspaceLine, most) => {
+    const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
+name: build
+description: Two prompts with no needs.
+steps:
+  - id: left
+    needs: []
+${workspaceLine}    prompt: Implement the left half.
+  - id: right
+    needs: []
+${workspaceLine}    prompt: Implement the right half.
+`, 2);
+    let running = 0;
+    let overlap = 0;
+    const together = (): boolean => running === 2;
+    const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
+      run: vi.fn(async () => {
+        running += 1;
+        overlap = Math.max(overlap, running);
+        // Each waits a while for the other, so two prompts that may run together do.
+        for (const deadline = Date.now() + 1000; Date.now() < deadline && !together();) await new Promise((resolve) => setTimeout(resolve, 20));
+        running -= 1;
+        return { started: true as const, exitCode: 0 };
+      }),
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(adapter.run).toHaveBeenCalledTimes(2);
+    expect(overlap).toBe(most);
+  });
+
   it('holds a prompt leased while a command runs, and starts it once the command has exited', async () => {
     const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
 name: build
@@ -1717,6 +1795,14 @@ model_reasoning_effort = "low"
     expect(opencode.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-sonnet']]);
   });
 
+  it('passes an exact model and effort as written, never through an alias of the same name', async () => {
+    const { argv, run } = await runOn('claude', oneStep('    model: { name: strong, effort: max }\n'));
+
+    expect(argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'stream-json', '--verbose', '--model', 'strong', '--effort', 'max']]);
+    expect(run.steps[0]).toMatchObject({ status: 'succeeded', agent: { model: { requested: 'strong' }, effort: { requested: 'max' } } });
+    expect(run.steps[0]).not.toMatchObject({ agent: { model: { alias: expect.anything() } } });
+  });
+
   it('fails an alias without a model for the tool with model_unavailable, and does not start the tool', async () => {
     const step = await runOn('codex', oneStep('    model: strong\n'), { aliases: 'aliases:\n  strong:\n    claude: opus\n' });
     const defaults = await runOn('codex', `schemaVersion: v1alpha1
@@ -2154,6 +2240,30 @@ steps:
     expect(fs.existsSync(driverLockPath(config, absent))).toBe(false);
   });
 
+  it('launches a prompt with permissions: unattended in its tool\'s unattended mode, and any other prompt without it', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Fix it in a sandbox.
+defaults: { requires: { isolation: sandbox, strict: true } }
+steps:
+  - id: fix
+    prompt: Fix it.
+    permissions: unattended
+  - id: explain
+    needs: [fix]
+    prompt: Explain it.
+`);
+    config.workflows = { tools: { default: 'claude' }, sandbox: true };
+    const inputs: LocalToolRun[] = [];
+    const ran = vi.fn(async (_tool: string, input: LocalToolRun) => {
+      inputs.push(input);
+      return { started: true as const, exitCode: 0 };
+    });
+
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter: { run: ran, runInteractive: ran } })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(inputs.map((input) => [input.prompt, input.unattended])).toEqual([['Fix it.', true], ['Explain it.', undefined]]);
+  });
+
   it.each([
     [false, [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }]],
     [true, [{ requirement: 'network', asked: false }]],
@@ -2248,6 +2358,49 @@ steps:
     const runFile = JSON.stringify(await readRun(config, runId));
     expect(runFile).toContain('deploying with <REDACTED:DEPLOY_TOKEN');
     expect(runFile).not.toContain('old-deploy-secret-value');
+  });
+
+  it('masks the value it gives a step when the value changes while the team env resolves', async () => {
+    const { config } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Print a secret.
+steps:
+  - id: deploy
+    command: echo "$DEPLOY_TOKEN"
+`);
+    const env: NodeJS.ProcessEnv = { DEPLOY_TOKEN: 'old-deploy-secret-value' };
+    const resolving = resolveWorkflowEnv(config, env);
+    env.DEPLOY_TOKEN = 'new-deploy-secret-value';
+    const resolved = await resolving;
+    expect(Object.values(resolved.secrets)).toContain(resolved.values.get('DEPLOY_TOKEN'));
+  });
+
+  it.each([
+    { looks: 'for no tool when no step names one', tool: '', probed: [] },
+    { looks: 'for codex alone when a step names it', tool: '\n    tool: codex', probed: ['codex'] },
+  ])('looks $looks', async ({ tool, probed }) => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Name a tool or not.
+steps:
+  - id: build
+    command: "true"
+  - id: review
+    needs: [build]
+    if: steps.build.outcome == 'failed'
+    prompt: Review.${tool}
+`);
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lookups-'));
+    dirs.push(bin);
+    const lookups = path.join(bin, 'lookups.log');
+    for (const name of ['which', 'bash', 'zsh']) {
+      fs.writeFileSync(path.join(bin, name), `#!/bin/sh\nfor last; do :; done\necho "$last" >> '${lookups}'\nexit 1\n`, { mode: 0o755 });
+    }
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    vi.unstubAllEnvs();
+    const looked = fs.existsSync(lookups) ? fs.readFileSync(lookups, 'utf8').split('\n').filter(Boolean) : [];
+    expect([...new Set(looked)]).toEqual(probed);
   });
 
   function keptResult(config: LocalConfig, runId: string): string {

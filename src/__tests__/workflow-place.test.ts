@@ -776,6 +776,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow place conformance in process as %s',
       const scenarioClient = inProcessConformanceClient(inner);
       const client: ConformanceClient = {
         start: (name) => own(() => inner.start(name, { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } })),
+        startBenchmark: scenarioClient.startBenchmark,
         next: (run, body, options) => own(() => inner.next(run, body, options)),
         report: (run, body) => own(() => inner.report(run, body)),
         respond: (run, step, choice, options) => own(() => scenarioClient.respond(run, step, choice, options)),

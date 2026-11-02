@@ -22,8 +22,8 @@ import {
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import type { RunState, RunStatus, WorkflowDefinition, WorkflowFailure, WorkflowSource, WorkflowStep } from './types.js';
-import { branchName, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
+import { workflowRunBy, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
+import { branchName, isIsolated, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
 /**
@@ -50,7 +50,8 @@ export type HandoffError =
   | { code: 'sessions_not_archived'; message: string }
   | { code: 'origin_unavailable'; message: string }
   | { code: 'commit_missing'; branch: string; commit: string; message: string }
-  | { code: 'branch_diverged'; branch: string; expected: string; actual: string; message: string };
+  | { code: 'branch_diverged'; branch: string; expected: string; actual: string; message: string }
+  | { code: 'isolated_run'; message: string };
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: HandoffError };
 
@@ -107,6 +108,15 @@ const REPORTS_BUSY: HandoffError = {
 
 function runBusy(runId: string): HandoffError {
   return { code: 'busy', message: `Run ${runId} is locked by another process; try again.` };
+}
+
+// A benchmark's trials run in clones and installs on the machine that started it, so its run never changes hands.
+function isolatedUnpublishable(runId: string): HandoffError {
+  return { code: 'isolated_run', message: `Run ${runId} is isolated: it runs only on the machine that started it, so it cannot be published. Its end record still reaches teamai-reports with usage reporting on.` };
+}
+
+function isolatedUnclaimable(runId: string): HandoffError {
+  return { code: 'isolated_run', message: `Run ${runId} is isolated: it runs only on the machine that started it, so it cannot be claimed. Continue it here with teamai workflow resume ${runId}, or start a new run on the other machine.` };
 }
 
 function runUnreadable(runId: string): HandoffError {
@@ -209,6 +219,7 @@ export async function publishRun(
   const stored = await readRun(config, runId);
   if (stored === 'missing') return refused({ code: 'run_not_found', message: `Run ${runId} was not found` });
   if (stored === 'corrupt') return refused(runUnreadable(runId));
+  if (isIsolated(stored)) return refused(isolatedUnpublishable(runId));
   const secrets = await knownSecrets(config, env);
   const projected = projectRun(stored, secrets);
   if (!projected.ok) return projected;
@@ -570,6 +581,8 @@ export interface Definitions {
  * the run continues in.
  */
 export async function claimRun(config: LocalConfig, runId: string, options: { checkout: string }): Promise<Result<ClaimReceipt>> {
+  const stored = isRunId(runId) ? await readRun(config, runId) : 'missing';
+  if (typeof stored === 'object' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
   return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
 }
 
@@ -604,6 +617,7 @@ export async function claimedAway(config: LocalConfig, runId: string): Promise<H
 export async function resumeRun(config: LocalConfig, runId: string, options: { claim: boolean; checkout: string }): Promise<Result<ClaimReceipt | null>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
+  if (options.claim && stored !== 'missing' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
   if (stored === 'missing' || options.claim) return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
   if (stored.publication === undefined) return ok(null);
   const origin = await publishedRun(config, runId);
@@ -646,7 +660,8 @@ export function settledSteps({ steps, definition, workflows = {} }: { steps: Rea
  * can run again.
  */
 function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMap<string, { status: string; loopFinal?: boolean }>) {
-  const workflowOf = (step: WorkflowStep) => (typeof step.workflow === 'object' ? step.workflow : step.workflow === undefined ? undefined : workflows[step.workflow]);
+  // A run with a `from` step is isolated, so it never comes here.
+  const workflowOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
   const prefixes = (id: string) => id.split('.').map((_, at, segments) => segments.slice(0, at + 1).join('.'));
   /** Each workflow on the way to instance `id`: its definition, the instance that runs it ('' at the top), and the step of it `id` is in. */
   const levels = (id: string) => {

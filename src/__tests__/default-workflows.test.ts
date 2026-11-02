@@ -58,14 +58,35 @@ describe('default workflows', () => {
     const shipped = await loadCachedWorkflow(config, 'teamai-share-session');
     expect(shipped).toMatchObject({ source: 'default', relativePath: 'workflows/teamai-share-session.yaml', definition: { name: 'teamai-share-session', invoke: 'ask' } });
     expect(shipped?.teamRevision).toBeUndefined();
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'default']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'default']]);
     expect(await loadCachedWorkflow(config, 'session-close')).toBeNull();
 
     writeWorkflow(config, 'teamai-share-session', workflow('teamai-share-session'));
     await syncWorkflowDefinitions(config);
 
     expect(await loadCachedWorkflow(config, 'teamai-share-session')).toMatchObject({ source: 'team', definition: { steps: [{ command: 'node compile.js' }] } });
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'team']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'team']]);
+  });
+
+  it('resolve teamai-session-to-task to the teamai default, interactive and asked before it starts, until the team adds a file of that name', async () => {
+    const config = testConfig();
+    await syncWorkflowDefinitions(config);
+
+    expect(await loadCachedWorkflow(config, 'teamai-session-to-task')).toMatchObject({
+      source: 'default',
+      definition: {
+        invoke: 'ask',
+        steps: [
+          { id: 'draft', interactive: true, output: { type: 'object', fields: { verdict: { type: 'enum', values: ['draft', 'skip'] }, file: { type: 'string' }, path: { type: 'string' } } } },
+          { id: 'propose', if: "steps.draft.outputs.verdict == 'draft'", hitl: { kind: 'approve', required: false } },
+        ],
+      },
+    });
+
+    writeWorkflow(config, 'teamai-session-to-task', workflow('teamai-session-to-task'));
+    await syncWorkflowDefinitions(config);
+
+    expect(await loadCachedWorkflow(config, 'teamai-session-to-task')).toMatchObject({ source: 'team', definition: { steps: [{ command: 'node compile.js' }] } });
   });
 
   it('share several learnings with one approval, then share the session with teamai-share-session', async () => {

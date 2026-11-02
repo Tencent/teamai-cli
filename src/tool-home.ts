@@ -2,10 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { TOOLS, type HomeMove, type ToolDescriptor } from './tools.js';
-import type { ToolId } from './tools.js';
+import { homeVariables, isToolId, TOOLS, type HomeMove, type ToolDescriptor, type ToolId } from './tools.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
-import { getUserHome, normalizeHomePath } from './utils/home.js';
+import { getUserHome, normalizeHomePath, usesInstallHome } from './utils/home.js';
 
 export type Host = {
   readonly platform: NodeJS.Platform;
@@ -34,6 +33,12 @@ export type Host = {
   userToolRoots(): Promise<Readonly<Record<string, string>> | undefined>;
 };
 
+/** `env` without any variable that moves a tool's home: under an install's home, each tool's home is the install's. */
+function withoutToolHomeVariables(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const names = new Set(Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
+}
+
 /** The machine teamai runs on, the default host of every function that takes one. */
 export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): Host {
   return {
@@ -41,7 +46,7 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
     path,
     home: overrides.home ?? getUserHome(),
     profileHome: normalizeHomePath(os.homedir()),
-    env: overrides.env ?? process.env,
+    env: overrides.env ?? (usesInstallHome() ? withoutToolHomeVariables(process.env) : process.env),
     toolHomes: cachedToolHomesRead(),
     cwd: () => process.cwd(),
     exists: pathExists,

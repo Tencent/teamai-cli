@@ -199,9 +199,12 @@ async function ownSessionRun(localConfig: LocalConfig): Promise<SessionRun> {
  */
 async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPath: string): Promise<void> {
   const id = learningIdOf(relPath);
+  // The scope the run is in: in a step's clone, this command's own scope is the clone's install, which holds no run.
+  const { findAttemptRun } = await import('./workflow/run-location.js');
+  const found = await findAttemptRun(process.env);
   let recorded: Awaited<ReturnType<typeof appendAttemptOutcome>>;
   try {
-    recorded = await appendAttemptOutcome(localConfig, marker, { kind: 'learning', id });
+    recorded = await appendAttemptOutcome('error' in found ? localConfig : found.config, marker, { kind: 'learning', id });
   } catch (e) {
     log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: ${e instanceof Error ? e.message : String(e)}`);
     return;

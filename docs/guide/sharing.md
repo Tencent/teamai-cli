@@ -402,6 +402,43 @@ profiles:
 teamai models switch tokenhub
 ```
 
+## Push one file to an exact path
+
+`teamai push --file <local file> --path <team path>` proposes one file, byte for byte, at one team path, as a pull request. Nothing else in your team clone joins it, and nothing rewrites or moves it:
+
+```console
+$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
+✔ Pull Request created: https://github.com/acme/team/pull/77
+
+$ teamai push --file ./review.md --path scorers/review.md
+✔ Pull Request created: https://github.com/acme/team/pull/78
+
+$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml   # the same bytes again
+ℹ No changes to push: benchmarks/fix-auth/tasks/refresh-race.yaml already holds these bytes on main.
+
+$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/refresh-race.yaml
+✖ benchmarks/fix-auth/refresh-race.yaml is not a benchmark task path. A task goes in benchmarks/<suite>/tasks/<task>.yaml or benchmarks/<namespace>/<suite>/tasks/<task>.yaml.
+
+$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/missing/tasks/refresh-race.yaml
+✖ benchmarks/missing/suite.yaml does not exist, so benchmarks/missing/tasks/refresh-race.yaml belongs to no suite. Pick a suite the team repo has under benchmarks/.
+
+$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml --role web
+✖ --path names the destination, so it cannot be combined with --skill, --role, --project, --shared, --all or --carried.
+```
+
+[teamai-session-to-task](benchmarks.md#turn-a-session-into-a-task) proposes the task file it drafts this way.
+
+| Flags | Result |
+| --- | --- |
+| `--file` and `--path` | Pushes that file to that path on a new branch from the default branch, without asking, and opens the pull request as `push` does. Your team clone's files, index and branch stay as they were. |
+| only one of them | Refused: they go together. |
+| with `--skill`, `--role`, `--project`, `--shared`, `--all` or `--carried` | Refused, as above. |
+| with `--branch` | Pushes to that branch, which cannot be the default branch. When the branch already has an open pull request, it is rebuilt from the default branch with this file and that pull request is updated, not a new one opened: run the same command again after you edit the file. The rebuild holds only this file, so a file an earlier push put on the branch leaves the pull request. A branch origin already has with no open pull request is refused, so its commits stay. |
+| `--path` outside `skills/`, `rules/`, `scorers/`, `benchmarks/` or another directory teamai pulls, with `..`, or through a symlink in the team repo | Refused. |
+| `--path` under `benchmarks/` | Must be a task of a suite the default branch has. |
+
+In single-repo mode the pull request holds `.teamai/<path>`, and your checkout's files, index and `HEAD` stay as they were.
+
 ## Packages
 
 ```bash

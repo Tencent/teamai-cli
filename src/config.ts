@@ -47,6 +47,8 @@ type LoadOptions = {
    * the clone-time self-heal. For `init`, which sets the project up itself.
    */
   selfHeal?: boolean;
+  /** The home whose `.teamai` holds a user-scope config, with that data home attached; teamai's own home by default. */
+  home?: string;
 };
 
 async function migrateLegacyRoleConfig(
@@ -725,14 +727,16 @@ export async function loadLocalConfigForScope(
       options,
     );
   }
-  const configPath = getConfigPath(scope, projectRoot);
+  const dataHome = scope === 'user' && options.home !== undefined ? path.join(options.home, '.teamai') : undefined;
+  const configPath = dataHome !== undefined ? path.join(dataHome, 'config.yaml') : getConfigPath(scope, projectRoot);
   const content = await readFileSafe(expandHome(configPath));
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
     if (scope === 'user' && isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
-    return await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
+    const loaded = await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
+    return dataHome !== undefined ? { ...loaded, dataHome } : loaded;
   } catch (e) {
     log.error(`Invalid ${installScopeName(scope)} config at ${configPath}: ${describeConfigError(e)}`);
     return null;

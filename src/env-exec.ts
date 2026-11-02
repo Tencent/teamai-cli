@@ -11,10 +11,13 @@
  * only.
  */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import crossSpawn from 'cross-spawn';
+import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv, type WorkflowEnv } from './env-resolution.js';
@@ -342,8 +345,9 @@ function run(
 /**
  * The environment a workflow step runs with, built once per lease from its `envScope` and the team env resolved for it
  * (`resolveWorkflowEnv`): the inherited environment without every withheld key, with each provided key's value. PATH, HOME
- * and every key the scope does not name stay. A provided key with no value here, after the engine saw one, fails the step
- * as `missing_env`, with the advice for a key the team does or does not declare (#1513).
+ * and every key the scope does not name stay, and PATH finds the running CLI as `teamai` first (`withRunningCli`). A provided key with no
+ * value here, after the engine saw one, fails the step as `missing_env`, with the advice for a key the team does or does
+ * not declare (#1513).
  */
 export async function stepEnvironment(
   { values, facts }: Pick<WorkflowEnv, 'values' | 'facts'>, scope: { provide: readonly string[]; withhold: readonly string[] },
@@ -357,5 +361,45 @@ export async function stepEnvironment(
     }
     setKey(env, key, value);
   }
-  return { ok: true, env: await teamWinsOverBashEnv(env, scope.provide, scope.withhold) };
+  return { ok: true, env: withRunningCli(await teamWinsOverBashEnv(env, scope.provide, scope.withhold)) };
+}
+
+/**
+ * `env` with the running CLI first on its PATH as `teamai`, for every process of a workflow step, so a command that runs
+ * teamai reaches the CLI and version that runs the step.
+ */
+export function withRunningCli(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const bin = runningCliBin();
+  if (!bin) return env;
+  const pathKey = sameEnvName(Object.keys(env), 'PATH') ?? 'PATH';
+  const inherited = env[pathKey];
+  return { ...env, [pathKey]: inherited ? `${bin}${path.delimiter}${inherited}` : bin };
+}
+
+/**
+ * A directory whose `teamai` runs the CLI running now, with the Node running it, for a step to find first on its PATH:
+ * an npx run has no global teamai, and a global one may be another version. Named by what it runs, so every process of
+ * this CLI shares it, and each file is renamed into place whole. Undefined when this process runs no built CLI.
+ */
+function runningCliBin(): string | undefined {
+  const entry = resolveTeamaiEntryScript();
+  if (!entry) return undefined;
+  const dir = path.join(os.tmpdir(), `teamai-cli-${createHash('sha256').update(`${process.execPath}\0${entry}`).digest('hex').slice(0, 12)}`);
+  const wrappers: Array<[string, string]> = [['teamai', `#!/bin/sh\nexec "${process.execPath}" "${entry}" "$@"\n`]];
+  if (process.platform === 'win32') wrappers.push(['teamai.cmd', `@echo off\r\n"${process.execPath}" "${entry}" %*\r\n`]);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [name, content] of wrappers) {
+      const file = path.join(dir, name);
+      if (fs.existsSync(file)) continue;
+      const temporary = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, content, { mode: 0o755 });
+      fs.renameSync(temporary, file);
+    }
+    return dir;
+  } catch (error) {
+    // A step then finds teamai where its PATH has one.
+    log.debug(`[workflow] could not write the teamai wrapper in ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
 }

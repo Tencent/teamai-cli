@@ -10,11 +10,11 @@ export interface ToolRun {
 }
 
 /**
- * Runs a headless tool with `stdin` as its input, stopping whatever it started at `timeoutMs`. A `detached` tool
+ * Runs a headless tool with `stdin` as its input, stopping whatever it started at `timeoutMs` or when `signal` aborts. A `detached` tool
  * leads its own process group outside Windows, recorded in `group` when given, so it outlives no stop but also gets
  * no Ctrl-C from the terminal: only a run nobody waits on in the foreground detaches.
  */
-export async function runTool(input: { executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin: string; timeoutMs: number; detached: boolean; group?: string }): Promise<ToolRun> {
+export async function runTool(input: { executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin: string; timeoutMs: number; detached: boolean; group?: string; signal?: AbortSignal }): Promise<ToolRun> {
   const detached = input.detached && process.platform !== 'win32';
   const child = crossSpawn(input.executable, input.args, { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'], detached, windowsHide: true });
   if (detached && input.group !== undefined) recordGroup(child, input.group);
@@ -26,8 +26,11 @@ export async function runTool(input: { executable: string; args: string[]; cwd: 
   const stop = stopProcess(child, exited, detached);
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; void stop(); }, input.timeoutMs);
+  const onAbort = (): void => { void stop(); };
+  input.signal?.addEventListener('abort', onAbort, { once: true });
+  if (input.signal?.aborted) onAbort();
   child.stdin?.on('error', () => {});
   child.stdin?.end(input.stdin);
   try { const code = await exited; return { stdout: stdout.join(''), stderr: stderr.join(''), code, timedOut }; }
-  finally { clearTimeout(timer); }
+  finally { clearTimeout(timer); input.signal?.removeEventListener('abort', onAbort); }
 }

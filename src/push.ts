@@ -906,8 +906,8 @@ function resolveRequestedSkill(skill: string): { requestedPath: string; skillPat
 /** Validate workflows without failing this push when one file is invalid. */
 async function validateWorkflows(localConfig: LocalConfig, dryRun: boolean): Promise<void> {
   try {
-    const { syncWorkflowDefinitions } = await import('./workflow/cache.js');
-    await syncWorkflowDefinitions(localConfig, { dryRun, scopeLabel: localConfig.scope });
+    const { syncTeamDefinitions } = await import('./benchmark/suite-cache.js');
+    await syncTeamDefinitions(localConfig, { dryRun, scopeLabel: localConfig.scope });
   } catch (error) {
     log.warn(`Workflows were not updated: ${error instanceof Error ? error.message : String(error)}`);
   }

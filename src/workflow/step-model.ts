@@ -1,11 +1,13 @@
 /**
  * Which model a prompt step runs on, first match wins: the step's `model`, the model its definition sets for the
  * tool, the `defaults.model` in effect, the tool's default. The lease carries the first and third as written; they
- * resolve here, with the member's aliases for the step's tool. Claude reads a definition's model from its file. Codex
+ * resolve here, with the member's aliases for the step's tool, except a step's exact model, `{ name, effort? }`, which
+ * the tool gets as is. Claude reads a definition's model from its file. Codex
  * gets it on argv, and so does OpenCode with the variant: OpenCode 2 reads neither from the agent file, and OpenCode 1
  * does not start a subagent, which is how pull deploys OpenCode agents.
  */
 import path from 'node:path';
+import { z } from 'zod';
 import { installOf, locate, ownOf } from '../locate.js';
 import { isModelAlias, loadModelAliases, noModelCause, noModelReason, resolveModelValue, type NoModel } from '../models/aliases.js';
 import {
@@ -17,8 +19,12 @@ import { isLaunchTool, launchAdapterIdOf } from '../tool-launch/tools.js';
 import { readFileSafe } from '../utils/fs.js';
 import type { WorkflowFailure } from './types.js';
 
-/** The model a prompt step's tool runs on, with the reasoning effort it takes. */
-export type StepModel = { name: string; effort?: string };
+/**
+ * The model a prompt step's tool runs on, with the reasoning effort it takes. A step's `model` in this form is exact:
+ * every driver passes it to the tool as is.
+ */
+export const StepModelSchema = z.object({ name: z.string().min(1), effort: z.string().min(1).optional() }).strict();
+export type StepModel = z.infer<typeof StepModelSchema>;
 
 /**
  * The model and effort the launch passes, none when it passes none, or why the step cannot run. `by` says whether the
@@ -35,8 +41,8 @@ export interface StepModelRequest {
   step: string;
   /** The tool the step runs on: a launch tool, or the coding session's own for a child it starts. */
   tool: ToolName;
-  /** The lease's `model`, as written. */
-  model?: string;
+  /** The lease's `model`: as written, or the exact model, which no alias resolves. */
+  model?: string | StepModel;
   /** The lease's `defaultModel`, as written. */
   defaultModel?: string;
   /** The definition deployed for the tool, when the step names an agent. */
@@ -77,6 +83,7 @@ function definitionModel(agent: AgentSpec | undefined, tool: ToolName): string |
 
 export async function chooseStepModel(request: StepModelRequest): Promise<StepModelChoice> {
   const { step, tool, agent } = request;
+  if (typeof request.model === 'object') return { ok: true, by: 'step', model: request.model };
   const defined = definitionModel(agent, tool);
   const chosen: { origin: ModelOrigin; value: string } | undefined = request.model !== undefined
     ? { origin: 'step', value: request.model }

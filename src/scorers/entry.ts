@@ -3,8 +3,9 @@
  * computed from the labels and attempts that name it, on every read.
  */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { canonicalJson } from '../utils/canonical-json.js';
-import type { AttemptRecord, JudgeFailureCode, LeasedAttempt, LeasedSessionAttempt } from './attempts.js';
+import { JUDGE_FAILURES, type AttemptRecord, type JudgeFailureCode, type LeasedAttempt, type LeasedSessionAttempt } from './attempts.js';
 import type { RunSubject, ScoreLabel, SessionSubject } from './label.js';
 
 /** `s` + 13 hex of sha256 over (scorer, subject): the same on every read and every machine. */
@@ -42,7 +43,8 @@ export const LEASE_LAPSES_ALLOWED = 3;
 export type EntryState =
   | { kind: 'open' }
   | { kind: 'leased'; attempt: LeasedAttempt }
-  | { kind: 'labelled' }
+  /** `verdict`: the newest model label or succeeded attempt since the entry was last asked for. */
+  | { kind: 'labelled'; verdict: { label: string; passed: boolean } }
   | { kind: 'failed'; code: JudgeFailureCode }
   | { kind: 'expired' };
 
@@ -66,9 +68,12 @@ export function entryState(facts: {
   const { now, requestedAt = '' } = facts;
   const labels = facts.labels.filter((label) => label.scoredAt >= requestedAt);
   const attempts = facts.attempts.filter((attempt) => attempt.leasedAt >= requestedAt || (attempt.status === 'leased' && !hasLapsed(attempt, now)));
-  if (labels.some((label) => label.judge.kind === 'model') || attempts.some((attempt) => attempt.status === 'succeeded')) {
-    return { kind: 'labelled' };
-  }
+  const answers = [
+    ...labels.filter((label) => label.judge.kind === 'model').map(({ scoredAt, label, passed }) => ({ at: scoredAt, label, passed })),
+    ...attempts.flatMap((attempt) => (attempt.status === 'succeeded' ? [{ at: attempt.settledAt, ...attempt.verdict }] : [])),
+  ];
+  const newest = answers.sort((left, right) => right.at.localeCompare(left.at))[0];
+  if (newest) return { kind: 'labelled', verdict: { label: newest.label, passed: newest.passed } };
   const live = attempts.find((attempt): attempt is LeasedAttempt => attempt.status === 'leased' && !hasLapsed(attempt, now));
   if (live) return { kind: 'leased', attempt: live };
   const failed = attempts.find((attempt) => attempt.status === 'failed');
@@ -100,3 +105,22 @@ export function sessionEntryState(facts: { labels: readonly ScoreLabel[]; attemp
 export function liveSessionLease(attempts: readonly AttemptRecord[], now: string): LeasedSessionAttempt | undefined {
   return attempts.find((attempt): attempt is LeasedSessionAttempt => attempt.source === 'session' && attempt.status === 'leased' && !hasLapsed(attempt, now));
 }
+
+/**
+ * An entry of a run's `sampling: all` scorers as it stood when its steps ended, kept on the run (`run.verdicts`) so its
+ * record is computed from the run alone. Here rather than beside the code that freezes it: the run store parses it on
+ * load.
+ */
+export const EntryVerdictSchema = z.object({
+  scorer: z.string().min(1),
+  step: z.string().min(1),
+  pass: z.number().int().positive(),
+  outcome: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('labelled'), label: z.string().min(1), passed: z.boolean() }).strict(),
+    /** No label: the judge failed (its attempt's code), the entry expired, or the run ended first (`run_ended`). */
+    z.object({ kind: z.literal('unscored'), because: z.enum([...JUDGE_FAILURES, 'expired', 'run_ended']) }).strict(),
+  ]),
+  /** What this install's attempts on the entry stated they cost, failed ones included; `complete: false` when one stated none. */
+  scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).strict().optional(),
+}).strict();
+export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;

@@ -105,19 +105,19 @@ describe('dashboard scorer results', () => {
     expect(byDefinition.selected?.groups?.map((group) => [group.kind === 'value' ? group.value : group.kind, group.stats.n])).toEqual([['implementer', 2]]);
   });
 
-  it('leaves out the labels of a benchmark run', async () => {
+  it('leaves out the labels of an isolated run', async () => {
     const { config } = team();
     publishRecord(config, { run: 'r0000000000000001', steps: [{ step: 'implement', pass: 1, agent: observation('claude') }] });
-    publishRecord(config, { run: 'r0000000000000002', benchmark: { suite: { sourceHash: 'b'.repeat(64) }, trials: [] }, steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
+    publishRecord(config, { run: 'r0000000000000002', isolated: true, steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
     publishLabels(config, 'bob', [workflowLabel('r0000000000000001'), workflowLabel('r0000000000000002', { passed: false })]);
     const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
     expect(view.selected?.cohort.stats).toEqual({ n: 1, passed: 1, failed: 0, rate: 1 });
   });
 
-  it('leaves out the labels of a benchmark run whose run file is also on this machine', async () => {
+  it('leaves out the labels of an isolated run whose run file is also on this machine', async () => {
     const { config } = team();
     const runId = 'r0000000000000002';
-    publishRecord(config, { run: runId, benchmark: { suite: { sourceHash: 'b'.repeat(64) }, trials: [] }, steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
+    publishRecord(config, { run: runId, isolated: true, steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
     write(runFilePath(config, runId), JSON.stringify({
       schemaVersion: 'v1alpha1', id: runId, name: 'review', revision: 1, status: 'succeeded', startedAt: 1, steps: [], settledAttempts: [],
       definition: { schemaVersion: 'v1alpha1', name: 'review', description: 'Review.', steps: [{ id: 'implement', prompt: 'p' }] },

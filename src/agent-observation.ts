@@ -67,7 +67,7 @@ export type Used = z.infer<typeof UsedSchema>;
  * when the report has no flat `tool` or `model`. Values are plain strings: one not shaped like a name is dropped when
  * the pass settles, not rejected.
  */
-const ReportedAgentSchema = z.object({
+export const ReportedAgentSchema = z.object({
   definition: z.object({ applied: Applied.optional() }).optional(),
   tool: z.object({ name: z.string().optional(), version: z.string().optional() }).optional(),
   model: z.object({ requested: z.string().optional(), reported: z.string().optional(), alias: z.string().optional() }).optional(),
@@ -87,6 +87,10 @@ export type RecordedAgent = AgentObservation | z.infer<typeof DefinitionOnlySche
 
 export function isNameShaped(value: string): boolean {
   return NAME.test(value);
+}
+
+export function isLabelShaped(value: string): boolean {
+  return LABEL.test(value);
 }
 
 /** What a launch hands the observer. */

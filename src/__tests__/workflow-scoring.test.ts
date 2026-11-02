@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,15 +12,16 @@ import { LabelStore } from '../scorers/label-store.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
+import { createRun, leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
-import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, scoredPasses, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
+import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
+import { scoredPasses } from '../workflow/scoring-entries.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { installOwner, readRun, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
-import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
+import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 import * as cliPaths from '../utils/cli-path.js';
 
@@ -518,6 +520,11 @@ process.stdin.resume(); process.stdin.on('end', () => console.log(JSON.stringify
     const payload: unknown = JSON.parse('{"driver":{"kind":"t3","machine":"m1","workspace":"/w"},"outcome":"success","answer":{"label":"good","reasoning":"r"},"judge":{"usage":{"inputTokens":1e309}}}');
     expect(parseJudgeSubmission(payload)).toMatch(/^judge\.usage\.inputTokens: /);
   });
+
+  it('takes no failure code from a submitted failure: only the local judge states its own', () => {
+    const payload: unknown = JSON.parse('{"driver":{"kind":"t3","machine":"m1","workspace":"/w"},"outcome":"failed","code":"evidence_empty"}');
+    expect(parseJudgeSubmission(payload)).toEqual({ driver: { kind: 't3', machine: 'm1', workspace: '/w' }, outcome: 'failed' });
+  });
 });
 
 describe('judge work and a work budget', () => {
@@ -707,6 +714,131 @@ describe('scoredPasses', () => {
       ],
     };
     expect(scoredPasses(items, install).map(({ subject }) => subject.step)).toEqual(['review[0]', 'review[1]']);
+  });
+});
+
+describe('scoring entries', () => {
+  it('imports neither the engine nor the local driver, so the engine can import it', () => {
+    const source = fs.readFileSync('src/workflow/scoring-entries.ts', 'utf8');
+    // Every relative module it names, in a static or a dynamic import.
+    const specifiers = [...source.matchAll(/'(\.\.?\/[^']+\.js)'/g)].map(([, specifier]) => specifier);
+    expect(specifiers).not.toEqual([]);
+    expect(specifiers).not.toContain('./engine.js');
+    expect(specifiers).not.toContain('./local-driver.js');
+  });
+});
+
+/**
+ * A run of `steps` prompt steps whose scorer `quality` judges every pass (`sampling: all`), each settled with outputs
+ * through workflow next and report, and the run still running. With `tidy`, a `finally` step of that id runs a command.
+ */
+async function allSampledRun(config: LocalConfig, scorerText: string, steps = 1, { tidy = false } = {}): Promise<string> {
+  const definition: WorkflowDefinition = {
+    schemaVersion: 'v1alpha1', name: 'judged', description: 'Steps every pass of which is judged.',
+    steps: Array.from({ length: steps }, (_, index) => ({ id: `s${index + 1}`, prompt: 'Review the change.', ...(index > 0 ? { needs: [] } : {}), scorers: { names: ['quality'], sampling: 'all' } })),
+    ...(tidy ? { finally: [{ id: 'tidy', command: 'echo tidy' }] } : {}),
+  };
+  const pin = { sourceHash: createHash('sha256').update(scorerText).digest('hex'), relativePath: 'scorers/quality.md', content: scorerText };
+  const runId = String(data(await createRun(config, { name: 'judged', sourceHash: 'h', origin: { source: 'team' }, definition, scorers: { quality: pin }, secrets: {} })).run);
+  for (let step = 0; step < steps; step += 1) {
+    const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
+    data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { reviewed: true } }));
+  }
+  return runId;
+}
+
+describe('judge work of sampling: all', () => {
+  it('offers every pass of a step with sampling: all, whatever the scorer samples', async () => {
+    const config = fixture(scorer(25));
+    const runId = await allSampledRun(config, scorer(25), 8);
+
+    const refs: string[] = [];
+    const steps: string[] = [];
+    for (;;) {
+      const answer = data(await nextJudgeLease(config, request({ running: refs })));
+      if (!('lease' in answer)) break;
+      const lease = LeaseSchema.extend({ subject: z.object({ runId: z.string(), step: z.string() }) }).parse(answer.lease);
+      refs.push(lease.ref);
+      steps.push(lease.subject.step);
+    }
+
+    expect(steps.sort()).toEqual(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']);
+    expect((await runOf(config, runId)).status).toBe('running');
+  });
+
+  it('offers no sampling: all pass once its run ended, which froze it unscored', async () => {
+    const config = fixture(scorer(100));
+    const runId = await allSampledRun(config, scorer(100));
+
+    await cancelRun(config, runId, await knownSecrets(config));
+    const answer = data(await nextJudgeLease(config, request()));
+
+    expect(answer).not.toHaveProperty('lease');
+    expect((await runOf(config, runId)).verdicts).toEqual([{ scorer: 'quality', step: 's1', pass: 1, outcome: { kind: 'unscored', because: 'run_ended' } }]);
+  });
+
+  it('refuses an answer for a sampling: all pass after its run ended, records no label, and releases the lease', async () => {
+    const config = fixture(scorer(100));
+    const runId = await allSampledRun(config, scorer(100));
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    await cancelRun(config, runId, await knownSecrets(config));
+
+    const late = await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } });
+
+    const [entry = '', attempt = ''] = lease.ref.split('/');
+    expect(late).toEqual({ error: { code: 'entry_closed', message: `Run ${runId} froze this entry's verdict when its steps ended, so the answer was not recorded.` } });
+    expect(await LabelStore.local(config)).toEqual([]);
+    expect(await AttemptStore.get(config, entry, attempt)).toMatchObject({ status: 'released' });
+  });
+});
+
+describe('verdicts and finally steps', () => {
+  const failure = { code: 'command_failed', message: 'command exited with status 1' };
+  const leased = async (config: LocalConfig, runId: string) => z.object({ step: z.string(), attempt: z.string(), revision: z.number() })
+    .parse(data(await leaseNext(config, runId, workDriver)).lease);
+
+  it('freezes the verdicts once the judges settle, before the finally steps run, and a failed finally step leaves them', async () => {
+    const config = fixture(scorer(100));
+    const runId = await allSampledRun(config, scorer(100), 1, { tidy: true });
+    expect(data(await leaseNext(config, runId, workDriver))).toMatchObject({ wait: { judging: 1 } });
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'missed', reasoning: 'r' } }));
+    const verdicts = [{ scorer: 'quality', step: 's1', pass: 1, outcome: { kind: 'labelled', label: 'missed', passed: false } }];
+
+    const tidy = await leased(config, runId);
+
+    expect(tidy.step).toBe('tidy');
+    expect(await runOf(config, runId)).toMatchObject({ status: 'running', finalizing: { outcome: 'succeeded' }, verdicts });
+    data(await reportAttempt(config, runId, { attempt: tidy.attempt, revision: tidy.revision, outcome: 'failed', driver: workDriver, message: failure.message, failure }));
+    expect(data(await leaseNext(config, runId, workDriver))).toMatchObject({ done: { outcome: 'succeeded', finally: [{ id: 'tidy', outcome: 'failed' }] } });
+    expect((await runOf(config, runId)).verdicts).toEqual(verdicts);
+  });
+
+  it('freezes an open entry unscored when a cancel ends the steps, and offers it to no judge while the finally steps run', async () => {
+    const config = fixture(scorer(100));
+    const runId = await allSampledRun(config, scorer(100), 1, { tidy: true });
+    const verdicts = [{ scorer: 'quality', step: 's1', pass: 1, outcome: { kind: 'unscored', because: 'run_ended' } }];
+
+    expect(data(await cancelRun(config, runId, await knownSecrets(config)))).toMatchObject({ run: { status: 'running', finalizing: { outcome: 'cancelled' } } });
+
+    expect((await runOf(config, runId)).verdicts).toEqual(verdicts);
+    expect(data(await nextJudgeLease(config, request()))).not.toHaveProperty('lease');
+    const tidy = await leased(config, runId);
+    data(await reportAttempt(config, runId, { attempt: tidy.attempt, revision: tidy.revision, outcome: 'success', driver: workDriver }));
+    expect(data(await leaseNext(config, runId, workDriver))).toMatchObject({ done: { outcome: 'cancelled' } });
+    expect((await runOf(config, runId)).verdicts).toEqual(verdicts);
+  });
+
+  it('refuses an answer leased before the steps ended once the finally steps run, and records no label', async () => {
+    const config = fixture(scorer(100));
+    const runId = await allSampledRun(config, scorer(100), 1, { tidy: true });
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await cancelRun(config, runId, await knownSecrets(config)));
+
+    const late = await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } });
+
+    expect(late).toEqual({ error: { code: 'entry_closed', message: `Run ${runId} froze this entry's verdict when its steps ended, so the answer was not recorded.` } });
+    expect(await LabelStore.local(config)).toEqual([]);
   });
 });
 

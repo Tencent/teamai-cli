@@ -2,11 +2,14 @@
 
 import type { RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
+import type { EntryVerdict } from '../scorers/entry.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
 import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
-import type { Requirements, Setup, Unenforced } from './requirements.js';
+import type { OnLimit, Requirements, Setup, TurnLimits, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
+import type { StepModel } from './step-model.js';
+import type { ClonePlace } from './clone.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
 export interface DriverIdentity {
@@ -21,7 +24,14 @@ export type OutputSchema =
   | { type: 'boolean' }
   | { type: 'enum'; values: string[] }
   | { type: 'object'; fields: Record<string, OutputSchema> }
-  | { type: 'array'; items: OutputSchema };
+  | { type: 'array'; items: OutputSchema }
+  /** Any JSON value, which no expression reads into; a workflow's `outputs` may pass it whole. Step outputs only. */
+  | { type: 'json' }
+  /**
+   * A workflow bundle, `{ definition, workflows?, scorers?, teamRevision? }`, admitted when its step reports, which a
+   * `from` step runs. Only one field of a step's object output may have it.
+   */
+  | { type: 'workflow' };
 
 /** A HITL request that must settle before its step can act or reach an end. */
 export interface StepHitl {
@@ -53,18 +63,24 @@ export interface WorkflowStep {
   /** The question answered before this step's action or end. */
   hitl?: StepHitl;
   agent?: string;
-  /** The model a prompt step runs on, as written: an alias from `models/aliases.yaml` or a model name. The driver resolves it. */
-  model?: string;
+  /** The tool a prompt step runs on, as written. Only a driver that lists it in `can.tools` takes the step. */
+  tool?: string;
+  /**
+   * The model a prompt step runs on: an alias from `models/aliases.yaml` or a model name, as written, which the driver
+   * resolves; or the exact model, which every driver passes to the tool as is.
+   */
+  model?: string | StepModel;
   /** The scorers that judge this prompt or workflow step's succeeded passes. */
   scorers?: StepScorers;
   output?: OutputSchema;
   /** Variables a command step receives, as written; `{{ inputs.… }}` and `{{ steps.… }}` render when the step is leased. */
   env?: Record<string, string>;
   /**
-   * The workflow this step runs: a name, which the cache keeps and `start` snapshots into the run,
-   * or an inline workflow, kept in place.
+   * The workflow this step runs, as written: a name, which the cache keeps and `start` snapshots into the run; an inline
+   * workflow, kept in place; or `{ from }`, the workflow output of a step it needs, admitted when that step reports.
+   * Read it through {@link stepWorkflow}.
    */
-  workflow?: string | InlineWorkflow;
+  workflow?: string | InlineWorkflow | WorkflowFrom;
   /** Values for the inputs of the workflow this step runs, as written; every string inside follows the template rules. */
   with?: Record<string, unknown>;
   /** Name in `ends` this step finishes the workflow with when it succeeds. A step with no action only ends the workflow and is never leased. */
@@ -77,9 +93,9 @@ export interface WorkflowStep {
   forEach?: ForEach;
   /**
    * Where the step runs. A command that omits it uses the active checkout and is read-only.
-   * A prompt that omits it continues an enclosing `new` or `continue` copy, or stays read-only.
+   * A prompt that omits it continues an enclosing `new`, `continue` or clone copy, or stays read-only.
    */
-  workspace?: typeof WORKSPACE_MODES[number];
+  workspace?: StepWorkspace;
   /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */
   deliver?: 'pr';
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
@@ -95,6 +111,17 @@ export interface WorkflowStep {
   budget?: Budget;
   /** On a prompt step: the most agent turns its tool may take, for a driver that can cap them. */
   maxTurns?: number;
+  /**
+   * On a prompt step: `unattended` lets its tool edit and run commands without asking. Valid only under a strict
+   * `isolation: sandbox` floor, and leased only to a driver with `can.unattended`.
+   */
+  permissions?: 'unattended';
+  /**
+   * What reaching `timeout`, `max_turns` or `budget` does. `fail`, the default, fails the step. `end_turn` ends the
+   * agent's turn: on a prompt step the limits count from tool launch and the step succeeds with the limit it reached;
+   * on a workflow step `timeout` and `budget` are an allowance its prompt turns spend.
+   */
+  onLimit?: OnLimit;
 }
 
 /**
@@ -135,8 +162,14 @@ export interface StepLoop {
   maxIterations: number;
 }
 
-/** Where a step runs: in the checkout as it is, in a new copy, or in the copy an enclosing step opened. */
-export const WORKSPACE_MODES = ['read-only', 'new', 'continue'] as const;
+/**
+ * Where a step runs: in the checkout as it is, in a new copy, in the copy an enclosing step opened, or in a fresh clone
+ * teamai prepares. A driver lists the ones it provides in `can.workspace`.
+ */
+export const WORKSPACE_MODES = ['read-only', 'new', 'continue', 'clone'] as const;
+
+/** A step's `workspace` as written: a mode, or the clone it opens. */
+export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone'> | { clone: ClonePlace };
 
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
 export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
@@ -147,6 +180,54 @@ export function hasAction(step: WorkflowStep): boolean {
 }
 
 export type EndOutcome = 'succeeded' | 'failed';
+
+/** `workflow: { from: <step> }`: the step runs the `workflow` output of step `from`, which it needs. */
+export interface WorkflowFrom {
+  from: string;
+}
+
+/** What a step's `workflow` names: a workflow file, an inline workflow, or the workflow output of a step it needs. */
+export type StepWorkflow =
+  | { kind: 'named'; name: string }
+  | { kind: 'inline'; workflow: InlineWorkflow }
+  | { kind: 'from'; step: string };
+
+/** The workflow `step` runs, as its `workflow` names it, or undefined for a step that runs none. Every reader of `workflow` goes through here. */
+export function stepWorkflow({ workflow }: Pick<WorkflowStep, 'workflow'>): StepWorkflow | undefined {
+  if (workflow === undefined) return undefined;
+  if (typeof workflow === 'string') return { kind: 'named', name: workflow };
+  return 'from' in workflow ? { kind: 'from', step: workflow.from } : { kind: 'inline', workflow };
+}
+
+/** Whether `workflow` is a workflow file, named or admitted, rather than an inline workflow, which has no name. */
+export function isWorkflowFile(workflow: WorkflowDefinition | InlineWorkflow): workflow is WorkflowDefinition {
+  return 'name' in workflow;
+}
+
+/**
+ * The workflow `step` runs in `run`, where `prefix` is the path of the workflow the step is in (`''` at the top): an
+ * inline one as written, a file as the run pinned it, or the workflow its `from` step's output was admitted as.
+ * Undefined when the run holds none of those.
+ */
+export function workflowRunBy(
+  run: Pick<RunState, 'workflows' | 'admitted'>, step: Pick<WorkflowStep, 'workflow'>, prefix: string,
+): WorkflowDefinition | InlineWorkflow | undefined {
+  const runs = stepWorkflow(step);
+  switch (runs?.kind) {
+    case undefined:
+      return undefined;
+    case 'named':
+      return run.workflows?.[runs.name];
+    case 'inline':
+      return runs.workflow;
+    case 'from':
+      return run.admitted?.[`${prefix}${runs.step}`]?.definition;
+    default: {
+      const unhandled: never = runs;
+      return unhandled;
+    }
+  }
+}
 
 /**
  * A workflow written inside a step. It has no inputs of its own: its steps read the enclosing workflow's inputs
@@ -173,6 +254,11 @@ export interface WorkflowDefaults {
 export interface StepScorers {
   names: string[];
   batch?: boolean;
+  /**
+   * `all`: every pass is judged whatever the scorers sample, the run waits for the judges before its `finally` steps,
+   * and an entry still open when its steps end is frozen unscored in `run.verdicts`.
+   */
+  sampling?: 'all';
 }
 
 /** Whether an agent session may start a workflow: on its own (`allow`), after the person's yes (`ask`), or never (`deny`). */
@@ -202,6 +288,11 @@ export interface WorkflowDefinition {
   /** Runs in each workspace a driver creates for a step of this file, or of a workflow it runs that has no setup. */
   setup?: Setup;
   steps: WorkflowStep[];
+  /**
+   * Read-only command steps that run once the run's steps end, whatever the outcome, a timeout or a cancel included.
+   * Only the run's own workflow runs them, never a workflow a step runs.
+   */
+  finally?: WorkflowStep[];
 }
 
 export interface WorkflowDiagnostic {
@@ -233,7 +324,7 @@ export interface WorkflowDiagnostic {
    * `alias_conflict`: another workflow has the same alias, or takes it as its name. The workflow is cached and starts by
    *   name; only the alias starts nothing.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -247,15 +338,32 @@ export interface StepLease {
   session?: LeaseSession;
   /** The best-effort requirements the driver could not enforce, decided when the lease was issued; a hand-back only adds. */
   unenforced?: Unenforced[];
-  /** When the step's own `timeout` ends this lease, set when it is issued so a hand-back keeps it. */
+  /** When the step's own `timeout` ends this lease, counted from `leasedAt` so a hand-back does not extend it. */
   expiresAt?: string;
+  /** When the attempt was first leased. Absent on a lease issued before teamai recorded it. */
+  leasedAt?: string;
   /** The run mode the driver runs the lease in, as its `next` reported it, so the pass keeps it however it settles. */
   runMode?: RunMode;
+  /** The turn limits the lease carried, for a driver that ends the turn at them. */
+  limits?: TurnLimits;
 }
 
 export interface WorkflowFailure {
   code: string;
   message: string;
+}
+
+/**
+ * A run whose steps ended while its `finally` steps run: the outcome, end and failure it ends with once they settle,
+ * whatever they do, and when they must settle by.
+ */
+export interface Finalizing {
+  outcome: Exclude<RunStatus, 'running'>;
+  end?: string;
+  failure?: WorkflowFailure;
+  /** When the run's steps ended. */
+  since: string;
+  until: string;
 }
 
 /** Durable run file. `revision` rejects stale reports; `definition` is the cached snapshot. */
@@ -269,6 +377,10 @@ export interface RunState {
   driver?: DriverIdentity;
   /** The end this run reached, set when it settles. */
   end?: string;
+  /** Set while the run's `finally` steps run, from when its steps end until it settles. Its status stays `running`. */
+  finalizing?: Finalizing;
+  /** Milliseconds `workflow start --timeout` gave the run; the shorter of it and the workflow's `timeout` applies. */
+  timeout?: number;
   /** Why the run failed when no end says it, such as `loop_exhausted` on a looping top-level workflow. */
   failure?: WorkflowFailure;
   /** The validated `--inputs`, stored when the workflow declares inputs. */
@@ -288,6 +400,13 @@ export interface RunState {
   workflows?: Record<string, WorkflowDefinition>;
   /** The scorers its steps list, by name, as they were cached when it started. A name with no valid scorer then is absent. */
   scorers?: Record<string, PinnedScorer>;
+  /**
+   * The `workflow` outputs of the steps a `from` step runs, by the path of the producing step, admitted when it reported
+   * and frozen for the run's life. The named workflows and generated scorers each brought are in `workflows` and `scorers`.
+   */
+  admitted?: Record<string, AdmittedWorkflow>;
+  /** How each entry of the run's `sampling: all` scorers stood when its steps ended, before `finally`, frozen by `finishRun`. */
+  verdicts?: EntryVerdict[];
   /**
    * Step instances in declaration order; a sub-workflow's steps follow the step that runs it. Never changed in place:
    * adding or removing an instance assigns a new array, so an index the engine keeps per array never goes stale.
@@ -321,9 +440,10 @@ export interface RunState {
    * from, `after` items before other needs, so a pull request from it targets the nearest delivered branch it grew from.
    * `used` is set once a step ran in the copy: a report on a lease of it was accepted, neither `released` nor a setup
    * failure. Only a lease on an unused copy carries setup, and only an unused copy's owner gives it up when it hands its
-   * lease back. `used` is local run state only.
+   * lease back. `used` is local run state only. `kind: clone` is a clone a step opened, which teamai prepared on its
+   * owner's machine: it is never pushed.
    */
-  copies?: Record<string, { owner?: DriverIdentity; commit?: string; from?: string; used?: true }>;
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; from?: string; used?: true; kind?: 'clone' }>;
   /**
    * The pull requests delivered on this run, once each, in the order they first appeared. Append-only: a receipt says a
    * request was opened, never that it is still open, so whether a delivery reuses one is its host's lookup to say.
@@ -348,6 +468,17 @@ export interface RunState {
    */
   limitsFrom?: LimitsFrom;
   updatedAt: string;
+}
+
+/**
+ * A producer's output as admission accepted it: the whole output its report gave, never rewritten, with a hash over it;
+ * the output field that held the workflow; and the workflow that field defines, which a `from` step runs.
+ */
+export interface AdmittedWorkflow {
+  output: Record<string, unknown>;
+  hash: string;
+  field: string;
+  definition: WorkflowDefinition;
 }
 
 /** What this machine knows of the run's snapshot on `teamai-reports`. */

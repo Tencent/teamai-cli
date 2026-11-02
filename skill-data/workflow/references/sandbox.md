@@ -11,4 +11,4 @@ A child changes code only in a place TeamAI prepared or checked: TeamAI commits,
 
 Done when the turn it returns has no `choose` action, or the person has the local-driver route.
 
-A worktree is not a sandbox. TeamAI declares no isolation for a skill run, so a step whose workflow requires `isolation: sandbox` still runs, and its `unenforced` lists `isolation`. Its dispatch carries `needs.isolation: sandbox`: start that child in a sandbox when your host has one that sees `dir`, and otherwise tell the person the step ran without one. Tell the person a step ran sandboxed only when your host says so.
+A worktree is not a sandbox. TeamAI declares no isolation for a skill run, so a step whose workflow requires `isolation: sandbox` still runs, and its `unenforced` lists `isolation`, unless the workflow also sets `strict: true`: then the step waits for a driver that declares a sandbox, which this session is not. Tell the person. Its dispatch carries `needs.isolation: sandbox`: start that child in a sandbox when your host has one that sees `dir`, and otherwise tell the person the step ran without one. Tell the person a step ran sandboxed only when your host says so.

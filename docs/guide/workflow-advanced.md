@@ -439,6 +439,78 @@ Three runs of `loop-wait-for-ci` with `--driver local` end like this:
 
 A workflow with `loop` cannot contain a step with `loop`. Put one of the two loops in a sub-workflow.
 
+## Finally steps
+
+```yaml
+schemaVersion: v1alpha1
+name: nightly-e2e
+description: Run the end-to-end suite, then always summarize it.
+timeout: 1h
+steps:
+  - id: e2e
+    command: npm run e2e
+finally:
+  - id: summary
+    command: node scripts/e2e-summary.js
+    output: { text: string }
+outputs: { summary: steps.summary.outputs.text }
+```
+
+`finally` steps run once the run's steps have ended, however they ended: succeeded, failed, timed out or cancelled. They are commands, read-only, with no workspace of their own, and carry only `id`, `needs`, `if`, `command`, `env`, `output` and `timeout`. The run stays `running` while they run, for at most 10 minutes, then ends with the outcome its steps reached: a failed `finally` step never changes it. `done.finally` lists each one that failed or was cancelled, with its failure. `workflow cancel` during them ends them and the run. A workflow with `finally` runs only as a run of its own, never as another workflow's step.
+
+`done.outputs` holds the workflow's top-level `outputs`, resolved after `finally`, so they may read `finally` steps. An output whose step failed is left out.
+
+```text
+teamai workflow start nightly-e2e --driver local --timeout 30m
+```
+
+`--timeout` bounds the run to the shorter of it and the file's `timeout`, with `--driver local` or `--driver skill`. Past it, the run fails `timeout`, and its `finally` steps still run.
+
+## Run a workflow a step printed
+
+```yaml
+schemaVersion: v1alpha1
+name: shard-tests
+description: Plan one test job per changed package, then run them.
+steps:
+  - id: plan
+    command: node scripts/plan-shards.js
+    output: { definition: workflow, notes: json }
+  - id: shards
+    needs: [plan]
+    workflow: { from: plan }
+```
+
+`plan` prints its outputs as JSON, a workflow included:
+
+```text
+{"definition":{"definition":{"schemaVersion":"v1alpha1","name":"shards","description":"One job per package.","steps":[{"id":"api","command":"npm test -w api"},{"id":"web","command":"npm test -w web"}]}},"notes":{"packages":2}}
+```
+
+| Output type | Holds |
+| --- | --- |
+| `workflow` | A bundle: `definition`, the workflow to run, and optionally `workflows`, the named workflows it runs, `scorers`, generated scorer pins, and `teamRevision`, the team commit whose scorers it uses. |
+| `json` | Any JSON value. Expressions cannot read into it; top-level `outputs` can pass it whole. |
+
+`workflow: { from: <step> }` runs the bundle of a step it `needs`. When that step reports, teamai checks the bundle as `workflow start` checks a file, pins it, and keeps it for the run. A bundle it cannot take, one that holds a secret value, a `from` step, a `prompt_file` step or `finally` steps, fails the producing step `invalid_output` with the reason. The producing step runs once, outside any loop or `for_each`. A run with a `from` step is [isolated](#isolated-runs).
+
+## Clone workspaces
+
+```yaml
+  - id: try-fix
+    workspace:
+      clone:
+        commit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+        team: { treatment: none }
+    prompt: Fix the failing test.
+```
+
+A step with `workspace: { clone: { commit, repo?, team } }` runs in a fresh clone of `commit` outside the checkout: its own git data, no remotes, hooks off. `team` names the team assets installed for it, under a home of its own: `{ treatment: none }`, or `{ revision, selection, treatment }` with `treatment` `pulled`, a ref, or `{ without: [<path>, ...] }`. `selection` holds `primaryRole`, `additionalRoles`, `projects`, `subscribedTags` and `excludedSkills` as your config names them, and `enabledAgents`, the tools the assets install for: by default the tool of the step that opens the clone, else your enabled agents. teamai makes the clone offline, from the run's checkout or the commit cache; `repo` only names the cache, never a URL. A workflow step that opens a clone owns it for every `continue` step under it. Nothing in a clone is pushed or delivered. [Benchmarks](benchmarks.md) write these steps for you.
+
+### Isolated runs
+
+A run is isolated when one of its steps opens a clone or runs `workflow: { from }`. It runs only on the machine that started it: `workflow publish` and `--claim` refuse it with `isolated_run`, and `workflow retry` refuses it and names the command that starts a new run. Its record carries `isolated: true`, still reaches `teamai-reports` with usage reporting on, and counts in no workflow total.
+
 ## Expression reference
 
 An `if` is an expression. The rules for which steps it can read, and for what counts as true, are in [Workflows](workflow.md).
@@ -580,7 +652,7 @@ Pass the whole list, as `explain` does in `fan-build`, when the prompt needs eve
 
 ## Requirements and limits
 
-A step says what it needs in `requires`. `defaults.requires` in a workflow file applies to each step in it. A step's own keys replace those, and `env` lists add up. The workflow file can also set `setup`, `timeout`, and `budget`, and a prompt step can set `max_turns`.
+A step says what it needs in `requires`. `defaults.requires` in a workflow file applies to each step in it. A step's own keys replace those, and `env` lists add up. The workflow file can also set `setup`, `timeout`, and `budget`, and a prompt step can set `max_turns`, `on_limit` and `permissions`.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -610,10 +682,13 @@ steps:
 | `requires.env` | Gives the step these [team env](sharing.md#env-environment-variables) keys. Every other team env key, and every key another step of the run requires, is kept from it. Only key names enter the run. A key with no value on this machine fails the step `missing_env` before it runs, and the message names what gives it one: see [A required key with no value here](#a-required-key-with-no-value-here). A step `env:` entry that names a team secret or a required key fails `env_conflict`. | The step waits. |
 | `requires.network` | `false` asks that the step get no network. | The step runs, and its `unenforced` lists `network`. The local driver cannot deny the network. |
 | `requires.isolation` | `none`, `worktree`, or `sandbox`. A step with a workspace has at least `worktree`. | The step runs, and its `unenforced` lists `isolation`. |
+| `requires.strict` | `true` makes `isolation` and `network` at this level a floor: every step under it gets at least them, whatever an inner level asks. A strict `isolation: sandbox` also keeps `GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN`, `GL_TOKEN`, `CI_JOB_TOKEN`, `SSH_AUTH_SOCK`, `GIT_ASKPASS` and `SSH_ASKPASS` from every process of the step, and pull refuses a step under it whose `requires.env` names one. With `--driver local`, a start the local driver could never run is refused `requirement_unmet`. | The step waits. A strict sandbox also needs `can.env: true`. |
 | `setup` | The driver runs `command` in each workspace it creates, before the step. Setup gets its `requires.env` keys; a step gets them only if it requires them too. Setup fails the step without running it, and the workspace is removed, when it exits non-zero (`setup_failed`), changes a file git would commit (`setup_dirty`), or leaves the value of one of its keys in a file it wrote, ignored files included (`setup_secret`). The step's `timeout` bounds setup. | Steps with a workspace wait. |
 | `timeout` | `500ms`, `30s`, `10m`, or `2h`, on a step or the workflow file. A step past it is stopped and ends with outcome `timeout`. On a workflow step, it stops every step inside. On the workflow file, the run ends `failed` with `timeout`. A retry starts the timeout again. | Not a capability. Every driver gets `expiresAt` on the lease. |
-| `budget` | `{ tokens: N }` on the workflow file or a workflow step. Input and output tokens of every step under it count from when it starts: the run's from its start, a workflow step's from each time it starts, such as a loop's next pass. A retry starts the budget again. Once they pass `N`, its open steps stop and it fails `budget_exceeded`. | A headless prompt under a budget waits. Its success report without tokens fails `budget_unmeasured`. An interactive prompt runs, since a person drives it; when its report has no tokens, its `unenforced` lists `budget`. |
+| `budget` | `{ tokens: N }` on the workflow file, a workflow step, or a prompt step with `on_limit: end_turn`. Input and output tokens of every step under it count from when it starts: the run's from its start, a workflow step's from each time it starts, such as a loop's next pass. A retry starts the budget again. Once they pass `N`, its open steps stop and it fails `budget_exceeded`. | A headless prompt under a budget waits. Its success report without tokens fails `budget_unmeasured`. An interactive prompt runs, since a person drives it; when its report has no tokens, its `unenforced` lists `budget`. |
 | `max_turns` | Caps the agent turns of a prompt step. The local driver passes it to headless Claude only. | The step runs, and its `unenforced` lists `max_turns`. |
+| `permissions` | `unattended` on a prompt step: its tool edits files and runs commands without asking. Only under a strict `isolation: sandbox`, set on the step, a step around it, `defaults`, or the step that runs its workflow: a start without one is refused `unattended_unsandboxed`, and a [workflow a step printed](#run-a-workflow-a-step-printed) without one fails that step `invalid_output`. See [Unattended prompts](#unattended-prompts). | The step waits. A run whose only driver lacks `can.unattended` fails it `tool_unavailable`. |
+| `on_limit` | `end_turn` on a prompt step with `timeout`, `max_turns` or `budget`: reaching one, counted from the tool's launch, ends the agent's turn instead of failing the step. The step succeeds with `limit` set and keeps its work, so the steps after it still run. On a workflow step with `timeout` or `budget`, those are what its prompts may spend together, one turn at a time: once spent, its pending steps are skipped. `fail`, the default, fails the step at the limit. A step handed back keeps the deadline of its first lease. | Without `can.end_turn`, the step runs under `fail`, and its `unenforced` lists `on_limit`. |
 
 `unenforced` is on the lease, the step, and the run record. Each `interactive: true` step also needs a driver with HITL, as [HITL](#hitl-human-in-the-loop) describes.
 
@@ -629,7 +704,7 @@ workflows:
 ```
 
 - `allow.network: false` holds each step that requires `network: true`. `allow.env` holds each step whose `requires.env`, or whose setup's, names a key it does not list. `wait.held[].missing` names `policy.network` or `policy.env`. A bad `allow` in `~/.teamai/config.yaml` stops workflow commands until it is fixed, so a typo never lifts a restriction.
-- `sandbox: true` says this host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation.
+- `sandbox: true` says this host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation. A step with [`permissions: unattended`](#unattended-prompts) then runs its tool without asking, in whatever workspace the step uses, your own checkout included. `teamai workflow start` and `resume` take `--sandbox` to declare it for one process.
 - `max_parallel` also caps how many leases of one run every driver on this machine holds at once.
 
 `allow.network` filters declared step requests. Setup declares only environment keys in v1 and receives no network restriction from that setting. To guarantee that setup and steps cannot reach the network, use a driver and host that enforce it for every process.
@@ -641,15 +716,45 @@ A driver other than `local` declares what it can do in `driver.can` on each `nex
 | `driver.can` key | The driver |
 |---|---|
 | `hitl` | Lets a person answer HITL requests and work in interactive steps. |
-| `workspace` | Takes leases in these workspace modes: `read-only`, `new`, `continue`. |
+| `workspace` | Takes leases in these workspace modes: `read-only`, `new`, `continue`, `clone`. A clone step is leased only through [`next --prepare`](#clone-workspaces-in-your-own-driver). |
 | `env` | `true`: resolves `lease.envScope.provide` itself, removes `lease.envScope.withhold`, and keeps the values from what runs the step. `"commands"`: does that for command steps and setup only, so a prompt step with `requires.env` waits. A driver whose agent runs the step leaves it out, or sends `"commands"` when it starts the commands itself. teamai before 0.28.0 answers `"commands"` with `invalid_json`. |
 | `setup` | Runs `lease.setup.command`, with `lease.setup.envScope`, in each workspace it creates and in one whose setup never finished, and fails the step with the codes above. Every lease with a workspace carries `setup` when the workflow declares it. |
 | `tokens` | Reports the tokens of every successful headless prompt step. |
 | `max_turns` | Passes `lease.maxTurns` to the tools it can cap, and reports `"unenforced":["max_turns"]` for the others. |
 | `network` | Can deny a step the network. |
 | `isolation` | Keeps every step at this level: `none`, `worktree`, or `sandbox`. |
+| `tools` | Launches a prompt step that names its `tool` on these tools, such as `["claude"]`. Without it, no such step. |
+| `end_turn` | Ends a prompt's turn at `lease.limits` and reports the `limit` it stopped at, with `durationMs`. |
+| `unattended` | Launches a prompt leased with `permissions: "unattended"` in its tool's own mode for editing and running commands without asking, and fails the step rather than launch a tool that has none. |
 
-An omitted key means the driver cannot. `next` lists any other key in `ignored`. The skill driver of a [coding session](workflow.md#run-from-a-coding-session) declares `hitl`, every `workspace` mode, `env: "commands"`, and `setup`. It never declares `tokens`, `max_turns`, or `network`, and its `isolation` is `none`.
+An omitted key means the driver cannot. Isolation is best effort, unless `strict: true` makes it a floor. `next` lists any other key in `ignored`. The skill driver of a [coding session](workflow.md#run-from-a-coding-session) declares `hitl`, every `workspace` mode, `env: "commands"`, and `setup`. It never declares `tokens`, `max_turns`, `network`, or `unattended`, and its `isolation` is `none`: a coding session never bypasses its person's permissions.
+
+### Unattended prompts
+
+A tool started headless asks before it edits a file or runs a command, and with no one there to answer, the step does nothing. `permissions: unattended` lets the prompt's tool go ahead, so give it only where the machine is one you can throw away:
+
+```yaml
+schemaVersion: v1alpha1
+name: unattended-fix
+description: Fix a failing test on a disposable machine.
+steps:
+  - id: work
+    prompt: Fix the failing test.
+    permissions: unattended
+    requires: { isolation: sandbox, strict: true }
+```
+
+The local driver then launches the tool in its own mode for that:
+
+| Tool | Launched with |
+|---|---|
+| Claude Code, and the tools on its flags | `--permission-mode bypassPermissions` |
+| CodeBuddy, WorkBuddy | `--permission-mode bypassPermissions` |
+| Codex CLI, and the tools on its flags | `--dangerously-bypass-approvals-and-sandbox` |
+| OpenCode | `--auto`, which still keeps what a permission rule denies |
+| agy | `--dangerously-skip-permissions` |
+
+A tool teamai knows no such mode of fails the step `tool_unavailable`, and is never launched without it. The `Unattended prompts` column of [Tool support](tool-support.md) says which tools have one, and on what evidence. The lease carries `permissions: "unattended"`, so a driver of your own sees it; only one with `can.unattended` takes the step.
 
 ### A required key with no value here
 
@@ -928,6 +1033,22 @@ A driver can leave the workspace and its git to TeamAI. `next <run> --prepare --
 To prepare an attempt the driver already leased, run `next <run> --prepare --attempt <attempt>`. It answers `wrong_attempt` when the run no longer leases that attempt to the driver. With `--adopt <dir>`, the attempt runs in a place the host made: a clean worktree of this repository on the lease's workspace branch, or detached at its start, as `git worktree add` makes it. A place that does not fit answers `adopt_mismatch`, and the attempt stays leased. TeamAI commits and pushes there as in its own worktree, and never removes the place.
 
 What TeamAI records to prepare an attempt stays on this machine: paths and file fingerprints, with no prompt, env value, or graph.
+
+## Clone workspaces in your own driver
+
+```text
+teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"end_turn":true}},"running":[]}'
+```
+
+With `--prepare`, teamai makes a [clone step](#clone-workspaces)'s clone on this machine, installs its team assets and runs setup, then answers the lease with `cwd`, the clone. A call can take as long as setup takes. A clone step is held from a driver that does not list `clone` in `workspace` or does not ask with `--prepare`, and `wait.held[].missing` names `workspace.clone` or `prepare`.
+
+For each lease the driver:
+
+1. Runs every process with `lease.env` and `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`, so a `teamai` call from it changes no run, and without the names in `lease.envScope.withhold`. It runs a command lease, such as `teamai benchmark check`, in `cwd`, or in its own workspace for a lease without one, and reports the JSON it prints as `outputs`.
+2. Launches a prompt lease's `lease.tool` in `cwd` on `lease.prompt`, with `lease.model` as given, and holds it to `lease.limits` from the tool's launch.
+3. Reports a prompt with `tool`, the `model`, `session` and `tokens` the tool reported, `durationMs` measured around the tool launch only, and `cost` (`{"amount":0.12,"unit":"USD"}`) only when the tool stated one. When a limit stopped the tool, the report has `outcome: "success"` and `limit`: `timeout`, `budget` or `max_turns`; a `budget` or `max_turns` the driver could not hold the tool to goes in `unenforced`. A report whose `limit` the lease does not set answers `invalid_report`, as does one with `changes` or `read`, which teamai fills from the clone.
+
+`src/__tests__/e2e/benchmark-driver-contract.test.ts` checks this contract against a driver that runs a [benchmark](benchmarks.md#your-own-driver).
 
 ## Judge work in your own driver
 

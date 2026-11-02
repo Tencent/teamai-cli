@@ -860,6 +860,8 @@ export async function initHttp(
     additionalRoles: [],
     ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
+    // A re-init keeps the member's workflow settings.
+    ...(existingLocalConfig?.workflows ? { workflows: existingLocalConfig.workflows } : {}),
   };
   try {
     Object.assign(localConfig, await promptForRoleProfile(localConfig.repo, localConfig.username, options.role));
@@ -1507,6 +1509,8 @@ export async function initSelfRepo(options: GlobalOptions & {
     branchHome: path.join(partitionHome, SELF_BRANCH_HOME_DIRNAME),
     additionalRoles: [],
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
+    // A re-init keeps the member's workflow settings.
+    ...(preInitConfig?.workflows ? { workflows: preInitConfig.workflows } : {}),
   };
   try {
     Object.assign(localConfig, await promptForRoleProfile(localConfig.repo, localConfig.username, options.role));
@@ -2448,6 +2452,8 @@ export async function init(options: GlobalOptions & {
     additionalRoles: [],
     ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
+    // A re-init keeps the member's workflow settings.
+    ...(carriedConfig?.workflows ? { workflows: carriedConfig.workflows } : {}),
   };
 
   if (!rolePromptedEarly) {

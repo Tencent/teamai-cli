@@ -12,6 +12,7 @@ import { inProcessClient } from '../../workflow/protocol.js';
 import { pendingRecords } from '../../workflow/records.js';
 import { readRun } from '../../workflow/store.js';
 import type { WorkflowEnvelope } from '../../workflow/types.js';
+import { benchmarkRunConfig, startBenchmarkRun } from './benchmark-fixture.js';
 
 /** The origin of the CLI conformance install, where nothing listens. */
 export const UNREACHABLE_ORIGIN = 'http://127.0.0.1:9/team/workflow.git';
@@ -25,7 +26,13 @@ export const UNREACHABLE_ORIGIN = 'http://127.0.0.1:9/team/workflow.git';
 export async function inProcessConformanceRunner(scenario: ConformanceScenario, root: string, options: { checkout?: true } = {}): Promise<{
   runner: Omit<ConformanceRunner, 'expect'>; places: Record<string, string>; printed: (value: unknown) => unknown;
 }> {
-  for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
+  if ('benchmark' in scenario) {
+    // A trial reads the user-scope config, so this machine's own stays out of the scenario.
+    vi.stubEnv('HOME', root);
+    vi.stubEnv('USERPROFILE', root);
+  } else {
+    for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
+  }
   if (options.checkout) {
     const git = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], { cwd: root, encoding: 'utf8' });
     git('init', '-q', '-b', 'main');
@@ -37,7 +44,8 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
   const knowledge = path.join(root, 'knowledge');
   const data = path.join(root, 'data');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
-  const config: LocalConfig = {
+  // A benchmark run needs a git team, which no install here provides, so it is made in process as startBenchmark makes it.
+  const config: LocalConfig = 'benchmark' in scenario ? benchmarkRunConfig(root) : {
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester',
     scope: 'project',
@@ -45,13 +53,17 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
     projectRoot: root,
     dataHome: data,
   };
-  fs.writeFileSync(path.join(knowledge, 'workflows', `${scenario.workflowName}.yaml`), scenario.yaml);
-  for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) {
-    fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
+  if (!('benchmark' in scenario)) {
+    fs.writeFileSync(path.join(knowledge, 'workflows', `${scenario.workflowName}.yaml`), scenario.yaml);
+    for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) {
+      fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
+    }
+    await syncWorkflowDefinitions(config);
   }
-  await syncWorkflowDefinitions(config);
   const env = await resolveWorkflowEnv(config);
-  const client = inProcessConformanceClient(inProcessClient({ config, env }));
+  const client = inProcessConformanceClient(inProcessClient({ config, env }), async (name) => ('benchmark' in scenario && scenario.benchmark.name === name
+    ? startBenchmarkRun(config, scenario.benchmark)
+    : { error: { code: 'benchmark_not_found', message: `This scenario has no suite "${name}"` } }));
   return {
     runner: {
       client: options.checkout ? { ...client, start: (name, start) => client.start(name, { ...start, checkout: root }) } : client,
@@ -84,6 +96,7 @@ export function recorded(client: ConformanceClient): { client: ConformanceClient
     envelopes,
     client: {
       start: (name, options) => keep('start', client.start(name, options).then((envelope) => (options?.driver === 'skill' ? withoutSkillNext(envelope) : envelope))),
+      startBenchmark: (suite) => keep('startBenchmark', client.startBenchmark(suite)),
       next: (runId, body, options) => keep('next', client.next(runId, body, options)),
       report: (runId, body, options) => keep('report', client.report(runId, body, options)),
       respond: (runId, step, choice, options) => keep('respond', client.respond(runId, step, choice, options)),

@@ -1,7 +1,9 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { canonicalJson } from '../utils/canonical-json.js';
 import type { ScorerDefinition } from './definition.js';
+import type { RunSubject } from './label.js';
 
 /** What the evidence could not hold, and says so instead of guessing. */
 export const EVIDENCE_GAPS = [
@@ -23,6 +25,25 @@ const FENCE = '<<<TEAMAI_UNTRUSTED_EVIDENCE>>>';
 
 export function evidenceDirOf(scoresDir: string, attempt: string): string {
   return path.join(scoresDir, 'evidence', attempt);
+}
+
+/**
+ * `<scoresDir>/evidence/subjects/s<13 hex>/`: the evidence of one pass whose workspace does not outlive its report, such
+ * as a benchmark trial's clone, collected when the pass was reported. Every judge of the pass reads it from here.
+ */
+export function subjectEvidenceDirOf(scoresDir: string, subject: RunSubject): string {
+  return path.join(scoresDir, 'evidence', 'subjects', `s${createHash('sha256').update(canonicalJson(subject)).digest('hex').slice(0, 13)}`);
+}
+
+/** Removes the collected evidence of `subjects`, whose verdicts are frozen, so no judge reads it again. */
+export async function removeSubjectEvidence(scoresDir: string, subjects: readonly RunSubject[]): Promise<void> {
+  const root = path.join(scoresDir, 'evidence', 'subjects');
+  const remove = new Set(subjects.map((subject) => path.basename(subjectEvidenceDirOf(scoresDir, subject))));
+  const names = await fs.readdir(root).catch((): string[] => []);
+  // A collection stopped midway leaves its `.tmp-` sibling.
+  await Promise.all(names
+    .filter((name) => remove.has(name.split('.tmp-')[0] ?? name))
+    .map((name) => fs.rm(path.join(root, name), { recursive: true, force: true, maxRetries: 3 })));
 }
 
 /** `text` whole when it fits in `max` characters, else its head and its tail around a line that says what was cut. */

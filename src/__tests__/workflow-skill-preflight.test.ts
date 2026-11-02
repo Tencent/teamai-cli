@@ -82,6 +82,22 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+// One step, then two finally steps at once: describe counts the finally steps as steps the run runs.
+const CLEANED = `schemaVersion: v1alpha1
+name: cleaned
+description: Lint, then report and clean up at once
+invoke: allow
+steps:
+  - id: lint
+    command: node -e "process.exit(0)"
+finally:
+  - id: report
+    command: node -e "process.exit(0)"
+  - id: clean
+    needs: []
+    command: node -e "process.exit(0)"
+`;
+
 // Two steps at once, then an optional approval: describe recommends running both at once, with the agent deciding.
 const WIDE = `schemaVersion: v1alpha1
 name: wide
@@ -229,6 +245,16 @@ describe('skill driver preflight', () => {
       ].join('\n'),
       start: 'teamai workflow start lint --driver skill',
     } } } });
+  });
+
+  it('counts finally steps among the steps a run runs, and asks how many run at once when two finally steps can', async () => {
+    const made = await harness({ cleaned: CLEANED });
+    expect(await made.call({ kind: 'describe', name: 'cleaned' })).toMatchObject({ data: { describe: {
+      workflow: { facts: { width: 2, runs: ['lint', 'report', 'clean'].map((step) => ({ step, executor: 'command', env: [] })) } },
+      ask: { kind: 'ask', question: { text: expect.stringContaining('- It can run up to 2 steps at once.') } },
+    } } });
+    expect(await made.call({ kind: 'start', name: 'cleaned', answers: { confirmed: false }, inputs: undefined }))
+      .toMatchObject({ error: { code: 'confirm_needed' } });
   });
 
   it('routes a run whose continue step needs env to the local driver', async () => {
