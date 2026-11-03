@@ -193,14 +193,16 @@ async function ensureWorktree(
  * {@link ensureWorktree}, and whether the checkout matches origin already:
  * created just now from a fetch this call made, pushed by it, or created while
  * origin has no such branch. A sync right after would only repeat that fetch.
+ * `isFetched` is true only for the first: the other two leave `origin/<branch>`
+ * as it was, which may be a ref left from a branch origin has since deleted.
  */
 async function openWorktree(
   spec: BranchWorktreeSpec,
   localConfig: LocalConfig,
   options: EnsureWorktreeOptions = {},
-): Promise<{ wt: string; current: boolean }> {
+): Promise<{ wt: string; current: boolean; isFetched: boolean }> {
   if (!usesBranchWorktree(localConfig)) {
-    return { wt: getWorktreeDir(localConfig, spec.worktreeDirname), current: false };
+    return { wt: getWorktreeDir(localConfig, spec.worktreeDirname), current: false, isFetched: false };
   }
 
   const wt = worktreePath(spec, localConfig);
@@ -222,7 +224,7 @@ async function openWorktree(
     if (await gitOpensCheckout(wt)) {
       await refuseForeignCheckout(spec, wt, repoRoot);
 
-      return { wt, current: false };
+      return { wt, current: false, isFetched: false };
     }
 
     await refuseUnprovenCheckout(spec, wt, repoRoot);
@@ -285,7 +287,7 @@ async function openWorktree(
       // so branching off it without tracking is correct in every clone (#706).
       await git.raw(['worktree', 'add', wt, '--no-track', '-b', spec.branch, `origin/${spec.branch}`]);
 
-      return { wt, current: fetched };
+      return { wt, current: fetched, isFetched: fetched };
     }
   } else {
     // Remote branch absent. A read-only cold start (or a failed first push)
@@ -306,17 +308,17 @@ async function openWorktree(
         // `--progress` keeps a slow upload alive under the block timeout, as in fetchTrackingRef.
         await createGitWithBlockTimeout(wt).push(['--progress', '-u', 'origin', spec.branch]);
 
-        return { wt, current: true };
+        return { wt, current: true, isFetched: false };
       } catch (e) {
         log.debug(`[${spec.logTag}] initial push skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (onOrigin === false) {
       // Origin said just now it has no such branch: nothing to sync from.
-      return { wt, current: true };
+      return { wt, current: true, isFetched: false };
     }
   }
 
-  return { wt, current: false };
+  return { wt, current: false, isFetched: false };
 }
 
 /**
@@ -972,9 +974,10 @@ async function commitAndPushImpl(
  */
 export interface BranchWriteContext {
   /**
-   * Whether this update fetched or pushed the branch just before `write`, so
+   * Whether this update fetched the branch just before `write`, so
    * `origin/<branch>` holds what origin held when the lock was taken. False
-   * when origin could not be reached and that ref may be stale.
+   * when origin could not be reached, or had no such branch, and that ref may
+   * be stale.
    */
   readonly isOriginFresh: boolean;
 
@@ -1017,9 +1020,9 @@ async function updateImpl(
   }
 
   try {
-    const { wt, current } = await openWorktree(spec, localConfig, options);
+    const { wt, current, isFetched } = await openWorktree(spec, localConfig, options);
 
-    let isOriginFresh = current;
+    let isOriginFresh = isFetched;
 
     try {
       if (!current) isOriginFresh = await syncWorktree(spec, wt);
