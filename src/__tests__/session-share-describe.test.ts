@@ -10,7 +10,8 @@ afterEach(() => {
 });
 
 const SESSION_CALL = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: '7c1e-session', tool: 'claude' } as const;
-const NO_SESSION = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: undefined, tool: undefined } as const;
+// It names its tool, which the judge step of teamai-score runs on, but no session.
+const NO_SESSION = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: undefined, tool: 'claude' } as const;
 
 /** A team override of teamai-share-learnings with `inputs` and one step that reads none of them. */
 const override = (inputs: string) => `schemaVersion: v1alpha1

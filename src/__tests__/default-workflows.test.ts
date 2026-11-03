@@ -101,7 +101,7 @@ describe('default workflows', () => {
       fields: { learnings: { type: 'array', items: { type: 'object', fields: { title: { type: 'string' }, file: { type: 'string' }, namespace: { type: 'string' } } } } },
     });
     const tree = await loadWorkflowTree(config, learnings);
-    expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-session']);
+    expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-session', 'teamai-score']);
   });
 
   it('are never written to the workflow cache', async () => {
@@ -239,7 +239,7 @@ steps:
     const wrap = await loadCachedWorkflow(config, 'wrap-up');
     if (!wrap) throw new Error('wrap-up is not runnable');
     const tree = await loadWorkflowTree(config, wrap);
-    expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-session']);
+    expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-session', 'teamai-score']);
   });
 
   it('record on the run and its start record that it ran teamai\'s default at this version, and a team run that it ran the team\'s', async () => {
