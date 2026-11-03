@@ -640,6 +640,7 @@ steps:
 `;
   const SPLIT_ANSWERS = { 'Plan the change.': 'Planned it.', 'Build it.': 'Built it.', 'Check it.': 'Checked it.', 'Wrap it up.': 'Wrapped it up.' };
 
+  // Three handovers run about 330 git processes, which took up to 16.5 s on a macOS CI runner.
   it('continues the plan\'s session with every turn a step added on either machine, when the run goes back and forth', async () => {
     const acme = team({ split: SPLIT });
     const alice = await acme.member('alice');
@@ -666,7 +667,7 @@ steps:
       ['Wrap it up.', ['Planned it.', 'Built it.', 'Checked it.']],
     ]);
     expect(await readRun(bob.config, runId)).toMatchObject({ status: 'succeeded' });
-  });
+  }, 60_000);
 
   it('resumes the session a copy continued when the copy was never archived, rather than starting a new one', async () => {
     const acme = team({ split: SPLIT });

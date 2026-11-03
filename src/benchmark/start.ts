@@ -4,6 +4,7 @@
  */
 import fs from 'node:fs/promises';
 import os from 'node:os';
+
 import path from 'node:path';
 import { isRecordableLabel, isRecordableName, observeCheckout } from '../agent-observation.js';
 import { loadLocalConfigForScope } from '../config.js';
@@ -25,7 +26,8 @@ import type { WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
 import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PlannedArm } from './plan.js';
-import { defaultsArmOf, parseSuite, type Arm, type Suite, type TaskJudge } from './suite.js';
+import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskJudge } from './suite.js';
+import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import type { ArmTeam, SkillChanges } from './terms.js';
@@ -194,7 +196,10 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const skillChanges = await skillChangesOf(config, arms, { baseline: revision, defaults: defaultsArmOf(found)?.name });
 
   if ('refused' in skillChanges) return refuse(skillChanges.refused);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, skillChanges: skillChanges.changes });
+  const covered = await coveredTaskRefusal(config, { tasks: found.tasks, pulled: revision, arms, member: selectionOf(config) });
+
+  if ('refusal' in covered) return refuse(covered.refusal);
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes });
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
@@ -208,6 +213,51 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
 }
 
 type ArmResolution = { ok: true; arm: PlannedArm } | { ok: false; message: string };
+
+/**
+ * Why start refuses the paths the suite's tasks cover, or undefined when every one can be compared: a path the pulled
+ * team revision does not have or that no arm's clone receives (`coveredDelivery`, the same resolvers as an arm's
+ * `without`), and
+ * two covered skill paths of the same bare name, which a trial's load record could not tell apart.
+ */
+async function coveredTaskRefusal(config: LocalConfig, { tasks, pulled, arms, member }: { tasks: readonly Task[]; pulled: string; arms: readonly PlannedArm[]; member: TeamSelection }): Promise<{ refusal: Refusal } | { skills: Record<string, string | null>; withheldFrom: Record<string, string[]> }> {
+  const covers = tasks.flatMap((task) => task.covers ?? []);
+
+  if (covers.length === 0) return { skills: {}, withheldFrom: {} };
+
+  const listed = await teamFilesAt(config, { paths: covers, revision: pulled });
+
+  // SAFETY: teamFilesAt fails only with `arm_team_unresolved`, reworded for the plan step that reads the team once.
+  if ('failed' in listed) return { refusal: error('arm_team_unresolved', `A task covers ${listed.failed.message}`) };
+
+  // Two different paths may share one bare skill name, which a trial's load record cannot tell apart; the same path twice is one.
+  const byName = new Map<string, string>();
+
+  for (const covered of new Set(covers)) {
+    const bare = coveredSkillName(covered, listed.files);
+
+    if (bare === undefined) continue;
+
+    const other = byName.get(bare);
+
+    if (other !== undefined) {
+      return { refusal: error('task_covers_ambiguous', `Tasks cover ${other} and ${covered}, two skills of the same name ${bare}, which a trial's load record cannot tell apart. Cover one of them, fix the team's tasks, push them, run teamai pull, and start again.`) };
+    }
+
+    byName.set(bare, covered);
+  }
+
+  const delivered = await coveredDelivery(config, { paths: [...new Set(covers)], revision: pulled, arms, member, files: listed.files });
+
+  if ('refusal' in delivered) return { refusal: error('arm_team_unresolved', delivered.refusal.message) };
+
+  const skills = new Map<string, string | null>();
+
+  for (const covered of new Set(covers)) skills.set(covered, coveredSkillName(covered, listed.files) ?? null);
+
+  return { skills: Object.fromEntries(skills), withheldFrom: delivered.withheldFrom };
+}
+
 
 /** A refusal before any run exists. */
 type Refusal = ReturnType<typeof error>;
@@ -226,10 +276,10 @@ async function plannedArm(config: LocalConfig, arm: Arm, pulled: string, aliases
 
 /**
  * The team assets of `arm` as the plan freezes them: a ref resolved, as `pull --team-ref` resolves it, to a commit on the
- * team remote; the paths it runs without checked at the pulled revision (`withoutRefusal`). An arm without team assets is refused on a
+ * team remote; the paths it runs without checked at the pulled revision, with the arm's role (`withoutRefusal`). An arm without team assets is refused on a
  * machine whose user-scope install delivers to its tool, since the tool would read those assets from the home.
  */
-async function resolveTeam(config: LocalConfig, { name, tool, team }: Arm, pulled: string): Promise<{ ok: true; team: ArmTeam } | Refused> {
+async function resolveTeam(config: LocalConfig, { name, tool, team, role }: Arm, pulled: string): Promise<{ ok: true; team: ArmTeam } | Refused> {
   switch (team.kind) {
     case 'pulled':
       return { ok: true, team: { kind: 'pulled', revision: pulled } };
@@ -258,7 +308,7 @@ async function resolveTeam(config: LocalConfig, { name, tool, team }: Arm, pulle
     }
 
     case 'without': {
-      const refusal = await withoutRefusal(config, { arm: name, paths: team.paths, revision: pulled, selection: selectionOf(config) });
+      const refusal = await withoutRefusal(config, { arm: name, paths: team.paths, revision: pulled, selection: selectionOf(config), role });
 
       if (refusal?.code === 'arm_team_unreadable') return { ok: false, refused: error('arm_team_unreadable', refusal.message) };
 
