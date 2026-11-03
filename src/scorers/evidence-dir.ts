@@ -13,8 +13,6 @@ import { judgeSession, SessionWork, writeSessionEvidence, type JudgedSession } f
 import { JsonValueSchema, type JsonValue } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
 import { redact } from '../utils/redact.js';
-import { judgeablePasses } from '../workflow/judge-work.js';
-import { findRunConfig } from '../workflow/run-location.js';
 import type { RunState } from '../workflow/types.js';
 import { pinScorers } from './cache.js';
 import type { ScorerDefinition } from './definition.js';
@@ -23,7 +21,7 @@ import { requiredIsolation, scorerIsolationSource } from './isolation.js';
 import { ISOLATIONS, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type RunSubject } from './label.js';
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import type { ScoreAttempt } from './score-attempt.js';
-import type { Refusal } from './score-plan.js';
+import { judgeablePass, type Refusal } from './score-plan.js';
 import { buildEvidence, isDelivered, missingEvidence } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
 import { Subject } from './subject.js';
@@ -95,18 +93,6 @@ async function pinsOf(names: readonly string[], run: RunState | undefined, attem
   const rubrics = rubricsOf([first, ...rest]);
 
   return rubrics ? { scorers: [first, ...rest], rubrics } : refused('scorer_not_found', `A scorer of ${names.join(', ')} does not parse.`);
-}
-
-/** The run whose pass is judged, and the tool that ran it, or why there is none. */
-async function passRun(attempt: ScoreAttempt, subject: RunSubject): Promise<{ run: RunState; tool: string | undefined } | Refusal> {
-  const found = await findRunConfig(subject.runId, attempt.config);
-
-  if ('error' in found) return refused(found.error.code, found.error.message);
-  const pass = judgeablePasses(found.run).find((each) => each.pass.step === subject.step && each.pass.pass === subject.pass);
-
-  if (!pass) return refused('pass_not_found', `Run ${subject.runId} has no pass ${subject.pass} of step ${subject.step} whose agent succeeded, so it has nothing to judge.`);
-
-  return { run: found.run, tool: pass.pass.tool };
 }
 
 /** The session judged: one of this machine, or one a member pushed, read from the archive. */
@@ -184,9 +170,9 @@ async function judgeRecords(attempt: ScoreAttempt, group: GroupRecord, rubrics: 
 }
 
 async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: readonly string[], hand: boolean): Promise<EvidenceOutput | Refusal> {
-  const ran = await passRun(attempt, subject);
+  const ran = await judgeablePass(attempt.config, subject);
 
-  if ('ok' in ran) return ran;
+  if (!ran.ok) return ran;
   const pinned = await pinsOf(names, ran.run, attempt);
 
   if ('ok' in pinned) return pinned;
@@ -200,7 +186,7 @@ async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: re
 
   const written = await passEvidence(attempt, ran.run, subject, pinned.rubrics);
 
-  return written.ok ? judgeRecords(attempt, group, pinned.rubrics, ran.tool) : written;
+  return written.ok ? judgeRecords(attempt, group, pinned.rubrics, ran.pass.tool) : written;
 }
 
 async function sessionEvidence(attempt: ScoreAttempt, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[], hand: boolean): Promise<EvidenceOutput | Refusal> {

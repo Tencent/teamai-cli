@@ -27,9 +27,11 @@ export interface ScoreVerbContext {
   readJudgeRun?: ReadJudgeRun;
 }
 
-export type ScoreVerbAnswer = { ok: true; output: JsonObject } | { ok: false; code: string; message: string };
+export type ScoreVerbAnswer = { ok: true; output: JsonObject } | Refused;
 
-function refused(code: string, message: string): ScoreVerbAnswer {
+type Refused = { ok: false; code: string; message: string };
+
+function refused(code: string, message: string): Refused {
   return { ok: false, code, message };
 }
 
@@ -52,41 +54,14 @@ function scorersOf(value: string | undefined): string[] | undefined {
   }
 }
 
-export interface PlanOptions {
-  subject?: string;
-  scorers?: string;
-  label?: string;
-  batch?: string;
-  demand?: string;
-}
-
-async function plan(options: PlanOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
-  const read = await ScoreAttempt.read('plan', ctx.env, ctx.current);
-
-  if (!read.ok) return read;
-  const subject = Subject.parse(options.subject ?? '');
-
-  if (!subject.ok) return subject;
-  const scorers = scorersOf(options.scorers);
-
-  if (!scorers) return refused('invalid_arguments', `--scorers ${options.scorers ?? ''} is neither a JSON array of scorer names nor names joined by ",".`);
-  const demand = DEMANDS.find((value) => value === (options.demand ?? 'auto'));
-
-  if (!demand) return refused('invalid_arguments', `--demand ${options.demand ?? ''} is neither auto nor named.`);
-
-  if (options.batch !== undefined && options.batch !== 'true' && options.batch !== 'false') return refused('invalid_arguments', `--batch=${options.batch} is neither true nor false.`);
-  const planned = await planGroups({ attempt: read.attempt, subject: subject.subject, scorers, label: options.label ?? '', batch: options.batch === 'true', demand, now: ctx.now });
-
-  return planned.ok ? { ok: true, output: { groups: planned.groups.map((group) => ({ ...group })) } } : planned;
-}
-
 export interface EvidenceOptions {
   subject?: string;
   scorers?: string;
 }
 
-async function evidence(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
-  const read = await ScoreAttempt.read('evidence', ctx.env, ctx.current);
+/** The attempt a verb on a subject runs in, that subject, and the scorers `--scorers` names. */
+async function subjectAt(verb: string, options: EvidenceOptions, ctx: ScoreVerbContext): Promise<{ ok: true; attempt: ScoreAttempt; subject: Subject; scorers: string[] } | Refused> {
+  const read = await ScoreAttempt.read(verb, ctx.env, ctx.current);
 
   if (!read.ok) return read;
   const subject = Subject.parse(options.subject ?? '');
@@ -95,13 +70,44 @@ async function evidence(options: EvidenceOptions, ctx: ScoreVerbContext): Promis
   const scorers = scorersOf(options.scorers);
 
   if (!scorers) return refused('invalid_arguments', `--scorers ${options.scorers ?? ''} is neither a JSON array of scorer names nor names joined by ",".`);
-  const written = await EvidenceDir.write(read.attempt, { subject: subject.subject, scorers, hand: read.attempt.hand !== '' });
+
+  return { ok: true, attempt: read.attempt, subject: subject.subject, scorers };
+}
+
+export interface PlanOptions extends EvidenceOptions {
+  label?: string;
+  batch?: string;
+  demand?: string;
+}
+
+const BatchSchema = z.enum(['true', 'false']).default('false');
+
+async function plan(options: PlanOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const at = await subjectAt('plan', options, ctx);
+
+  if (!at.ok) return at;
+  const demand = DEMANDS.find((value) => value === (options.demand ?? 'auto'));
+
+  if (!demand) return refused('invalid_arguments', `--demand ${options.demand ?? ''} is neither auto nor named.`);
+  const batch = BatchSchema.safeParse(options.batch);
+
+  if (!batch.success) return refused('invalid_arguments', `--batch=${options.batch ?? ''} is neither true nor false.`);
+  const planned = await planGroups({ attempt: at.attempt, subject: at.subject, scorers: at.scorers, label: options.label ?? '', batch: batch.data === 'true', demand, now: ctx.now });
+
+  return planned.ok ? { ok: true, output: { groups: planned.groups.map((group) => ({ ...group })) } } : planned;
+}
+
+async function evidence(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const at = await subjectAt('evidence', options, ctx);
+
+  if (!at.ok) return at;
+  const written = await EvidenceDir.write(at.attempt, { subject: at.subject, scorers: at.scorers, hand: at.attempt.hand !== '' });
 
   return written.ok ? { ok: true, output: { ...written.output } } : written;
 }
 
 /** The attempt a verb on a group's evidence runs in, and that group as `score evidence` wrote it in a directory of this run's. */
-async function groupAt(verb: string, dir: string | undefined, ctx: ScoreVerbContext): Promise<{ ok: true; attempt: ScoreAttempt; dir: string; group: GroupRecord } | Extract<ScoreVerbAnswer, { ok: false }>> {
+async function groupAt(verb: string, dir: string | undefined, ctx: ScoreVerbContext): Promise<{ ok: true; attempt: ScoreAttempt; dir: string; group: GroupRecord } | Refused> {
   const read = await ScoreAttempt.read(verb, ctx.env, ctx.current);
 
   if (!read.ok) return read;
@@ -165,16 +171,10 @@ async function write(options: WriteOptions, ctx: ScoreVerbContext): Promise<Scor
 }
 
 async function settle(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
-  const read = await ScoreAttempt.read('settle', ctx.env, ctx.current);
+  const at = await subjectAt('settle', options, ctx);
 
-  if (!read.ok) return read;
-  const subject = Subject.parse(options.subject ?? '');
-
-  if (!subject.ok) return subject;
-  const scorers = scorersOf(options.scorers);
-
-  if (!scorers) return refused('invalid_arguments', `--scorers ${options.scorers ?? ''} is neither a JSON array of scorer names nor names joined by ",".`);
-  const settled = await ScoreLabels.settle(read.attempt, subject.subject, scorers, { now: ctx.now });
+  if (!at.ok) return at;
+  const settled = await ScoreLabels.settle(at.attempt, at.subject, at.scorers, { now: ctx.now });
 
   return settled.ok ? { ok: true, output: { settled: settled.settled } } : settled;
 }

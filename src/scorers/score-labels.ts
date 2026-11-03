@@ -102,13 +102,10 @@ function labelOf({ group, run, now, hash }: Labelling, member: Member, given: Sc
     const { context, subject } = group.judged;
     const label: ScoreLabel = { ...verdict, source: 'session', subject };
 
-    if (context?.used) label.used = context.used;
+    if (!context) return label;
+    const { prompt: _prompt, ...facts } = context;
 
-    if (context?.agent) label.agent = context.agent;
-
-    if (context?.runMode) label.runMode = context.runMode;
-
-    return label;
+    return { ...label, ...facts };
   }
 
   const facts: JudgedFacts = run ? judgedFacts(run, group.judged.subject) : {};
@@ -164,9 +161,8 @@ async function stageEntries(labelling: Labelling, dir: string, members: readonly
   }
 }
 
-/** The entries of the judge's answer: one label per member, or one code for all of them. */
-function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run }: { answer: string | undefined; judged: string | undefined; run: JudgeRun | undefined }): Entry[] {
-  if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged === undefined || judged === '' ? 'without running' : judged}, so it gave no answer.`);
+/** The verdict on each member that the judge's `answer` gives, or why it gives none. */
+function verdictsIn(members: readonly [Member, ...Member[]], answer: string | undefined): ReturnType<typeof verdictsOf<Member>> {
   let parsed: unknown;
 
   try {
@@ -176,7 +172,14 @@ function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member
   }
 
   const given = JudgeAnswerSchema.safeParse(parsed);
-  const verdicts = given.success ? verdictsOf(members, (member) => member.definition, given.data) : { ok: false as const, message: 'The answer is not JSON of the answer schema.' };
+
+  return given.success ? verdictsOf(members, (member) => member.definition, given.data) : { ok: false, message: 'The answer is not JSON of the answer schema.' };
+}
+
+/** The entries of the judge's answer: one label per member, or one code for all of them. */
+function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run }: { answer: string | undefined; judged: string | undefined; run: JudgeRun | undefined }): Entry[] {
+  if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged === undefined || judged === '' ? 'without running' : judged}, so it gave no answer.`);
+  const verdicts = verdictsIn(members, answer);
 
   if (!verdicts.ok) return failedAll(members, 'judge_answer_invalid', verdicts.message);
 
@@ -195,14 +198,8 @@ function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member
   });
 }
 
-/** Why an entry is not the label its group may give: the same rules `label` built it by, read again. */
-function entryProblem(group: GroupRecord, members: readonly Member[], entry: Entry, index: number, byHand: boolean): string | undefined {
-  const member = members[index];
-
-  if (!member || member.name !== entry.scorer) return `entry ${index + 1} is not of scorer ${member?.name ?? '(none)'}`;
-
-  if (entry.kind === 'failed') return undefined;
-  const { label } = entry;
+/** Why `label` is not one `member` gives on the group's subject, by hand when `byHand`. */
+function labelProblem(group: GroupRecord, member: Member, label: ScoreLabel, byHand: boolean): string | undefined {
   const given = member.definition.labels.find((candidate) => candidate.value === label.label);
 
   if (label.scorer !== member.name || label.rubric.sourceHash !== member.pin.sourceHash) return `the label of ${member.name} is not of its pinned rubric`;
@@ -211,9 +208,16 @@ function entryProblem(group: GroupRecord, members: readonly Member[], entry: Ent
 
   if ((label.judge.kind === 'human') !== byHand) return `the label of ${member.name} ${byHand ? 'is not' : 'is'} a hand label, which only a run a person started gives`;
 
-  if (canonicalJson(label.subject) !== canonicalJson(group.judged.subject)) return `the label of ${member.name} is of another subject`;
+  return canonicalJson(label.subject) === canonicalJson(group.judged.subject) ? undefined : `the label of ${member.name} is of another subject`;
+}
 
-  return undefined;
+/** Why an entry is not the label its group may give: the same rules `label` built it by, read again. */
+function entryProblem(group: GroupRecord, members: readonly Member[], entry: Entry, index: number): string | undefined {
+  const member = members[index];
+
+  if (!member || member.name !== entry.scorer) return `entry ${index + 1} is not of scorer ${member?.name ?? '(none)'}`;
+
+  return entry.kind === 'failed' ? undefined : labelProblem(group, member, entry.label, group.hand);
 }
 
 /** The run of a pass subject, when it is still on this machine. */
@@ -311,7 +315,7 @@ export const ScoreLabels = {
     if (!members || !entries) return refused('evidence_unreadable', `${dir} holds no labels that teamai score label wrote. Run the label step first.`);
 
     if (group.hand && !isByHand(attempt, group)) return refused('hand_label_refused', `Run ${attempt.run.id} was not started by a person, so its label input is not a hand label.`);
-    const problems = entries.length === members.length ? entries.flatMap((entry, index) => entryProblem(group, members, entry, index, group.hand) ?? []) : ['the entries are not one per scorer of the group'];
+    const problems = entries.length === members.length ? entries.flatMap((entry, index) => entryProblem(group, members, entry, index) ?? []) : ['the entries are not one per scorer of the group'];
 
     if (problems.length > 0) return refused('label_invalid', `${dir}/${LABELS} cannot be written: ${problems.join('; ')}. Nothing was written.`);
     const run = await subjectRun(attempt, group);

@@ -13,11 +13,13 @@ import { judgeablePasses } from '../workflow/judge-work.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { workflowBatch } from '../workflow/scope.js';
 import { readRun } from '../workflow/store.js';
-import type { WorkflowStep } from '../workflow/types.js';
+import type { RunPass } from '../workflow/loop.js';
+import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
 import { batchesScorers } from './batch.js';
 import { pinScorers } from './cache.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
 import { chooseJudgeModel } from './judge-model.js';
+import type { RunSubject } from './label.js';
 import { Marks, type Demand, type Launch, type MarkFacts, type MarkKey } from './marks.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import { isSampled } from './sampling.js';
@@ -107,27 +109,35 @@ function pinned(names: readonly string[], pins: Readonly<Record<string, PinnedSc
   return candidates;
 }
 
-async function runJudged(request: PlanRequest, subject: Extract<Subject, { kind: 'run' }>['subject'], teamBatch: boolean | undefined): Promise<Judged | Refusal> {
-  const found = await findRunConfig(subject.runId, request.attempt.config);
+/** The run of `subject` on this machine and its pass, when its agent succeeded, so the pass has work to judge. */
+export async function judgeablePass(config: LocalConfig, subject: RunSubject): Promise<{ ok: true; run: RunState; pass: RunPass; step: WorkflowStep } | Refusal> {
+  const found = await findRunConfig(subject.runId, config);
 
   if ('error' in found) return refused(found.error.code, found.error.message);
-  const { run } = found;
-  const pass = judgeablePasses(run).find((each) => each.pass.step === subject.step && each.pass.pass === subject.pass);
+  const judgeable = judgeablePasses(found.run).find(({ pass }) => pass.step === subject.step && pass.pass === subject.pass);
 
-  if (!pass) return refused('pass_not_found', `Run ${run.id} has no pass ${subject.pass} of step ${subject.step} whose agent succeeded, so it has nothing to judge.`);
-  const step: WorkflowStep = pass.definition;
-  const names = request.scorers.length > 0 ? request.scorers : step.scorers?.names ?? [];
-  const candidates = pinned(names, run.scorers ?? {}, `pinned by run ${run.id}`);
+  if (!judgeable) return refused('pass_not_found', `Run ${subject.runId} has no pass ${subject.pass} of step ${subject.step} whose agent succeeded, so it has nothing to judge.`);
+
+  return { ok: true, run: found.run, pass: judgeable.pass, step: judgeable.definition };
+}
+
+async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: boolean | undefined): Promise<Judged | Refusal> {
+  const found = await judgeablePass(request.attempt.config, subject);
+
+  if (!found.ok) return found;
+  const { run, pass } = found;
+  const own: StepScorers = found.step.scorers ?? { names: [] };
+  const candidates = pinned(request.scorers.length > 0 ? request.scorers : own.names, run.scorers ?? {}, `pinned by run ${run.id}`);
 
   if (!Array.isArray(candidates)) return candidates;
   const delivered = isDelivered(run, subject);
-  const all = step.scorers?.sampling === 'all';
+  const all = own.sampling === 'all';
 
   return {
     candidates,
     sampled: (candidate) => all || isSampled(candidate.name, subject, candidate.definition.samplingRate),
-    batch: batchesScorers({ step: step.scorers?.batch, workflow: workflowBatch(run, subject.step), team: teamBatch }),
-    prefer: pass.pass.tool === undefined ? [] : [pass.pass.tool],
+    batch: batchesScorers({ step: own.batch, workflow: workflowBatch(run, subject.step), team: teamBatch }),
+    prefer: pass.tool === undefined ? [] : [pass.tool],
     stagesOf: (candidate) => (delivered ? scorerStages(request.attempt, candidate.definition) : []),
     alone: (candidate) => delivered && candidate.definition.check !== undefined,
     key: (candidate) => ({ scorer: candidate.name, subject: { kind: 'run', subject } }),

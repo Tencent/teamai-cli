@@ -51,19 +51,27 @@ export const passOf = (run: RunState, subject: RunSubject): StepPass | undefined
  * answer, which is warned of.
  */
 export async function ciStage(run: RunState, subject: RunSubject, pass: StepPass | undefined): Promise<CiVerdict> {
-  const receipt = run.deliveries?.find((each) => each.step === subject.step && each.pass === subject.pass);
-  const head = pass?.delivery?.head;
+  const delivered = deliveredCommit(run, subject, pass);
 
-  if (!receipt || !head || !run.checkout) return { kind: 'judge' };
-  const ci = await deliveredCi({ checkout: run.checkout, commit: head });
+  if (!delivered) return { kind: 'judge' };
+  const { url, head } = delivered;
+  const ci = await deliveredCi({ checkout: delivered.checkout, commit: head });
 
-  if (ci.kind === 'unanswered') log.warn(`The CI of ${receipt.url} could not be read, so the judge of step "${subject.step}" decides without it: ${ci.reason}`);
+  if (ci.kind === 'unanswered') log.warn(`The CI of ${url} could not be read, so the judge of step "${subject.step}" decides without it: ${ci.reason}`);
 
   if (ci.kind === 'read' && ci.status === 'pending') return { kind: 'pending', head };
 
   if (ci.kind !== 'read' || ci.status !== 'failed') return { kind: 'judge' };
 
-  return { kind: 'decided', by: 'ci', reasoning: `Decided by CI, before any judge: the checks of commit ${head} on ${receipt.url} failed.` };
+  return { kind: 'decided', by: 'ci', reasoning: `Decided by CI, before any judge: the checks of commit ${head} on ${url} failed.` };
+}
+
+/** The pull request the pass delivered and its commit, with the checkout it was made from, when it delivered one. */
+function deliveredCommit(run: RunState, subject: RunSubject, pass: StepPass | undefined): { url: string; head: string; checkout: string } | undefined {
+  const receipt = run.deliveries?.find((each) => each.step === subject.step && each.pass === subject.pass);
+  const head = pass?.delivery?.head;
+
+  return receipt && head && run.checkout ? { url: receipt.url, head, checkout: run.checkout } : undefined;
 }
 
 /** The delivery's own refusal of the pass, recorded when it changed a path no pull request TeamAI opens may change. */
