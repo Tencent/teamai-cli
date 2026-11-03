@@ -115,11 +115,16 @@ export function skillDefinitionOf(skill: string): string {
   return `${skill}/SKILL.md`;
 }
 
+/** An arm as the covers check reads it: a team-free arm (`team: none`) pulls nothing, so it receives no covered path. */
+type CoveringArm = Pick<Arm, 'name' | 'role'> & Partial<Pick<Arm, 'team'>>;
+
 /**
- * Every selection the run's arms pull under, with the arms that pull under it: the member's own when an arm runs with no
- * role, then each arm's role, so a path only one role receives is not refused and one no arm receives is.
+ * Every selection the run's arms pull under, with the arms that pull under it: the member's own when an arm with team
+ * assets runs with no role, then each arm's role, so a path only one role receives is not refused and one no arm
+ * receives is.
  */
-export function armSelections(arms: ReadonlyArray<Pick<Arm, 'name' | 'role'>>, member: TeamSelection): Array<{ selection: TeamSelection; arms: string[] }> {
+export function armSelections(planned: readonly CoveringArm[], member: TeamSelection): Array<{ selection: TeamSelection; arms: string[] }> {
+  const arms = planned.filter(({ team }) => team?.kind !== 'none');
   const roles = [...new Set(arms.flatMap(({ role }) => (role !== undefined ? [role] : [])))];
   const own = arms.some(({ role }) => role === undefined) ? [member] : [];
 
@@ -136,7 +141,7 @@ export function armSelections(arms: ReadonlyArray<Pick<Arm, 'name' | 'role'>>, m
  */
 export async function coveredDelivery(
   config: LocalConfig,
-  { paths, revision, arms, member, files }: { paths: readonly string[]; revision: string; arms: ReadonlyArray<Pick<Arm, 'name' | 'role'>>; member: TeamSelection; files: readonly string[] },
+  { paths, revision, arms, member, files }: { paths: readonly string[]; revision: string; arms: readonly CoveringArm[]; member: TeamSelection; files: readonly string[] },
 ): Promise<{ refusal: Refusal } | { withheldFrom: Record<string, string[]> }> {
   const short = revision.slice(0, 7);
   const selections = armSelections(arms, member);
