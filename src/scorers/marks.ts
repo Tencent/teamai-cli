@@ -89,7 +89,10 @@ const LineSchema = z.discriminatedUnion('state', [
 
 type Line = z.infer<typeof LineSchema>;
 
-type LineState = Line extends infer Each ? Each extends Line ? Omit<Each, keyof typeof Mark> : never : never;
+type StateOf<TLine> = TLine extends unknown ? Omit<TLine, keyof typeof Mark> : never;
+
+/** A line without the key and time every line has: what one state adds. */
+type LineState = StateOf<Line>;
 
 /** What a next automatic launch carries on: the lapses so far, and when the mark was last asked for. */
 interface Restart {
@@ -340,9 +343,9 @@ export const Marks = {
         if (spends) slots.add(slot);
 
         for (const { key, line } of starts) {
-          if (line) lines.push(line);
-
-          if (line) ledger.newest.set(idOf(key), { key, line });
+          if (!line) continue;
+          lines.push(line);
+          ledger.newest.set(idOf(key), { key, line });
         }
 
         outcome.opened.push({ group, keys: starts.map(({ key }) => key) });
