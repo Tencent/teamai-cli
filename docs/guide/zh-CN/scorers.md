@@ -420,7 +420,7 @@ $ teamai score --run r24df… --step review --pass 1 --scorer review-quality --l
 {"error":{"code":"invalid_arguments","message":"--label labels a session. To label pass 1 of step review of run r24df… by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs '{\"subject\":\"run:r24df…:review:1\",\"scorers\":[\"review-quality\"],\"label\":\"missed-bug\",\"batch\":false,\"demand\":\"named\"}'"}}
 $ teamai workflow start teamai-score --driver local --inputs '{"subject":"run:r24df…:review:1","scorers":["review-quality"],"label":"missed-bug","batch":false,"demand":"named"}'
 ℹ Run re440… started. If it stops before it ends, continue it with: teamai workflow resume re440…
-{"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}]}}]}},"cancelled":[]}}
+{"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}],"written":["9c41…"]}}]}},"cancelled":[]}}
 ```
 
 该标签以 `judge: { kind: "human" }` 存储，并由该运行的 `publish` 步骤发送到 `teamai-reports`，与会话相同。

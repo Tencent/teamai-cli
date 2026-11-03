@@ -378,7 +378,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   };
 }
 
-// Labels one pass as teamai-score does: a plan, then per group its evidence, a judge confined to it, and the label.
+// Labels one pass as teamai-score does: a plan, then per group its evidence, a judge confined to it, the label and its write.
 export const LABEL_PASS = (level: 'verified' | 'best-effort') => `schemaVersion: v1alpha1
 name: label-pass
 description: Label one pass
@@ -392,7 +392,7 @@ steps:
     for_each: steps.plan.outputs.groups
     continue_on_failure: true
     workflow:
-      outputs: { labels: steps.label.outputs.labels }
+      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels }
       steps:
         - id: evidence
           command: node -e "const p=require('path'),fs=require('fs'),d=p.join(process.env.TEAMAI_RUN_DIR,'evidence');fs.mkdirSync(d);fs.writeFileSync(p.join(d,'confined.json'),JSON.stringify({level:'${level}'}))"
@@ -406,6 +406,10 @@ steps:
           command: node -e "process.stdout.write(JSON.stringify({labels:[{scorer:process.env.SCORER,label:process.env.LABEL,code:''}]}))"
           env: { SCORER: "{{ item }}", LABEL: "{{ steps.judge.outputs.label }}" }
           output: { labels: [{ scorer: string, label: string, code: string }] }
+        - id: write
+          needs: [label]
+          command: node -e "process.stdout.write(JSON.stringify({labels:['v1']}))"
+          output: { labels: [string] }
 outputs: { labels: steps.score.results }
 `;
 
