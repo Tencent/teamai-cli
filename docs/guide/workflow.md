@@ -387,7 +387,7 @@ teamai workflow start share-standup --inputs '{"member":"alice","note":"Shipped 
 - Only what the step staged is published, and only the member's own files: those whose second path segment, less its extension, is the member's username, such as `scores/alice/2026-11.jsonl` or `votes/alice.yaml`. Any other file, or a deletion, fails the step with `push_failed`, and nothing is published.
 - A step that stages nothing succeeds and pushes nothing. Its run makes no copy, opens no pull request, and `workflow publish` takes it.
 - In an [isolated run](workflow-advanced.md#isolated-runs), such as a benchmark run, the step is skipped once it is ready, and its `message` says why, so no driver needs the team workspace for it.
-- Offline, while another teamai process writes the branch, with an http team repo, or when origin changed what the step staged, the step succeeds and its message says the data is pending. A commit origin could not take stays on this machine, and `teamai score --push` sends it. A producer keeps what it publishes until it finds it on origin's tip, as `teamai score publish` does with labels.
+- Offline, while another teamai process writes the branch, with an http team repo, or when origin changed what the step staged, the step succeeds and its message says the data is pending. A commit origin could not take stays on this machine, and the next `teamai pull`, `teamai score --push` or `teamai score --drain` sends it. `teamai score --drain` names the branch whose data stays pending, and exits 1. A producer keeps what it publishes until it finds it on origin's tip, as `teamai score publish` does with labels.
 - The local driver runs it, and so does the skill driver on a host that starts child agents.
 
 ### A prompt confined to a directory
