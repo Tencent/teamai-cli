@@ -221,9 +221,18 @@ function rowOf(record: ReadRecord): RunRow {
 /** What the page shows of judging, by `${step}#${pass}`: the labels, and on this machine why the others have none. */
 type Judging = ReadonlyMap<string, Pick<PassJudging, 'scores'> & Partial<PassJudging>>;
 
-function stepRow(entry: StepEntry, status: string, judging: Judging | undefined, gate?: Gate): StepRow {
-  const pass = judging?.get(`${entry.step}#${entry.pass}`);
+/** Adds to `row` its pass's labels, and on this machine why its other scorers have none and its score runs. */
+function addJudging(row: StepRow, judging: Judging): void {
+  const pass = judging.get(`${row.step}#${row.pass}`);
 
+  if (pass?.scores.length) row.scores = pass.scores;
+
+  if (pass?.unlabelled?.length) row.unlabelled = pass.unlabelled;
+
+  if (pass?.scoreRuns?.length) row.scoreRuns = pass.scoreRuns;
+}
+
+function stepRow(entry: StepEntry, status: string, judging: Judging, gate?: Gate): StepRow {
   const outcomes = entry.outcomes?.flatMap((outcome) => {
     const parsed = WorkOutcomeSchema.safeParse(outcome);
 
@@ -239,11 +248,7 @@ function stepRow(entry: StepEntry, status: string, judging: Judging | undefined,
 
   if (gate) row.gate = gate;
 
-  if (pass?.scores.length) row.scores = pass.scores;
-
-  if (pass?.unlabelled?.length) row.unlabelled = pass.unlabelled;
-
-  if (pass?.scoreRuns?.length) row.scoreRuns = pass.scoreRuns;
+  addJudging(row, judging);
 
   if (outcomes?.length) row.outcomes = outcomes;
 
@@ -400,23 +405,26 @@ function localDetail(run: RunState, row: LocalRunRow, judging: Judging, scoring:
   return { run: row, steps: withHarnessChanges(steps), scoring };
 }
 
+/** A run of this machine with how judging stands for it here, or undefined when there is no such run. */
+async function localRunDetail(config: LocalConfig, runId: string): Promise<RunDetail | undefined> {
+  const run = await readRun(config, runId);
+
+  if (run === 'missing' || run === 'corrupt') return undefined;
+
+  const [records, judging, benchmark] = await Promise.all([
+    runRecordStates(config, run.status === 'running' ? [] : [run]),
+    RunJudging.of(config, [run], new Date().toISOString()).then((byRun) => byRun.get(runId)),
+    benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
+  ]);
+
+  return { ...localDetail(run, localRow(run, records), judging?.passes ?? new Map(), await RunJudging.total(config, runId, judging)), ...benchmark };
+}
+
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */
 export async function workflowRunDetail(config: LocalConfig, source: 'local' | 'reported', runId: string): Promise<RunDetail | undefined> {
   if (!isRunId(runId)) return undefined;
 
-  if (source === 'local') {
-    const run = await readRun(config, runId);
-
-    if (run === 'missing' || run === 'corrupt') return undefined;
-
-    const [records, judging, benchmark] = await Promise.all([
-      runRecordStates(config, run.status === 'running' ? [] : [run]),
-      RunJudging.of(config, [run], new Date().toISOString()).then((byRun) => byRun.get(runId)),
-      benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
-    ]);
-
-    return { ...localDetail(run, localRow(run, records), judging?.passes ?? new Map(), await RunJudging.total(config, runId, judging)), ...benchmark };
-  }
+  if (source === 'local') return localRunDetail(config, runId);
 
   if (usesBranchWorktree(config)) {
     // The history refreshes the checkout; a detail only checks it is this repository's.

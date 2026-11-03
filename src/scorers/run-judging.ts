@@ -42,13 +42,9 @@ export interface PassJudging {
 
 const passKey = (subject: Pick<RunSubject, 'step' | 'pass'>): string => `${subject.step}#${subject.pass}`;
 
-/** Why `state` leaves a scorer without a label, when it is `sampled`; undefined for a labelled mark, whose label shows. */
-function unlabelledOf(state: MarkState, sampled: { is: boolean; rate: number }, expiresAt: string): Unlabelled | undefined {
+/** Why a mark a score run took leaves its scorer without a label. */
+function startedWhy(state: Extract<MarkState, { kind: 'open' | 'waiting' | 'lapsed' | 'failed' }>, expiresAt: string): Unlabelled {
   switch (state.kind) {
-    case 'unmarked':
-      return sampled.is ? { kind: 'queued' } : { kind: 'not_sampled', samplingRate: sampled.rate };
-    case 'expired':
-      return sampled.is ? { kind: 'expired' } : { kind: 'not_sampled', samplingRate: sampled.rate };
     case 'open':
       return { kind: 'judging', run: state.run, since: state.at };
     case 'waiting':
@@ -57,14 +53,31 @@ function unlabelledOf(state: MarkState, sampled: { is: boolean; rate: number }, 
       return { kind: 'lapsed', lapses: state.lapses, expiresAt };
     case 'failed':
       return { kind: 'failed', code: state.code };
-    case 'labelled':
-      return undefined;
     default: {
       const unhandled: never = state;
 
       return unhandled;
     }
   }
+}
+
+/** Why `state` leaves a scorer without a label, when it is `sampled`; undefined for a labelled mark, whose label shows. */
+function unlabelledOf(state: MarkState, sampled: { is: boolean; rate: number }, expiresAt: string): Unlabelled | undefined {
+  if (state.kind === 'labelled') return undefined;
+
+  if (state.kind !== 'unmarked' && state.kind !== 'expired') return startedWhy(state, expiresAt);
+
+  if (!sampled.is) return { kind: 'not_sampled', samplingRate: sampled.rate };
+
+  return state.kind === 'unmarked' ? { kind: 'queued' } : { kind: 'expired' };
+}
+
+/** Whether automatic judging samples `scorer` on `subject`, at the rate `run` pinned; a step that judges every pass samples all. */
+function samplingOf(run: RunState, subject: RunSubject, scorer: string, isAll: boolean) {
+  const pin = run.scorers?.[scorer];
+  const rate = (pin && pinnedDefinition(scorer, pin)?.samplingRate) ?? 0;
+
+  return { is: isAll || isSampled(scorer, subject, rate), rate };
 }
 
 /** The root runs of the score workflow on this machine, by the subject they label, oldest first. */
@@ -90,6 +103,24 @@ export interface RunJudgingState {
 
 const stateKey = (subject: RunSubject, scorer: string): string => JSON.stringify([subject.runId, subject.step, subject.pass, scorer]);
 
+/** Adds to `pass` why each of `scorers` this install judges has no label, and gives the failed judge calls among them. */
+function addUnlabelled(pass: PassJudging, subject: RunSubject, scorers: readonly string[], context: { run: RunState; stateOf: ReadonlyMap<string, MarkState>; expiresAt: string; isAll: boolean }): number {
+  let failedJudgeCalls = 0;
+
+  for (const scorer of scorers) {
+    const state = context.stateOf.get(stateKey(subject, scorer));
+
+    if (!state) continue;
+
+    if (state.kind === 'failed' && state.code !== 'check_could_not_run') failedJudgeCalls += 1;
+    const why = pass.scores.some((score) => score.scorer === scorer) ? undefined : unlabelledOf(state, samplingOf(context.run, subject, scorer, context.isAll), context.expiresAt);
+
+    if (why) pass.unlabelled.push({ scorer, state: why });
+  }
+
+  return failedJudgeCalls;
+}
+
 /** `run`'s passes from its `labels`, and why every other scorer of a pass this install judges has no label. */
 function judgingOf(run: RunState, scored: ReturnType<typeof scoredPasses>, labels: ReadonlyMap<string, PassScore[]>, stateOf: ReadonlyMap<string, MarkState>, scoreRuns: ReadonlyMap<string, PassJudging['scoreRuns']>): RunJudgingState {
   const definitionOf = stepDefinitions(run);
@@ -99,21 +130,10 @@ function judgingOf(run: RunState, scored: ReturnType<typeof scoredPasses>, label
 
   for (const { subject, scorers } of scored) {
     const pass = passes.get(passKey(subject)) ?? { scores: [], unlabelled: [], scoreRuns: [] };
-    const all = definitionOf(subject.step)?.scorers?.sampling === 'all';
     passes.set(passKey(subject), pass);
     pass.scores.sort((left, right) => scorers.indexOf(left.scorer) - scorers.indexOf(right.scorer));
     pass.scoreRuns = scoreRuns.get(Subject.format({ kind: 'run', subject })) ?? [];
-
-    for (const scorer of scorers) {
-      const state = stateOf.get(stateKey(subject, scorer));
-      const pin = run.scorers?.[scorer];
-      const rate = (pin && pinnedDefinition(scorer, pin)?.samplingRate) ?? 0;
-      const why = state && !pass.scores.some((score) => score.scorer === scorer) ? unlabelledOf(state, { is: all || isSampled(scorer, subject, rate), rate }, expiresAt) : undefined;
-
-      if (state?.kind === 'failed' && state.code !== 'check_could_not_run') failedJudgeCalls += 1;
-
-      if (why) pass.unlabelled.push({ scorer, state: why });
-    }
+    failedJudgeCalls += addUnlabelled(pass, subject, scorers, { run, stateOf, expiresAt, isAll: definitionOf(subject.step)?.scorers?.sampling === 'all' });
   }
 
   return { passes, failedJudgeCalls };

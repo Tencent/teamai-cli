@@ -6,9 +6,10 @@
 import type { Decider, JudgeFailureCode, ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { Marks } from '../scorers/marks.js';
-import { RunJudging, type Unlabelled } from '../scorers/run-judging.js';
+import { RunJudging, type RunJudgingState, type Unlabelled } from '../scorers/run-judging.js';
 import { scopeScoring } from '../scorers/settings.js';
 import type { LocalConfig } from '../types.js';
+import type { RunState } from '../workflow/types.js';
 import { listedRuns } from './workflow-runs.js';
 
 const DAYS = 7;
@@ -77,48 +78,54 @@ function lastDays(now: string): Date[] {
   });
 }
 
-export async function judgingHealth(config: LocalConfig, now: string): Promise<JudgingHealth> {
-  const runs = await listedRuns(config);
-  const days = lastDays(now);
+/** A listed pass's scorer, keyed `step#pass` in its run's judging, as the missing labels list it. */
+function missingLabel(run: RunState, key: string, scorer: string, state: MissingLabel['state']): MissingLabel {
+  const at = key.lastIndexOf('#');
+  const row: MissingLabel = { run: run.id, workflow: run.definition.name, step: key.slice(0, at), pass: Number(key.slice(at + 1)), scorer, state };
 
-  const [labels, judging, scoring, launches] = await Promise.all([
-    LabelStore.local(config),
-    RunJudging.of(config, runs, now),
-    scopeScoring(config),
-    Promise.all(days.map((day) => Marks.launchesToday(config, day.toISOString()))),
-  ]);
+  if (run.definition.alias !== undefined) row.alias = run.definition.alias;
 
+  return row;
+}
+
+/** The scorers of the passes of `runs` without a label: by why, the failed ones by code, and the first that sampling did not leave out. */
+function unlabelledOfRuns(runs: readonly RunState[], judging: ReadonlyMap<string, RunJudgingState>): Pick<JudgingHealth, 'states' | 'failures' | 'missing'> {
   const states: JudgingHealth['states'] = { queued: 0, not_sampled: 0, judging: 0, waiting_ci: 0, lapsed: 0, failed: 0, expired: 0 };
   const failures = new Map<JudgeFailureCode, number>();
   const missing: MissingLabel[] = [];
 
   for (const run of runs) {
     for (const [key, pass] of judging.get(run.id)?.passes ?? []) {
-      const at = key.lastIndexOf('#');
-
       for (const { scorer, state } of pass.unlabelled) {
         states[state.kind] += 1;
 
         if (state.kind === 'failed') failures.set(state.code, (failures.get(state.code) ?? 0) + 1);
 
-        if (state.kind === 'not_sampled' || missing.length >= MISSING_LIMIT) continue;
-        const row: MissingLabel = { run: run.id, workflow: run.definition.name, step: key.slice(0, at), pass: Number(key.slice(at + 1)), scorer, state };
-
-        if (run.definition.alias !== undefined) row.alias = run.definition.alias;
-        missing.push(row);
+        if (state.kind !== 'not_sampled') missing.push(missingLabel(run, key, scorer, state));
       }
     }
   }
 
-  const sessions: JudgingHealth['sessions'] = { days: days.map((day, index) => ({ day: localDay(day), launches: launches[index] ?? 0 })) };
+  return {
+    states,
+    failures: [...failures].map(([code, count]) => ({ code, count })).sort((left, right) => right.count - left.count),
+    missing: missing.slice(0, MISSING_LIMIT),
+  };
+}
+
+export async function judgingHealth(config: LocalConfig, now: string): Promise<JudgingHealth> {
+  const runs = await listedRuns(config);
+
+  const [labels, judging, scoring, days] = await Promise.all([
+    LabelStore.local(config),
+    RunJudging.of(config, runs, now),
+    scopeScoring(config),
+    Promise.all(lastDays(now).map(async (day) => ({ day: localDay(day), launches: await Marks.launchesToday(config, day.toISOString()) }))),
+  ]);
+
+  const sessions: JudgingHealth['sessions'] = { days };
 
   if (scoring.ok) sessions.dailyLimit = scoring.sessions.dailyLimit;
 
-  return {
-    labels: weekOf(labels, Date.parse(now) - DAYS * DAY_MS),
-    states,
-    failures: [...failures].map(([code, count]) => ({ code, count })).sort((left, right) => right.count - left.count),
-    missing,
-    sessions,
-  };
+  return { labels: weekOf(labels, Date.parse(now) - DAYS * DAY_MS), ...unlabelledOfRuns(runs, judging), sessions };
 }

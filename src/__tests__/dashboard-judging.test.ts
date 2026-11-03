@@ -107,14 +107,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe('what judging a run cost', () => {
   it('counts each judge call from the labels and the failed marks, a batch\'s tokens once, and no stage decision', async () => {
-    const config = await team(['quality', 'coverage', 'delivered', 'checked', 'style']);
+    const config = await team(['quality', 'coverage', 'delivered', 'checked', 'unchecked', 'style']);
     const runId = await reviewedRun(config);
     await marked(config, runId, ['quality', 'coverage'], { kind: 'labelled' });
     await label(config, runId, { scorer: 'quality', label: 'good', decidedBy: 'judge', judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read', batched: true, usage: { inputTokens: 900, outputTokens: 120 } } });
     await label(config, runId, { scorer: 'coverage', label: 'bad', decidedBy: 'judge', judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read', batched: true } });
     await marked(config, runId, ['delivered'], { kind: 'labelled' });
     await label(config, runId, { scorer: 'delivered', label: 'bad', decidedBy: 'ci' });
-    await marked(config, runId, ['checked'], { kind: 'failed', code: 'check_could_not_run' });
+    await marked(config, runId, ['checked', 'unchecked'], { kind: 'failed', code: 'check_could_not_run' });
     await marked(config, runId, ['style'], { kind: 'failed', code: 'judge_answer_invalid' });
 
     expect((await workflowRunDetail(config, 'local', runId))?.scoring).toEqual({ judged: 3, inputTokens: 900, outputTokens: 120 });
@@ -122,14 +122,14 @@ describe('what judging a run cost', () => {
 });
 
 /**
- * A pass of `review` with a scorer in each state: labelled by the judge, by hand and by CI, waiting for CI, judging in a
- * live score run, lapsed three times, failed, not sampled, and not started.
+ * A pass of `review` with a scorer in each state: labelled by CI, the judge and by hand (in that order, not the step's),
+ * waiting for CI, judging in a live score run, lapsed three times, failed, not sampled, and not started.
  */
 async function judgedPass(config: LocalConfig): Promise<{ runId: string; scoreRun: string }> {
   const runId = await reviewedRun(config);
+  await label(config, runId, { scorer: 'delivered', label: 'bad', decidedBy: 'ci' });
   await label(config, runId, { scorer: 'quality', label: 'good', decidedBy: 'judge', judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read', usage: { inputTokens: 900, outputTokens: 120 } } });
   await label(config, runId, { scorer: 'coverage', label: 'bad', judge: { kind: 'human' } });
-  await label(config, runId, { scorer: 'delivered', label: 'bad', decidedBy: 'ci' });
   await marked(config, runId, ['waiting'], { kind: 'waiting' });
   const scoreRun = await scoreRunOf(config, runId);
   await marked(config, runId, ['judging'], undefined, scoreRun);
@@ -144,6 +144,9 @@ describe("a pass's scorers on the run page", () => {
   it('shows each scorer labelled, waiting for CI, judging in its score run, lapsed, failed, not sampled or not started', async () => {
     const config = await team(EVERY_STATE, { rare: 0 });
     const { runId, scoreRun } = await judgedPass(config);
+    fs.writeFileSync(path.join(root, 'knowledge', 'workflows', 'notes.yaml'), ['schemaVersion: v1alpha1', 'name: notes', 'description: Note a pass.', 'inputs:', '  subject: string', 'steps:', '  - id: note', '    prompt: Note it.'].join('\n'));
+    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    data(await startRun(config, 'notes', { subject: `run:${runId}:review:1` }, { secrets: await knownSecrets(config) }));
     const run = await readRun(config, runId);
     if (run === 'missing' || run === 'corrupt') throw new Error(`run ${runId} is ${run}`);
 
@@ -171,24 +174,41 @@ const localDay = (at: Date): string => `${at.getFullYear()}-${String(at.getMonth
 
 describe('judging health on Workflow Runs', () => {
   it('counts the week\'s labels and judge tokens, the passes by state and failure, lists each missing label, and the session launches per day', async () => {
-    const config = await team([...EVERY_STATE, 'old'], { rare: 0 });
+    const config = await team([...EVERY_STATE, 'old', 'edge', 'broken', 'crashed'], { rare: 0 });
     const { runId, scoreRun } = await judgedPass(config);
-    await label(config, runId, { scorer: 'old', label: 'good', decidedBy: 'judge', scoredAt: new Date(Date.now() - 10 * DAY_MS).toISOString() });
-    const facts = markFacts(config, new Date().toISOString());
-    const session: MarkKey = { scorer: 'quality', sourceHash: 'h1', subject: { kind: 'session', subject: { platform: 'claude-code', sessionId: 's1' } } };
-    expect(await Marks.open(config, { run: SCORE_RUN, demand: 'auto', groups: [{ group: 'quality', keys: [session] }] }, facts)).toMatchObject({ status: 'done' });
+    const now = new Date();
+    await label(config, runId, { scorer: 'old', label: 'good', decidedBy: 'judge', scoredAt: new Date(now.getTime() - 10 * DAY_MS).toISOString() });
+    await label(config, runId, { scorer: 'edge', label: 'good', decidedBy: 'judge', scoredAt: new Date(now.getTime() - 7 * DAY_MS).toISOString() });
+    await marked(config, runId, ['broken', 'crashed'], { kind: 'failed', code: 'judge_failed' });
+    const threeDaysAgo = new Date(now);
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    threeDaysAgo.setHours(12, 0, 0, 0);
+    const session = (sessionId: string): MarkKey => ({ scorer: 'quality', sourceHash: 'h1', subject: { kind: 'session', subject: { platform: 'claude-code', sessionId } } });
+    expect(await Marks.open(config, { run: SCORE_RUN, demand: 'auto', groups: [{ group: 'quality', keys: [session('s1')] }] }, markFacts(config, now.toISOString()))).toMatchObject({ status: 'done' });
+    expect(await Marks.open(config, { run: 'r00000000000000c1', demand: 'auto', groups: [{ group: 'quality', keys: [session('s0')] }] }, markFacts(config, threeDaysAgo.toISOString()))).toMatchObject({ status: 'done' });
 
-    const health = await judgingHealth(config, new Date().toISOString());
+    const health = await judgingHealth(config, now.toISOString());
     const missing = (name: string) => expect.objectContaining({ run: runId, workflow: 'review', step: 'review', pass: 1, scorer: name });
 
-    expect(health.labels).toEqual({ total: 3, passed: 1, byDecider: { judge: 1, hand: 1, ci: 1 }, inputTokens: 900, outputTokens: 120 });
-    expect(health.states).toEqual({ queued: 1, not_sampled: 1, judging: 1, waiting_ci: 1, lapsed: 1, failed: 1, expired: 0 });
-    expect(health.failures).toEqual([{ code: 'judge_answer_invalid', count: 1 }]);
-    expect(health.missing).toEqual([missing('waiting'), missing('judging'), missing('lapsed'), missing('style'), missing('queued')]);
+    expect(health.labels).toEqual({ total: 4, passed: 2, byDecider: { judge: 2, hand: 1, ci: 1 }, inputTokens: 900, outputTokens: 120 });
+    expect(health.states).toEqual({ queued: 1, not_sampled: 1, judging: 1, waiting_ci: 1, lapsed: 1, failed: 3, expired: 0 });
+    expect(health.failures).toEqual([{ code: 'judge_failed', count: 2 }, { code: 'judge_answer_invalid', count: 1 }]);
+    expect(health.missing).toEqual([missing('waiting'), missing('judging'), missing('lapsed'), missing('style'), missing('queued'), missing('broken'), missing('crashed')]);
+    expect(health.missing[0]).not.toHaveProperty('alias');
     expect(health.missing[1]?.state).toEqual({ kind: 'judging', run: scoreRun, since: expect.any(String) });
     expect(health.sessions.dailyLimit).toBe(10);
-    expect(health.sessions.days).toHaveLength(7);
-    expect(health.sessions.days.at(-1)).toEqual({ day: localDay(new Date()), launches: 1 });
-    expect(health.sessions.days.slice(0, -1).every(({ launches }) => launches === 0)).toBe(true);
+    expect(health.sessions.days.map(({ launches }) => launches)).toEqual([0, 0, 0, 1, 0, 0, 1]);
+    expect(health.sessions.days.at(3)?.day).toBe(localDay(threeDaysAgo));
+    expect(health.sessions.days.at(-1)?.day).toBe(localDay(now));
+  });
+
+  it('shows a sampled scorer not judged within 14 days of the run\'s last change as expired, and one sampling left out as not sampled', async () => {
+    const config = await team(['queued', 'rare'], { rare: 0 });
+    const runId = await reviewedRun(config);
+
+    const health = await judgingHealth(config, new Date(Date.now() + 15 * DAY_MS).toISOString());
+
+    expect(health.states).toEqual({ queued: 0, not_sampled: 1, judging: 0, waiting_ci: 0, lapsed: 0, failed: 0, expired: 1 });
+    expect(health.missing).toEqual([expect.objectContaining({ run: runId, scorer: 'queued', state: { kind: 'expired' } })]);
   });
 });
