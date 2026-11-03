@@ -24,12 +24,14 @@ import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { benchmarkRecordFile, BenchmarkRunRecordSchema } from '../benchmark/result.js';
 import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmark/table.js';
 import { locateStep } from '../workflow/engine.js';
-import { benchmarkRecordPath, buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
+import { benchmarkRecordPath, buildEndRecord, pullRequestBranches, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
+import { resolveRetention } from '../workflow/retention.js';
+import { loadTeamConfig } from '../config.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { PublishedRuns, type PublishedRun, type Taker } from '../workflow-published-runs.js';
 import { installOwner, isRunId, readRun, readRuns, runsDir } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
-import type { StepHitl, RunState } from '../workflow/types.js';
+import type { RunLeftovers, StepHitl, RunState } from '../workflow/types.js';
 import { HttpError, type JsonBody } from './http.js';
 
 /** The newest runs each source lists; a run still running on this machine is always listed. */
@@ -158,8 +160,17 @@ interface StepRow {
 /** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
 type ScoringTotal = Awaited<ReturnType<typeof LabelStore.scoringTotal>>;
 
+/**
+ * A settled local run's `teamai/<run>/…` branches (#1689). `cleaned`: what the run kept and deleted as it succeeded, or
+ * what `doctor --fix` removed past `workflows.retention`, with the deletions that failed. `kept`: the branches it handed
+ * out, kept for inspection, and from when `doctor --fix` removes all but the pull request ones; never under `never`.
+ */
+export type RunBranches =
+  | ({ state: 'cleaned' } & Pick<RunLeftovers, 'by' | 'at' | 'kept' | 'deleted' | 'failed'>)
+  | { state: 'kept'; branches: Array<{ branch: string; pr: boolean }>; retention: string; file?: string; eligibleAt?: string };
+
 /** `benchmark` holds an ended benchmark run's tables, as the CLI prints them. */
-export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal; benchmark?: BenchmarkCells };
+export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal; benchmark?: BenchmarkCells; branches?: RunBranches };
 
 /** A run handed over on teamai-reports: offered while `offer` is set, else held by its owner, who claimed it or resumed it. `isMine`: this install owns it. */
 export type HandoffRow = PublishedRun & { isMine: boolean };
@@ -393,6 +404,31 @@ function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string
   return { run: row, steps: withHarnessChanges(steps), scoring };
 }
 
+/** What `run` left of its branches, once it settled and handed out any. */
+async function branchesOf(config: LocalConfig, run: RunState): Promise<Pick<RunDetail, 'branches'>> {
+  if (run.status === 'running') return {};
+
+  if (run.leftovers?.revision === run.revision) {
+    const { by, at, kept, deleted, failed } = run.leftovers;
+
+    return { branches: { state: 'cleaned', by, at, kept, deleted, failed } };
+  }
+
+  const pr = new Set(pullRequestBranches(run));
+  const handed = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.kind === undefined ? [branch] : []));
+  const branches = [...new Set([...handed, ...pr])].sort().map((branch) => ({ branch, pr: pr.has(branch) }));
+
+  if (branches.length === 0) return {};
+  const { retention, file } = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
+  const kept: RunBranches = { state: 'kept', branches, retention: retention.kind === 'never' ? 'never' : retention.text };
+
+  if (file !== undefined) kept.file = file;
+
+  if (retention.kind === 'after') kept.eligibleAt = new Date(Date.parse(run.updatedAt) + retention.ms).toISOString();
+
+  return { branches: kept };
+}
+
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */
 export async function workflowRunDetail(config: LocalConfig, source: 'local' | 'reported', runId: string): Promise<RunDetail | undefined> {
   if (!isRunId(runId)) return undefined;
@@ -402,14 +438,15 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
 
     if (run === 'missing' || run === 'corrupt') return undefined;
 
-    const [records, scores, scoring, benchmark] = await Promise.all([
+    const [records, scores, scoring, benchmark, branches] = await Promise.all([
       runRecordStates(config, run.status === 'running' ? [] : [run]),
       LabelStore.ofRuns(config, [runId], { published: false }),
       LabelStore.scoringTotal(config, runId, 'local'),
       benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
+      branchesOf(config, run),
     ]);
 
-    return { ...localDetail(run, localRow(run, records), scores.get(runId), scoring), ...benchmark };
+    return { ...localDetail(run, localRow(run, records), scores.get(runId), scoring), ...benchmark, ...branches };
   }
 
   if (usesBranchWorktree(config)) {

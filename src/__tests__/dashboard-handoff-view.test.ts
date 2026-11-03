@@ -34,6 +34,7 @@ function row(run: string, { isMine, offer }: Pick<HandoffRow, 'isMine' | 'offer'
 const NONE = { env: [], prompts: [] };
 const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [], mayNeed: [], uses: NONE, lacks: [] };
 const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'], mayNeed: ['ship'], uses: NONE, lacks: [] };
+const PERHAPS = { at: '2026-10-28T09:05:00.000Z', needs: [], mayNeed: ['pair', 'ship'], uses: NONE, lacks: [] };
 const SIGNED = {
   at: '2026-10-28T09:05:00.000Z', needs: [], mayNeed: [], uses: { env: ['SIGNING_KEY'], prompts: ['notes'] },
   lacks: [{ reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'run teamai env set SIGNING_KEY, or set it in the environment' }],
@@ -57,6 +58,19 @@ describe('the Handed-off runs panel', () => {
       'teamai workflow resume r0000000000000004 --claim',
     ]);
     expect(html).toContain('This install drives it');
+  });
+
+  it('tells a run that needs a person now from one that may need a person later, which a runner takes and a person can claim', () => {
+    const now = render([row('r0000000000000002', { isMine: false, offer: GATED })]).html;
+    const later = render([row('r0000000000000003', { isMine: false, offer: PERHAPS })]).html;
+
+    expect(now).toContain('Needs a person now');
+    expect(now).not.toContain('May need a person at');
+    expect(copied(now)).toEqual(['teamai workflow resume r0000000000000002 --claim']);
+    expect(later).toContain('May need a person at');
+    expect(later).toContain('<span data-verbatim>pair, ship</span>');
+    expect(later).not.toContain('Needs a person now');
+    expect(copied(later)).toEqual(['teamai workflow resume --next', 'teamai workflow resume r0000000000000003 --claim']);
   });
 
   it('names a run by its workflow\'s alias, with the workflow\'s name under it', () => {
@@ -83,6 +97,7 @@ describe('the Handed-off runs panel', () => {
       row('r0000000000000004', { isMine: false }),
       row('r0000000000000005', { isMine: true }),
       row('r0000000000000006', { isMine: false, offer: SIGNED }),
+      row('r0000000000000007', { isMine: false, offer: PERHAPS }),
     ], 'zh-CN');
     expect(render([], 'zh-CN').keys.concat(keys).filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });

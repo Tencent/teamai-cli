@@ -86,6 +86,42 @@ describe('dashboard workflow runs', () => {
     }
   });
 
+  it('says which branches a failed run keeps, and from when doctor --fix may remove them but its pull request branch', async () => {
+    const run = await waitingRun();
+    const file = path.join(runsDir(run.config), `${run.id}.json`);
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as RunState;
+    const branch = (name: string) => `teamai/${run.id}/${name}/p1`;
+    fs.writeFileSync(file, JSON.stringify({
+      ...stored, status: 'failed', updatedAt: '2026-10-20T08:00:00.000Z',
+      copies: { [branch('change')]: { commit: 'a'.repeat(40) }, [branch('docs')]: { commit: 'b'.repeat(40) } },
+      deliveries: [{ url: 'https://github.com/acme/app/pull/7', branch: branch('change'), base: 'main', step: 'change', pass: 1 }],
+    }));
+
+    expect((await workflowRunDetail(run.config, 'local', run.id))?.branches).toEqual({
+      state: 'kept', retention: '14d', eligibleAt: '2026-11-03T08:00:00.000Z',
+      branches: [{ branch: branch('change'), pr: true }, { branch: branch('docs'), pr: false }],
+    });
+  });
+
+  it('shows what a succeeded run kept of its branches, and deleted, as it settled', async () => {
+    const run = await waitingRun();
+    const file = path.join(runsDir(run.config), `${run.id}.json`);
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as RunState;
+    const leftovers = {
+      by: 'success', at: '2026-10-20T08:00:01.000Z', revision: stored.revision, kept: [{ branch: `teamai/${run.id}/change/p1`, why: 'pr' }],
+      deleted: [`teamai/${run.id}/build-0/p1`], failed: [{ branch: `teamai/${run.id}/build-1/p1`, reason: 'on origin: deleting is not allowed' }],
+    };
+    fs.writeFileSync(file, JSON.stringify({ ...stored, status: 'succeeded', leftovers }));
+
+    const { by, at, kept, deleted, failed } = leftovers;
+    expect((await workflowRunDetail(run.config, 'local', run.id))?.branches).toEqual({ state: 'cleaned', by, at, kept, deleted, failed });
+  });
+
+  it('says nothing of the branches of a run still running', async () => {
+    const run = await waitingRun();
+    expect(await workflowRunDetail(run.config, 'local', run.id)).not.toHaveProperty('branches');
+  });
+
   it('answers a required HITL request through the non-agent dashboard channel', async () => {
     const run = await waitingRun();
     expect(await answerFromDashboard(run.config, { run: run.id, step: 'ship', pass: 1, choice: 'yes' }))

@@ -1,7 +1,8 @@
 /**
  * The Handed-off runs panel (#1390) as browser code: `handoffPanel(rows, local)` renders the `handoffs` that
  * `/api/workflows` answers, with the command that takes each run, where `local` holds the ids of the runs this machine
- * has. `needsPerson(offer)` says whether an offered run waits for a person. The dashboard client embeds it, and so
+ * has. `needsPerson(offer)` says whether an offered run waits for a person now; `mayNeed` names the steps a runner may
+ * reach that only a person can take, which the run then is offered again for. The dashboard client embeds it, and so
  * supplies `e`, `label`, `number` and `when`.
  */
 export const handoffView = `
@@ -12,6 +13,8 @@ function uses(o, title) {
  const env=o.uses.env.map(k=>label('env')+' <code data-verbatim>'+e(k)+'</code>'), prompts=o.uses.prompts.length?[label('a tool for')+' <span data-verbatim>'+o.uses.prompts.map(e).join(', ')+'</span>']:[];
  return env.length||prompts.length?'<div class="need"><span>'+label(title)+'</span><small>'+env.concat(prompts).join('<br>')+'</small></div>':'';
 }
+// Steps a runner may reach that only a person can take: it takes the run anyway, and offers it again if it reaches one.
+function maybePerson(o) { return o.mayNeed.length?'<div class="need"><span>'+label('May need a person at')+'</span><small><span data-verbatim>'+o.mayNeed.map(e).join(', ')+'</span><br>'+label('A runner takes it, and offers it again if it reaches one')+'</small></div>':''; }
 // Each lack, then what gives it, on a line of its own.
 function lacks(o) { return o.lacks.length?'<div class="need"><span class="amber">'+label('Not on this machine')+'</span>'+o.lacks.map(l=>'<small data-verbatim>'+e(l.reason)+'</small><small class="fix" data-verbatim>→ '+e(l.fix)+'</small>').join('')+'</div>':''; }
 function handoffRow(h, local) {
@@ -19,13 +22,14 @@ function handoffRow(h, local) {
  const name=local.has(h.run)?'<button class="link" data-run="'+e(h.run)+'" data-run-source="local"><span class="sr-only">'+label('Details')+' </span><span data-verbatim>'+e(h.alias||h.workflow)+'</span> ↗</button>':'<span data-verbatim>'+e(h.alias||h.workflow)+'</span>';
  const state=(o?'<span class="good">'+label('Offered')+'</span>':'<span>'+label('Held')+'</span>')+'<small>'+who+' · '+e(when(o?o.at:h.ownedAt))+'</small>';
  const needs=!o?'—':o.refusal?'<span class="amber" data-verbatim>'+e(o.refusal.message)+'</span>'
-  :(o.needs.length?'<div class="need"><span class="amber">'+label('Needs a person')+'</span><small data-verbatim>'+o.needs.map(e).join('<br>')+'</small></div>'+uses(o,'Their machine needs')
-   :uses(o,'A runner needs')||'<span class="good">'+label('Nothing: a runner can finish it')+'</span>')+lacks(o);
+  :(o.needs.length?'<div class="need"><span class="amber">'+label('Needs a person now')+'</span><small data-verbatim>'+o.needs.map(e).join('<br>')+'</small></div>'+uses(o,'Their machine needs')
+   :maybePerson(o)+(uses(o,'A runner needs')||(o.mayNeed.length?'':'<span class="good">'+label('Nothing: a runner can finish it')+'</span>')))+lacks(o);
  // A runner's --next never takes this install's own offer, and --claim takes another install's run over even on a
  // machine that still holds an earlier copy of it.
  const next=o?(h.isMine?command('teamai workflow resume '+h.run)+'<small>'+label('Takes it back here, and the offer away')+'</small>'
   :needsPerson(o)?command('teamai workflow resume '+h.run+' --claim')+'<small>'+label('A person takes it over, in a checkout of')+' '+repo+'</small>'
-  :command('teamai workflow resume --next')+'<small>'+label('A runner takes it, in a checkout of')+' '+repo+'</small>')
+  :command('teamai workflow resume --next')+'<small>'+label('A runner takes it, in a checkout of')+' '+repo+'</small>'
+   +(o.mayNeed.length?command('teamai workflow resume '+h.run+' --claim')+'<small>'+label('Or a person takes it over now')+'</small>':''))
   :h.isMine?'<span class="muted">'+label('This install drives it')+'</span>':command('teamai workflow resume '+h.run+' --claim')+'<small>'+label('Takes it over from')+' '+who+'</small>';
  return '<tr><td>'+name+'<small>'+(h.alias?'<span data-verbatim>'+e(h.workflow)+'</span> · ':'')+'<span data-verbatim>'+e(h.run)+'</span></small></td><td data-label="'+label('HAND-OFF')+'">'+state+'</td><td data-label="'+label('WHAT IT NEEDS')+'">'+needs+'</td><td data-label="'+label('NEXT STEP')+'">'+next+'</td></tr>';
 }

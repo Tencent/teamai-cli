@@ -6,6 +6,7 @@ import { handoffView } from './handoff-view.js';
 import { agentHarnessView } from './agent-harness-view.js';
 import { chartFitView } from './chart-fit-view.js';
 import { runStepsView } from './run-steps-view.js';
+import { runBranchesView } from './run-branches-view.js';
 import { sessionSharingView } from './session-sharing-view.js';
 import { memberSettingsView } from './member-settings-view.js';
 import { tokensView } from './tokens-view.js';
@@ -259,6 +260,7 @@ function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?
 ${handoffView}
 ${agentHarnessView}
 ${runStepsView}
+${runBranchesView}
 async function copyCommand(button) { try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent=t('Copied'); } catch { button.textContent=t('Select and copy'); } }
 function runPanel(title, source, rows, local, empty) { return '<section class="panel sessions"><div class="panelhead"><h2>'+label(title)+' <span class="count">'+number(rows.length)+'</span></h2><span class="tag">'+label(source)+'</span></div>'+(rows.length?runTable(rows,local):'<div class="empty"><p>'+label(empty)+'</p></div>')+'</section>'; }
 function workflowRuns() {
@@ -287,6 +289,7 @@ function runDetailHtml(d) {
   +detailSection('Run','<p>'+label('Driver')+': <span data-verbatim>'+e(r.driver||'—')+'</span> · '+label('End')+': <span data-verbatim>'+e(r.end||'—')+'</span><br>'+label('Started')+': '+e(when(r.startedAt))+(r.endedAt?'<br>'+label('Ended')+': '+e(when(r.endedAt)):'')+'<br>'+label('Duration')+': '+runDurationHtml(r)+' · '+label('Tokens')+': '+number(r.tokens)+(local?'':'<br>'+label('Member')+': <span data-verbatim>'+e(r.username)+'</span>')+'</p><p>'+label('Definition')+': '+revision(r)+'</p>'+(counts?'<p>'+number(counts.total)+' '+label('Steps')+' · '+number(counts.succeeded)+' '+label('Succeeded')+' · '+number(counts.failed)+' '+label('Failed')+' · '+number(counts.skipped)+' '+label('Skipped')+' · '+number(counts.cancelled)+' '+label('Cancelled')+'</p>':'')+(r.prs.length?'<p>'+label('Pull requests')+': '+prLinks(r)+'</p>':'')+(r.learnings.length?'<p>'+label('Learnings')+': <span class="outcomes">'+learningTags(r)+'</span></p>':''))
   +(d.benchmark?detailSection('Benchmark results',benchmarkHtml(d.benchmark)):'')
   +detailSection('Steps',runStepsTable(d.steps)+(d.scoring&&d.scoring.judged?'<p>'+label('Scoring')+': '+number(d.scoring.judged)+' '+label('judged')+' · '+label('Tokens')+': '+number(d.scoring.inputTokens+d.scoring.outputTokens)+'</p>':''))
+  +(d.branches?detailSection('Branches',runBranchesHtml(d.branches)):'')
   +'<p class="label">'+label('The dashboard shows only what a run record publishes: never prompts, inputs, outputs, or HITL messages.')+'</p>';
 }
 function renderRun() { if(!runDetail||!runKey||!$('session-dialog').open)return; const html=runDetailHtml(runDetail); if(html===runHtml)return; runHtml=html; const scroll=$('session-dialog').scrollTop; $('detail').innerHTML=html; tickRunDurations(); $('session-dialog').scrollTop=scroll; }
