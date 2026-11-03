@@ -20,8 +20,8 @@ import { outputMismatch } from './output.js';
 import { publishRunRecords, queueRunRecord, runRecordState } from './records.js';
 import { freezeVerdicts, isUnsettled, verdictEntries } from './scoring-entries.js';
 import {
-  parseTemplate, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
-  type StepExpression, type TemplateContext, type TemplateError,
+  parseTemplate, renderLeaseText, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
+  type StepExpression, type TemplateError,
 } from './template.js';
 import { stageSettledEvidence } from './place/place.js';
 import { parseStepPath } from './step-path.js';
@@ -296,22 +296,6 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   if (definition.prompt !== undefined && scope.defaultModel !== undefined && model !== '') texts.defaultModel = scope.defaultModel;
 
   return texts;
-}
-
-/**
- * `text`, the template at `what` of the step `state` is leased for, rendered from `context`, what the step reads when
- * it is leased. Pull rejects a template that does not parse, so a failure here means the run file was changed.
- */
-function renderLeaseText(context: TemplateContext, state: StepState, { what, text }: { what: string; text: string }): string | WorkflowFailure {
-  const parsed = parseTemplate(text, Object.hasOwn(context, 'item'));
-
-  if (!parsed.ok) {
-    const [problem] = parsed.errors;
-
-    return { code: 'invalid_template', message: `step "${state.id}" ${what} template ${problem?.source}: ${problem?.message}` };
-  }
-
-  return renderText(parsed.template, context);
 }
 
 function hitlMessage(scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep): string | WorkflowFailure {

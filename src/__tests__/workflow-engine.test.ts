@@ -4539,6 +4539,56 @@ describe('run.id', () => {
   });
 });
 
+describe('the team branch a lease names', () => {
+  const TEAM = { can: { workspace: ['read-only', 'new', 'continue', 'team'] satisfies DriverCan['workspace'] } };
+
+  /** Leases `plan` and reports `outputs` for it, then leases the step that commits to the team repo. */
+  async function teamLease(files: Record<string, string>, inputs: Record<string, string>, outputs: Record<string, string>): Promise<Awaited<ReturnType<typeof leaseNext>>> {
+    const { config, runId } = await startTree(files, 'build', inputs);
+    const plan = leaseIn(await leaseNext(config, runId, driverA, TEAM));
+    await reportAttempt(config, runId, { ...plan, outcome: 'success', driver: driverA, outputs });
+    return leaseNext(config, runId, driverA, TEAM);
+  }
+
+  const PROPOSE = `  - id: plan
+    command: node plan.js
+    output: { id: string }
+  - id: propose
+    needs: [plan]
+    workspace: { team: { branch: "teamai/tasks/{{ inputs.suite }}/{{ steps.plan.outputs.id }}" } }
+    deliver: pr
+    command: node propose.js
+`;
+
+  it('renders the branch from the inputs and the outputs of the steps it needs when the step is leased', async () => {
+    const leased = await teamLease({ build: graph(PROPOSE, 'inputs: { suite: string }\n') }, { suite: 'frontend' }, { id: 'pod-startup' });
+
+    expect(leased).toMatchObject({ data: { lease: { step: 'propose', workspace: { mode: 'team', branch: 'teamai/tasks/frontend/pod-startup' } } } });
+  });
+
+  it('renders a step\'s branch in a workflow file from that workflow\'s inputs', async () => {
+    const leased = await teamLease({
+      propose: workflow('propose', PROPOSE, 'inputs: { suite: string }\n'),
+      build: graph(`  - id: task
+    workflow: propose
+    with: { suite: backend }
+`),
+    }, {}, { id: 'login-retry' });
+
+    expect(leased).toMatchObject({ data: { lease: { step: 'task.propose', workspace: { mode: 'team', branch: 'teamai/tasks/backend/login-retry' } } } });
+  });
+
+  it('fails the step, naming the branch, when what it reads does not make a branch name', async () => {
+    const { config, runId } = await startTree({ build: graph(PROPOSE, 'inputs: { suite: string }\n') }, 'build', { suite: 'frontend' });
+    const plan = leaseIn(await leaseNext(config, runId, driverA, TEAM));
+    await reportAttempt(config, runId, { ...plan, outcome: 'success', driver: driverA, outputs: { id: '../main' } });
+
+    expect(await leaseNext(config, runId, driverA, TEAM)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    expect(typeof run === 'string' ? run : run.steps.find((step) => step.id === 'propose')).toMatchObject({ status: 'failed', failure: { code: 'workspace_base', message: 'step "propose" commits to team branch "teamai/tasks/frontend/../main", which git cannot name a branch. Give inputs and step outputs that make workspace team branch a branch name.' } });
+  });
+});
+
 describe('the tool a prompt step names', () => {
   const REVIEW_AND_LINT = graph(`  - id: review
     prompt: Review it.

@@ -11,7 +11,8 @@ import {
   evaluateExpression, expressionPaths, parseExpression, parseFields, resolvePath,
   readsLikeExpression, type Expression, type ExpressionContext, type ExpressionPath, type PathField,
 } from './expression.js';
-import type { WorkflowStep } from './types.js';
+import type { StepState } from './step-state.js';
+import type { WorkflowFailure, WorkflowStep } from './types.js';
 import { isJsonObject } from '../types.js';
 
 /** A `{{ with.<name>… }}` read: a value the step's own `with` names. Only templates read it; an `if` cannot. */
@@ -221,6 +222,22 @@ function textOf(value: JsonValue): string {
 /** Renders a template to text. A missing value renders as ''. */
 export function renderText(template: Template, context: TemplateContext): string {
   return template.map((part) => (isRead(part) ? textOf(valueOf(part, context)) : part)).join('');
+}
+
+/**
+ * `text`, the template at `what` of the step `state` is leased for, rendered from `context`, what the step reads when
+ * it is leased. Pull rejects a template that does not parse, so a failure here means the run file was changed.
+ */
+export function renderLeaseText(context: TemplateContext, state: Pick<StepState, 'id'>, { what, text }: { what: string; text: string }): string | WorkflowFailure {
+  const parsed = parseTemplate(text, Object.hasOwn(context, 'item'));
+
+  if (!parsed.ok) {
+    const [problem] = parsed.errors;
+
+    return { code: 'invalid_template', message: `step "${state.id}" ${what} template ${problem?.source}: ${problem?.message}` };
+  }
+
+  return renderText(parsed.template, context);
 }
 
 /** Renders a whole value: a template that is exactly one `{{ … }}` keeps the JSON value it reads; anything else is text. */

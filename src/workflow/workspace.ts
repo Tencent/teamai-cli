@@ -7,12 +7,11 @@ import { sameDriver } from '../driver-identity.js';
 import type { JsonValue } from '../types.js';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
-import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
+import { contextOf, localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
-import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
+import { renderLeaseText, renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
 import { passOf, type Delivery, type StepState } from './step-state.js';
 import { ClonePlaceSchema, type ClonePlace } from './clone.js';
-import { parseTemplate, renderText } from './template.js';
 import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type TeamPlace, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
 
 export type WorkspaceMode = typeof WORKSPACE_MODES[number];
@@ -689,7 +688,7 @@ export function planWorkspace(
 
   const team = teamOf(definition);
 
-  if (team) return planTeam(run, state, request, { team, session, handback });
+  if (team) return planTeam(run, state, request, { scope, team, session, handback });
 
   if (mode === 'clone') return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" opens a clone this teamai cannot read` } };
 
@@ -846,19 +845,21 @@ function planClone(run: RunState, state: StepState, request: WorkspaceRequest, i
 const GIT_BRANCH = /^(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)))(?![-./])[\w./-]*[\w-]$/;
 
 /**
- * The contract of a step in the team workspace: `team.branch` rendered with the run's inputs, else the run's own branch
- * of the step. Only a driver that provides `team` takes it, and a step the copy's owner did not lease waits for it.
+ * The contract of a step in the team workspace: `team.branch` rendered from what the step reads when it is leased, its
+ * workflow's inputs and the outputs of the steps it needs, else the run's own branch of the step. Only a driver that
+ * provides `team` takes it, and a step the copy's owner did not lease waits for it.
  */
-function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { team: TeamPlace; session: { session?: LeaseSession }; handback: boolean }): WorkspacePlan {
-  const { team, session, handback } = input;
+function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { scope: Scope; team: TeamPlace; session: { session?: LeaseSession }; handback: boolean }): WorkspacePlan {
+  const { scope, team, session, handback } = input;
   const mode = 'team';
-  const parsed = team.branch === undefined ? undefined : parseTemplate(team.branch, false);
 
-  if (parsed && !parsed.ok) return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" workspace team branch ${team.branch} is not a template teamai reads` } };
-  const branch = parsed ? renderText(parsed.template, { inputs: run.inputs ?? {}, steps: {} }) : branchName(run.id, state.id, state.pass ?? 1);
+  const branch = team.branch === undefined ? branchName(run.id, state.id, state.pass ?? 1)
+    : renderLeaseText(contextOf(scope, statesIn(run, scope), state), state, { what: 'workspace team branch', text: team.branch });
+
+  if (branch instanceof Object) return { mode, fail: branch };
 
   if (!GIT_BRANCH.test(branch)) {
-    return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs that make workspace team branch a branch name.` } };
+    return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs and step outputs that make workspace team branch a branch name.` } };
   }
 
   if (!handback && !(request.modes ?? []).includes('team')) {

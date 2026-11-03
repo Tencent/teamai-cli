@@ -1797,14 +1797,18 @@ steps:
 });
 
 describe('team workspace', () => {
-  it('reads the branch a step commits to in the team repo, or none for the run\'s own', () => {
+  it('reads the branch a step commits to in the team repo, from inputs and the outputs of steps it needs, or none for the run\'s own', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
 description: Tidy the team's rules.
 inputs: { topic: string }
 steps:
+  - id: plan
+    command: ./plan.sh
+    output: { id: string }
   - id: named
-    workspace: { team: { branch: "teamai/tidy/{{ inputs.topic }}" } }
+    needs: [plan]
+    workspace: { team: { branch: "teamai/tidy/{{ inputs.topic }}/{{ steps.plan.outputs.id }}" } }
     deliver: pr
     command: ./tidy.sh
   - id: own
@@ -1813,12 +1817,13 @@ steps:
     prompt: Tidy the rules.
 `);
     expect(result.ok && result.definition.steps.map((step) => step.workspace)).toEqual([
-      { team: { branch: 'teamai/tidy/{{ inputs.topic }}' } },
+      undefined,
+      { team: { branch: 'teamai/tidy/{{ inputs.topic }}/{{ steps.plan.outputs.id }}' } },
       { team: {} },
     ]);
   });
 
-  it('rejects a branch that reads a step, and a team workspace on a step that runs a workflow, runs per item, or is scored', () => {
+  it('rejects a branch that reads a step\'s outcome, the run or a step it does not need, and a team workspace on a step that runs a workflow, runs per item, or is scored', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
 description: Tidy the team's rules.
@@ -1829,7 +1834,7 @@ steps:
     output: { topic: string }
   - id: fromStep
     needs: [plan]
-    workspace: { team: { branch: "teamai/tidy/{{ steps.plan.outputs.topic }}" } }
+    workspace: { team: { branch: "teamai/tidy/{{ steps.plan.outcome }}" } }
     command: ./tidy.sh
   - id: perItem
     needs: []
@@ -1841,13 +1846,24 @@ steps:
     workspace: { team: {} }
     scorers: [review-quality]
     prompt: Tidy the rules.
+  - id: fromRun
+    needs: []
+    workspace: { team: { branch: "teamai/tidy/{{ run.id }}" } }
+    command: ./tidy.sh
+  - id: unneeded
+    needs: []
+    workspace: { team: { branch: "teamai/tidy/{{ steps.plan.outputs.topic }}" } }
+    command: ./tidy.sh
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
+    const READS = 'workspace team branch may read only inputs and the outputs of steps the step needs, so every run that drafts the same thing goes on with the same branch';
     expect(result.diagnostics.map(formatDiagnostic)).toEqual([
-      'workflows/build.yaml:11: field "steps[1].workspace": step "fromStep" workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch',
+      `workflows/build.yaml:11: field "steps[1].workspace": step "fromStep" ${READS}`,
       'workflows/build.yaml:16: field "steps[2].workspace": step "perItem" workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again',
       'workflows/build.yaml:20: field "steps[3].workspace": step "scored" workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed',
+      `workflows/build.yaml:25: field "steps[4].workspace": step "fromRun" ${READS}`,
+      'workflows/build.yaml:29: field "steps[5].workspace": step "unneeded" workspace team branch reads steps.plan, which is not a step it needs, directly or through its needs',
     ]);
   });
 
