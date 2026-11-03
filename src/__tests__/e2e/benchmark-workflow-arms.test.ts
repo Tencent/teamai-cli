@@ -269,6 +269,7 @@ successCriteria: answer.js exports 42.
 
   it.each([
     { why: 'delivers a pull request', step: '    prompt: Ship it.\n    deliver: pr\n    workspace: new\n' },
+    { why: 'opens a workspace other than continue', step: '    command: teamai score publish\n    workspace: { team: { branch: teamai-reports } }\n    deliver: publish\n' },
     { why: 'opens a workspace other than continue', step: '    command: echo more\n    workspace: new\n' },
     { why: 'runs a command in the member\'s checkout; give it workspace: continue', step: '    command: echo more\n' },
     {
