@@ -219,6 +219,15 @@ $ teamai workflow start build --driver local
 ℹ Retry it with teamai workflow retry re907e4818f6db47b test, then continue the run with teamai workflow resume re907e4818f6db47b
 ```
 
+A limit of the whole run, such as its `timeout` or `budget`, fails no step. stderr then says why the run failed, and how to retry each step the limit stopped while it ran:
+
+```text
+$ teamai workflow start nightly-small --driver local --tools default=claude
+ℹ Run rdcfd8a2eb4ffe5ca started. If it stops before it ends, continue it with: teamai workflow resume rdcfd8a2eb4ffe5ca
+{"data":{"done":{"run":"rdcfd8a2eb4ffe5ca","outcome":"failed","failure":{"code":"budget_exceeded","message":"workflow \"nightly-small\" spent 350 of its 300-token budget"}},"cancelled":[]}}
+✖ Run rdcfd8a2eb4ffe5ca failed with budget_exceeded: workflow "nightly-small" spent 350 of its 300-token budget
+```
+
 Use `workflow respond <run> <step> <choice>` for a waiting HITL request, `workflow retry <run> <step>` for a failed or stuck step, `workflow cancel <run> [step]` to stop work, `workflow resume <run>` to continue locally, and `workflow publish <run>` to let another machine continue it ([Continue a run on another machine](#continue-a-run-on-another-machine)). `next` answers `lease`, `hitl`, `wait`, or `done`. See [HITL](workflow-advanced.md#hitl-human-in-the-loop) and [Retry, cancel, and resume](workflow-advanced.md#retry-cancel-and-resume).
 
 ## Workspaces
@@ -455,6 +464,12 @@ teamai workflow resume <run>      # on the other machine, in a checkout of the s
 ```
 
 `publish` writes the run's state to the team's `teamai-reports` branch and makes this install the run's owner. Stop the driver first, so no step is in flight. A step still leased when you publish runs again on the other machine. A Ctrl-C leaves what the in-flight step wrote in that step's worktree on this machine, and another machine can still claim the run. If you take the run back here while it is still running, the claim makes this install the owner, but `resume` refuses with `branch_diverged` and names the worktree. Move those changes elsewhere or remove them, then run `resume` again. On a machine that does not have the run, `resume` takes it from `teamai-reports`, makes that install the owner, and drives it with the local driver.
+
+The other machine does not get the `--tools`, `--auto-approve` or `--sandbox` the run was started with: they describe the machine and the person who started it. Pass the ones that fit there:
+
+```text
+teamai workflow resume <run> --tools default=claude --sandbox     # a CI runner that has claude, in a container
+```
 
 Only the owner continues a published run. On another install that has the run, `resume` and `publish` answer `not_owner` with the owner's user name and install id. Two installs of one member show the same user name, and the install id tells them apart. To take the run over, run `teamai workflow resume <run> --claim`. The claim replaces this machine's copy of the run and releases the leases other machines held. The previous owner can then no longer publish or resume the run, unless it claims it back.
 

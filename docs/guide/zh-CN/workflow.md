@@ -219,6 +219,15 @@ $ teamai workflow start build --driver local
 ℹ Retry it with teamai workflow retry re907e4818f6db47b test, then continue the run with teamai workflow resume re907e4818f6db47b
 ```
 
+整个运行的限制（例如它的 `timeout` 或 `budget`）不会让某个步骤失败。这时 stderr 会说明运行为什么失败，并给出限制在运行中停下的每个步骤的重试命令：
+
+```text
+$ teamai workflow start nightly-small --driver local --tools default=claude
+ℹ Run rdcfd8a2eb4ffe5ca started. If it stops before it ends, continue it with: teamai workflow resume rdcfd8a2eb4ffe5ca
+{"data":{"done":{"run":"rdcfd8a2eb4ffe5ca","outcome":"failed","failure":{"code":"budget_exceeded","message":"workflow \"nightly-small\" spent 350 of its 300-token budget"}},"cancelled":[]}}
+✖ Run rdcfd8a2eb4ffe5ca failed with budget_exceeded: workflow "nightly-small" spent 350 of its 300-token budget
+```
+
 等待 HITL 请求用 `workflow respond <run> <step> <choice>` 回答，失败或卡住的步骤用 `workflow retry <run> <step>` 重试，`workflow cancel <run> [step]` 停止工作，`workflow resume <run>` 继续本地执行，`workflow publish <run>` 让另一台机器接着运行（见[在另一台机器上继续运行](#在另一台机器上继续运行)）。next 返回 lease、hitl、wait 或 done。参见[HITL](workflow-advanced.md#hitl人在回路中)和[重试、取消和继续运行](workflow-advanced.md#重试取消和继续运行)。本地运行以 failed 或 cancelled 结束时退出码为 1。结束运行的操作在锁内排队写入结束记录，在释放锁后发布；重试后仍更新同一路径。回答记录只发布 choice、channel 和 agent，备注、回答时间和回答驱动身份只保存在本地。
 
 ## 工作区
@@ -455,6 +464,12 @@ teamai workflow resume <run>      # 在另一台机器上，位于同一个仓�
 ```
 
 `publish` 把运行状态写到团队的 `teamai-reports` 分支，并让本安装实例成为该运行的所有者。先停止驱动，让没有步骤在执行。发布时仍处于租约中的步骤会在另一台机器上重新运行。按 Ctrl-C 后，正在执行的步骤写下的内容会留在本机该步骤的工作树里，另一台机器仍然可以认领这个运行。之后你在运行仍在进行时把它接管回本机，认领会让本安装实例成为所有者，但 `resume` 会返回 `branch_diverged` 并指出那个工作树。把这些改动移到别处或删除，再执行 `resume`。在没有这个运行的机器上，`resume` 从 `teamai-reports` 取得它，让该安装实例成为所有者，并用本地驱动运行它。
+
+另一台机器不会带上运行启动时的 `--tools`、`--auto-approve` 或 `--sandbox`：它们描述的是启动它的机器和人。在那里传入合适的参数：
+
+```text
+teamai workflow resume <run> --tools default=claude --sandbox     # 装有 claude、跑在容器里的 CI runner
+```
 
 已发布的运行只有所有者能继续。在另一个已有该运行的安装实例上，`resume` 和 `publish` 都返回 `not_owner`，带上所有者的用户名和安装实例 id。同一成员的两个安装实例显示相同的用户名，靠安装实例 id 区分。要接管这个运行，执行 `teamai workflow resume <run> --claim`。认领会替换本机的运行副本，并释放其他机器持有的租约。此后原所有者不能再发布或继续这个运行，除非它再认领回来。
 

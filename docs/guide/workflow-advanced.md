@@ -944,7 +944,7 @@ Without that capability, a `next` request that can take a lease applies this tab
 | Choose with default | Take default, channel `auto_approve` | Fail `hitl_required` |
 | Choose without default | Fail `hitl_required` | Fail `hitl_required` |
 
-Every decision without HITL and `hitl_required` failure logs a warning to stderr. Set `workflows.auto_approve` beside `workflows.max_parallel` in local config, or pass `--auto-approve` to `start --driver local` or `resume` for that process only. JSON `next` from a driver without HITL cannot set this override. A driver with HITL ignores `workflows.auto_approve`: it sends `autoApprove: true` on `next` when the person chose auto-approve for the run, and the local driver in a terminal does so with `--auto-approve`. Optional approvals and choices with a default are then answered as in the `auto_approve: true` column; required approvals and choices without a default still come back as `hitl`. The local driver declares HITL only in an attended run (see [Attended and unattended runs](workflow.md#attended-and-unattended-runs)) whose stdin and stderr are TTYs. It asks on stderr, accepts a choice followed by an optional note, and keeps polling while the question is open. An answer from elsewhere or a cancellation closes that question. Questions wait while an interactive tool owns the terminal.
+Every decision without HITL and `hitl_required` failure logs a warning to stderr. Set `workflows.auto_approve` beside `workflows.max_parallel` in local config, or pass `--auto-approve` to `start --driver local` or `resume` for that run: the run remembers it on this install, and `resume --no-auto-approve` turns it off. JSON `next` from a driver without HITL cannot set this override. A driver with HITL ignores `workflows.auto_approve`: it sends `autoApprove: true` on `next` when the person chose auto-approve for the run, and the local driver in a terminal does so with `--auto-approve`. Optional approvals and choices with a default are then answered as in the `auto_approve: true` column; required approvals and choices without a default still come back as `hitl`. The local driver declares HITL only in an attended run (see [Attended and unattended runs](workflow.md#attended-and-unattended-runs)) whose stdin and stderr are TTYs. It asks on stderr, accepts a choice followed by an optional note, and keeps polling while the question is open. An answer from elsewhere or a cancellation closes that question. Questions wait while an interactive tool owns the terminal.
 
 `interactive: true` needs `prompt` or `prompt_file`. The step waits for a driver with HITL. Without a terminal, `--driver local` stops with `busy` and a reason that names `hitl`; run `resume` from a terminal. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, and the step succeeds. An interactive step that sets `workspace: read-only` is checked like a command: a checkout change fails `read_only_dirty` and the edits stay. Inside a workspace an enclosing step opened, they are kept on `refs/teamai/kept/<attempt>` and removed from the workspace. An interactive step in its own workspace can still change that workspace. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
 
@@ -953,8 +953,29 @@ Every decision without HITL and `hitl_required` failure logs a warning to stderr
 ```sh
 teamai workflow retry <run> <step>
 teamai workflow cancel <run> [step]
-teamai workflow resume <run> --tools default=claude
+teamai workflow resume <run>
 ```
+
+A run started with `--driver local` remembers its `--tools`, `--auto-approve` and `--sandbox` on this install, so every `resume` the CLI prints works as printed:
+
+```console
+$ teamai workflow start loop-plan-change --driver local --tools default=claude --auto-approve --sandbox --inputs '{"issue":42}'
+ℹ Run redf22a69e4ae6652 started. If it stops before it ends, continue it with: teamai workflow resume redf22a69e4ae6652
+^C                                                   # or the terminal closed, or claude ran out of tokens
+
+$ teamai workflow resume redf22a69e4ae6652           # claude, --auto-approve and --sandbox, as started
+$ teamai workflow retry redf22a69e4ae6652 decide     # its JSON ends with "resume":"teamai workflow resume redf22a69e4ae6652"
+$ teamai workflow resume redf22a69e4ae6652 --tools default=codex     # every prompt step on codex from now on
+$ teamai workflow resume redf22a69e4ae6652 --no-auto-approve         # from now on, optional approvals are not answered yes
+```
+
+A flag on `resume` replaces what the run remembers, a `--tools` name at a time, and the run remembers the result for the next `resume`:
+
+| Flag | `resume` on this install | A claim on another machine |
+|---|---|---|
+| `--tools default=claude` | keeps it; `--tools <name>=<tool>` replaces that name | starts without it; the listing says `pass --tools default=<tool>` |
+| `--auto-approve` | keeps it; `--no-auto-approve` turns it off | starts without it |
+| `--sandbox` | keeps it | starts without it; a step that needs a sandbox stops with `busy` and names `--sandbox` |
 
 `retry` accepts a leased, failed, or cancelled step, a refused approve with an answer, or an answered choose. Retry a HITL request to change its answer; its old answer stays in pass history. It frees an old lease and starts a new pass at a new revision. The local driver stops a command it was running and starts the new pass only after that command has exited. It resets the steps that depend on or read that step, including loop waits and item `after` dependencies. A HITL request among them that waits, or was answered and has not run, is asked again at a new pass. It reopens settled enclosing workflows, items, fan-out steps, and the run. A step whose pull request delivery failed keeps its pass, and only its delivery runs again. If the reopened run is still running, the result includes a `resume` command. Run it to continue locally, or let your driver poll `next`. Unanswered skips in each affected container are re-derived; manual cancellations outside it stay cancelled. An independent standing end or break prevents retry.
 
@@ -962,7 +983,7 @@ History stays in `passes` and the archive, so `length(steps.x.passes)` counts fa
 
 A single-step `cancel` stops pending, waiting, leased, running, or delivering work. Its open descendants stop too. Cancelled steps count as stopped, so dependents skip unless an `if` reads their outcome for recovery. The run normally fails. A whole-run cancel ends immediately with run outcome `cancelled`, without starting another loop round. Cancel does not bump the revision. A late report returns `lease_cancelled`; `next.cancelled` tells drivers which tools to stop.
 
-`resume` drives the run locally after a retry, response, Ctrl-C, or closed terminal. `workflow start --driver local` prints the run id on stderr when the run starts, with the `resume` command that continues it. It uses this machine's open local lease workspace first, then the workspace of the latest driver that called `next` when that driver was local on this machine, then the current directory. Resuming after a retry from a subdirectory therefore keeps the original local workspace. Only one local driver can drive a run at a time. A second resume returns `driver_running` with the owning process id; stop that driver or wait. Locks from dead processes are reclaimed automatically. A settled run returns `done`. When a local run fails, `start`, `resume` and `resume --next` print on stderr why each step failed and its `retry` and `resume` commands, as in [A required key with no value here](#a-required-key-with-no-value-here). Failed and cancelled local runs exit 1; successful control commands exit 0 even when their answer describes a failed or cancelled run.
+`resume` drives the run locally after a retry, response, Ctrl-C, or closed terminal. `workflow start --driver local` prints the run id on stderr when the run starts, with the `resume` command that continues it. It uses this machine's open local lease workspace first, then the workspace of the latest driver that called `next` when that driver was local on this machine, then the current directory. Resuming after a retry from a subdirectory therefore keeps the original local workspace. Only one local driver can drive a run at a time. A second resume returns `driver_running` with the owning process id; stop that driver or wait. Locks from dead processes are reclaimed automatically. A settled run returns `done`. When a local run fails, `start`, `resume` and `resume --next` print on stderr why each step failed and its `retry` and `resume` commands, as in [A required key with no value here](#a-required-key-with-no-value-here). When a limit of the whole run, its `timeout` or `budget`, stopped it, they print why the run failed instead, with the `retry` of each step the limit stopped. Failed and cancelled local runs exit 1; successful control commands exit 0 even when their answer describes a failed or cancelled run.
 
 ## Publish and claim
 

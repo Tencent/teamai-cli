@@ -944,7 +944,7 @@ teamai workflow resume <run>
 | 有 default 的 choose | 选择 default，渠道 `auto_approve` | 失败 `hitl_required` |
 | 无 default 的 choose | 失败 `hitl_required` | 失败 `hitl_required` |
 
-每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，仅对当前进程生效。没有 HITL 的驱动不能通过 JSON next 设置此覆盖。支持 HITL 的驱动忽略 `workflows.auto_approve`：用户为这次运行选择自动批准时，它在 `next` 中发送 `autoApprove: true`，终端中的本地驱动在传入 `--auto-approve` 时也这样做。此时可选 approve 和有 default 的 choose 按 `auto_approve: true` 一列回答；必需 approve 和无 default 的 choose 仍以 `hitl` 返回。本地驱动仅在有人值守的运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)）中、且 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
+每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，对这次运行生效：运行会在本安装实例上记住它，`resume --no-auto-approve` 可以关闭它。没有 HITL 的驱动不能通过 JSON next 设置此覆盖。支持 HITL 的驱动忽略 `workflows.auto_approve`：用户为这次运行选择自动批准时，它在 `next` 中发送 `autoApprove: true`，终端中的本地驱动在传入 `--auto-approve` 时也这样做。此时可选 approve 和有 default 的 choose 按 `auto_approve: true` 一列回答；必需 approve 和无 default 的 choose 仍以 `hitl` 返回。本地驱动仅在有人值守的运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)）中、且 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
 
 `interactive: true` 要求 `prompt` 或 `prompt_file`。步骤会等待支持 HITL 的驱动。没有终端时，`--driver local` 以 `busy` 停止，原因中指出 `hitl`；请在终端中运行 `resume`。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
 
@@ -953,8 +953,29 @@ teamai workflow resume <run>
 ```sh
 teamai workflow retry <run> <step>
 teamai workflow cancel <run> [step]
-teamai workflow resume <run> --tools default=claude
+teamai workflow resume <run>
 ```
+
+用 `--driver local` 启动的运行会在本安装实例上记住它的 `--tools`、`--auto-approve` 和 `--sandbox`，所以 CLI 打印的每条 `resume` 命令照原样就能用：
+
+```console
+$ teamai workflow start loop-plan-change --driver local --tools default=claude --auto-approve --sandbox --inputs '{"issue":42}'
+ℹ Run redf22a69e4ae6652 started. If it stops before it ends, continue it with: teamai workflow resume redf22a69e4ae6652
+^C                                                   # 或者终端关闭了，或者 claude 用完了 token
+
+$ teamai workflow resume redf22a69e4ae6652           # 和启动时一样：claude、--auto-approve 和 --sandbox
+$ teamai workflow retry redf22a69e4ae6652 decide     # 它的 JSON 以 "resume":"teamai workflow resume redf22a69e4ae6652" 结尾
+$ teamai workflow resume redf22a69e4ae6652 --tools default=codex     # 从现在起，每个 prompt 步骤都用 codex
+$ teamai workflow resume redf22a69e4ae6652 --no-auto-approve         # 从现在起，可选审批不再自动回答 yes
+```
+
+`resume` 上的参数会替换运行记住的值，`--tools` 按名字逐个替换，替换后的结果供下一次 `resume` 使用：
+
+| 参数 | 在本安装实例上 `resume` | 在另一台机器上认领 |
+|---|---|---|
+| `--tools default=claude` | 保留；`--tools <name>=<tool>` 替换该名字 | 不带过去；列表提示 `pass --tools default=<tool>` |
+| `--auto-approve` | 保留；`--no-auto-approve` 关闭它 | 不带过去 |
+| `--sandbox` | 保留 | 不带过去；需要沙箱的步骤以 `busy` 停下并指出 `--sandbox` |
 
 `retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
 
@@ -962,7 +983,7 @@ teamai workflow resume <run> --tools default=claude
 
 指定步骤的 cancel 停止 pending、waiting、leased、running 或 delivering 工作，同时停止尚未结束的后代。cancelled 属于 stopped，因此依赖步骤会跳过，除非其 if 读取取消结果来恢复；运行通常失败。取消整个运行立即以 `cancelled` 结束，不启动下一轮。cancel 不增加修订号。迟到的报告返回 `lease_cancelled`，`next.cancelled` 告诉驱动停止哪些工具。
 
-在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。`workflow start --driver local` 在运行开始时就把运行 id 和继续它的 `resume` 命令输出到 stderr。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行失败时，`start`、`resume` 和 `resume --next` 会在 stderr 写出每个步骤失败的原因，以及它的 `retry` 和 `resume` 命令，见[必需的键在本机没有值](#必需的键在本机没有值)。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
+在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。`workflow start --driver local` 在运行开始时就把运行 id 和继续它的 `resume` 命令输出到 stderr。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行失败时，`start`、`resume` 和 `resume --next` 会在 stderr 写出每个步骤失败的原因，以及它的 `retry` 和 `resume` 命令，见[必需的键在本机没有值](#必需的键在本机没有值)。如果是整个运行的限制（它的 `timeout` 或 `budget`）让它停下，则改为写出运行失败的原因，以及限制停下的每个步骤的 `retry` 命令。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
 
 ## 发布和认领
 
