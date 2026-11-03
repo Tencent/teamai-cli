@@ -10,6 +10,7 @@ import { readRun } from '../workflow/store.js';
 import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { labelId, labelVersion, type ScoreLabel } from './label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from './label-store.js';
+import { LABEL_CODES } from './score-labels.js';
 
 const DoneSchema = z.object({ outcome: z.string() });
 
@@ -19,14 +20,18 @@ const WrittenSchema = z.object({ labels: z.array(z.string()) });
 
 const GroupsSchema = z.object({ groups: z.array(z.object({ scorers: z.string() })) });
 
-/** Why a scorer of the run got no label, as the member reads it. */
-const UNLABELLED = new Map([
-  ['check_could_not_run', 'its check could not run, so no judge ran'],
-  ['ci_pending', 'the CI of its pull request has not finished; the next teamai score --drain labels it once CI finishes'],
-  ['judge_failed', 'its judge failed'],
-  ['judge_answer_invalid', 'its judge answered outside the answer schema'],
-  ['judge_tool_unavailable', 'no judge tool here runs it'],
-]);
+/** Why a scorer of the run got no label, as the member reads it, for each code its label step gives. */
+const UNLABELLED: Record<(typeof LABEL_CODES)[number], string> = {
+  check_could_not_run: 'its check could not run, so no judge ran',
+  ci_pending: 'the CI of its pull request has not finished; the next teamai score --drain labels it once CI finishes',
+  judge_failed: 'its judge failed',
+  judge_answer_invalid: 'its judge answered outside the answer schema',
+  judge_tool_unavailable: 'no judge tool here runs it',
+  evidence_empty: 'nothing of its transcript or diff was kept, so there was nothing to judge',
+  lease_expired: 'an earlier teamai\'s judge lease lapsed before anyone answered it',
+};
+
+const LabelCodeSchema = z.enum(LABEL_CODES);
 
 const NOT_PLANNED = 'it was not planned: another teamai-score run holds its judge work';
 
@@ -105,7 +110,9 @@ function unwritten(scorer: string, end: ItemEnd): Outcome {
 function coded(scorer: string, entry: Entry): Outcome {
   const why = entry.why === undefined ? '' : `: ${entry.why}`;
 
-  return { scorer, kind: 'unlabelled', code: entry.code, message: `${UNLABELLED.get(entry.code) ?? entry.code}${why}` };
+  const known = LabelCodeSchema.safeParse(entry.code);
+
+  return { scorer, kind: 'unlabelled', code: entry.code, message: `${known.success ? UNLABELLED[known.data] : entry.code}${why}` };
 }
 
 /** What `scorer` got from `item`, its group's item, whose write step wrote the labels of `stored` it names. */

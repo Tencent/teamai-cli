@@ -1404,6 +1404,15 @@ describe('what teamai score answers for a run its local driver drove', () => {
     expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'judge_failed', message: `Run ${runId}: quality got no label (judge_failed): its judge failed: The judge exited 1.`, labels: [] } });
   });
 
+  it('says in words why a scorer got no label for every code its label step gives, not the bare code', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const label: ScoreVerbAnswer = { ok: true, output: { labels: [{ scorer: 'quality', label: '', code: 'evidence_empty' }] } };
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { label } });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toMatchObject({ error: { code: 'evidence_empty', message: `Run ${runId}: quality got no label (evidence_empty): nothing of its transcript or diff was kept, so there was nothing to judge.` } });
+  });
+
   it('answers not_planned for a scorer another teamai-score run holds, beside the label of one it judged', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const reviewed = await reviewedRun(config);
