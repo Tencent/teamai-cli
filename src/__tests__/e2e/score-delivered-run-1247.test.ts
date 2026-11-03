@@ -14,13 +14,14 @@ import { z } from 'zod';
 import { benchmarkFixture, envelope, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 import { fakeGhHost } from '../helpers/fake-gh.js';
 
+// It samples no pass, so an attended run's own scoring labels nothing, and only the member's teamai score --run judges it.
 const DELIVERED = `---
 labels:
   - { value: complete, score: 1, description: Delivers what was asked and nothing else. }
   - { value: partial, score: 0.5, description: Delivers part of what was asked. }
   - { value: off-target, score: 0, description: Delivers something other than what was asked. }
 passingScore: 1
-samplingRate: 100
+samplingRate: 0
 check: { run: node test.js, protect: [test.js] }
 ---
 Judge whether the pull request delivers what the issue asked, and only that.

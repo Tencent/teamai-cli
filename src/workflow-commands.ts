@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
+import { PassScoring } from './scorers/pass-scoring.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redact, redactJson } from './utils/redact.js';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, retryCommand, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
@@ -14,10 +15,10 @@ import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retryStep } from './workflow/run-controls.js';
 import { isIsolated } from './workflow/workspace.js';
-import { localStrictCan, personAnswers, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
+import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
-import { AttemptIdSchema, installOwner, readRun, RunIdSchema } from './workflow/store.js';
+import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type RunId } from './workflow/store.js';
 import { inProcessClient, isRefusal, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow, namespaceConflictOf, resolveStart } from './workflow/cache.js';
@@ -77,6 +78,66 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
 }
 
 const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed') });
+
+/**
+ * Drives run `runId` with the local driver through `drive`. An attended drive starts the scoring of each pass as it
+ * settles, one teamai-score run per pass, then drives those runs before it answers, so their labels are written when
+ * `workflow start` or `resume` returns; the scored run's own steps and `finally` never wait for them. An unattended
+ * drive starts none, since the drain it ends with judges its passes (`writeDriven`).
+ */
+async function withPassScoring(
+  { config, env }: { config: LocalConfig; env: WorkflowEnv },
+  runId: RunId,
+  options: LocalDriverOptions,
+  drive: (options: LocalDriverOptions) => Promise<WorkflowEnvelope>,
+): Promise<WorkflowEnvelope> {
+  const mode = resolveRunMode(process.env);
+
+  if (mode !== 'attended') return drive(options);
+  const client = inProcessClient({ config, env });
+  const scoring = new Map<RunId, string>();
+
+  const start = async (run: RunId): Promise<void> => {
+    const starts = await PassScoring.start(config, run, { client, mode });
+
+    for (const { subject, run: scored } of starts.runs) scoring.set(scored, subject);
+
+    for (const { subject, failure } of starts.refused) log.warn(`The scoring of ${subject} did not start (${failure.code}): ${failure.message}`);
+  };
+
+  const driven = await drive({ ...options, settled: start });
+  // A resume whose steps had all settled reports nothing, so the runs an earlier drive started are read here too.
+  await start(runId);
+
+  for (const [scored, subject] of scoring) {
+    saidScored(subject, scored, await runLocalDriver(config, scored, process.cwd(), { tools: options.tools, toolPaths: options.toolPaths, sandbox: options.sandbox }));
+  }
+
+  return driven;
+}
+
+const ScoreDoneSchema = z.object({
+  done: z.object({ outputs: z.object({ labels: z.array(z.object({ outputs: z.object({ labels: z.array(z.object({ scorer: z.string(), label: z.string(), code: z.string() })) }).optional() })) }).optional() }),
+});
+
+/** On stderr, what teamai-score run `run` gave `subject`: each scorer's label or code, or why it has not ended. */
+function saidScored(subject: string, run: RunId, envelope: WorkflowEnvelope): void {
+  if ('error' in envelope) {
+    log.warn(`${subject} is not labelled yet (${envelope.error.code}): ${envelope.error.message}`);
+
+    return;
+  }
+
+  const entries = (ScoreDoneSchema.safeParse(envelope.data).data?.done.outputs?.labels ?? []).flatMap((group) => group.outputs?.labels ?? []);
+
+  if (entries.length === 0) {
+    log.info(`${subject}: no scorer sampled it (teamai-score run ${run}).`);
+
+    return;
+  }
+
+  log.info(`${subject}: ${entries.map(({ scorer, label, code }) => `${scorer} ${label || code}`).join(', ')} (teamai-score run ${run}).`);
+}
 
 /**
  * On stderr, why each step of a failed run failed and the commands that retry it, since the `done` envelope carries
@@ -430,7 +491,8 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const runId = startedRun.data;
 
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}`);
-  const driven = await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
+  const local = { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox };
+  const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => runLocalDriver(config, runId, process.cwd(), scored));
   const answered = await shortcut.answer?.(config, runId, driven);
 
   if (answered) writeEnvelope(answered, secrets);
@@ -846,7 +908,9 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
     const cwd = lease?.status === 'leased' ? lease.lease.driver.workspace
       : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();
 
-    return drive(cwd, { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
+    const driving = { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox };
+
+    return withPassScoring(loaded, run.data, driving, (scored) => drive(cwd, scored));
   }), secrets);
 }
 
@@ -987,14 +1051,15 @@ function withoutDriver(options: ResumeOptions): Omit<ResumeOptions, 'driver' | '
 }
 
 /** Claims offered run `run` under this machine's driver lock, as `resume <run>` does, and drives it with the local driver. */
-async function driveOffered({ config, teamConfig }: Ready, run: PublishedRun, options: { tools: Record<string, string>; autoApprove?: boolean; sandbox?: boolean }): Promise<WorkflowEnvelope> {
+async function driveOffered({ config, teamConfig, env }: Ready, run: PublishedRun, options: { tools: Record<string, string>; autoApprove?: boolean; sandbox?: boolean }): Promise<WorkflowEnvelope> {
   return withDriverLock(config, run.run, async (drive) => {
     const claimed = await claimOffered(config, run.run, { checkout: process.cwd() });
 
     if (!claimed.ok) return { error: claimed.error };
     saidClaimed(run);
+    const local = { tools: options.tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox };
 
-    return drive(process.cwd(), { tools: options.tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
+    return withPassScoring({ config, env }, RunIdSchema.parse(run.run), local, (scored) => drive(process.cwd(), scored));
   });
 }
 

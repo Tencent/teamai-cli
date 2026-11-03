@@ -156,6 +156,8 @@ export interface LocalDriverOptions {
   adapter?: LocalToolAdapter;
   /** Where the tools a step confined to a directory runs on are looked up: PATH unless given. */
   resolveTool?: (executable: string) => string | null;
+  /** Called after each report the engine took, so the caller acts on what settled, such as starting the scoring of a pass. */
+  settled?: (run: RunId) => Promise<void>;
 }
 
 /** A lease as this driver runs it: what the engine sent, and what staging it adds. A step staged after `expiresAt` does not start. */
@@ -920,6 +922,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
     reported.add(body.attempt);
+    await options.settled?.(runId);
 
     return undefined;
   };
