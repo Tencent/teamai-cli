@@ -616,7 +616,23 @@ describe('teamai score --drain', () => {
 
     expect(drained.code, drained.lines.join('\n')).toBe(0);
     expect(drained.lines.filter((said) => said.includes('Skipped'))).toEqual([
-      `ℹ Skipped 2 step sessions of ${runId}: claude-code keeps no such session on this machine (review, pass 1; check, pass 1)`,
+      `ℹ Skipped 2 step sessions of ${runId}: claude-code could not read these sessions here (not found), so they stay unarchived (review, pass 1; check, pass 1)`,
+    ]);
+  });
+
+  it('says the step sessions of one run it cannot read here in one line, though they fail for different reasons', async () => {
+    const { config } = await team({ 'workflows/review.yaml': `${WORKFLOW.replace('    scorers: [quality]\n', '')}  - id: check\n    needs: [review]\n    prompt: Check the change.\n` });
+    const missing = '7c1e0000-0000-4000-8000-000000000041';
+    const broken = '7c1e0000-0000-4000-8000-000000000042';
+    fs.chmodSync(claudeSession(broken, 'Checked it.'), 0o000);
+    const runId = await settledRun(config, 'unattended', { tool: 'claude', session: missing }, { tool: 'claude', session: broken });
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines.filter((said) => said.includes('Skipped'))).toEqual([
+      `ℹ Skipped 2 step sessions of ${runId}: claude-code could not read these sessions here (not found, unreadable), so they stay unarchived (review, pass 1; check, pass 1)`,
     ]);
   });
 
@@ -632,7 +648,7 @@ describe('teamai score --drain', () => {
     expect(drained.code, drained.lines.join('\n')).toBe(0);
     expect(drained.lines).toEqual(expect.arrayContaining([
       `✔ Archived 1 step session of ${runId} to teamai-reports (scrubbed)`,
-      `ℹ Skipped 1 step session of ${runId}: claude-code keeps no such session on this machine (check, pass 1)`,
+      `ℹ Skipped 1 step session of ${runId}: claude-code could not read this session here (not found), so it stays unarchived (check, pass 1)`,
     ]));
     expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
 
