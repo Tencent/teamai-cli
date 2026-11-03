@@ -1,7 +1,8 @@
 /**
  * Real CLI against a local bare team repo: a member who turns session scoring on starts a session, and the session
  * start's pull starts one detached teamai-finished-sessions run, which judges an earlier finished session with a fake
- * Claude judge. The label stays pending until the next pull publishes it, never with the transcript.
+ * Claude judge and publishes its label, never with the transcript. The label leaves the outbox once the next pull
+ * finds it on teamai-reports.
  */
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -129,7 +130,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { answer: { labe
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('starts teamai-finished-sessions after a session start\'s pull, which judges a finished session; the next pull publishes the label', async () => {
+  it('starts teamai-finished-sessions after a session start\'s pull, which judges a finished session and publishes its label; the next pull clears it from the outbox', async () => {
     const pending = () => (fs.existsSync(path.join(dataHome, 'scores', 'pending')) ? fs.readdirSync(path.join(dataHome, 'scores', 'pending')) : []);
     const published = () => {
       const refs = git(team, 'for-each-ref', '--format=%(refname)', 'refs/heads/teamai-reports');
@@ -145,14 +146,14 @@ console.log(JSON.stringify({ type: 'result', structured_output: { answer: { labe
 
     const labels = fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').map((text) => JSON.parse(text) as unknown);
     expect(labels).toEqual([expect.objectContaining({ source: 'session', subject: { platform: 'claude-code', sessionId: FINISHED }, label: 'thorough', judge: expect.objectContaining({ tool: 'claude' }) })]);
-    expect(published()).toEqual([]);
-
-    const pull = await runCLI(['pull'], app, env);
-    expect(pull.code, pull.stdout + pull.stderr).toBe(0);
-    expect(pending()).toEqual([]);
     const [file, ...more] = published();
     expect(more).toEqual([]);
     expect(git(team, 'show', `teamai-reports:${file}`)).toContain(FINISHED);
     expect(() => git(team, 'grep', '-q', PHRASE, 'teamai-reports')).toThrow();
+
+    const pull = await runCLI(['pull'], app, env);
+    expect(pull.code, pull.stdout + pull.stderr).toBe(0);
+    expect(pending()).toEqual([]);
+    expect(published()).toEqual([file]);
   });
 });
