@@ -179,7 +179,7 @@ describe('judging health on Workflow Runs', () => {
     expect(await Marks.open(config, { run: SCORE_RUN, demand: 'auto', groups: [{ group: 'quality', keys: [session] }] }, facts)).toMatchObject({ status: 'done' });
 
     const health = await judgingHealth(config, new Date().toISOString());
-    const missing = (scorer: string) => expect.objectContaining({ run: runId, workflow: 'review', step: 'review', pass: 1, scorer });
+    const missing = (name: string) => expect.objectContaining({ run: runId, workflow: 'review', step: 'review', pass: 1, scorer: name });
 
     expect(health.labels).toEqual({ total: 3, passed: 1, byDecider: { judge: 1, hand: 1, ci: 1 }, inputTokens: 900, outputTokens: 120 });
     expect(health.states).toEqual({ queued: 1, not_sampled: 1, judging: 1, waiting_ci: 1, lapsed: 1, failed: 1, expired: 0 });

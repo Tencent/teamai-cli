@@ -2,6 +2,7 @@
  * How judging stands for a run on this machine: the labels of each pass, and why every other scorer of a pass this
  * install judges has no label, from its mark and the scorer's sampling. Read only: nothing here opens or closes a mark.
  */
+import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { scoredPasses } from '../workflow/judge-work.js';
 import { stepDefinitions } from '../workflow/scope.js';
@@ -71,10 +72,10 @@ function scoreRunsBySubject(runs: readonly RunState[]): Map<string, PassJudging[
   const bySubject = new Map<string, PassJudging['scoreRuns']>();
 
   for (const run of [...runs].sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
-    const subject = run.inputs?.subject;
+    const subject = z.string().safeParse(run.inputs?.subject);
 
-    if (run.definition.name !== SCORE_WORKFLOW || typeof subject !== 'string') continue;
-    bySubject.set(subject, [...bySubject.get(subject) ?? [], { run: run.id, status: run.status }]);
+    if (run.definition.name !== SCORE_WORKFLOW || !subject.success) continue;
+    bySubject.set(subject.data, [...bySubject.get(subject.data) ?? [], { run: run.id, status: run.status }]);
   }
 
   return bySubject;

@@ -93,8 +93,6 @@ export async function judgingHealth(config: LocalConfig, now: string): Promise<J
   const missing: MissingLabel[] = [];
 
   for (const run of runs) {
-    const alias = run.definition.alias === undefined ? {} : { alias: run.definition.alias };
-
     for (const [key, pass] of judging.get(run.id)?.passes ?? []) {
       const at = key.lastIndexOf('#');
 
@@ -104,16 +102,23 @@ export async function judgingHealth(config: LocalConfig, now: string): Promise<J
         if (state.kind === 'failed') failures.set(state.code, (failures.get(state.code) ?? 0) + 1);
 
         if (state.kind === 'not_sampled' || missing.length >= MISSING_LIMIT) continue;
-        missing.push({ run: run.id, workflow: run.definition.name, ...alias, step: key.slice(0, at), pass: Number(key.slice(at + 1)), scorer, state });
+        const row: MissingLabel = { run: run.id, workflow: run.definition.name, step: key.slice(0, at), pass: Number(key.slice(at + 1)), scorer, state };
+
+        if (run.definition.alias !== undefined) row.alias = run.definition.alias;
+        missing.push(row);
       }
     }
   }
+
+  const sessions: JudgingHealth['sessions'] = { days: days.map((day, index) => ({ day: localDay(day), launches: launches[index] ?? 0 })) };
+
+  if (scoring.ok) sessions.dailyLimit = scoring.sessions.dailyLimit;
 
   return {
     labels: weekOf(labels, Date.parse(now) - DAYS * DAY_MS),
     states,
     failures: [...failures].map(([code, count]) => ({ code, count })).sort((left, right) => right.count - left.count),
     missing,
-    sessions: { ...scoring.ok ? { dailyLimit: scoring.sessions.dailyLimit } : {}, days: days.map((day, index) => ({ day: localDay(day), launches: launches[index] ?? 0 })) },
+    sessions,
   };
 }
