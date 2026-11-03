@@ -87,7 +87,7 @@ function ownerOf(file: string): string | undefined {
 }
 
 /** Why each staged change in `listed`, git's `--name-status -z` output, may not be published by `member`. */
-function refusals(listed: string[], member: string | undefined): string[] {
+function refusals(listed: string[], member: string): string[] {
   const refused: string[] = [];
 
   for (let index = 0; index + 1 < listed.length; index += 2) {
@@ -96,7 +96,7 @@ function refusals(listed: string[], member: string | undefined): string[] {
     const owner = ownerOf(file);
 
     if (owner === undefined) refused.push(`${file}: in no member's directory or file`);
-    else if (owner !== member) refused.push(`${file}: belongs to ${owner}, not ${member ?? 'this member, who has no username'}`);
+    else if (owner !== member) refused.push(`${file}: belongs to ${owner}, not ${member}`);
     else if (status === 'D') refused.push(`${file}: deleted; a step publishes new and changed files only`);
   }
 
@@ -127,46 +127,50 @@ export async function finishDataCheckout(input: { config: LocalConfig; dir: stri
     const refused = refusals(entries, member);
 
     if (refused.length > 0) {
-      const own = member ?? '<username>';
-
       return {
         code: 'push_failed',
-        message: `Step "${step}" staged files outside ${own}'s own on ${branch}, so nothing was published:\n${refused.join('\n')}\nA step publishes only paths such as scores/${own}/… or votes/${own}.yaml. Have it stage only those, then run the workflow again.`,
+        message: `Step "${step}" staged files outside ${member}'s own on ${branch}, so nothing was published:\n${refused.join('\n')}\nA step publishes only paths such as scores/${member}/… or votes/${member}.yaml. Have it stage only those, then run the workflow again.`,
       };
     }
 
-    const files = entries.filter((_, index) => index % 2 === 1);
     const patch = await git(dir, ['diff', '--cached', '--binary', '--no-renames', at.base, '--']);
 
     if (patch.code !== 0) return { code: 'push_failed', message: `Step "${step}" could not read what it staged in ${dir}: ${said(patch)}` };
-    let conflict: string | undefined;
 
-    const published = await DataBranches.checkout(branch).update(config, async (worktree) => {
-      const applied = await git(worktree, ['apply', '--index', '--binary', '-'], { input: patch.stdout });
-
-      if (applied.code === 0) return { files, message: `[teamai] ${step}: ${member ?? ''}` };
-      conflict = said(applied);
-
-      return null;
-    });
-
-    if (conflict !== undefined) return pending(step, `${branch} on origin changed what it staged: ${conflict}`);
-
-    switch (published.status) {
-      case 'published':
-      case 'already-present':
-        return {};
-      case 'busy':
-        return pending(step, `another teamai process is writing ${branch}`);
-      case 'failed':
-        return pending(step, published.reason.trim());
-      default: {
-        const unhandled: never = published;
-
-        return unhandled;
-      }
-    }
+    return await land({ config, step, branch, files: entries.filter((_, index) => index % 2 === 1), patch: patch.stdout });
   } finally {
     await removeDataCheckout(config, dir);
+  }
+}
+
+/** Applies `patch`, which changes `files`, to the member's persistent checkout of `branch`, and pushes it. */
+async function land(input: { config: LocalConfig; step: string; branch: DataBranch; files: string[]; patch: string }): Promise<{ message?: string }> {
+  const { config, step, branch, files } = input;
+  let conflict: string | undefined;
+
+  const published = await DataBranches.checkout(branch).update(config, async (worktree) => {
+    const applied = await git(worktree, ['apply', '--index', '--binary', '-'], { input: input.patch });
+
+    if (applied.code === 0) return { files, message: `[teamai] ${step}: ${config.username}` };
+    conflict = said(applied);
+
+    return null;
+  });
+
+  if (conflict !== undefined) return pending(step, `${branch} on origin changed what it staged: ${conflict}`);
+
+  switch (published.status) {
+    case 'published':
+    case 'already-present':
+      return {};
+    case 'busy':
+      return pending(step, `another teamai process is writing ${branch}`);
+    case 'failed':
+      return pending(step, published.reason.trim());
+    default: {
+      const unhandled: never = published;
+
+      return unhandled;
+    }
   }
 }
