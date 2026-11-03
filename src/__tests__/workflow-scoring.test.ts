@@ -17,7 +17,7 @@ import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
-import { scoredPasses } from '../workflow/scoring-entries.js';
+import { scoredPasses } from '../workflow/judge-work.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { installOwner, readRun, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';

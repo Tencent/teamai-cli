@@ -12,7 +12,7 @@ import { getDataHome, type LocalConfig } from '../types.js';
 import { runPasses, type RunPass } from '../workflow/loop.js';
 import { localRuns } from '../workflow/scoring.js';
 import { privateSteps } from '../workflow/scope.js';
-import { settledHere } from '../workflow/scoring-entries.js';
+import { settledHere } from '../workflow/judge-work.js';
 import { installOwner } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { isIsolated } from '../workflow/workspace.js';

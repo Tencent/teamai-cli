@@ -43,7 +43,8 @@ import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, ty
 import { buildEvidence, evidenceHash, evidencePlan, missingEvidence } from './scoring-evidence.js';
 import { decideBeforeJudge, failingLabel, judgedAlone } from './scoring-stages.js';
 import type { RunPass } from './loop.js';
-import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
+import { judgeablePasses, scoredPasses } from './judge-work.js';
+import { isUnsettled, sameSubject, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
 import { stepDefinitions } from './scope.js';
 import { parseStepPath } from './step-path.js';

@@ -1,7 +1,6 @@
 /**
- * The judge entries of a run: the passes a judge may judge, which install may judge them, and how the entries of its
- * `sampling: all` scorers stand. It imports neither engine.ts nor local-driver.ts, so the engine can import it without a
- * cycle.
+ * The judge entries of a run: how the entries of its `sampling: all` scorers stand, over the passes `judge-work.ts`
+ * lists. It imports neither engine.ts nor local-driver.ts, so the engine can import it without a cycle.
  */
 import { AttemptStore, isDecidedBeforeJudge, type AttemptRecord } from '../scorers/attempts.js';
 import { entryIdOf, entryState, type EntryState, type EntryVerdict } from '../scorers/entry.js';
@@ -9,64 +8,10 @@ import type { RunSubject, ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import type { LocalConfig } from '../types.js';
-import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
+import { judgeablePasses, scoredPasses } from './judge-work.js';
 import { stepDefinitions } from './scope.js';
-import { agentPassOf, agentSucceeded } from './step-state.js';
-import { parseStepPath } from './step-path.js';
 import { installOwner } from './store.js';
-import type { RunState, WorkflowStep } from './types.js';
-
-/** A succeeded pass of a step that lists scorers this run pinned. */
-interface ScorablePass {
-  subject: RunSubject;
-  scorers: string[];
-}
-
-/** Whether this install settled `pass`: its stamp, or, for a pass settled before stamps, a run no other install handed over. */
-export function settledHere(run: RunState, pass: RunPass, install: string): boolean {
-  return pass.installId === undefined ? run.publication === undefined : pass.installId === install;
-}
-
-/**
- * The passes a judge can judge: passes of prompt and workflow steps whose agent succeeded, delivering or not, and of a
- * `for_each` step only its items.
- */
-export function judgeablePasses(run: RunState): Array<{ pass: RunPass; definition: WorkflowStep }> {
-  const definitionOf = stepDefinitions(run);
-
-  return runPasses(run, agentPassOf).flatMap((pass) => {
-    const definition: WorkflowStep | undefined = definitionOf(pass.step);
-
-    if (!agentSucceeded(pass) || !definition) return [];
-
-    if (definition.forEach && parseStepPath(pass.step).at(-1)?.index === undefined) return [];
-
-    return [{ pass, definition }];
-  });
-}
-
-/**
- * The passes of `run` this install may judge: judgeable passes of steps that list a scorer the run pinned. A prompt pass
- * belongs to the install that settled it; a workflow pass to the install that settled its first child that has a
- * stamp. Sampling is left to the caller.
- */
-export function scoredPasses(run: RunState, install: string): ScorablePass[] {
-  const all = runPasses(run, agentPassOf);
-  const pinned = run.scorers ?? {};
-
-  return judgeablePasses(run).flatMap(({ pass, definition }) => {
-    const scorers = (definition.scorers?.names ?? []).filter((name) => Object.hasOwn(pinned, name));
-
-    if (scorers.length === 0) return [];
-
-    const owner = definition.workflow === undefined ? pass
-      : firstSettled(passesWithin(run, all, pass.step, pass.pass).filter((child) => child.installId !== undefined));
-
-    if (!settledHere(run, owner ?? pass, install)) return [];
-
-    return [{ subject: { runId: run.id, step: pass.step, pass: pass.pass }, scorers }];
-  });
-}
+import type { RunState } from './types.js';
 
 export function sameSubject(label: ScoreLabel, scorer: string, sourceHash: string, subject: RunSubject): boolean {
   return label.source === 'workflow' && label.scorer === scorer && label.rubric.sourceHash === sourceHash
