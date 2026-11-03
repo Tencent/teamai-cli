@@ -13,6 +13,8 @@ import { pinnedDefinition } from '../scorers/pin.js';
 import { markFacts } from '../scorers/score-plan.js';
 import { ScoreSubjects } from '../scorers/score-subjects.js';
 import { scopeScoring } from '../scorers/settings.js';
+import { availableTeamSkills } from '../scorers/skill-evidence.js';
+import { routingScorers } from '../scorers/skill-routing.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
@@ -164,31 +166,41 @@ type Finished = Awaited<ReturnType<typeof SessionWork.finished>>[number];
 async function wantsOf(config: LocalConfig, request: Request): Promise<Wants | Extract<Listed, { ok: false }>> {
   const judging = await judgingOf(config);
   const publishing = SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies;
-  const chosen = await candidatesOf(config, { names: request.scorers, isJudging: judging !== undefined });
+  const chosen = await candidatesOf(config, { names: request.scorers, judging });
 
   if ('ok' in chosen) return chosen;
 
   return {
     ...chosen,
-    scores: (mode) => chosen.demand === 'named' || judging?.[mode].policy === 'auto',
+    scores: (mode) => chosen.demand === 'named' || judging?.policies[mode].policy === 'auto',
     publishes: (mode) => request.publish === 'always' || (request.publish === 'policy' && publishing[mode].policy === 'auto'),
   };
 }
 
-/** The session judging policies of `config`, or undefined while scoring is unavailable here or its settings do not load. */
+/**
+ * The session judging policies of `config`, and whether `skill_routing` is on, or undefined while scoring is
+ * unavailable here or its settings do not load.
+ */
 async function judgingOf(config: LocalConfig) {
   if (scoringUnavailable(config)) return undefined;
   const scoring = await scopeScoring(config);
 
-  return scoring.ok ? scoring.sessions.policies : undefined;
+  return scoring.ok ? { policies: scoring.sessions.policies, isRouting: scoring.skillRouting } : undefined;
 }
 
 /**
- * Which scorers judge a session: the scorers `names` names, whatever a policy says, or else, while `isJudging`, those
- * that sample it.
+ * Which scorers judge a session: the scorers `names` names, whatever a policy says, or else, while `judging`, those
+ * that sample it and, while `skill_routing` is on, a routing question per team skill its captures delivered.
  */
-async function candidatesOf(config: LocalConfig, { names, isJudging }: { names: readonly string[]; isJudging: boolean }): Promise<Pick<Wants, 'candidates' | 'demand'> | Extract<Listed, { ok: false }>> {
-  if (names.length === 0) return { candidates: isJudging ? await SessionWork.samplingScorers(config) : async () => [], demand: 'auto' };
+async function candidatesOf(config: LocalConfig, { names, judging }: { names: readonly string[]; judging: Awaited<ReturnType<typeof judgingOf>> }): Promise<Pick<Wants, 'candidates' | 'demand'> | Extract<Listed, { ok: false }>> {
+  if (names.length === 0 && judging === undefined) return { candidates: async () => [], demand: 'auto' };
+
+  if (names.length === 0) {
+    const sampling = await SessionWork.samplingScorers(config);
+    const routing = (session: Finished) => (judging?.isRouting ? routingScorers(availableTeamSkills(session.captures) ?? []) : []);
+
+    return { candidates: async (session) => [...await sampling(session), ...routing(session)], demand: 'auto' };
+  }
 
   const named = await namedScorers(config, names);
 
@@ -250,7 +262,7 @@ async function reachedScopes(cwd: string): Promise<LocalConfig[]> {
  * says otherwise, and a drain at the end of each unattended job takes them.
  */
 async function worksOnAttended(config: LocalConfig): Promise<boolean> {
-  return (await judgingOf(config))?.attended.policy === 'auto'
+  return (await judgingOf(config))?.policies.attended.policy === 'auto'
     || SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.attended.policy === 'auto';
 }
 

@@ -10,17 +10,16 @@ import { knownSecrets } from '../env-resolution.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { pushedSession } from '../session-flow/scoring.js';
 import { judgeSession, SessionWork, writeSessionEvidence, type JudgedSession } from '../session-flow/session-work.js';
-import type { JsonValue, LocalConfig } from '../types.js';
+import type { JsonValue } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
 import { redact } from '../utils/redact.js';
 import { CONFINED_FILE, ConfinedFileSchema, type ConfinedFile } from '../workflow/confined-place.js';
 import type { RunState } from '../workflow/types.js';
-import { pinScorers } from './cache.js';
 import type { ScorerDefinition } from './definition.js';
 import { answerSchema, rubricPrompt, type Rubrics } from './evidence.js';
 import { requiredIsolation, scorerIsolationSource } from './isolation.js';
 import { RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type RunSubject } from './label.js';
-import { pinnedDefinition, PinnedScorerSchema } from './pin.js';
+import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import { RunScorers } from './run-scorers.js';
 import type { ScoreAttempt } from './score-attempt.js';
 import { judgeablePass, type Refusal } from './score-plan.js';
@@ -82,16 +81,16 @@ function replySchema(rubrics: Rubrics): JsonValue {
   return { type: 'object', properties: { answer: answerSchema(rubrics) }, required: ['answer'], additionalProperties: false };
 }
 
-/** The scorers of the group as pinned for the subject: by its run for a pass, as teamai pull cached them for a session. */
-async function pinsOf(names: readonly string[], ran: { config: LocalConfig; run: RunState } | undefined, attempt: ScoreAttempt): Promise<Pinned | Refusal> {
-  const run = ran?.run;
-  const read = ran ? await RunScorers.of(ran.config, ran.run) : { ok: true as const, pins: await pinScorers(attempt.config, names) };
-
+/**
+ * The scorers of the group as `read` pins them for the subject: by its run for a pass; for a session, as teamai pull
+ * cached them, and a routing question as the session's captures ask it. `where` says where a missing one was looked for.
+ */
+function pinsOf(names: readonly string[], read: { ok: true; pins: Record<string, PinnedScorer> } | { ok: false; reason: string }, where: string): Pinned | Refusal {
   if (!read.ok) return refused('scorer_not_found', `${read.reason} No evidence was written.`);
   const scorers = names.map((name) => ({ name, pin: read.pins[name] }));
   const missing = scorers.find(({ name, pin }) => !pin || !pinnedDefinition(name, pin));
 
-  if (missing) return refused('scorer_not_found', `Scorer ${missing.name} is not ${run ? `a scorer of run ${run.id} at the team revision it started from` : 'a scorer teamai pull cached'}, so the group has nothing to judge it by.`);
+  if (missing) return refused('scorer_not_found', `Scorer ${missing.name} is not ${where}, so the group has nothing to judge it by.`);
   const [first, ...rest] = scorers.flatMap(({ name, pin }) => (pin ? [{ name, pin }] : []));
 
   if (!first) return refused('invalid_arguments', '--scorers names no scorer. Pass the group\'s scorers, as plan printed them.');
@@ -174,7 +173,7 @@ async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: re
   const ran = await judgeablePass(attempt.config, subject);
 
   if (!ran.ok) return ran;
-  const pinned = await pinsOf(names, ran, attempt);
+  const pinned = pinsOf(names, await RunScorers.of(ran.config, ran.run), `a scorer of run ${ran.run.id} at the team revision it started from`);
 
   if ('ok' in pinned) return pinned;
   const group: GroupRecord = { subject: Subject.format({ kind: 'run', subject }), judged: { kind: 'run', subject }, scorers: pinned.scorers, delivers: isDelivered(ran.run, subject), hand };
@@ -191,7 +190,7 @@ async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: re
 }
 
 async function sessionEvidence(attempt: ScoreAttempt, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[], hand: boolean): Promise<EvidenceOutput | Refusal> {
-  const pinned = await pinsOf(names, undefined, attempt);
+  const pinned = pinsOf(names, { ok: true, pins: (await SessionWork.pinsOf(attempt.config, subject, names)).pins }, 'a scorer teamai pull cached or a routing question of the session');
 
   if ('ok' in pinned) return pinned;
   const read = await sessionRead(attempt, subject);

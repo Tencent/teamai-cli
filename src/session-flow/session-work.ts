@@ -20,7 +20,9 @@ import { LabelStore } from '../scorers/label-store.js';
 import { Marks, type MarkFacts, type MarkKey } from '../scorers/marks.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { isSampled } from '../scorers/sampling.js';
-import { skillsEvidence, type SkillsEvidence } from '../scorers/skill-evidence.js';
+import { availableTeamSkills, skillsEvidence, type AvailableSkill, type SkillsEvidence } from '../scorers/skill-evidence.js';
+import { isRoutingScorer, routingQuestionOf, routingScorers } from '../scorers/skill-routing.js';
+import type { Subject } from '../scorers/subject.js';
 import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, isJsonObject, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
@@ -258,6 +260,38 @@ async function sessionScorers(config: LocalConfig): Promise<SessionScorer[]> {
   return scorers.map(({ dir, ...scorer }) => (dir === undefined || shared.includes(dir) ? scorer : { ...scorer, namespace: dir }));
 }
 
+/** The team skills the captures of `subject` delivered, which its routing questions ask of; a pushed session has no captures here. */
+async function deliveredSkills(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>): Promise<AvailableSkill[] | undefined> {
+  return subject.kind === 'session' ? availableTeamSkills(await SessionCaptures.read(config, subject.subject.platform, subject.subject.sessionId)) : undefined;
+}
+
+/** One routing question per team skill `subject`'s captures delivered, each a scorer of the session. */
+async function routingQuestions(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>): Promise<SessionScorer[]> {
+  return routingScorers(await deliveredSkills(config, subject) ?? []);
+}
+
+/**
+ * The pins of `names` for `subject`: a scorer as teamai pull cached it, a routing question as the team skills its
+ * captures delivered ask it. A name with neither is left out; `unpinned` says why for a routing name.
+ */
+async function pinsOf(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[]): Promise<{ pins: Record<string, PinnedScorer>; unpinned: Map<string, string> }> {
+  const routing = names.filter(isRoutingScorer);
+  const pinned = await pinScorers(config, names);
+  const unpinned = new Map<string, string>();
+
+  if (routing.length === 0) return { pins: pinned, unpinned };
+  const available = await deliveredSkills(config, subject);
+
+  for (const name of routing) {
+    const routed = routingQuestionOf(name, available);
+
+    if (routed.ok) pinned[name] = routed.question.pin;
+    else unpinned.set(name, routed.why);
+  }
+
+  return { pins: pinned, unpinned };
+}
+
 type CaptureSelection = NonNullable<NonNullable<SessionCapture['agent']['team']>['selection']>;
 
 /**
@@ -430,4 +464,4 @@ async function sampledScorers(config: LocalConfig, subject: SessionSubject, fact
   });
 }
 
-export const SessionWork = { finished, read, scopeCwd, sampledScorers, samplingScorers, sessionScorers, isGone } as const;
+export const SessionWork = { finished, read, scopeCwd, sampledScorers, samplingScorers, sessionScorers, routingQuestions, pinsOf, isGone } as const;

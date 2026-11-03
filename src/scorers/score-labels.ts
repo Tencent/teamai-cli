@@ -16,7 +16,7 @@ import { privateSteps } from '../workflow/scope.js';
 import type { RunState } from '../workflow/types.js';
 import { isIsolated } from '../workflow/workspace.js';
 import { JudgeAnswerSchema, verdictsOf } from './batch.js';
-import { pinScorers } from './cache.js';
+import { SessionWork } from '../session-flow/session-work.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
 import { EvidenceDir, readRecord, type GroupRecord } from './evidence-dir.js';
 import { chooseJudgeModel } from './judge-model.js';
@@ -391,7 +391,7 @@ export const ScoreLabels = {
   /** Records a failed attempt of each scorer the root run holds open on `subject`, so automatic judging does not start it again. */
   async settle(attempt: ScoreAttempt, subject: Subject, scorers: readonly string[], { now }: { now: string }): Promise<{ ok: true; settled: number } | Refusal> {
     if (attempt.hand !== '') return { ok: true, settled: 0 };
-    const pins = subject.kind === 'run' ? {} : await pinScorers(attempt.config, scorers);
+    const pins = subject.kind === 'run' ? {} : (await SessionWork.pinsOf(attempt.config, subject, scorers)).pins;
     const keys = keysOf(subject, scorers.map((name) => ({ name, pin: pins[name] })));
     const spent = judgeSpend(attempt.run, judgeStepOf(attempt));
     const closed = await closeHeld(attempt, keys.map((key, index) => ({ key, outcome: failedOutcome('judge_failed', index === 0 ? spent : undefined) })), now);

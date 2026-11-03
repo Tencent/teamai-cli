@@ -15,7 +15,6 @@ import { readRun } from '../workflow/store.js';
 import type { RunPass } from '../workflow/loop.js';
 import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
 import { batchesScorers } from './batch.js';
-import { pinScorers } from './cache.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
 import { chooseJudgeModel, type JudgeModelChoice } from './judge-model.js';
 import type { RunSubject } from './label.js';
@@ -26,6 +25,7 @@ import { isSampled } from './sampling.js';
 import { ScoreAttempt } from './score-attempt.js';
 import { isDelivered } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
+import { isRoutingScorer } from './skill-routing.js';
 import { Subject } from './subject.js';
 
 /** One judge launch: the scorers it labels, joined by `,`, and the stages its steps run. */
@@ -147,19 +147,33 @@ async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: b
   };
 }
 
-async function sessionJudged(request: PlanRequest, subject: Exclude<Subject, { kind: 'run' }>, teamBatch: boolean | undefined): Promise<Judged | Refusal> {
-  const { config } = request.attempt;
-  const named = request.scorers.length > 0;
-  const pins = named ? await pinScorers(config, request.scorers) : Object.fromEntries((await SessionWork.sessionScorers(config)).map(({ scorer, pin }) => [scorer, pin]));
-  const candidates = pinned(named ? request.scorers : Object.keys(pins), pins, 'a scorer teamai pull cached');
+/**
+ * The scorers of a session: those named, else every scorer that judges sessions and, while `skill_routing` is on, a
+ * routing question per team skill its captures delivered.
+ */
+async function sessionPins(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>, { names, isRouting }: { names: readonly string[]; isRouting: boolean }): Promise<Candidate[] | Refusal> {
+  if (names.length === 0) {
+    const scorers = [...await SessionWork.sessionScorers(config), ...(isRouting ? await SessionWork.routingQuestions(config, subject) : [])];
+
+    return scorers.map(({ scorer, pin, definition }) => ({ name: scorer, pin, definition }));
+  }
+
+  const { pins, unpinned } = await SessionWork.pinsOf(config, subject, names);
+  const [routing, why] = [...unpinned][0] ?? [];
+
+  return routing === undefined ? pinned(names, pins, 'a scorer teamai pull cached') : refused('scorer_not_found', `Scorer ${routing} is not a routing question of ${Subject.format(subject)}. ${why}`);
+}
+
+async function sessionJudged(request: PlanRequest, subject: Exclude<Subject, { kind: 'run' }>, scoring: { batch: boolean | undefined; skillRouting: boolean }): Promise<Judged | Refusal> {
+  const candidates = await sessionPins(request.attempt.config, subject, { names: request.scorers, isRouting: scoring.skillRouting });
 
   if (!Array.isArray(candidates)) return candidates;
   const structured = subject.kind === 'session' ? subject.subject : undefined;
 
   return {
     candidates,
-    sampled: (candidate) => structured === undefined || isSampled(candidate.name, structured, candidate.definition.samplingRate),
-    batch: batchesScorers({ team: teamBatch }),
+    sampled: (candidate) => structured === undefined || isRoutingScorer(candidate.name) || isSampled(candidate.name, structured, candidate.definition.samplingRate),
+    batch: batchesScorers({ team: scoring.batch }),
     prefer: [],
     stagesOf: () => [],
     alone: () => false,
@@ -197,7 +211,8 @@ function batchKey(candidate: Candidate, judged: Judged, chosen: JudgeModelChoice
 
 /**
  * The sampled scorers, every one on a named demand, grouped: a scorer with a check alone, else those that resolve to one
- * judge and take the same stages.
+ * judge and take the same stages. A session's routing questions share a group whatever `batch` says, and its team
+ * scorers join them only under `batch`.
  */
 async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[][]> {
   const aliases = await loadModelAliases(request.attempt.config);
@@ -206,7 +221,9 @@ async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[
   const batch = request.batch || judged.batch === true;
 
   for (const candidate of judged.candidates.filter((one) => request.demand === 'named' || judged.sampled(one))) {
-    const key = batch && !judged.alone(candidate) ? batchKey(candidate, judged, chooseJudgeModel(aliases, candidate.definition, tools)) : `${candidate.name}\n`;
+    const routing = isRoutingScorer(candidate.name);
+    const shared = (batch || routing) && !judged.alone(candidate) ? batchKey(candidate, judged, chooseJudgeModel(aliases, candidate.definition, tools)) : undefined;
+    const key = shared === undefined ? `${candidate.name}\n` : routing && !batch ? `routing\n${shared}` : shared;
     groups.set(key, [...groups.get(key) ?? [], candidate]);
   }
 
@@ -232,7 +249,7 @@ export async function planGroups(request: PlanRequest): Promise<{ ok: true; grou
 
   if (!scoring.ok) return refused('scoring_settings_invalid', scoring.reason);
   const { subject } = request;
-  const judged = subject.kind === 'run' ? await runJudged(request, subject.subject, scoring.batch) : await sessionJudged(request, subject, scoring.batch);
+  const judged = subject.kind === 'run' ? await runJudged(request, subject.subject, scoring.batch) : await sessionJudged(request, subject, scoring);
 
   if ('ok' in judged) return judged;
 

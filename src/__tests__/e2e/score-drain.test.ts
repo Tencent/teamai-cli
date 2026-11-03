@@ -2,6 +2,7 @@
  * Real CLI against a local bare team repo: `teamai score --drain` in an unattended job drives one
  * teamai-finished-sessions run, which archives and judges the job's finished sessions with a fake Claude judge, then
  * publishes the labels. A failed judgment is final, and `daily_limit` in ~/.teamai/config.yaml binds under the team's.
+ * With `skill_routing` on, each delivered team skill of a session gets a routing question, all of them in one launch.
  */
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -31,6 +32,9 @@ Judge whether the session did what the member asked.
 interface Job {
   team: string;
   dataHome: string;
+  root: string;
+  app: string;
+  env: NodeJS.ProcessEnv;
   drain: () => Promise<{ code: number | null; lines: string[] }>;
 }
 
@@ -57,9 +61,10 @@ function runCLI(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<{ 
 
 /**
  * An unattended job on a member's machine whose team has `files`, with `config` appended to its config.yaml, a Claude
- * judge that answers thorough or with `fails` exits 1, and `sessions` captured unattended and idle seven hours.
+ * judge that gives each scorer its first label, or with `fails` exits 1, and counts its launches in `<root>/calls`, and
+ * `sessions` captured unattended and idle seven hours, each delivered the team skills `skills`.
  */
-async function job({ files = {}, config = '', fails = false, sessions = 1 }: { files?: Record<string, string>; config?: string; fails?: boolean; sessions?: number }): Promise<Job> {
+async function job({ files = {}, config = '', fails = false, sessions = 1, skills }: { files?: Record<string, string>; config?: string; fails?: boolean; sessions?: number; skills?: Record<string, { namespace?: string }> }): Promise<Job> {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-score-drain-e2e-')));
   roots.push(root);
   const knowledge = path.join(root, 'knowledge');
@@ -83,10 +88,14 @@ async function job({ files = {}, config = '', fails = false, sessions = 1 }: { f
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
 if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+require('node:fs').appendFileSync(${JSON.stringify(path.join(root, 'calls'))}, 'x');
 ${fails ? 'process.exit(1);' : ''}
+const schema = JSON.parse(process.argv[process.argv.indexOf('--json-schema') + 1]).properties.answer;
+const first = (one) => ({ label: one.properties.label.enum[0], reasoning: 'It ran the tests.' });
+const answer = schema.properties.label ? first(schema) : Object.fromEntries(Object.entries(schema.properties).map(([name, one]) => [name, first(one)]));
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: { answer: { label: 'thorough', reasoning: 'It ran the tests.' } } }));
+console.log(JSON.stringify({ type: 'result', structured_output: { answer } }));
 });\n`, { mode: 0o755 });
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, TEAMAI_MODE: 'unattended' };
   for (const name of ['CI', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEBUDDY_SESSION_ID', 'COPILOT_AGENT_SESSION_ID', 'CURSOR_CONVERSATION_ID', 'CLAUDE_SESSION_ID', 'OPENCODE_SESSION_ID', 'TEAMAI_AGENT_SESSION_ID', 'PI_SESSION_ID', 'MUSE_SESSION_ID', 'TEAMAI_LAUNCHED_BY', 'TEAMAI_WORKFLOW_ATTEMPT']) delete env[name];
@@ -111,12 +120,15 @@ console.log(JSON.stringify({ type: 'result', structured_output: { answer: { labe
     fs.mkdirSync(captures, { recursive: true });
     const captureId = `0b6f2a52-5d7e-4c7e-9a43-${sessionId.slice(-12)}`;
     fs.writeFileSync(path.join(captures, `${captureId}.json`), JSON.stringify({ captureId, platform: 'claude-code', sessionId, runMode: 'unattended',
-      capturedAt: ended.toISOString(), agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
+      capturedAt: ended.toISOString(), agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file, ...(skills ? { teamSkillInfo: skills } : {}) }));
   }
 
   return {
     team,
     dataHome,
+    root,
+    app,
+    env,
     drain: async () => {
       const drained = await runCLI(['score', '--drain'], app, env);
       return { code: drained.code, lines: `${drained.stdout}${drained.stderr}`.split('\n').filter(Boolean) };
@@ -183,5 +195,43 @@ describe('teamai score --drain, through the real CLI', () => {
     expect(drained.code, drained.lines.join('\n')).toBe(0);
     expect(drained.lines).toContain('✔ Judged 2 sampled sessions here (review-quality)');
     expect(labels(dataHome)).toHaveLength(2);
+  }, 180_000);
+});
+
+describe('routing questions, through the real CLI', () => {
+  const skills = { release: { namespace: 'ops' }, 'review-notes': {} };
+  const launches = (root: string): number => (fs.existsSync(path.join(root, 'calls')) ? fs.readFileSync(path.join(root, 'calls'), 'utf8').length : 0);
+  const routed = (dataHome: string): unknown[] => labels(dataHome).filter((label) => String((label as { scorer: string }).scorer).startsWith('teamai:routing:'));
+
+  it('with skill_routing on, a drain asks one question per delivered team skill of a finished session, all in one launch', async () => {
+    const { root, dataHome, drain } = await job({ files: { 'scorers/scoring.yaml': 'skill_routing: true\n' }, skills });
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(routed(dataHome)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scorer: 'teamai:routing:ops:release', label: 'fit', subject: { platform: 'claude-code', sessionId: SESSIONS[0] } }),
+      expect.objectContaining({ scorer: 'teamai:routing:review-notes', label: 'fit', subject: { platform: 'claude-code', sessionId: SESSIONS[0] } }),
+    ]));
+    expect(routed(dataHome)).toHaveLength(2);
+    expect(launches(root)).toBe(2);
+  }, 180_000);
+
+  it('with skill_routing off, a drain asks no routing question', async () => {
+    const { dataHome, drain } = await job({ skills });
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(labels(dataHome)).toEqual([expect.objectContaining({ scorer: 'review-quality' })]);
+  }, 180_000);
+
+  it('teamai score --session --scorer teamai:routing:<namespace>:<skill> labels it through a teamai-score run, with skill_routing off', async () => {
+    const { app, env, dataHome } = await job({ skills });
+
+    const scored = await runCLI(['score', '--session', SESSIONS[0], '--source', 'claude-code', '--scorer', 'teamai:routing:ops:release'], app, { ...env, TEAMAI_MODE: 'attended' });
+
+    expect(scored.code, `${scored.stdout}\n${scored.stderr}`).toBe(0);
+    expect(routed(dataHome)).toEqual([expect.objectContaining({ scorer: 'teamai:routing:ops:release', label: 'fit', subject: { platform: 'claude-code', sessionId: SESSIONS[0] } })]);
   }, 180_000);
 });

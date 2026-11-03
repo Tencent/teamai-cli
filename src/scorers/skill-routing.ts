@@ -85,3 +85,29 @@ export function routingScorer(skill: AvailableSkill): RoutingQuestion {
 export function routingScorers(skills: readonly AvailableSkill[]): RoutingQuestion[] {
   return skills.flatMap((skill) => skill.namespaceUnknown ? [] : [routingScorer(skill)]);
 }
+
+/**
+ * The routing question `value` names among `available`, the team skills a session's captures delivered (undefined
+ * when they record none), or why it names none of them. It resolves whatever `skill_routing` says.
+ */
+export function routingQuestionOf(value: string, available: readonly AvailableSkill[] | undefined): { ok: true; question: RoutingQuestion } | { ok: false; why: string } {
+  const parsed = parseRoutingScorer(value);
+  const skill = parsed && available !== undefined ? routingSkillOf(parsed, available) : undefined;
+
+  if (parsed && skill !== undefined) {
+    const question = routingScorer(skill);
+
+    return question.scorer === value ? { ok: true, question } : { ok: false, why: `It names ${question.scorer}.` };
+  }
+
+  const tellable = (available ?? []).filter(({ namespaceUnknown }) => !namespaceUnknown);
+  const untellable = parsed && (available ?? []).some(({ name, namespaceUnknown }) => namespaceUnknown && name === parsed.skill);
+
+  if (available === undefined) return { ok: false, why: 'The session\'s captures record no delivered team skills, so no routing question can name one.' };
+
+  if (available.length === 0) return { ok: false, why: 'The session\'s checkout held no team skills.' };
+
+  if (parsed && untellable) return { ok: false, why: `Its delivery record cannot tell the namespace of team skill ${parsed.skill}, so judging it could judge another skill of the same name: it has no routing question.` };
+
+  return { ok: false, why: `It names no team skill in this session's skills.available: ${tellable.map(routingScorerName).join(', ')}.` };
+}
