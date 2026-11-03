@@ -44,11 +44,15 @@ export type ScoredLabel = z.infer<typeof ScoredLabelSchema>;
 
 /**
  * A teamai-score run's `done` outputs as `workflows/teamai-score.yaml` declares them: the labels of each group, by its
- * `score` results. A run that planned no group, and a group that broke before `label`, give none.
+ * `score` results, and the versions its write stored, null when that write did not succeed. A run that planned no
+ * group, and a group that broke before `label`, give none.
  */
 const ScoreRunOutputsSchema = z.object({
-  labels: z.array(z.object({ outputs: z.object({ labels: z.array(ScoredLabelSchema).optional() }).optional() })).optional(),
+  labels: z.array(z.object({ outputs: z.object({ labels: z.array(ScoredLabelSchema).optional(), written: z.array(z.string()).nullish() }).optional() })).optional(),
 }).optional();
+
+/** A label of a group whose write stored nothing is no label. */
+const UNWRITTEN: Pick<ScoredLabel, 'label' | 'code'> = { label: '', code: 'score_step_failed' };
 
 /** What teamai-score's `done` `outputs` gave each scorer, or why this teamai cannot read them. */
 export type ScoredLabels = { ok: true; labels: ScoredLabel[] } | { ok: false; reason: string };
@@ -62,7 +66,7 @@ function labelsOf(outputs: Record<string, JsonValue> | undefined): ScoredLabels 
     return { ok: false, reason: issue === undefined ? 'invalid' : `outputs.${issue.path.join('.')}: ${issue.message}` };
   }
 
-  return { ok: true, labels: (parsed.data?.labels ?? []).flatMap((group) => group.outputs?.labels ?? []) };
+  return { ok: true, labels: (parsed.data?.labels ?? []).flatMap(({ outputs: group }) => (group?.labels ?? []).map((entry) => (entry.code === '' && !group?.written ? { ...entry, ...UNWRITTEN } : entry))) };
 }
 
 const DoneSchema = z.object({ done: z.object({ outcome: z.string(), outputs: z.record(z.string(), z.json()).optional() }) });

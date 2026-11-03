@@ -27,7 +27,8 @@ steps:
     for_each: steps.plan.outputs.groups
     continue_on_failure: true
     workflow:
-      outputs: { labels: steps.label.outputs.labels }
+      # written: the version of each label write stored; null when it did not succeed, so the labels were not stored.
+      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels }
       steps:
         - id: evidence
           command: teamai score evidence --subject "$SUBJECT" --scorers "$GROUP"

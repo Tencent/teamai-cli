@@ -30,7 +30,7 @@ import type { ConfinedRunReport } from '../workflow/step-state.js';
 import { evidenceHash } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { checkConfinedDir } from '../workflow/confined-place.js';
-import { readRun, runScratchDir, updateRun } from '../workflow/store.js';
+import { readRun, RunIdSchema, runScratchDir, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import { PrUrlSchema } from '../workflow/pr-url.js';
 
@@ -1365,6 +1365,14 @@ describe('what teamai score answers for a run its local driver drove', () => {
     const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { write: { ok: false, code: 'write_failed', message: 'The disk is full.' } } });
 
     expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].write failed: The disk is full.`, labels: [] } });
+  });
+
+  it('says, after the run, that a scorer whose label the write step failed to store got score_step_failed, not its label', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { write: { ok: false, code: 'busy', message: 'Another teamai process holds the label store.' } } });
+
+    expect(PassScoring.said(`run:${reviewed}:review:1`, RunIdSchema.parse(runId), ended)).toEqual({ kind: 'scored', line: `run:${reviewed}:review:1: quality score_step_failed (teamai-score run ${runId}).` });
   });
 
   it('answers the label the run wrote for the one scorer named, with where its reasoning is', async () => {

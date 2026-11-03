@@ -207,8 +207,8 @@ describe('PassScoring.said', () => {
 
   it('names the label or the code of each scorer of each group the run labelled', () => {
     const groups = [
-      { item: { scorers: 'quality' }, outcome: 'success', outputs: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } },
-      { item: { scorers: 'depth,clarity' }, outcome: 'success', outputs: { labels: [{ scorer: 'depth', label: '', code: 'judge_failed' }, { scorer: 'clarity', label: 'bad', code: '' }] } },
+      { item: { scorers: 'quality' }, outcome: 'success', outputs: { labels: [{ scorer: 'quality', label: 'good', code: '' }], written: ['v1'] } },
+      { item: { scorers: 'depth,clarity' }, outcome: 'success', outputs: { labels: [{ scorer: 'depth', label: '', code: 'judge_failed' }, { scorer: 'clarity', label: 'bad', code: '' }], written: ['v2'] } },
     ];
 
     expect(PassScoring.said('run:r1:review:1', run, done(groups))).toEqual({
