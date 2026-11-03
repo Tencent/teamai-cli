@@ -209,6 +209,7 @@ import { buildAdoptedSummary, buildHandlerRegistry, filterHandlersForConfig } fr
 import { createDispatcher } from '../hook-dispatch.js';
 import { GIT_HOOK_EVENTS } from '../git-hook.js';
 import type { JsonValue, LocalConfig } from '../types.js';
+import { log } from '../utils/logger.js';
 
 /** The scope hook-dispatch resolved for the hook's cwd, handed to every handler. */
 const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [] };
@@ -546,6 +547,24 @@ describe('hook-handlers registry', () => {
     expect(env).toMatchObject({ env: expect.not.objectContaining({ CLAUDE_CODE_SESSION_ID: expect.anything() }) });
     expect(env).toMatchObject({ env: expect.not.objectContaining({ TEAMAI_WORKFLOW_ATTEMPT: expect.anything() }) });
     expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockStartFinished.mock.invocationCallOrder.at(0) ?? 0);
+  });
+
+  it('session-start pull drives no run of teamai-finished-sessions that did not start, and says why only in debug output', async () => {
+    const handler = sessionStartPull();
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope, { ...scope, dataHome: '/data/user' }]);
+    mockStartFinished.mockResolvedValueOnce({ kind: 'failed', failure: { code: 'workflow_not_found', message: 'No workflow named teamai-finished-sessions.' } })
+      .mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    mockSpawn.mockClear();
+    vi.mocked(log.debug).mockClear();
+
+    await handler.execute({ cwd: fs.realpathSync.native(os.tmpdir()) }, 'claude', scope);
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(vi.mocked(log.debug).mock.calls.map(([said]) => said)).toEqual(expect.arrayContaining([
+      'hook-dispatch: teamai-finished-sessions did not start: workflow_not_found: No workflow named teamai-finished-sessions.',
+      'hook-dispatch: teamai-finished-sessions did not start: EACCES: permission denied',
+    ]));
+    expect(vi.mocked(log.warn)).not.toHaveBeenCalledWith(expect.stringContaining('teamai-finished-sessions'));
   });
 
   it('session-start pull reaches the scopes of the directory it runs in when the payload names none (#1179)', async () => {

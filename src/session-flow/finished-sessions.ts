@@ -76,18 +76,18 @@ function scorerNames(text: string): string[] | undefined {
   }
 }
 
-function requestOf(options: ListOptions): Request | Listed {
-  const idleMs = durationMs(options.idle ?? '6h');
+function requestOf({ idle = '6h', publish = 'policy', scorers = '[]' }: ListOptions): Request | Listed {
+  const idleMs = durationMs(idle);
 
-  if (idleMs === undefined) return refused('invalid_arguments', `--idle ${options.idle ?? ''} is not a duration. Pass a whole number of s, m or h, such as 6h.`);
-  const publish = z.enum(PUBLISH).safeParse(options.publish ?? 'policy');
+  if (idleMs === undefined) return refused('invalid_arguments', `--idle ${idle} is not a duration. Pass a whole number of s, m or h, such as 6h.`);
+  const policy = z.enum(PUBLISH).safeParse(publish);
 
-  if (!publish.success) return refused('invalid_arguments', `--publish ${options.publish ?? ''} is not one of ${PUBLISH.join(', ')}.`);
-  const scorers = scorerNames(options.scorers ?? '[]');
+  if (!policy.success) return refused('invalid_arguments', `--publish ${publish} is not one of ${PUBLISH.join(', ')}.`);
+  const names = scorerNames(scorers);
 
-  if (!scorers) return refused('invalid_arguments', `--scorers ${options.scorers ?? ''} is not a JSON array of scorer names, such as ["review-quality"].`);
+  if (!names) return refused('invalid_arguments', `--scorers ${scorers} is not a JSON array of scorer names, such as ["review-quality"].`);
 
-  return { idleMs, publish: publish.data, scorers };
+  return { idleMs, publish: policy.data, scorers: names };
 }
 
 /**
@@ -151,32 +151,81 @@ async function list(options: ListOptions, ctx: ListContext): Promise<Listed> {
   return scope.ok ? listIn(scope.config, request, ctx.now) : scope;
 }
 
-/** The finished sessions of `config` that `request` asks for, at `now`. */
-async function listIn(config: LocalConfig, request: Request, now: string): Promise<Listed> {
-  const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
+/** What a request asks of the sessions of each run mode: whether to judge them, with which scorers, and to publish them. */
+interface Wants {
+  scores: (mode: RunMode) => boolean;
+  publishes: (mode: RunMode) => boolean;
+  candidates: (session: Finished) => Promise<SessionScorer[]>;
+  demand: Demand;
+}
+
+type Finished = Awaited<ReturnType<typeof SessionWork.finished>>[number];
+
+async function wantsOf(config: LocalConfig, request: Request): Promise<Wants | Extract<Listed, { ok: false }>> {
+  const judging = await judgingOf(config);
   const publishing = SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies;
-  const named = request.scorers.length > 0 ? await namedScorers(config, request.scorers) : undefined;
+  const chosen = await candidatesOf(config, { names: request.scorers, isJudging: judging !== undefined });
 
-  if (named && 'ok' in named) return named;
-  const sampling = scoring?.ok === true && !named ? await SessionWork.samplingScorers(config) : undefined;
-  const scores = (mode: RunMode) => named !== undefined || (scoring?.ok === true && scoring.sessions.policies[mode].policy === 'auto');
-  const publishes = (mode: RunMode) => request.publish === 'always' || (request.publish === 'policy' && publishing[mode].policy === 'auto');
-  const wanted = (mode: RunMode) => scores(mode) || publishes(mode);
-  const found: FinishedSession[] = [];
+  if ('ok' in chosen) return chosen;
 
-  if (!RUN_MODES.some(wanted)) return { ok: true, list: found };
+  return {
+    ...chosen,
+    scores: (mode) => chosen.demand === 'named' || judging?.[mode].policy === 'auto',
+    publishes: (mode) => request.publish === 'always' || (request.publish === 'policy' && publishing[mode].policy === 'auto'),
+  };
+}
 
-  for (const session of await SessionWork.finished(await SessionCaptures.list(config), now, wanted, request.idleMs)) {
-    const mode = SessionCaptures.runModeOf(session.captures) ?? 'attended';
-    const key = { platform: session.platform, sessionId: session.sessionId };
-    const publish = publishes(mode) && !((await SessionPublish.archivedAt(config, key) ?? -Infinity) >= session.activeAt);
-    const candidates = !scores(mode) ? [] : named ?? await sampling?.(session) ?? [];
-    const scorers = await unmarked(config, candidates, key, now);
+/** The session judging policies of `config`, or undefined while scoring is unavailable here or its settings do not load. */
+async function judgingOf(config: LocalConfig) {
+  if (scoringUnavailable(config)) return undefined;
+  const scoring = await scopeScoring(config);
 
-    if (publish || scorers.length > 0) found.push({ session: session.sessionId, source: session.platform, publish, scorers, demand: named ? 'named' : 'auto' });
+  return scoring.ok ? scoring.sessions.policies : undefined;
+}
+
+/**
+ * Which scorers judge a session: the scorers `names` names, whatever a policy says, or else, while `isJudging`, those
+ * that sample it.
+ */
+async function candidatesOf(config: LocalConfig, { names, isJudging }: { names: readonly string[]; isJudging: boolean }): Promise<Pick<Wants, 'candidates' | 'demand'> | Extract<Listed, { ok: false }>> {
+  if (names.length === 0) {
+    const sampling = isJudging ? await SessionWork.samplingScorers(config) : undefined;
+
+    return { candidates: async (session) => await sampling?.(session) ?? [], demand: 'auto' };
   }
 
-  return { ok: true, list: found };
+  const named = await namedScorers(config, names);
+
+  return 'ok' in named ? named : { candidates: async () => named, demand: 'named' };
+}
+
+/** `session` as the listing gives it, or undefined when `wants` leaves nothing to archive or judge in it. */
+async function itemOf(config: LocalConfig, { wants, session, now }: { wants: Wants; session: Finished; now: string }): Promise<FinishedSession | undefined> {
+  const mode = SessionCaptures.runModeOf(session.captures) ?? 'attended';
+  const key = { platform: session.platform, sessionId: session.sessionId };
+  const publish = wants.publishes(mode) && !((await SessionPublish.archivedAt(config, key) ?? -Infinity) >= session.activeAt);
+  const scorers = wants.scores(mode) ? await unmarked(config, await wants.candidates(session), key, now) : [];
+
+  return publish || scorers.length > 0 ? { session: session.sessionId, source: session.platform, publish, scorers, demand: wants.demand } : undefined;
+}
+
+/** The finished sessions of `config` that `request` asks for, at `now`. */
+async function listIn(config: LocalConfig, request: Request, now: string): Promise<Listed> {
+  const wants = await wantsOf(config, request);
+
+  if ('ok' in wants) return wants;
+  const wanted = (mode: RunMode) => wants.scores(mode) || wants.publishes(mode);
+  const listed: FinishedSession[] = [];
+
+  if (!RUN_MODES.some(wanted)) return { ok: true, list: listed };
+
+  for (const session of await SessionWork.finished(await SessionCaptures.list(config), now, wanted, request.idleMs)) {
+    const item = await itemOf(config, { wants, session, now });
+
+    if (item) listed.push(item);
+  }
+
+  return { ok: true, list: listed };
 }
 
 /**
@@ -233,7 +282,8 @@ const PASS_MS = 30 * 60 * 1000;
  * nothing for a run to do. `cwd` is the directory a driver of the run works from.
  */
 export type FinishedStart =
-  | { kind: 'started' | 'working'; run: RunId; cwd: string }
+  | { kind: 'started'; run: RunId; cwd: string }
+  | { kind: 'working'; run: RunId; cwd: string }
   | { kind: 'idle' }
   | { kind: 'failed'; failure: WorkflowFailure };
 
