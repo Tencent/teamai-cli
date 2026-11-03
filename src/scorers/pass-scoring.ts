@@ -48,8 +48,8 @@ export type ScoredLabel = z.infer<typeof ScoredLabelSchema>;
  * group, and a group that broke before `label`, give none.
  */
 const ScoreRunOutputsSchema = z.object({
-  labels: z.array(z.object({ outputs: z.object({ labels: z.array(ScoredLabelSchema).optional(), written: z.array(z.string()).nullish() }).optional() })).optional(),
-}).optional();
+  labels: z.array(z.object({ outputs: z.object({ labels: z.array(ScoredLabelSchema).default([]), written: z.array(z.string()).nullish() }).default({ labels: [] }) })).default([]),
+}).default({ labels: [] });
 
 /** A label of a group whose write stored nothing is no label. */
 const UNWRITTEN: Pick<ScoredLabel, 'label' | 'code'> = { label: '', code: 'score_step_failed' };
@@ -66,7 +66,7 @@ function labelsOf(outputs: Record<string, JsonValue> | undefined): ScoredLabels 
     return { ok: false, reason: issue === undefined ? 'invalid' : `outputs.${issue.path.join('.')}: ${issue.message}` };
   }
 
-  return { ok: true, labels: (parsed.data?.labels ?? []).flatMap(({ outputs: group }) => (group?.labels ?? []).map((entry) => (entry.code === '' && !group?.written ? { ...entry, ...UNWRITTEN } : entry))) };
+  return { ok: true, labels: parsed.data.labels.flatMap(({ outputs: group }) => group.labels.map((entry) => (entry.code === '' && !group.written ? { ...entry, ...UNWRITTEN } : entry))) };
 }
 
 const DoneSchema = z.object({ done: z.object({ outcome: z.string(), outputs: z.record(z.string(), z.json()).optional() }) });

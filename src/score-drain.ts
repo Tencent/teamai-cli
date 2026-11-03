@@ -122,14 +122,12 @@ type Judgeable = Exclude<Subject, { kind: 'team-session' }>;
 
 const kindOf = (subject: Judgeable): 'passes' | 'sessions' => (subject.kind === 'run' ? 'passes' : 'sessions');
 
-/** Why the write step `writeId` of an item stored no label: the first of `steps` that broke, with what it said, else write's own state. */
-function unwrittenWhy(steps: readonly StepState[], writeId: string): string {
+/** Why an item's write stored no label: the first of its `steps` that broke, with what it said. */
+function unwrittenWhy(steps: readonly StepState[]): string {
   const broke = steps.find((one) => one.status === 'failed' || one.status === 'cancelled');
+  const why = broke?.status === 'failed' ? whyFailed(broke) : undefined;
 
-  if (!broke) return `step ${writeId} ${steps.find((one) => one.id === writeId)?.status ?? 'did not run'}`;
-  const why = broke.status === 'failed' ? whyFailed(broke) : undefined;
-
-  return `step ${broke.id} ${broke.status}${why === undefined ? '' : `: ${why}`}`;
+  return broke ? `step ${broke.id} ${broke.status}${why === undefined ? '' : `: ${why}`}` : 'the run wrote no label for it';
 }
 
 /** How the item of teamai-score plan group `index` under `prefix` ended: a label counts once its write step stored it. */
@@ -143,7 +141,7 @@ function itemOf(ran: RunState, prefix: string, index: number): Item {
   const label = step('label');
   const entries = LabelEntriesSchema.safeParse(label?.status === 'succeeded' ? label.outputs : undefined).data?.labels ?? [];
 
-  return { kind: 'ended', entries, unwritten: step('write')?.status === 'succeeded' ? undefined : unwrittenWhy(steps, `${at}write`) };
+  return { kind: 'ended', entries, unwritten: step('write')?.status === 'succeeded' ? undefined : unwrittenWhy(steps) };
 }
 
 /**
