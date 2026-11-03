@@ -102,12 +102,8 @@ function publishesLabels(step: WorkflowStep): boolean {
   return step.command === PUBLISH && step.deliver === 'publish' && branch === REPORTS_BRANCH;
 }
 
-/**
- * Why `team`, a team file named like teamai's default `shipped`, is refused at pull, one diagnostic each, located at
- * `file`; none when it may replace the default. `scorerHasCheck`: a scorer cached here has a `check`, so the override
- * keeps the step that runs it.
- */
-function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefinition; shipped: WorkflowDefinition; file: string; scorerHasCheck: boolean }): WorkflowDiagnostic[] {
+/** Why `team` changes what teamai's default `shipped` takes, gives or runs around its steps. */
+function headerProblems(team: WorkflowDefinition, shipped: WorkflowDefinition): Problem[] {
   const found: Problem[] = [];
   const contract = (field: string, message: string) => found.push({ code: 'score_override_contract', field, message });
 
@@ -128,46 +124,76 @@ function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefin
     found.push({ code: 'score_override_command', field: 'setup', message: `runs setup ${team.setup?.command ?? 'none'} in the workspace of each step, where teamai's default teamai-score runs ${shipped.setup?.command ?? 'none'}. Give it the setup it ships` });
   }
 
-  const shippedSteps = walk(shipped);
-  const verbsIn = (list: StepList) => new Map(shippedSteps.flatMap(({ list: at, step }) => (at !== list || step.command === undefined ? [] : [[step.command, canonicalJson(step.env ?? {})]])));
-  const verbs = { steps: verbsIn('steps'), finally: verbsIn('finally') } satisfies Record<StepList, Map<string, string>>;
-  const steps = walk(team);
+  return found;
+}
 
-  for (const walked of steps) {
-    const { list, path, field, step } = walked;
-    const child = stepWorkflow(step);
-    const listVerbs = verbs[list];
+/** The commands of each step list of the default, each with its `env`, which a step of the same list must run as it ships them. */
+type Verbs = Record<StepList, ReadonlyMap<string, string>>;
 
-    if (step.command !== undefined && !listVerbs.has(step.command)) {
-      const message = listVerbs.size === 0
-        ? `step "${path}" runs ${step.command} under ${list}, where teamai's default teamai-score runs no command. Remove the step`
-        : `step "${path}" runs ${step.command}, which is not a score verb as teamai's default teamai-score runs it. Run the verbs with the arguments it ships`;
+function verbsOf(shipped: WorkflowDefinition): Verbs {
+  const steps = walk(shipped);
+  const verbsIn = (list: StepList) => new Map(steps.flatMap(({ list: at, step }) => (at !== list || step.command === undefined ? [] : [[step.command, canonicalJson(step.env ?? {})]])));
 
-      found.push({ code: 'score_override_command', field: `${field}.command`, message });
-    } else if (step.command !== undefined && listVerbs.get(step.command) !== canonicalJson(step.env ?? {})) {
-      found.push({ code: 'score_override_command', field: `${field}.env`, message: `step "${path}" gives ${step.command} other env than teamai's default teamai-score does. Give it the env it ships` });
-    }
+  return { steps: verbsIn('steps'), finally: verbsIn('finally') };
+}
 
-    if (child !== undefined && !(path === 'score' && child.kind === 'inline')) {
-      found.push({ code: 'score_override_workflow_step', field: `${field}.workflow`, message: `step "${path}" runs a workflow, and only the inline workflow of step "score" labels the groups. Remove it` });
-    }
+/** Why the step at `walked` runs a command other than a verb its list of the default runs, with the `env` it gives it. */
+function commandProblem({ list, path, field, step }: Walked, verbs: Verbs): Problem | undefined {
+  const listVerbs = verbs[list];
 
-    if (step.prompt !== undefined || step.promptFile !== undefined) found.push(...promptProblems(walked));
+  if (step.command === undefined) return undefined;
 
-    if ((step.command === PUBLISH || step.deliver === 'publish') && !publishesLabels(step)) {
-      found.push({ code: 'score_override_publish', field, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` });
-    }
+  if (!listVerbs.has(step.command)) {
+    const message = listVerbs.size === 0
+      ? `step "${path}" runs ${step.command} under ${list}, where teamai's default teamai-score runs no command. Remove the step`
+      : `step "${path}" runs ${step.command}, which is not a score verb as teamai's default teamai-score runs it. Run the verbs with the arguments it ships`;
+
+    return { code: 'score_override_command', field: `${field}.command`, message };
   }
 
-  const kept = new Set(steps.flatMap(({ list, path }) => (list === 'steps' ? [path] : [])));
+  return listVerbs.get(step.command) === canonicalJson(step.env ?? {}) ? undefined
+    : { code: 'score_override_command', field: `${field}.env`, message: `step "${path}" gives ${step.command} other env than teamai's default teamai-score does. Give it the env it ships` };
+}
 
+/** Why the step at `walked` is refused: its command, a workflow it runs, its prompt, or how it publishes. */
+function stepProblems(walked: Walked, verbs: Verbs): Problem[] {
+  const { path, field, step } = walked;
+  const child = stepWorkflow(step);
+  const command = commandProblem(walked, verbs);
+  const found: Problem[] = command ? [command] : [];
+
+  if (child !== undefined && !(path === 'score' && child.kind === 'inline')) {
+    found.push({ code: 'score_override_workflow_step', field: `${field}.workflow`, message: `step "${path}" runs a workflow, and only the inline workflow of step "score" labels the groups. Remove it` });
+  }
+
+  if (step.prompt !== undefined || step.promptFile !== undefined) found.push(...promptProblems(walked));
+
+  if ((step.command === PUBLISH || step.deliver === 'publish') && !publishesLabels(step)) {
+    found.push({ code: 'score_override_publish', field, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` });
+  }
+
+  return found;
+}
+
+/** The steps of `KEPT` the override's `steps` do not have; `score.check` too while `scorerHasCheck`. */
+function missingSteps(steps: readonly Walked[], scorerHasCheck: boolean): Problem[] {
+  const kept = new Set(steps.flatMap(({ list, path }) => (list === 'steps' ? [path] : [])));
   const required: Array<[string, string]> = Object.entries(KEPT);
 
   if (scorerHasCheck) required.push(['score.check', `${LABELS_GO_THROUGH} while a scorer here has a check`]);
 
-  for (const [path, why] of required) {
-    if (!kept.has(path)) found.push({ code: 'score_override_step_missing', field: 'steps', message: `drops step ${path}, ${why}. Keep it` });
-  }
+  return required.flatMap(([path, why]): Problem[] => (kept.has(path) ? [] : [{ code: 'score_override_step_missing', field: 'steps', message: `drops step ${path}, ${why}. Keep it` }]));
+}
+
+/**
+ * Why `team`, a team file named like teamai's default `shipped`, is refused at pull, one diagnostic each, located at
+ * `file`; none when it may replace the default. `scorerHasCheck`: a scorer cached here has a `check`, so the override
+ * keeps the step that runs it.
+ */
+function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefinition; shipped: WorkflowDefinition; file: string; scorerHasCheck: boolean }): WorkflowDiagnostic[] {
+  const verbs = verbsOf(shipped);
+  const steps = walk(team);
+  const found = [...headerProblems(team, shipped), ...steps.flatMap((walked) => stepProblems(walked, verbs)), ...missingSteps(steps, scorerHasCheck)];
 
   return found.map((problem) => ({ file, line: 1, column: 1, ...problem }));
 }

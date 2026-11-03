@@ -210,6 +210,20 @@ function batchKey(candidate: Candidate, judged: Judged, chosen: JudgeModelChoice
 }
 
 /**
+ * The group `candidate` joins: its own; under `batch`, that of the scorers sharing its judge and stages; and for a
+ * routing question, that of the session's other routing questions sharing its judge, which only `batch` lets team
+ * scorers join.
+ */
+function groupKey(candidate: Candidate, judged: Judged, { batch, choose }: { batch: boolean; choose: () => JudgeModelChoice }): string {
+  const routing = isRoutingScorer(candidate.name);
+
+  if (!(batch || routing) || judged.alone(candidate)) return `${candidate.name}\n`;
+  const shared = batchKey(candidate, judged, choose());
+
+  return routing && !batch ? `routing\n${shared}` : shared;
+}
+
+/**
  * The sampled scorers, every one on a named demand, grouped: a scorer with a check alone, else those that resolve to one
  * judge and take the same stages. A session's routing questions share a group whatever `batch` says, and its team
  * scorers join them only under `batch`.
@@ -221,9 +235,7 @@ async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[
   const batch = request.batch || judged.batch === true;
 
   for (const candidate of judged.candidates.filter((one) => request.demand === 'named' || judged.sampled(one))) {
-    const routing = isRoutingScorer(candidate.name);
-    const shared = (batch || routing) && !judged.alone(candidate) ? batchKey(candidate, judged, chooseJudgeModel(aliases, candidate.definition, tools)) : undefined;
-    const key = shared === undefined ? `${candidate.name}\n` : routing && !batch ? `routing\n${shared}` : shared;
+    const key = groupKey(candidate, judged, { batch, choose: () => chooseJudgeModel(aliases, candidate.definition, tools) });
     groups.set(key, [...groups.get(key) ?? [], candidate]);
   }
 
