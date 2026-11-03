@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
-import { copyOf, opensCopy, resolveMode, roleLevelOf, runsInCheckout, writtenRole, type RoleLevel } from './workspace.js';
+import { copyOf, opensCopy, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
  * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, and a
@@ -111,8 +111,6 @@ type Gate = Facts['gates'][number];
 /** What the steps of one workflow in the tree run under, as the engine's scopes give it. */
 interface Scope {
   prefix: string;
-  /** The workflow steps around it, outermost first. */
-  ancestors: WorkflowStep[];
   requires: InEffect;
   budgeted: boolean;
   setup?: Setup;
@@ -120,18 +118,17 @@ interface Scope {
   copy?: string;
   /** The `defaults.model` in effect, as the engine's scope keeps it. */
   defaultModel?: string;
-  /** The steps around it as the engine resolves a step's role from them, outermost first, and the `defaults.role` in effect. */
+  /**
+   * The levels around it, outermost first, the run's own copy included (`runLevels`), as the engine places a step and
+   * resolves its role from them, and the `defaults.role` in effect.
+   */
   roleLevels: RoleLevel[];
   defaultRole?: string;
 }
 
-/** Whether `step` leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
-function writes(step: WorkflowStep, ancestors: WorkflowStep[], childOf: (step: WorkflowStep) => { steps: WorkflowStep[] } | undefined): boolean {
-  const child = childOf(step);
-
-  if (child) return child.steps.some((inner) => writes(inner, [...ancestors, step], childOf));
-
-  return (step.prompt !== undefined || step.promptFile !== undefined || (step.workspace !== undefined && step.workspace !== 'read-only')) && resolveMode(step, ancestors) !== 'read-only';
+/** The steps around the steps of `scope`, outermost first, as `resolveMode` reads them. */
+function stepsAround(scope: Scope): WorkflowStep[] {
+  return scope.roleLevels.map((level) => level.step);
 }
 
 /**
@@ -171,7 +168,7 @@ export function describeWorkflow(input: {
 
   /** As the engine's `offerTerms` asks `negotiate`, so describe holds exactly what `next` would hold. */
   const offer = (step: WorkflowStep, path: string, scope: Scope): void => {
-    const hasContract = !runsInCheckout(step, scope.ancestors);
+    const hasContract = !runsInCheckout(step, stepsAround(scope));
     const requires = mergeRequirements(scope.requires, step.requires);
     const executor = step.command !== undefined ? 'command' : 'prompt';
     // The role of the copy it runs in, as the engine's `stepRoleOf` finds it; a role template stands for its item's role.
@@ -219,7 +216,7 @@ export function describeWorkflow(input: {
 
         if (!found || seen.has(need)) continue;
         seen.add(need);
-        const writer = writes(found, scope.ancestors, childOf) ? found : startsFrom(found, seen);
+        const writer = writesBranch(found, stepsAround(scope), childOf) ? found : startsFrom(found, seen);
 
         if (writer) return writer;
       }
@@ -248,7 +245,7 @@ export function describeWorkflow(input: {
         }
       }
 
-      if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
+      if (!child && step.end === undefined && !runsInCheckout(step, stepsAround(scope))) facts.inWorkspace.push(path);
 
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
 
@@ -281,7 +278,7 @@ export function describeWorkflow(input: {
 
         if (limits.length > 0) facts.budgets.push({ step: path, tokens: Math.min(...limits) });
         own = visit(child.steps, {
-          prefix: `${path}.`, ancestors: [...scope.ancestors, step],
+          prefix: `${path}.`,
           requires: mergeRequirements(scope.requires, step.requires, named?.defaults?.requires),
           budgeted: scope.budgeted || step.budget !== undefined || named?.budget !== undefined,
           setup,
@@ -315,10 +312,10 @@ export function describeWorkflow(input: {
   };
 
   const top: Scope = {
-    prefix: '', ancestors: [], requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
+    prefix: '', requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
     setup: definition.setup,
     defaultModel: definition.defaults?.model,
-    roleLevels: [],
+    roleLevels: runLevels(definition).map((step) => roleLevelOf(step, definition.defaults?.role)),
     defaultRole: definition.defaults?.role,
   };
 

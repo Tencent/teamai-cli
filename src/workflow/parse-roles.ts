@@ -7,9 +7,9 @@
 import type { Node } from 'yaml';
 import { isSeq } from 'yaml';
 import { isYamlNode, locate, valueNode, type ParseContext, type WorkflowFiles } from './parse-context.js';
-import { stepWorkflow, type WorkflowDefaults, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
+import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import type { StepRoleSpec } from './template.js';
-import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, roleLevelOf, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
+import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, roleLevelOf, runLevels, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
 
 /** A step on the way to a step: its label, and, in this file, its field and YAML mapping. */
 interface Level extends RoleLevel {
@@ -177,7 +177,7 @@ function roleConflictMessage(conflict: RoleConflict, caller?: Caller): string {
 }
 
 /** The `bad_role` and `bad_session` diagnostics of the roles of `workflow`, the file whose YAML mapping is `root`. */
-export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefaults; steps: readonly WorkflowStep[] }, ctx: ParseContext): WorkflowDiagnostic[] {
+export function roleDiagnostics(root: Node, workflow: Pick<WorkflowDefinition, 'defaults' | 'workspace'> & { steps: readonly WorkflowStep[] }, ctx: ParseContext): WorkflowDiagnostic[] {
   const { file, lineCounter } = ctx;
   const diagnostics: WorkflowDiagnostic[] = [];
   const reported = new Set<string>();
@@ -429,7 +429,12 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     });
   };
 
-  walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: [], defaults: { role: defaultRole, isOwn: true }, caller: undefined });
+  // A copy the run opens is written in this file's header, which says `workspace: new`.
+  const runLevel = (step: WorkflowStep): Level => ({
+    ...roleLevelOf(step, defaultRole), label: 'the workflow', isOwnDefaultRole: true, written: { field: 'workspace', item: valueNode(root, 'workspace') },
+  });
+
+  walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: runLevels(workflow).map(runLevel), defaults: { role: defaultRole, isOwn: true }, caller: undefined });
 
   for (const source of sources.values()) {
     const undeclared = source.role === undefined ? undefined : undeclaredRole(source.owner, source.role, ctx.files);

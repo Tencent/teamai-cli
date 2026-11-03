@@ -312,6 +312,11 @@ export interface WorkflowDefinition {
   budget?: Budget;
   /** Runs in each workspace a driver creates for a step of this file, or of a workflow it runs that has no setup. */
   setup?: Setup;
+  /**
+   * `new`: the steps work in one copy. A run of this file opens it (the run copy); a step that runs it continues the copy
+   * it has or is in, and opens one, as with `workspace: new`, when it has none.
+   */
+  workspace?: 'new';
   steps: WorkflowStep[];
   /**
    * Read-only command steps that run once the run's steps end, whatever the outcome, a timeout or a cancel included.
