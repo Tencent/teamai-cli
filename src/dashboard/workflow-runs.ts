@@ -306,7 +306,8 @@ function newestFirst<T extends { startedAt: string }>(rows: T[]): T[] {
 
 /** This machine's runs in the scope: every running one, then the newest settled ones. */
 export async function listLocalRuns(config: LocalConfig): Promise<LocalRunRow[]> {
-  const runs = (await readRuns(config)).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  // A private workflow's runs, such as one per judged pass, would bury the runs a person started.
+  const runs = (await readRuns(config)).filter((run) => !run.definition.private).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const running = runs.filter((run) => run.status === 'running');
   const settled = runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length));
   const records = await runRecordStates(config, settled);

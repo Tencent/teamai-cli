@@ -111,6 +111,23 @@ describe('dashboard workflow runs', () => {
     expect((await run.state()).steps.find((step) => step.id === 'ship')).toMatchObject({ status: 'waiting' });
   });
 
+  it('leaves out a run of a private workflow, and still lists the other local runs', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/judge.yaml'), [
+      'schemaVersion: v1alpha1', 'name: judge', 'description: Judge on this machine only.', 'private: true', 'steps:', '  - id: label', '    command: echo label',
+    ].join('\n'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/build.yaml'), [
+      'schemaVersion: v1alpha1', 'name: build', 'description: Build.', 'steps:', '  - id: compile', '    command: echo compile',
+    ].join('\n'));
+    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    for (const name of ['judge', 'build']) {
+      const started = await startRun(config, name, {}, { secrets: {} });
+      if ('error' in started) throw new Error(started.error.message);
+    }
+    expect((await listLocalRuns(config)).map((row) => row.workflow)).toEqual(['build']);
+  });
+
   it('says whether a run ran the team\'s definition or teamai\'s default, and which teamai shipped the default', async () => {
     const team = await waitingRun();
     expect((await listLocalRuns(team.config))[0]?.origin).toEqual({ source: 'team' });
