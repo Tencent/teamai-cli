@@ -1,7 +1,7 @@
 import { hookToolPathsForConfig, parseUserStats } from './types.js';
 import os from 'node:os';
 import path from 'node:path';
-import { readFile, realpath, rm, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import matter from 'gray-matter';
 import {
@@ -241,12 +241,7 @@ async function refreshTeamRepo(
   // The git-pull hook caps the fetch: git pull is waiting on it.
   const cap = options.fetchTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.fetchTimeoutMs);
 
-  const transition = await transitionTeamRepo(localConfig, options, cap).catch(async (cause: unknown) => {
-    if (!options.dryRun) {
-      await rm(teamFetchStamp(localConfig), { force: true })
-        .catch((e) => log.debug(`Could not invalidate the team repo fetch: ${e instanceof Error ? e.message : String(e)}`));
-    }
-
+  const transition = await transitionTeamRepo(localConfig, options, cap).catch((cause: unknown) => {
     if (cap?.aborted) {
       const exceeded = new Error(`team repo fetch exceeded ${options.fetchTimeoutMs} ms, left to the detached pull`);
       const timeout = cause instanceof DetachedRecoveryError ? new DetachedRecoveryError(exceeded) : exceeded;
@@ -342,11 +337,8 @@ async function refreshTeamRepo(
     log.warn(`Submodule update failed for ${localConfig.repo.localPath}: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // An incomplete submodule update must be retried, even when HEAD did not move.
-  if (submodulesFailed && !options.dryRun) {
-    await rm(teamFetchStamp(localConfig), { force: true })
-      .catch((e) => log.debug(`Could not invalidate the team repo fetch: ${e instanceof Error ? e.message : String(e)}`));
-  } else if (!submodulesFailed) {
+  // Only a complete refresh is recorded; a failed one keeps the last success's stamp.
+  if (!submodulesFailed) {
     await writeJson(teamFetchStamp(localConfig), { lastFetch: new Date().toISOString() })
       .catch((e) => log.debug(`Could not record the team repo fetch: ${e instanceof Error ? e.message : String(e)}`));
   }

@@ -10,10 +10,11 @@ For git teams, `last-fetch.json` beside the team clone records a successful
 refresh, including any required submodule update. Session-start pulls reuse it
 for 60 seconds without extending its timestamp. They wait up to 60 seconds for
 the partition sync lock, then check the stamp under that lock. Each checkout
-still runs its own local delivery and reconciliation. Failed fetches and
-submodule updates invalidate the stamp so the next start retries. Manual pulls,
-forced pulls and explicit team-ref changes bypass this short cooldown. The
-existing inline checkout-preparation TTL is unchanged.
+still runs its own local delivery and reconciliation. A failed fetch or
+submodule update does not write the stamp, so it keeps naming the last
+successful refresh: the next start after the cooldown retries, and the inline
+checkout-preparation TTL still reads that refresh. Manual pulls, forced pulls
+and explicit team-ref changes bypass this short cooldown.
 
 ## Problem
 

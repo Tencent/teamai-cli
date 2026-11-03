@@ -220,14 +220,28 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     expect(saveStateForScope).toHaveBeenCalledOnce();
   });
 
-  it('retries after a failed forced fetch even if an earlier fetch was recent', async () => {
-    await writeFetchStamp(new Date().toISOString());
+  it('does not record a failed session-start fetch as a refresh, so the next start retries', async () => {
+    await writeFetchStamp(new Date(Date.now() - 61_000).toISOString());
     vi.mocked(pullRepo).mockRejectedValueOnce(new Error('offline'));
 
-    await pull({ sessionStart: true, force: true, silent: true });
+    await pull({ sessionStart: true, silent: true });
     await pull({ sessionStart: true, silent: true });
 
     expect(pullRepo).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps delivering a new worktree from the cached clone after a failed session-start fetch', async () => {
+    const lastFetch = new Date(Date.now() - 5 * 60_000).toISOString();
+    await writeFetchStamp(lastFetch);
+    vi.mocked(pullRepo).mockRejectedValueOnce(new Error('offline'));
+
+    await pull({ sessionStart: true, silent: true });
+    vi.mocked(saveStateForScope).mockClear();
+    await pull({ inline: true, gitHook: 'post-checkout', silent: true });
+
+    expect(pullRepo).toHaveBeenCalledOnce();
+    expect(saveStateForScope).toHaveBeenCalledOnce();
+    expect(await fse.readJson(path.join(tmpDir, 'last-fetch.json'))).toEqual({ lastFetch });
   });
 
   it('does not cool down a refresh whose submodule update failed', async () => {
