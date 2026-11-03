@@ -19,7 +19,7 @@ import {
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
 import { drivesRun, newSkillState, readSkillState, removeSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, heldProbeRow, invokeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
   reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
@@ -74,6 +74,13 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
         applied.state = sent.state;
 
         if (sent.refused) applied.refused = sent.refused;
+        break;
+      }
+
+      case 'give-up': {
+        const answer = await context.client.giveUp(applied.state.run, effect.steps);
+
+        if ('error' in answer) applied.refused = answer.error;
         break;
       }
 
@@ -214,10 +221,12 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   let state = start;
   let spawned = false;
 
-  const apply = async (effects: readonly Effect[]): Promise<void> => {
+  const apply = async (effects: readonly Effect[]): Promise<Applied> => {
     const applied = await applyEffects(context, lock, state, effects);
     state = applied.state;
     spawned = spawned || applied.spawned;
+
+    return applied;
   };
 
   for (const open of start.attempts) {
@@ -254,6 +263,10 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
+    const givingUp = traced(context, giveUpRow(state, reply));
+
+    // A step given up lets the run go on, so the engine is asked again; one it refused waits as D14 says.
+    if (givingUp && (await apply(givingUp.effects)).refused === undefined) continue;
     const ended = reply.kind === 'done' && !state.done ? await context.client.runVersion(state.run) : undefined;
     const replied = traced(context, replyRow(state, { reply, at, version: ended }));
 

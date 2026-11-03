@@ -74,6 +74,7 @@ export const TRANSITIONS = [
   { id: 'D12', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `recommend`', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:agent`' },
   { id: 'D13', state: 'drive', input: 'reply wait', guard: 'it lists `delivering`', effects: 'none', next: 'drive', action: 'waiting `delivering` in each turn that ticked, polls\' included; `then: poll`' },
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
+  { id: 'D29', state: 'drive', input: 'reply wait, before its row', guard: 'it lists `held`, no attempt is open, and each held step misses only `confined` or `model`, which this driver\'s offers never give for the run', effects: '`WorkflowClient.giveUp` of the held steps, which cancels the nearest step above each that sets `continue_on_failure`; when it cancels, engine `next` again as D1; when it refuses, D14', next: 'drive', action: '' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
   { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, judging, score}`' },
@@ -218,7 +219,9 @@ export type Effect =
   /** Stops what the command of `attempt` left running when its runner died, before anything else runs in its place. */
   | { kind: 'stop-left'; attempt: AttemptId }
   /** Saves the state, which holds `body` as the report of `attempt`, then sends it. */
-  | { kind: 'send'; attempt: AttemptId; body: ReportBody };
+  | { kind: 'send'; attempt: AttemptId; body: ReportBody }
+  /** Gives up `steps`, held steps this driver can never take, so the run goes on without them. */
+  | { kind: 'give-up'; steps: string[] };
 
 /** A call the skill driver refuses, with what its message names. */
 export type Refusal =
@@ -803,6 +806,21 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       return unhandled;
     }
   }
+}
+
+/** The capabilities a skill driver declares once for a run, so a step held for them alone is never leased to it. */
+const FIXED_FOR_RUN = new Set(['confined', 'model']);
+
+/**
+ * D29: a wait that holds only steps this driver can never take, with no attempt open. Its confined offers and their
+ * tools stay as they were for the run, so such a step would wait out its timeout.
+ */
+export function giveUpRow(state: SkillState, reply: EngineReply): MovedWithEffects<'D29'> | undefined {
+  if (reply.kind !== 'wait' || reply.held.length === 0 || state.attempts.length > 0) return undefined;
+
+  if (!reply.held.every((held) => held.missing.length > 0 && held.missing.every((missing) => FIXED_FOR_RUN.has(missing)))) return undefined;
+
+  return { row: 'D29', state, effects: [{ kind: 'give-up', steps: reply.held.map((held) => held.step) }] };
 }
 
 /** D27: a wait that holds a step says nothing of a gate, which only a `next` that takes no lease answers. */

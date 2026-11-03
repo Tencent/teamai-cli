@@ -2247,6 +2247,39 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a verified confined step no offer of this session reaches is given up at once, by cancelling the step above it that continue_on_failure lets fail',
+    rows: ['D29'],
+    run: async () => {
+      const wrapped = `schemaVersion: v1alpha1
+name: judged
+description: Judge a change from its evidence, and go on without the judgement
+invoke: allow
+steps:
+  - id: judged
+    continue_on_failure: true
+    workflow:
+      steps:
+        - id: evidence
+          command: node -e "const p=require('path'),fs=require('fs'),d=p.join(process.env.TEAMAI_RUN_DIR,'evidence');fs.mkdirSync(d);fs.writeFileSync(p.join(d,'confined.json'),JSON.stringify({level:'verified'}))"
+        - id: judge
+          needs: [evidence]
+          workspace: { confined: evidence }
+          prompt: Judge the change.
+          output:
+            verdict: pass | fail
+`;
+      const made = await harness({ judged: wrapped }, { tool: 'copilot' });
+      const turn = await chosen(made, 'judged', 1);
+      const done = await polledToDone(made, turn.run);
+      expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
+      const engine = await readRun(made.config, turn.run);
+      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judged')).toMatchObject({
+        status: 'cancelled', failure: { code: 'cancelled', message: expect.stringContaining('no driver of this run can take step "judged.judge"') },
+      });
+      return made.rows;
+    },
+  },
+  {
     name: 'a step confined at best-effort, in a session with no confined tool, goes to a fresh child that reads only its directory',
     rows: ['D7', 'C2'],
     run: async () => {
