@@ -1,7 +1,8 @@
 /**
- * The verbs of `teamai score` that the steps of a `teamai-score` run call: plan, evidence, stage, label, write, settle
- * and subjects. Each prints one JSON object, the step's outputs, on stdout; a refusal prints `{"error":…}` and exits 1.
+ * The verbs of `teamai score` that the steps of a `teamai-score` run call: plan, evidence, stage, label, write, publish,
+ * settle and subjects. Each prints one JSON object, the step's outputs, on stdout; a refusal prints `{"error":…}` and exits 1.
  */
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit } from './config.js';
@@ -9,14 +10,17 @@ import { STAGES } from './scorers/definition.js';
 import { EvidenceDir, type GroupRecord } from './scorers/evidence-dir.js';
 import { DEMANDS } from './scorers/marks.js';
 import { ScoreAttempt } from './scorers/score-attempt.js';
+import { LabelStore } from './scorers/label-store.js';
 import { readJudgeRun, ScoreLabels, type ReadJudgeRun } from './scorers/score-labels.js';
 import { planGroups } from './scorers/score-plan.js';
 import { ScoreSubjects } from './scorers/score-subjects.js';
 import { ScoreStage } from './scorers/score-stage.js';
 import { Subject } from './scorers/subject.js';
 import type { JsonObject, LocalConfig } from './types.js';
-import { setStderrOnly } from './utils/logger.js';
+import { createGit } from './utils/git.js';
+import { log, setStderrOnly } from './utils/logger.js';
 import { durationMs } from './workflow/parse.js';
+import { isIsolated } from './workflow/workspace.js';
 
 /** Where a verb runs: the process's environment, the scope of its directory, and the time it reads as now. */
 export interface ScoreVerbContext {
@@ -25,6 +29,8 @@ export interface ScoreVerbContext {
   now: string;
   /** What the judge step's confined run recorded on its pass. */
   readJudgeRun?: ReadJudgeRun;
+  /** The directory the verb runs in: publish stages there. */
+  cwd?: string;
 }
 
 export type ScoreVerbAnswer = { ok: true; output: JsonObject } | Refused;
@@ -169,6 +175,46 @@ async function write(options: WriteOptions, ctx: ScoreVerbContext): Promise<Scor
   return written.ok ? { ok: true, output: { written: written.written.length, labels: written.written } } : written;
 }
 
+/**
+ * Stages this member's pending labels in the checkout of teamai-reports the verb runs in, which its step's `deliver:
+ * publish` publishes. Outside such a checkout, as when the step's place could not be made, and inside an isolated run,
+ * such as a benchmark, whose work stays off the team's, it stages nothing.
+ */
+async function publish(ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const read = await ScoreAttempt.read('publish', ctx.env, ctx.current);
+
+  if (!read.ok) return read;
+
+  if (isIsolated(read.attempt.run)) {
+    log.info(`Run ${read.attempt.run.id} is isolated, so it publishes no label; pending labels wait for teamai score --push.`);
+
+    return { ok: true, output: { staged: 0 } };
+  }
+
+  const dir = path.resolve(ctx.cwd ?? process.cwd());
+  const top = await createGit(dir).revparse(['--show-toplevel']).then((out) => out.trim(), () => '');
+
+  if (top === '' || !await sameDir(top, dir)) {
+    log.info(`${dir} is no checkout of teamai-reports, so no label was staged; they stay pending.`);
+
+    return { ok: true, output: { staged: 0 } };
+  }
+
+  const staged = await LabelStore.stage(read.attempt.config, dir);
+
+  if (staged.reason) log.info(staged.reason);
+
+  if (staged.files.length > 0) await createGit(dir).raw(['--literal-pathspecs', 'add', '--', ...staged.files]);
+
+  return { ok: true, output: { staged: staged.labels } };
+}
+
+async function sameDir(left: string, right: string): Promise<boolean> {
+  const [one, two] = await Promise.all([left, right].map((each) => fs.realpath(each).catch(() => each)));
+
+  return one === two;
+}
+
 async function settle(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
   const at = await subjectAt('settle', options, ctx);
 
@@ -199,7 +245,7 @@ async function subjects(options: SubjectsOptions, ctx: ScoreVerbContext): Promis
   return listed.ok ? { ok: true, output: { list: listed.list } } : listed;
 }
 
-export const ScoreVerbs = { plan, evidence, stage, label, write, settle, subjects } as const;
+export const ScoreVerbs = { plan, evidence, stage, label, write, publish, settle, subjects } as const;
 
 async function currentConfig(): Promise<LocalConfig | undefined> {
   try {
@@ -213,7 +259,7 @@ async function currentConfig(): Promise<LocalConfig | undefined> {
 /** Runs one verb in this process and prints its answer. */
 export async function scoreVerbCommand(verb: (ctx: ScoreVerbContext) => Promise<ScoreVerbAnswer>): Promise<void> {
   setStderrOnly(true);
-  const answer = await verb({ env: process.env, current: await currentConfig(), now: new Date().toISOString() });
+  const answer = await verb({ env: process.env, current: await currentConfig(), now: new Date().toISOString(), cwd: process.cwd() });
 
   if (answer.ok) {
     process.stdout.write(`${JSON.stringify(answer.output)}\n`);

@@ -1096,6 +1096,14 @@ scoreCmd
   });
 
 scoreCmd
+  .command('publish')
+  .description('A step of a teamai-score run, in the team workspace on teamai-reports with deliver: publish: stage this member\'s pending labels, without reasoning, into scores/<username>/<YYYY-MM>.jsonl of that checkout, merged by key with what origin\'s tip holds; the step publishes what it staged. A pending label origin\'s tip already holds, or holds a newer label of, leaves the outbox. Stages nothing with usage reporting off, for an http team repo, or outside a checkout of teamai-reports. Prints {"staged":<n>}. Refused outside a leased attempt of a teamai-score step.')
+  .action(async () => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.publish(ctx));
+  });
+
+scoreCmd
   .command('settle')
   .description('A step of a teamai-score run, after a verb of a group broke: record a failed attempt of each scorer whose mark the run holds, so automatic judging does not start the subject again. Works when evidence failed. Prints {"settled":<n>}.')
   .option('--subject <subject>', 'The group\'s subject, as plan printed it')

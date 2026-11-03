@@ -134,6 +134,7 @@ export const NO_DRY_RUN_PREVIEW = {
   'score stage': 'runs a check and writes the stage record in the evidence directory',
   'score label': 'writes the labels of a group in its evidence directory',
   'score write': 'writes labels to local storage and closes their marks',
+  'score publish': 'stages pending labels in the teamai-reports checkout its step runs in',
   'score settle': 'closes the scoring marks of a group as failed',
   'score subjects': 'reads the marks, whose first read carries judge attempts over into them',
   'workflow next': 'leases a step and writes the run',

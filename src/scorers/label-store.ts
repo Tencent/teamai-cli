@@ -102,6 +102,35 @@ function passScoreOf(label: RunLabel): PassScore {
   return score;
 }
 
+/**
+ * Takes the labels of `sent` out of the outbox, each while its pending file still holds that label, so a rescore written
+ * meanwhile stays pending, and appends one an interrupted `append` left out of `labels.jsonl`.
+ */
+async function clearSent(config: LocalConfig, sent: ReadonlyArray<{ id: string; label: ScoreLabel }>): Promise<'cleared' | 'busy'> {
+  if (sent.length === 0) return 'cleared';
+
+  const cleared = await LabelStore.locked(config, async () => {
+    const appended = new Set(parseScoreLabels(await readFileSafe(labelsFile(config)) ?? '').map(labelVersion));
+
+    for (const { id, label } of sent) {
+      const file = path.join(pendingDir(config), `${id}.json`);
+      const current = parseScoreLabel(JSON.parse(await readFileSafe(file) ?? 'null'));
+
+      if (current?.scoredAt !== label.scoredAt) continue;
+
+      if (!appended.has(labelVersion(label))) await fs.appendFile(labelsFile(config), `${JSON.stringify(label)}\n`, 'utf8');
+      await fs.rm(file, { force: true });
+    }
+  });
+
+  return cleared.status === 'busy' ? 'busy' : 'cleared';
+}
+
+/** Whether `labels` hold `label`, or a newer label of its key. */
+function holds(labels: readonly ScoreLabel[], label: ScoreLabel): boolean {
+  return labels.some((other) => labelId(other) === labelId(label) && other.scoredAt >= label.scoredAt);
+}
+
 function addUsage(total: { inputTokens: number; outputTokens: number }, usage: JudgeUsage | undefined): void {
   total.inputTokens += usage?.inputTokens ?? 0;
   total.outputTokens += usage?.outputTokens ?? 0;
@@ -185,21 +214,7 @@ export const LabelStore = {
     switch (outcome.status) {
       case 'published':
       case 'already-present': {
-        const cleared = await LabelStore.locked(config, async () => {
-          const appended = new Set(parseScoreLabels(await readFileSafe(labelsFile(config)) ?? '').map(labelVersion));
-
-          for (const { id, label } of pending) {
-            const file = path.join(pendingDir(config), `${id}.json`);
-            const current = parseScoreLabel(JSON.parse(await readFileSafe(file) ?? 'null'));
-
-            if (current?.scoredAt !== label.scoredAt) continue;
-
-            if (!appended.has(labelVersion(label))) await fs.appendFile(labelsFile(config), `${JSON.stringify(label)}\n`, 'utf8');
-            await fs.rm(file, { force: true });
-          }
-        });
-
-        if (cleared.status === 'busy') return { state: 'pending', reason: 'another teamai process is writing a score label' };
+        if (await clearSent(config, pending) === 'busy') return { state: 'pending', reason: 'another teamai process is writing a score label' };
 
         return (await readPending(config)).length === 0
           ? { state: 'published' }
@@ -216,6 +231,44 @@ export const LabelStore = {
         return unhandled;
       }
     }
+  },
+
+  /**
+   * Writes this machine's pending labels into `dir`, a checkout of teamai-reports at origin's tip, each into
+   * `scores/<member>/<YYYY-MM>.jsonl` merged by key with what that file holds, and answers the files it wrote and how
+   * many labels. A pending label the file already holds, or holds a newer label of its key, leaves the outbox instead.
+   * Writes nothing with usage reporting off, or for an http team repo, and says why.
+   */
+  async stage(config: LocalConfig, dir: string): Promise<{ files: string[]; labels: number; reason?: string }> {
+    if (!usesBranchWorktree(config)) return { files: [], labels: 0, reason: 'An http team repo has no teamai-reports branch, so labels stay on this machine.' };
+    const pending = await readPending(config);
+
+    if (pending.length === 0) return { files: [], labels: 0 };
+
+    if (!isUsageReportEnabled(config, (await loadTeamConfig(config.repo.localPath)) ?? {})) return { files: [], labels: 0, reason: 'Usage reporting is off, so labels stay on this machine.' };
+    const username = config.username ?? 'unknown';
+    const byFile = new Map<string, Array<{ id: string; label: ScoreLabel }>>();
+
+    for (const entry of pending) byFile.set(publishedPath(username, entry.label), [...byFile.get(publishedPath(username, entry.label)) ?? [], entry]);
+    const delivered: Array<{ id: string; label: ScoreLabel }> = [];
+    const files: string[] = [];
+    let labels = 0;
+
+    for (const [file, entries] of byFile) {
+      const tip = parseScoreLabels(await readFileSafe(path.join(dir, file)) ?? '');
+      const sending = entries.filter((entry) => !holds(tip, entry.label));
+      delivered.push(...entries.filter((entry) => holds(tip, entry.label)));
+
+      if (sending.length === 0) continue;
+      await fs.mkdir(path.join(dir, path.dirname(file)), { recursive: true });
+      await fs.writeFile(path.join(dir, file), newestLabels([...tip, ...sending.map(({ label }) => label)]).map((label) => `${JSON.stringify(label)}\n`).join(''), 'utf8');
+      files.push(file);
+      labels += sending.length;
+    }
+
+    await clearSent(config, delivered);
+
+    return { files, labels };
   },
 
   /** How many labels a push would publish: the pending ones, or none while usage reporting is off. */

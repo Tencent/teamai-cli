@@ -153,8 +153,27 @@ async function deliveredRun(config: LocalConfig, failure?: { code: 'protected_pa
   return runId;
 }
 
-/** What the external driver offers: a confined step at either level, on Claude. */
-const JUDGING = { confined: [{ level: 'verified' as const, access: 'read' as const, tools: ['claude'] }] };
+/** What the external driver offers: a confined step at either level, on Claude, and the team workspace publish runs in. */
+const JUDGING = { confined: [{ level: 'verified' as const, access: 'read' as const, tools: ['claude'] }], workspace: ['team' as const] };
+
+/** A checkout of teamai-reports at origin's tip, holding `files`, as the place of a publish step is. */
+function reportsTip(files: Record<string, string> = {}): string {
+  const dir = fs.mkdtempSync(path.join(root, 'reports-'));
+  git(dir, 'init', '-q', '-b', 'teamai-reports');
+  for (const [file, text] of Object.entries({ '.gitignore': '', ...files })) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+  }
+  git(dir, 'add', '-A');
+  git(dir, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-qm', 'tip');
+  return dir;
+}
+
+/** What `dir` has staged against its tip, by file. */
+function staged(dir: string): Record<string, string> {
+  const files = git(dir, 'diff', '--cached', '--name-only').split('\n').filter(Boolean);
+  return Object.fromEntries(files.map((file) => [file, git(dir, 'show', `:${file}`)]));
+}
 
 interface Taken {
   ctx: ScoreVerbContext;
@@ -605,13 +624,15 @@ interface Walk {
   startedBy?: StartedBy;
   /** What a step answers in place of its verb, by step id. */
   fake?: Record<string, ScoreVerbAnswer>;
+  /** The checkout of teamai-reports each publish step runs in; a fresh one at an empty tip by default. */
+  tip?: string;
 }
 
 /**
  * Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step
  * path, and what the engine answered when the run ended.
  */
-async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun, inputs = {}, startedBy = 'cli', fake = {} }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
+async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun, inputs = {}, startedBy = 'cli', fake = {}, tip }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const answers = new Map<string, ScoreVerbAnswer>();
   const items = (index: string) => {
@@ -636,7 +657,8 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
           : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1.' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
             : id === 'label' ? await ScoreVerbs.label({ evidence: dir, answer: judged?.ok ? JSON.stringify(judged.output.answer) : '', judge: judged === undefined ? '' : judged.ok ? 'success' : 'failed' }, taken.ctx)
               : id === 'write' ? await ScoreVerbs.write({ evidence: dir }, taken.ctx)
-                : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
+                : id === 'publish' ? await ScoreVerbs.publish({ ...taken.ctx, cwd: tip ?? reportsTip() })
+                  : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
     answers.set(lease.step, answer);
     await run.report(taken, answer, id === 'judge' ? { confined: JUDGED } : undefined);
   }
@@ -702,6 +724,16 @@ describe('score label and score write', () => {
     expect(await LabelStore.unpublished(config)).toBe(0);
   });
 
+  it('stage nothing to publish for a private run\'s pass', async () => {
+    const config = await team({ review: REVIEW.replace('description: Review a change.', 'description: Review a change.\nprivate: true') }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const tip = reportsTip();
+    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } }, tip });
+
+    expect(answers.get('score[0].publish')).toEqual({ ok: true, output: { staged: 0 } });
+    expect(staged(tip)).toEqual({});
+  });
+
   it('label a session by hand only in a run a person started, and set no mark', async () => {
     const config = await team({}, { quality: scorer() });
     plantSession(path.join(root, 'app'), 'one', 'Fix the login bug.');
@@ -765,6 +797,97 @@ steps:
     prompt: Do something else.
     scorers: [quality]
 `;
+
+describe('score publish', () => {
+  const MONTH = `scores/tester/${NOW.slice(0, 7)}.jsonl`;
+  const lines = (text: string) => text.split('\n').filter(Boolean).map((line) => z.record(z.string(), z.unknown()).parse(JSON.parse(line)));
+
+  it('stages this member\'s pending labels, without reasoning, into its month file at origin\'s tip, merged by key with what that file holds', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const earlier = await reviewedRun(config);
+    await walk(config, `run:${earlier}:review:1`, { inputs: { scorers: ['coverage'] }, judge: { answer: { label: 'bad', reasoning: 'No tests.' } } });
+    const [theirs] = await LabelStore.local(config);
+    const tip = reportsTip({ [MONTH]: `${JSON.stringify(theirs)}\n`, 'scores/someone/2026-11.jsonl': '{}\n' });
+    const runId = await reviewedRun(config);
+    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'Covers it.' } }, tip });
+
+    expect(answers.get('score[0].publish')).toEqual({ ok: true, output: { staged: 1 } });
+    const published = staged(tip);
+    expect(Object.keys(published)).toEqual([MONTH]);
+    expect(lines(published[MONTH] ?? '')).toEqual([
+      expect.objectContaining({ scorer: 'coverage', label: 'bad' }),
+      expect.objectContaining({ scorer: 'quality', label: 'good' }),
+    ]);
+    expect(published[MONTH]).not.toContain('Covers it.');
+    expect(await LabelStore.unpublished(config)).toBe(1);
+  });
+
+  it('takes a pending label out of the outbox once origin\'s tip holds it or a newer label of its key, and stages nothing for it', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'bad', reasoning: 'x' } } });
+    const [label] = await LabelStore.local(config);
+    const newer = { ...label, label: 'good', score: 1, passed: true, scoredAt: '2026-11-03T11:00:00.000Z' };
+    const tip = reportsTip({ [MONTH]: `${JSON.stringify(newer)}\n` });
+    const { ctx } = await (await scoreRun(config, { subject: `run:${runId}:review:1` })).next('plan');
+
+    expect(await ScoreVerbs.publish({ ...ctx, cwd: tip })).toEqual({ ok: true, output: { staged: 0 } });
+    expect(staged(tip)).toEqual({});
+    expect(await LabelStore.unpublished(config)).toBe(0);
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'bad' }]);
+  });
+
+  it.each([
+    ['usage reporting is off', (config: LocalConfig) => ({ ...config, usageReportEnabled: false }), (dir: string) => dir],
+    ['it runs in no checkout of teamai-reports', (config: LocalConfig) => config, (dir: string) => path.join(dir, 'scores')],
+  ])('stages nothing while %s, and keeps the labels pending', async (_case, configured, place) => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+    const tip = reportsTip({ 'scores/.keep': '' });
+    const { ctx } = await (await scoreRun(configured(config), { subject: `run:${runId}:review:1` })).next('plan');
+
+    expect(await ScoreVerbs.publish({ ...ctx, current: configured(config), cwd: place(tip) })).toEqual({ ok: true, output: { staged: 0 } });
+    expect(staged(tip)).toEqual({});
+    expect(await LabelStore.unpublished(config)).toBe(1);
+  });
+
+  it('stages nothing in a teamai-score instance of an isolated run, as a benchmark\'s trials are, whatever is pending', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+    const trial = `schemaVersion: v1alpha1
+name: trial
+description: Judge a pass, then try a change in a clone.
+inputs: { subject: string }
+steps:
+  - id: score
+    workflow: teamai-score
+    with: { subject: "{{ inputs.subject }}", scorers: [quality], label: '', batch: false, demand: named }
+  - id: try
+    needs: [score]
+    workspace: { clone: { commit: ${git(config.projectRoot ?? '', 'rev-parse', 'HEAD')}, team: { treatment: none } } }
+    command: node try.js
+`;
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'trial.yaml'), trial);
+    await syncWorkflowDefinitions(config);
+    const isolated = runOf(config, String(data(await startRun(config, 'trial', { subject: `run:${runId}:review:1` }, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run));
+    const { ctx } = await isolated.next('score.plan');
+    const tip = reportsTip();
+
+    expect(await ScoreVerbs.publish({ ...ctx, cwd: tip })).toEqual({ ok: true, output: { staged: 0 } });
+    expect(staged(tip)).toEqual({});
+    expect(await LabelStore.unpublished(config)).toBe(1);
+  });
+
+  it('refuses a call from a shell no teamai-score attempt runs, and stages nothing', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const tip = reportsTip();
+
+    expect(await ScoreVerbs.publish({ env: { TEAMAI_RUN_DIR: path.join(root, 'data') }, current: config, now: NOW, cwd: tip })).toMatchObject({ ok: false, code: 'score_attempt_required' });
+    expect(staged(tip)).toEqual({});
+  });
+});
 
 describe('score subjects', () => {
   it('lists the passes of steps that start their own scoring, --step read from the workflow of the attempt of this run that calls it', async () => {

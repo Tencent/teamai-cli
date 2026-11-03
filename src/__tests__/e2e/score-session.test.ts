@@ -129,9 +129,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     });
   });
 
-  it('judges a session by id, keeps the label here, never guesses the session, and refuses a judging from inside it', async () => {
-    const reportsBefore = git(team, 'for-each-ref', '--format=%(refname) %(objectname)');
-
+  it('judges a session by id, publishes its label and keeps its reasoning here, never guesses the session, and refuses a judging from inside it', async () => {
     const guessed = await runCLI(['score', '--scorer', 'review-quality'], app, env);
     expect(guessed.code).toBe(1);
     expect(envelope(guessed.stdout).error).toEqual({ code: 'session_required', message: 'Pass --session <id>; scoring never guesses the session.' });
@@ -146,7 +144,8 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     expect(fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').map((text) => JSON.parse(text) as unknown))
       .toEqual([expect.objectContaining({ source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: expect.objectContaining({ tool: 'claude', model: { reported: 'm1' } }) })]);
     expect(fs.readdirSync(path.join(dataHome, 'scores', 'reasoning'))).toHaveLength(1);
-    expect(git(team, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(reportsBefore);
+    expect(git(team, 'ls-tree', '-r', '--name-only', 'teamai-reports').split('\n').filter((file) => file.startsWith('scores/'))).toEqual([expect.stringMatching(/^scores\/tester\/\d{4}-\d{2}\.jsonl$/)]);
+    expect(() => git(team, 'grep', '-q', 'It never ran the tests.', 'teamai-reports')).toThrow();
 
     // A session is judged from the person's terminal: from inside it, teamai-score refuses the agent, and nothing is written.
     const inside = await runCLI(['score', '--scorer', 'review-quality'], app, { ...env, CLAUDE_CODE_SESSION_ID: SESSION });

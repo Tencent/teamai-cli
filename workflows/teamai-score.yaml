@@ -81,6 +81,12 @@ steps:
           command: teamai score write --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { written: number, labels: [string] }   # labels: the version of each label written, which teamai score answers with
+        # Publishes this member's pending labels to teamai-reports. Offline, or with an http team repo, they stay pending.
+        - id: publish
+          needs: [write]
+          workspace: { team: { branch: teamai-reports } }
+          command: teamai score publish
+          deliver: publish
         - id: settle
           needs: [evidence, write]
           # After a verb that broke: records the failed attempt. Reading the outcomes keeps it from being skipped.
