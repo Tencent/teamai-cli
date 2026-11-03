@@ -7,6 +7,7 @@ import { sameDriver } from '../driver-identity.js';
 import type { JsonValue } from '../types.js';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
+import { passesWithin, runPasses } from './loop.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
@@ -400,22 +401,45 @@ function workflowChildren(run: RunState, step: StepState): StepState[] {
   });
 }
 
-/** Branches a step merges, `after` items first, then its other needs. An omitted `needs` uses the parent step's needs. */
-function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): StepChanges[] {
-  const ordered: Array<{ changes: StepChanges; settledAt: number }> = [];
+/**
+ * Where the current pass of step `state` left each branch it wrote: its own passes and those of every step under it,
+ * current or archived by a loop, so a fix loop that ends on a skipped pass still leaves its fix. Passes record no
+ * settle time, and a write starts from the commit the last one left, so the newest write on a branch is the one no
+ * other write there goes on from.
+ */
+function headsWritten(run: RunState, state: StepState): Array<{ branch: string; commit: string }> {
+  const current = passOf(state);
+  const passes = [...state.passes ?? [], ...(current ? [current] : []), ...passesWithin(run, runPasses(run), state.id, state.pass ?? 1)];
+  const writes = passes.flatMap((pass) => (pass.changes ? [pass.changes] : []));
+  const heads = new Map<string, string>();
+
+  for (const write of writes) {
+    const goesOn = writes.some((other) => other.branch === write.branch && other.from === write.to && other.to !== write.to);
+
+    if (!goesOn || !heads.has(write.branch)) heads.set(write.branch, write.to);
+  }
+
+  return [...heads].map(([branch, commit]) => ({ branch, commit }));
+}
+
+/**
+ * Branches a step merges, `after` items first, then its other needs, each where that need left it. An omitted `needs`
+ * uses the parent step's needs.
+ */
+function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): Array<{ branch: string; commit: string }> {
+  const ordered: Array<{ branch: string; commit: string; settledAt: number }> = [];
   const visited = new Set<string>();
 
   const push = (step: StepState | undefined): void => {
     if (!step || visited.has(step.id)) return;
     visited.add(step.id);
-    const changes = changesOf(step);
+    const heads = headsWritten(run, step);
 
-    // A for_each step keeps each item's branch on that item, and a workflow step keeps each child's on that child.
-    if (!changes) {
+    // A skipped or read-only need wrote no branch, but its earlier dependencies still supply the copy's origin.
+    if (heads.length === 0) {
       for (const item of itemsOf(run, step)) push(item);
 
       for (const child of workflowChildren(run, step)) push(child);
-      // A skipped or read-only need wrote no branch, but its earlier dependencies still supply the copy's origin.
       let id: string | undefined = step.id;
 
       while (id) {
@@ -434,15 +458,13 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     }
 
     const settledAt = 'settledAt' in step ? step.settledAt : 0;
-    const earlier = ordered.findIndex((item) => item.changes.branch === changes.branch);
 
-    if (earlier >= 0) {
-      if (settledAt > ordered[earlier]!.settledAt) ordered[earlier] = { changes, settledAt };
+    for (const head of heads) {
+      const earlier = ordered.find((item) => item.branch === head.branch);
 
-      return;
+      if (!earlier) ordered.push({ ...head, settledAt });
+      else if (settledAt > earlier.settledAt) Object.assign(earlier, { commit: head.commit, settledAt });
     }
-
-    ordered.push({ changes, settledAt });
   };
 
   for (const itemId of itemIdsIn(state.id)) pushItemAfter(run, itemId, push);
@@ -456,7 +478,7 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     for (const id of definition.needs ?? []) push(states.find((item) => localId(scope, item) === id));
   }
 
-  return ordered.map((item) => item.changes);
+  return ordered.map(({ branch, commit }) => ({ branch, commit }));
 }
 
 /**
@@ -767,8 +789,8 @@ export function planWorkspace(
       base,
       configCommit: base.commit,
       branch,
-      start: first ? { commit: first.to, branch: first.branch } : { commit: copy?.commit ?? base.commit },
-      merge: (mode === 'continue' ? changes : rest).map((item) => ({ branch: item.branch, commit: item.to })),
+      start: first ? { commit: first.commit, branch: first.branch } : { commit: copy?.commit ?? base.commit },
+      merge: mode === 'continue' ? changes : rest,
     },
   };
 }
