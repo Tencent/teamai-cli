@@ -640,7 +640,7 @@ steps:
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
-  # Judges every trial with the scorers it pinned, a criteria task's teamai:correctness:<task> included. Reading
+  # Judges every trial with the scorers as of the run's start, a criteria task's teamai:correctness:<task> included. Reading
   # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
   - id: subjects
     needs: [trials]
@@ -672,7 +672,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | `teamai benchmark plan <suite>` | `plan` 步骤 | 冻结你 pull 到的团队修订，获取 trial 读取的每个提交，并把 trial 打印成一个工作流，每个基线和 trial 一个克隆。 |
 | `teamai benchmark check --baseline\|--trial` | 每个克隆中的一个步骤 | 写入 `check.add`，对 trial 恢复 `protect`，运行任务的 check，并打印其结果。 |
 | `teamai score subjects --run <run> --step trials` | `subjects` 步骤 | 列出 trial 在本机结算的、需要评分的执行轮次。 |
-| [`teamai-score`](scorers.md#teamai-score-工作流) | `score` 步骤，每个 subject 一次 | 用 trial 固定的评分器评判它。 |
+| [`teamai-score`](scorers.md#teamai-score-工作流) | `score` 步骤，每个 subject 一次 | 用运行开始时的评分器评判 trial。 |
 | `teamai benchmark report` | `report` 这个 `finally` 步骤 | 给 trial 分类，写出记录，并打印结果。`COMPARE=true` 时还会比较记录，见[回归时失败](#回归时失败)。 |
 
 `trials` 运行 `plan` 打印的内容：见[运行步骤打印的工作流](workflow-advanced.md#运行步骤打印的工作流)。`report` 在 trial 之后运行，无论它们发生了什么，就像 [finally 步骤](workflow-advanced.md#finally-步骤)那样。`benchmark run --member-aliases` 把 `aliases` 传为 `member`，否则传为 `team`。`--task` 和 `--arm` 传入 `tasks` 和 `arms`，否则传 `[]`，即规划所有任务和 arm。`--fail-on-regression` 把 `fail_on_regression` 传为 `true`，否则传为 `false`。`report` 从运行文件中 `score` 步骤的结果读取每个 trial 的标签，因为 `finally` 步骤不能读取 `steps`。

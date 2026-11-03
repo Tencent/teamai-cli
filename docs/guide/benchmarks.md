@@ -640,7 +640,7 @@ steps:
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
-  # Judges every trial with the scorers it pinned, a criteria task's teamai:correctness:<task> included. Reading
+  # Judges every trial with the scorers as of the run's start, a criteria task's teamai:correctness:<task> included. Reading
   # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
   - id: subjects
     needs: [trials]
@@ -672,7 +672,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | `teamai benchmark plan <suite>` | The `plan` step | Freezes the team revision you pulled, fetches every commit a trial reads, and prints the trials as a workflow, with one clone per baseline and trial. |
 | `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints its result. |
 | `teamai score subjects --run <run> --step trials` | The `subjects` step | Lists the trials' scored passes that settled on this machine. |
-| [`teamai-score`](scorers.md#the-teamai-score-workflow) | The `score` step, once per subject | Judges the trial with the scorers it pinned. |
+| [`teamai-score`](scorers.md#the-teamai-score-workflow) | The `score` step, once per subject | Judges the trial with the scorers as of the run's start. |
 | `teamai benchmark report` | The `report` `finally` step | Classifies the trials, writes the record, and prints the results. With `COMPARE=true`, also compares the record, as [Fail on a regression](#fail-on-a-regression) says. |
 
 `trials` runs what `plan` printed: see [Run a workflow a step printed](workflow-advanced.md#run-a-workflow-a-step-printed). `report` runs after the trials whatever happened to them, as [finally steps](workflow-advanced.md#finally-steps) do. `benchmark run --member-aliases` passes `aliases` as `member`, else as `team`. `--task` and `--arm` pass `tasks` and `arms`, else `[]`, which plans every task and arm. `--fail-on-regression` passes `fail_on_regression` as `true`, else `false`. `report` reads each trial's labels from the `score` step's results in the run file, since a `finally` step cannot read `steps`.

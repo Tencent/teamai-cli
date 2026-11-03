@@ -248,7 +248,7 @@ $ teamai score --run r5863… --scorer review-quality                           
 $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --driver none   # 交给任意 driver 的 workflow next
 ```
 
-`--run`、`--session` 或 `--team-session` 加上 `--scorer`，会在本地 driver 上为该执行轮次或会话启动 [`teamai-score`](#teamai-score-工作流)，并输出它写入的标签。`--driver none` 只启动运行，交给任意 driver 的 `workflow next`；它取代了 `--queue`。运行中只有一个有成功执行的步骤列出该评分器时，`--step` 可以省略；否则错误会列出可选的步骤。不应用抽样，失败或过期的评审任务会重新打开。`--run` 只接受运行固定过的评分器，使用固定的评分标准；会话接受 `teamai pull` 缓存的任意评分器，使用当前版本。未知的运行、步骤、执行轮次或评分器会失败，列出存在的值，且不启动运行。
+`--run`、`--session` 或 `--team-session` 加上 `--scorer`，会在本地 driver 上为该执行轮次或会话启动 [`teamai-score`](#teamai-score-工作流)，并输出它写入的标签。`--driver none` 只启动运行，交给任意 driver 的 `workflow next`；它取代了 `--queue`。运行中只有一个有成功执行的步骤列出该评分器时，`--step` 可以省略；否则错误会列出可选的步骤。不应用抽样，失败或过期的评审任务会重新打开。`--run` 在运行开始时的团队提交读取每个评分器，并带上检出当时在该提交之后的改动，因此运行期间修改的评分标准不会改变标签；会话接受 `teamai pull` 缓存的任意评分器，使用当前版本。未知的运行、步骤、执行轮次或评分器会失败，列出存在的值，且不启动运行。
 
 有评分器没有得到标签时，命令以退出码 1 结束并给出它的代码，`labels` 列出其他评分器得到的标签：
 
