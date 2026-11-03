@@ -577,6 +577,7 @@ What `--next` does with each offered run:
 | A step left has a required approval, is `interactive`, or is a choice with no default | skips it: listed as `needs a person` | takes it from a terminal; with no terminal, such as cron, skips it |
 | A step left requires env with no value here | skips it: listed as `cannot run here` | skips it |
 | A prompt step left has no tool here: `--tools`, `workflows.tools` and your AI tool name none, or the one they name is not on `PATH` | skips it: listed as `cannot run here` | skips it |
+| A step left needs a sandbox (`requires: { isolation: sandbox, strict: true }`), and neither `--sandbox` nor `workflows.sandbox` declares one here | skips it: listed as `cannot run here` | skips it |
 | You published it from this install | skips it | skips it |
 | It works in another business repository | skips it | skips it |
 | Another runner claimed it a moment earlier | takes the next one | takes the next one |

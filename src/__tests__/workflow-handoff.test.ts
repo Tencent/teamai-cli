@@ -2819,8 +2819,8 @@ steps:
 `;
 
   /** A process that runs teamai in a CI job, with no agent session: unattended unless `mode` says otherwise. */
-  function runnerTaker(mode: 'attended' | 'unattended' = 'unattended') {
-    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const, tools: {}, hasPerson: false };
+  function runnerTaker(mode: 'attended' | 'unattended' = 'unattended', { sandbox = false } = {}) {
+    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const, tools: {}, sandbox, hasPerson: false };
   }
 
   /** What `member` reads of teamai-reports after a pull. */
@@ -2912,6 +2912,32 @@ steps:
     }]);
     const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'attended' as const }, driver: 'skill' as const, hasPerson: true };
     expect((await publishedRuns(runner, skill))[0]?.offer?.lacks).toEqual([]);
+  });
+
+  it('lists an offered run whose steps left need a sandbox as lacking --sandbox on a machine that does not declare one, which no runner there takes', async () => {
+    const acme = team({ sealed: `schemaVersion: v1alpha1
+name: sealed
+description: A build that runs only on a sandbox.
+steps:
+  - id: build
+    requires: { isolation: sandbox, strict: true }
+    command: echo build
+` });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'sealed', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    const self = (await installOwner(runner.config)).id;
+
+    const runs = await publishedRuns(runner);
+    expect(runs[0]?.offer?.lacks).toEqual([{
+      reason: 'build needs a sandbox, which this machine does not declare',
+      fix: 'pass --sandbox on a disposable host, such as a CI runner or a container, or set workflows.sandbox: true',
+    }]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self })).toEqual([]);
+    expect((await publishedRuns(runner, runnerTaker('unattended', { sandbox: true })))[0]?.offer?.lacks).toEqual([]);
   });
 
   it('names one --tools default=<tool> for every prompt step left with no tool configured here, whichever agent each runs', async () => {

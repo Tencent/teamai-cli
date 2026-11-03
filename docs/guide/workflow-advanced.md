@@ -975,7 +975,7 @@ A flag on `resume` replaces what the run remembers, a `--tools` name at a time, 
 |---|---|---|
 | `--tools default=claude` | keeps it; `--tools <name>=<tool>` replaces that name | starts without it; the listing says `pass --tools default=<tool>` |
 | `--auto-approve` | keeps it; `--no-auto-approve` turns it off | starts without it |
-| `--sandbox` | keeps it | starts without it; a step that needs a sandbox stops with `busy` and names `--sandbox` |
+| `--sandbox` | keeps it | starts without it; the listing and `busy` name `--sandbox`, and `--next` skips the run |
 
 `retry` accepts a leased, failed, or cancelled step, a refused approve with an answer, or an answered choose. Retry a HITL request to change its answer; its old answer stays in pass history. It frees an old lease and starts a new pass at a new revision. The local driver stops a command it was running and starts the new pass only after that command has exited. It resets the steps that depend on or read that step, including loop waits and item `after` dependencies. A HITL request among them that waits, or was answered and has not run, is asked again at a new pass. It reopens settled enclosing workflows, items, fan-out steps, and the run. A step whose pull request delivery failed keeps its pass, and only its delivery runs again. If the reopened run is still running, the result includes a `resume` command. Run it to continue locally, or let your driver poll `next`. Unanswered skips in each affected container are re-derived; manual cancellations outside it stay cancelled. An independent standing end or break prevents retry.
 

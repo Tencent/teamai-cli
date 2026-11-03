@@ -553,7 +553,7 @@ Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#una
 
 | Flag or setting | Effect |
 | --- | --- |
-| `--sandbox` | Declares this machine a sandbox for this process. Only on a machine you can throw away. |
+| `--sandbox` | Declares this machine a sandbox for this run, which `workflow resume` on this machine keeps. Only on a machine you can throw away. |
 | `workflows.sandbox: true` in config | Declares it for every process, as [Requirements and limits](workflow-advanced.md#requirements-and-limits) describes. |
 | neither | The run is refused at start with `requirement_unmet`: the trials require a strict sandbox. |
 | `--member-aliases` | Your own `~/.teamai/models/aliases.yaml` wins over the team's `models/aliases.yaml`, and the table shows `member` as the source of each model your file decided. |

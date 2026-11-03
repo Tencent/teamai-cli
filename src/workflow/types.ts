@@ -521,7 +521,8 @@ export interface AdmittedWorkflow {
  */
 export interface DriveOptions {
   tools?: Record<string, string>;
-  autoApprove?: true;
+  /** `false` after `resume --no-auto-approve`, which overrides `workflows.auto_approve` as the flag does. */
+  autoApprove?: boolean;
   sandbox?: true;
 }
 

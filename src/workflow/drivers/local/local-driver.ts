@@ -20,7 +20,7 @@ import { attemptEnv } from '../../attempt-marker.js';
 import { leaseNext, type ReportInput } from '../../engine.js';
 import { reconcileTakenCopies } from '../../handoff.js';
 import { LeaseWireSchema, type LeaseWire } from '../../lease-wire.js';
-import { setsLimit, type DriverCan } from '../../requirements.js';
+import { setsLimit, type DriverCan, type Missing } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl, type ResponseInput } from '../../run-controls.js';
 import { isRecord } from '../../expression.js';
 import { MAX_TIMER_DELAY } from '../../shell-command.js';
@@ -115,6 +115,9 @@ const HitlRequestSchema = z.object({
 });
 
 /** What the engine's `next` says the driver waits for. */
+/** What a step held for strict isolation misses, as `wait.held` names it. */
+const ISOLATION = 'isolation' satisfies Missing;
+
 const WaitReplySchema = z.object({
   delivering: z.array(z.unknown()).optional().catch(undefined),
   judging: z.number().optional().catch(undefined),
@@ -135,11 +138,11 @@ async function askHitl(hitl: LocalHitl, signal: AbortSignal): Promise<string> {
 
 /** Local tool selection and terminal behavior for one driver invocation. */
 export interface LocalDriverOptions {
-  /** Overrides auto approval for this process without changing member config. */
+  /** Overrides auto approval for this run without changing member config; the run remembers it on this install. */
   autoApprove?: boolean;
   /** Declares whether a person can answer HITL requests and work in foreground tools. */
   hitl?: boolean;
-  /** Declares this host a sandbox for this process, as `workflows.sandbox` does for every process. */
+  /** Declares this host a sandbox for this run, as `workflows.sandbox` does for every process; the run remembers it on this install. */
   sandbox?: boolean;
   /** The terminal question implementation, injectable for callers without readline. */
   question?: (hitl: LocalHitl, signal: AbortSignal) => Promise<string>;
@@ -781,13 +784,15 @@ async function removeGitLocks(gitDir: string): Promise<void> {
  * The flags a drive runs with: those `given`, over the ones the run `remembered` from this install's last drive, a
  * `--tools` name at a time. A flag left out keeps what the run remembers.
  */
-function drivenWith(given: Pick<LocalDriverOptions, 'tools' | 'autoApprove' | 'sandbox'>, remembered: DriveOptions | undefined): DriveOptions {
+function drivenWith(given: Pick<LocalDriverOptions, keyof DriveOptions>, remembered: DriveOptions | undefined): DriveOptions {
   const driven: DriveOptions = {};
   const tools = { ...remembered?.tools, ...given.tools };
 
   if (Object.keys(tools).length > 0) driven.tools = tools;
+  // Kept off as well as on: an off overrides the member's workflows.auto_approve, as the flag does.
+  const autoApprove = given.autoApprove ?? remembered?.autoApprove;
 
-  if (given.autoApprove ?? remembered?.autoApprove) driven.autoApprove = true;
+  if (autoApprove !== undefined) driven.autoApprove = autoApprove;
 
   if (given.sandbox ?? remembered?.sandbox) driven.sandbox = true;
 
@@ -801,7 +806,7 @@ function drivenWith(given: Pick<LocalDriverOptions, 'tools' | 'autoApprove' | 's
 async function rememberDrive(config: LocalConfig, run: RunState, given: LocalDriverOptions): Promise<LocalDriverOptions | { error: WorkflowFailure }> {
   const driven = drivenWith(given, run.driveOptions);
   // Neither given nor remembered, auto-approve stays unset, so the member's workflows.auto_approve decides.
-  const options = { ...given, tools: driven.tools ?? {}, autoApprove: given.autoApprove ?? run.driveOptions?.autoApprove, sandbox: driven.sandbox === true };
+  const options = { ...given, tools: driven.tools ?? {}, autoApprove: driven.autoApprove, sandbox: driven.sandbox === true };
 
   if (JSON.stringify(driven) === JSON.stringify(run.driveOptions ?? {})) return options;
 
@@ -822,10 +827,10 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   const started = await readRun(config, runId);
   // Places go under the checkout the run started from, wherever in it the driver runs.
   const isStarted = started !== 'missing' && started !== 'corrupt';
-  const remembered = isStarted ? await rememberDrive(config, started, given) : given;
+  const drive = isStarted ? await rememberDrive(config, started, given) : given;
 
-  if ('error' in remembered) return remembered;
-  const options = remembered;
+  if ('error' in drive) return drive;
+  const options = drive;
   const root = await placeRoot({ cwd, checkout: isStarted ? started.checkout : undefined });
   const unreconciled = await reconcileTakenCopies(config, runId, root);
 
@@ -1123,7 +1128,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
         const reason = wait.reason ?? 'the next step is not available';
         // A run claimed from another machine does not bring its --sandbox along: say which flag declares it here.
-        const needsSandbox = !isSandbox(config, options) && wait.held?.some(({ missing }) => missing.includes('isolation')) === true;
+        const needsSandbox = !isSandbox(config, options) && wait.held?.some(({ missing }) => missing.includes(ISOLATION)) === true;
 
         return { error: { code: 'busy', message: needsSandbox
           ? `${reason}. If this machine is a disposable host, such as a CI runner or a container, declare it a sandbox: teamai workflow resume ${runId} --sandbox, or workflows.sandbox: true in config`

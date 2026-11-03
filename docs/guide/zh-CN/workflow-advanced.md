@@ -975,7 +975,7 @@ $ teamai workflow resume redf22a69e4ae6652 --no-auto-approve         # 从现在
 |---|---|---|
 | `--tools default=claude` | 保留；`--tools <name>=<tool>` 替换该名字 | 不带过去；列表提示 `pass --tools default=<tool>` |
 | `--auto-approve` | 保留；`--no-auto-approve` 关闭它 | 不带过去 |
-| `--sandbox` | 保留 | 不带过去；需要沙箱的步骤以 `busy` 停下并指出 `--sandbox` |
+| `--sandbox` | 保留 | 不带过去；列表和 `busy` 都会指出 `--sandbox`，`--next` 跳过这个运行 |
 
 `retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
 

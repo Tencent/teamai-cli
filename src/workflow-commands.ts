@@ -107,9 +107,11 @@ async function explainFailedSteps(config: LocalConfig, runId: string, secrets: R
 
   if (failedIds.length === 0 && failure) {
     log.error(redact(`Run ${runId} failed with ${failure.code}: ${failure.message}`, { envSecrets: secrets, patterns: false }));
-    const stopped = isolated ? [] : run.steps.filter((step) => step.status === 'cancelled' && step.failure?.code === failure.code);
+    const stopped = isolated ? [] : run.steps.filter((step) => step.status === 'cancelled' && step.failure?.code === failure.code).map((step) => step.id);
+    // The limit stops a workflow step with the steps under it: retrying the one under it reopens the one around it.
+    const stoppedUnder = (id: string): boolean => stopped.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
 
-    for (const step of stopped) log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
+    for (const step of stopped.filter((id) => !stoppedUnder(id))) log.info(`Retry it with ${retryCommand(runId, step)}, then continue the run with teamai workflow resume ${runId}`);
   }
 
   // An isolated run refuses a retry: what it admitted or measured would change.
@@ -901,7 +903,7 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
 
   if (isSkill && evidence.kind === 'none') caller.evidence = { kind: 'skill-driver' };
   // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
-  const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, hasPerson: personAnswers(caller.mode) };
+  const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, sandbox: options.sandbox === true, hasPerson: personAnswers(caller.mode) };
 
   if (options.next) await takeNext(loaded, taker, options);
   else await listResumable(loaded, taker);

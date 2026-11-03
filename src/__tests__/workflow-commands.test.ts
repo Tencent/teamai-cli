@@ -456,6 +456,35 @@ steps:
     expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} wait, then continue the run with teamai workflow resume ${runId}`));
   });
 
+  it('names the retry of the step a limit of the whole run stopped, not of the workflow step around it', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'slow.yaml'), `schemaVersion: v1alpha1
+name: slow
+description: A nested step slower than the run may take.
+timeout: 1s
+steps:
+  - id: change
+    workflow:
+      steps:
+        - id: wait
+          command: node -e "setTimeout(() => {}, 10000)"
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('slow', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } });
+    expect(printed.filter((line) => line.includes('teamai workflow retry'))).toEqual([expect.stringMatching(/teamai workflow retry \S+ change\.wait, then/)]);
+  });
+
   it('names the item that failed, not the fan-out step that failed because of it', async () => {
     const config = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1
@@ -854,6 +883,13 @@ steps:
     await capture(() => workflowRetry(second.runId, 'build'));
     expect(await capture(() => workflowResume(second.runId, { autoApprove: false }))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(await readRun(second.config, second.runId)).toMatchObject({ steps: [{ id: 'build', status: 'succeeded' }, { id: 'ship', status: 'skipped', answer: { choice: 'no' } }] });
+    expect(fs.existsSync(path.join(process.cwd(), 'shipped'))).toBe(false);
+
+    // The run remembers the no, over the member's workflows.auto_approve, until a resume says otherwise.
+    second.config.workflows = { tools: {}, auto_approve: true };
+    await capture(() => workflowRetry(second.runId, 'ship'));
+    expect(await capture(() => workflowResume(second.runId, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(second.config, second.runId)).toMatchObject({ steps: [{ id: 'build' }, { id: 'ship', pass: 2, status: 'skipped', answer: { choice: 'no' } }] });
     expect(fs.existsSync(path.join(process.cwd(), 'shipped'))).toBe(false);
   });
 

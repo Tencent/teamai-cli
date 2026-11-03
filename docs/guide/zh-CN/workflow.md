@@ -577,6 +577,7 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 | 剩余的某个步骤有必需审批、是 `interactive`，或是没有默认值的选择 | 跳过：列为 `needs a person` | 在终端中接手；没有终端（如 cron）时跳过 |
 | 剩余的某个步骤要求的 env 在本机没有值 | 跳过：列为 `cannot run here` | 跳过 |
 | 剩余的某个提示词步骤在本机没有工具：`--tools`、`workflows.tools` 和你的 AI 工具都没有指定，或指定的工具不在 `PATH` 上 | 跳过：列为 `cannot run here` | 跳过 |
+| 剩余的某个步骤需要沙箱（`requires: { isolation: sandbox, strict: true }`），而本机既没有传 `--sandbox` 也没有设置 `workflows.sandbox` | 跳过：列为 `cannot run here` | 跳过 |
 | 你从本安装实例发布了它 | 跳过 | 跳过 |
 | 它在另一个业务仓库中工作 | 跳过 | 跳过 |
 | 另一个运行器刚刚抢先认领了它 | 接手下一个 | 接手下一个 |

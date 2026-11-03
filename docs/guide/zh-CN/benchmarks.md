@@ -553,7 +553,7 @@ $ teamai benchmark run fix-auth --sandbox
 
 | 选项或配置 | 效果 |
 | --- | --- |
-| `--sandbox` | 只为当前这个进程把本机声明为 sandbox。只在可以丢弃的机器上使用。 |
+| `--sandbox` | 为这次运行把本机声明为 sandbox，本机上的 `workflow resume` 会沿用它。只在可以丢弃的机器上使用。 |
 | 配置里的 `workflows.sandbox: true` | 为每个进程声明它，见[要求和限制](workflow-advanced.md#要求和限制)。 |
 | 两者都没有 | 运行在启动时以 `requirement_unmet` 被拒绝：trial 需要严格 sandbox。 |
 | `--member-aliases` | 你自己的 `~/.teamai/models/aliases.yaml` 优先于团队的 `models/aliases.yaml`，表格会把由你的文件决定的模型的来源显示为 `member`。 |
