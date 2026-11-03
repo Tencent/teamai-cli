@@ -1122,10 +1122,10 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           if (judging.kind === 'skipped') log.info(judging.message);
         }
 
-        const confinedWait = handedBack ?? (heldForConfined(wait.held) ? wait.held.map((item) => item.reason).join('; ') : undefined);
+        const confinedWait = handedBack ?? (heldForConfined(wait.held) ? wait.held.map((item) => item.reason.replace(/\.$/u, '')).join('; ') : undefined);
 
         if (confinedWait !== undefined) {
-          return { error: { code: 'confined_pending', message: `Run ${runId} waits for a confined tool: ${confinedWait}. Make one available here, then run teamai workflow resume ${runId}, or drive the run with a driver that offers one.` } };
+          return { error: { code: 'confined_pending', message: `Run ${runId} waits for a confined tool: ${confinedWait.replace(/\.$/u, '')}. Make one available here, then run teamai workflow resume ${runId}, or drive the run with a driver that offers one.` } };
         }
 
         return { error: { code: 'busy', message: wait.reason ?? 'the next step is not available' } };

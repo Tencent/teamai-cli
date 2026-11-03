@@ -182,7 +182,7 @@ function settledAnswer(runId: string, unlabelled: readonly Unlabelled[], kept: K
 
   for (const one of unlabelled) log.warn(`${one.scorer}: no label, ${one.message}`);
 
-  return { error: { code: first.code, message: `Run ${runId}: ${unlabelled.map((one) => `${one.scorer} got no label (${one.code}): ${one.message}.`).join(' ')}${kept.text}`, labels: kept.labels } };
+  return { error: { code: first.code, message: `Run ${runId}: ${unlabelled.map((one) => `${one.scorer} got no label (${one.code}): ${one.message.replace(/\.$/u, '')}.`).join(' ')}${kept.text}`, labels: kept.labels } };
 }
 
 /** The answer for `outcomes` of run `runId`; `held`: why the local driver left a confined step open, when it did. */

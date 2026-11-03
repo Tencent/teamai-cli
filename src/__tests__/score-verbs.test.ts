@@ -633,7 +633,7 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
       ? await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, taken.ctx)
       : id === 'evidence' ? await ScoreVerbs.evidence({ subject: item?.subject, scorers: item?.scorers }, taken.ctx)
         : id === 'check' || id === 'ci' || id === 'protected' ? await ScoreVerbs.stage({ stage: id, evidence: dir, wait: '2h' }, taken.ctx)
-          : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1..' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
+          : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1.' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
             : id === 'label' ? await ScoreVerbs.label({ evidence: dir, answer: judged?.ok ? JSON.stringify(judged.output.answer) : '', judge: judged === undefined ? '' : judged.ok ? 'success' : 'failed' }, taken.ctx)
               : id === 'write' ? await ScoreVerbs.write({ evidence: dir }, taken.ctx)
                 : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
@@ -1034,7 +1034,7 @@ describe('what teamai score answers for a run its local driver drove', () => {
   it('gives no label to a scorer whose label the write step failed to store, and says which step failed', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer() });
     const reviewed = await reviewedRun(config);
-    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { write: { ok: false, code: 'write_failed', message: 'The disk is full..' } } });
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { write: { ok: false, code: 'write_failed', message: 'The disk is full.' } } });
 
     expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].write failed: The disk is full.`, labels: [] } });
   });
@@ -1088,7 +1088,7 @@ describe('what teamai score answers for a run its local driver drove', () => {
   it('gives no label to a scorer whose evidence could not be gathered, and says why', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer() });
     const reviewed = await reviewedRun(config);
-    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, fake: { evidence: { ok: false, code: 'evidence_missing', message: 'The session is gone..' } } });
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, fake: { evidence: { ok: false, code: 'evidence_missing', message: 'The session is gone.' } } });
 
     expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].evidence failed: The session is gone.`, labels: [] } });
   });
