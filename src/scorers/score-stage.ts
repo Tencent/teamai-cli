@@ -3,7 +3,6 @@
  * record into the group's evidence directory, which `score label` reads in the order check, CI, protected, and answers
  * whether it decided the group, so the later stages and the judge do not run.
  */
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { readFileIfExists, writeFileAtomic } from '../utils/fs.js';
@@ -48,7 +47,6 @@ async function cachedCi(attempt: ScoreAttempt, read: () => Promise<CiVerdict>, h
 
   if (cached) return cached;
   const verdict = await read();
-  await fs.mkdir(path.dirname(file), { recursive: true });
   await writeFileAtomic(file, JSON.stringify(verdict));
 
   return verdict;
@@ -60,7 +58,6 @@ async function pastWait(attempt: ScoreAttempt, head: string, waitMs: number, now
   const since = await readFileIfExists(file);
 
   if (since === null) {
-    await fs.mkdir(path.dirname(file), { recursive: true });
     await writeFileAtomic(file, now);
 
     return waitMs <= 0;

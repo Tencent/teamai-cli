@@ -17,12 +17,12 @@ import { isIsolated } from '../workflow/workspace.js';
 import { JudgeAnswerSchema, verdictsOf } from './batch.js';
 import { pinScorers } from './cache.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
-import { EvidenceDir, readRecord, rubricsOf, type GroupRecord } from './evidence-dir.js';
+import { EvidenceDir, readRecord, type GroupRecord } from './evidence-dir.js';
 import { chooseJudgeModel } from './judge-model.js';
 import { JUDGE_FAILURES, ModelJudgeSchema, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
 import { Marks, type MarkKey, type MarkOutcome } from './marks.js';
-import type { PinnedScorer } from './pin.js';
+import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import type { ScoreAttempt } from './score-attempt.js';
 import { markFacts, scorerStages, type Refusal } from './score-plan.js';
 import { ScoreStage, type StageRecord } from './score-stage.js';
@@ -87,10 +87,15 @@ function failedAll(members: readonly Member[], code: (typeof CODES)[number], mes
   return members.map(({ name }) => ({ kind: 'failed', scorer: name, code, message }));
 }
 
+/** Each scorer of the group with the rubric its pin holds, or undefined when one does not parse. */
 function membersOf(group: GroupRecord): Member[] | undefined {
-  const rubrics = rubricsOf(group.scorers);
+  const members = group.scorers.flatMap(({ name, pin }) => {
+    const definition = pinnedDefinition(name, pin);
 
-  return rubrics && group.scorers.map(({ name, pin }, index) => ({ name, pin, definition: rubrics[index] ?? rubrics[0] }));
+    return definition ? [{ name, pin, definition }] : [];
+  });
+
+  return members.length === group.scorers.length ? members : undefined;
 }
 
 /** The label of `member` with `given`, as a pass's or a session's label holds it. */
