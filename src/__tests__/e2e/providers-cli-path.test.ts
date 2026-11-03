@@ -21,10 +21,9 @@ import { cnbExec, isCnbInstalled } from '../../providers/cnb/cnb-cli.js';
  * wrong candidate to skip.
  *
  * Run with `npm run test:e2e`. This directory is excluded from the default
- * `vitest run` (see `vitest.config.ts`), and `ci.yml` only runs the single e2e
- * file it names explicitly — so this is not CI-gated. That is deliberate: the CI
- * matrix has no Windows runner, and the `.cmd` branch can only be exercised on
- * Windows. Run it there.
+ * `vitest run` (see `vitest.config.ts`). CI runs the file on macOS, where
+ * `path_helper` can drop a prepended PATH entry, and on Windows, where the
+ * `.cmd` sibling is the one CreateProcess can launch.
  */
 const MARKER = 'teamai-fake-cli';
 

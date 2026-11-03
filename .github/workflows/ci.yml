@@ -23,19 +23,19 @@ env:
 
 jobs:
   lint-and-test:
-    name: Lint & Test (Node ${{ matrix.node-version }} on ${{ matrix.os }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
+    name: Lint & Test (Node ${{ matrix.node-version }} on ${{ matrix.os }})
     strategy:
       fail-fast: false
-      # Every Node version on Linux. macOS differs by platform, not by Node
-      # version, and its runner takes over twice as long: one version, split in
-      # two so it finishes with the Linux legs.
+      # Every Node version on Linux, which runs the full suite. macOS differs
+      # by the machine (case-insensitive APFS, /tmp → /private/tmp, path_helper),
+      # not by Node version, and a full suite there is what the Build check waits
+      # on. It runs only those cases.
       matrix:
         include:
           - { os: ubuntu-latest, node-version: 20 }
           - { os: ubuntu-latest, node-version: 22 }
           - { os: ubuntu-latest, node-version: 24 }
-          - { os: macos-latest, node-version: 22, shard: 1/2 }
-          - { os: macos-latest, node-version: 22, shard: 2/2 }
+          - { os: macos-latest, node-version: 22 }
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -60,7 +60,19 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests
-        run: npx vitest run ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+        if: matrix.os == 'ubuntu-latest'
+        run: npx vitest run
+
+      # Whole files whose result depends on Darwin, plus the git-exclude cases
+      # that do: precomposed names, and the on-disk spelling on APFS. The rest
+      # of that file matches Linux. A renamed case passes nothing, which fails
+      # the count check. Vitest itself exits 0 when a filter matches nothing.
+      - name: macOS platform tests
+        if: matrix.os == 'macos-latest'
+        run: |
+          npx vitest run --config vitest.macos.config.ts
+          npx vitest run src/__tests__/git-exclude.test.ts -t "precomposeunicode|case-insensitive filesystem" --reporter=json --outputFile="$RUNNER_TEMP/git-exclude-platform.json"
+          node scripts/expect-vitest-passed.mjs "$RUNNER_TEMP/git-exclude-platform.json" 3
 
   # Coverage made the Node 20 leg the slowest unit job (17 min against 10).
   # It runs on its own, outside Build's needs, so nothing waits for it.
@@ -282,3 +294,24 @@ jobs:
       # files only, so the gate's e2e cases run here.
       - name: CodeBuddy project gate
         run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/hooks-project-isolation-issue373.test.ts
+
+      # The .cmd sibling is what CreateProcess launches. The file also plants a
+      # POSIX shim, so it stays out of WINDOWS_TESTS (that list forbids chmod).
+      - name: Provider CLI .cmd shim
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/providers-cli-path.test.ts
+
+      # NTFS folds case. The rest of the file uses symlinks and stays on Linux
+      # and macOS. A renamed case passes nothing, which fails the count check.
+      - name: Case-insensitive git exclude
+        shell: bash
+        run: |
+          npx vitest run src/__tests__/git-exclude.test.ts -t "case-insensitive filesystem" --reporter=json --outputFile="$RUNNER_TEMP/git-exclude-case.json"
+          node scripts/expect-vitest-passed.mjs "$RUNNER_TEMP/git-exclude-case.json" 1
+
+      # The launcher that drops the dispatch's stdout only fails this way on
+      # Windows (#1030). The rest of the file already runs on Linux.
+      - name: ZCode launcher drops dispatch output
+        shell: bash
+        run: |
+          npx vitest run src/__tests__/project-hook-rules.test.ts -t "launcher drops the dispatch" --reporter=json --outputFile="$RUNNER_TEMP/zcode-launcher.json"
+          node scripts/expect-vitest-passed.mjs "$RUNNER_TEMP/zcode-launcher.json" 1
