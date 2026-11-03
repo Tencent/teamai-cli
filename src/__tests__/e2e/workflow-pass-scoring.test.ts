@@ -98,7 +98,6 @@ describe('the scoring of a run\'s passes, through the real CLI', () => {
       scorer: 'quality', label: 'good', subject: { runId: done.run, step: 'review', pass: 1 }, judge: expect.objectContaining({ kind: 'model' }),
     })]);
     expect(fixture.judgeLaunches()).toHaveLength(1);
-    expect(started.stderr).not.toContain('score --next');
   }, 180_000);
 
   it('starts no teamai-score run for a step whose workflow scores its passes itself', async () => {

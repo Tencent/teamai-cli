@@ -10,7 +10,7 @@ import { log } from '../utils/logger.js';
 import { runCheckAt } from './check-run.js';
 import { runPasses } from '../workflow/loop.js';
 import { deliveredCi } from '../workflow/pr-delivery.js';
-import { evidencePlan, isDelivered } from './scoring-evidence.js';
+import { evidencePlan } from './scoring-evidence.js';
 import { agentPassOf, type StepPass } from '../workflow/step-state.js';
 import type { RunState } from '../workflow/types.js';
 
@@ -25,11 +25,6 @@ export type StageVerdict =
 
 /** What the CI of a delivered pass says: a stage verdict, or that it has not finished on commit `head`. */
 export type CiVerdict = StageVerdict | { kind: 'pending'; head: string };
-
-/** Whether a scorer judges `subject` in a lease of its own: its check is run on a delivered pass, for it alone. */
-export function judgedAlone(run: RunState, subject: RunSubject, definition: Pick<ScorerDefinition, 'check'>): boolean {
-  return definition.check !== undefined && isDelivered(run, subject);
-}
 
 /**
  * The label a stage that fails gives: the scorer's highest-scoring label below `passingScore`, the first listed on a
@@ -119,29 +114,5 @@ export async function checkStage(run: RunState, subject: RunSubject, pass: StepP
   }
 }
 
-/** The check of the one scorer a lease judges, and when the lease ends, which stops it. */
+/** The check of the one scorer a check stage runs, and when it must stop. */
 export interface StageCheck { scorer: string; check: NonNullable<ScorerDefinition['check']>; expiresAt: string }
-
-/**
- * What decides pass `subject` before its judge, stage by stage in order; only a delivered pass has stages. `check` is
- * the scorer's: a scorer with one is judged alone, since the other stages decide every scorer of the pass alike.
- */
-export async function decideBeforeJudge(run: RunState, subject: RunSubject, check?: StageCheck): Promise<StageVerdict> {
-  if (!isDelivered(run, subject)) return { kind: 'judge' };
-  const pass = passOf(run, subject);
-
-  const stages = [
-    ...(check ? [() => checkStage(run, subject, pass, check)] : []),
-    () => ciStage(run, subject, pass),
-    async () => protectedStage(pass),
-  ];
-
-  for (const stage of stages) {
-    const verdict = await stage();
-
-    // A pending CI says nothing to a lease's judge, as one that passed.
-    if (verdict.kind !== 'judge' && verdict.kind !== 'pending') return verdict;
-  }
-
-  return { kind: 'judge' };
-}

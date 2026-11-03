@@ -1,6 +1,6 @@
 /**
- * The engine's envelopes as the skill driver reads them: each answer to `next`, `respond`, a report and `score --next`,
- * parsed once into the reply its row takes, and a lease, read as the step this driver runs.
+ * The engine's envelopes as the skill driver reads them: each answer to `next`, `respond` and a report, parsed
+ * once into the reply its row takes, and a lease, read as the step this driver runs.
  */
 import { z } from 'zod';
 import { LeaseWireSchema } from '../../lease-wire.js';
