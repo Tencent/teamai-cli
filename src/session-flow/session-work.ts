@@ -253,7 +253,7 @@ function sameSessionKey(label: ScoreLabel, scorer: string, sourceHash: string, s
 }
 
 /** A cached scorer that sets `sessions: true`; `namespace` is the scorers namespace it is in, none for the root or a shared dir. */
-interface SessionScorer {
+export interface SessionScorer {
   scorer: string;
   pin: PinnedScorer;
   definition: ScorerDefinition;
@@ -358,10 +358,11 @@ async function isGone(captured: CapturedSession): Promise<boolean> {
 
 /**
  * The sessions of `captured` finished at `now`, oldest activity first, of the run modes `includes` keeps (a capture with
- * no mode counts as attended): an attended session once nothing happened in it for six hours, an unattended one once a
- * drain reached it (#1385). A session whose file is gone is never finished.
+ * no mode counts as attended): an attended session once nothing happened in it for `idleMs`, six hours unless given, an
+ * unattended one once a drain reached it (#1385), each with when something last happened in it. A session whose file
+ * is gone is never finished.
  */
-async function finished(captured: readonly CapturedSession[], now: string, includes: (mode: RunMode) => boolean): Promise<CapturedSession[]> {
+async function finished(captured: readonly CapturedSession[], now: string, includes: (mode: RunMode) => boolean, idleMs = FINISHED_AFTER_MS): Promise<Array<CapturedSession & { activeAt: number }>> {
   const events = await lastEvents();
   const found: Array<{ captured: CapturedSession; activeAt: number }> = [];
 
@@ -375,7 +376,7 @@ async function finished(captured: readonly CapturedSession[], now: string, inclu
 
     switch (mode) {
       case 'attended':
-        if (activeAt + FINISHED_AFTER_MS <= Date.parse(now)) found.push({ captured: one, activeAt });
+        if (activeAt + idleMs <= Date.parse(now)) found.push({ captured: one, activeAt });
         break;
       case 'unattended':
         if (one.drained) found.push({ captured: one, activeAt });
@@ -388,7 +389,7 @@ async function finished(captured: readonly CapturedSession[], now: string, inclu
     }
   }
 
-  return found.sort((left, right) => left.activeAt - right.activeAt).map((one) => one.captured);
+  return found.sort((left, right) => left.activeAt - right.activeAt).map((one) => ({ ...one.captured, activeAt: one.activeAt }));
 }
 
 /** Every session captured here by `platform\0sessionId`, while a session attempt is kept here to prune by it; else none. */
@@ -468,22 +469,33 @@ export interface SampledScorer {
 }
 
 /**
- * The rule a session is judge work by, for each scorer of this scope that judges sessions (`scorers`, else read): the
- * scorer lives at the root, in a shared dir, or in a namespace every capture of the session was delivered; it samples
- * the session; and no label or settled attempt exists for (scorer, rubric, session).
+ * The scorers of this scope that judge sessions (`scorers`, else read) and apply to a session: the scorer lives at the
+ * root, in a shared dir, or in a namespace every capture of the session was delivered, and it samples the session.
  */
-async function sampler(config: LocalConfig, now: string, scorers?: readonly SessionScorer[]): Promise<(session: { platform: string; sessionId: string; captures: readonly SessionCapture[] }) => Promise<SampledScorer[]>> {
+async function samplingScorers(config: LocalConfig, scorers?: readonly SessionScorer[]): Promise<(session: { platform: string; sessionId: string; captures: readonly SessionCapture[] }) => Promise<SessionScorer[]>> {
   const all = scorers ?? await sessionScorers(config);
-  const [labels, attempts] = await Promise.all([LabelStore.local(config), AttemptStore.read(config)]);
   const dirs = [...new Set(all.flatMap(({ namespace }) => namespace ?? []))];
   const scope = dirs.length > 0 ? await readWorkspaceChildren(config) : config;
 
   return async ({ platform, sessionId, captures }) => {
     const active = dirs.length > 0 ? await sessionNamespaces(scope, captures, dirs) : new Set<string>();
-    const subject = { platform, sessionId };
 
-    return all.filter(({ namespace }) => namespace === undefined || active.has(namespace)).flatMap(({ scorer, pin, definition }): SampledScorer[] => {
-      if (!isSampled(scorer, subject, definition.samplingRate)) return [];
+    return all.filter(({ scorer, namespace, definition }) => (namespace === undefined || active.has(namespace)) && isSampled(scorer, { platform, sessionId }, definition.samplingRate));
+  };
+}
+
+/**
+ * The rule a session is judge work by, for each scorer of this scope that judges sessions (`scorers`, else read): the
+ * scorer lives at the root, in a shared dir, or in a namespace every capture of the session was delivered; it samples
+ * the session; and no label or settled attempt exists for (scorer, rubric, session).
+ */
+async function sampler(config: LocalConfig, now: string, scorers?: readonly SessionScorer[]): Promise<(session: { platform: string; sessionId: string; captures: readonly SessionCapture[] }) => Promise<SampledScorer[]>> {
+  const [sampling, labels, attempts] = await Promise.all([samplingScorers(config, scorers), LabelStore.local(config), AttemptStore.read(config)]);
+
+  return async (session) => {
+    const subject = { platform: session.platform, sessionId: session.sessionId };
+
+    return (await sampling(session)).flatMap(({ scorer, pin, definition }): SampledScorer[] => {
       const id = sessionEntryIdOf(scorer, pin.sourceHash, subject);
       const state = sessionEntryState({ labels: labels.filter((label) => sameSessionKey(label, scorer, pin.sourceHash, subject)), attempts: attempts.get(id) ?? [], now });
 
@@ -587,4 +599,4 @@ function leaseCwd(config: LocalConfig): string {
   return config.scope === 'project' && config.projectRoot ? config.projectRoot : getDataHome(config);
 }
 
-export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd, sampledScorers, sessionScorers, isGone } as const;
+export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd, sampledScorers, samplingScorers, sessionScorers, isGone } as const;

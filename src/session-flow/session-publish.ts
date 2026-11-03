@@ -7,8 +7,10 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import type { RunMode } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
+import { readFileSafe } from '../utils/fs.js';
 import { runPasses, type RunPass } from '../workflow/loop.js';
 import { localRuns } from '../workflow/scoring.js';
 import { privateSteps } from '../workflow/scope.js';
@@ -63,6 +65,28 @@ async function hasRecord(config: LocalConfig, key: PublishedKey): Promise<boolea
 
 /** Whether this data home archived session `ref`. */
 const isRecorded = (config: LocalConfig, ref: ArchiveSessionRef): Promise<boolean> => hasRecord(config, platformKey(ref));
+
+const RecordTimeSchema = z.union([z.object({ publishedAt: z.string() }), z.object({ skippedAt: z.string() })]);
+
+/** When this data home last archived session `ref`; Infinity for one it can never archive from here, undefined for none. */
+async function archivedAt(config: LocalConfig, ref: ArchiveSessionRef): Promise<number | undefined> {
+  const text = await readFileSafe(recordFile(config, platformKey(ref)));
+
+  if (text === null) return undefined;
+
+  try {
+    const parsed = RecordTimeSchema.safeParse(JSON.parse(text));
+
+    if (!parsed.success) return undefined;
+
+    return 'publishedAt' in parsed.data ? Date.parse(parsed.data.publishedAt) : Infinity;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Records that this data home archived session `ref` at `at`, as a push of it does. */
+const recordArchived = (config: LocalConfig, ref: ArchiveSessionRef, at: string): Promise<void> => record(config, { ...platformKey(ref), publishedAt: at });
 
 async function record(config: LocalConfig, entry: PublicationRecord): Promise<void> {
   const file = recordFile(config, entry);
@@ -220,4 +244,4 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
   return published;
 }
 
-export const SessionPublish = { captured, steps, waitingSteps, isRecorded } as const;
+export const SessionPublish = { captured, steps, waitingSteps, isRecorded, archivedAt, recordArchived } as const;

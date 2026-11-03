@@ -394,6 +394,9 @@ export const Marks = {
     return { passes: open.filter((kind) => kind === 'run').length, sessions: open.filter((kind) => kind !== 'run').length };
   },
 
+  /** Whether automatic judging starts a mark in `state`: never marked, waiting for CI, or a lapse before the fourth. */
+  startsAgain,
+
   /** The marks automatic judging starts again: lapses before the fourth, and marks waiting for CI, none expired. */
   async restartable(config: LocalConfig, facts: MarkFacts): Promise<Array<{ key: MarkKey; state: Extract<MarkState, { kind: 'lapsed' | 'waiting' }> }>> {
     const { newest } = await readLedger(config, facts.now);

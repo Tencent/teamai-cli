@@ -90,6 +90,8 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'confined_pending',
       // Refusals of a score verb called outside a leased teamai-score attempt, and of a label no person gave.
       'score_attempt_required', 'hand_label_refused',
+      // Refusal of teamai session list --finished, in a run no person started, of inputs other than the session policies.
+      'policy_override_refused',
       // Refusals of a score verb whose --evidence is no group's evidence directory of its run.
       'evidence_unreadable',
       // Why a scorer of a teamai-score group has no label yet: its CI has not finished; and a check stage that never ran.

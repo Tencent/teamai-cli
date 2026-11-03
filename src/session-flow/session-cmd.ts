@@ -39,6 +39,10 @@ import { updateReports } from '../utils/reports-branch.js';
 import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
 import { SessionCaptures } from './captures.js';
+import { SessionPublish } from './session-publish.js';
+import { FinishedSessions } from './finished-sessions.js';
+import { autoDetectInit } from '../config.js';
+import type { LocalConfig } from '../types.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
 import { dashboardWorkspaces } from '../dashboard/workspaces.js';
 import {
@@ -143,6 +147,45 @@ async function listPushSource(platform: string, cwd: string, all: boolean) {
 /**
  * Register SessionFlow's 7 subcommands on the `teamai session` command object.
  */
+/** `teamai session list --finished`: prints the finished sessions to archive and judge, or why it lists none. */
+async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: string; cwd?: string; idle?: string; publish?: string; scorers?: string; json?: boolean }): Promise<void> {
+  const answer = opts.author !== undefined || opts.all || opts.repoRoot !== undefined
+    ? { ok: false as const, code: 'invalid_arguments', message: '--finished lists the sessions of this machine, so it takes no --author, --all or --repo-root.' }
+    : await FinishedSessions.list(opts, { env: process.env, current: await currentConfig(opts.cwd), now: new Date().toISOString() });
+
+  if (!answer.ok) {
+    if (opts.json) process.stdout.write(`${JSON.stringify({ error: { code: answer.code, message: answer.message } })}\n`);
+    console.error(`Error: ${answer.message}`);
+    process.exitCode = 1;
+
+    return;
+  }
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
+
+    return;
+  }
+
+  if (answer.list.length === 0) {
+    console.log('No finished sessions to archive or judge here.');
+
+    return;
+  }
+
+  for (const one of answer.list) console.log(`  ${one.session}  ${one.source}  ${one.publish ? 'publish' : '-'}  ${one.scorers.join(', ') || '-'}`);
+}
+
+/** The config of the scope of `cwd`, or of this directory; undefined where teamai is not set up. */
+async function currentConfig(cwd: string | undefined): Promise<LocalConfig | undefined> {
+  try {
+    // oxlint-disable-next-line teamai/config-load-options -- the listing reads the scope as a step's process does, which has no preview mode
+    return (await autoDetectInit(cwd)).localConfig;
+  } catch {
+    return undefined;
+  }
+}
+
 export function registerSessionFlowCommands(sessionCmd: Command): void {
   // When the output pipe is closed by a downstream consumer (e.g. `session push --all | head`),
   // EPIPE would end the whole command in a stack-trace crash — the data was
@@ -215,10 +258,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           return;
         }
 
-        const pushed = await pushSession(config, { platform: source, sessionId: opts.session });
+        const ref = { platform: source, sessionId: opts.session };
+        const pushed = await pushSession(config, ref);
 
         switch (pushed.status) {
           case 'archived':
+            // teamai-finished-sessions archives it again only once something happened in it after this push.
+            await SessionPublish.recordArchived(config, ref, new Date().toISOString());
             console.log(`\n  ✓ Pushed ${source} session ${safeText(opts.session)} to teamai-reports (redacted)\n`);
 
             return;
@@ -589,12 +635,23 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
   // ── session list ───────────────────────────────────────────
   sessionCmd
     .command('list')
-    .description('List team sessions for the current project')
+    .description('List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step\'s, is never listed, nor a scorer whose mark is open or closed.')
     .option('--repo-root <path>', 'Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--author <name>', 'Filter by author')
     .option('--all', 'List sessions across all projects in the team repo (not just the current one)')
+    .option('--finished', 'List the finished sessions of this machine to archive and judge, not the team\'s pushed ones')
+    .option('--idle <duration>', 'With --finished: how long an attended session has been idle to count as finished, such as 6h (default). An unattended one counts once a drain reached it.')
+    .option('--publish <policy>', 'With --finished: policy (sessions.publish for the session\'s run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.')
+    .option('--scorers <json>', 'With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.')
+    .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}')
     .action(async (opts) => {
+      if (opts.finished) {
+        await listFinished(opts);
+
+        return;
+      }
+
       const workCwd = opts.cwd ?? process.cwd();
       const archives = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
