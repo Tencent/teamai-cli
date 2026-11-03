@@ -18,7 +18,7 @@ import { openSessionArchive, type SessionArchive } from '../../../session-flow/a
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
 import { attemptEnv } from '../../attempt-marker.js';
 import { leaseNext, type PersonHandoff, type ReportInput } from '../../engine.js';
-import { publishRun, reconcileTakenCopies } from '../../handoff.js';
+import { offeredToPerson, offerToPerson, reconcileTakenCopies } from '../../handoff.js';
 import { LeaseWireSchema, type LeaseWire } from '../../lease-wire.js';
 import { setsLimit, type DriverCan, type Missing } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl, type ResponseInput } from '../../run-controls.js';
@@ -126,25 +126,10 @@ const WaitReplySchema = z.object({
   held: z.array(z.object({ step: z.string(), missing: z.array(z.string()) })).optional().catch(undefined),
 }).catch({});
 
-/**
- * Offers run `runId` on teamai-reports, published from `checkout`, for a person to claim, as an unattended driver hands
- * over a step only a person can take. Answers why it could not, as a clause.
- */
-async function offerToPerson(config: LocalConfig, runId: string, checkout: string): Promise<string | undefined> {
-  const published = await publishRun(config, runId, { checkout });
-
-  if (!published.ok) return published.error.message.replace(/\.$/, '');
-
-  return published.value.offered ? undefined : 'the checkout it works in has no origin, so teamai-reports cannot say which repository it works in';
-}
-
 /** What the driver says once it handed run `runId` to a person at `steps`, and the command that person runs. */
 function handedToPerson(runId: string, steps: readonly string[]): WorkflowEnvelope {
   const resume = `teamai workflow resume ${runId} --claim`;
-  const named = steps.map((step) => `"${step}"`).join(', ');
-  log.info(steps.length > 1
-    ? `Steps ${named} need a person, so run ${runId} is offered on teamai-reports. A person continues it with: ${resume}`
-    : `Step ${named} needs a person, so run ${runId} is offered on teamai-reports. A person continues it with: ${resume}`);
+  log.info(offeredToPerson(runId, steps, resume));
 
   return { data: { handoff: { run: runId, steps: [...steps], resume } } };
 }

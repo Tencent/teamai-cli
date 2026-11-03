@@ -662,6 +662,27 @@ export async function publishRunEnd(config: LocalConfig, runId: string, checkout
   return error.code === 'not_owner' ? claimedElsewhere(runId, error.owner, error.ownedAt) : error;
 }
 
+/**
+ * Offers run `runId` on teamai-reports, published from `checkout`, for a person to claim, as a driver nobody attends
+ * hands over a step only a person can take. Answers why it could not, as a clause.
+ */
+export async function offerToPerson(config: LocalConfig, runId: string, checkout: string): Promise<string | undefined> {
+  const publication = await publishRun(config, runId, { checkout });
+
+  if (!publication.ok) return publication.error.message.replace(/\.$/, '');
+
+  return publication.value.offered ? undefined : 'the checkout it works in has no origin, so teamai-reports cannot say which repository it works in';
+}
+
+/** What a driver says once it offered run `runId` to a person at `steps`, who continues it with `resume`. */
+export function offeredToPerson(runId: string, steps: readonly string[], resume: string): string {
+  const named = steps.map((step) => `"${step}"`).join(', ');
+
+  return steps.length > 1
+    ? `Steps ${named} need a person, so run ${runId} is offered on teamai-reports. A person continues it with: ${resume}`
+    : `Step ${named} needs a person, so run ${runId} is offered on teamai-reports. A person continues it with: ${resume}`;
+}
+
 /** What a claim decided from the snapshot it read; `replaces` is the write a claim lands only over. */
 type ClaimVerdict =
   | { kind: 'owned'; snapshot: RunSnapshot }
