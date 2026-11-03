@@ -178,7 +178,7 @@ function unrunnableStep(steps: readonly WorkflowStep[], prefix = ''): { step: st
   for (const step of steps) {
     const id = `${prefix}${step.id}`;
 
-    if (step.deliver !== undefined) return { step: id, why: 'delivers a pull request' };
+    if (step.deliver === 'pr') return { step: id, why: 'delivers a pull request' };
 
     if (step.hitl !== undefined || step.interactive === true) return { step: id, why: 'asks a person' };
 
