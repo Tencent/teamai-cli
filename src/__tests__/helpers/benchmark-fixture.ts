@@ -578,7 +578,10 @@ function judgeMode(log: string, trialRoots: string, judge: FakeJudge): string {
   process.exit(0);
 }
 if (process.argv.includes('--json-schema')) {
-  const labels = JSON.parse(process.argv[process.argv.indexOf('--json-schema') + 1]).properties.label.enum;
+  const schema = JSON.parse(process.argv[process.argv.indexOf('--json-schema') + 1]);
+  // A confined workflow step's reply wraps the answer schema as {"answer": …}; a judge lease's is the answer itself.
+  const wrapped = schema.properties.answer !== undefined;
+  const labels = (wrapped ? schema.properties.answer : schema).properties.label.enum;
   const diff = fs.existsSync('diff.patch') ? fs.readFileSync('diff.patch', 'utf8') : null;
   fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ labels, diff, trialRoots: fs.existsSync(${JSON.stringify(trialRoots)}) ? fs.readdirSync(${JSON.stringify(trialRoots)}) : [] }) + '\\n');
   process.stdin.resume();
@@ -587,7 +590,8 @@ if (process.argv.includes('--json-schema')) {
     if (${JSON.stringify(judge)} === 'fails') process.exit(1);
     const label = ${JSON.stringify(judge)} === 'another-label' ? 'no-such-label' : ${JSON.stringify(judge)} === 'incorrect' && labels.includes('incorrect') ? 'incorrect' : labels[0];
     console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-judge' }));
-    console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoning: 'The fake judge decided.' }, total_cost_usd: 0.1 }));
+    const answer = { label, reasoning: 'The fake judge decided.' };
+    console.log(JSON.stringify({ type: 'result', structured_output: wrapped ? { answer } : answer, total_cost_usd: 0.1 }));
   });
   return;
 }`;

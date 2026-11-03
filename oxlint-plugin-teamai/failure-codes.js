@@ -91,6 +91,9 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'evidence_unreadable',
       // Why a scorer of a teamai-score group has no label yet: its CI has not finished; and a check stage that never ran.
       'ci_pending', 'stage_record_missing',
+      // Why teamai score ended its teamai-score run with a scorer unlabelled: its judge waits for a driver that can run it,
+      // plan left it out, or a step of its group failed with no code of its own.
+      'judge_pending', 'not_planned', 'score_step_failed',
       // Why a scorer got no label from a judge attempt: kept with its mark under scores/, never on a run.
       ...literalStrings('src/scorers/label.ts', 'JUDGE_FAILURES')];
 

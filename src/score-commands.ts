@@ -1,15 +1,21 @@
+import { z } from 'zod';
 import { autoDetectInit, loadLocalConfigForScope } from './config.js';
 import { resolveRunMode } from './launch-context.js';
 import { AttemptStore, isRunAttempt } from './scorers/attempts.js';
 import { isScorerFile } from './scorers/definition.js';
 import { parseLeaseRef } from './scorers/entry.js';
+import { labelId, labelVersion, type ScoreLabel } from './scorers/label.js';
+import { NamedSubject, type NamedPass } from './scorers/named-subject.js';
+import { Subject } from './scorers/subject.js';
 import { scoreSession, type OwnJudge, type SessionDemand, type TeamSession } from './session-flow/scoring.js';
 import type { JsonValue, LocalConfig } from './types.js';
-import { LabelStore } from './scorers/label-store.js';
-import { setStderrOnly } from './utils/logger.js';
+import { LabelStore, reasoningPath, shareFailedLabelHint } from './scorers/label-store.js';
+import { log, setStderrOnly } from './utils/logger.js';
 import { findRunConfig, partitionConfig, projectPartitions } from './workflow/run-location.js';
-import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, submitJudgeLease, type ScoreDemand } from './workflow/scoring.js';
-import type { WorkflowEnvelope } from './workflow/types.js';
+import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, submitJudgeLease } from './workflow/scoring.js';
+import { readRun } from './workflow/store.js';
+import type { RunState, WorkflowEnvelope } from './workflow/types.js';
+import { startWorkflow } from './workflow-commands.js';
 
 export interface ScoreOptions {
   next?: boolean;
@@ -21,7 +27,7 @@ export interface ScoreOptions {
   step?: string;
   pass?: string;
   scorer?: string[];
-  queue?: boolean;
+  driver?: string;
   batch?: boolean;
   session?: string;
   source?: string;
@@ -65,16 +71,13 @@ async function payloadOf(options: ScoreOptions): Promise<{ ok: true; value: Json
   }
 }
 
-/** The on-demand request `--run` asks for, or the failure that says what is missing. */
-function demandOf(options: ScoreOptions): ScoreDemand | WorkflowEnvelope {
+/** The pass `--run` names, or the failure that says what is missing. */
+function passOf(options: ScoreOptions): NamedPass | WorkflowEnvelope {
   if (options.next || options.lease !== undefined || options.json !== undefined || options.stdin) {
-    return failure('invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--queue] [--batch]');
+    return failure('invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--batch] [--driver <driver>]');
   }
 
   const [scorer, ...scorers] = options.scorer ?? [];
-  const file = options.scorer?.find(isScorerFile);
-
-  if (file !== undefined) return failure('invalid_arguments', `--run takes scorer names, not the file ${file}: a run pins its scorers when it starts`);
 
   if (options.run === undefined || scorer === undefined) {
     return failure('invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded');
@@ -86,17 +89,13 @@ function demandOf(options: ScoreOptions): ScoreDemand | WorkflowEnvelope {
     return failure('invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge');
   }
 
-  const demand: ScoreDemand = { run: options.run, scorers: [scorer, ...scorers] };
+  const named: NamedPass = { run: options.run, scorers: [scorer, ...scorers] };
 
-  if (options.step !== undefined) demand.step = options.step;
+  if (options.step !== undefined) named.step = options.step;
 
-  if (pass !== undefined) demand.pass = pass;
+  if (pass !== undefined) named.pass = pass;
 
-  if (options.queue) demand.queue = true;
-
-  if (options.batch) demand.batch = true;
-
-  return demand;
+  return named;
 }
 
 /** The session `--session` asks for, or the failure that says what is missing. */
@@ -192,16 +191,30 @@ async function leaseConfig(ref: string): Promise<{ ok: true; config: LocalConfig
   return current;
 }
 
-async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
+/** A teamai-score run the command starts: its subject, found here, and the inputs the person gave. */
+interface ScoreStart {
+  named: NamedSubject;
+  scorers: readonly string[];
+  label?: string;
+  batch: boolean;
+  push: boolean;
+}
+
+function refusedWith(refusal: { code: string; message: string }): WorkflowEnvelope {
+  // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
+  return failure(refusal.code, refusal.message);
+}
+
+async function score(options: ScoreOptions): Promise<WorkflowEnvelope | { start: ScoreStart }> {
   if (options.drain) return failure('invalid_arguments', '--drain goes alone and takes no payload: teamai score --drain');
-  const asksForPass = options.run !== undefined || options.step !== undefined || options.pass !== undefined || options.queue;
+  const asksForPass = options.run !== undefined || options.step !== undefined || options.pass !== undefined;
   const namesSession = options.session !== undefined || options.source !== undefined || options.teamSession !== undefined || options.author !== undefined || options.label !== undefined;
   const asksForSession = namesSession || (!asksForPass && (options.scorer?.length || options.batch));
 
   if (asksForPass && namesSession) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
 
-  if (options.push && (asksForPass || options.next || options.lease !== undefined)) {
-    return failure('invalid_arguments', '--push goes alone or with a session: teamai score --push, or teamai score [--session <id>] --scorer <name> --push');
+  if (options.push && (options.next || options.lease !== undefined)) {
+    return failure('invalid_arguments', '--push goes alone, or with a pass or a session: teamai score --push, or teamai score --run <id> | --session <id> --scorer <name> --push');
   }
 
   const file = options.push ? options.scorer?.find(isScorerFile) : undefined;
@@ -234,7 +247,26 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
 
     if (!loaded.ok) return loaded.envelope;
 
-    return scoreSession(loaded.config, ownJudge ? { ...demand, ownJudge } : demand);
+    // A scorer file's label is only tried, never stored, so it is judged here and starts no teamai-score run.
+    if (ownJudge || demand.scorers.some(isScorerFile)) {
+      if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives a teamai-score run, and a scorer file or --json judges here without one. Leave out --driver.');
+
+      return scoreSession(loaded.config, ownJudge ? { ...demand, ownJudge } : demand);
+    }
+
+    const named = await NamedSubject.ofSession(loaded.config, demand);
+
+    return named.ok ? { start: { named, scorers: demand.scorers, label: demand.label, batch: demand.batch === true, push: demand.push === true } } : refusedWith(named);
+  }
+
+  if (asksForPass) {
+    const demand = passOf(options);
+
+    if (!('run' in demand)) return demand;
+    const loaded = await localConfig();
+    const named = await NamedSubject.ofPass(loaded.ok ? loaded.config : undefined, demand);
+
+    return named.ok ? { start: { named, scorers: demand.scorers, batch: options.batch === true, push: options.push === true } } : refusedWith(named);
   }
 
   if (options.push) {
@@ -244,14 +276,7 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
     return loaded.ok ? LabelStore.push(loaded.config) : loaded.envelope;
   }
 
-  if (asksForPass) {
-    const demand = demandOf(options);
-
-    if (!('run' in demand)) return demand;
-    const loaded = await localConfig();
-
-    return loaded.ok ? scoreOnDemand(loaded.config, demand) : loaded.envelope;
-  }
+  if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives the teamai-score run that --run, --session or --team-session starts. Pass one of them.');
 
   if (options.next === (options.lease !== undefined)) {
     return failure('invalid_arguments', 'Pass --next to take judge work, --lease <ref> to judge it here, --lease <ref> --submit to settle it, --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels');
@@ -305,5 +330,165 @@ export async function scoreCommand(options: ScoreOptions): Promise<void> {
   }
 
   setStderrOnly(true);
-  writeEnvelope(await score(options));
+  const scored = await score(options);
+
+  if ('start' in scored) await startScore(scored.start, options.driver);
+  else writeEnvelope(scored);
+}
+
+export const SCORE_WORKFLOW = 'teamai-score';
+
+/**
+ * Starts teamai-score for the subject a person named, with `demand: named`, on the local driver unless `driver` names
+ * another; `none` leaves the run to any driver's `workflow next`. The local driver drives it to its end, or until only a
+ * judge step no tool here can run is left, and the answer is the labels the run wrote.
+ */
+async function startScore(start: ScoreStart, driver: string | undefined): Promise<void> {
+  const { named } = start;
+  const inputs = { subject: Subject.format(named.subject), scorers: start.scorers, label: start.label ?? '', batch: start.batch, demand: 'named' };
+  const chosen = driver ?? 'local';
+
+  await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
+    scope: named.config,
+    answer: async (config, runId, driven) => {
+      const answered = await scoredAnswer(config, runId, driven, start);
+
+      return answered && start.push && 'data' in answered ? pushed(config, answered) : answered;
+    },
+  });
+}
+
+async function pushed(config: LocalConfig, answered: Extract<WorkflowEnvelope, { data: unknown }>): Promise<WorkflowEnvelope> {
+  const delivery = await LabelStore.push(config);
+
+  return 'data' in delivery ? { data: { ...answered.data, ...delivery.data } } : delivery;
+}
+
+const DoneSchema = z.object({ outcome: z.string() });
+
+const LabelEntriesSchema = z.object({ labels: z.array(z.object({ scorer: z.string(), label: z.string(), code: z.string() })) });
+
+const GroupsSchema = z.object({ groups: z.array(z.object({ scorers: z.string() })) });
+
+const NOT_PLANNED = 'it was not planned: another run holds its judge work, or no judge tool here runs its model';
+
+/** Why a scorer of the run got no label, as the member reads it. */
+const UNLABELLED = new Map([
+  ['check_could_not_run', 'its check could not run, so no judge ran'],
+  ['ci_pending', 'the CI of its pull request has not finished; the next teamai score --drain labels it once CI finishes'],
+  ['judge_failed', 'its judge failed'],
+  ['judge_answer_invalid', 'its judge answered outside the answer schema'],
+  ['judge_tool_unavailable', 'no judge tool here runs it'],
+  ['not_planned', NOT_PLANNED],
+]);
+
+type Outcome = { scorer: string } & ({ kind: 'labelled'; label: ScoreLabel | undefined; value: string } | { kind: 'unlabelled'; code: string; message: string } | { kind: 'pending' });
+
+/** What run `run` gave each scorer the person named: a label, a code, or a judge step still open. */
+function outcomesOf(run: RunState, scorers: readonly string[], stored: readonly ScoreLabel[]): Outcome[] {
+  const plan = run.steps.find((step) => step.id === 'plan');
+  const groups = GroupsSchema.safeParse(plan?.status === 'succeeded' ? plan.outputs : undefined).data?.groups ?? [];
+  const entries = new Map<string, { label: string; code: string; why?: string }>();
+  const settled = new Map<string, string | undefined>();
+
+  groups.forEach((group, index) => {
+    const inItem = run.steps.filter((step) => step.id.startsWith(`score[${index}].`));
+    const labelled = inItem.find((step) => step.id === `score[${index}].label`);
+    const listed = LabelEntriesSchema.safeParse(labelled?.status === 'succeeded' ? labelled.outputs : undefined);
+
+    const judge = inItem.find((step) => step.id === `score[${index}].judge`);
+    const why = judge && 'message' in judge && judge.message ? judge.message : undefined;
+
+    for (const entry of listed.data?.labels ?? []) entries.set(entry.scorer, why === undefined || entry.code !== 'judge_failed' ? entry : { ...entry, why });
+    const broke = inItem.find((step) => step.status === 'failed' || step.status === 'cancelled');
+    const open = inItem.some((step) => ['pending', 'waiting', 'leased', 'running'].includes(step.status));
+
+    for (const name of group.scorers.split(',')) settled.set(name, open ? undefined : broke ? `step ${broke.id} ${broke.status}${'message' in broke && broke.message ? `: ${broke.message}` : ''}` : '');
+  });
+
+  return scorers.map((scorer): Outcome => {
+    const entry = entries.get(scorer);
+
+    if (entry && entry.code === '') {
+      const label = stored.filter((one) => one.scorer === scorer && one.scoredAt >= run.createdAt).sort((left, right) => (left.scoredAt < right.scoredAt ? 1 : -1))[0];
+
+      return { scorer, kind: 'labelled', label, value: entry.label };
+    }
+
+    if (entry) return { scorer, kind: 'unlabelled', code: entry.code, message: `${UNLABELLED.get(entry.code) ?? entry.code}${entry.why === undefined ? '' : `: ${entry.why}`}` };
+
+    if (!settled.has(scorer)) return { scorer, kind: 'unlabelled', code: 'not_planned', message: NOT_PLANNED };
+    const broke = settled.get(scorer);
+
+    if (broke === undefined) return { scorer, kind: 'pending' };
+
+    return { scorer, kind: 'unlabelled', code: 'score_step_failed', message: broke === '' ? 'the run wrote no label for it' : broke };
+  });
+}
+
+/** What the answer of teamai score carries of one label it wrote. */
+type ScoreAnswer = Pick<ScoreLabel, 'scorer' | 'subject' | 'label' | 'score' | 'passed'> & {
+  labelId: string;
+  judge: { kind: 'human' } | { kind: 'model'; tool: string };
+  decidedBy?: string;
+  reasoning?: string;
+};
+
+/** What the person reads of one label, and what the answer carries of it. */
+function answerOf(config: LocalConfig, label: ScoreLabel): ScoreAnswer {
+  const verdict = `${label.label} (score ${label.score}, ${label.passed ? 'passed' : 'did not pass'})`;
+  const answer: ScoreAnswer = { scorer: label.scorer, subject: label.subject, label: label.label, score: label.score, passed: label.passed, labelId: labelId(label), judge: { kind: 'human' } };
+
+  if (label.judge.kind === 'human') {
+    log.info(`${label.scorer}: ${verdict}, by hand. No judge ran.`);
+
+    return answer;
+  }
+
+  const reasoning = reasoningPath(config, labelVersion(label));
+  log.info(`${label.scorer}: ${verdict}. Reasoning: ${reasoning}`);
+
+  if (!label.passed) log.info(shareFailedLabelHint(reasoning, label.source === 'session' ? label.subject.sessionId : undefined));
+  answer.judge = { kind: 'model', tool: label.judge.tool };
+  answer.reasoning = reasoning;
+
+  if (label.source === 'workflow' && label.decidedBy) answer.decidedBy = label.decidedBy;
+
+  return answer;
+}
+
+/**
+ * The answer of a teamai-score run the local driver drove: the labels it wrote, or, when a scorer got none, the code
+ * that says why, with the labels the others got. Undefined when the run did not end succeeded and no judge step holds
+ * it, so the driver's own answer is printed.
+ */
+async function scoredAnswer(config: LocalConfig, runId: string, driven: WorkflowEnvelope, start: ScoreStart): Promise<WorkflowEnvelope | undefined> {
+  const held = 'error' in driven && driven.error.code === 'confined_pending' ? driven.error.message : undefined;
+
+  if (held === undefined && ('error' in driven || DoneSchema.safeParse(driven.data.done).data?.outcome !== 'succeeded')) return undefined;
+  const run = await readRun(config, runId);
+
+  if (run === 'missing' || run === 'corrupt') return undefined;
+  const outcomes = outcomesOf(run, start.scorers, await LabelStore.local(config));
+  const labels = outcomes.flatMap((outcome) => (outcome.kind === 'labelled' && outcome.label ? [answerOf(config, outcome.label)] : outcome.kind === 'labelled' ? [{ scorer: outcome.scorer, label: outcome.value }] : []));
+  const kept = outcomes.flatMap((outcome) => (outcome.kind === 'labelled' ? [`${outcome.scorer}: ${outcome.value}`] : []));
+  const keeping = kept.length > 0 ? ` Kept the label of ${kept.join(', ')}.` : '';
+  const pending = outcomes.filter((outcome) => outcome.kind === 'pending').map((outcome) => outcome.scorer);
+
+  if (held !== undefined || pending.length > 0) {
+    return { error: { code: 'judge_pending', message: `Run ${runId} left the judge of ${pending.join(', ') || 'a scorer'} open for a driver that can run it: ${held ?? 'its judge step is still open'} The run waits for one until its timeout, and teamai score --drain lists it.${keeping}`, labels } };
+  }
+
+  const unlabelled = outcomes.flatMap((outcome) => (outcome.kind === 'unlabelled' ? [outcome] : []));
+  const [first] = unlabelled;
+
+  if (first) {
+    for (const one of unlabelled) log.warn(`${one.scorer}: no label, ${one.message}`);
+
+    return { error: { code: first.code, message: `Run ${runId}: ${unlabelled.map((one) => `${one.scorer} got no label (${one.code}): ${one.message}.`).join(' ')}${keeping}`, labels } };
+  }
+
+  const [only, ...more] = labels;
+
+  return { data: only && more.length === 0 ? { run: runId, label: only } : { run: runId, labels } };
 }

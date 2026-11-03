@@ -188,12 +188,15 @@ async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
   return { ...loaded, env, secrets: env.secrets };
 }
 
-/** `readyConfig`, or the user scope's when a start of `name` runs there, as {@link resolveStart} decides. */
-async function readyStartConfig(name: string): Promise<Ready | WorkflowEnvelope> {
+/**
+ * `readyConfig`, or the user scope's when a start of `name` runs there, as {@link resolveStart} decides. With `scope`,
+ * that scope's, as a shortcut that found its subject in another scope starts there.
+ */
+async function readyStartConfig(name: string, scope?: LocalConfig): Promise<Ready | WorkflowEnvelope> {
   const loaded = await readyConfig();
 
   if (!('config' in loaded)) return loaded;
-  const { config } = await resolveStart(loaded.config, name);
+  const { config } = scope ? { config: scope } : await resolveStart(loaded.config, name);
 
   if (config === loaded.config) return loaded;
   const teamConfig = await loadTeamConfig(config.repo.localPath);
@@ -301,7 +304,7 @@ const NonSkillRunOptionsSchema = z.object({
   judge: z.boolean().optional().refine((judged) => judged !== false, '--no-judge needs --driver skill'),
 });
 
-type StartOptions = {
+export type StartOptions = {
   driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean;
   sandbox?: boolean; timeout?: string;
 };
@@ -311,8 +314,17 @@ export async function workflowStart(name: string, options: StartOptions): Promis
   await startWorkflow(name, options);
 }
 
+/**
+ * How a command that is a workflow's shortcut starts it: in `scope` rather than this directory's, and with `answer` in
+ * place of the local driver's own answer when it gives one, which is printed instead.
+ */
+export interface ShortcutStart {
+  scope?: LocalConfig;
+  answer?: (config: LocalConfig, runId: string, driven: WorkflowEnvelope) => Promise<WorkflowEnvelope | undefined>;
+}
+
 /** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
-async function startWorkflow(name: string, options: StartOptions): Promise<WorkflowEnvelope | undefined> {
+export async function startWorkflow(name: string, options: StartOptions, shortcut: ShortcutStart = {}): Promise<WorkflowEnvelope | undefined> {
   if (refusedNested(await nestedStart(process.env, process.cwd()), options.driver === 'skill')) return undefined;
 
   if (options.driver === 'skill') {
@@ -340,7 +352,7 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
   }
 
   const { timeout } = nonSkill.data;
-  const loaded = await readyStartConfig(name);
+  const loaded = await readyStartConfig(name, shortcut.scope);
 
   if (!('config' in loaded)) {
     refuse(loaded);
@@ -419,7 +431,10 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
 
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}`);
   const driven = await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
-  await writeDriven(config, driven, secrets);
+  const answered = await shortcut.answer?.(config, runId, driven);
+
+  if (answered) writeEnvelope(answered, secrets);
+  else await writeDriven(config, driven, secrets);
 
   return driven;
 }

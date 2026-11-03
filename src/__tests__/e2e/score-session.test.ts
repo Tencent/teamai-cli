@@ -96,7 +96,9 @@ fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-evidence.json'))}, fs.
 const label = transcript.includes('Added the retries.') ? 'shallow' : 'thorough';
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoning: 'It never ran the tests.' } }));
+const at = process.argv.indexOf('--json-schema');
+const answer = { label, reasoning: 'It never ran the tests.' };
+console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.parse(process.argv[at + 1]).properties.answer ? { answer } : answer }));
 });\n`, { mode: 0o755 });
     env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
     for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEBUDDY_SESSION_ID', 'COPILOT_AGENT_SESSION_ID', 'CURSOR_CONVERSATION_ID', 'CLAUDE_SESSION_ID', 'OPENCODE_SESSION_ID', 'TEAMAI_AGENT_SESSION_ID', 'PI_SESSION_ID', 'MUSE_SESSION_ID']) delete env[name];
@@ -127,7 +129,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoni
     });
   });
 
-  it('judges a session by id and from inside it, keeps the label here, and never guesses the session', async () => {
+  it('judges a session by id, keeps the label here, never guesses the session, and refuses a judging from inside it', async () => {
     const reportsBefore = git(team, 'for-each-ref', '--format=%(refname) %(objectname)');
 
     const guessed = await runCLI(['score', '--scorer', 'review-quality'], app, env);
@@ -146,9 +148,11 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoni
     expect(fs.readdirSync(path.join(dataHome, 'scores', 'reasoning'))).toHaveLength(1);
     expect(git(team, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(reportsBefore);
 
+    // A session is judged from the person's terminal: from inside it, teamai-score refuses the agent, and nothing is written.
     const inside = await runCLI(['score', '--scorer', 'review-quality'], app, { ...env, CLAUDE_CODE_SESSION_ID: SESSION });
-    expect(inside.code, inside.stdout + inside.stderr).toBe(0);
-    expect(envelope(inside.stdout).data).toMatchObject({ label: { subject: { platform: 'claude-code', sessionId: SESSION } } });
+    expect(inside.code, inside.stdout + inside.stderr).toBe(1);
+    expect(envelope(inside.stdout).error).toMatchObject({ code: 'invoke_denied' });
+    expect(fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n')).toHaveLength(1);
   });
 
   it('tries a scorer file next to the labels stored for its scorer and a control on the first prompt alone, stores nothing, and refuses it with --push and --run', async () => {

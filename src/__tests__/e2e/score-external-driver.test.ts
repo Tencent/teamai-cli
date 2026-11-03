@@ -1,10 +1,10 @@
 /**
  * Real CLI against a local bare team repo: an external JSON driver runs a scored workflow to its end with workflow next
  * and report, then takes the judge work with score --next and settles it with score --lease --submit for a fake judge.
- * The member then asks for the pass again with score --run --queue. The review's report names the team skills it used,
+ * The member then asks for the pass again with score --run --driver none, and the driver runs that teamai-score run. The review's report names the team skills it used,
  * and the label carries those that are shaped like a skill name.
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -138,6 +138,42 @@ async function drivenToDone(input: { app: string; home: string; env: NodeJS.Proc
   return runId;
 }
 
+/**
+ * Drives teamai-score run `runId` to its end as `driver`, from `app`: each command lease runs with `env` and the lease's
+ * own `env` only, a `teamai` on PATH, and the judge lease is answered with `answer` as a confined run of Claude would.
+ * The run's done.
+ */
+async function drivenScore(input: { app: string; env: NodeJS.ProcessEnv; driver: { kind: string; machine: string; workspace: string }; runId: string; answer: { label: string; reasoning: string } }): Promise<unknown> {
+  const { app, env, runId, answer } = input;
+  const driver = { ...input.driver, can: { confined: [{ level: 'verified', access: 'read', tools: ['claude'] }] } };
+  const bin = fs.mkdtempSync(path.join(path.dirname(app), 'bin-'));
+  fs.writeFileSync(path.join(bin, 'teamai'), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
+  const shell = { ...env, PATH: [bin, env.PATH ?? ''].join(path.delimiter) };
+  const LeaseSchema = z.object({ attempt: z.string(), revision: z.number(), step: z.string(), command: z.string().optional(), env: z.record(z.string(), z.string()).optional(), confined: z.object({ dir: z.string() }).optional() });
+  let done: unknown;
+  for (let turn = 0; turn < 20 && done === undefined; turn += 1) {
+    const next = envelope((await runCLI(['workflow', 'next', runId, '--json', JSON.stringify({ driver })], app, env)).stdout);
+    expect(next.data, JSON.stringify(next)).toBeDefined();
+    done = next.data?.done;
+    const lease = LeaseSchema.optional().parse(next.data?.lease);
+    if (!lease) continue;
+    const report = { attempt: lease.attempt, revision: lease.revision, driver };
+    if (lease.command !== undefined) {
+      const ran = spawnSync('sh', ['-c', lease.command], { cwd: app, env: { ...shell, ...lease.env }, encoding: 'utf8' });
+      expect(ran.status, `${lease.step}: ${ran.stdout}\n${ran.stderr}`).toBe(0);
+      const outputs: unknown = JSON.parse(ran.stdout.trim().split('\n').at(-1) ?? '{}');
+      const reported = envelope((await runCLI(['workflow', 'report', runId, '--json', JSON.stringify({ ...report, outcome: 'success', outputs })], app, env)).stdout);
+      expect(reported.data, `${lease.step}: ${ran.stderr}\n${JSON.stringify(reported)}`).toMatchObject({ accepted: true });
+      continue;
+    }
+    expect(lease.confined, JSON.stringify(lease)).toBeDefined();
+    const confined = { tool: 'claude', isolation: 'verified', access: 'read' };
+    const reported = envelope((await runCLI(['workflow', 'report', runId, '--json', JSON.stringify({ ...report, outcome: 'success', outputs: { answer }, confined })], app, env)).stdout);
+    expect(reported.data, JSON.stringify(reported)).toMatchObject({ accepted: true });
+  }
+  return done;
+}
+
 describe('teamai score with an external driver', () => {
   let root: string;
 
@@ -195,17 +231,15 @@ describe('teamai score with an external driver', () => {
     expect(filesContaining(path.join(dataHome, 'workflows'), PHRASE)).toEqual([]);
     expect(filesContaining(path.join(dataHome, 'scores'), PHRASE)).toEqual([expect.stringMatching(/scores\/reasoning\/[0-9a-f]{64}\.md$/)]);
 
-    // On demand: the member queues the labelled pass again, and a driver whose judge only answers takes it.
-    const queued = await runCLI(['score', '--run', runId, '--step', 'review', '--scorer', 'review-quality', '--queue'], app, env);
+    // On demand: the member starts teamai-score for the labelled pass and leaves it to this driver, which runs its
+    // command steps with only the env each lease carries, and its judge step confined to the evidence directory.
+    const queued = await runCLI(['score', '--run', runId, '--step', 'review', '--scorer', 'review-quality', '--driver', 'none'], app, env);
     expect(queued.code, queued.stdout + queued.stderr).toBe(0);
-    expect(envelope(queued.stdout).data).toEqual({ queued: [{ scorer: 'review-quality', subject: { runId, step: 'review', pass: 1 } }] });
-    const answering = { driver: { ...driver, can: { judge: { isolation: 'verified', access: 'answer', tools: ['claude'] } } }, running: [] };
-    const again = JudgeLeaseSchema.parse(envelope((await runCLI(['score', '--next', '--json', JSON.stringify(answering)], app, env)).stdout).data?.lease);
-    expect(again).toMatchObject({ subject: { runId, step: 'review', pass: 1 }, judge: { access: 'answer' } });
-    const rescored = await runCLI(['score', '--lease', again.ref, '--submit', '--stdin'], app, env, answer('shallow'));
-    expect(envelope(rescored.stdout).data, rescored.stdout + rescored.stderr).toMatchObject({ label: { label: 'shallow' } });
+    const scoreRun = z.string().parse(envelope(queued.stdout).data?.run);
+    const rescored = await drivenScore({ app, env, driver, runId: scoreRun, answer: { label: 'shallow', reasoning: `${PHRASE}: it missed the off-by-one.` } });
+    expect(rescored).toMatchObject({ outcome: 'succeeded', outputs: { labels: [{ outputs: { labels: [{ scorer: 'review-quality', label: 'shallow', code: '' }] } }] } });
     const latest = fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').at(-1) ?? '{}';
-    expect(JSON.parse(latest)).toMatchObject({ label: 'shallow', judge: { kind: 'model', tool: 'claude', access: 'answer' } });
+    expect(JSON.parse(latest)).toMatchObject({ label: 'shallow', subject: { runId, step: 'review', pass: 1 }, judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' } });
     const unknown = await runCLI(['score', '--run', runId, '--step', 'nope', '--scorer', 'review-quality'], app, env);
     expect(unknown.code).toBe(1);
     expect(envelope(unknown.stdout).error).toMatchObject({ code: 'step_not_found', message: expect.stringContaining('plan, review') });

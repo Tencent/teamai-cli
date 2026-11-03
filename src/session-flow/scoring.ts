@@ -149,7 +149,7 @@ export interface NamedSession {
 }
 
 /** The session of a tool on this machine that `--session`, or the agent session variable, names. */
-async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<NamedSession | Failure> {
+export async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<NamedSession | Failure> {
   const named = await sessionOf(from, demand);
 
   if ('error' in named) return named;

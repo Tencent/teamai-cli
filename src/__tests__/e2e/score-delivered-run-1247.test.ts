@@ -118,7 +118,7 @@ async function shipAndScore(checkRuns: unknown[], issue = 42, ship = SHIP): Prom
   expect(done.outcome, said(started)).toBe('succeeded');
   expect(fixture.judgeLaunches()).toEqual([]);
 
-  const scored = await fixture.teamai(['score', '--run', done.run, '--scorer', 'delivered']);
+  const scored = await fixture.teamai(['score', '--run', done.run, '--scorer', 'delivered', '--push']);
   expect(scored.code, said(scored)).toBe(0);
   return { fixture, run: done.run };
 }
