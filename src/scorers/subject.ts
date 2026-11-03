@@ -30,9 +30,7 @@ function runOf(runId: string, rest: string): Subject | undefined {
 }
 
 function parsed(text: string): Subject | undefined {
-  const [, kind, first, rest] = PARTS.exec(text) ?? [];
-
-  if (first === undefined || rest === undefined) return undefined;
+  const [, kind, first = '', rest = ''] = PARTS.exec(text) ?? [];
 
   switch (kind) {
     case 'session':

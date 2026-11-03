@@ -99,12 +99,12 @@ function isLive(attempt: Attempt, now: string): boolean {
   return attempt.status === 'leased' && attempt.expiresAt > now;
 }
 
-/** Why main gave up on an entry that has no label and no live lease: a failed attempt, a tried session, or a fourth lapse. */
+/** Why main gave up on an entry that has no label and no live lease: a failed attempt, a session it tried, or a fourth lapse. */
 function givenUp(key: MarkKey, attempts: readonly Attempt[], lapses: number): JudgeFailureCode | undefined {
   const failed = attempts.find((attempt) => attempt.status === 'failed')?.code;
 
   if (failed) return failed;
-  const isGivenUp = key.subject.kind === 'run' ? lapses >= LEASES_LAPSING : attempts.length > 0;
+  const isGivenUp = key.subject.kind !== 'run' || lapses >= LEASES_LAPSING;
 
   return isGivenUp ? 'lease_expired' : undefined;
 }

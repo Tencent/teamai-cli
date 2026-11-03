@@ -100,6 +100,9 @@ interface Restart {
   requestedAt?: string;
 }
 
+/** Where a mark that never lapsed, or whose lapses a label or a failure ended, starts again from. */
+const FRESH: Restart = { lapses: 0 };
+
 /** A mark as its newest line leaves it. */
 interface Derived {
   state: MarkState;
@@ -138,9 +141,11 @@ function lineOf(key: MarkKey, at: string, state: LineState): Line {
 function parsedLine(text: string): { key: MarkKey; line: Line } | undefined {
   try {
     const parsed = LineSchema.safeParse(JSON.parse(text));
-    const key = parsed.success ? keyOf(parsed.data) : undefined;
 
-    return parsed.success && key ? { key, line: parsed.data } : undefined;
+    if (!parsed.success) return undefined;
+    const key = keyOf(parsed.data);
+
+    return key ? { key, line: parsed.data } : undefined;
   } catch {
     return undefined;
   }
@@ -202,7 +207,7 @@ async function readLedger(config: LocalConfig, now: string) {
   /** Session launches of `now`'s local day, by run and group: a group is one launch. */
   const slotsOn = (today: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && localDay(line.at) === localDay(today) ? [`${line.run}\n${line.group}`] : [])));
 
-  return { newest, slotsOn, torn: text.length > 0 && !text.endsWith('\n') };
+  return { newest, slotsOn, torn: text !== '' && !text.endsWith('\n') };
 }
 
 type Ledger = Awaited<ReturnType<typeof readLedger>>;
@@ -234,11 +239,11 @@ async function openOrLapsed(line: Extract<Line, { state: 'open' }>, readRun: Rea
 async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<Derived> {
   switch (line?.state) {
     case undefined:
-      return { state: { kind: 'unmarked' }, restart: { lapses: 0 } };
+      return { state: { kind: 'unmarked' }, restart: FRESH };
     case 'labelled':
-      return { state: { kind: 'labelled' }, restart: { lapses: 0 } };
+      return { state: { kind: 'labelled' }, restart: FRESH };
     case 'failed':
-      return { state: { kind: 'failed', code: line.code }, restart: { lapses: 0 } };
+      return { state: { kind: 'failed', code: line.code }, restart: FRESH };
     case 'waiting':
       return { state: { kind: 'waiting' }, restart: restartOf(line) };
     case 'carried':
@@ -290,7 +295,7 @@ function closeLine(key: MarkKey, current: Line | undefined, outcome: MarkOutcome
     case 'failed':
       return lineOf(key, now, { state: 'failed', code: outcome.code });
     case 'waiting':
-      return lineOf(key, now, { state: 'waiting', ...current && 'lapses' in current ? restartOf(current) : { lapses: 0 } });
+      return lineOf(key, now, { state: 'waiting', ...current && 'lapses' in current ? restartOf(current) : FRESH });
     default: {
       const unhandled: never = outcome;
 
