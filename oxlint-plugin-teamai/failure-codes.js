@@ -45,8 +45,8 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'branch_diverged', 'sessions_not_archived',
       // Refusals of a driver's or member's request about a run that is already past it.
       'stale_revision', 'wrong_driver', 'run_settled', 'step_not_found', 'not_hitl', 'not_waiting', 'invalid_choice', 'not_cancellable', 'not_retryable',
-      // Refusals of a judge submit, answered to the driver; the lease and the run stay as they were.
-      'lease_unknown', 'lease_settled', 'lease_judging', 'entry_closed', 'label_invalid', 'isolation_unmet', 'scoring_settings_invalid',
+      // Refusals of a hand label, or of scoring whose settings cannot be read.
+      'label_invalid', 'scoring_settings_invalid',
       // Work the driver's judge tools cannot run the scorer's model for; it stays open for another driver.
       'judge_model_unavailable',
       // Refusals of a teamai score or teamai workflow command line before it reads any run or judge work.
@@ -70,7 +70,7 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       // An error thrown inside a --driver skill call, answered to the agent as one envelope with its message.
       'skill_call_failed',
       // Why the skill driver stopped judging a run, told to the agent in a judging-off event.
-      'judge_runner_gone', 'no_child_agent', 'scoring_run_ended',
+      'no_child_agent', 'scoring_run_ended',
       // Refusals of teamai benchmark run and plan, before any run exists.
       'team_revision_unpullable', 'benchmark_not_found', 'commit_unreachable', 'check_files_unwritable',
       'arm_model_missing', 'arm_unpublishable', 'arm_team_unresolved', 'arm_team_unreadable', 'arm_team_unclean', 'arm_workflow_unrunnable',
@@ -83,7 +83,7 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       // Refusals of teamai workflow publish and a claim while a step of a private workflow is open on this machine.
       'private_open',
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
-      'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased', 'step_ambiguous', 'evidence_missing',
+      'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'step_ambiguous', 'evidence_missing',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
       'session_required', 'source_required', 'session_not_found', 'session_ambiguous', 'scorer_invalid',
       // Refusals of a teamai-score subject that is none of run:, session: or team-session:.

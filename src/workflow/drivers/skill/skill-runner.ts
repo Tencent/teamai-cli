@@ -2,8 +2,7 @@
  * The runner of one attempt: a detached `teamai workflow report <run> --driver skill --attempt <a>` that prepares the
  * attempt's place and runs its setup outside the run lock, then runs its command and reports it, or offers its prompt
  * to the agent. It holds `runner.lock` for its whole life, which is how a tick tells it is alive. While its command
- * runs it checks the run as its driver, and it alone stops that command when the engine stopped the attempt. The open
- * judge's runner is the same call, keyed by the attempt in its lease ref: it runs the judge and renews its lease.
+ * runs it checks the run as its driver, and it alone stops that command when the engine stopped the attempt.
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';

@@ -156,7 +156,7 @@ export const PassScoring = {
     return starts;
   },
 
-  /** Whether the scoring module started the scoring of `subject`, so no judge lease takes it. */
+  /** Whether the scoring module started the scoring of `subject`. */
   async started(config: LocalConfig, subject: RunSubject): Promise<boolean> {
     return (await readFileSafe(startKey(config, subject))) !== null;
   },

@@ -2,12 +2,13 @@
  * Judging a finished agent session with team scorers (#1178), on the judge, evidence and label store `src/scorers/`
  * keeps for every subject. The session is read redacted and goes only to the local judge; only its labels are published.
  */
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { observedModel, type AgentObservation } from '../agent-observation.js';
 import { knownSecrets } from '../env-resolution.js';
 import { loadModelAliases } from '../models/aliases.js';
-import { newAttemptId, scoresDir } from '../scorers/attempts.js';
+import { scoresDir } from '../scorers/home.js';
 import { batchesScorers, verdictsOf, type Verdict } from '../scorers/batch.js';
 import { cachedScorerNames, NOT_A_SCORER, pinScorers, scorerSourceHash } from '../scorers/cache.js';
 import { formatScorerDiagnostic, isScorerFile, parseScorer, type ScorerDefinition, type ScorerLabel } from '../scorers/definition.js';
@@ -259,7 +260,7 @@ async function judgeOnce(config: LocalConfig, judged: JudgedSession, members: re
 > {
   const [head, ...tail] = members;
   const rubrics: Rubrics = [head.definition, ...tail.map((member) => member.definition)];
-  const attempt = newAttemptId();
+  const attempt = `a${randomBytes(4).toString('hex')}`;
   const evidence = evidenceDirOf(scoresDir(config), attempt);
 
   try {

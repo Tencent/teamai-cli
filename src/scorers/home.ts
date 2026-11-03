@@ -11,7 +11,7 @@ const LOCK_ATTEMPTS = 40;
 const LOCK_WAIT_MS = 25;
 
 /** Runs `change` under `<scores>/<name>.lock`, or answers busy when another process holds it for about a second. */
-export async function scoresLocked<T>(config: LocalConfig, name: 'attempts' | 'labels' | 'marks', change: () => Promise<T>): Promise<{ status: 'done'; value: T } | { status: 'busy' }> {
+export async function scoresLocked<T>(config: LocalConfig, name: 'labels' | 'marks', change: () => Promise<T>): Promise<{ status: 'done'; value: T } | { status: 'busy' }> {
   const lock = path.join(scoresDir(config), `${name}.lock`);
   await fs.mkdir(scoresDir(config), { recursive: true });
   let held = false;

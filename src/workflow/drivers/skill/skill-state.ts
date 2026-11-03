@@ -122,11 +122,11 @@ const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('takeover'), from: z.string().optional() }),
   /** The engine cancelled the attempt's lease, or its deadline passed, so its report was not recorded. */
   z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema, why: z.enum(STOP_REASONS) }),
-  /** The judging of the pass of `step` that `scorers` judge started: judge lease `ref`, or run `run`, which scores the pass. */
-  z.object({ kind: z.literal('judging'), step: z.string(), scorers: z.array(z.string()), ref: z.string().optional(), run: RunIdSchema.optional() }),
+  /** The judging of the pass of `step` that `scorers` judge started: run `run`, which scores the pass. */
+  z.object({ kind: z.literal('judging'), step: z.string(), scorers: z.array(z.string()), run: RunIdSchema }),
   /** `scorer` labelled the pass of `step` with `label`, or gave it none for `code`, with `label` empty. */
   z.object({ kind: z.literal('judged'), step: z.string(), scorer: z.string(), label: z.string(), code: z.string().optional() }),
-  /** This driver judges no more of the run, for `failure`; the open judge lease lapses back to the queue. */
+  /** This driver judges no more of the run, for `failure`; its open judge steps stay for another driver. */
   z.object({ kind: z.literal('judging-off'), failure: FailureSchema }),
   /** The agent's answer to an optional gate, as the engine recorded it. */
   z.object({ kind: z.literal('answered'), step: z.string(), choice: z.string(), channel: z.string(), agent: z.boolean() }),
