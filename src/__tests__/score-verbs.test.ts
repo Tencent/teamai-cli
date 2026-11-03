@@ -343,6 +343,14 @@ describe('score plan', () => {
     expect(await ScoreVerbs.plan({ subject }, ctx)).toEqual({ ok: true, output: { groups: [{ subject, hand: '', scorers: 'quality', model: '', ci: false, protected: false }] } });
   });
 
+  it('gives a group the model its scorer asks for', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer({ extra: 'model: gpt-5.4\n' }), coverage: scorer() });
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality', model: 'gpt-5.4' }] } });
+  });
+
   it('takes a hand label only from a run a person started, as one group with no stage', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const subject = 'session:claude-code:one';
@@ -569,6 +577,17 @@ describe('score stage', () => {
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-protected.json'), 'utf8'))).toEqual({ kind: 'decided', by: 'protected', reasoning: expect.stringContaining('AGENTS.md') });
   });
 
+  it('decides nothing for a hand label of a delivered pass, whatever stage its workflow runs', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const subject = `run:${await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' })}:change:1`;
+    const { evidence, scorers } = await plannedGroup(config, subject, { scorers: ['clarity'], label: 'bad', demand: 'named' }, 'person');
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+
+    expect(written).toMatchObject({ ok: true, output: { rubric: '', delivers: false } });
+    expect(await ScoreVerbs.stage({ stage: 'protected', evidence: dir }, evidence.ctx)).toEqual({ ok: true, output: { decided: false } });
+  });
+
   it('refuses a directory that is not an evidence directory of the attempt\'s run', async () => {
     const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
     const { next } = await deliveredGroup(config, await deliveredRun(config));
@@ -714,6 +733,7 @@ describe('score label and score write', () => {
     expect((await walk(config, subject, { inputs })).answers.get('plan')).toMatchObject({ ok: false, code: 'hand_label_refused' });
     const { answers } = await walk(config, subject, { inputs, startedBy: 'person' });
 
+    expect(answers.get('score[0].evidence')).toMatchObject({ ok: true, output: { rubric: '', delivers: false } });
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
     expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good', source: 'session', subject: { platform: 'claude-code', sessionId: 'one' }, judge: { kind: 'human' }, used: { skills: [] } }]);
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'marks.jsonl'))).toBe(false);
@@ -977,6 +997,22 @@ describe('labels a stage decided', () => {
     expect(answers.has('score[0].judge')).toBe(false);
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: 'bad', code: '' }] } });
     expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'clarity', label: 'bad', passed: false, decidedBy: 'protected', judge: { kind: 'model', tool: 'claude', isolation: 'best-effort' } }]);
+  });
+
+  it('give judge_tool_unavailable when a stage decided and no judge tool here runs the scorer', async () => {
+    const config = await team({ ship: clarityOnly }, { clarity: scorer() });
+    const runId = await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' });
+    mocks.ci.mockResolvedValue({ kind: 'unsupported' });
+    const { run, dir, next } = await deliveredGroup(config, runId);
+    await run.report(next, await ScoreVerbs.stage({ stage: 'check', evidence: dir }, next.ctx));
+    const ci = await run.next('score[0].ci');
+    await run.report(ci, await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, ci.ctx));
+    const decided = await run.next('score[0].protected');
+    await run.report(decided, await ScoreVerbs.stage({ stage: 'protected', evidence: dir }, decided.ctx));
+    const label = await run.next('score[0].label');
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+
+    expect(await ScoreVerbs.label({ evidence: dir, answer: '', judge: '' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: '', code: 'judge_tool_unavailable' }] } });
   });
 
   it('give ci_pending while CI has not finished, and leave the mark waiting for it', async () => {
