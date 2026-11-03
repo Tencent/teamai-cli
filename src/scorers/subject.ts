@@ -16,33 +16,31 @@ export type Subject =
   | { kind: 'session'; subject: SessionSubject }
   | { kind: 'team-session'; subject: TeamSessionSubject };
 
-const PASS = /^[1-9][0-9]*$/;
+/** A kind, then a part up to the first `:`, then the rest; neither part empty. */
+const PARTS = /^(run|session|team-session):([^:]+):(.+)$/su;
 
-/** `text` cut at its first `:`, when both sides hold something. */
-function head(text: string): [string, string] | undefined {
-  const at = text.indexOf(':');
+/** A run's step path up to its last `:`, then a pass from 1. */
+const STEP_PASS = /^(.+):([1-9][0-9]*)$/su;
 
-  return at > 0 && at < text.length - 1 ? [text.slice(0, at), text.slice(at + 1)] : undefined;
+function runOf(runId: string, rest: string): Subject | undefined {
+  const [, step, digits] = STEP_PASS.exec(rest) ?? [];
+  const pass = Number(digits);
+
+  return step !== undefined && Number.isSafeInteger(pass) ? { kind: 'run', subject: { runId, step, pass } } : undefined;
 }
 
 function parsed(text: string): Subject | undefined {
-  const [kind, rest] = head(text) ?? [];
-  const [first, last] = rest === undefined ? [] : head(rest) ?? [];
+  const [, kind, first, rest] = PARTS.exec(text) ?? [];
 
-  if (first === undefined || last === undefined) return undefined;
+  if (first === undefined || rest === undefined) return undefined;
 
   switch (kind) {
     case 'session':
-      return { kind, subject: { platform: first, sessionId: last } };
+      return { kind, subject: { platform: first, sessionId: rest } };
     case 'team-session':
-      return { kind, subject: { author: first, name: last } };
-    case 'run': {
-      const at = last.lastIndexOf(':');
-      const pass = Number(last.slice(at + 1));
-
-      return at > 0 && PASS.test(last.slice(at + 1)) && Number.isSafeInteger(pass) ? { kind, subject: { runId: first, step: last.slice(0, at), pass } } : undefined;
-    }
-
+      return { kind, subject: { author: first, name: rest } };
+    case 'run':
+      return runOf(first, rest);
     default:
       return undefined;
   }
