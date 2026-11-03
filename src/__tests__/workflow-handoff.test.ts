@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { listHandoffs } from '../dashboard/workflow-runs.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import { AgentSession } from '../session-flow/agent-session.js';
@@ -13,7 +14,6 @@ import { log } from '../utils/logger.js';
 import * as reportsBranch from '../utils/reports-branch.js';
 import { updateReports } from '../utils/reports-branch.js';
 import * as workflowCache from '../workflow/cache.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, resumableSessions, startRun } from '../workflow/engine.js';
 import { claimOffered, claimRun, publishRun, resumeRun, settledSteps } from '../workflow/handoff.js';
 import { pendingRecords, publishPendingRecords, queueRunRecord } from '../workflow/records.js';
@@ -189,7 +189,7 @@ function team(workflows: Record<string, string> = { build: BUILD }, files: Recor
         additionalRoles: [],
         dataHome: path.join(home, 'data'),
       };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout, driver: { kind: 'local', machine: name, workspace: checkout } };
     },
     change: (changes) => {
@@ -210,7 +210,7 @@ function team(workflows: Record<string, string> = { build: BUILD }, files: Recor
 /** Brings the member's team clone up to origin and syncs its workflow cache, as a pull does. */
 async function pull({ config }: Member): Promise<void> {
   git(config.repo.localPath, 'pull', '-q', '--ff-only');
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
 }
 
 /** Every file of the member's workflow cache, with its content. */
@@ -1797,7 +1797,7 @@ steps:
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
     fs.writeFileSync(path.join(alice.config.repo.localPath, 'workflows', 'build.yaml'), BUILD.replace('echo two', 'echo edited'));
-    await syncWorkflowDefinitions(alice.config);
+    await syncScorersThenWorkflows(alice.config);
     const runId = await start(alice);
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
 
@@ -1881,7 +1881,7 @@ steps:
         additionalRoles: [],
         dataHome: path.join(root, name, 'data'),
       };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout, driver: { kind: 'local', machine: name, workspace: checkout } };
     };
     const alice = await member('alice');
@@ -1893,7 +1893,7 @@ steps:
     git(seed, 'commit', '-qam', 'change build');
     git(seed, 'push', '-q', origin, 'main');
     git(bob.checkout, 'pull', '-q', '--ff-only');
-    await syncWorkflowDefinitions(bob.config);
+    await syncScorersThenWorkflows(bob.config);
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
     expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { lease: { step: 'two', command: 'echo two' } } });
@@ -2366,7 +2366,7 @@ steps:
         additionalRoles: [],
         dataHome: path.join(root, name, 'data'),
       };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout, driver: { kind: 'local', machine: name, workspace: checkout } };
     };
     const alice = await member('alice');

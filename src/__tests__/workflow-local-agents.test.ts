@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { getDataHome, TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 import type { LocalToolRun } from '../workflow/drivers/local/local-tool-adapter.js';
 
@@ -35,7 +36,6 @@ vi.mock('../workflow/drivers/local/local-tool-adapter.js', async (importOriginal
 import { knownSecrets } from '../env-resolution.js';
 import { resolveProjectDataHome } from '../config.js';
 import { setStderrOnly } from '../utils/logger.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import { workflowResume, workflowStart } from '../workflow-commands.js';
@@ -103,7 +103,7 @@ ${project ? '    workspace: new\n' : ''}`);
     repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data'),
     workflows: { tools: { default: 'opencode' } },
   };
-  await syncWorkflowDefinitions(state.config);
+  await syncScorersThenWorkflows(state.config);
   vi.spyOn(process, 'cwd').mockReturnValue(checkout);
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   return { checkout };

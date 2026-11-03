@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
-import { listCachedWorkflows, loadCachedWorkflow, loadWorkflowTree, syncWorkflowDefinitions } from '../workflow/cache.js';
+import { listCachedWorkflows, loadCachedWorkflow, loadWorkflowTree } from '../workflow/cache.js';
 import { startRun } from '../workflow/engine.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { buildStartRecord } from '../workflow/records.js';
@@ -54,7 +55,7 @@ describe('default workflows', () => {
   it('resolve teamai-share-session and teamai-share-learnings to the teamai defaults until the team adds a file of that name', async () => {
     const config = testConfig();
     writeWorkflow(config, 'build', workflow('build'));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     const shipped = await loadCachedWorkflow(config, 'teamai-share-session');
     expect(shipped).toMatchObject({ source: 'default', relativePath: 'workflows/teamai-share-session.yaml', definition: { name: 'teamai-share-session', invoke: 'ask' } });
@@ -63,7 +64,7 @@ describe('default workflows', () => {
     expect(await loadCachedWorkflow(config, 'session-close')).toBeNull();
 
     writeWorkflow(config, 'teamai-share-session', workflow('teamai-share-session'));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(await loadCachedWorkflow(config, 'teamai-share-session')).toMatchObject({ source: 'team', definition: { steps: [{ command: 'node compile.js' }] } });
     expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'team']]);
@@ -71,7 +72,7 @@ describe('default workflows', () => {
 
   it('resolve teamai-session-to-task to the teamai default, interactive and asked before it starts, until the team adds a file of that name', async () => {
     const config = testConfig();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(await loadCachedWorkflow(config, 'teamai-session-to-task')).toMatchObject({
       source: 'default',
@@ -86,14 +87,14 @@ describe('default workflows', () => {
     });
 
     writeWorkflow(config, 'teamai-session-to-task', workflow('teamai-session-to-task'));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(await loadCachedWorkflow(config, 'teamai-session-to-task')).toMatchObject({ source: 'team', definition: { steps: [{ command: 'node compile.js' }] } });
   });
 
   it('share several learnings with one approval, then share the session with teamai-share-session', async () => {
     const config = testConfig();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     const learnings = await loadCachedWorkflow(config, 'teamai-share-learnings');
     if (!learnings) throw new Error('teamai-share-learnings is not runnable');
@@ -107,7 +108,7 @@ describe('default workflows', () => {
 
   it('are never written to the workflow cache', async () => {
     const config = testConfig();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     await loadCachedWorkflow(config, 'teamai-share-session');
 
     const home = config.dataHome ?? '';
@@ -126,7 +127,7 @@ steps:
     command: echo wrapped
 `);
     const warn = vi.spyOn(log, 'warn');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.publish is not an input workflow "teamai-share-session" declares',
@@ -158,7 +159,7 @@ steps:
     command: echo wrapped
 `);
     const warn = vi.spyOn(log, 'warn');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.publish is not an input workflow "teamai-share-session" declares',
@@ -184,7 +185,7 @@ steps:
     command: echo wrapped
 `);
     const warn = vi.spyOn(log, 'warn');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" passes publish, which workflow "wrap-up" declares as another type than teamai\'s default teamai-share-session',
@@ -208,7 +209,7 @@ steps:
     command: echo wrapped
 `);
     const warn = vi.spyOn(log, 'warn');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(warn).not.toHaveBeenCalled();
     const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' }, { secrets: await knownSecrets(config) });
@@ -226,7 +227,7 @@ steps:
     command: echo wrapped
 `);
     const warn = vi.spyOn(log, 'warn');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" passes judge, which workflow "teamai-share-session" declares as another type than teamai\'s default teamai-share-session',
@@ -246,7 +247,7 @@ steps:
     with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", judge: "{{ inputs.judge }}", demand: named }
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual(['wrap-up']);
     const wrap = await loadCachedWorkflow(config, 'wrap-up');
@@ -267,7 +268,7 @@ steps:
     with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", judge: "{{ inputs.judge }}" }
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/wrap-up.yaml:8: field "steps[0].with": step "share" with does not pass input "demand", which workflow "teamai-share-session" declares as auto | named',
@@ -277,7 +278,7 @@ steps:
   it('record on the run and its start record that it ran teamai\'s default at this version, and a team run that it ran the team\'s', async () => {
     const config = testConfig();
     writeWorkflow(config, 'build', workflow('build'));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const secrets = await knownSecrets(config);
     const runOf = async (name: string, inputs: unknown) => {
       const started = await startRun(config, name, inputs, { secrets });
@@ -303,7 +304,7 @@ steps:
 
     const warn = vi.spyOn(log, 'warn');
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/teamai-share-session.yaml']);
     expect(warn).toHaveBeenCalledWith('[workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai\'s default teamai-share-session stays in effect');

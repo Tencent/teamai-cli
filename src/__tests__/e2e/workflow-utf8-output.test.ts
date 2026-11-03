@@ -5,9 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
 import YAML from 'yaml';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { resolveProjectDataHome } from '../../config.js';
 import type { LocalConfig } from '../../types.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import type { RunState } from '../../workflow/types.js';
 
 const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
@@ -58,7 +58,7 @@ steps:
     output:
       summary: string
 `);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
 
   const output = { summary: '检查完成 café 😀' };
   const fake = path.join(bin, 'claude');

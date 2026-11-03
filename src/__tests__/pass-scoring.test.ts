@@ -10,11 +10,11 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, homedir: () => mocks.home, default: { ...actual, homedir: () => mocks.home } };
 });
 
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { scoresDir } from '../scorers/home.js';
 import { PassScoring } from '../scorers/pass-scoring.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { cancelRun } from '../workflow/run-controls.js';
@@ -69,7 +69,7 @@ async function team(workflow: string): Promise<LocalConfig> {
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data'),
   };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   return config;
 }
 

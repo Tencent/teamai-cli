@@ -15,6 +15,7 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => {
   return { ...actual, readableReportsWorktree: async (config: Parameters<typeof getReportsDir>[0]) => getReportsDir(config) };
 });
 
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { knownSecrets } from '../env-resolution.js';
 import { NamedSubject } from '../scorers/named-subject.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -22,7 +23,6 @@ import type { Session } from '../session-flow/ir.js';
 import { defaultSyncMeta, getRepoIdentity, SyncManager } from '../session-flow/sync.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 
@@ -74,7 +74,7 @@ async function team(workflow: string): Promise<LocalConfig> {
   fs.writeFileSync(path.join(knowledge, 'workflows', 'review.yaml'), workflow);
   fs.writeFileSync(path.join(knowledge, 'scorers', 'quality.md'), QUALITY);
   const config: LocalConfig = { repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   return config;
 }
 
@@ -194,7 +194,7 @@ describe('NamedSubject.ofSession of a session on this machine', () => {
 
     expect(await NamedSubject.ofSession(config, { session: SESSION, source: 'claude-code', scorers: ['style'] })).toEqual({ ok: false, code: 'scorer_not_found', message: 'Scorer style is not cached here. Scorers: quality.' });
     fs.rmSync(path.join(config.repo.localPath, 'scorers', 'quality.md'));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect(await NamedSubject.ofSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] })).toEqual({
       ok: false, code: 'scorer_not_found', message: 'Scorer quality is not cached here. Run teamai pull to cache the team\'s scorers.',
     });
@@ -301,7 +301,7 @@ describe('NamedSubject.ofSession of a session a member pushed', () => {
   it('names the archived session by who pushed it, and says so, with no directory, which pushing scrubs', async () => {
     const self = await team(ONE_STEP);
     const config: LocalConfig = { ...self, repo: { ...self.repo, kind: 'git' } };
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const session: Session = {
       sessionId: SESSION, title: 'fix the retry loop', cwd: '/home/alice/app', platform: 'claude-code', createdAt: '2026-10-20T10:00:00.000Z', updatedAt: '2026-10-20T11:00:00.000Z',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'fix the retry loop in sync.ts' }] }, { role: 'assistant', content: [{ type: 'text', text: 'Added the retries.' }] }],

@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
@@ -130,7 +130,7 @@ async function startFan(items: number, body = FAN, item = (index: number): unkno
     repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project',
     additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data'), usageReportEnabled: false,
   };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'fan', { xs: Array.from({ length: items }, (_, index) => item(index)) }, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, run: String(started.data.run) };

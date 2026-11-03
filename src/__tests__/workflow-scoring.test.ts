@@ -3,9 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { LabelStore } from '../scorers/label-store.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { scoredPasses } from '../workflow/judge-work.js';
@@ -82,7 +82,7 @@ async function runOf(config: LocalConfig, runId: string): Promise<RunState> {
  * with `reported` added to its report payload and `asked` to its first next payload.
  */
 async function settledRun(config: LocalConfig, reported: Record<string, unknown> = {}, asked: Omit<NextOptions, 'env'> = {}): Promise<string> {
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
   const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver, asked)).lease);
   const parsed = parseReport({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { reviewed: true }, ...reported });
@@ -196,7 +196,7 @@ describe('scoredPasses', () => {
   it('scores the items of a for_each step, never the step that fans them out', async () => {
     const config = fixture(scorer(100));
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), WORKFLOW.replace('    scorers:', "    for_each: '[]'\n    scorers:"));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     expect(data(await leaseNext(config, runId, workDriver))).toMatchObject({ done: { outcome: 'succeeded' } });
     const install = (await installOwner(config)).id;
@@ -256,7 +256,7 @@ describe('the run mode of a judged pass (#1384)', () => {
 
   it('keeps the mode of a lease the run cancelled before its driver reported', async () => {
     const config = fixture(scorer(100));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     data(await leaseNext(config, runId, workDriver, { runMode: 'unattended' }));
 
@@ -327,7 +327,7 @@ steps:
     async function labelledCheck(reviewKeys: string, reports: Record<'draft' | 'lint' | 'review', Record<string, unknown>>) {
       const config = fixture(scorer(100));
       fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), subWorkflow(reviewKeys));
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
       for (const step of ['draft', 'lint', 'review'] as const) {
         const lease = z.object({ attempt: z.string(), revision: z.number(), step: z.string() }).parse(data(await leaseNext(config, runId, workDriver)).lease);

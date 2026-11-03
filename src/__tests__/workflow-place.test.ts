@@ -5,9 +5,9 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { DRIVERS_UNDER_TEST, inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance/place.js';
 import { inProcessClient, type HostPlaceRequest } from '../workflow/protocol.js';
@@ -83,7 +83,7 @@ steps:
           needs: [write]
           prompt: Polish the project.
 `);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const env = await resolveWorkflowEnv(config);
   const client = inProcessClient({ config, env });
   const started = await client.start('ship', { checkout: work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
@@ -757,7 +757,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow place conformance in process as %s',
       };
       fs.writeFileSync(path.join(knowledge, 'workflows', `${scenario.workflowName}.yaml`), scenario.yaml);
       for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       const inner = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
       // Every call gets a temporary directory of its own, gone once it returns, as a process of its own would.
       let calls = 0;

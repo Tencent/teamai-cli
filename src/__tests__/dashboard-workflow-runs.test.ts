@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { answerFromDashboard, listLocalRuns, listReportedRuns, workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { HttpError } from '../dashboard/http.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
 import { readRun, runsDir } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
@@ -34,7 +34,7 @@ async function waitingRun(hitl = 'approve: { message: "Ship {{ inputs.ticket }}?
     '  - id: build', '    command: echo build-secret-command',
     '  - id: ship', '    needs: [build]', `    ${hitl}`, '    prompt: Deliver {{ inputs.ticket }} as prompt-secret-text',
   ].join('\n'));
-  expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+  expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
   const started = await startRun(config, 'ship', { ticket: 'TICKET-SECRET-42' }, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   const id = String(started.data.run);
@@ -120,7 +120,7 @@ describe('dashboard workflow runs', () => {
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows/build.yaml'), [
       'schemaVersion: v1alpha1', 'name: build', 'description: Build.', 'steps:', '  - id: compile', '    command: echo compile',
     ].join('\n'));
-    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
     for (const name of ['judge', 'build']) {
       const started = await startRun(config, name, {}, { secrets: {} });
       if ('error' in started) throw new Error(started.error.message);
@@ -147,7 +147,7 @@ describe('dashboard workflow runs', () => {
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows/review-and-fix.yaml'), [
       'schemaVersion: v1alpha1', 'name: review-and-fix', 'alias: fix', 'description: Review the change, then fix it.', 'steps:', '  - id: review', '    command: echo review',
     ].join('\n'));
-    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
     const started = await startRun(config, 'fix', {}, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
 
@@ -167,7 +167,7 @@ describe('dashboard workflow runs', () => {
     ].join('\n'));
     write('review-and-fix', 'fix');
     write('fix');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const started = await startRun(config, 'review-and-fix', {}, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
 

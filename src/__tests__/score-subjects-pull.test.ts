@@ -6,9 +6,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 
 const dirs: string[] = [];
 
@@ -45,7 +45,7 @@ steps:
 ${after}`);
   const config: LocalConfig = { repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
   const warn = vi.spyOn(log, 'warn');
-  const result = await syncWorkflowDefinitions(config);
+  const result = await syncScorersThenWorkflows(config);
   expect(result.invalid).toEqual([]);
   return warn.mock.calls.map(([message]) => String(message));
 }

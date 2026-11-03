@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { driverIdentity } from '../driver-identity.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { publishRun } from '../workflow/handoff.js';
@@ -16,7 +17,6 @@ import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runScratchDir, runsDir, skillStatePath, updateRun, type RunId } from '../workflow/store.js';
 import { DeliveryReceiptSchema } from '../workflow/delivery-schema.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
@@ -2167,7 +2167,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       // A project whose teamai data is still inside its repository, where scoring is off.
       const member = await sharedTeam({ review: REVIEW }).install('legacy');
       const config: LocalConfig = { ...member.config, scope: 'project', projectRoot: member.checkout, dataHome: path.join(member.checkout, '.teamai') };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       const legacy = await harness({ review: REVIEW }, { install: { config, checkout: member.checkout } });
       expect(await legacy.call({ kind: 'describe', name: 'review' }, { tool: 'cursor' })).toMatchObject({ data: { describe: { judging: { kind: 'elsewhere' }, ask: {
         kind: 'start', say: expect.stringMatching(/^- review is not judged on this machine\. Scoring is off for this project/), start: 'teamai workflow start review --driver skill',

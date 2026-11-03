@@ -7,9 +7,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
-import { listCachedWorkflows, syncWorkflowDefinitions } from '../workflow/cache.js';
+import { listCachedWorkflows } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 
 const SHIPPED = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-score.yaml'), 'utf8');
@@ -39,7 +40,7 @@ function shippedWith(from: string, to: string): string {
 async function pulled(files: Record<string, string>): Promise<{ codes: Array<string | undefined>; refused: string[]; source: string | undefined; warned: string[] }> {
   const config = teamWith(files);
   const warn = vi.spyOn(log, 'warn');
-  const result = await syncWorkflowDefinitions(config);
+  const result = await syncScorersThenWorkflows(config);
   const source = (await listCachedWorkflows(config)).find(({ definition }) => definition.name === 'teamai-score')?.source;
   return { codes: result.invalid.map(({ code }) => code), refused: result.invalid.map(formatDiagnostic), source, warned: warn.mock.calls.map(([message]) => String(message)) };
 }

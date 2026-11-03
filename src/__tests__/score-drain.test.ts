@@ -14,6 +14,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   detectProjectConfig: async () => null,
 }));
 
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
 import { dataHomeKey } from '../dashboard-collector.js';
@@ -28,7 +29,6 @@ import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import * as cliPaths from '../utils/cli-path.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { workflowResume, workflowStart } from '../workflow-commands.js';
@@ -157,7 +157,7 @@ function data(envelope: WorkflowEnvelope): Record<string, unknown> {
 
 /** Runs the review workflow in `config` to its end, its steps settled in order by `reports` as an external driver would. */
 async function settledRun(config: LocalConfig, runMode: RunMode, ...reports: Record<string, unknown>[]): Promise<string> {
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   const runId = String(data(await startRun(config, 'review', {}, { secrets: {}, runMode, checkout })).run);
@@ -629,7 +629,7 @@ steps:
         - id: publish
           command: echo "push refused" >&2; exit 1
 ` });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     capturedSession(SESSION, 'unattended');
     vi.stubEnv('CI', 'true');
 
@@ -676,7 +676,7 @@ steps:
                 prompt: Judge the session from the files here.
                 output: { answer: json }
 ` });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     capturedSession(SESSION, 'unattended');
     vi.stubEnv('CI', 'true');
 
@@ -716,7 +716,7 @@ steps:
 
   it('runs at the end of an unattended local run, which keeps the run\'s outcome as its exit code when a publish fails', async () => {
     const { origin, config } = await team({ 'workflows/mark.yaml': MARK });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     await LabelStore.append(config, [{ label: {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
@@ -741,7 +741,7 @@ steps:
       'scorers/scoring.yaml': 'sessions: { unattended: off }\n',
       'workflows/mark.yaml': MARK,
     });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     capturedSession(SESSION, 'unattended');
     fakeClaude();
     vi.stubEnv('CI', 'true');
@@ -767,7 +767,7 @@ steps:
   - id: sessions
     command: echo listed
 ` });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     vi.stubEnv('CI', 'true');
 
     const started = await driveLocally(() => workflowStart('teamai-finished-sessions', { driver: 'local', inputs: '{"publish":"policy","scorers":[]}' }));
@@ -778,7 +778,7 @@ steps:
 
   it('does not run at the end of an attended local run', async () => {
     const { config } = await team({ 'workflows/mark.yaml': MARK });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     const started = await driveLocally(() => workflowStart('mark', { driver: 'local' }));
 
@@ -788,7 +788,7 @@ steps:
 
   it('runs at the end of an unattended local resume', async () => {
     const { config } = await team({ 'workflows/mark.yaml': MARK });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const checkout = path.join(root, 'app');
     fs.mkdirSync(checkout, { recursive: true });
     const runId = String(data(await startRun(config, 'mark', {}, { secrets: {}, runMode: 'unattended', checkout })).run);

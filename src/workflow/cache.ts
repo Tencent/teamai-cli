@@ -4,8 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { loadLocalConfigForScope } from '../config.js';
-import { anyScorerChecks, syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
-import { ScoreSubjects } from '../scorers/score-subjects.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
@@ -31,56 +29,25 @@ import {
   remotelyReachableRevision, revisionHoldsSources, withoutStaleTeamRevision, type ReachableRevision,
 } from '../utils/team-revision.js';
 
-export type SyncWorkflowOptions = SyncScorerOptions;
+/**
+ * `scorerHasCheck`: whether a team scorer has a `check`, so a team file that replaces teamai-score must keep its check
+ * step. Asked once, on the first such file. Scorers are scoring's to sync, before this.
+ */
+export interface SyncWorkflowOptions {
+  scopeLabel?: string;
+  dryRun?: boolean;
+  scorerHasCheck: () => Promise<boolean>;
+}
 
 export interface SyncWorkflowResult {
   cached: string[];
   kept: string[];
   invalid: WorkflowDiagnostic[];
   unrunnable: string[];
-  /** The scorers of the same tree, synced first. */
-  scorers: SyncScorerResult;
-  /**
-   * Scorers a step or a suite lists that `scorers` has no valid version of. A workflow still runs, and its step without
-   * them; a suite does not start.
-   */
-  unknownScorers: UnknownScorer[];
+  /** Each file's definition as this sync settled it, the one start runs: for the checks of what its steps list. */
+  settled: Array<{ relativePath: string; definition: WorkflowDefinition }>;
   /** `alias_conflict` on each cached workflow whose alias another one has as alias or name. Each still starts by name. */
   aliasConflicts: WorkflowDiagnostic[];
-}
-
-export type UnknownScorer = { file: string; scorer: string } & (
-  /** `step` is the step's path, such as `check.review`. */
-  | { kind: 'step'; step: string }
-  | { kind: 'suite'; suite: string }
-);
-
-export function formatUnknownScorer(unknown: UnknownScorer): string {
-  const { file, scorer } = unknown;
-
-  switch (unknown.kind) {
-    case 'step':
-      return `${file}: step "${unknown.step}" lists scorer "${scorer}", which has no valid scorers/${scorer}.md; the step runs without it`;
-    case 'suite':
-      return `${file}: suite "${unknown.suite}" lists scorer "${scorer}", which has no valid scorers/${scorer}.md; the benchmark does not start without it`;
-    default: {
-      const unhandled: never = unknown;
-
-      return unhandled;
-    }
-  }
-}
-
-/** The scorers a definition's steps list, including inside its inline workflows, with each step's path. */
-function scorersListedBy(definition: { steps: WorkflowStep[] }, prefix = ''): Array<{ step: string; scorer: string }> {
-  return definition.steps.flatMap((step) => {
-    const child = stepWorkflow(step);
-
-    return [
-      ...(step.scorers?.names ?? []).map((scorer) => ({ step: `${prefix}${step.id}`, scorer })),
-      ...(child?.kind === 'inline' ? scorersListedBy(child.workflow, `${prefix}${step.id}.`) : []),
-    ];
-  });
 }
 
 /** One version of a file, as its reference checks read it: this revision, or the copy the cache keeps. */
@@ -279,17 +246,13 @@ export async function workflowFileNames(dir: string): Promise<string[]> {
 }
 
 /**
- * Validate `scorers/` first, then each `workflows/*.yaml` on its own, and cache only files that pass.
+ * Validate each `workflows/*.yaml` on its own, and cache only files that pass.
  * An invalid file keeps its last cached definition; a file that was never valid
  * stays unrunnable. The cache then holds only what this sync settled, so start
  * finds no version that was not checked against the others. Nothing here fails the caller.
  */
-export async function syncWorkflowDefinitions(
-  config: LocalConfig,
-  options: SyncWorkflowOptions = {},
-): Promise<SyncWorkflowResult> {
-  const scorers = await syncScorerDefinitions(config, options);
-  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], scorers, unknownScorers: [], aliasConflicts: [] };
+export async function syncWorkflowDefinitions(config: LocalConfig, options: SyncWorkflowOptions): Promise<SyncWorkflowResult> {
+  const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [], settled: [], aliasConflicts: [] };
   const dir = path.join(getKnowledgeDir(config), 'workflows');
   const knowledgeRoot = getKnowledgeDir(config);
   // Asked on the first valid file: a team without workflows starts no git here.
@@ -470,14 +433,14 @@ export async function syncWorkflowDefinitions(
       continue;
     }
 
-    const refused = DefaultWorkflows.overrideProblems(relativePath, resolved.definition, { scorerHasCheck: await (scorerHasCheck ??= anyScorerChecks(config, scorers.cached)) });
+    const refused = DefaultWorkflows.overrideProblems(relativePath, resolved.definition, { scorerHasCheck: await (scorerHasCheck ??= options.scorerHasCheck()) });
 
     if (refused.length > 0) {
       checked.push({ stem, relativePath, diagnostics: refused });
       continue;
     }
 
-    for (const warning of [...DefaultWorkflows.callerWarnings(relativePath, resolved.definition), ...ScoreSubjects.unreadWarnings(relativePath, resolved.definition)]) log.warn(`[workflows] ${warning}`);
+    for (const warning of DefaultWorkflows.callerWarnings(relativePath, resolved.definition)) log.warn(`[workflows] ${warning}`);
     const hash = createHash('sha256').update(content);
 
     for (const source of resolved.sources) {
@@ -582,17 +545,11 @@ export async function syncWorkflowDefinitions(
   }
 
   if (!options.dryRun) await dropUnsettled(config, new Set([...result.cached, ...result.kept, ...conflicted]));
-  const valid = new Set(scorers.cached);
+  result.settled = checked.flatMap((file) => {
+    const { definition } = settle(file.stem);
 
-  for (const file of checked) {
-    const definition = settle(file.stem).definition;
-
-    for (const { step, scorer } of definition ? scorersListedBy(definition) : []) {
-      if (!valid.has(scorer)) result.unknownScorers.push({ kind: 'step', file: file.relativePath, step, scorer });
-    }
-  }
-
-  for (const unknown of result.unknownScorers) log.warn(`[workflows] ${formatUnknownScorer(unknown)}`);
+    return definition ? [{ relativePath: file.relativePath, definition }] : [];
+  });
 
   const versions = checked.flatMap((file): AliasSource[] => {
     const { definition, revision } = settle(file.stem);
@@ -898,7 +855,8 @@ export async function loadWorkflowBundle(config: LocalConfig, name: string): Pro
  */
 export async function loadWorkflowBundleAt(config: LocalConfig, name: string, revision: string): Promise<WorkflowBundle | { failed: string }> {
   return withTeamRevision(config, revision, async (at) => {
-    await syncWorkflowDefinitions(at, { scopeLabel: `team commit ${revision.slice(0, 7)}` });
+    // The caller compares this bundle with the one the run started with, which that machine's pull checked against its scorers.
+    await syncWorkflowDefinitions(at, { scopeLabel: `team commit ${revision.slice(0, 7)}`, scorerHasCheck: () => Promise.resolve(false) });
 
     return loadWorkflowBundle(at, name);
   });

@@ -11,12 +11,12 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, homedir: () => mocks.home, default: { ...actual, homedir: () => mocks.home } };
 });
 
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { collectEvidence, evidencePlan } from '../scorers/scoring-evidence.js';
 import { readRun } from '../workflow/store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { AgentSession } from '../session-flow/agent-session.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { scoreEvidenceDir } from './helpers/score-run.js';
 import { branchName } from '../workflow/workspace.js';
@@ -116,7 +116,7 @@ async function scoredRun(driver: 'external' | 'local' = 'external', files: Recor
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data'),
   };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const runId = String(data(await startRun(config, 'build', {}, { secrets: await knownSecrets(config), base: { ref: 'main', commit: from }, checkout })).run);
 
   const write = z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }).parse(data(await leaseNext(config, runId, work, { can: { workspace: ['new', 'continue', 'read-only'] } })).lease);
@@ -381,7 +381,7 @@ async function deliveredRun(
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data'),
   };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const runId = String(data(await startRun(config, 'ship-issue', { issue: 42 }, { secrets: await knownSecrets(config), base: { ref: 'main', commit: from }, checkout })).run);
   const can: Omit<NextOptions, 'env'> = { can: { workspace: ['new', 'continue', 'read-only'] } };
   const issue = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, external, can)).lease);

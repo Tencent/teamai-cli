@@ -8,10 +8,10 @@ import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { LeaseWireSchema } from '../../src/workflow/lease-wire.js';
 import { syncScorerDefinitions } from '../../src/scorers/cache.js';
+import { formatUnknownScorer, syncScorersThenWorkflows } from '../../src/scorers/team-sync.js';
 import { ciRecipesOf, runCommandsOf } from '../ci-recipe.js';
 import { formatScorerDiagnostic } from '../../src/scorers/definition.js';
 import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig, JsonObjectSchema } from '../../src/types.js';
-import { formatUnknownScorer, syncWorkflowDefinitions } from '../../src/workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../../src/workflow/engine.js';
 import { formatDiagnostic } from '../../src/workflow/parse.js';
 import { WORKSPACE_MODES, type DriverIdentity, type WorkflowEnvelope } from '../../src/workflow/types.js';
@@ -224,7 +224,7 @@ async function startExample(
 ): Promise<{ config: LocalConfig; runId: string }> {
   const config = teamRepo();
   writeExamples(page, config);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, name, inputs, { secrets: await knownSecrets(config) });
 
   if ('error' in started) throw new Error(`${page}: ${started.error.message}`);
@@ -298,7 +298,7 @@ for (const page of [...PAGES, ...SCORER_PAGES, ...OTHER_PAGES]) {
         fs.writeFileSync(path.join(config.repo.localPath, example.file), example.source);
       }
 
-      const result = await syncWorkflowDefinitions(config, { dryRun: true });
+      const result = await syncScorersThenWorkflows(config, { dryRun: true });
 
       for (const unknown of result.unknownScorers)
         failures.push(`${byFile.get(unknown.file) ?? page}: ${formatUnknownScorer(unknown)}`);
@@ -388,7 +388,7 @@ for (const page of PAGES) {
         declared.push(start);
       }
 
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
 
       for (const start of declared) {
         let inputs: unknown;

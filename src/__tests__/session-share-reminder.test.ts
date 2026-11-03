@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { readContributeState, writeContributeState } from '../contribute-check.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
@@ -11,7 +12,6 @@ import { SessionShare } from '../session-share.js';
 import type { LocalConfig } from '../types.js';
 import { CONTRIBUTE_BASE_THRESHOLD, CONTRIBUTE_SMART_THRESHOLD } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { skillHarness } from './helpers/skill-harness.js';
 
 const SESSION = '7c1e0000-0000-4000-8000-000000000003';
@@ -143,7 +143,7 @@ describe('the friction reminder keeps today\'s text, offering nothing,', () => {
     const workflows = path.join(config.repo.localPath, 'workflows');
     fs.mkdirSync(workflows);
     fs.writeFileSync(path.join(workflows, 'teamai-share-learnings.yaml'), 'schemaVersion: v1alpha1\nname: teamai-share-learnings\ndescription: Our close-out, started by hand only.\ninvoke: deny\nsteps:\n  - id: note\n    command: node -e "console.log(\'closed\')"\n');
-    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['teamai-share-learnings']);
+    expect((await syncScorersThenWorkflows(config)).cached).toEqual(['teamai-share-learnings']);
 
     await expectTodaysReminder(config);
   });
@@ -153,7 +153,7 @@ describe('the friction reminder keeps today\'s text, offering nothing,', () => {
     const workflows = path.join(config.repo.localPath, 'workflows');
     fs.mkdirSync(workflows);
     fs.writeFileSync(path.join(workflows, 'teamai-share-session.yaml'), 'schemaVersion: v1alpha1\nname: teamai-share-session\nalias: wrap-up\ndescription: Publish this session our way.\ninputs: { session: string, source: string }\nsteps:\n  - id: note\n    command: node -e "console.log(\'wrapped\')"\n');
-    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['teamai-share-session']);
+    expect((await syncScorersThenWorkflows(config)).cached).toEqual(['teamai-share-session']);
 
     await expectTodaysReminder(config);
   });
@@ -191,7 +191,7 @@ steps:
     const user = await memberConfig();
     fs.mkdirSync(path.join(user.repo.localPath, 'workflows'));
     fs.writeFileSync(path.join(user.repo.localPath, 'workflows', 'note.yaml'), NOTE);
-    await syncWorkflowDefinitions(user);
+    await syncScorersThenWorkflows(user);
     execFileSync('git', ['init', '-q', '-b', 'main', project]);
     execFileSync('git', ['-C', project, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'fixture']);
     const harness = await skillHarness({}, { install: { config: user, checkout: project } });
@@ -216,7 +216,7 @@ steps:
     fs.mkdirSync(partition, { recursive: true });
     fs.writeFileSync(path.join(partition, 'config.yaml'), `repo:\n  localPath: ${user.repo.localPath}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: project\nprojectRoot: ${project}\n`);
     const inProject: LocalConfig = { ...user, scope: 'project', projectRoot: project, dataHome: partition };
-    await syncWorkflowDefinitions(inProject);
+    await syncScorersThenWorkflows(inProject);
     const harness = await skillHarness({}, { install: { config: inProject, checkout: project } });
     onTestFinished(() => fs.rmSync(harness.root, { recursive: true, force: true }));
     vi.stubEnv('HOME', home);

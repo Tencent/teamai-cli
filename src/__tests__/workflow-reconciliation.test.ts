@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
@@ -404,7 +404,7 @@ describe('workflow report reconciliation', () => {
     for (const [file, body] of Object.entries(scenarios[key]!.files)) {
       fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${file}.yaml`), body);
     }
-    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
     const digest = createHash('sha1');
     for (let seed = 1; seed <= 12; seed += 1) {
       const plain = await replay(config, key, seed, false);

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import * as envExec from '../env-exec.js';
 import { launchEnv, sessionRun } from '../launch-context.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
@@ -15,7 +16,6 @@ import type { Session } from '../session-flow/ir.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
 import { getDataHome, getReportsDir, getUserConfigPath, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { LeaseIdSchema } from '../workflow/lease-wire.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
@@ -86,7 +86,7 @@ async function workflowFixture(yaml: string): Promise<{ config: LocalConfig; wor
     workflows: { tools: { default: 'claude' } },
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };

@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { formatUnknownScorer } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedSuite, suiteDirectories, syncTeamDefinitions } from '../benchmark/suite-cache.js';
-import { formatUnknownScorer } from '../workflow/cache.js';
 import { parseSuite, type SuiteFile } from '../benchmark/suite.js';
 
 const START = 'a'.repeat(40);

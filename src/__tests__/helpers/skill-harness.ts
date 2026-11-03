@@ -4,13 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { RunMode } from '../../launch-context.js';
 import { memberTools } from '../../tool-launch/call.js';
 import { getUserConfigPath, TeamaiConfigBaseSchema, type LocalConfig } from '../../types.js';
 import type { ToolId } from '../../tools.js';
 import type { AgentEvidence } from '../../workflow/attempt-marker.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
 import { runSkillCall, skillContext, type CommandRun, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
 import { RunIdSchema, takeRunLock, type RunId } from '../../workflow/store.js';
@@ -302,7 +302,7 @@ export function sharedTeam(workflows: Record<string, string>): { install(name: s
         git(dir, 'config', 'user.email', `${name}@example.invalid`);
       }
       const config: LocalConfig = { repo: { kind: 'git', localPath: clone, remote: origin }, username: name, scope: 'user', additionalRoles: [], dataHome: path.join(home, 'data') };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout };
     },
   };
@@ -331,7 +331,7 @@ async function ownInstall(root: string, workflows: Record<string, string>, optio
     additionalRoles: [], dataHome: path.join(root, 'data'), ...(options.scoring ? { scoring: options.scoring } : {}),
   };
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(repo, 'workflows', `${name}.yaml`), yaml);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   return { config, checkout: work };
 }
 

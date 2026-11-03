@@ -8,11 +8,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { detectProjectConfig, loadStateForScope } from '../config.js';
 import { resolveAnchors } from '../utils/git.js';
 import { resolvePartitionDir } from '../utils/partition.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import * as engine from '../workflow/engine.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
@@ -58,7 +58,7 @@ async function fixture(yaml: string, inputs: unknown = {}): Promise<{ config: Lo
     workflows: { tools: {}, max_parallel: 2 },
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', inputs, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
@@ -113,7 +113,7 @@ async function teamWorkspace(yaml: string): Promise<{ config: LocalConfig; works
   const config = await detectProjectConfig(workspace);
   if (!config) throw new Error('project config was not found');
   config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };

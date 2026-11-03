@@ -14,12 +14,12 @@ import { readSessionSharing } from '../dashboard/session-sharing.js';
 import type { RunMode } from '../launch-context.js';
 import { SessionPublish } from '../session-flow/session-publish.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { SessionCaptures } from '../session-flow/captures.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 
@@ -298,7 +298,7 @@ function data(envelope: WorkflowEnvelope): Record<string, unknown> {
 
 /** Runs the review workflow in `config` to its end in `runMode`, its step settled by `report` as an external driver would. */
 async function settledRun(config: LocalConfig, runMode: RunMode, report: Record<string, unknown>): Promise<void> {
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   const runId = String(data(await startRun(config, 'review', {}, { secrets: {}, runMode, checkout })).run);

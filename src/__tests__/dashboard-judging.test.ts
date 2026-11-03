@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { judgingHealth } from '../dashboard/judging-health.js';
 import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { knownSecrets } from '../env-resolution.js';
@@ -10,7 +11,6 @@ import type { ScoreLabel } from '../scorers/label.js';
 import { Marks, type MarkKey, type MarkOutcome } from '../scorers/marks.js';
 import { markFacts } from '../scorers/score-plan.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
@@ -57,7 +57,7 @@ async function team(scorers: string[], rates: Record<string, number> = {}): Prom
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data'),
   };
-  expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+  expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
   return config;
 }
 
@@ -145,7 +145,7 @@ describe("a pass's scorers on the run page", () => {
     const config = await team(EVERY_STATE, { rare: 0 });
     const { runId, scoreRun } = await judgedPass(config);
     fs.writeFileSync(path.join(root, 'knowledge', 'workflows', 'notes.yaml'), ['schemaVersion: v1alpha1', 'name: notes', 'description: Note a pass.', 'inputs:', '  subject: string', 'steps:', '  - id: note', '    prompt: Note it.'].join('\n'));
-    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
     data(await startRun(config, 'notes', { subject: `run:${runId}:review:1` }, { secrets: await knownSecrets(config) }));
     const run = await readRun(config, runId);
     if (run === 'missing' || run === 'corrupt') throw new Error(`run ${runId} is ${run}`);

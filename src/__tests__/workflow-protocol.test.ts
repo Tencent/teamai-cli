@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import type { AgentEvidence } from '../workflow/attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { readRun, RunIdSchema, runScratchDir, withRunLock, type RunLock } from '../workflow/store.js';
@@ -27,7 +27,7 @@ async function fixture(workflows: Record<string, string>): Promise<{ config: Loc
   fs.mkdirSync(path.join(root, 'knowledge', 'workflows'), { recursive: true });
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(root, 'knowledge', 'workflows', `${name}.yaml`), yaml);
   const config: LocalConfig = { repo: { kind: 'self', localPath: path.join(root, 'knowledge'), remote: 'local' }, username: 'test', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data') };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   return { config, checkout };
 }
 

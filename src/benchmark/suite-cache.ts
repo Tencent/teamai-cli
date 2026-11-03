@@ -14,26 +14,25 @@ import { loadRolesManifestIfPresent } from '../roles.js';
 import { getBusinessRoot, getDataHome, getKnowledgeDir, isSelfMode, managedMcpWorkspaceId, type LocalConfig } from '../types.js';
 import { readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import {
-  dropsKeptVersion, formatUnknownScorer, syncWorkflowDefinitions, workflowFileNames,
-  type SyncWorkflowOptions, type SyncWorkflowResult, type UnknownScorer,
-} from '../workflow/cache.js';
+import { type SyncScorerOptions } from '../scorers/cache.js';
+import { formatUnknownScorer, syncScorersThenWorkflows, type SyncScoredWorkflowsResult, type UnknownScorer } from '../scorers/team-sync.js';
+import { dropsKeptVersion, workflowFileNames } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { checkFilesNamed, parseSuite, type SourceFile, type Suite, type SuiteFile } from './suite.js';
 import { BENCHMARK_NAME } from './terms.js';
 
-export interface SyncTeamResult extends SyncWorkflowResult {
+export interface SyncTeamResult extends SyncScoredWorkflowsResult {
   /** The valid benchmark suites of the same tree. Their diagnostics are in `invalid`. */
   benchmarks: Suite[];
 }
 
 /**
- * `syncWorkflowDefinitions`, then the suites of the same tree: their diagnostics join `invalid`, and the scorers they
+ * `syncScorersThenWorkflows`, then the suites of the same tree: their diagnostics join `invalid`, and the scorers they
  * list that the sync did not cache join `unknownScorers`. Nothing here fails the caller.
  */
-export async function syncTeamDefinitions(config: LocalConfig, options: SyncWorkflowOptions = {}): Promise<SyncTeamResult> {
-  const result: SyncTeamResult = { ...await syncWorkflowDefinitions(config, options), benchmarks: [] };
+export async function syncTeamDefinitions(config: LocalConfig, options: SyncScorerOptions = {}): Promise<SyncTeamResult> {
+  const result: SyncTeamResult = { ...await syncScorersThenWorkflows(config, options), benchmarks: [] };
   await syncSuites(config, options, result);
 
   return result;
@@ -256,7 +255,7 @@ async function suiteSources(config: LocalConfig, everyNamespace: boolean): Promi
  * Parse each suite this member receives, cache the valid ones, and keep the last valid version of a suite this revision
  * breaks, unless a diagnostic has a code. Suites this sync settled nothing for leave the cache.
  */
-async function syncSuites(config: LocalConfig, options: SyncWorkflowOptions, result: SyncTeamResult): Promise<void> {
+async function syncSuites(config: LocalConfig, options: SyncScorerOptions, result: SyncTeamResult): Promise<void> {
   const { sources, invalid } = await suiteSources(config, options.everyNamespace === true);
   result.invalid.push(...invalid);
 

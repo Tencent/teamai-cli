@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { retryStep } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
@@ -52,7 +52,7 @@ outputs:
 
 async function startPlanned(config: LocalConfig, body = PLANNED): Promise<string> {
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), body);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'planned', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return String(started.data.run);
@@ -120,7 +120,7 @@ describe('a workflow output run in a copy with a role', () => {
     fs.mkdirSync(path.join(config.repo.localPath, 'manifest'));
     fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n  - id: spec\n    resources: { knowledge: [], skills: [spec] }\n');
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), PLANNED_IN_ROLE_COPY);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const started = await startRun(config, 'planned', {}, { secrets: await knownSecrets(config), base: { ref: 'main', commit: 'a'.repeat(40) } });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
@@ -350,7 +350,7 @@ steps:
     loop: { back_to: round, max_iterations: 2 }
 `);
 
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
     const started = await startRun(config, 'planned', {}, { secrets: await knownSecrets(config) });
 
     expect(synced.invalid.map((diagnostic) => diagnostic.message)).toContain('step "round" runs workflow "produce", whose step "plan" outputs a workflow, so it runs once; step "round" may not repeat in a loop or run per item of a for_each');
@@ -378,7 +378,7 @@ describe('a run with a from step', () => {
   ])('of workflow %s with aliases %s, names the command that starts it again', async (name, aliases, command) => {
     const config = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${name}.yaml`), PLANNED.replace('name: planned', `name: ${name}\ninputs: { suite: string, aliases: string }`));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const started = await startRun(config, name, { suite: 'fix', aliases }, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);

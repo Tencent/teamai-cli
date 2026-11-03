@@ -3,10 +3,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { LocalConfig } from '../../types.js';
 import { redactJson } from '../../utils/redact.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessConformanceClient, type ConformanceClient, type ConformanceRunner, type ConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { inProcessClient } from '../../workflow/protocol.js';
 import { pendingRecords } from '../../workflow/records.js';
@@ -62,7 +62,7 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
       fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
       fs.writeFileSync(path.join(knowledge, file), text);
     }
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
   }
   const env = await resolveWorkflowEnv(config);
   const client = inProcessConformanceClient(inProcessClient({ config, env }), async (name) => ('benchmark' in scenario && scenario.benchmark.name === name

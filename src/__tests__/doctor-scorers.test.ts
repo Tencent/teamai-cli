@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { localAliasesPath } from '../models/aliases.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { scorerNotes } from '../doctor-scorers.js';
 import { getUserConfigPath, type LocalConfig } from '../types.js';
 
@@ -80,7 +80,7 @@ describe('scorerNotes', () => {
       'scorers/s.md': SCORER.replace('passingScore: 0.5', 'passingScore: 0.5\nmodel: claude-haiku-4-5'),
       'models/aliases.yaml': 'aliases:\n  fast:\n    codex: gpt-6-mini\n  strong:\n    claude: opus\n',
     });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     fs.mkdirSync(path.dirname(localAliasesPath()), { recursive: true });
     fs.writeFileSync(localAliasesPath(), 'aliases:\n  strong:\n    claude: ~\n');
 

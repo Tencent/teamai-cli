@@ -13,7 +13,7 @@ import { SessionPolicy, type PolicySource } from './session-flow/session-policy.
 import type { LocalConfig } from './types.js';
 import { isSilent, setSilent } from './utils/logger.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
-import { formatUnknownScorer } from './workflow/cache.js';
+import { formatUnknownScorer } from './scorers/team-sync.js';
 
 /** What scoring in this scope follows: its isolation, what decides session judging, and the problems with its settings. */
 async function scoringNotes(localConfig: LocalConfig, verified: readonly string[]): Promise<string[]> {

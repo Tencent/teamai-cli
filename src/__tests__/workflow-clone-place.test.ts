@@ -9,9 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { startRun } from '../workflow/engine.js';
 import { claimRun } from '../workflow/handoff.js';
@@ -89,7 +89,7 @@ async function fixture(yaml: (commit: string) => string, scorers: Record<string,
     fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
     fs.writeFileSync(path.join(knowledge, file), text);
   }
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run), first };
@@ -627,7 +627,7 @@ async function roleRun(roles: { committed: readonly string[]; declared: readonly
   fs.writeFileSync(path.join(knowledge, 'manifest', 'roles.yaml'), rolesYaml(roles.declared));
   fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), teamYaml);
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), (roles.workflow ?? ROLE_CLONE)(first).replace('d'.repeat(40), revision));
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
   return { config, runId: String(started.data.run), revision };

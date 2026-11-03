@@ -5,11 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { parseWorkflow } from '../workflow/parse.js';
 import { leaseNext, parseReport, reportAttempt, startRun, withIgnored, type NextOptions } from '../workflow/engine.js';
 import { knownSecrets } from '../env-resolution.js';
 import { sanitizePrUrl } from '../workflow/pr-url.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { deliveryLockPath, readRun, runLockPath } from '../workflow/store.js';
 import * as store from '../workflow/store.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
@@ -60,7 +60,7 @@ async function fixture(steps: string, inputs?: unknown): Promise<{ config: Local
   const config: LocalConfig = { repo: { localPath: knowledge, remote: 'local', kind: 'self' }, scope: 'project',
     username: 'tester', usageReportEnabled: false, additionalRoles: [], projectRoot: cwd, dataHome: path.join(root, 'data'), workflows: { tools: {}, max_parallel: 1 } };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'ship.yaml'), `schemaVersion: v1alpha1\nname: ship\ndescription: Deliver work\n${inputs ? 'inputs:\n  packages: [{ name: string, id: string, after: [string] }]\n' : ''}steps:\n${steps}`);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'ship', inputs ?? {}, { checkout: cwd, base: { ref: 'main', commit: git(cwd, ['rev-parse', 'HEAD']) }, secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, cwd, root, runId: String(started.data.run) };
