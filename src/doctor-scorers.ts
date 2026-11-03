@@ -5,6 +5,7 @@ import { confinedToolLevels, installedConfinedTools } from './tool-launch/confin
 import { CONFINED_TOOLS } from './tool-launch/tools.js';
 import { chooseJudgeModel } from './scorers/judge-model.js';
 import { scoringUnavailable } from './scorers/home.js';
+import { Marks } from './scorers/marks.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
 import { scopeScoring, type SessionScoring } from './scorers/settings.js';
 import { RUN_MODES } from './launch-context.js';
@@ -79,6 +80,15 @@ async function scorerModelNotes(localConfig: LocalConfig, resolveTool: ResolveTo
 
 type ResolveTool = (tool: string) => string | null;
 
+/** How much open judge work the upgrade to marks carried over from judge attempts, when it carried any. */
+async function carriedNote(localConfig: LocalConfig): Promise<string[]> {
+  const carried = await Marks.carriedOver(localConfig, { now: new Date().toISOString() });
+  const counted = (count: number, one: string, many: string) => (count === 0 ? [] : [`${count} ${count === 1 ? one : many}`]);
+  const parts = [...counted(carried?.passes ?? 0, 'open workflow pass', 'open workflow passes'), ...counted(carried?.sessions ?? 0, 'open session', 'open sessions')];
+
+  return parts.length === 0 ? [] : [`The upgrade carried ${parts.join(' and ')} over from judge attempts. teamai score --drain judges them.`];
+}
+
 /**
  * What a pull says about scorers, for members whose pull ran silently from a hook: each invalid file in `scorers/`, and
  * each scorer a workflow step lists that has no valid file. Also, when the team has scorers, why this install cannot
@@ -99,6 +109,7 @@ export async function scorerNotes(localConfig: LocalConfig, { resolveTool }: { r
       ...result.scorers.invalid.map((diagnostic) => `Invalid scorer: ${formatScorerDiagnostic(diagnostic)}`),
       ...result.unknownScorers.map((unknown) => `Unknown scorer: ${formatUnknownScorer(unknown)}`),
       ...await scorerModelNotes(localConfig, resolveTool),
+      ...await carriedNote(localConfig),
     ];
   } catch (error) {
     return [`Scorers could not be checked: ${error instanceof Error ? error.message : String(error)}`];

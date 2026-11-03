@@ -264,3 +264,111 @@ describe('Marks', () => {
     expect(await Marks.states(config, [pass('review'), pass('tests')], { now: NOW, readRun: reader.readRun })).toMatchObject([{ kind: 'open' }, { kind: 'open' }]);
   });
 });
+
+describe('Marks carried over from the judge attempts of an earlier teamai', () => {
+  const SESSION_SUBJECT = { platform: 'claude-code', sessionId: '7c1e' };
+  const lapsedLease = { status: 'leased', leasedAt: later(-2), expiresAt: later(-1.9) };
+  const liveLease = { status: 'leased', leasedAt: later(-0.01), expiresAt: later(0.01) };
+  const settled = { leasedAt: later(-2), expiresAt: later(-1.9), settledAt: later(-1.95) };
+  const verdict = { labelId: 'l1', verdict: { label: 'good', score: 1, passed: true, version: 'v1' } };
+  let entries = 0;
+
+  /** One entry's attempts as an earlier teamai wrote them, under an entry id of its own. */
+  function plant(config: LocalConfig, attempts: Array<Record<string, unknown>>, request?: { scorer: string; pass: number; requestedAt: string }): void {
+    entries += 1;
+    const entry = `s${entries.toString(16).padStart(13, '0')}`;
+    const dir = path.join(config.dataHome ?? '', 'scores', 'attempts', entry);
+    fs.mkdirSync(dir, { recursive: true });
+    attempts.forEach((fields, index) => {
+      const attempt = `a${(entries * 16 + index).toString(16).padStart(8, '0')}`;
+      fs.writeFileSync(path.join(dir, `${attempt}.json`), JSON.stringify({
+        attempt, entry, rubric: { sourceHash: 'h1' }, driver: { kind: 'local', machine: 'm', workspace: '/w' },
+        judge: { tool: 'claude', by: 'scorer', isolation: 'verified', access: 'read' }, ...fields,
+      }));
+    });
+    if (request) {
+      const pin = { sourceHash: 'h1', content: 'Judge.' };
+      fs.writeFileSync(path.join(dir, 'request.json'), JSON.stringify({ entry, scorer: request.scorer, subject: { runId: JUDGED, step: 'fix', pass: request.pass }, pin, requestedAt: request.requestedAt }));
+    }
+  }
+
+  const ofPass = (scorer: string, number: number) => ({ scorer, subject: { runId: JUDGED, step: 'fix', pass: number } });
+  const ofSession = (scorer: string, sessionId: string) => ({ scorer, source: 'session', subject: { ...SESSION_SUBJECT, sessionId }, session: { used: { skills: [] }, prompt: 'Add retries' } });
+
+  function sessionLabel(scorer: string, sessionId: string, judge: Record<string, unknown>): string {
+    return `${JSON.stringify({ scorer, rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true, source: 'session', subject: { ...SESSION_SUBJECT, sessionId }, judge, scoredAt: later(-1) })}\n`;
+  }
+
+  /** An attempts store with each kind of entry main's lease rules knew, and labels written without an attempt. */
+  function upgraded(): LocalConfig {
+    const config = scope();
+    plant(config, [{ ...ofPass('labelled', 1), ...settled, status: 'succeeded', ...verdict }]);
+    plant(config, [{ ...ofPass('failed', 1), ...settled, status: 'failed', code: 'judge_failed' }]);
+    plant(config, [{ ...ofPass('lapsed', 1), ...lapsedLease }, { ...ofPass('lapsed', 1), ...lapsedLease }]);
+    plant(config, [1, 2, 3, 4].map(() => ({ ...ofPass('worn', 1), ...lapsedLease })));
+    plant(config, [{ ...ofPass('leased', 1), ...lapsedLease }, { ...ofPass('leased', 1), ...liveLease }]);
+    plant(config, [], { scorer: 'requested', pass: 1, requestedAt: later(-1) });
+    plant(config, [{ ...ofSession('labelled', 's1'), ...settled, status: 'succeeded', ...verdict }]);
+    plant(config, [{ ...ofSession('released', 's1'), ...settled, status: 'released' }]);
+    plant(config, [{ ...ofSession('failed', 's1'), ...settled, status: 'failed', code: 'judge_answer_invalid' }]);
+    plant(config, [{ ...ofSession('leased', 's1'), ...liveLease }]);
+    fs.writeFileSync(path.join(config.dataHome ?? '', 'scores', 'labels.jsonl'), [
+      sessionLabel('judged', 's2', { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' }),
+      sessionLabel('by-hand', 's2', { kind: 'human' }),
+    ].join(''));
+
+    return config;
+  }
+
+  const passKeys = ['labelled', 'failed', 'lapsed', 'worn', 'leased', 'requested'].map((scorer) => pass(scorer));
+  const sessionKeys = [['labelled', 's1'], ['released', 's1'], ['failed', 's1'], ['leased', 's1'], ['judged', 's2'], ['by-hand', 's2']].map(([scorer = '', id]) => session(scorer, id));
+
+  it('keeps a closed entry closed and an open one open, its lapses counted and its request kept', async () => {
+    const config = upgraded();
+    const reader = runs();
+    reader.set(JUDGED, { ended: true, changedAt: later(-10) });
+
+    expect(await Marks.states(config, passKeys, { now: NOW, readRun: reader.readRun })).toEqual([
+      { kind: 'labelled' },
+      { kind: 'failed', code: 'judge_failed' },
+      { kind: 'lapsed', lapses: 2 },
+      { kind: 'failed', code: 'lease_expired' },
+      { kind: 'lapsed', lapses: 1 },
+      { kind: 'lapsed', lapses: 0 },
+    ]);
+    expect(await Marks.states(config, [pass('lapsed'), pass('requested')], { now: later(10), readRun: reader.readRun })).toEqual([{ kind: 'expired' }, { kind: 'lapsed', lapses: 0 }]);
+  });
+
+  it('closes a session that was tried or labelled, and keeps a session a live lease held open', async () => {
+    const config = upgraded();
+
+    expect(await Marks.states(config, sessionKeys, { now: NOW, readRun: runs().readRun })).toEqual([
+      { kind: 'labelled' },
+      { kind: 'failed', code: 'lease_expired' },
+      { kind: 'failed', code: 'judge_answer_invalid' },
+      { kind: 'lapsed', lapses: 0 },
+      { kind: 'labelled' },
+      { kind: 'unmarked' },
+    ]);
+    expect(await Marks.carriedOver(config, { now: NOW })).toEqual({ passes: 3, sessions: 1 });
+  });
+
+  it('carries the attempts once, and a mark written since outranks what it carried', async () => {
+    const config = upgraded();
+    const reader = runs();
+    await Marks.states(config, [], { now: NOW, readRun: reader.readRun });
+    plant(config, [{ ...ofPass('lapsed', 1), ...settled, status: 'succeeded', ...verdict }, { ...ofPass('fresh', 1), ...settled, status: 'failed', code: 'judge_failed' }]);
+
+    expect(await launch(config, [pass('lapsed')], NOW, { reader })).toMatchObject({ opened: [{ keys: [pass('lapsed')] }] });
+    reader.end('score-1');
+    expect(await Marks.states(config, [pass('lapsed'), pass('fresh')], { now: later(1), readRun: reader.readRun })).toEqual([{ kind: 'lapsed', lapses: 3 }, { kind: 'unmarked' }]);
+    expect(await Marks.carriedOver(config, { now: NOW })).toEqual({ passes: 3, sessions: 1 });
+  });
+
+  it('carries nothing and writes nothing where nothing was ever scored', async () => {
+    const config = scope();
+
+    expect(await Marks.carriedOver(config, { now: NOW })).toBeUndefined();
+    expect(fs.existsSync(config.dataHome ?? '')).toBe(false);
+  });
+});

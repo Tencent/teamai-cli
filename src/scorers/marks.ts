@@ -8,7 +8,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
-import { readFileSafe } from '../utils/fs.js';
+import { pathExists, readFileSafe, writeFileAtomic } from '../utils/fs.js';
+import { carriedMarks, type CarriedMark } from './attempts-upgrade.js';
 import { scoresDir, scoresLocked } from './home.js';
 import { JUDGE_FAILURES, type JudgeFailureCode } from './label.js';
 import { Subject } from './subject.js';
@@ -80,6 +81,8 @@ const Restart = { lapses: z.number().int().min(0).max(MARK_LAPSES - 1), requeste
 const LineSchema = z.discriminatedUnion('state', [
   z.object({ ...Mark, ...Restart, state: z.literal('open'), run: z.string().min(1), group: z.string().min(1), demand: z.enum(DEMANDS) }),
   z.object({ ...Mark, ...Restart, state: z.literal('waiting') }),
+  /** Open judge work an earlier teamai's attempts left, carried over on the upgrade: started again as a lapse. */
+  z.object({ ...Mark, ...Restart, state: z.literal('carried') }),
   z.object({ ...Mark, state: z.literal('labelled') }),
   z.object({ ...Mark, state: z.literal('failed'), code: z.enum(JUDGE_FAILURES) }),
 ]);
@@ -102,6 +105,11 @@ interface Derived {
 
 function marksFile(config: LocalConfig): string {
   return path.join(scoresDir(config), 'marks.jsonl');
+}
+
+/** The marks the judge attempts of an earlier teamai left, written once; it being there says the upgrade ran. */
+function carriedFile(config: LocalConfig): string {
+  return path.join(scoresDir(config), 'marks-carried.jsonl');
 }
 
 function idOf(key: MarkKey): string {
@@ -137,20 +145,59 @@ function parsedLine(text: string): { key: MarkKey; line: Line } | undefined {
 
 const localDay = (at: string) => new Date(at).toDateString();
 
+function carriedLine(key: MarkKey, mark: CarriedMark, at: string): Line {
+  switch (mark.kind) {
+    case 'labelled':
+      return lineOf(key, at, { state: 'labelled' });
+    case 'failed':
+      return lineOf(key, at, { state: 'failed', code: mark.code });
+    case 'open': {
+      const restart: Restart = { lapses: Math.min(mark.lapses, MARK_LAPSES - 1) };
+
+      if (mark.requestedAt !== undefined) restart.requestedAt = mark.requestedAt;
+
+      return lineOf(key, at, { state: 'carried', ...restart });
+    }
+
+    default: {
+      const unhandled: never = mark;
+
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * The marks carried over from judge attempts, carried at `now` on the first read. Undefined where nothing was ever
+ * scored: there is nothing to carry, and nothing is written.
+ */
+async function readCarried(config: LocalConfig, now: string): Promise<string | undefined> {
+  const kept = await readFileSafe(carriedFile(config));
+
+  if (kept !== null) return kept;
+
+  if (!await pathExists(scoresDir(config))) return undefined;
+  const text = (await carriedMarks(config, now)).map(({ key, mark }) => `${JSON.stringify(carriedLine(key, mark, now))}\n`).join('');
+  await writeFileAtomic(carriedFile(config), text);
+
+  return text;
+}
+
 /** Every mark of this data home: the newest line per key in the order keys first appear, and every launch. */
-async function readLedger(config: LocalConfig) {
+async function readLedger(config: LocalConfig, now: string) {
+  const carried = await readCarried(config, now) ?? '';
   const text = await readFileSafe(marksFile(config)) ?? '';
   const newest = new Map<string, { key: MarkKey; line: Line }>();
   const launches: Array<{ key: MarkKey; line: Extract<Line, { state: 'open' }> }> = [];
 
-  for (const mark of text.split('\n').flatMap((one) => parsedLine(one) ?? [])) {
+  for (const mark of [...carried.split('\n'), ...text.split('\n')].flatMap((one) => parsedLine(one) ?? [])) {
     newest.set(idOf(mark.key), mark);
 
     if (mark.line.state === 'open') launches.push({ key: mark.key, line: mark.line });
   }
 
   /** Session launches of `now`'s local day, by run and group: a group is one launch. */
-  const slotsOn = (now: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && localDay(line.at) === localDay(now) ? [`${line.run}\n${line.group}`] : [])));
+  const slotsOn = (today: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && localDay(line.at) === localDay(today) ? [`${line.run}\n${line.group}`] : [])));
 
   return { newest, slotsOn, torn: text.length > 0 && !text.endsWith('\n') };
 }
@@ -183,6 +230,8 @@ async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<D
       return { state: { kind: 'failed', code: line.code }, restart: { lapses: 0 } };
     case 'waiting':
       return { state: { kind: 'waiting' }, restart: restartOf(line) };
+    case 'carried':
+      return { state: { kind: 'lapsed', lapses: line.lapses }, restart: restartOf(line) };
     case 'open': {
       if ((await readRun(line.run))?.ended === false) return { state: { kind: 'open', at: line.at, run: line.run, group: line.group, demand: line.demand }, restart: restartOf(line) };
       const lapses = line.lapses + 1;
@@ -250,7 +299,7 @@ function closeLine(key: MarkKey, current: Line | undefined, outcome: MarkOutcome
 export const Marks = {
   /** The mark of each key, in the order given. */
   async states(config: LocalConfig, keys: readonly MarkKey[], facts: MarkFacts): Promise<MarkState[]> {
-    const { newest } = await readLedger(config);
+    const { newest } = await readLedger(config, facts.now);
 
     return Promise.all(keys.map(async (key) => (await derive(key, newest.get(idOf(key))?.line, facts)).state));
   },
@@ -263,7 +312,7 @@ export const Marks = {
    */
   async open(config: LocalConfig, launch: Launch, facts: MarkFacts): Promise<Opened> {
     const done = await scoresLocked(config, 'marks', async () => {
-      const ledger = await readLedger(config);
+      const ledger = await readLedger(config, facts.now);
       const slots = ledger.slotsOn(facts.now);
       const outcome: Extract<Opened, { status: 'done' }> = { status: 'done', opened: [], skipped: [], limited: false };
       const lines: Line[] = [];
@@ -310,7 +359,7 @@ export const Marks = {
   /** Records what a write or a settle of the launch says of each key. Writing the same outcome again changes nothing. */
   async close(config: LocalConfig, keys: readonly MarkKey[], outcome: MarkOutcome, { now }: Pick<MarkFacts, 'now'>): Promise<{ status: 'done' } | { status: 'busy' }> {
     const done = await scoresLocked(config, 'marks', async () => {
-      const ledger = await readLedger(config);
+      const ledger = await readLedger(config, now);
       await append(config, ledger, keys.flatMap((key) => closeLine(key, ledger.newest.get(idOf(key))?.line, outcome, now) ?? []));
     });
 
@@ -319,12 +368,27 @@ export const Marks = {
 
   /** Session launches on `now`'s local day; a group of scorers judged in one launch counts once. */
   async launchesToday(config: LocalConfig, now: string): Promise<number> {
-    return (await readLedger(config)).slotsOn(now).size;
+    return (await readLedger(config, now)).slotsOn(now).size;
+  },
+
+  /** How many open passes and sessions the upgrade carried over from judge attempts; undefined before it ran. */
+  async carriedOver(config: LocalConfig, { now }: Pick<MarkFacts, 'now'>): Promise<{ passes: number; sessions: number } | undefined> {
+    const carried = await readCarried(config, now);
+
+    if (carried === undefined) return undefined;
+
+    const open = carried.split('\n').flatMap((one) => {
+      const mark = parsedLine(one);
+
+      return mark?.line.state === 'carried' ? [mark.key.subject.kind] : [];
+    });
+
+    return { passes: open.filter((kind) => kind === 'run').length, sessions: open.filter((kind) => kind !== 'run').length };
   },
 
   /** The marks automatic judging starts again: lapses before the fourth, and marks waiting for CI, none expired. */
   async restartable(config: LocalConfig, facts: MarkFacts): Promise<Array<{ key: MarkKey; state: Extract<MarkState, { kind: 'lapsed' | 'waiting' }> }>> {
-    const { newest } = await readLedger(config);
+    const { newest } = await readLedger(config, facts.now);
     const marks = await Promise.all([...newest.values()].map(async ({ key, line }) => ({ key, state: (await derive(key, line, facts)).state })));
 
     return marks.flatMap(({ key, state }) => ((state.kind === 'waiting' || state.kind === 'lapsed') && startsAgain(state) ? [{ key, state }] : []));

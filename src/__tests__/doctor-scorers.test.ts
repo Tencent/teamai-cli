@@ -128,4 +128,23 @@ describe('scorerNotes', () => {
   it('says nothing when every scorer is valid and known', async () => {
     expect(await scorerNotes(teamRepo({}))).toEqual([]);
   });
+
+  it('says how much open judge work the upgrade carried over from judge attempts', async () => {
+    const config = teamRepo({});
+    const plant = (entry: string, attempt: string, fields: Record<string, unknown>) => {
+      fs.mkdirSync(path.join(config.dataHome ?? '', 'scores', 'attempts', entry), { recursive: true });
+      fs.writeFileSync(path.join(config.dataHome ?? '', 'scores', 'attempts', entry, `${attempt}.json`), JSON.stringify({
+        attempt, entry, scorer: 'review', rubric: { sourceHash: 'h1' }, driver: { kind: 'local', machine: 'm', workspace: '/w' },
+        judge: { tool: 'claude', by: 'scorer', isolation: 'verified', access: 'read' }, status: 'leased', ...fields,
+      }));
+    };
+    plant('s0000000000001', 'a00000001', { subject: { runId: 'r00000000', step: 'fix', pass: 1 }, leasedAt: '2026-10-25T00:00:00.000Z', expiresAt: '2026-10-25T00:30:00.000Z' });
+    plant('s0000000000002', 'a00000002', { subject: { runId: 'r00000000', step: 'fix', pass: 2 }, leasedAt: '2026-10-25T00:00:00.000Z', expiresAt: '2026-10-25T00:30:00.000Z' });
+    plant('s0000000000003', 'a00000003', {
+      source: 'session', subject: { platform: 'claude-code', sessionId: '7c1e' }, session: { used: { skills: [] }, prompt: 'Add retries' },
+      leasedAt: '2026-10-25T00:00:00.000Z', expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+
+    expect(await scorerNotes(config)).toEqual(['The upgrade carried 2 open workflow passes and 1 open session over from judge attempts. teamai score --drain judges them.']);
+  });
 });
