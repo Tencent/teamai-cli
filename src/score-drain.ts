@@ -11,7 +11,7 @@ import { scoringUnavailable } from './scorers/home.js';
 import { scopeScoring } from './scorers/settings.js';
 import { Subject } from './scorers/subject.js';
 import { SessionCaptures } from './session-flow/captures.js';
-import { FINISHED_WORKFLOW, FinishedSessions } from './session-flow/finished-sessions.js';
+import { FINISHED_WORKFLOW, FinishedSessions, type FinishedStart } from './session-flow/finished-sessions.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
 import { SessionPublish, type StepSessionsPublished } from './session-flow/session-publish.js';
 import type { RunSubject, SessionSubject } from './scorers/label.js';
@@ -103,33 +103,57 @@ interface Reading {
   open: { passes: number; sessions: number };
 }
 
-/** What the teamai-score plan group `index` under `prefix` gave its subject, added to the reading. */
-function readGroup(ran: RunState, { prefix, index, text }: { prefix: string; index: number; text: string }, { into, open }: Reading): void {
-  const parsed = Subject.parse(text);
+type Judgeable = Exclude<Subject, { kind: 'team-session' }>;
 
-  if (!parsed.ok || parsed.subject.kind === 'team-session') return;
-  const { subject } = parsed.subject;
-  const kind = parsed.subject.kind === 'run' ? 'passes' : 'sessions';
+const kindOf = (subject: Judgeable): 'passes' | 'sessions' => (subject.kind === 'run' ? 'passes' : 'sessions');
+
+/** The label entries the item of teamai-score plan group `index` under `prefix` wrote, or `open` while its judge waits. */
+function itemOf(ran: RunState, prefix: string, index: number): 'open' | z.infer<typeof LabelEntriesSchema>['labels'] {
   const step = (name: string) => ran.steps.find((one) => one.id === `${prefix}.score[${index}].${name}`);
   const judge = step('judge');
 
-  if (judge && OPEN.has(judge.status)) {
-    open[kind] += 1;
-
-    return;
-  }
-
+  if (judge && OPEN.has(judge.status)) return 'open';
   const label = step('label');
-  const entries = LabelEntriesSchema.safeParse(label?.status === 'succeeded' ? label.outputs : undefined).data?.labels ?? [];
+
+  return LabelEntriesSchema.safeParse(label?.status === 'succeeded' ? label.outputs : undefined).data?.labels ?? [];
+}
+
+/** Adds to `into` what `entries` gave `subject`: the scorers that labelled it, its wait for CI, and each failure by code. */
+function addEntries(into: Finished, judged: Judgeable, entries: z.infer<typeof LabelEntriesSchema>['labels']): void {
   const labelled = entries.filter((entry) => entry.code === '').map((entry) => entry.scorer);
 
-  if (labelled.length > 0) into.judged.push({ source: parsed.subject.kind === 'run' ? 'workflow' : 'session', scorers: labelled });
+  if (labelled.length > 0) into.judged.push({ source: judged.kind === 'run' ? 'workflow' : 'session', scorers: labelled });
 
-  if (entries.some((entry) => entry.code === 'ci_pending')) into.ciPending[kind] += 1;
+  if (entries.some((entry) => entry.code === 'ci_pending')) into.ciPending[kindOf(judged)] += 1;
 
   for (const code of new Set(entries.map((entry) => entry.code).filter((one) => one !== '' && one !== 'ci_pending'))) {
-    into.failed.push({ scorers: entries.filter((entry) => entry.code === code).map((entry) => entry.scorer), subject, code });
+    into.failed.push({ scorers: entries.filter((entry) => entry.code === code).map((entry) => entry.scorer), subject: judged.subject, code });
   }
+}
+
+/** What the teamai-score plan step `plan` under `prefix` planned, each group added to the reading. */
+function readPlan(ran: RunState, { plan, prefix }: { plan: StepState; prefix: string }, { into, open }: Reading): void {
+  const groups = GroupsSchema.safeParse(plan.status === 'succeeded' ? plan.outputs : undefined).data?.groups ?? [];
+
+  groups.forEach((group, index) => {
+    const parsed = Subject.parse(group.subject);
+
+    if (!parsed.ok || parsed.subject.kind === 'team-session') return;
+    const item = itemOf(ran, prefix, index);
+
+    if (item === 'open') open[kindOf(parsed.subject)] += 1;
+    else addEntries(into, parsed.subject, item);
+  });
+}
+
+/** What a failed step says of why: its driver's report, or the engine's failure. */
+const whyFailed = (step: Extract<StepState, { status: 'failed' }>): string | undefined => step.message ?? step.failure?.message;
+
+/** What a teamai-share-session publish step did: archived its session, or failed to. */
+function readPublish(step: StepState, into: Finished): void {
+  if (step.status === 'succeeded') into.capturedArchived += 1;
+
+  if (step.status === 'failed') into.unpublished.push({ kind: 'sessions', count: 1, reason: whyFailed(step) ?? 'teamai session push failed' });
 }
 
 /**
@@ -142,22 +166,19 @@ function readFinished(ran: RunState, reading: Reading): void {
   for (const step of ran.steps) {
     const [, prefix = '', name] = /^(.+)\.(plan|publish)$/u.exec(step.id) ?? [];
 
-    if (name === 'plan') {
-      const groups = GroupsSchema.safeParse(step.status === 'succeeded' ? step.outputs : undefined).data?.groups ?? [];
-      groups.forEach((group, index) => readGroup(ran, { prefix, index, text: group.subject }, reading));
-    } else if (name === 'publish' && !ids.has(`${prefix}.plan`)) {
-      if (step.status === 'succeeded') reading.into.capturedArchived += 1;
-
-      if (step.status === 'failed') reading.into.unpublished.push({ kind: 'sessions', count: 1, reason: step.failure?.message ?? 'teamai session push failed' });
-    }
+    if (name === 'plan') readPlan(ran, { plan: step, prefix }, reading);
+    else if (name === 'publish' && !ids.has(`${prefix}.plan`)) readPublish(step, reading.into);
   }
 }
 
 /** Why `run` ended failed: each of its own steps that failed, with what it said. */
 function failedSteps(ran: RunState): string {
-  const said = ran.steps.flatMap((step) => (step.status === 'failed' && !/[.[]/u.test(step.id)
-    ? [`step ${step.id} failed${step.failure ? `: ${step.failure.message.replace(/\.$/u, '')}` : ''}`]
-    : []));
+  const said = ran.steps.flatMap((step) => {
+    if (step.status !== 'failed' || /[.[]/u.test(step.id)) return [];
+    const why = whyFailed(step);
+
+    return [`step ${step.id} failed${why === undefined ? '' : `: ${why.replace(/\.$/u, '')}`}`];
+  });
 
   return said.join('; ') || 'no step says why';
 }
@@ -184,28 +205,9 @@ async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finis
   const unavailable = scoringUnavailable(config);
 
   if (unavailable) log.warn(unavailable);
-  const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode });
+  const started = await startHere(config, mode, finished);
 
-  switch (started.kind) {
-    case 'idle':
-      return finished;
-    case 'working':
-      finished.working.push(started.run);
-
-      return finished;
-    case 'failed':
-      finished.broke.push(`${FINISHED_WORKFLOW} did not start: ${started.failure.code}: ${started.failure.message}`);
-
-      return finished;
-    case 'started':
-      break;
-    default: {
-      const unhandled: never = started;
-
-      return unhandled;
-    }
-  }
-
+  if (!started) return finished;
   const team = await loadTeamConfig(config.repo.localPath);
   const driven = await runLocalDriver(config, started.run, started.cwd, { toolPaths: team?.toolPaths });
   const ran = await readRun(config, started.run);
@@ -214,6 +216,31 @@ async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finis
   else readDriven(driven, ran, finished);
 
   return finished;
+}
+
+/** The run of teamai-finished-sessions this drain started in `config`, or undefined, with why in `finished`, when none. */
+async function startHere(config: LocalConfig, mode: RunMode, finished: Finished): Promise<Extract<FinishedStart, { kind: 'started' }> | undefined> {
+  const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode });
+
+  switch (started.kind) {
+    case 'idle':
+      return undefined;
+    case 'working':
+      finished.working.push(started.run);
+
+      return undefined;
+    case 'failed':
+      finished.broke.push(`${FINISHED_WORKFLOW} did not start: ${started.failure.code}: ${started.failure.message}`);
+
+      return undefined;
+    case 'started':
+      return started;
+    default: {
+      const unhandled: never = started;
+
+      return unhandled;
+    }
+  }
 }
 
 /** Publishes the workflow run records of `config` that a run queued and could not publish, as pull does. */
@@ -355,8 +382,20 @@ function hasFailed(result: DrainResult): boolean {
   return result.failed.length > 0 || result.broke.length > 0 || result.unpublished.length > 0 || result.usage.some((usage) => !usage.reported);
 }
 
-/** Prints what `result` did, one line per kind of work. */
-function print(result: DrainResult): void {
+/** Prints what each run's step sessions did: archived, or skipped for a reason, by reason. */
+function printSteps(steps: readonly StepSessionsPublished[]): void {
+  for (const { run: runId, archived, skipped } of steps) {
+    if (archived > 0) log.success(`Archived ${plural({ count: archived, one: 'step session', many: 'step sessions' })} of ${runId} to teamai-reports (scrubbed)`);
+
+    for (const reason of new Set(skipped.map((pass) => pass.reason))) {
+      const skippedPasses = skipped.filter((pass) => pass.reason === reason);
+      log.info(`Skipped ${plural({ count: skippedPasses.length, one: 'step session', many: 'step sessions' })} of ${runId}: ${reason} (${skippedPasses.map((pass) => `${pass.step}, pass ${pass.pass}`).join('; ')})`);
+    }
+  }
+}
+
+/** Prints what `result` judged, published, archived and reported. */
+function printDone(result: DrainResult): void {
   const passes = result.judged.filter((one) => one.source === 'workflow');
   const sessions = result.judged.filter((one) => one.source === 'session');
 
@@ -371,16 +410,11 @@ function print(result: DrainResult): void {
   if (result.labelsPublished > 0) log.success(`Published ${plural({ count: result.labelsPublished, one: 'label', many: 'labels' })} to teamai-reports`);
 
   if (result.capturedArchived > 0) log.success(`Archived ${plural({ count: result.capturedArchived, one: 'captured session', many: 'captured sessions' })} to teamai-reports (scrubbed)`);
+  printSteps(result.steps);
+}
 
-  for (const { run: runId, archived, skipped } of result.steps) {
-    if (archived > 0) log.success(`Archived ${plural({ count: archived, one: 'step session', many: 'step sessions' })} of ${runId} to teamai-reports (scrubbed)`);
-
-    for (const reason of new Set(skipped.map((pass) => pass.reason))) {
-      const skippedPasses = skipped.filter((pass) => pass.reason === reason);
-      log.info(`Skipped ${plural({ count: skippedPasses.length, one: 'step session', many: 'step sessions' })} of ${runId}: ${reason} (${skippedPasses.map((pass) => `${pass.step}, pass ${pass.pass}`).join('; ')})`);
-    }
-  }
-
+/** Prints what `result` could not do, and what it left for other drivers or the next drain. */
+function printLeft(result: DrainResult): void {
   if (result.unpublished.length > 0) log.error(unpublishedText(result.unpublished));
 
   for (const { member, reported } of result.usage) {
@@ -391,9 +425,8 @@ function print(result: DrainResult): void {
   for (const broke of result.broke) log.error(broke);
 
   for (const { run: runId, passes: heldPasses, sessions: heldSessions, reason } of result.held) {
-    const what = passesAndSessions({ passes: heldPasses, sessions: heldSessions });
     const them = heldPasses + heldSessions === 1 ? 'it' : 'them';
-    log.info(`Left open: the judge of ${what} in run ${runId}: ${reason.replace(/\.$/u, '')}. A driver whose tools judge ${them} takes ${them} with: teamai workflow next ${runId} --json '{"driver":{…,"can":{…}}}'`);
+    log.info(`Left open: the judge of ${passesAndSessions({ passes: heldPasses, sessions: heldSessions })} in run ${runId}: ${reason.replace(/\.$/u, '')}. A driver whose tools judge ${them} takes ${them} with: teamai workflow next ${runId} --json '{"driver":{…,"can":{…}}}'`);
   }
 
   const ci = passesAndSessions(result.ciPending);
@@ -401,8 +434,15 @@ function print(result: DrainResult): void {
   if (ci !== '') log.info(`Left open: ${ci} whose CI has not finished. The next teamai score --drain labels them once it has.`);
 
   for (const runId of result.working) log.info(`Left open: run ${runId} of ${FINISHED_WORKFLOW} is already working here. Run teamai score --drain again once it ends.`);
+}
 
-  if (result.held.length === 0 && ci === '' && result.working.length === 0 && !hasFailed(result)) log.success('Nothing left to do here');
+/** Prints what `result` did, one line per kind of work. */
+function print(result: DrainResult): void {
+  printDone(result);
+  printLeft(result);
+  const left = result.held.length + result.working.length + result.ciPending.passes + result.ciPending.sessions;
+
+  if (left === 0 && !hasFailed(result)) log.success('Nothing left to do here');
 }
 
 export const Drain = { run, print, hasFailed, drainsUnattendedRun } as const;
