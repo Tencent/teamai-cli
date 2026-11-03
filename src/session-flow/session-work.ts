@@ -65,17 +65,35 @@ export interface JudgedTranscript {
   gaps: EvidenceGap[];
 }
 
-/** A read session's transcript followed by each of its subagents', each kept to its budget, and what of them could not be read. */
+/**
+ * The directory a step confined to a directory works in, under its run's `$TEAMAI_RUN_DIR`: no other step works there.
+ * A child agent the session started for such a step read only that directory, so its transcript is not the session's
+ * work, and a judge of the session never reads it.
+ */
+const RUN_SCRATCH = /[\\/]runs[\\/]r[0-9a-f]{16}[\\/]scratch[\\/]/;
+
+/** `found` without the subagents that worked a step confined to a directory of a workflow run. */
+function ownWork<T extends { subagents?: SubagentsRead }>(found: T): T {
+  if (found.subagents?.status !== 'read') return found;
+
+  return { ...found, subagents: { ...found.subagents, agents: found.subagents.agents.filter((agent) => !RUN_SCRATCH.test(firstPrompt(agent.session))) } };
+}
+
+/**
+ * A read session's transcript followed by each of its subagents', each kept to its budget, and what of them could not
+ * be read. A subagent that worked a confined step is left out.
+ */
 export function judgedTranscript(
   found: { session: Session; subagents?: SubagentsRead },
   budget: { session: number; subagent: number },
   mask: (text: string) => string,
 ): JudgedTranscript {
   const gaps: EvidenceGap[] = [];
-  let body = transcriptOf(found.session, budget.session, mask);
+  const { session, subagents } = ownWork(found);
+  let body = transcriptOf(session, budget.session, mask);
 
-  if (found.subagents?.status !== 'read') gaps.push('subagents_unread');
-  else for (const agent of found.subagents.agents) {
+  if (subagents?.status !== 'read') gaps.push('subagents_unread');
+  else for (const agent of subagents.agents) {
     if (agent.start === 'unknown') gaps.push('subagent_boundary_unknown');
     body += `\n\n## Subagent (depth ${agent.depth}${agent.finished === false ? ', not finished' : ''})\n\n${transcriptOf(agent.session, budget.subagent, mask)}`;
   }
@@ -157,7 +175,7 @@ export function judgeSession({ platform, found, captures, mask, agent: archived 
   const { session } = found;
   const transcript = judgedTranscript(found, { session: Number.POSITIVE_INFINITY, subagent: Number.POSITIVE_INFINITY }, mask);
   const subject = { platform, sessionId: session.sessionId };
-  const used = usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures));
+  const used = usedSkills(AgentSession.toolForPlatform(platform), ownWork(found), capturedTeamSkillsAt(captures));
   const skills = skillsEvidence(captures, used, mask);
 
   const manifest: JudgedSession['manifest'] = {

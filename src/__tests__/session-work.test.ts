@@ -380,6 +380,28 @@ describe('the transcript a judge reads', () => {
     messages: [{ role: 'assistant', content: [{ type: 'tool_call', toolName: 'bash', callId: 'toolu_1', arguments: { command } }], timestamp: NOW }],
   });
 
+  it('leaves out a subagent that worked a step confined to a directory of a workflow run, and keeps every other', () => {
+    const said = (text: string): Session => ({
+      sessionId: SESSION, title: 'agent', cwd: '/tmp/proj', platform: 'claude-code', createdAt: NOW, updatedAt: NOW,
+      messages: [{ role: 'user', content: [{ type: 'text', text }], timestamp: NOW }],
+    });
+    const run = '~/.teamai/workflows/runs/r0123456789abcdef';
+    const judged = judgeSession({
+      platform: 'claude-code', captures: [], mask: (text) => text,
+      found: {
+        session: said('Add retries to sync.ts.'),
+        subagents: { status: 'read', agents: [
+          { session: said(`Read \`${run}/attempts/a1b2c3d4/brief.md\` and do what it says. Work only in \`${run}/scratch/a1b2c3d4/\`.`), depth: 1, start: 'unknown' },
+          { session: said('Find where sync.ts retries.'), depth: 1 },
+        ] },
+      },
+    });
+
+    expect(judged.body).not.toContain('brief.md');
+    expect(judged.body).toContain('Find where sync.ts retries.');
+    expect(judged.manifest.gaps).not.toContain('subagent_boundary_unknown');
+  });
+
   it('masks a key=value secret written as JSON inside a tool argument string', () => {
     const judged = judgeSession({
       platform: 'claude-code', found: { session: withCommand(`curl -d '{"password": "Tr0ub4dorAndHorse9"}' https://x`) },
