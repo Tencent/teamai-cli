@@ -1,6 +1,7 @@
 /**
  * Real CLI: an ordinary workflow whose command step prints a workflow, and a `from` step that runs it, on the local
  * driver. The printing step runs `teamai --version` with no teamai of its own on PATH, so it finds the CLI that runs it.
+ * A command step whose PATH finds an older teamai first still runs the CLI that runs the workflow.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,7 +30,19 @@ process.stdout.write(JSON.stringify({ definition: { definition }, plan: { teamai
 const HELLO = `require('node:fs').writeFileSync(process.env.FIXTURE_ROOT + '/hello.txt', 'hello');
 `;
 
+const VERSION = `schemaVersion: v1alpha1
+name: version
+description: Say which teamai a command step runs.
+steps:
+  - id: version
+    command: printf '{"version":"%s"}' "$(teamai --version)"
+    output: { version: string }
+outputs:
+  version: steps.version.outputs.version
+`;
+
 const DoneSchema = z.object({ done: z.object({ run: z.string(), outcome: z.string(), outputs: z.object({ plan: z.object({ teamai: z.string() }) }) }) });
+const VersionDoneSchema = z.object({ done: z.object({ outputs: z.object({ version: z.string() }) }) });
 const RunSchema = z.object({ admitted: z.object({ plan: z.object({ hash: z.string(), output: z.unknown() }) }) });
 
 const fixtures: BenchmarkFixture[] = [];
@@ -57,5 +70,20 @@ describe('a from step on the local driver', () => {
     expect(fs.readFileSync(path.join(fixture.root, 'hello.txt'), 'utf8')).toBe('hello');
     const run = RunSchema.parse(fixture.runFile(done.run));
     expect(run.admitted.plan.output).toEqual({ definition: { definition: expect.objectContaining({ name: 'generated' }) }, plan: { teamai: version } });
+  }, 120_000);
+
+  it('runs the running teamai from a command step whose PATH has an older teamai first', async () => {
+    const fixture = await benchmarkFixture({ tool: 'does-nothing', sandbox: false, tools: [], team: { 'workflows/version.yaml': VERSION } });
+    fixtures.push(fixture);
+    const version = (await fixture.teamai(['--version'])).stdout.trim();
+    const older = path.join(fixture.root, 'older-bin');
+    fs.mkdirSync(older);
+    fs.writeFileSync(path.join(older, 'teamai'), '#!/bin/sh\necho 0.0.1\n', { mode: 0o755 });
+    fixture.env.PATH = `${older}${path.delimiter}${fixture.env.PATH ?? ''}`;
+
+    const started = await fixture.teamai(['workflow', 'start', 'version', '--driver', 'local']);
+
+    expect(started.code, said(started)).toBe(0);
+    expect(VersionDoneSchema.parse(envelope(started).data).done.outputs.version.trim()).toBe(version);
   }, 120_000);
 });
