@@ -2100,6 +2100,11 @@ const CONFINED_OBSERVED = {
   effort: 'confined.effort must be {"reported": "<effort>"}, with "requested" when known',
 } as const;
 
+/** Why a report's `confined` does not parse, naming `field` when it is one a driver sends as a bare name by mistake. */
+function confinedRefusal(field: PropertyKey | undefined): string {
+  return field === 'model' || field === 'effort' ? CONFINED_OBSERVED[field] : 'confined must be what the confined run measured: its tool, isolation and access, and its model, effort and usage when known';
+}
+
 /** A parsed `next` payload and the fields the CLI did not read from it. */
 export interface ParsedNextPayload {
   request: NextRequest;
@@ -2253,11 +2258,7 @@ export function parseReport(value: unknown): ParsedReport | string {
   if (record.confined !== undefined) {
     const confined = ConfinedRunReportSchema.safeParse(record.confined);
 
-    if (!confined.success) {
-      const field = confined.error.issues[0]?.path[0];
-
-      return field === 'model' || field === 'effort' ? CONFINED_OBSERVED[field] : 'confined must be what the confined run measured: its tool, isolation and access, and its model, effort and usage when known';
-    }
+    if (!confined.success) return confinedRefusal(confined.error.issues[0]?.path[0]);
 
     report.confined = confined.data;
   }

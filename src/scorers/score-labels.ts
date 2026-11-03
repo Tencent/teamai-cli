@@ -39,6 +39,19 @@ export const readJudgeRun: ReadJudgeRun = (run, step) => z.object({ confined: Co
 
 const JudgeSpendSchema = z.object({ confined: z.object({ usage: ConfinedUsageSchema.optional() }).optional(), tokens: TokenUsageSchema.optional(), cost: CostSchema.optional() });
 
+/** The usage of a report's `tokens` and `cost`, or undefined when it gave neither. */
+function reportedUsage({ tokens, cost }: Omit<z.infer<typeof JudgeSpendSchema>, 'confined'>): ConfinedUsage | undefined {
+  const usage: ConfinedUsage = {};
+
+  if (tokens?.input !== undefined) usage.inputTokens = tokens.input;
+
+  if (tokens?.output !== undefined) usage.outputTokens = tokens.output;
+
+  if (cost) usage.cost = cost;
+
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
 /**
  * What judge step `step` of `run` spent: its confined run's usage, or the tokens and cost its report gave, which is all a
  * confined run that failed reports. Undefined when it reported nothing.
@@ -46,18 +59,7 @@ const JudgeSpendSchema = z.object({ confined: z.object({ usage: ConfinedUsageSch
 function judgeSpend(run: RunState, step: string): ConfinedUsage | undefined {
   const spent = JudgeSpendSchema.safeParse(run.steps.find((state) => state.id === step)).data;
 
-  if (spent?.confined?.usage) return spent.confined.usage;
-
-  if (!spent?.tokens && !spent?.cost) return undefined;
-  const usage: ConfinedUsage = {};
-
-  if (spent.tokens?.input !== undefined) usage.inputTokens = spent.tokens.input;
-
-  if (spent.tokens?.output !== undefined) usage.outputTokens = spent.tokens.output;
-
-  if (spent.cost) usage.cost = spent.cost;
-
-  return usage;
+  return spent?.confined?.usage ?? (spent ? reportedUsage(spent) : undefined);
 }
 
 /** The judge step of the group attempt `attempt` runs a step of. */

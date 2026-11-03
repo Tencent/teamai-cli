@@ -242,20 +242,15 @@ async function openOrLapsed(line: Extract<Line, { state: 'open' }>, readRun: Rea
   return { state: { kind: 'lapsed', lapses }, restart: { ...restartOf(line), lapses } };
 }
 
-function failedState(line: Extract<Line, { state: 'failed' }>): MarkState {
-  const state: Extract<MarkState, { kind: 'failed' }> = { kind: 'failed', code: line.code };
+/** A failed mark's code, and what its judge call spent when its tool reported that. */
+type FailedFields = Omit<Extract<MarkOutcome, { kind: 'failed' }>, 'kind'>;
 
-  if (line.usage) state.usage = line.usage;
+function failedFields({ code, usage }: { code: JudgeFailureCode; usage?: ConfinedUsage | undefined }): FailedFields {
+  const fields: FailedFields = { code };
 
-  return state;
-}
+  if (usage) fields.usage = usage;
 
-function failedLine(outcome: Extract<MarkOutcome, { kind: 'failed' }>): LineState {
-  const line: Extract<LineState, { state: 'failed' }> = { state: 'failed', code: outcome.code };
-
-  if (outcome.usage) line.usage = outcome.usage;
-
-  return line;
+  return fields;
 }
 
 /** The mark `line` leaves, before its window. */
@@ -266,7 +261,7 @@ async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<D
     case 'labelled':
       return { state: { kind: 'labelled' }, restart: FRESH };
     case 'failed':
-      return { state: failedState(line), restart: FRESH };
+      return { state: { kind: 'failed', ...failedFields(line) }, restart: FRESH };
     case 'waiting':
       return { state: { kind: 'waiting' }, restart: restartOf(line) };
     case 'carried':
@@ -316,7 +311,7 @@ function closeLine(key: MarkKey, current: Line | undefined, outcome: MarkOutcome
     case 'labelled':
       return lineOf(key, now, { state: 'labelled' });
     case 'failed':
-      return lineOf(key, now, failedLine(outcome));
+      return lineOf(key, now, { state: 'failed', ...failedFields(outcome) });
     case 'waiting':
       return lineOf(key, now, { state: 'waiting', ...current && 'lapses' in current ? restartOf(current) : FRESH });
     default: {

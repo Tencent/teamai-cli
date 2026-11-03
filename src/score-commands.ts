@@ -124,12 +124,15 @@ function namesSession(options: ScoreOptions): boolean {
   return [options.session, options.source, options.teamSession, options.author, options.label].some((flag) => flag !== undefined);
 }
 
-/** The refusal of `--label` beside a pass, with the teamai-score start that labels that pass by hand. */
-function passLabelRefusal(options: ScoreOptions & { label: string }): WorkflowEnvelope {
+/** The refusal of `--label` beside a pass and no session, with the teamai-score start that labels that pass by hand. */
+function passLabelRefusal(options: ScoreOptions): WorkflowEnvelope | undefined {
+  const { label } = options;
+
+  if (!namesPass(options) || label === undefined || [options.session, options.source, options.teamSession, options.author].some((flag) => flag !== undefined)) return undefined;
   const run = options.run ?? '<run id>';
   const step = options.step ?? '<step path>';
   const pass = options.pass ?? '<pass>';
-  const inputs = { subject: `run:${run}:${step}:${pass}`, scorers: options.scorer ?? ['<scorer>'], label: options.label, batch: false, demand: 'named' };
+  const inputs = { subject: `run:${run}:${step}:${pass}`, scorers: options.scorer ?? ['<scorer>'], label, batch: false, demand: 'named' };
 
   return failure('invalid_arguments', `--label labels a session. To label pass ${pass} of step ${step} of run ${run} by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs ${shellWord(JSON.stringify(inputs))}`);
 }
@@ -137,9 +140,9 @@ function passLabelRefusal(options: ScoreOptions & { label: string }): WorkflowEn
 /** Why the flags of `options` cannot go together, or undefined. */
 function flagConflict(options: ScoreOptions): WorkflowEnvelope | undefined {
   if (options.drain) return failure('invalid_arguments', '--drain goes alone: teamai score --drain');
-  const { label } = options;
+  const passLabel = passLabelRefusal(options);
 
-  if (namesPass(options) && label !== undefined && [options.session, options.source, options.teamSession, options.author].every((flag) => flag === undefined)) return passLabelRefusal({ ...options, label });
+  if (passLabel) return passLabel;
 
   if (namesPass(options) && namesSession(options)) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
   const file = options.push ? options.scorer?.find(isScorerFile) : undefined;

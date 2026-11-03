@@ -386,6 +386,13 @@ async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> 
   }
 }
 
+/** `row` with why its step was skipped, when the engine said. */
+function withSkipReason(row: StepRow, state: RunState['steps'][number] | undefined): StepRow {
+  if (state?.status === 'skipped' && state.message !== undefined) row.message = state.message;
+
+  return row;
+}
+
 function localDetail(run: RunState, row: LocalRunRow, judging: Judging, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
   const live = new Map(run.steps.map((state) => [`${state.id}#${state.pass ?? 1}`, state]));
   const record = localRecord(run);
@@ -401,11 +408,7 @@ function localDetail(run: RunState, row: LocalRunRow, judging: Judging, scoring:
 
     if (answer) answered.answer = answer;
 
-    const stepped = stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), judging, gate);
-
-    if (state?.status === 'skipped' && state.message !== undefined) stepped.message = state.message;
-
-    return stepped;
+    return withSkipReason(stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), judging, gate), state);
   });
 
   return { run: row, steps: withHarnessChanges(steps), scoring };
