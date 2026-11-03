@@ -59,6 +59,9 @@ sharing:
         timeout: 5000
         retries: 3
 
+workflows:
+  retention: 14d              # how long doctor --fix leaves what a settled run left: a duration such as 14d, or never
+
 ```
 
 ### config.yaml (local config)
@@ -108,6 +111,7 @@ The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHi
 | Claude in one workspace all the same | `ai: { tool: claude }` | that workspace's `~/.teamai/projects/<slug>/config.yaml` |
 | Recall on for the whole team | `sharing: { recall: { enabled: true } }` | the team's `teamai.yaml` |
 | No judging of the sessions you run by hand, in any workspace | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
+| Keep what workflow runs leave for a week on this machine ([The branches a run leaves](./workflow.md#the-branches-a-run-leaves)) | `workflows: { retention: 7d }` | `~/.teamai/config.yaml` |
 
 `teamai doctor` names the file of the workspace it runs in. The dashboard's [Member settings](./dashboard.md#member-settings) panel shows the same for the workspace you select.
 

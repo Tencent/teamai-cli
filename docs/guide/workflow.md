@@ -496,6 +496,53 @@ If a host may have opened the request but TeamAI cannot confirm it, the step fai
 
 A driver that opens its own pull request, such as one on another machine, reports it as `changes.pr_url` with the step's other `changes`. TeamAI keeps an `https` URL without credentials, of at most 512 characters, and removes its query and fragment. On the origin's own host, the URL must be the open pull request of the branch into its target, and one TeamAI cannot check with the host is dropped. Delivery then finds the open pull request itself. A URL on another host, such as a private review service, is kept as it is. A URL TeamAI does not keep is dropped, and so is one no delivery uses: from a step without `deliver: pr`, from a step that failed or was released, or for a branch with no changes beyond the run base. The report is still accepted, and its envelope lists `"dropped":[{"field":"changes.pr_url","reason":"…"}]` without the value. The branch is then delivered as for any driver.
 
+### The branches a run leaves
+
+A run that succeeds deletes, here and on `origin`, each `teamai/<run>/…` branch whose commits a branch it keeps already holds. It keeps the branches of its pull requests, and the final copy: the branch of the last step that changed something. A failed or cancelled run keeps every branch and worktree, so you can look at what it did.
+
+```text
+# ship: left and right each write a branch, join merges both
+$ git branch --list 'teamai/*'          # as join settles
+  teamai/r9ae70cdd87f258db/join/p1
+  teamai/r9ae70cdd87f258db/left/p1
+  teamai/r9ae70cdd87f258db/right/p1
+$ git branch --list 'teamai/*'          # once the run succeeded
+  teamai/r9ae70cdd87f258db/join/p1
+```
+
+A branch that cannot be deleted, such as a protected one on origin, stays, and the run warns:
+
+```text
+⚠ Branch teamai/<run>/build-1/p1 of run <run> was not deleted on origin: <reason>. teamai doctor --fix tries again.
+```
+
+`teamai doctor --fix` removes what a run left once `workflows.retention` has passed since it settled: its branches here and on origin, its worktrees, the commits teamai kept under `refs/teamai/kept/`, and its base pin `teamai/<run>/base`. It keeps pull request branches. It also finds the runs other machines published on `teamai-reports`, and deletes their branches on origin. The default is `14d`. `never` keeps everything. It is a [member setting](reference.md#member-settings), so a machine or a workspace can set its own:
+
+```yaml
+# teamai.yaml
+workflows:
+  retention: 30d
+```
+
+```yaml
+# ~/.teamai/config.yaml
+workflows:
+  retention: 7d
+```
+
+```text
+$ teamai doctor
+ℹ Member settings:
+  workflows.retention: 7d, from the user config /home/ana/.teamai/config.yaml, also this machine's (the team says 30d)
+
+$ teamai doctor --fix
+ℹ Removed what 2 workflow run(s) left behind (workflows.retention 7d, from /home/ana/.teamai/config.yaml):
+ℹ   r9ae70cdd87f258db (settled 2026-10-27T19:39:13.771Z): teamai/r9ae70cdd87f258db/join/p1
+ℹ   rbcc5a67473d24a48 (settled 2026-10-27T19:39:16.700Z): teamai/rbcc5a67473d24a48/fail/p1, teamai/rbcc5a67473d24a48/left/p1, worktree /home/ana/app/.teamai/workflow-worktrees/teamai-rbcc5a67473d24a48-fail-p1-84c932947390
+```
+
+A value that is neither a duration nor `never` is skipped with a warning, and the next level decides. TeamAI never deletes a pull request branch: turn on your provider's option to delete a head branch once it is merged.
+
 ### Start from CI
 
 A GitHub Actions job can start a run with the local driver, and the run delivers its pull requests unattended. Store the workflow in the team repo. Give the job a token that can read the team repo, push branches to the product repo, and open pull requests there. The job below reads it from a `WORKFLOW_TOKEN` secret, and the team repo's URL from a `TEAM_REPO` variable. The runner also needs the tool that runs the prompt steps, signed in, and `--tools` picks it for this start.
@@ -759,7 +806,7 @@ When the run cannot be offered, such as with no push access to the team repo, or
 
 With [usage reporting](reporting.md) on, every run publishes a privacy-preserving record to the team's `teamai-reports` branch: once when it starts and once when it ends. With it off, nothing is published and the envelopes carry no `record`. Records live in `workflows/runs/<run id>.json`, keyed by run id, so a retried publication updates the same record instead of adding a copy.
 
-A record carries only: the run id, workflow name, its `alias` when its definition has one, `sourceHash`, optional `teamRevision`, `origin` (the team's definition, or a [default](#default-workflows) and the teamai version that shipped it), phase (`start` or `end`), driver kind, the run mode it started in (`runMode`), status, the end the run reached (when it reached one), the failure code of a run that failed without reaching an end, when it is a code teamai sets, such as `loop_exhausted` for a loop that ran out or `tool_unavailable` when the local driver cannot find the tool (never its message), start and end times, duration, per-step entries (step path such as `check.classify`, agent, tool, model, outcome, tokens, the pass's `runMode` when its driver sent one on `next`, and what the pass delivered (`outcomes`: the commit shas on its branch, the pull request delivered for it, and the ids of the learnings `teamai contribute` recorded in its attempt) — a mixed-agent run records each step's own fields; `tool` is kept only when it is one of the local driver's tools, and `model` is the name the driver reported, kept only when it is shaped like a model name), summary step counts (succeeded, failed, skipped, cancelled), the cumulative settled-attempt count, the pull requests the run delivered (`prs`), `isolated: true` for an [isolated run](workflow-advanced.md#isolated-runs), and the publishing username. `sourceHash` identifies the exact workflow and prompt bytes that ran. `teamRevision` is present only when one remote-reachable team commit stores those exact bytes for the parent and every child workflow; local or unpushed edits and mixed cached revisions leave it out. Every entry has its `pass` number, and a step that a loop ran more than once has one entry per pass. An item of a `for_each` counts the times that item ran, so its `pass` can be lower than its step's when an earlier pass had fewer items. A cancelled step's entry has the outcome `cancelled`, and a skipped step's has none. The counts cover each step once, as the run ended. Steps of a sub-workflow that never started are not counted. Prompts, command text, input values, `env` values, outputs, diffs, secret values, local workspace paths, session ids, and hostnames have no field to land in — the record is built from an allowlist, not filtered from the run state.
+A record carries only: the run id, workflow name, its `alias` when its definition has one, `sourceHash`, optional `teamRevision`, `origin` (the team's definition, or a [default](#default-workflows) and the teamai version that shipped it), phase (`start` or `end`), driver kind, the run mode it started in (`runMode`), status, the end the run reached (when it reached one), the failure code of a run that failed without reaching an end, when it is a code teamai sets, such as `loop_exhausted` for a loop that ran out or `tool_unavailable` when the local driver cannot find the tool (never its message), start and end times, duration, per-step entries (step path such as `check.classify`, agent, tool, model, outcome, tokens, the pass's `runMode` when its driver sent one on `next`, and what the pass delivered (`outcomes`: the commit shas on its branch, the pull request delivered for it, and the ids of the learnings `teamai contribute` recorded in its attempt) — a mixed-agent run records each step's own fields; `tool` is kept only when it is one of the local driver's tools, and `model` is the name the driver reported, kept only when it is shaped like a model name), summary step counts (succeeded, failed, skipped, cancelled), the cumulative settled-attempt count, the pull requests the run delivered (`prs`) and their branches (`prBranches`), `isolated: true` for an [isolated run](workflow-advanced.md#isolated-runs), and the publishing username. `sourceHash` identifies the exact workflow and prompt bytes that ran. `teamRevision` is present only when one remote-reachable team commit stores those exact bytes for the parent and every child workflow; local or unpushed edits and mixed cached revisions leave it out. Every entry has its `pass` number, and a step that a loop ran more than once has one entry per pass. An item of a `for_each` counts the times that item ran, so its `pass` can be lower than its step's when an earlier pass had fewer items. A cancelled step's entry has the outcome `cancelled`, and a skipped step's has none. The counts cover each step once, as the run ended. Steps of a sub-workflow that never started are not counted. Prompts, command text, input values, `env` values, outputs, diffs, secret values, local workspace paths, session ids, and hostnames have no field to land in — the record is built from an allowlist, not filtered from the run state.
 
 An entry's `agent` is what that pass ran as, as observed. It holds the step's `agent:` definition and how the tool got it (`main` when the tool reads its own agent file, `prompt` when the instructions are prepended), the tool and its version, the model and effort the launch asked for and the model the tool reported, the team commit the checkout last pulled and whether a delivered file was edited since, the project commit, the TeamAI version, and the driver kind. A value nobody observed is left out. `fingerprint` hashes the definition, tool, model, effort and team commit, so two passes with the same fingerprint ran with the same recorded parts. It is left out when the model or the team commit is unknown, or a delivered file was edited. A pass nothing observed, and a record from an older TeamAI, carry only the definition's name. While a step runs, the tool it starts, and any session that tool starts in the same checkout, skips the session-start pull when the checkout's last pull delivered completely to that tool, so the step keeps the team commit it records.
 

@@ -43,8 +43,9 @@ teamai dashboard --port 8080
 | `workflows.tools.default` | `codex` | 本机，`~/.teamai/config.yaml` | — |
 | `recallEnabled` | `false` | 此工作区，`~/.teamai/projects/<slug>/config.yaml` | 本机 `true`，团队 `false` |
 | `updatePolicy` | `skip` | 用户配置，`~/.teamai/config.yaml` | 此工作区 `auto`，未使用 |
+| `workflows.retention` | `7d` | 本机，`~/.teamai/config.yaml` | 团队 `30d`，此工作区 `2 weeks`，未使用 |
 
-由 user scope 决定 `updatePolicy` 或 `autoCompactTokens` 时，此工作区自己的值标为“未使用”。面板不列出 `scoring`，因为本机的 `scoring` 只会让评判更严格：每种模式和每日上限来自哪项设置，见会话共享面板。**未读取**列出没有 user scope 安装的 `~/.teamai/config.yaml` 中不是成员设置的键，如 `excludedSkills`。在侧边栏选择另一个工作区即可对比。面板不修改任何设置：请编辑它给出的文件。
+由 user scope 决定 `updatePolicy` 或 `autoCompactTokens` 时，此工作区自己的值标为“未使用”；teamai 跳过的值也是，例如不是时长的 `workflows.retention`。面板不列出 `scoring`，因为本机的 `scoring` 只会让评判更严格：每种模式和每日上限来自哪项设置，见会话共享面板。**未读取**列出没有 user scope 安装的 `~/.teamai/config.yaml` 中不是成员设置的键，如 `excludedSkills`。在侧边栏选择另一个工作区即可对比。面板不修改任何设置：请编辑它给出的文件。
 
 ## 工作流运行（Workflow Runs）
 
@@ -54,14 +55,15 @@ teamai dashboard --port 8080
 
 | 行 | 所需条件 | 下一步 |
 |---|---|---|
-| `release` · 待接手 · alice | 需要人工：only a person can answer the approval at ship | 由人运行 `teamai workflow resume <run> --claim` |
+| `release` · 待接手 · alice | 现在需要人工：only a person can answer the approval at ship | 由人运行 `teamai workflow resume <run> --claim` |
+| `review` · 待接手 · chen | 可能需要人工的步骤：`pair`、`review.fix`；运行器会接手，若到达这些步骤，会再次发布待接手 | `teamai workflow resume --next`，或由人现在运行 `teamai workflow resume <run> --claim` 接管 |
 | `ship-issue` · 待接手 · alice | 无：运行器可以完成 | 在该仓库的检出中运行 `teamai workflow resume --next` |
 | `release-docs` · 待接手 · alice | 运行器需要：环境变量 `SIGNING_KEY`、运行 notes 的工具。本机缺少：sign requires env SIGNING_KEY, which has no value here → set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY | 在该仓库的检出中运行 `teamai workflow resume --next` |
 | `nightly-report` · 持有中 · bob | — | `teamai workflow resume <run> --claim` 从 bob 接管 |
 
 在交出运行的那个安装上，下一步改为 `teamai workflow resume <run>`，在那里把它收回。待接手的本机运行，或现在由其他安装持有的本机运行，会在状态下方注明。**运行器需要**（需要人工的运行上为**其机器需要**）列出剩余步骤的 `requires.env` 键和提示词步骤：照[其作业](workflow.md#从-ci-接手交出的运行)那样在运行器上配好。**本机缺少**是本机缺的那部分，与 `teamai workflow resume` 列为 `cannot run here` 的一致。状态栏统计待接手的运行和需要人工的运行。页面本身不认领任何运行：命令在接手运行的机器上启动驱动。
 
-页面显示运行记录会发布的内容，以及每个步骤的实时状态和等待中 HITL 请求的选项。输入、`for_each` 条目、输出、提示词、HITL 消息和本地路径都留在运行文件里。HITL 问题请在运行的驱动提问处阅读。运行详情显示每个 pass 的产出：它分支上的 commit、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验。每个 pass 标出它的 Harness，例如 `claude · claude-sonnet-5-5 · review 步骤角色 · 3bb7751`。Harness 与同一步骤上一个 pass 不同的 pass 会写明改了什么，例如 `review` 第 2 个 pass 下的 `模型已变: claude-sonnet-5-5 → claude-opus-5-5`。每个 pass 的评分显示标签，不是评审模型判定时还显示判定它的阶段，例如 `delivered: partial  合并请求 CI`。运行的评审次数不计入这些标签。已结束的[基准测试](benchmarks.md)运行的详情显示它的结果、用量和任务 × arm 表格，与 CLI 打印的一致。
+页面显示运行记录会发布的内容，以及每个步骤的实时状态和等待中 HITL 请求的选项。输入、`for_each` 条目、输出、提示词、HITL 消息和本地路径都留在运行文件里。HITL 问题请在运行的驱动提问处阅读。运行详情显示每个 pass 的产出：它分支上的 commit、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验。每个 pass 标出它的 Harness，例如 `claude · claude-sonnet-5-5 · review 步骤角色 · 3bb7751`。Harness 与同一步骤上一个 pass 不同的 pass 会写明改了什么，例如 `review` 第 2 个 pass 下的 `模型已变: claude-sonnet-5-5 → claude-opus-5-5`。每个 pass 的评分显示标签，不是评审模型判定时还显示判定它的阶段，例如 `delivered: partial  合并请求 CI`。运行的评审次数不计入这些标签。已结算的本机运行的**分支**显示它的[分支](workflow.md#运行留下的分支)去向：成功的运行列出保留的分支及原因（`拉取请求`、`最终副本`）、已删除的分支，以及删不掉、由 `teamai doctor --fix` 再次尝试的分支。失败或取消的运行列出保留以供检查的分支，以及按 `workflows.retention` 从何时起 `doctor --fix` 会移除它们，并给出设置它的文件。已结束的[基准测试](benchmarks.md)运行的详情显示它的结果、用量和任务 × arm 表格，与 CLI 打印的一致。
 
 等待中的 approve 或 choose 请求可以在运行详情里回答。回答和 CLI 走同一个 `respond` 操作，渠道为 `dashboard`，`agent: false`，因此可以回答必需审批。在 agent 会话中启动的仪表盘记录为 `agent: true`，与从该 shell 回答相同，不能回答必需审批。回答带上页面显示的 pass：如果该请求期间已被回答或替换，页面会显示拒绝原因并刷新。其他网站无法提交回答。不带 `Origin` 请求头的请求（如普通 `curl`）也会被拒绝。这只表明回答来自浏览器，并不能阻止自行设置该请求头的本地脚本。
 

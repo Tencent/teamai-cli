@@ -15,7 +15,7 @@ teamai remove skills <name>
 teamai remove rules <name> --force
 ```
 
-`doctor` exits 1 when any check fails. `stats` adds a recall section when that scope has recall runs. See [Recall adoption and upvotes](./knowledge.md#recall-adoption-and-upvotes).
+`doctor` exits 1 when any check fails. `doctor --fix` also removes what workflow runs left once `workflows.retention` has passed, and deletes again the branches a succeeded run could not delete ([The branches a run leaves](./workflow.md#the-branches-a-run-leaves)). `stats` adds a recall section when that scope has recall runs. See [Recall adoption and upvotes](./knowledge.md#recall-adoption-and-upvotes).
 
 For tools with known agent search paths, `doctor` also checks that the configured agents directory is one the tool reads. A successful delivery to a custom directory alone does not pass this check; correct `toolPaths.<tool>.agents` in the team repo and pull again.
 
