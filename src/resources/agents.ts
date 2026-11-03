@@ -394,7 +394,7 @@ export class AgentsHandler extends ResourceHandler {
         if (tombstones.has(stem)) continue;
 
         // A built-in's copy is teamai's, unless the team replaces it here.
-        if (BUILTIN_AGENT_NAMES.has(stem) && !replacedBuiltins.has(stem)) continue;
+        if (BUILTIN_AGENT_NAMES.has(stem) && !replacedBuiltins.get(stem)?.(tool)) continue;
 
         if (directStems.has(stem)) continue; // canonical direct-pickup wins (self mode)
 
@@ -2339,6 +2339,28 @@ async function removeStaleAgentSiblings(
     await removeDelivered(ledger, sibling);
     log.debug(`Removed stale agent sibling ${file} for ${stem}`);
   }
+}
+
+/**
+ * The tools a team agent file reaches, the way `pullItem` decides it before
+ * any model is resolved: a legacy `.md` reaches the tools with
+ * `legacyAgentMd`, a YAML spec its `targets`, or every tool without them. A
+ * file that cannot be read or does not parse reaches none, with the reason.
+ */
+export async function teamAgentReach(
+  item: AgentResourceItem,
+): Promise<{ ok: true; reaches: (tool: string) => boolean } | { ok: false; reason: string }> {
+  const content = await readFileSafe(item.sourcePath);
+
+  if (content === null) return { ok: false, reason: `cannot read ${item.relativePath}` };
+
+  if (isLegacyAgent(item)) return { ok: true, reaches: (tool) => isToolId(tool) && TOOLS[tool].legacyAgentMd };
+  const parsed = parseAgentYaml(content, `${item.name}.yaml`);
+
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  const { targets } = parsed.spec;
+
+  return { ok: true, reaches: (tool) => !targets || (isAgentToolId(tool) && targets.includes(tool)) };
 }
 
 /**

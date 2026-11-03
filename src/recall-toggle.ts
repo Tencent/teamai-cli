@@ -118,14 +118,14 @@ async function writeRecallBlock(
 
 async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   const { deployBuiltinRules } = await import('./builtin-rules.js');
-  const { builtinAgentsReplacedByTeam, deployBuiltinAgents } = await import('./builtin-agents.js');
+  const { RECALL_AGENT, builtinAgentsReplacedByTeam, deployBuiltinAgents } = await import('./builtin-agents.js');
   const { deployBuiltinSkills } = await import('./builtin-skills.js');
 
   await deployBuiltinRules(teamConfig, localConfig, { skipRecall: false });
   await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: false });
 
   // Pull delivers the team's copy, which recall disable removed.
-  if ((await builtinAgentsReplacedByTeam(teamConfig, localConfig)).has('teamai-recall')) {
+  if ((await builtinAgentsReplacedByTeam(teamConfig, localConfig)).has(RECALL_AGENT)) {
     log.info("Your team replaces the teamai-recall agent: run `teamai pull` to get the team's copy back.");
   }
 

@@ -2191,7 +2191,10 @@ async function pullForScope(
           // The fast path's writers add what they write to the delivered paths (#915).
           const { recorder } = policy;
 
-          try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
+          try {
+            const { deployBuiltinAgents } = await import('./builtin-agents.js');
+            await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder, record: { kind: 'fast-path', delivered: await deliveredHashes(localConfig, state) } });
+          } catch {}
 
           try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
 
@@ -2894,7 +2897,10 @@ async function pullForScope(
   try {
     const { deployBuiltinAgents } = await import('./builtin-agents.js');
     const skipRecall = !isRecallEnabled(localConfig, freshConfig);
-    const deployed = await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder, dryRun, toolsMissingAgents: ledger.toolsMissingAgents });
+
+    const deployed = await deployBuiltinAgents(freshConfig, localConfig, {
+      skipRecall, recorder, dryRun, toolsMissingAgents: ledger.toolsMissingAgents, record: { kind: 'full-sync', ledger },
+    });
 
     if (deployed > 0 && !dryRun) {
       log.debug(`[${scopeLabel}] Deployed built-in agents to ${deployed} location(s)`);

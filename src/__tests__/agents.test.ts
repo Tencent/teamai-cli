@@ -481,6 +481,16 @@ projects:
       expect(await handler.scanLocalForPush(teamConfig, self)).toEqual([]);
     });
 
+    it('picks up a canonical teamai-recall, the team replacing the built-in recall agent', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/teamai-recall.yaml'),
+        'name: teamai-recall\ndescription: Our recall\ninstructions: Search docs/adr first.\n');
+
+      const items = await handler.scanLocalForPush(teamConfig, self);
+
+      expect(items.map((item) => [item.name, item.status, item.relativePath])).toEqual([['teamai-recall', 'new', 'agents/teamai-recall.yaml']]);
+    });
+
     it('follows the record for a root canonical source placed in a namespace', async () => {
       const self = selfConfig();
       await fse.outputFile(path.join(repoPath, 'agents/fe/vr.yaml'),

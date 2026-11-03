@@ -124,10 +124,12 @@ name: teamai-recall
 description: Search the team knowledge base for a frontend task and return doc_ids
 tools: [Bash, Read, Grep, Glob]
 instructions: |
-  Run `teamai recall "<task>"` and read the top three hits.
+  Run `teamai recall --caller teamai-recall "<task>"` and read the top three hits.
   For each component the task names, grep src/design-system/ and its Storybook stories.
   Return at most ten lines: doc_ids, file paths, and the one rule that applies.
 ```
+
+Keep `--caller teamai-recall` on each `teamai recall` call, as teamai's agent does: it is how the docs the agent opens are credited to recall.
 
 ```console
 # a member with the frontend role

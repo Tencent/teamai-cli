@@ -115,10 +115,12 @@ name: teamai-recall
 description: Search the team knowledge base for a frontend task and return doc_ids
 tools: [Bash, Read, Grep, Glob]
 instructions: |
-  Run `teamai recall "<task>"` and read the top three hits.
+  Run `teamai recall --caller teamai-recall "<task>"` and read the top three hits.
   For each component the task names, grep src/design-system/ and its Storybook stories.
   Return at most ten lines: doc_ids, file paths, and the one rule that applies.
 ```
+
+每次调用 `teamai recall` 都带上 `--caller teamai-recall`，和 teamai 自带的 agent 一样：这样 agent 打开的文档才会记到 recall 上。
 
 ```console
 # frontend 角色的成员

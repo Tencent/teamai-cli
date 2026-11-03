@@ -20,6 +20,7 @@ import type { BuildIndexOptions, IndexedSkills } from '../utils/search-index.js'
 import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { deliveredMembers, unionMemberItems } from '../workspace-children.js';
+import { RECALL_AGENT } from '../builtin-agents.js';
 import { resolveAgentsForDirectory } from './agents.js';
 import { resolveDocsForDirectory } from './docs.js';
 import { getHandler } from './index.js';
@@ -697,7 +698,7 @@ export async function resolveDesiredAgents(
   // it, and redeploy it as missing on the next run.
   if (desired.kind === 'conflict' || isRecallEnabled(localConfig, teamConfig)) return desired;
 
-  return { ...desired, items: desired.items.filter((item) => item.name !== 'teamai-recall') };
+  return { ...desired, items: desired.items.filter((item) => item.name !== RECALL_AGENT) };
 }
 
 /**

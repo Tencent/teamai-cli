@@ -1,10 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureDir, pathExists, readFileSafe, writeFile, remove, listFiles } from './utils/fs.js';
+import { ensureDir, fileHash, pathExists, readFileSafe, writeFile, remove, listFiles } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { keepsTrackedCopy } from './resources/delivered-copies.js';
+import {
+  contentHash, forgetDelivered, keepsTrackedCopy, type DeliveredHashes, type DeliveryLedger,
+} from './resources/delivered-copies.js';
 import { agentStemFromFilename, renderForTool, reverseFromClaude } from './resources/agent-format.js';
 import { isAgentToolId } from './tools.js';
 import { installOf, locate, writable } from './locate.js';
@@ -33,31 +36,82 @@ import type { DeliveryRecorder } from './git-exclude-delivered.js';
 //  deployment leaves it alone.
 //
 
-/**
- * Names of CLI built-in agents. Used by `AgentsHandler.scanLocalForPush`
- * to exclude them from team repo push (they are CLI-managed, not team-managed).
- */
-export const BUILTIN_AGENT_NAMES = new Set<string>(['teamai-recall']);
+/** The recall subagent teamai ships while recall is on. */
+export const RECALL_AGENT = 'teamai-recall';
 
 /**
- * The built-in agents the team replaces in this directory: those a team agent
- * of the same name stands for in what pull delivers here. While the team's
- * agents collide, pull keeps the installed ones, so every built-in name the
- * team repo holds counts as replaced and the installed copy stays.
+ * Names of CLI built-in agents. `AgentsHandler.scanLocalForPush` leaves a
+ * copy of one out of a push unless a team agent of that name replaces it
+ * (`builtinAgentsReplacedByTeam`): teamai's own copy is never the team's.
  */
-export async function builtinAgentsReplacedByTeam(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ReadonlySet<string>> {
+export const BUILTIN_AGENT_NAMES = new Set<string>([RECALL_AGENT]);
+
+/**
+ * Each built-in agent a team agent of the same name replaces in this
+ * directory, with the tools it replaces it for: those the team file reaches
+ * (`teamAgentReach`), so a tool the team agent does not target keeps
+ * teamai's. The team agent is one pull delivers here; while the team's agents
+ * collide, pull keeps the installed ones, so every team file of a built-in's
+ * name counts. A team file that cannot be read or parsed replaces nothing,
+ * and pull says so, as for a team workflow with no runnable version.
+ */
+export async function builtinAgentsReplacedByTeam(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<ReadonlyMap<string, (tool: string) => boolean>> {
   // Lazy: resources/agents.ts imports this module.
-  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }] = await Promise.all([
-    import('./resources/desired.js'), import('./resources/index.js'),
+  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }, { teamAgentReach }] = await Promise.all([
+    import('./resources/desired.js'), import('./resources/index.js'), import('./resources/agents.js'),
   ]);
 
   const desired = await resolveTeamAgents(teamConfig, localConfig, await buildRolePullContext(localConfig));
+  const items = desired.kind === 'resolved' ? desired.items : await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
+  const replaced = new Map<string, (tool: string) => boolean>();
 
-  const names = desired.kind === 'resolved'
-    ? desired.items.map((item) => item.name)
-    : (await getHandler('agents').scanTeamForPull(teamConfig, localConfig)).map((item) => item.name);
+  for (const item of items) {
+    if (!BUILTIN_AGENT_NAMES.has(item.name)) continue;
+    const reach = await teamAgentReach(item);
 
-  return new Set(names.filter((name) => BUILTIN_AGENT_NAMES.has(name)));
+    if (!reach.ok) {
+      warnOnce(`[agents] ${item.relativePath} cannot be delivered (${reach.reason}), so teamai's ${item.name} stays in effect`);
+      continue;
+    }
+
+    const earlier = replaced.get(item.name);
+    replaced.set(item.name, earlier ? (tool) => earlier(tool) || reach.reaches(tool) : reach.reaches);
+  }
+
+  return replaced;
+}
+
+/**
+ * The checkout record the built-in step reads, where a team agent of a
+ * built-in's name may have left a copy on record: the full sync's ledger,
+ * which it updates, or the fast path's read-only snapshot of the record.
+ */
+export type BuiltinAgentRecord =
+  | { kind: 'full-sync'; ledger: DeliveryLedger }
+  | { kind: 'fast-path'; delivered: DeliveredHashes | undefined };
+
+/**
+ * What the built-in step does at `dest`, which may hold a copy of a team agent
+ * that no longer replaces the built-in here. A copy on record is the team's:
+ * written over when unedited, kept when the member edited it, as pull keeps any
+ * edited copy. The fast path cannot update the record, so it leaves such a copy
+ * to the next full sync.
+ */
+async function builtinDestination(dest: string, content: string, record: BuiltinAgentRecord | undefined): Promise<'write' | 'leave' | 'keep-edit'> {
+  if (record === undefined) return 'write';
+  const recorded = record.kind === 'full-sync' ? record.ledger.hashes[dest] : record.delivered?.[dest];
+
+  if (recorded === undefined) return 'write';
+  const disk = await fileHash(dest);
+
+  if (disk === null) return 'write';
+
+  if (record.kind === 'fast-path') return 'leave';
+
+  return disk === recorded || disk === contentHash(content) ? 'write' : 'keep-edit';
 }
 
 /**
@@ -126,7 +180,7 @@ export async function deployBuiltinAgents(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   options?: {
-    skipRecall?: boolean; recorder?: DeliveryRecorder; dryRun?: boolean;
+    skipRecall?: boolean; recorder?: DeliveryRecorder; dryRun?: boolean; record?: BuiltinAgentRecord;
     /** Gets each tool that did not take every built-in agent (`DeliveryLedger.toolsMissingAgents`). */
     toolsMissingAgents?: Set<string>;
   },
@@ -147,14 +201,11 @@ export async function deployBuiltinAgents(
     return 0;
   }
 
-  let agentFiles = entries
+  const agentFiles = entries
     .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
     .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
 
   const replaced = await builtinAgentsReplacedByTeam(teamConfig, localConfig);
-
-  for (const name of replaced) log.debug(`The team's ${name} agent replaces the built-in one`);
-  agentFiles = agentFiles.filter((file) => !replaced.has(path.basename(file, '.md')));
 
   if (agentFiles.length === 0) return 0;
 
@@ -200,6 +251,9 @@ export async function deployBuiltinAgents(
     for (const file of agentFiles) {
       const src = path.join(builtinDir, file);
 
+      // The team's agent of this name is delivered here instead.
+      if (replaced.get(path.basename(file, '.md'))?.(tool)) continue;
+
       try {
         const source = await readFileSafe(src);
 
@@ -220,12 +274,23 @@ export async function deployBuiltinAgents(
           continue;
         }
 
+        const dest = path.join(targetAgentsDir, `${stem}${rendered.ext}`);
+        const destination = await builtinDestination(dest, rendered.content, options?.record);
+
+        if (destination === 'leave') continue;
+
+        if (destination === 'keep-edit') {
+          log.warn(`Kept ${dest}: it holds your edit of the team's ${stem} agent, which no longer reaches this directory. Delete it to get teamai's ${stem} back.`);
+          continue;
+        }
+
         // Clean up any same-stem sibling with a different extension before
         // writing the (possibly new) native extension — e.g. an upgrade that
         // switches a tool's native extension must not leave the stale file behind.
         await removeStaleAgentSiblings(targetAgentsDir, stem, rendered.ext);
-        const dest = path.join(targetAgentsDir, `${stem}${rendered.ext}`);
         await writeFile(dest, rendered.content);
+
+        if (options?.record?.kind === 'full-sync') forgetDelivered(options.record.ledger.hashes, dest);
         options?.recorder?.report('builtin', dest);
         deployed++;
       } catch (e) {
