@@ -245,6 +245,8 @@ function currentStep(step: StepState): ExpressionStep {
 
   if ('outputs' in step && step.outputs !== undefined) current.outputs = step.outputs;
 
+  if ('pr' in step && step.pr) current.pr = step.pr;
+
   if ('results' in step && step.results !== undefined) current.results = step.results;
   const branches = 'results' in step ? branchNames(step.results) : undefined;
 

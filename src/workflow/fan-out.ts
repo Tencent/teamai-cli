@@ -160,6 +160,8 @@ export function itemsSettled(
 
     if (branch) result.branch = branch;
 
+    if (pass?.pr) result.pr = pass.pr;
+
     return result;
   });
 

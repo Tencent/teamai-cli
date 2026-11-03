@@ -790,6 +790,92 @@ describe('where a pull request goes', () => {
   });
 });
 
+/** A fix-ci workflow: `fix` patches in a copy and delivers it, and the run ends by whether it opened a pull request. */
+const fixCi = (patch: string): string => `  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          workspace: continue
+          command: ${patch}
+  - id: comment
+    needs: [fix]
+    if: steps.fix.pr != null
+    env: { PR: "{{ steps.fix.pr.url }}" }
+    command: node -e "require('fs').writeFileSync(require('path').join(process.env.OUT, 'comment.txt'), process.env.PR)"
+  - id: nothing-to-fix
+    needs: [fix]
+    if: steps.fix.pr == null
+    end: nothing-to-fix
+  - id: fixed
+    needs: [comment]
+    end: fixed
+ends: { fixed: succeeded, nothing-to-fix: succeeded }
+`;
+
+describe('reading the pull request a step delivered', () => {
+  it('ends fixed, with the pull request a later step reads, when the patch changes something', async () => {
+    const { config, cwd, root, runId } = await fixture(fixCi(bump('fix.txt')));
+    fakeGh(path.join(root, 'gh'));
+    vi.stubEnv('OUT', root);
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded', end: 'fixed' } } });
+    expect(fs.readFileSync(path.join(root, 'comment.txt'), 'utf8')).toBe('https://github.com/fixture/app/pull/1');
+  });
+
+  it('ends nothing-to-fix, opening no pull request, when the patch changes nothing', async () => {
+    const { config, cwd, root, runId } = await fixture(fixCi('node -e "0"'));
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded', end: 'nothing-to-fix' } } });
+    expect(creates(gh)).toEqual([]);
+    expect((await state(config, runId)).steps.find((step) => step.id === 'fix')).toMatchObject({ status: 'succeeded' });
+  });
+
+  const said = (template: string): string => `    env: { SAID: "${template}" }
+    command: node -e "require('fs').writeFileSync(require('path').join(process.env.OUT, 'said.txt'), process.env.SAID)"
+`;
+
+  it.each([
+    ['each for_each item in its result', `  - id: build
+    for_each: inputs.packages
+    workspace: new
+    command: ${bump('items.txt')}
+    deliver: pr
+  - id: report
+    needs: [build]
+${said('{{ steps.build.results[0].pr.url }} {{ steps.build.results[2].pr.url }}')}`, 'https://github.com/fixture/app/pull/1 https://github.com/fixture/app/pull/3'],
+    ['each pass of a looped step, and the last pass on the step', `  - id: fix
+    workspace: new
+    command: ${bump('fix.txt')}
+    deliver: pr
+    loop: { back_to: fix, while: "length(steps.fix.passes) < 2", max_iterations: 2 }
+  - id: report
+    needs: [fix]
+${said('{{ steps.fix.passes[0].pr.url }} {{ steps.fix.pr.url }}')}`, 'https://github.com/fixture/app/pull/1 https://github.com/fixture/app/pull/2'],
+    ['a step inside a workflow, which its outputs pass on', `  - id: change
+    workspace: new
+    workflow:
+      outputs: { pr: steps.fix.pr }
+      steps:
+        - id: fix
+          workspace: continue
+          command: ${bump('fix.txt')}
+          deliver: pr
+  - id: report
+    needs: [change]
+${said('{{ steps.change.outputs.pr.url }}')}`, 'https://github.com/fixture/app/pull/1'],
+  ])('reads the pull request of %s', async (_case, steps, expected) => {
+    const { config, cwd, root, runId } = await fixture(steps, { packages: ['one', 'two', 'three'].map((name) => ({ name, id: name, after: [] })) });
+    fakeGh(path.join(root, 'gh'));
+    vi.stubEnv('OUT', root);
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(path.join(root, 'said.txt'), 'utf8')).toBe(expected);
+  });
+});
+
 describe('protected paths', () => {
   it('protect every path a step reads from the run base, every CI and hook path, and AGENTS.md or CLAUDE.md at any depth, in any case', () => {
     const changed = [...AGENT_PATHS, ...DELIVERY_ONLY_PATHS].flatMap((root) => [root, `${root}/nested/file`, root.toUpperCase()]);

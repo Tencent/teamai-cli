@@ -254,14 +254,14 @@ const RUN_RULES = {
 const STEP_RULES = {
   id: 'publish', pass: 'publish', passes: 'rewrite', answer: 'rewrite', item: 'publish', inputs: 'publish',
   iteration: 'publish', round: 'publish', status: 'publish', attempt: 'publish', lease: 'rewrite', outcome: 'publish',
-  outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
+  outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', delivery: 'publish', unenforced: 'publish',
   runMode: 'publish', expiresAt: 'publish', limitsFrom: 'publish', allowanceSpent: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {
-  pass: 'publish', attempt: 'publish', outcome: 'publish', outputs: 'publish', end: 'publish', results: 'publish',
+  pass: 'publish', attempt: 'publish', outcome: 'publish', outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish',
   failure: 'rewrite', exitCode: 'publish', message: 'drop', tool: 'publish', model: 'publish', session: 'publish',
   tokens: 'publish', changes: 'publish', read: 'publish', agent: 'publish', used: 'publish', installId: 'publish', answer: 'rewrite',
   delivery: 'publish', unenforced: 'publish', runMode: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
