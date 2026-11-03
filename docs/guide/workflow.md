@@ -32,10 +32,10 @@ Every driver tells a prompt step its `output` as JSON Schema, so the prompt does
   output: { summary: string, risk: low | high, files: [string] }
 ```
 
-gets its prompt, followed by the result instruction, which ends with:
+gets its prompt, followed by where to write its result, which asks for `output` to be:
 
 ```text
-where output is a value that matches this JSON Schema: `{"type":"object","properties":{"summary":{"type":"string"},"risk":{"type":"string","enum":["low","high"]},"files":{"type":"array","items":{"type":"string"}}},"required":["summary","risk","files"]}`.
+a value that matches this JSON Schema: `{"type":"object","properties":{"summary":{"type":"string"},"risk":{"type":"string","enum":["low","high"]},"files":{"type":"array","items":{"type":"string"}}},"required":["summary","risk","files"]}`
 ```
 
 A step with no `output` is asked for a short summary of what it did, as a JSON string.

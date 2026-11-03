@@ -32,10 +32,10 @@ steps:
   output: { summary: string, risk: low | high, files: [string] }
 ```
 
-收到的提示词后面会跟着结果说明，结尾是：
+收到的提示词后面会说明结果写到哪里，并要求 `output` 是：
 
 ```text
-where output is a value that matches this JSON Schema: `{"type":"object","properties":{"summary":{"type":"string"},"risk":{"type":"string","enum":["low","high"]},"files":{"type":"array","items":{"type":"string"}}},"required":["summary","risk","files"]}`.
+a value that matches this JSON Schema: `{"type":"object","properties":{"summary":{"type":"string"},"risk":{"type":"string","enum":["low","high"]},"files":{"type":"array","items":{"type":"string"}}},"required":["summary","risk","files"]}`
 ```
 
 没有 `output` 的步骤会被要求用一个 JSON 字符串简述做了什么。

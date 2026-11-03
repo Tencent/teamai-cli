@@ -63,7 +63,10 @@ export function outputMismatch(schema: OutputSchema, value: unknown, path = 'out
   }
 }
 
-/** The JSON Schema a value fits exactly when `outputMismatch` finds nothing wrong with it. */
+/**
+ * The JSON Schema of the values `outputMismatch` accepts. A workflow also requires `definition`, which admission
+ * checks once the step reports.
+ */
 function jsonSchemaOf(schema: OutputSchema): JsonObject {
   switch (schema.type) {
     case 'string':
