@@ -456,6 +456,39 @@ steps:
     expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} wait, then continue the run with teamai workflow resume ${runId}`));
   });
 
+  it('says why the run failed when a limit of the whole run stops the step that recovers from a failed one', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'slow.yaml'), `schemaVersion: v1alpha1
+name: slow
+description: A failed check, then a recovery slower than the run may take.
+timeout: 1s
+steps:
+  - id: check
+    command: node -e "process.exit(1)"
+  - id: recover
+    needs: [check]
+    if: steps.check.outcome == 'failed'
+    command: node -e "setTimeout(() => {}, 10000)"
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('slow', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    expect(printed).toContainEqual(expect.stringMatching(new RegExp(`Run ${runId} failed with timeout: `)));
+    expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} recover, then`));
+  });
+
   it('names the retry of the step a limit of the whole run stopped, not of the workflow step around it', async () => {
     const config = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'slow.yaml'), `schemaVersion: v1alpha1

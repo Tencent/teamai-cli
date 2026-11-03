@@ -102,10 +102,11 @@ async function explainFailedSteps(config: LocalConfig, runId: string, secrets: R
     if (!isolated) log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
   }
 
-  // A limit of the whole run, such as its timeout or token budget, fails no step: it stops the steps still running.
+  // The run's own failure, such as its timeout or token budget, fails no step: it stops the steps still running, a step
+  // that recovers from a failed one too, so it is said whatever steps failed before it.
   const { failure } = run;
 
-  if (failedIds.length === 0 && failure) {
+  if (failure) {
     log.error(redact(`Run ${runId} failed with ${failure.code}: ${failure.message}`, { envSecrets: secrets, patterns: false }));
     const stopped = isolated ? [] : run.steps.filter((step) => step.status === 'cancelled' && step.failure?.code === failure.code).map((step) => step.id);
     // The limit stops a workflow step with the steps under it: retrying the one under it reopens the one around it.
