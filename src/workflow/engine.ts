@@ -429,7 +429,7 @@ export type PersonStep = { step: string; kind: StepHitl['kind'] | 'interactive' 
  */
 export function personSteps(run: RunState, now: string, { autoApprove }: { autoApprove: boolean }): PersonStep[] {
   const copy = structuredClone(run);
-  const settled = reconcileRun(copy, now);
+  const reconciled = reconcileRun(copy, now);
   const definitionOf = stepDefinitions(copy);
 
   const answers = copy.steps.flatMap((state): PersonStep[] => {
@@ -438,7 +438,7 @@ export function personSteps(run: RunState, now: string, { autoApprove }: { autoA
     return hitl && onlyPersonAnswers(hitl, { autoApprove }) ? [{ step: state.id, kind: hitl.kind }] : [];
   });
 
-  const interactive = 'ready' in settled ? settled.ready.flatMap((ready): PersonStep[] => (ready.definition.interactive ? [{ step: ready.lease.id, kind: 'interactive' }] : [])) : [];
+  const interactive = 'ready' in reconciled ? reconciled.ready.flatMap((ready): PersonStep[] => (ready.definition.interactive ? [{ step: ready.lease.id, kind: 'interactive' }] : [])) : [];
 
   return [...answers, ...interactive];
 }
