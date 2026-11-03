@@ -59,11 +59,11 @@ afterEach(() => {
   for (const fixture of fixtures.splice(0)) fixture.remove();
 });
 
-async function judgedFixture(options: { judge?: FakeJudge; arms?: Array<{ name: string; model?: string }>; scorers?: string[]; tools?: Array<'claude' | 'codex'>; timeout?: string } = {}): Promise<BenchmarkFixture> {
+async function judgedFixture(options: { judge?: FakeJudge; arms?: Array<{ name: string; model?: string }>; scorers?: string[]; tools?: Array<'claude' | 'codex'>; timeout?: string; team?: Record<string, string> } = {}): Promise<BenchmarkFixture> {
   const fixture = await benchmarkFixture({
     tool: 'fixes', sandbox: true, judge: options.judge, tools: options.tools ?? ['claude'],
     suite: suite({ arms: options.arms ?? [{ name: 'claude' }], scorers: options.scorers }).replace('timeout: 10m', `timeout: ${options.timeout ?? '10m'}`), tasks: { fix: CRITERIA_TASK },
-    team: options.scorers ? { 'scorers/quality.md': QUALITY } : {},
+    team: { ...(options.scorers ? { 'scorers/quality.md': QUALITY } : {}), ...options.team },
   });
   fixtures.push(fixture);
   return fixture;
@@ -148,6 +148,22 @@ describe('benchmark judges on the local driver', () => {
     expect(envelope(started).error).toEqual({
       code: 'scoring_unavailable',
       message: 'This suite needs a judge (task "fix" has successCriteria), and this machine cannot judge: No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy. Fix it, or start the benchmark where a judge tool is installed.',
+    });
+    expect(fixture.runIds()).toEqual([]);
+  }, 120_000);
+
+  it('refuses to start a suite whose judge needs verified isolation on a machine whose judge tools run only best-effort, and leaves no run', async () => {
+    const fixture = await judgedFixture({ team: { 'scorers/scoring.yaml': 'isolation: verified\n' } });
+    const claude = path.join(fixture.bin, 'claude');
+    fs.writeFileSync(claude, fs.readFileSync(claude, 'utf8').replace("console.log('2.1.308 (Claude Code)')", "console.log('2.0.0 (Claude Code)')"));
+    await fixture.teamai(['pull']);
+
+    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
+
+    expect(started.code).toBe(1);
+    expect(envelope(started).error).toEqual({
+      code: 'scoring_unavailable',
+      message: 'This suite needs a judge (task "fix" has successCriteria), and this machine cannot judge: Scorer "teamai:correctness:fix" needs a verified judge, which scorers/scoring.yaml isolation asks for, and no judge tool here runs verified. Fix it, or start the benchmark where a judge tool is installed.',
     });
     expect(fixture.runIds()).toEqual([]);
   }, 120_000);

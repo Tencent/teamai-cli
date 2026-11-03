@@ -28,7 +28,7 @@ import {
 import { ACCESS_LEVELS, CONFINED_LEVELS, type ConfinedLevel, type ConfinedAccess } from '../tool-launch/confined-level.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { runLocalJudge } from '../scorers/judge.js';
-import { installedConfinedTools, isConfinedTool } from '../tool-launch/confined.js';
+import { confinedOffers, installedConfinedTools, isConfinedTool } from '../tool-launch/confined.js';
 import { CONFINED_TOOLS } from '../tool-launch/tools.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { chooseJudgeModel } from '../scorers/judge-model.js';
@@ -1620,33 +1620,31 @@ export async function runJudgeLease(config: LocalConfig, ref: string, value: unk
   return settledAnswer(config, ref, await judgeLease(config, ref, parsed.data.driver, options));
 }
 
-/** Why this install cannot judge at all, or undefined. */
-async function scoringOff(config: LocalConfig): Promise<string | undefined> {
+/**
+ * Why this machine cannot judge with `scorers`, or undefined: scoring is off in this scope, the team's scoring settings
+ * cannot be read, no judge tool is on PATH, or none here runs a scorer's model at the isolation it needs.
+ */
+export async function judgeUnavailable(config: LocalConfig, scorers: Record<string, PinnedScorer>): Promise<string | undefined> {
   const unavailable = scoringUnavailable(config);
 
   if (unavailable) return unavailable;
   const scoring = await scopeScoring(config);
 
-  return scoring.ok ? undefined : scoring.reason;
-}
+  if (!scoring.ok) return scoring.reason;
+  const offers = await confinedOffers();
 
-/**
- * Why this machine cannot judge with `scorers`, or undefined: scoring is off in this scope, the team's scoring settings
- * cannot be read, no judge tool is on PATH, or no judge tool here runs a scorer's model.
- */
-export async function judgeUnavailable(config: LocalConfig, scorers: Record<string, PinnedScorer>): Promise<string | undefined> {
-  const off = await scoringOff(config);
-
-  if (off) return off;
-  const tools = installedConfinedTools([]);
-
-  if (tools.length === 0) return 'No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy.';
+  if (offers.length === 0) return 'No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy.';
   const aliases = await loadModelAliases(config);
 
   for (const [name, pin] of Object.entries(scorers)) {
     const definition = pinnedDefinition(name, pin);
 
     if (!definition) return `This teamai cannot read scorer ${name}. Update teamai.`;
+    const required = requiredIsolation([...scoring.isolation, { source: scorerIsolationSource(name, pin.relativePath), value: definition.isolation }]);
+    const tools = offers.flatMap((offer) => (offer.level === required.level ? offer.tools : []));
+
+    // Every judge tool here runs best-effort, so only a verified scorer finds none.
+    if (tools.length === 0) return `Scorer "${name}" needs a verified judge, which ${required.setBy.join(' and ')} asks for, and no judge tool here runs verified.`;
     const chosen = chooseJudgeModel(aliases, definition, tools);
 
     if (!chosen.ok) return chosen.message;
