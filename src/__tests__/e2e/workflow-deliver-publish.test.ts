@@ -116,7 +116,7 @@ fs.mkdirSync('notes', { recursive: true }); fs.writeFileSync(${own}, 'seen: 4\\n
     expect(mainIsMerged()).toBe(false);
   }, 120_000);
 
-  it('succeeds offline with its data pending on this machine, and pushes nothing', async () => {
+  it('succeeds offline with its data pending on this machine, and the next teamai score --push sends it', async () => {
     const before = published();
     const away = `${fixture.teamOrigin}.away`;
     fs.renameSync(fixture.teamOrigin, away);
@@ -130,5 +130,12 @@ fs.writeFileSync(${JSON.stringify(`notes/${member}.yaml`)}, 'seen: 5\\n'); stage
       fs.renameSync(away, fixture.teamOrigin);
     }
     expect(published()).toBe(before);
+
+    const pushed = await fixture.teamai(['score', '--push']);
+
+    expect(pushed.code, said(pushed)).toBe(0);
+    expect(envelope(pushed).data).toEqual({ published: true });
+    expect(published()).toBe(before + 1);
+    expect(onReports(`notes/${member}.yaml`)).toBe('seen: 5\n');
   }, 120_000);
 });

@@ -9,7 +9,9 @@ import { Subject } from './scorers/subject.js';
 import { scoreSession, type OwnJudge, type SessionDemand } from './session-flow/scoring.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
-import { setStderrOnly } from './utils/logger.js';
+import { isDelivered } from './utils/branch-worktree.js';
+import { DataBranches } from './utils/data-branches.js';
+import { log, setStderrOnly } from './utils/logger.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findRunConfig, partitionConfig, projectPartitions } from './workflow/run-location.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, submitJudgeLease } from './workflow/scoring.js';
@@ -261,7 +263,7 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope | { start:
     if (options.json !== undefined || options.stdin) return failure('invalid_arguments', '--push takes no payload: teamai score --push');
     const loaded = await localConfig();
 
-    return loaded.ok ? LabelStore.push(loaded.config) : loaded.envelope;
+    return loaded.ok ? pushPending(loaded.config) : loaded.envelope;
   }
 
   if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives the teamai-score run that --run, --session or --team-session starts. Pass one of them.');
@@ -383,8 +385,25 @@ async function startScore(start: ScoreStart, driver: string | undefined): Promis
   });
 }
 
+/**
+ * `teamai score --push`: publishes the pending labels, then pushes what a `deliver: publish` step left on this machine's
+ * checkout of a data branch while origin could not take it. `published` is false while any of it stays pending.
+ */
+async function pushPending(config: LocalConfig): Promise<{ data: { published: boolean } } | { error: { code: string; message: string } }> {
+  const labels = await LabelStore.push(config);
+
+  if (!('data' in labels)) return labels;
+  const stuck = (await DataBranches.pushPending(config)).filter(({ result }) => !isDelivered(result));
+
+  for (const { branch, result } of stuck) {
+    log.warn(`What workflow steps published to ${branch} stays pending on this machine: ${result.status === 'failed' ? result.reason.trim() : 'another teamai process is writing it'}.`);
+  }
+
+  return stuck.length === 0 ? labels : { data: { published: false } };
+}
+
 async function pushed(config: LocalConfig, answered: Extract<WorkflowEnvelope, { data: unknown }>): Promise<WorkflowEnvelope> {
-  const delivery = await LabelStore.push(config);
+  const delivery = await pushPending(config);
 
   return 'data' in delivery ? { data: { ...answered.data, ...delivery.data } } : delivery;
 }

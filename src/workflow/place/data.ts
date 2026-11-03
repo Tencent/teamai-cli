@@ -12,15 +12,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { usesBranchWorktree, type DataBranch, type LocalConfig } from '../../types.js';
-import { failureReason, gitRoot, type BranchWorktree } from '../../utils/branch-worktree.js';
-import { learningsBranch } from '../../utils/learnings-branch.js';
-import { reportsBranch } from '../../utils/reports-branch.js';
+import { failureReason, gitRoot } from '../../utils/branch-worktree.js';
+import { DataBranches } from '../../utils/data-branches.js';
 import { runsDir, type AttemptId, type RunId } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
 import type { DataAt } from './record.js';
 import { git } from '../worktree.js';
-
-const CHECKOUTS: Record<DataBranch, BranchWorktree> = { 'teamai-reports': reportsBranch, 'teamai-learnings': learningsBranch };
 
 const said = (result: { stderr: string; stdout: string }): string => (result.stderr || result.stdout).trim();
 
@@ -51,10 +48,10 @@ export async function openDataCheckout(input: { config: LocalConfig; run: RunId;
     return { dir, at: { kind: 'unavailable', reason } };
   };
 
-  if (!CHECKOUTS[branch].enabled(config)) return unavailable(`the team repo is served over http, which has no ${branch} branch`);
+  if (!DataBranches.checkout(branch).enabled(config)) return unavailable(`the team repo is served over http, which has no ${branch} branch`);
 
   try {
-    const refreshed = await CHECKOUTS[branch].refresh(config);
+    const refreshed = await DataBranches.checkout(branch).refresh(config);
 
     if (refreshed.status === 'failed') return await unavailable(`this machine's checkout of ${branch} is not ready: ${refreshed.reason}`);
   } catch (e) {
@@ -144,7 +141,7 @@ export async function finishDataCheckout(input: { config: LocalConfig; dir: stri
     if (patch.code !== 0) return { code: 'push_failed', message: `Step "${step}" could not read what it staged in ${dir}: ${said(patch)}` };
     let conflict: string | undefined;
 
-    const published = await CHECKOUTS[branch].update(config, async (worktree) => {
+    const published = await DataBranches.checkout(branch).update(config, async (worktree) => {
       const applied = await git(worktree, ['apply', '--index', '--binary', '-'], { input: patch.stdout });
 
       if (applied.code === 0) return { files, message: `[teamai] ${step}: ${member ?? ''}` };
