@@ -161,9 +161,9 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
 
       const task = plan.tasks.find(({ id }) => id === trial.task);
       const covers = task === undefined ? [] : namesOf(task);
-      // An arm that runs without a covered skill by design, alone or with the directory holding it, reports no routing
-      // for it: the asset is absent, not misrouted.
-      const left = arm?.team.kind === 'without' ? arm.team.paths : [];
+      // An arm that runs without a covered skill by design, alone, with the directory holding it, or with no team
+      // assets at all, reports no routing for it: the asset is absent, not misrouted.
+      const left = arm?.team.kind === 'without' ? arm.team.paths : arm?.team.kind === 'none' ? ['skills'] : [];
 
       const absent = new Set(plan.tasks.flatMap((one) => (one.covers ?? []).flatMap((covered, index) => {
         const name = one.coversSkills?.[index];

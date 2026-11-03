@@ -256,6 +256,22 @@ describe('asset effects', () => {
     expect(text).toContain('login-copy   no   -   100% (3/3)   1/3 extra, 2 idle');
   });
 
+  it('counts the trials whose tool reported no loads beside the observed ones', () => {
+    const arms = [
+      { name: 'pulled', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM } },
+    ];
+    const runs = (task: string, values: Array<'fit' | 'idle' | 'unknown'>): TrialSpec[] => values.map((value) => ({ task, arm: 'pulled', routing: { migrations: value } }));
+    const text = formatBenchmarkTable(benchmarkTable(migrationsRecord([
+      ...runs('add-column', ['fit', 'unknown']),
+      ...runs('drop-index', ['unknown', 'unknown']),
+      ...runs('login-copy', ['idle', 'unknown']),
+    ], arms)));
+
+    expect(text).toContain('add-column   yes   -   100% (2/2)   1/2 fit, 1 unknown');
+    expect(text).toContain('drop-index   yes   -   100% (2/2)   0/2 unknown');
+    expect(text).toContain('login-copy   no   -   100% (2/2)   0/2 1 idle, 1 unknown');
+  });
+
   it('names the routing question of a covered skill, with its namespace when a namespace delivers it', () => {
     const record = migrationsRecord(paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }));
     const [migrations, rule] = assetEffects(record);

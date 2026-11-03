@@ -123,6 +123,24 @@ describe('asset effect tables on the local driver', () => {
     expect(record.trials.find(({ arm }) => arm === 'no-dev')?.routing).toBeUndefined();
   }, 300_000);
 
+  it('records no routing for a covered skill on an arm that runs with no team assets', async () => {
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], loadsSkill: 'auth-tokens',
+      suite: SUITE('arms:\n  - name: pulled\n  - name: bare\n    team: none\n'),
+      tasks: { fix: COVERS_TASK(['skills/auth-tokens']) },
+      team: { 'skills/auth-tokens/SKILL.md': SKILL('auth-tokens') },
+    });
+    fixtures.push(fixture);
+    expect((await fixture.teamai(['pull'])).code).toBe(0);
+    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
+    const done = DoneSchema.safeParse(envelope(started).data?.done);
+    if (!done.success) throw new Error(`the run did not end: ${said(started)}`);
+    const record = RecordSchema.parse(fixture.benchmarkRecord(done.data.run));
+
+    expect(record.trials.find(({ arm }) => arm === 'pulled')?.routing).toEqual({ 'auth-tokens': 'fit' });
+    expect(record.trials.find(({ arm }) => arm === 'bare')?.routing).toBeUndefined();
+  }, 300_000);
+
   it('refuses a covered path the pulled team revision does not have, and starts no run', async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'],

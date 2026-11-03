@@ -311,7 +311,7 @@ function assetPanel(sel,chosen){
  if(!shown.length)return '';
  const rate=r=>r==null?'-':number(r.passed)+'/'+number(r.planned);
  // As the CLI's formatLoads: the loaded value first, then every other count in routingValues order.
- const loads=r=>{if(r==null)return 'not observed'; const shown=routingValues.filter(v=>v!=='unknown'&&r.byValue[v]), isLoaded=v=>v==='fit'||v==='extra'; return number(r.loaded)+'/'+number(r.planned)+' '+([...shown.filter(isLoaded),...shown.filter(v=>!isLoaded(v)).map(v=>number(r.byValue[v])+' '+v)].join(', ')||'unknown');};
+ const loads=r=>{if(r==null)return 'not observed'; const shown=routingValues.filter(v=>r.byValue[v]), isLoaded=v=>v==='fit'||v==='extra'; return number(r.loaded)+'/'+number(r.planned)+' '+(shown.every(v=>v==='unknown')?'unknown':[...shown.filter(isLoaded),...shown.filter(v=>!isLoaded(v)).map(v=>number(r.byValue[v])+' '+v)].join(', '));};
  const split=(t,l)=>l==null?'':t+'   '+(l.difference.value>=0?'+':'')+Math.round(l.difference.value*100)+' pp   '+rate(l.from)+' → '+rate(l.to)+'   '+(l.separated?'95% '+(l.difference.low>=0?'+':'')+Math.round(l.difference.low*100)+' to '+(l.difference.high>=0?'+':'')+Math.round(l.difference.high*100)+' pp':label('not separated'));
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Asset effect')+'</h2><span class="label">'+label('Per covered team asset: the arm that runs without it against the arm that leaves nothing out, split by the tasks that cover it. A skill that did not load is missed, one that loaded where it was not needed is extra.')+'</span></div>'
   +shown.map(a=>'<div class="asset-effect"><h3 data-verbatim>'+e(a.path)+' · '+e(a.without!=null?a.without+' → '+a.has:a.has)+' · '+e(a.tool)+'</h3>'

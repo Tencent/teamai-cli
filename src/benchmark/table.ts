@@ -257,14 +257,15 @@ export function formatAssetEffect(effect: AssetEffect): string {
 
 /**
  * `2/3 fit, 1 missed`-style: the loads over the trials, then every routing value the trials have. The loaded value
- * (`fit` or `extra`, which the loads count) comes first, then the others counted, in `ROUTING_VALUES` order.
+ * (`fit` or `extra`, which the loads count) comes first, then the others counted, in `ROUTING_VALUES` order; `unknown`
+ * alone when no trial's tool reported its loads.
  */
 function formatLoads({ loaded, planned, byValue }: NonNullable<AssetEffectRow['loaded']>): string {
   const isLoaded = (value: RoutingValue): boolean => value === 'fit' || value === 'extra';
-  const present = ROUTING_VALUES.filter((value) => value !== 'unknown' && (byValue[value] ?? 0) > 0);
+  const present = ROUTING_VALUES.filter((value) => (byValue[value] ?? 0) > 0);
   const parts = [...present.filter(isLoaded), ...present.flatMap((value) => (isLoaded(value) ? [] : [`${byValue[value]} ${value}`]))];
 
-  return `${loaded}/${planned} ${parts.length > 0 ? parts.join(', ') : 'unknown'}`;
+  return `${loaded}/${planned} ${present.every((value) => value === 'unknown') ? 'unknown' : parts.join(', ')}`;
 }
 
 /** `+33 pp`, `-8 pp`, `0 pp`: the difference in percentage points. */
