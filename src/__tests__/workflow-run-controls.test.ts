@@ -92,7 +92,7 @@ describe('workflow HITL', () => {
     expect(lease.step).toBe('work');
     expect(data(await f.next({ ...hitl, running: [lease.attempt], canTakeLease: false } as NextOptions)).hitl.step).toBe('finish');
     await f.respond('finish', 'no');
-    expect((await f.state()).steps[0]?.status).toBe('skipped');
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'skipped', message: 'Step "finish" was skipped: its approval was answered no.' });
     await f.report(lease);
     expect(data(await f.next()).done).toMatchObject({ run: f.id, outcome: 'succeeded' });
   });
@@ -215,6 +215,7 @@ describe('workflow cancellation', () => {
     const cancelled = data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'nested'));
     expect(cancelled.cancelled.attempts).toEqual([lease.attempt]);
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['cancelled', 'cancelled', 'skipped']);
+    expect((await f.state()).steps[2]).toMatchObject({ message: 'Step "nested.pending" was skipped before it started: Cancelled by teamai workflow cancel' });
     expect(await f.report(lease)).toMatchObject({ error: { code: 'lease_cancelled' } });
   });
 

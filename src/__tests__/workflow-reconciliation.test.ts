@@ -389,13 +389,13 @@ async function replay(config: LocalConfig, key: string, seed: number, between: b
  * back. After a change that is meant to move leases, take the new digest from the failure.
  */
 const TRACE_DIGESTS: Record<string, string> = {
-  nested: '6e6fd747678923f5fdd691bf805ecf0d15177a12',
-  fan: 'fcca32cd8ca1a8cae21f00591fd3389f69624f6e',
-  fanafter: '86faabb77f80db3102854c29e31a9568e0043d50',
-  rounds: '3c33dd97dbb4082ab756b08aa1ec872e17f0ed83',
-  loopwhile: 'a909c2e9fb540a4e227a33a8d41522da49f67738',
-  itemloop: 'f11047ad887b8c0abfed29bb78f8ab8cc26fd94b',
-  deep: '892032c5d23025cf4f1ce0606ac2a73535670f51',
+  nested: '6c8a7055d0d42a39b9b9bdaa3f937a5592b34557',
+  fan: '9ee602fc92589f5c81414e9ddbc83c244de1674e',
+  fanafter: '8acbcfefef947f166b4c351caf0d6947c51a9bf0',
+  rounds: '28dc9492e7737cc2dae1db83cb52383b166f5b7a',
+  loopwhile: 'a5fd60ece582f8b008520b9df8f041a8f7e24372',
+  itemloop: '5f56de22db406c55853d060cf9c113488ad546d8',
+  deep: 'e2b250ed17838427323ea9e9a847a2ef7cf06c0f',
 };
 
 describe('workflow report reconciliation', () => {

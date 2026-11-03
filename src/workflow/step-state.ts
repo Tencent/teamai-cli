@@ -248,7 +248,7 @@ const FailedSchema = StepBaseSchema.extend({
   status: z.literal('failed'), outcome: z.literal('failed').default('failed'), ...settledFields, failure: FailureSchema.optional(),
 });
 
-/** `message`: why the engine skipped a step it could have run, when that is not its `if` or its needs. */
+/** `message`: why the engine skipped the step. A run file written before every skip carried one may lack it. */
 const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0), message: z.string().optional() });
 
 /** A step cancelled while it delivered keeps what its agent settled, as `delivering` holds it. */
@@ -347,8 +347,8 @@ export function resetIteration(state: StepState): void {
   delete state.iteration;
 }
 
-export function skip(state: StepState, settledAt: number, message?: string): SkippedStep {
-  return become<SkippedStep>(state, { status: 'skipped', settledAt, ...message !== undefined && { message } });
+export function skip(state: StepState, settledAt: number, message: string): SkippedStep {
+  return become<SkippedStep>(state, { status: 'skipped', settledAt, message });
 }
 
 /** A released lease returns the step to `pending` with nothing from the attempt. */
@@ -658,7 +658,7 @@ export function stopWhere(run: RunState, under: (id: string) => boolean, failure
       case 'pending':
       case 'waiting':
         if (run.finalizing) cancel(state, failure, settledAt);
-        else skip(state, settledAt);
+        else skip(state, settledAt, `Step "${state.id}" was skipped before it started: ${failure.message}`);
         break;
       case 'running':
       case 'delivering':

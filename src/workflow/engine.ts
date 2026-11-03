@@ -795,10 +795,15 @@ export function parseReads(run: RunState, scope: Scope): RunReads | string {
   return parsedReads;
 }
 
+/** How a settled step that stops what comes after it ended, as a skip message says it. */
+function endedAs(step: StepState): string {
+  return step.status === 'skipped' ? 'was skipped' : step.status === 'cancelled' ? 'was cancelled' : 'failed';
+}
+
 /**
  * Marks every pending step of a workflow that can no longer run as `skipped`, until nothing changes:
- * a stopped need its `if` does not read, all needs skipped, or a ready step whose `if` is false. A step that waits for a loop is neither skipped
- * nor ready until that loop is settled. A ready `deliver: publish` step of an isolated run is skipped with why, so no
+ * a stopped need its `if` does not read, all needs skipped, or a ready step whose `if` is false, each with that reason. A step that waits for
+ * a loop is neither skipped nor ready until that loop is settled. A ready `deliver: publish` step of an isolated run is skipped too, so no
  * driver needs the team workspace for what the run keeps off the team's data anyway.
  * Returns whether a step is ready: everything it needs and everything its `if` and templates read has settled.
  */
@@ -812,10 +817,27 @@ function skipUnreachable(run: RunState, scope: Scope, states: StepState[], { con
   const ready = (step: StepState): boolean => !waiting(step) && needs(step).every(settled)
     && [...reads.get(localId(scope, step)) ?? []].every((id) => settled(byId.get(id)));
 
-  const conditionHolds = (step: StepState): boolean => {
-    const condition = conditions.get(localId(scope, step));
+  const ifOf = new Map(scope.definition.steps.map((step) => [step.id, step.if]));
 
-    return !condition || isTruthy(evaluateExpression(condition, contextOf(scope, states, step)));
+  const skipReason = (step: StepState): string | undefined => {
+    const id = localId(scope, step);
+    const condition = conditions.get(id);
+    const read = stepsRead(condition ? expressionPaths(condition) : []);
+    const stepNeeds = needs(step);
+    const stoppedNeed = stepNeeds.find((need) => need && stopped(need) && !read.has(localId(scope, need)));
+
+    if (stoppedNeed) return `Step "${step.id}" was skipped: it needs "${stoppedNeed.id}", which ${endedAs(stoppedNeed)}.`;
+    const skippedNeeds = stepNeeds.filter((need) => need?.status === 'skipped');
+
+    if (stepNeeds.length > 0 && skippedNeeds.length === stepNeeds.length) {
+      return `Step "${step.id}" was skipped: every step it needs was skipped: ${skippedNeeds.map((need) => `"${need?.id}"`).join(', ')}.`;
+    }
+
+    if (!ready(step)) return undefined;
+
+    if (condition && !isTruthy(evaluateExpression(condition, contextOf(scope, states, step)))) return `Step "${step.id}" was skipped: its if is false: ${ifOf.get(id)}`;
+
+    return publishes.has(id) ? `Step "${step.id}" was skipped: this run is isolated, so it publishes nothing to a data branch.` : undefined;
   };
 
   for (let changed = true; changed;) {
@@ -823,17 +845,10 @@ function skipUnreachable(run: RunState, scope: Scope, states: StepState[], { con
 
     for (const step of states) {
       if (step.status !== 'pending' || waiting(step)) continue;
-      const condition = conditions.get(localId(scope, step));
-      const read = stepsRead(condition ? expressionPaths(condition) : []);
-      const stoppedNeed = needs(step).some((need) => need && stopped(need) && !read.has(localId(scope, need)));
-      const allSkipped = needs(step).length > 0 && needs(step).every((need) => need?.status === 'skipped');
-      const conditionFalse = ready(step) && !conditionHolds(step);
+      const reason = skipReason(step);
 
-      const unreachable = stoppedNeed || allSkipped || conditionFalse;
-      const isolatedPublish = !unreachable && ready(step) && publishes.has(localId(scope, step));
-
-      if (!unreachable && !isolatedPublish) continue;
-      skip(step, run.revision, isolatedPublish ? `Step "${localId(scope, step)}" was skipped: this run is isolated, so it publishes nothing to a data branch.` : undefined);
+      if (reason === undefined) continue;
+      skip(step, run.revision, reason);
       changed = true;
     }
   }
@@ -1043,7 +1058,8 @@ function settleItems(
 
         for (const next of skippable) {
           if (items[next]!.status !== 'pending' || standing(next) !== 'skip') continue;
-          skip(items[next]!, run.revision);
+          const before = dependencies(next).find((other) => stopped(other) || other.status === 'skipped');
+          skip(items[next]!, run.revision, `Step "${items[next]!.id}" was skipped: it runs after ${before ? `"${before.id}", which ${endedAs(before)}` : 'an item that did not succeed'}.`);
           skippable.push(...dependents[next]!);
         }
 
@@ -1105,7 +1121,9 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
   // A workflow step whose allowance is spent starts nothing more: what is still pending under it is skipped, and what
   // runs finishes its turn.
   for (const owner of spentAllowances(run, scope)) {
-    for (const state of run.steps) if (state.status === 'pending' && isUnder(owner)(state.id)) skip(state, run.revision);
+    for (const state of run.steps) {
+      if (state.status === 'pending' && isUnder(owner)(state.id)) skip(state, run.revision, `Step "${state.id}" was skipped: step "${owner}" spent the timeout or budget it gives the steps under it.`);
+    }
   }
 
   const states = statesIn(run, scope);
@@ -1139,7 +1157,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
         }
 
         if (definition.hitl.kind === 'approve' && state.answer.choice === 'no') {
-          skip(state, run.revision);
+          skip(state, run.revision, `Step "${state.id}" was skipped: its approval was answered no.`);
           changed = true;
           break;
         }

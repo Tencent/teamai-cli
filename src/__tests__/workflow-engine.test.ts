@@ -690,7 +690,7 @@ steps:
     expect(done).toMatchObject({ outcome: 'failed' });
     expect(await readRun(config, runId)).toMatchObject({
       status: 'failed',
-      steps: [{ id: 'build', status: 'failed' }, { id: 'test', status: 'skipped' }, { id: 'docs', status: 'succeeded' }],
+      steps: [{ id: 'build', status: 'failed' }, { id: 'test', status: 'skipped', message: 'Step "test" was skipped: it needs "build", which failed.' }, { id: 'docs', status: 'succeeded' }],
     });
   });
 
@@ -758,10 +758,10 @@ steps:
     expect(await readRun(config, runId)).toMatchObject({
       steps: [
         { id: 'check', status: 'failed' },
-        { id: 'fix', status: 'skipped' },
+        { id: 'fix', status: 'skipped', message: 'Step "fix" was skipped: it needs "check", which failed.' },
         { id: 'docs', status: 'succeeded' },
         { id: 'some-skipped', status: 'succeeded' },
-        { id: 'all-skipped', status: 'skipped' },
+        { id: 'all-skipped', status: 'skipped', message: 'Step "all-skipped" was skipped: every step it needs was skipped: "fix".' },
       ],
     });
   });
@@ -811,7 +811,9 @@ steps:
     expect(await readRun(config, runId)).toMatchObject({
       status: 'succeeded',
       revision: 2,
-      steps: [{ id: 'check', status: 'succeeded' }, { id: 'drop', status: 'succeeded' }, { id: 'build', status: 'skipped' }],
+      steps: [{ id: 'check', status: 'succeeded' }, { id: 'drop', status: 'succeeded' }, {
+        id: 'build', status: 'skipped', message: 'Step "build" was skipped before it started: Cancelled: workflow "build" reached end "dropped"',
+      }],
     });
   });
 
@@ -3026,7 +3028,7 @@ ${build}  - id: stop
     const after = leaseIn(await leaseNext(config, runId, driverA));
     expect(after.step).toBe('after');
     expect(await readRun(config, runId)).toMatchObject({ steps: expect.arrayContaining([
-      expect.objectContaining({ id: 'stop', status: 'skipped' }),
+      expect.objectContaining({ id: 'stop', status: 'skipped', message: 'Step "stop" was skipped: its if is false: steps.build.outcome == \'failed\'' }),
     ]) });
     await reportAttempt(config, runId, { ...after, outcome: 'success', driver: driverA });
     expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -4357,9 +4359,9 @@ describe('for_each', () => {
         { item: tasks[3], outcome: 'skipped' },
       ] },
       { id: 'build[0]', status: 'failed' },
-      { id: 'build[1]', status: 'skipped' },
+      { id: 'build[1]', status: 'skipped', message: 'Step "build[1]" was skipped: it runs after "build[0]", which failed.' },
       { id: 'build[2]', status: 'succeeded' },
-      { id: 'build[3]', status: 'skipped' },
+      { id: 'build[3]', status: 'skipped', message: 'Step "build[3]" was skipped: it runs after "build[1]", which was skipped.' },
       { id: 'ship', status: 'skipped' },
     ] });
   });
@@ -5624,7 +5626,7 @@ ${inner}  - id: after
     expect(await readRun(config, runId)).toMatchObject({ steps: expect.arrayContaining([
       expect.objectContaining({ id: 'work', status: 'succeeded' }),
       expect.objectContaining({ id: 'work.first', status: 'succeeded', limit: 'timeout' }),
-      expect.objectContaining({ id: 'work.second', status: 'skipped' }),
+      expect.objectContaining({ id: 'work.second', status: 'skipped', message: 'Step "work.second" was skipped: step "work" spent the timeout or budget it gives the steps under it.' }),
     ]) });
   });
 

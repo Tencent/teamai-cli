@@ -371,6 +371,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       { kind: 'report', lease: 'docs', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
     ],
+    expectState: { steps: [{ id: 'build', status: 'failed' }, { id: 'test', status: 'skipped', message: 'Step "test" was skipped: it needs "build", which failed.' }, { id: 'docs', status: 'succeeded' }] },
   },
   {
     name: 'an isolated run skips its step that publishes to a data branch, so a driver without the team workspace ends it',
@@ -381,7 +382,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       { kind: 'report', lease: 'tally', body: { outcome: 'success', outputs: { baseline: false } }, expect: { data: { step: { status: 'succeeded' } } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
-    expectState: { steps: [{ id: 'tally', status: 'succeeded' }, { id: 'baseline', status: 'skipped' }, {
+    expectState: { steps: [{ id: 'tally', status: 'succeeded' }, { id: 'baseline', status: 'skipped', message: 'Step "baseline" was skipped: its if is false: steps.tally.outputs.baseline' }, {
       id: 'publish', status: 'skipped', message: 'Step "publish" was skipped: this run is isolated, so it publishes nothing to a data branch.',
     }] },
   },
