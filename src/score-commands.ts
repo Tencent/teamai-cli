@@ -173,6 +173,9 @@ async function sessionScore(options: ScoreOptions): Promise<Scored> {
   // A scorer file's label is only tried, never stored, so it is judged here and starts no teamai-score run.
   if (demand.scorers.some(isScorerFile)) {
     if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives a teamai-score run, and a scorer file is judged here without one. Leave out --driver.');
+    const cached = demand.scorers.find((scorer) => !isScorerFile(scorer));
+
+    if (cached !== undefined) return failure('invalid_arguments', `A scorer file is tried here, and --scorer ${cached} is judged by a teamai-score run. Score them in separate commands.`);
 
     return scoreSession(loaded.config, demand);
   }

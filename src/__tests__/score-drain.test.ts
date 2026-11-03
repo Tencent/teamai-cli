@@ -858,6 +858,15 @@ describe('teamai score of a subject the person names', () => {
     } }, code: 1 });
   });
 
+  it.each(['quality', 'teamai:routing:review'])('refuses scorer %s beside a scorer file, so the file is only tried and no label is stored here', async (named) => {
+    const { config } = await team();
+
+    expect(await scored({ scorer: ['./draft.md', named], batch: true })).toEqual({ envelope: { error: {
+      code: 'invalid_arguments', message: `A scorer file is tried here, and --scorer ${named} is judged by a teamai-score run. Score them in separate commands.`,
+    } }, code: 1 });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
+
   it('publishes with --push alone, with nothing pending', async () => {
     await team();
 
