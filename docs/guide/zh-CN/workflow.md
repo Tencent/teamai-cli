@@ -386,6 +386,7 @@ teamai workflow start share-standup --inputs '{"member":"alice","note":"Shipped 
 - `branch` 是 `teamai-reports` 或 `teamai-learnings`，原样写出。pull 以 `bad_delivery` 拒绝别的分支，也拒绝团队工作区之外的 `deliver: publish`。
 - 只发布步骤暂存的内容，且只限成员自己的文件：路径第二段去掉扩展名后等于成员用户名的文件，例如 `scores/alice/2026-11.jsonl` 或 `votes/alice.yaml`。其他任何文件或删除都会让步骤以 `push_failed` 失败，什么也不发布。
 - 什么也没暂存的步骤会成功，也不推送。它的运行不产生副本、不开 pull request，`workflow publish` 会接受它。
+- 在[隔离运行](workflow-advanced.md#隔离运行)里，例如基准测试运行，步骤就绪后会被跳过，它的 `message` 说明原因，因此不需要任何驱动提供团队工作区。
 - 离线、另一个 teamai 进程正在写该分支、团队仓库是 http，或者 origin 改动了步骤暂存的内容时，步骤成功，消息说明数据待发布。origin 没能接收的提交留在本机，`teamai score --push` 会发送它。生产者会保留它发布的内容，直到在 origin 顶端找到它，就像 `teamai score publish` 对标签所做的那样。
 - 本地驱动运行它；在会启动子 agent 的宿主上，skill 驱动也运行它。
 
