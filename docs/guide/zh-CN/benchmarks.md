@@ -563,7 +563,7 @@ $ teamai benchmark run fix-auth --sandbox
 | `benchmark run` 退出码 | 何时 |
 | --- | --- |
 | 0 | 运行成功并写出了报告，无论 trial 的结果如何。 |
-| 1 | 套件或启动被拒绝、运行超时或被取消、报告失败或被取消，或者 `--fail-on-regression` 发现了下降。 |
+| 1 | 套件或启动被拒绝、运行超时或被取消，或者某个 `finally` 步骤失败或被取消：报告，或者 `--fail-on-regression` 发现下降时的 `regression` 关卡。 |
 
 仍在等待发布的记录从不改变退出码。
 
@@ -620,7 +620,7 @@ schemaVersion: v1alpha1
 name: teamai-benchmark
 description: Run a benchmark suite. Every arm works the same tasks in fresh clones, judged by checks it never sees.
 invoke: deny
-inputs: { suite: string, aliases: string, tasks: [string], arms: [string] }
+inputs: { suite: string, aliases: string, tasks: [string], arms: [string], fail_on_regression: boolean }
 steps:
   - id: plan
     command: teamai benchmark plan "$SUITE" --aliases "$ALIASES" --tasks "$TASKS" --arms "$ARMS"
@@ -633,7 +633,12 @@ steps:
 finally:
   - id: report
     command: teamai benchmark report
-    output: { text: string, table: json }
+    env: { COMPARE: "{{ inputs.fail_on_regression }}" }
+    output: { text: string, table: json, regression: dropped | held | no_comparable | off }
+  - id: regression
+    needs: [report]
+    if: steps.report.outputs.regression == 'dropped'
+    command: exit 1
 outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 ```
 
@@ -641,9 +646,9 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | `plan` 步骤 | 冻结你 pull 到的团队修订，获取 trial 读取的每个提交，并把 trial 打印成一个工作流，每个基线和 trial 一个克隆。 |
 | `teamai benchmark check --baseline\|--trial` | 每个克隆中的一个步骤 | 写入 `check.add`，对 trial 恢复 `protect`，运行任务的 check，并打印其结果。 |
-| `teamai benchmark report` | `finally` 步骤 | 给 trial 分类，写出记录，并打印结果。 |
+| `teamai benchmark report` | `report` 这个 `finally` 步骤 | 给 trial 分类，写出记录，并打印结果。`COMPARE=true` 时还会比较记录，见[回归时失败](#回归时失败)。 |
 
-`trials` 运行 `plan` 打印的内容：见[运行步骤打印的工作流](workflow-advanced.md#运行步骤打印的工作流)。`report` 在 trial 之后运行，无论它们发生了什么，就像 [finally 步骤](workflow-advanced.md#finally-步骤)那样。`benchmark run --member-aliases` 把 `aliases` 传为 `member`，否则传为 `team`。`--task` 和 `--arm` 传入 `tasks` 和 `arms`，否则传 `[]`，即规划所有任务和 arm。
+`trials` 运行 `plan` 打印的内容：见[运行步骤打印的工作流](workflow-advanced.md#运行步骤打印的工作流)。`report` 在 trial 之后运行，无论它们发生了什么，就像 [finally 步骤](workflow-advanced.md#finally-步骤)那样。`benchmark run --member-aliases` 把 `aliases` 传为 `member`，否则传为 `team`。`--task` 和 `--arm` 传入 `tasks` 和 `arms`，否则传 `[]`，即规划所有任务和 arm。`--fail-on-regression` 把 `fail_on_regression` 传为 `true`，否则传为 `false`。
 
 要修改它，推送你自己的 `workflows/teamai-benchmark.yaml`，或者为某个角色或项目的成员推送 `workflows/<namespace>/teamai-benchmark.yaml`。它会为接收它的人替换 teamai 的版本，就像任何[默认工作流](workflow.md#覆盖默认工作流)一样，`benchmark run` 会说明这一点：
 
@@ -651,7 +656,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 ℹ Running the team's workflows/ops/teamai-benchmark.yaml, which replaces teamai's benchmark workflow.
 ```
 
-你的版本必须接受输入 `suite`，要用 `--member-aliases` 运行还必须接受输入 `aliases`，要用 `--task` 和 `--arm` 运行还必须接受输入 `tasks` 和 `arms`；否则 `benchmark run` 会拒绝它，并指出缺少的输入。保留 `plan` 的步骤 id，并把 `report` 保留为 `finally` 步骤。去掉 `strict: true` 会让 trial 在不扣留凭据的情况下运行，并且使用各工具自己的权限设置，而不是无人值守：不能编辑的工具会让它的 trial 失败，报告的第一行会说明这一点。你接收的两个命名空间都有 `teamai-benchmark.yaml` 时，`benchmark run` 以 `workflow_namespace_conflict` 拒绝，并指出两个文件，绝不退回 teamai 自带的版本。
+你的版本必须接受输入 `suite`，要用 `--member-aliases` 运行还必须接受输入 `aliases`，要用 `--task` 和 `--arm` 运行还必须接受输入 `tasks` 和 `arms`，要用 `--fail-on-regression` 运行还必须接受输入 `fail_on_regression`；否则 `benchmark run` 会拒绝它，并指出缺少的输入。保留 `plan` 的步骤 id，并把 `report` 保留为 `finally` 步骤。去掉 `strict: true` 会让 trial 在不扣留凭据的情况下运行，并且使用各工具自己的权限设置，而不是无人值守：不能编辑的工具会让它的 trial 失败，报告的第一行会说明这一点。你接收的两个命名空间都有 `teamai-benchmark.yaml` 时，`benchmark run` 以 `workflow_namespace_conflict` 拒绝，并指出两个文件，绝不退回 teamai 自带的版本。
 
 ## 结果
 
@@ -706,11 +711,24 @@ These results hold for these tasks, this run and this machine.
 ## 回归时失败
 
 ```console
-$ teamai benchmark run fix-auth --sandbox --fail-on-regression
+$ teamai benchmark run fix-auth --sandbox --fail-on-regression > done.json
 Arm "claude" passed 4/9 paired trials, against 8/9 in run r1c0d9e2f4b6a8c7d: a drop of 44 points, with a 95% interval of -73 to -16 points.
+$ echo $?
+1
+$ jq -c .data.done.finally done.json
+[{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，并且任务和 arm 相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，运行以 1 退出。仍在本机等待的记录不参与比较。没有这样的运行时，它打印一条提示，不改变退出码。它需要本地驱动：使用 `--driver skill` 时，命令返回之后才由编码会话驱动运行，所以命令会拒绝这个参数。
+`--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，并且任务和 arm 相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，这个 arm 就算下降了。仍在本机等待的记录不参与比较。
+
+| `report` 的输出 `regression` | 何时 | `regression` 步骤 |
+| --- | --- | --- |
+| `dropped` | 有 arm 下降。文本会像上面那样逐个指出。 | 运行 `exit 1` 并失败：`benchmark run` 以 1 退出。 |
+| `held` | 没有 arm 下降。文本指出用来比较的那次运行。 | 跳过。 |
+| `no_comparable` | 没有这样的运行。文本会说明。 | 跳过。 |
+| `off` | `fail_on_regression` 为 `false`：没有比较任何东西。 | 跳过。 |
+
+这个关卡是运行的一个步骤，所以无论谁启动了运行，运行的驱动都会在这里结束它。用 `"fail_on_regression":true` 执行 `workflow start teamai-benchmark` 会运行同一个关卡。它的退出码跟随运行的结果，而 `finally` 步骤不会改变这个结果，所以要读取 `done.finally`。
 
 要把评分器反复判定的失败变成一个修改团队资产、每个失败加一个回归任务的 PR，并在每个工具上对比改动前后，见[自我改进](self-improvement.md)。
 
@@ -770,7 +788,7 @@ benchmark:
 benchmark 运行是一次普通的工作流运行，所以任何驱动都通过 `workflow next --prepare` 和 `workflow report` 运行它，见[在自己的驱动里使用克隆工作区](workflow-advanced.md#在自己的驱动里使用克隆工作区)：
 
 ```text
-teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team","tasks":[],"arms":[]}' --timeout 45m
+teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}' --timeout 45m
 teamai workflow next <run> --prepare --json '{"driver":{..., "can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"unattended":true,"end_turn":true}}}'
   -> a command lease (plan, check, report): run lease.command in lease.cwd, or in your checkout without one, with TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>
   -> a prompt lease: launch lease.tool in lease.cwd on lease.prompt, with lease.model, in its unattended mode for lease.permissions, held to lease.limits

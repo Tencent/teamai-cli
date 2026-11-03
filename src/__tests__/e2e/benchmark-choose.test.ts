@@ -86,7 +86,7 @@ describe('the inputs tasks and arms of teamai-benchmark', () => {
   it('plan the whole suite when both are []', async () => {
     const fixture = await twoByTwo();
 
-    const ran = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--driver', 'local', '--sandbox', '--timeout', '10m', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}']);
+    const ran = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--driver', 'local', '--sandbox', '--timeout', '10m', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}']);
     const done = DoneSchema.parse(envelope(ran).data?.done);
     const record = RecordSchema.parse(fixture.benchmarkRecord(done.run));
 

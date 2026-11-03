@@ -563,7 +563,7 @@ Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#una
 | `benchmark run` exits | When |
 | --- | --- |
 | 0 | The run succeeded and its report was written, whatever the trials' results. |
-| 1 | The suite or the start was refused, the run timed out or was cancelled, the report failed or was cancelled, or `--fail-on-regression` found a drop. |
+| 1 | The suite or the start was refused, the run timed out or was cancelled, or a `finally` step failed or was cancelled: the report, or the `regression` gate when `--fail-on-regression` found a drop. |
 
 A record still waiting for publication never changes the exit code.
 
@@ -620,7 +620,7 @@ schemaVersion: v1alpha1
 name: teamai-benchmark
 description: Run a benchmark suite. Every arm works the same tasks in fresh clones, judged by checks it never sees.
 invoke: deny
-inputs: { suite: string, aliases: string, tasks: [string], arms: [string] }
+inputs: { suite: string, aliases: string, tasks: [string], arms: [string], fail_on_regression: boolean }
 steps:
   - id: plan
     command: teamai benchmark plan "$SUITE" --aliases "$ALIASES" --tasks "$TASKS" --arms "$ARMS"
@@ -633,7 +633,12 @@ steps:
 finally:
   - id: report
     command: teamai benchmark report
-    output: { text: string, table: json }
+    env: { COMPARE: "{{ inputs.fail_on_regression }}" }
+    output: { text: string, table: json, regression: dropped | held | no_comparable | off }
+  - id: regression
+    needs: [report]
+    if: steps.report.outputs.regression == 'dropped'
+    command: exit 1
 outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 ```
 
@@ -641,9 +646,9 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | The `plan` step | Freezes the team revision you pulled, fetches every commit a trial reads, and prints the trials as a workflow, with one clone per baseline and trial. |
 | `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints its result. |
-| `teamai benchmark report` | The `finally` step | Classifies the trials, writes the record, and prints the results. |
+| `teamai benchmark report` | The `report` `finally` step | Classifies the trials, writes the record, and prints the results. With `COMPARE=true`, also compares the record, as [Fail on a regression](#fail-on-a-regression) says. |
 
-`trials` runs what `plan` printed: see [Run a workflow a step printed](workflow-advanced.md#run-a-workflow-a-step-printed). `report` runs after the trials whatever happened to them, as [finally steps](workflow-advanced.md#finally-steps) do. `benchmark run --member-aliases` passes `aliases` as `member`, else as `team`. `--task` and `--arm` pass `tasks` and `arms`, else `[]`, which plans every task and arm.
+`trials` runs what `plan` printed: see [Run a workflow a step printed](workflow-advanced.md#run-a-workflow-a-step-printed). `report` runs after the trials whatever happened to them, as [finally steps](workflow-advanced.md#finally-steps) do. `benchmark run --member-aliases` passes `aliases` as `member`, else as `team`. `--task` and `--arm` pass `tasks` and `arms`, else `[]`, which plans every task and arm. `--fail-on-regression` passes `fail_on_regression` as `true`, else `false`.
 
 To change it, push your own `workflows/teamai-benchmark.yaml`, or `workflows/<namespace>/teamai-benchmark.yaml` for members of one role or project. It replaces teamai's for whoever receives it, as any [default workflow](workflow.md#override-a-default) does, and `benchmark run` says so:
 
@@ -651,7 +656,7 @@ To change it, push your own `workflows/teamai-benchmark.yaml`, or `workflows/<na
 ℹ Running the team's workflows/ops/teamai-benchmark.yaml, which replaces teamai's benchmark workflow.
 ```
 
-Yours must take input `suite`, input `aliases` to run with `--member-aliases`, and inputs `tasks` and `arms` to run with `--task` and `--arm`; `benchmark run` refuses it otherwise, naming the input. Keep `plan`'s step id and `report` as a `finally` step. Dropping `strict: true` lets trials run without the credentials being kept from them, and with each tool's own permission settings rather than unattended: a tool that may not edit fails its trials, and the report opens with a line that says so. When two namespaces you receive both have a `teamai-benchmark.yaml`, `benchmark run` refuses with `workflow_namespace_conflict`, naming both files, and never falls back to teamai's.
+Yours must take input `suite`, input `aliases` to run with `--member-aliases`, inputs `tasks` and `arms` to run with `--task` and `--arm`, and input `fail_on_regression` to run with `--fail-on-regression`; `benchmark run` refuses it otherwise, naming the input. Keep `plan`'s step id and `report` as a `finally` step. Dropping `strict: true` lets trials run without the credentials being kept from them, and with each tool's own permission settings rather than unattended: a tool that may not edit fails its trials, and the report opens with a line that says so. When two namespaces you receive both have a `teamai-benchmark.yaml`, `benchmark run` refuses with `workflow_namespace_conflict`, naming both files, and never falls back to teamai's.
 
 ## Results
 
@@ -706,11 +711,24 @@ The results are not the run's status: a run whose trials all failed still succee
 ## Fail on a regression
 
 ```console
-$ teamai benchmark run fix-auth --sandbox --fail-on-regression
+$ teamai benchmark run fix-auth --sandbox --fail-on-regression > done.json
 Arm "claude" passed 4/9 paired trials, against 8/9 in run r1c0d9e2f4b6a8c7d: a drop of 44 points, with a 95% interval of -73 to -16 points.
+$ echo $?
+1
+$ jq -c .data.done.finally done.json
+[{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and the run exits 1 when an arm's pass rate dropped by more than chance. Records still waiting on this machine are not compared. With no such run, it prints a notice and leaves the exit code alone. It needs the local driver: with `--driver skill` the coding session drives the run after the command returns, so the command refuses the flag.
+`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and an arm dropped when its pass rate dropped by more than chance. Records still waiting on this machine are not compared.
+
+| `report` output `regression` | When | The `regression` step |
+| --- | --- | --- |
+| `dropped` | An arm dropped. The text names each one, as above. | Runs `exit 1` and fails: `benchmark run` exits 1. |
+| `held` | No arm dropped. The text names the run it compared with. | Skipped. |
+| `no_comparable` | No such run. The text says so. | Skipped. |
+| `off` | `fail_on_regression` is `false`: nothing was compared. | Skipped. |
+
+The gate is a step of the run, so the run's driver ends it there whoever started it. `workflow start teamai-benchmark` with `"fail_on_regression":true` runs the same gate. Its exit code follows the run's outcome, which a `finally` step does not change, so read `done.finally`.
 
 To turn a scorer's repeated failures into a PR that changes the team's assets and adds one regression task each, proven on every tool before and after, see [Self-improvement](self-improvement.md).
 
@@ -770,7 +788,7 @@ Set `TEAM_REPO`, `GITLAB_TOKEN` (reads the team repo) and `ANTHROPIC_API_KEY` as
 A benchmark run is an ordinary workflow run, so any driver runs it through `workflow next --prepare` and `workflow report`, as [Clone workspaces in your own driver](workflow-advanced.md#clone-workspaces-in-your-own-driver) describes:
 
 ```text
-teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team","tasks":[],"arms":[]}' --timeout 45m
+teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}' --timeout 45m
 teamai workflow next <run> --prepare --json '{"driver":{..., "can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"unattended":true,"end_turn":true}}}'
   -> a command lease (plan, check, report): run lease.command in lease.cwd, or in your checkout without one, with TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>
   -> a prompt lease: launch lease.tool in lease.cwd on lease.prompt, with lease.model, in its unattended mode for lease.permissions, held to lease.limits

@@ -181,7 +181,7 @@ describe('a team benchmark workflow', () => {
     });
     fixtures.push(fixture);
 
-    const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--driver', 'local', '--sandbox', '--timeout', '10m', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}']);
+    const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--driver', 'local', '--sandbox', '--timeout', '10m', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}']);
 
     expect(started.code, said(started)).toBe(1);
     expect(envelope(started).error).toMatchObject({ code: 'workflow_namespace_conflict' });
@@ -230,6 +230,20 @@ describe('a team benchmark workflow', () => {
     expect(envelope(task).error).toEqual({ code: 'invalid_inputs', message: 'The team\'s workflows/teamai-benchmark.yaml replaces teamai\'s benchmark workflow and takes no input tasks, so teamai benchmark run cannot give it --task. Add tasks: [string] to its inputs and pass it to teamai benchmark plan --tasks, or run without --task.' });
     expect(arm.code).toBe(1);
     expect(envelope(arm).error).toEqual({ code: 'invalid_inputs', message: 'The team\'s workflows/teamai-benchmark.yaml replaces teamai\'s benchmark workflow and takes no input arms, so teamai benchmark run cannot give it --arm. Add arms: [string] to its inputs and pass it to teamai benchmark plan --arms, or run without --arm.' });
+    expect(fixture.runIds()).toEqual([]);
+  }, 180_000);
+
+  it('is refused by benchmark run --fail-on-regression, leaving no run, when it takes no input fail_on_regression', async () => {
+    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
+    fixtures.push(fixture);
+    fixture.pushTeam({ 'workflows/teamai-benchmark.yaml': RELAXED });
+    const pulled = await fixture.teamai(['pull']);
+
+    const ran = await fixture.teamai(['benchmark', 'run', 'fix', '--fail-on-regression']);
+
+    expect(pulled.code, said(pulled)).toBe(0);
+    expect(ran.code).toBe(1);
+    expect(envelope(ran).error).toEqual({ code: 'invalid_inputs', message: 'The team\'s workflows/teamai-benchmark.yaml replaces teamai\'s benchmark workflow and takes no input fail_on_regression, so teamai benchmark run cannot give it --fail-on-regression. Add fail_on_regression: boolean to its inputs and pass it to teamai benchmark report as COMPARE, or run without --fail-on-regression.' });
     expect(fixture.runIds()).toEqual([]);
   }, 180_000);
 });
@@ -281,8 +295,8 @@ describe('the benchmark workflow', () => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
     fixtures.push(fixture);
 
-    const unbounded = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}', '--driver', 'local']);
-    const longer = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}', '--driver', 'local', '--timeout', '11m']);
+    const unbounded = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}', '--driver', 'local']);
+    const longer = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}', '--driver', 'local', '--timeout', '11m']);
 
     expect(unbounded.code, said(unbounded)).toBe(1);
     expect(envelope(unbounded).data?.done).toMatchObject({ outcome: 'failed' });
