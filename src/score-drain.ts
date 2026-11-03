@@ -18,6 +18,7 @@ import type { RunSubject, SessionSubject } from './scorers/label.js';
 import { LabelStore } from './scorers/label-store.js';
 import { reportUsage } from './team-push.js';
 import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './types.js';
+import { DataBranches } from './utils/data-branches.js';
 import { log } from './utils/logger.js';
 import { agentSessionIdFromEnv } from './utils/session-id.js';
 // oxlint-disable-next-line teamai/workflow-boundaries -- the drain drives the teamai-finished-sessions run it starts, as workflow start --driver local does
@@ -76,6 +77,8 @@ export interface DrainResult {
   /** The step sessions of each run ended here, archived on teamai-reports or skipped. */
   steps: StepSessionsPublished[];
   unpublished: Unpublished[];
+  /** Why what workflow steps published to a data branch stays on this machine, one sentence per branch. */
+  dataPending: string[];
   /** The usage of each scope that had new usage to report, by the member whose `stats/<member>.yaml` it goes to. */
   usage: Array<{ member: string; reported: boolean }>;
 }
@@ -285,9 +288,17 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
   }
 }
 
+/**
+ * Sends what workflow steps published to a data branch and left here, answering why each branch it could not send stays pending.
+ * Labels and run records that stay pending leave their commit on teamai-reports, and their own line says so.
+ */
+async function sendPendingData(config: LocalConfig, { hasReportsPending }: { hasReportsPending: boolean }): Promise<string[]> {
+  return (await DataBranches.sendPending(config)).flatMap(({ branch, message }) => (hasReportsPending && branch === 'teamai-reports' ? [] : [message]));
+}
+
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
-  const result: DrainResult = { ...nothing(), runRecordsPublished: 0, labelsPublished: 0, steps: [], usage: [] };
+  const result: DrainResult = { ...nothing(), runRecordsPublished: 0, labelsPublished: 0, steps: [], dataPending: [], usage: [] };
 
   for (const config of configs) {
     const team = await loadTeamConfig(config.repo.localPath);
@@ -309,6 +320,7 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     const labels = await publishLabels(config);
     result.labelsPublished += labels.labelsPublished;
     result.unpublished.push(...labels.unpublished);
+    result.dataPending.push(...(await sendPendingData(config, { hasReportsPending: records.unpublished.length + labels.unpublished.length > 0 })));
 
     if (SessionPolicy.publish(config, team).policies[mode].policy === 'auto') {
       const steps = await SessionPublish.steps(config, mode, clock());
@@ -379,7 +391,7 @@ function unpublishedText(unpublished: readonly Unpublished[]): string {
 
 /** Whether a judgment or a publish the drain tried here failed, so its command exits 1. */
 function hasFailed(result: DrainResult): boolean {
-  return result.failed.length > 0 || result.broke.length > 0 || result.unpublished.length > 0 || result.usage.some((usage) => !usage.reported);
+  return result.failed.length > 0 || result.broke.length > 0 || result.unpublished.length > 0 || result.dataPending.length > 0 || result.usage.some((usage) => !usage.reported);
 }
 
 /** Prints what each run's step sessions did: archived, or skipped for a reason, by reason. */
@@ -413,14 +425,21 @@ function printDone(result: DrainResult): void {
   printSteps(result.steps);
 }
 
+/** Prints whether each member's usage reached `stats/<member>.yaml`. */
+function printUsage(usage: DrainResult['usage']): void {
+  for (const { member, reported } of usage) {
+    if (reported) log.success(`Reported usage to stats/${member}.yaml`);
+    else log.error(`Could not report usage to stats/${member}.yaml on teamai-reports. It stays on this machine; run teamai score --drain again.`);
+  }
+}
+
 /** Prints what `result` could not do, and what it left for other drivers or the next drain. */
 function printLeft(result: DrainResult): void {
   if (result.unpublished.length > 0) log.error(unpublishedText(result.unpublished));
 
-  for (const { member, reported } of result.usage) {
-    if (reported) log.success(`Reported usage to stats/${member}.yaml`);
-    else log.error(`Could not report usage to stats/${member}.yaml on teamai-reports. It stays on this machine; run teamai score --drain again.`);
-  }
+  for (const pending of result.dataPending) log.error(pending);
+
+  printUsage(result.usage);
 
   for (const broke of result.broke) log.error(broke);
 

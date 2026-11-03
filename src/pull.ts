@@ -4072,6 +4072,17 @@ export async function pull(
         for (const scope of [reconcileProject, reconcileUser]) {
           if (scope) await capUsageEvents(scope);
         }
+
+        // What a `deliver: publish` step left unpushed rides every pull, reporting or not; like labels, pull says nothing of it.
+        try {
+          const { DataBranches } = await import('./utils/data-branches.js');
+
+          for (const scope of [reconcileProject, reconcileUser]) {
+            for (const { message } of scope ? await DataBranches.sendPending(scope) : []) log.debug(message);
+          }
+        } catch (e) {
+          log.debug(`Pending data-branch publish deferred: ${e instanceof Error ? e.message : String(e)}`);
+        }
       } catch (e) {
         log.debug(`Auto-report skipped: ${e instanceof Error ? e.message : String(e)}`);
       }

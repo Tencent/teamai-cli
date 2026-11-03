@@ -4,7 +4,7 @@
  * checkout, and `pushPending` sends it later.
  */
 import { DATA_BRANCHES, usesBranchWorktree, type DataBranch, type LocalConfig } from '../types.js';
-import type { BranchWorktree, PublishResult } from './branch-worktree.js';
+import { isDelivered, type BranchWorktree, type PublishResult } from './branch-worktree.js';
 import { isGitRepo } from './git.js';
 import { learningsBranch } from './learnings-branch.js';
 import { reportsBranch } from './reports-branch.js';
@@ -26,5 +26,14 @@ export const DataBranches = {
     }
 
     return results;
+  },
+
+  /** `pushPending`, answering each data branch whose data still stays on this machine, with a sentence that says why. */
+  async sendPending(config: LocalConfig): Promise<Array<{ branch: DataBranch; message: string }>> {
+    return (await DataBranches.pushPending(config)).flatMap(({ branch, result }) => {
+      if (isDelivered(result)) return [];
+
+      return [{ branch, message: `What workflow steps published to ${branch} stays pending on this machine: ${result.status === 'failed' ? result.reason.trim() : 'another teamai process is writing it'}.` }];
+    });
   },
 } as const;

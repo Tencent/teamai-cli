@@ -11,12 +11,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { benchmarkFixture, envelope, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
-const workflow = (script: string): string => `schemaVersion: v1alpha1
-name: publish-note
-description: Publish this member's note to teamai-reports.
+const workflow = (script: string, branch = 'teamai-reports'): string => `schemaVersion: v1alpha1
+name: ${branch === 'teamai-reports' ? 'publish-note' : 'publish-learning'}
+description: Publish this member's note to ${branch}.
 steps:
   - id: note
-    workspace: { team: { branch: teamai-reports } }
+    workspace: { team: { branch: ${branch} } }
     deliver: publish
     command: node ${JSON.stringify(script)}
 `;
@@ -41,10 +41,15 @@ describe('a step that publishes to a teamai data branch, run through the real CL
   };
   const mainIsMerged = (): boolean => spawnSync('git', ['--git-dir', fixture.teamOrigin, 'merge-base', '--is-ancestor', 'main', 'teamai-reports']).status === 0;
 
-  /** Runs publish-note with the local driver, its step doing `body` in the place it runs in. */
-  async function run(body: string) {
+  const onLearnings = (file: string): string | undefined => {
+    const shown = spawnSync('git', ['--git-dir', fixture.teamOrigin, 'show', `teamai-learnings:${file}`], { encoding: 'utf8' });
+    return shown.status === 0 ? shown.stdout : undefined;
+  };
+
+  /** Runs `name`, publish-note by default, with the local driver, its step doing `body` in the place it runs in. */
+  async function run(body: string, name = 'publish-note') {
     fs.writeFileSync(script, `const fs = require('fs'); const { execFileSync } = require('child_process');\nconst stage = (file) => execFileSync('git', ['add', '--', file]);\n${body}\n`);
-    const ran = await fixture.teamai(['workflow', 'start', 'publish-note', '--driver', 'local']);
+    const ran = await fixture.teamai(['workflow', 'start', name, '--driver', 'local']);
     const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
     if (!done.success) throw new Error(`no run: ${said(ran)}`);
     const state = RunSchema.parse(fixture.runFile(done.data.run));
@@ -54,7 +59,7 @@ describe('a step that publishes to a teamai data branch, run through the real CL
   beforeAll(async () => {
     fixture = await benchmarkFixture({ tool: 'does-nothing', sandbox: false });
     script = path.join(fixture.root, 'note.js');
-    fixture.pushTeam({ 'workflows/publish-note.yaml': workflow(script) });
+    fixture.pushTeam({ 'workflows/publish-note.yaml': workflow(script), 'workflows/publish-learning.yaml': workflow(script, 'teamai-learnings') });
     const pulled = await fixture.teamai(['pull']);
     expect(pulled.code, said(pulled)).toBe(0);
     member = z.object({ username: z.string() }).parse(parseYaml(fs.readFileSync(path.join(fixture.dataHome(), 'config.yaml'), 'utf8'))).username;
@@ -146,5 +151,45 @@ fs.writeFileSync(${JSON.stringify(`notes/${member}.yaml`)}, 'seen: 5\\n'); stage
     expect(envelope(pushed).data).toEqual({ published: true });
     expect(published()).toBe(before + 1);
     expect(onReports(`notes/${member}.yaml`)).toBe('seen: 5\n');
+  }, 120_000);
+
+  /** Runs publish-learning with origin unreachable, so its note to teamai-learnings stays pending on this machine. */
+  async function learnOffline(seen: number, whileAway: () => Promise<void> = async () => {}): Promise<void> {
+    const away = `${fixture.teamOrigin}.away`;
+    fs.renameSync(fixture.teamOrigin, away);
+    try {
+      const ran = await run(`fs.mkdirSync('notes', { recursive: true });
+fs.writeFileSync(${JSON.stringify(`notes/${member}.yaml`)}, 'seen: ${seen}\\n'); stage(${JSON.stringify(`notes/${member}.yaml`)});`, 'publish-learning');
+
+      expect(ran.outcome, ran.said).toBe('succeeded');
+      expect(ran.step?.message).toMatch(/^Step "note" left its data on this machine, pending: /);
+      await whileAway();
+    } finally {
+      fs.renameSync(away, fixture.teamOrigin);
+    }
+    expect(onLearnings(`notes/${member}.yaml`)).not.toBe(`seen: ${seen}\n`);
+  }
+
+  it('sends with the next teamai pull what a step published to teamai-learnings while origin was unreachable', async () => {
+    await learnOffline(7);
+
+    const pulled = await fixture.teamai(['pull']);
+
+    expect(pulled.code, said(pulled)).toBe(0);
+    expect(onLearnings(`notes/${member}.yaml`)).toBe('seen: 7\n');
+  }, 120_000);
+
+  it('says with teamai score --drain that what a step published to teamai-learnings stays pending, and sends it once origin is back', async () => {
+    await learnOffline(8, async () => {
+      const stuck = await fixture.teamai(['score', '--drain']);
+
+      expect(stuck.code, said(stuck)).toBe(1);
+      expect(said(stuck)).toContain('What workflow steps published to teamai-learnings stays pending on this machine: ');
+    });
+
+    const drained = await fixture.teamai(['score', '--drain']);
+
+    expect(said(drained)).not.toMatch(/teamai-learnings/);
+    expect(onLearnings(`notes/${member}.yaml`)).toBe('seen: 8\n');
   }, 120_000);
 });
