@@ -3,7 +3,7 @@
  * (`config.yaml` `scoring.isolation`) and this machine (~/.teamai/config.yaml `scoring.isolation`) may each ask; the
  * strictest wins, and nobody asking means `best-effort`.
  */
-import { ISOLATIONS, type Isolation } from './label.js';
+import { ISOLATIONS, type Isolation } from '../tool-launch/confined-level.js';
 
 export function scorerIsolationSource(scorer: string, relativePath = `scorers/${scorer}.md`): string {
   return `${relativePath} isolation`;

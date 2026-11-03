@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, UsedSchema } from '../agent-observation.js';
 import { RunModeSchema } from '../launch-context.js';
+import { ACCESS_LEVELS, ISOLATIONS } from '../tool-launch/confined-level.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import type { JsonValue } from '../types.js';
 
@@ -44,14 +45,6 @@ export function sumUsage(first: JudgeUsage | undefined, second: JudgeUsage | und
 
   return sum;
 }
-
-export const ISOLATIONS = ['best-effort', 'verified'] as const;
-
-export type Isolation = (typeof ISOLATIONS)[number];
-
-export const ACCESS_LEVELS = ['answer', 'read', 'full'] as const;
-
-export type JudgeAccess = (typeof ACCESS_LEVELS)[number];
 
 /**
  * A model judge names the tool it ran in, never the driver that ran that tool. A hand label names neither. Its `model`

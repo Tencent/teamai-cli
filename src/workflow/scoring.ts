@@ -25,9 +25,9 @@ import {
 } from '../scorers/entry.js';
 import { observedEffort, observedModel, sameHarness, type AgentObservation } from '../agent-observation.js';
 import {
-  ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, sumUsage, type Isolation, type JudgeAccess, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel,
-  type SessionSubject, type Decider,
+  JudgeUsageSchema, sumUsage, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel, type SessionSubject, type Decider,
 } from '../scorers/label.js';
+import { ACCESS_LEVELS, ISOLATIONS, type Isolation, type JudgeAccess } from '../tool-launch/confined-level.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { installedJudgeTools, isJudgeTool, runLocalJudge } from '../scorers/judge.js';
 import { JUDGE_TOOLS } from '../tool-launch/tools.js';

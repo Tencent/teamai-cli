@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { JsonValueSchema, type JsonValue } from '../types.js';
-import type { JudgeAccess } from '../scorers/label.js';
+import type { JudgeAccess } from './confined-level.js';
 import type { Evidence } from '../tools.js';
 import { agyRun, readToolMetadata, type TokenUsage } from './stdout.js';
 

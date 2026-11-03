@@ -10,7 +10,7 @@ import { driverIdentity } from './driver-identity.js';
 import { scoresDir } from './scorers/attempts.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { confinedToolLevels } from './tool-launch/confined.js';
-import type { Isolation } from './scorers/label.js';
+import type { Isolation } from './tool-launch/confined-level.js';
 import { scopeScoring } from './scorers/settings.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
 import { SessionPublish } from './session-flow/session-publish.js';

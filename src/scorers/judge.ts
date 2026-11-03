@@ -4,7 +4,8 @@ import { confinedAccess, confinedToolLevel, installedConfinedTools, isConfinedTo
 import type { ConfinedTool } from '../tool-launch/tools.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
-import type { ScoreLabel, Isolation, JudgeUsage } from './label.js';
+import type { Isolation } from '../tool-launch/confined-level.js';
+import type { ScoreLabel, JudgeUsage } from './label.js';
 import type { JsonValue } from '../types.js';
 
 // The engine still reads these names until it moves onto the confined launcher.

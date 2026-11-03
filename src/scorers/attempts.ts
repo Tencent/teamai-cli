@@ -12,8 +12,9 @@ import { AgentObservationSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import type { LocalConfig } from '../types.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
+import { ACCESS_LEVELS, ISOLATIONS } from '../tool-launch/confined-level.js';
 import { scoresDir, scoresLocked } from './home.js';
-import { ACCESS_LEVELS, DECIDERS, isStageDecider, ISOLATIONS, JUDGE_FAILURES, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type JudgeFailureCode } from './label.js';
+import { DECIDERS, isStageDecider, JUDGE_FAILURES, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type JudgeFailureCode } from './label.js';
 import { PinnedScorerSchema } from './pin.js';
 
 const ENTRY_ID = /^s[0-9a-f]{13}$/;

@@ -43,6 +43,8 @@ const SKILL_IMPORTS = {
   // What the confined judge of the session tool can do, which the driver declares on `score --next`.
   'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },
   'src/scorers/label.ts': { typeOnly: true },
+  // The level a confined run reaches and what its tool can do there.
+  'src/tool-launch/confined-level.ts': { typeOnly: true },
   // What describe proposes for the inputs of teamai's default share workflows, for the calling session.
   'src/session-share.ts': { names: ['SessionShare'] },
   // What describe proposes for the inputs of teamai's default teamai-session-to-task, for the calling session.

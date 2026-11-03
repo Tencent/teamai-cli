@@ -1,5 +1,5 @@
 /** The host question the agent answers once per run with prompt steps, and what the skill driver declares on every `next`. */
-import type { JudgeAccess } from '../../../scorers/label.js';
+import type { JudgeAccess } from '../../../tool-launch/confined-level.js';
 import { isJudgeTool, judgeAccess } from '../../../scorers/judge.js';
 import type { DriverCan } from '../../requirements.js';
 
