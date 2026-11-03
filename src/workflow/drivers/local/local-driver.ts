@@ -39,11 +39,12 @@ import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
-import type { ConfinedOffer } from '../../../tool-launch/confined.js';
+import { confinedOffers, type ConfinedOffer } from '../../../tool-launch/confined.js';
+import { runConfinedStep } from '../../confined-step.js';
 import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
 import type { DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
 import { isWorkflowError, stepWorkflow, WORKSPACE_MODES } from '../../types.js';
-import { contractClone, type SessionRef } from '../../workspace.js';
+import { confinedOf, contractClone, type SessionRef } from '../../workspace.js';
 import { headCommit } from '../../worktree.js';
 
 const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
@@ -120,7 +121,13 @@ const WaitReplySchema = z.object({
   delivering: z.array(z.unknown()).optional().catch(undefined),
   judging: z.number().optional().catch(undefined),
   reason: z.string().optional().catch(undefined),
+  held: z.array(z.object({ reason: z.string(), missing: z.array(z.string()) })).optional().catch(undefined),
 }).catch({});
+
+/** Whether every step `next` held from this driver waits for a confined tool here that reaches its level or resolves its model. */
+function heldForConfined(held: ReadonlyArray<{ missing: readonly string[] }> | undefined): held is ReadonlyArray<{ reason: string; missing: string[] }> {
+  return held !== undefined && held.length > 0 && held.every(({ missing }) => missing.includes('confined') || missing.includes('model'));
+}
 
 async function askHitl(hitl: LocalHitl, signal: AbortSignal): Promise<string> {
   process.stderr.write(`Step "${hitl.step}": ${hitl.message}\nOptions: ${hitl.options.join(', ')}\n${hitl.respond}\n`);
@@ -147,6 +154,8 @@ export interface LocalDriverOptions {
   /** The team's `toolPaths`, as teamai.yaml states them. */
   toolPaths?: TeamaiConfig['toolPaths'];
   adapter?: LocalToolAdapter;
+  /** Where the tools a step confined to a directory runs on are looked up: PATH unless given. */
+  resolveTool?: (executable: string) => string | null;
 }
 
 /** A lease as this driver runs it: what the engine sent, and what staging it adds. A step staged after `expiresAt` does not start. */
@@ -712,6 +721,20 @@ function namedTools(run: Pick<RunState, 'definition' | 'workflows'>): Set<string
   return [run.definition, ...Object.values(run.workflows ?? {})].every((definition) => known(definition.steps)) ? named : undefined;
 }
 
+/**
+ * Whether a step of `run` may be confined to a directory: one is, or a `from` step may bring a workflow with one. Probing
+ * the confined tools runs each, so the driver probes them only then.
+ */
+function mayConfine(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
+  const confines = (steps: readonly WorkflowStep[]): boolean => steps.some((step) => {
+    const child = stepWorkflow(step);
+
+    return confinedOf(step) !== undefined || child?.kind === 'from' || (child?.kind === 'inline' && confines(child.workflow.steps));
+  });
+
+  return [run.definition, ...Object.values(run.workflows ?? {})].some((definition) => confines(definition.steps));
+}
+
 function isSandbox(config: LocalConfig, options: Pick<LocalDriverOptions, 'sandbox'>): boolean {
   return options.sandbox === true || config.workflows?.sandbox === true;
 }
@@ -792,7 +815,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   // rather than waits.
   const named = isStarted ? namedTools(started) : undefined;
   const tools = LAUNCH_TOOLS.filter((tool) => (named === undefined || named.has(tool)) && onPath(tool));
-  const can = localCan({ strict: localStrictCan(config, options), hitl: canHitl, tools, confined: [] });
+  const lookup = options.resolveTool ? { resolveTool: options.resolveTool } : {};
+  const confined = isStarted && mayConfine(started) ? await confinedOffers(lookup) : [];
+  const can = localCan({ strict: localStrictCan(config, options), hitl: canHitl, tools, confined });
   const driver = driverIdentity('local', cwd);
   // A driver killed before cleanup, of this run or any other, left clones behind.
   await sweepClones(config);
@@ -900,12 +925,15 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   };
 
   const unstaged = (lease: Lease, failure: WorkflowFailure): ReportBody => ({ attempt: lease.attempt, revision: lease.revision, driver, ...failureReport(failure) });
+  // Why a confined step this driver was leased has no tool here that resolves its model. It hands that lease back and
+  // takes no other, so it does not lease the step again in this process.
+  let handedBack: string | undefined;
 
   try {
     for (;;) {
       if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} after every command it started exited` } };
       const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt), ...prompts.keys()];
-      const canTakeLease = room();
+      const canTakeLease = room() && handedBack === undefined;
       const resolved = await resolveWorkflowEnv(config);
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
@@ -956,7 +984,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           return { error: { code: 'driver_stuck', message: `Attempt ${nextLease.attempt} was leased again before it could be reported` } };
         }
 
-        held.push(nextLease);
+        // A confined step runs in its directory, never in a checkout another attempt holds.
+        held.push(nextLease.confined ? { ...nextLease, cwd: nextLease.confined.dir } : nextLease);
       }
 
       const placesBusy = (): Set<string> => new Set([
@@ -1024,6 +1053,21 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
 
         if (maxParallel === 1) handle(STOP_SIGNALS);
         prompts.set(lease.attempt, { lease, controller, exit: (async () => {
+          const { confined: place } = lease;
+
+          if (place) {
+            await stopRecordedGroup(attemptDir(config, runId, lease.attempt));
+
+            if (!startable(lease, controller.signal)) return undefined;
+            const ended = await runConfinedStep({ config, run: runId, lease: { ...lease, confined: place }, signal: controller.signal, ...lookup });
+            const id = { attempt: lease.attempt, revision: lease.revision, driver };
+
+            if (ended.kind === 'ran') return { ...id, ...ended.report };
+            handedBack = ended.reason;
+
+            return { ...id, outcome: 'released' };
+          }
+
           // A role copy is checked and delivered for the tool the step launches, so another tool the member enables does not refuse it.
           const launch = lease.role !== undefined ? launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config)) : undefined;
           const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal, launches: launch?.ok ? launch.tool : undefined });
@@ -1073,6 +1117,12 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           if (judging.kind === 'settled' || judging.kind === 'stopped') continue;
 
           if (judging.kind === 'skipped') log.info(judging.message);
+        }
+
+        const confinedWait = handedBack ?? (heldForConfined(wait.held) ? wait.held.map((item) => item.reason).join('; ') : undefined);
+
+        if (confinedWait !== undefined) {
+          return { error: { code: 'confined_pending', message: `Run ${runId} waits for a confined tool: ${confinedWait}. Make one available here, then run teamai workflow resume ${runId}, or drive the run with a driver that offers one.` } };
         }
 
         return { error: { code: 'busy', message: wait.reason ?? 'the next step is not available' } };

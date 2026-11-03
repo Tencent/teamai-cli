@@ -83,8 +83,8 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'session_required', 'source_required', 'session_not_found', 'session_ambiguous', 'scorer_invalid',
       // Refusals of a teamai-score subject that is none of run:, session: or team-session:.
       'subject_invalid',
-      // Why a run confined to one directory gave no reply, answered to the caller that launched it.
-      'confined_tool_unavailable', 'confined_failed', 'confined_reply_invalid',
+      // Why the local driver stopped with only steps confined to a directory left, which no tool here can run.
+      'confined_pending',
       // Why a scorer got no label from a judge attempt: kept with its mark under scores/, never on a run.
       ...literalStrings('src/scorers/label.ts', 'JUDGE_FAILURES')];
 

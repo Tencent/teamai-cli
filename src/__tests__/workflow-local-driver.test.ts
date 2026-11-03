@@ -993,6 +993,59 @@ async function exitsWithin(pid: number, ms: number): Promise<boolean> {
   return true;
 }
 
+describe('a prompt step confined to a directory, under the local driver', () => {
+  /** A run whose first step writes the directory, with `confined`, and whose second answers from it, confined there. */
+  const judged = (confined: object): string => `schemaVersion: v1alpha1
+name: build
+description: Judge a change from the evidence an earlier step wrote.
+steps:
+  - id: evidence
+    command: |
+      node -e "const p=require('path'),fs=require('fs'),d=p.join(process.env.TEAMAI_RUN_DIR,'evidence');fs.mkdirSync(d);fs.writeFileSync(p.join(d,'confined.json'),process.argv[1]);fs.writeFileSync(p.join(d,'diff.txt'),'retries 3')" '${JSON.stringify(confined)}'
+  - id: judge
+    needs: [evidence]
+    workspace: { confined: evidence }
+    prompt: Judge the change from the files here.
+    output:
+      verdict: pass | fail
+`;
+
+  /** A machine whose only confined tool is a Cursor that replies `reply` on any prompt, and prints a version. */
+  function cursorOnly(root: string, reply: object): (executable: string) => string | null {
+    const cursor = path.join(root, 'cursor-agent');
+    fs.writeFileSync(cursor, `#!${process.execPath}
+if (process.argv.includes('--version')) { console.log('2026.10.1'); process.exit(); }
+console.log(JSON.stringify({ type: 'result', result: ${JSON.stringify(JSON.stringify(reply))} }));\n`, { mode: 0o755 });
+
+    return (executable) => (executable === 'cursor-agent' ? cursor : null);
+  }
+
+  it('runs a best-effort step on a Cursor-only machine and keeps what the run measured', async () => {
+    const { config, workspace, runId } = await workflowFixture(judged({ level: 'best-effort' }));
+    const resolveTool = cursorOnly(path.dirname(workspace), { verdict: 'pass' });
+
+    expect(await runLocalDriver(config, runId, workspace, { toolPaths, resolveTool })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ id: 'evidence', status: 'succeeded' }, {
+        id: 'judge', status: 'succeeded', tool: 'cursor', outputs: { verdict: 'pass' }, confined: { tool: 'cursor', isolation: 'best-effort', access: 'full' },
+      }],
+    });
+  });
+
+  it('leaves a verified step pending on a Cursor-only machine, which offers no verified tool', async () => {
+    const { config, workspace, runId } = await workflowFixture(judged({ level: 'verified' }));
+    const resolveTool = cursorOnly(path.dirname(workspace), { verdict: 'pass' });
+
+    expect(await runLocalDriver(config, runId, workspace, { toolPaths, resolveTool })).toEqual({
+      error: {
+        code: 'confined_pending',
+        message: `Run ${runId} waits for a confined tool: step "judge" runs confined at verified, which no offer in this driver's can.confined reaches. Make one available here, then run teamai workflow resume ${runId}, or drive the run with a driver that offers one.`,
+      },
+    });
+    expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'evidence', status: 'succeeded' }, { id: 'judge', status: 'pending' }] });
+  });
+});
+
 describe('local workflow driver and a lease from a newer teamai', () => {
   it('fails a step whose place it cannot read with the wording every driver uses', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
