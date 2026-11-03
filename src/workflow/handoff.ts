@@ -1103,6 +1103,23 @@ function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
 }
 
 /**
+ * Published run `snapshot` as a claim would continue it with `definitions`, every lease released, before it adds what
+ * only the claiming machine knows: its scorers, checkout and publication. `resume --next` judges what an offered run
+ * needs from it without claiming the run.
+ */
+export function handedRun(snapshot: RunSnapshot, definitions: Definitions, handed = handedOver(snapshot, definitions)): RunState {
+  // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
+  const { definitionHash: _hash, copies: _copies, steps: _steps, scorers: _scorers, ...body } = snapshotBody(snapshot);
+  const pinned: Pick<RunState, 'workflows' | 'copies'> = {};
+
+  if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
+
+  if (Object.keys(handed.copies).length > 0) pinned.copies = handed.copies;
+
+  return { ...body, id: snapshot.run, definition: definitions.definition, ...pinned, steps: handed.steps, settledAttempts: [] };
+}
+
+/**
  * The definitions run `snapshot` executes, exactly as the machine that ran it had them: this machine's cache when it holds
  * the same ones, else the team commit the run ran at.
  */
@@ -1210,8 +1227,7 @@ async function install(
   handed: Handover,
   secrets: Record<string, string>,
 ): Promise<Result<ClaimReceipt>> {
-  // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
-  const { definitionHash: _hash, copies: _copies, steps: _steps, scorers: publishedScorers, ...body } = snapshotBody(snapshot);
+  const publishedScorers = snapshot.scorers;
   // A pinned scorer comes back only when this machine caches the same bytes; otherwise its passes are not scored here (D19).
   const cached = await pinScorers(config, Object.keys(publishedScorers ?? {}));
   const scorers = Object.fromEntries(Object.entries(cached).filter(([name, pin]) => publishedScorers?.[name]?.sourceHash === pin.sourceHash));
@@ -1219,18 +1235,10 @@ async function install(
   const publication: RunPublication = { stateRevision: snapshot.stateRevision };
 
   if (Object.values(handed.copies).some((copy) => copy.commit !== undefined)) publication.reconcileCopies = true;
-  const pinned: Pick<RunState, 'workflows' | 'scorers'> = {};
-
-  if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
+  const pinned: Pick<RunState, 'scorers'> = {};
 
   if (Object.keys(scorers).length > 0) pinned.scorers = scorers;
-  const copied: Pick<RunState, 'copies'> = {};
-
-  if (Object.keys(handed.copies).length > 0) copied.copies = handed.copies;
-
-  const run: RunState = {
-    ...body, id: runId, definition: definitions.definition, ...pinned, steps: handed.steps, settledAttempts: [], ...copied, checkout, publication,
-  };
+  const run: RunState = { ...handedRun(snapshot, definitions, handed), ...pinned, checkout, publication };
 
   const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };

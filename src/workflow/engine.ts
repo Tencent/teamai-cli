@@ -58,6 +58,7 @@ import type {
   OutputSchema,
   RunState,
   RunStatus,
+  StepHitl,
   StepLease,
   StepOutcome,
   WorkflowDefinition,
@@ -364,7 +365,28 @@ function answerOptionalGates(run: RunState, now: string): boolean {
   return changed;
 }
 
-function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, autoApprove?: boolean): boolean {
+/**
+ * How a driver without HITL settles a step that only a person can take: it `waits` for a driver that hands the run to a
+ * person, unless that driver could not and says why in `unoffered`; under any other driver the step fails.
+ */
+type PersonOutcome = { kind: 'waits' } | { kind: 'fails'; unoffered?: string };
+
+function personOutcome({ handoff }: Pick<NextOptions, 'handoff'>): PersonOutcome {
+  if (handoff === undefined) return { kind: 'fails' };
+
+  return handoff.unoffered === undefined ? { kind: 'waits' } : { kind: 'fails', unoffered: handoff.unoffered };
+}
+
+/** Why step `step` of run `run`, which only a person can take, failed `hitl_required` under a driver without HITL. */
+function personRequired(run: string, step: string, unoffered: string | undefined): WorkflowFailure {
+  const retry = `${retryCommand(run, step)}; then teamai workflow resume ${run}`;
+
+  return unoffered === undefined
+    ? { code: 'hitl_required', message: `Step "${step}" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it, then resume the run where a person answers, from a terminal in an attended run (TEAMAI_MODE=attended, or neither TEAMAI_MODE nor CI set): ${retry}` }
+    : { code: 'hitl_required', message: `Step "${step}" needs a person, and run ${run} could not be offered to one: ${unoffered}. Its state is on this machine. Retry the step here, then resume the run where a person answers: ${retry}` };
+}
+
+function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, { autoApprove, person }: { autoApprove?: boolean; person: PersonOutcome }): boolean {
   let changed = autoApprove ?? config.workflows?.auto_approve === true ? answerOptionalGates(run, now) : false;
   const definitionOf = stepDefinitions(run);
 
@@ -375,7 +397,8 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
     if (!hitl) continue;
 
     if (hitl.required || hitl.kind === 'choose') {
-      const failure = { code: 'hitl_required', message: `Step "${state.id}" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it, then resume the run where a person answers, from a terminal in an attended run (TEAMAI_MODE=attended, or neither TEAMAI_MODE nor CI set): teamai workflow retry ${run.id} ${state.id}; then teamai workflow resume ${run.id}` };
+      if (person.kind === 'waits') continue;
+      const failure = personRequired(run.id, state.id, person.unoffered);
       log.warn(failure.message);
       failStep(state, failure, run.revision);
     } else {
@@ -387,6 +410,42 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
   }
 
   return changed;
+}
+
+/** The steps of `run` that wait for an answer only a person gives, as held for `hitl` from a driver without it. */
+function waitingForPerson(run: RunState): Held[] {
+  const definitionOf = stepDefinitions(run);
+
+  return run.steps.flatMap((state) => {
+    const hitl = state.status === 'waiting' ? definitionOf(state.id)?.hitl : undefined;
+
+    return hitl && (hitl.required || hitl.kind === 'choose') ? [heldFor(state.id, ['hitl'])] : [];
+  });
+}
+
+/** A step ready now that only a person can take: one that waits for an answer, by the kind of its request, or an interactive one. */
+export type PersonStep = { step: string; kind: StepHitl['kind'] | 'interactive' };
+
+/**
+ * The steps of `run` ready now that only a person can take, as a driver without HITL meets them in an unattended run
+ * that answers optional gates when `autoApprove`: one waiting for an answer that does not give, or an interactive one.
+ * It settles a copy, so `run` stays as it is.
+ */
+export function personSteps(run: RunState, now: string, autoApprove: boolean): PersonStep[] {
+  const copy = structuredClone(run);
+  const result = reconcileRun(copy, now);
+  const definitionOf = stepDefinitions(copy);
+
+  const answers = copy.steps.flatMap((state): PersonStep[] => {
+    const hitl = state.status === 'waiting' ? definitionOf(state.id)?.hitl : undefined;
+    const needed = hitl && (hitl.required || (hitl.kind === 'choose' && !(autoApprove && hitl.default !== undefined)));
+
+    return hitl && needed ? [{ step: state.id, kind: hitl.kind }] : [];
+  });
+
+  const interactive = 'ready' in result ? result.ready.flatMap((ready): PersonStep[] => (ready.definition.interactive ? [{ step: ready.lease.id, kind: 'interactive' }] : [])) : [];
+
+  return [...answers, ...interactive];
 }
 
 /** The lease `next` answers with: what `LeaseWireSchema` reads, plus the run, the pass, and the gaps the engine names. */
@@ -1528,7 +1587,7 @@ function unattendedUnavailable(step: string, tool: string | undefined): Workflow
 }
 
 /** Why `next` has no lease to hand out yet, and the steps still delivering. */
-type WaitData = { reason: string; delivering?: string[] };
+type WaitData = { reason: string; delivering?: string[]; held?: Held[] };
 
 /** What a driver tells `next` besides who it is. */
 export interface NextOptions {
@@ -1553,6 +1612,13 @@ export interface NextOptions {
   claim?: boolean;
   /** The run mode the driver runs its leases in, the one it exports to their processes. A lease issued or handed back keeps it. */
   runMode?: RunMode;
+  /**
+   * Process-only: the driver hands a run that reaches a step only a person can take to one, as the local driver does when
+   * nobody answers at its terminal. A required approval or an unanswered choice then waits, held for `hitl` as an
+   * interactive step is, instead of failing `hitl_required`. Once the driver could not hand the run over, `unoffered`
+   * says why, and such a step fails `hitl_required` with it.
+   */
+  handoff?: { unoffered?: string };
   /** Process-only: the team env the caller resolved for this operation, so `next` does not resolve it again. */
   env?: WorkflowEnv;
   /**
@@ -1757,16 +1823,20 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       return answer(doneData(run));
     };
 
-    const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => {
+    const wait = (open = run.steps.find((step) => step.status === 'leased'), people: Held[] = []): { save: boolean; envelope: WorkflowEnvelope } => {
       // Steps still delivering here are being delivered by another process of this machine, waited for a busy run
       // lock, or wait for a report: of the commit their branch is ahead at on origin, or of a leased step that writes
       // their branch. A driver polls until they settle.
       const delivering = run.steps.filter((step) => step.status === 'delivering').map((step) => step.id);
-      const reason = open ? `${open.id} is leased` : delivering.length > 0 ? `${delivering[0]} is delivering` : 'canTakeLease is false';
+
+      const reason = open ? `${open.id} is leased` : delivering.length > 0 ? `${delivering[0]} is delivering`
+        : people.length > 0 ? people.map((item) => item.reason).join('; ') : 'canTakeLease is false';
 
       const waiting: WaitData = { reason };
 
       if (delivering.length > 0) waiting.delivering = delivering;
+
+      if (people.length > 0) waiting.held = people;
 
       return answer({ wait: waiting });
     };
@@ -1782,6 +1852,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     const older = missingNeeds(run);
 
     if (older) return { save: false, envelope: error('run_unreadable', older) };
+    const person = personOutcome(options);
 
     for (;;) {
       // Ends reached through reports, and deadlines passed, apply before an open lease is handed back, so a restarted
@@ -1806,7 +1877,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       // follows workflows.auto_approve.
       if (can.hitl && options.autoApprove === true && answerOptionalGates(run, now)) continue;
 
-      if (options.canTakeLease !== false && !can.hitl && answerWithoutHitl(config, run, now, options.autoApprove)) continue;
+      if (options.canTakeLease !== false && !can.hitl && answerWithoutHitl(config, run, now, { autoApprove: options.autoApprove, person })) continue;
       // An open lease the driver does not list is handed back before another lease is issued, as a restarted driver expects.
       const leased = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !running.has(step.lease.attempt));
 
@@ -1814,7 +1885,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         if (options.canTakeLease === false || 'inProgress' in result) {
           const hitl = can.hitl ? waitingHitl(run) : undefined;
 
-          return hitl ? answer({ hitl }) : wait();
+          return hitl ? answer({ hitl }) : wait(undefined, can.hitl ? [] : waitingForPerson(run));
         }
 
         const open = run.steps.filter((step) => step.status === 'leased').length;
@@ -1872,6 +1943,12 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             break;
           }
 
+          if (terms.kind === 'hold' && person.kind === 'fails' && person.unoffered !== undefined && terms.missing.includes('hitl')) {
+            failStep(state, personRequired(run.id, state.id, person.unoffered), run.revision);
+            settledOne = true;
+            break;
+          }
+
           if (terms.kind === 'hold' && options.alone && terms.missing.includes('unattended')) {
             failStep(state, unattendedUnavailable(state.id, definition.tool), run.revision);
             settledOne = true;
@@ -1904,8 +1981,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }
 
         if (settledOne) continue;
+        const holds = [...held, ...can.hitl ? [] : waitingForPerson(run)];
 
-        return answer({ wait: { reason: held.map((item) => item.reason).join('; '), held } });
+        return answer({ wait: { reason: holds.map((item) => item.reason).join('; '), held: holds } });
       }
 
       const located = locateStep(run, leased.id);

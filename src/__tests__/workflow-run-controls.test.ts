@@ -121,6 +121,35 @@ describe('workflow HITL', () => {
     if (state.status === 'failed') expect(state.failure?.code).toBe('hitl_required');
   });
 
+  it.each([
+    ['approve: { message: Go?, required: true }', true],
+    ['choose: { message: Pick, options: [one, two] }', true],
+    ['choose: { message: Pick, options: [one, two], default: one }', false],
+  ])('keeps %s waiting for a person for a driver without HITL that hands runs to a person (auto_approve=%s), held for hitl', async (hitlSpec, auto) => {
+    const f = await fixture(`  - id: ask\n    ${hitlSpec}`);
+    const next = data(await leaseNext(f.config, f.id, driver, { handoff: {}, autoApprove: auto })) as unknown as { wait: { held: unknown[] } };
+    expect(next.wait.held).toEqual([{ step: 'ask', reason: 'step "ask" needs hitl, which this driver does not declare', missing: ['hitl'] }]);
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'waiting' });
+  });
+
+  it('holds an interactive step for hitl from a driver that hands runs to a person, and fails it hitl_required once the driver could not offer the run to a person', async () => {
+    const f = await fixture('  - id: pair\n    interactive: true\n    prompt: Pair on it.');
+    const held = data(await leaseNext(f.config, f.id, driver, { handoff: {} })) as unknown as { wait: { held: Array<{ step: string; missing: string[] }> } };
+    expect(held.wait.held).toEqual([expect.objectContaining({ step: 'pair', missing: expect.arrayContaining(['hitl']) })]);
+    expect(data(await leaseNext(f.config, f.id, driver, { handoff: { unoffered: 'its team repo has no teamai-reports' } }))).toHaveProperty('done');
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'failed', failure: { code: 'hitl_required', message: expect.stringContaining(`Step "pair" needs a person, and run ${f.id} could not be offered to one: its team repo has no teamai-reports.`) } });
+  });
+
+  it('fails a step that waits for a person with hitl_required once the driver could not offer the run to one, saying why and how to continue it', async () => {
+    const f = await fixture('  - id: ask\n    approve: { message: Go?, required: true }');
+    await leaseNext(f.config, f.id, driver, { handoff: {} });
+    expect(data(await leaseNext(f.config, f.id, driver, { handoff: { unoffered: 'teamai-reports could not be reached' } }))).toHaveProperty('done');
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'failed', failure: {
+      code: 'hitl_required',
+      message: `Step "ask" needs a person, and run ${f.id} could not be offered to one: teamai-reports could not be reached. Its state is on this machine. Retry the step here, then resume the run where a person answers: teamai workflow retry ${f.id} ask; then teamai workflow resume ${f.id}`,
+    } });
+  });
+
   it('requires a terminal answer for a required HITL request, and validates choice and pass', async () => {
     const f = await fixture('  - id: ask\n    approve: { message: Go?, required: true }\n    command: echo work');
     expect(await f.respond('ask', 'yes', { provenance: respondProvenance({ kind: 'terminal', caller: { tty: false, evidence: { kind: 'none' } } }) })).toMatchObject({ error: { code: 'agent_in_path' } });

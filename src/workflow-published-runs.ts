@@ -18,7 +18,8 @@ import { executableOf, type LaunchTool } from './tool-launch/tools.js';
 import { resolveCliPath } from './utils/cli-path.js';
 import { sameEnvName } from './resources/env-key.js';
 import { envAdvice, type EnvFacts } from './workflow/requirements.js';
-import { definitionsOf, settledSteps } from './workflow/handoff.js';
+import { personSteps, type PersonStep } from './workflow/engine.js';
+import { definitionsOf, handedRun, settledSteps } from './workflow/handoff.js';
 import { invokeRefusal, type InvokeCaller } from './workflow/protocol.js';
 import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './workflow/snapshot.js';
 import { installOwner, readRuns, RunIdSchema, type RunId } from './workflow/store.js';
@@ -26,10 +27,10 @@ import type { RunState, RunStatus, WorkflowFailure } from './workflow/types.js';
 
 /**
  * Who would take an offered run: the calling process, as `invoke` judges it, whether a person answers what the run asks
- * them, as its driver finds out, and the driver it would drive the run with: the local driver with `--tools` `tools`, or
- * the skill driver, whose session runs the prompt steps.
+ * them, as its driver finds out, and the driver it would drive the run with: the local driver with `--tools` `tools`,
+ * answering optional gates when `autoApprove`, or the skill driver, whose session runs the prompt steps.
  */
-export type Taker = { caller: InvokeCaller; hasPerson: boolean } & ({ driver: 'local'; tools: Record<string, string>; sandbox: boolean } | { driver: 'skill' });
+export type Taker = { caller: InvokeCaller; hasPerson: boolean } & ({ driver: 'local'; tools: Record<string, string>; sandbox: boolean; autoApprove?: boolean } | { driver: 'skill' });
 
 /** Something the steps an offered run has left need that this machine lacks: why, as a clause, and what gives it. */
 export interface Lack {
@@ -40,8 +41,17 @@ export interface Lack {
 /** An offered run, as `taker` would find it. */
 export interface Offer {
   at: string;
-  /** What in the steps the run has not settled for good needs a person, a clause each; empty when a runner can finish it. */
+  /**
+   * What needs a person before `taker` can go on, a clause each; empty when a runner can take the run. For the local
+   * driver, the steps ready now in the published state that only a person can take, such as an approval the run was
+   * handed back at. For the skill driver, whose unattended resume refuses them, every step left that may need one.
+   */
   needs: string[];
+  /**
+   * The steps the run has not settled for good that may need a person, whether or not the run reaches them. A local
+   * runner takes the run anyway, and hands it back to a person if it reaches one.
+   */
+  mayNeed: string[];
   /** What those steps need of the machine that runs them, whichever it is: the env keys they require, and the prompt steps among them, which run on a tool. */
   uses: { env: string[]; prompts: string[] };
   /** What those steps need that this machine lacks: env with no value here, or for the local driver a prompt tool. */
@@ -134,7 +144,7 @@ async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapsho
 async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env, toolLacksOf }: { taker: Taker; env: WorkflowEnv; toolLacksOf: ToolLacks }): Promise<Offer> {
   const definitions = await definitionsOf(config, snapshot);
 
-  if (!definitions.ok) return { at, needs: [], uses: { env: [], prompts: [] }, lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
+  if (!definitions.ok) return { at, needs: [], mayNeed: [], uses: { env: [], prompts: [] }, lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
 
   const description = describeWorkflow({
@@ -142,7 +152,16 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
   });
 
   const settled = new Set(settledSteps({ definition, workflows, steps: snapshot.steps }));
-  const needs = stepNeeds(description, settled);
+
+  const needs = taker.driver === 'skill'
+    ? stepNeeds(description, settled)
+    : personNeeds(personSteps(handedRun(snapshot, definitions.value), new Date().toISOString(), taker.autoApprove ?? config.workflows?.auto_approve === true));
+
+  const { facts } = description;
+
+  const mayNeed = [...facts.interactive, ...facts.gates.flatMap((gate) => (gate.required || (gate.kind === 'choose' && gate.default === undefined) ? [gate.step] : []))]
+    .filter((step) => isLeft(step, settled));
+
   const left = description.facts.runs.filter((run) => isLeft(run.step, settled));
   const local = taker.driver === 'skill' ? localReason(description) : undefined;
 
@@ -153,11 +172,23 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
 
   const isSandbox = taker.driver === 'local' && (taker.sandbox || config.workflows?.sandbox === true);
   const sealed = taker.driver === 'local' && !isSandbox ? sandboxLacks(description.facts.held.filter((held) => isLeft(held.step, settled))) : [];
-  const offer: Offer = { at, needs, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left), ...sealed] };
+  const offer: Offer = { at, needs, mayNeed, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left), ...sealed] };
 
   if (refusal) offer.refusal = refusal;
 
   return offer;
+}
+
+/** `steps`, ready now and only a person can take them, as clauses: one per kind, as the static check words them. */
+function personNeeds(steps: readonly PersonStep[]): string[] {
+  const of = (kind: PersonStep['kind']): string[] => steps.flatMap((step) => (step.kind === kind ? [step.step] : []));
+  const [interactive, approvals, choices] = [of('interactive'), of('approve'), of('choose')];
+
+  return [
+    ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
+    ...(approvals.length > 0 ? [`only a person can answer the approval${approvals.length > 1 ? 's' : ''} at ${listOf(approvals)}`] : []),
+    ...(choices.length > 0 ? [`only a person can answer the choice${choices.length > 1 ? 's' : ''} at ${listOf(choices)}`] : []),
+  ];
 }
 
 /** A step that runs a command or a prompt, with what it needs of the machine that runs it, as describe gives it. */
@@ -271,8 +302,8 @@ function envLacks(runs: readonly StepRun[], env: EnvFacts): Lack[] {
 
 /**
  * The runs `workflow resume --next` tries, in order, from `runs` as `list` gave them: offered by an install other than
- * `self`, in business repository `repository`, refused by nothing, and, unless `hasPerson`, with no step left that needs
- * a person, since `--auto-approve` answers none of them.
+ * `self`, in business repository `repository`, refused by nothing, and, unless `hasPerson`, with nothing that needs a
+ * person before the taker can go on, since `--auto-approve` answers none of it.
  */
 function candidates(runs: readonly PublishedRun[], { repository, hasPerson, self }: { repository: string | undefined; hasPerson: boolean; self: string }): PublishedRun[] {
   return runs.filter(({ offer, owner, repository: of }) => offer !== undefined && owner.id !== self && repository !== undefined && of === repository

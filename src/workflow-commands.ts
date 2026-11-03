@@ -903,8 +903,11 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
   const caller: InvokeCaller = invokeCaller(options.confirmed);
 
   if (isSkill && evidence.kind === 'none') caller.evidence = { kind: 'skill-driver' };
+
   // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
-  const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, sandbox: options.sandbox === true, hasPerson: personAnswers(caller.mode) };
+  const taker: Taker = isSkill
+    ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' }
+    : { caller, driver: 'local', tools, sandbox: options.sandbox === true, hasPerson: personAnswers(caller.mode), autoApprove: options.autoApprove ?? loaded.config.workflows?.auto_approve === true };
 
   if (options.next) await takeNext(loaded, taker, options);
   else await listResumable(loaded, taker);
@@ -1067,7 +1070,10 @@ function resumableRow(resumable: ResumableRun): string[] {
 
       if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: ${take}`];
 
-      return [run, workflow, 'running', ownerText(owner), 'offered on teamai-reports: teamai workflow resume --next'];
+      // A runner takes it and finds out by running whether it reaches a person, handing it back if it does.
+      const may = offer.mayNeed.length > 0 ? `, may need a person at ${offer.mayNeed.join(', ')}` : '';
+
+      return [run, workflow, 'running', ownerText(owner), `offered on teamai-reports${may}: teamai workflow resume --next`];
     }
 
     case 'here': {

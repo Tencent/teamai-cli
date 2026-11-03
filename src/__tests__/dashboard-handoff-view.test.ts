@@ -32,10 +32,10 @@ function row(run: string, { isMine, offer }: Pick<HandoffRow, 'isMine' | 'offer'
 }
 
 const NONE = { env: [], prompts: [] };
-const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [], uses: NONE, lacks: [] };
-const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'], uses: NONE, lacks: [] };
+const RUNNABLE = { at: '2026-10-28T09:05:00.000Z', needs: [], mayNeed: [], uses: NONE, lacks: [] };
+const GATED = { at: '2026-10-28T09:05:00.000Z', needs: ['only a person can answer the approval at ship'], mayNeed: ['ship'], uses: NONE, lacks: [] };
 const SIGNED = {
-  at: '2026-10-28T09:05:00.000Z', needs: [], uses: { env: ['SIGNING_KEY'], prompts: ['notes'] },
+  at: '2026-10-28T09:05:00.000Z', needs: [], mayNeed: [], uses: { env: ['SIGNING_KEY'], prompts: ['notes'] },
   lacks: [{ reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'run teamai env set SIGNING_KEY, or set it in the environment' }],
 };
 
