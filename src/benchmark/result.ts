@@ -22,6 +22,7 @@ import { compareAgent } from './agent-match.js';
 import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
+import { leavesOut } from './team-without.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -160,21 +161,19 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
 
       const task = plan.tasks.find(({ id }) => id === trial.task);
       const covers = task === undefined ? [] : namesOf(task);
-      // An arm that runs without a covered skill by design reports no routing for it: the asset is absent, not misrouted.
+      // An arm that runs without a covered skill by design, alone or with the directory holding it, reports no routing
+      // for it: the asset is absent, not misrouted.
+      const left = arm?.team.kind === 'without' ? arm.team.paths : [];
 
-      const absent = arm?.team.kind === 'without'
+      const absent = new Set(plan.tasks.flatMap((one) => (one.covers ?? []).flatMap((covered, index) => {
+        const name = one.coversSkills?.[index];
 
-        ? arm.team.paths.flatMap((without) => {
-          const name = plan.tasks.flatMap((one) => one.covers?.map((covered, index) => [covered, one.coversSkills?.[index] ?? null] as const) ?? [])
-            .find(([covered]) => covered === without)?.[1];
-
-          return name !== undefined && name !== null ? [name] : [];
-        })
-        : [];
+        return name !== undefined && name !== null && leavesOut(left, covered) ? [name] : [];
+      })));
 
       const entry = arm?.workflow
-        ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.includes(name)), covers, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
-        : projectionOf(settledPass(work), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.includes(name)), covers, unenforced: [] });
+        ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.has(name)), covers, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
+        : projectionOf(settledPass(work), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.has(name)), covers, unenforced: [] });
 
       const recorded: BenchmarkRecord['trials'][number] = { ...trial, step: `${prefix}${trial.step}`, result, ...entry };
 
