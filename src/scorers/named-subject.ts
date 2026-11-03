@@ -77,18 +77,8 @@ function onlyListingStep(run: RunState, scorers: readonly string[], succeeded: r
   return refused('step_not_found', `Run ${run.id} lists scorer ${named} on no step. ${succeeded.length > 0 ? `Pass --step <path> to pick one: ${succeeded.join(', ')}.` : 'No step of it succeeded.'}`);
 }
 
-/** The pass `named` asks for, whose evidence is still here, and the definitions the run pinned for its scorers. */
-async function ofPass(current: LocalConfig | undefined, named: NamedPass): Promise<({ ok: true } & NamedSubject) | Refusal> {
-  const file = named.scorers.find(isScorerFile);
-
-  if (file !== undefined) return refused('invalid_arguments', `--run takes scorer names, not the file ${file}: a run pins its scorers when it starts`);
-  const found = await findRunConfig(named.run, current);
-
-  if ('error' in found) return refused(found.error.code, found.error.message);
-  const { config, run } = found;
-  const unready = await scoringRefusal(config);
-
-  if (unready) return unready;
+/** The step and pass of `run` that `named` asks for, of those that succeeded: by default the latest of the step. */
+function passIn(run: RunState, named: NamedPass): { ok: true; step: string; pass: number } | Refusal {
   const judgeable = judgeablePasses(run).map(({ pass }) => pass);
   const succeeded = [...new Set(judgeable.map((pass) => pass.step))];
   const chosen = named.step === undefined ? onlyListingStep(run, named.scorers, succeeded) : { ok: true as const, step: named.step };
@@ -104,7 +94,25 @@ async function ofPass(current: LocalConfig | undefined, named: NamedPass): Promi
 
   const pass = named.pass ?? latest;
 
-  if (!ofStep.includes(pass)) return refused('pass_not_found', `Pass ${pass} of step ${step} did not succeed in run ${run.id}. Succeeded passes: ${ofStep.join(', ')}.`);
+  return ofStep.includes(pass) ? { ok: true, step, pass } : refused('pass_not_found', `Pass ${pass} of step ${step} did not succeed in run ${run.id}. Succeeded passes: ${ofStep.join(', ')}.`);
+}
+
+/** The pass `named` asks for, whose evidence is still here, and the definitions the run pinned for its scorers. */
+async function ofPass(current: LocalConfig | undefined, named: NamedPass): Promise<({ ok: true } & NamedSubject) | Refusal> {
+  const file = named.scorers.find(isScorerFile);
+
+  if (file !== undefined) return refused('invalid_arguments', `--run takes scorer names, not the file ${file}: a run pins its scorers when it starts`);
+  const found = await findRunConfig(named.run, current);
+
+  if ('error' in found) return refused(found.error.code, found.error.message);
+  const { config, run } = found;
+  const unready = await scoringRefusal(config);
+
+  if (unready) return unready;
+  const chosen = passIn(run, named);
+
+  if (!chosen.ok) return chosen;
+  const { step, pass } = chosen;
   const subject = { runId: run.id, step, pass };
   const missing = await missingEvidence(run, subject);
 
