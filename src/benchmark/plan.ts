@@ -62,7 +62,7 @@ const PlannedTaskSchema = z.object({
   covers: z.array(z.string().min(1)).nonempty().optional(),
   /** Aligned with `covers`: the bare skill name a trial's load record shows for that path, or null when the revision delivers it as no skill, such as a namespace directory. */
   coversSkills: z.array(z.string().min(1).nullable()).nonempty().optional(),
-  /** Aligned with `covers`: the arms whose selection pull does not deliver that path to, so their trials record no routing for it. Absent: every arm's selection receives each path. */
+  /** Aligned with `covers`: the arms whose clone does not receive that path, at its team revision, with its role and without paths, so their trials record no routing for it. Absent: every arm receives each path. */
   coversWithheldFrom: z.array(z.array(BenchmarkNameSchema)).nonempty().optional(),
 }).strict();
 

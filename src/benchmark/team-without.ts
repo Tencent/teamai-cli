@@ -13,10 +13,12 @@ import {
 } from '../resources/desired.js';
 import { resolveDesiredDocs } from '../resources/docs.js';
 import type { LocalConfig, ResourceItem } from '../types.js';
+import { usesMemberFilters } from '../resource-namespaces.js';
 import { withTeamRevision } from '../workflow/cache.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import { git } from '../workflow/worktree.js';
 import type { Arm } from './suite.js';
+import type { ArmTeam } from './terms.js';
 
 /** Why plan refuses the arm: git could not read its team revision, or a path changes nothing its trials get. */
 type Refusal = { code: 'arm_team_unreadable' | 'arm_team_unresolved'; message: string };
@@ -41,13 +43,14 @@ const REASONS: ReadonlyMap<string, (unchanged: Unchanged) => string | undefined>
 
 /**
  * Why plan refuses arm `arm` that runs without `paths` at team commit `revision`, or undefined when its trials can run
- * without them. `config` is the member's; `selection`, the assets the run's clones install. Refused: a path the revision
+ * without them. `config` is the member's; `selection`, the assets the run's clones install; `role`, the arm's, which its
+ * clone pulls with in place of the member's roles and filters. Refused: a path the revision
  * does not have; teamai.yaml, which the clone's pull reads; and a path under skills/, rules/, agents/, claudemd/ or docs/
  * whose leaving out leaves what pull delivers as it was, with the reason pull's resolvers give.
  */
 export async function withoutRefusal(
   config: LocalConfig,
-  { arm, paths, revision, selection }: { arm: string; paths: readonly string[]; revision: string; selection: TeamSelection },
+  { arm, paths, revision, selection, role }: { arm: string; paths: readonly string[]; revision: string; selection: TeamSelection; role?: string },
 ): Promise<Refusal | undefined> {
   const short = revision.slice(0, 7);
   const listed = await git(config.repo.localPath, ['ls-tree', '-r', '-z', '--name-only', revision]);
@@ -67,9 +70,8 @@ export async function withoutRefusal(
     return { code: 'arm_team_unresolved', message: `Arm "${arm}" runs without teamai.yaml, which teamai pull reads to install the team, so no trial could run. ${REMOVE}` };
   }
 
-  // The member as the clone's own pull reads it: the run's selection, on a scope with no state of its own.
-  const member: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
-  const read = await withTeamRevision(member, revision, async (at) => ({ unchanged: await firstUnchanged(at, { subject: `Arm "${arm}" runs without`, advice: REMOVE, paths, files, short, excluded: selection.excludedSkills }) }));
+  const { reader, excluded } = readerOf(config, selection, role);
+  const read = await withTeamRevision(reader, revision, async (at) => ({ unchanged: await firstUnchanged(at, { subject: `Arm "${arm}" runs without`, advice: REMOVE, paths, files, short, excluded }) }));
 
   if ('failed' in read) {
     return { code: 'arm_team_unreadable', message: `Arm "${arm}" runs without ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${read.failed}. Repair the team repo, or run teamai pull, and start again.` };
@@ -115,36 +117,57 @@ export function skillDefinitionOf(skill: string): string {
   return `${skill}/SKILL.md`;
 }
 
-/** An arm as the covers check reads it: a team-free arm (`team: none`) pulls nothing, so it receives no covered path. */
-type CoveringArm = Pick<Arm, 'name' | 'role'> & Partial<Pick<Arm, 'team'>>;
+/** An arm as the covers check reads it: its team as plan resolved it (absent: the pulled revision) and its role. */
+type CoveringArm = Pick<Arm, 'name' | 'role'> & { team?: ArmTeam };
+
+/** What an arm's clone installs from: a team revision, the role it pulls with (absent: the member's), and the paths it runs without. */
+type ArmSource = { revision: string; role: string | undefined; without: readonly string[] };
 
 /**
- * Every selection the run's arms pull under, with the arms that pull under it: the member's own when an arm with team
- * assets runs with no role, then each arm's role, so a path only one role receives is not refused and one no arm
- * receives is.
+ * The sources the run's arms install from, each with the arms that install from it, so arms that share a revision, a
+ * role and the paths they run without share one read. A team-free arm (`team: none`) installs nothing, so it has none.
  */
-export function armSelections(planned: readonly CoveringArm[], member: TeamSelection): Array<{ selection: TeamSelection; arms: string[] }> {
-  const arms = planned.filter(({ team }) => team?.kind !== 'none');
-  const roles = [...new Set(arms.flatMap(({ role }) => (role !== undefined ? [role] : [])))];
-  const own = arms.some(({ role }) => role === undefined) ? [member] : [];
+export function armSources(planned: readonly CoveringArm[], pulled: string): Array<{ source: ArmSource; arms: string[] }> {
+  const sources = new Map<string, { source: ArmSource; arms: string[] }>();
 
-  return [...own, ...roles.map((role) => ({ ...member, primaryRole: role }))]
-    .flatMap((selection, index, all) => (all.findIndex((other) => other.primaryRole === selection.primaryRole) === index
-      ? [{ selection, arms: arms.flatMap(({ name, role }) => ((role ?? member.primaryRole) === selection.primaryRole ? [name] : [])) }]
-      : []));
+  for (const { name, role, team } of planned) {
+    if (team?.kind === 'none') continue;
+    const source: ArmSource = { revision: team?.revision ?? pulled, role, without: team?.kind === 'without' ? [...team.paths].sort() : [] };
+    const key = JSON.stringify([source.revision, source.role ?? null, source.without]);
+    const known = sources.get(key) ?? { source, arms: [] };
+
+    known.arms.push(name);
+    sources.set(key, known);
+  }
+
+  return [...sources.values()];
 }
 
 /**
- * Why plan refuses the paths the tasks cover, or, by each covered path, the arms whose selection pull does not deliver
- * it to, so their trials record no routing for it. Refused: a path the revision does not have, teamai.yaml, and a path
- * no arm's selection receives.
+ * The member as an arm's clone pulls, on a scope with no state of its own: the run's selection, and with a role, that
+ * role as the clone's step role, which replaces the member's roles and drops their tags and excluded skills. `excluded`:
+ * the skills that pull still excludes.
+ */
+function readerOf(config: LocalConfig, selection: TeamSelection, role: string | undefined) {
+  const reader: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
+
+  if (role !== undefined) reader.stepRole = role;
+
+  return { reader, excluded: usesMemberFilters(reader) ? selection.excludedSkills : [] };
+}
+
+/**
+ * Why plan refuses the paths the tasks cover, or, by each covered path, the arms whose clone does not receive it, so
+ * their trials record no routing for it. Each arm is read as its clone installs: at its own team revision, with its
+ * role, and without the paths it runs without. Refused: a path the pulled revision does not have, teamai.yaml, and a
+ * path no arm receives.
  */
 export async function coveredDelivery(
   config: LocalConfig,
   { paths, revision, arms, member, files }: { paths: readonly string[]; revision: string; arms: readonly CoveringArm[]; member: TeamSelection; files: readonly string[] },
 ): Promise<{ refusal: Refusal } | { withheldFrom: Record<string, string[]> }> {
   const short = revision.slice(0, 7);
-  const selections = armSelections(arms, member);
+  const sources = armSources(arms, revision);
   const missing = paths.find((one) => !files.some((file) => leavesOut([one], file)));
 
   if (missing !== undefined) {
@@ -155,61 +178,89 @@ export async function coveredDelivery(
     return { refusal: { code: 'arm_team_unresolved', message: `A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. ${TASK_FIX}` } };
   }
 
-  if (selections.length === 0) {
+  if (sources.length === 0) {
     return { refusal: { code: 'arm_team_unresolved', message: `A task covers ${paths.join(', ')}, but every arm runs with team: none, so no arm receives it. ${TASK_FIX}` } };
   }
 
-  // Every selection the run's arms pull under, so a path only a role arm receives is not refused. A path refuses
-  // only when every selection's delivery leaves it unchanged: each read is the member as the clone's own pull reads
-  // it, on a scope with no state of its own.
   // Each path once, however many tasks cover it, each checked on its own against the whole tree.
   const unique = [...new Set(paths)];
 
-  // One path at a time within a clone — each check renames its path out and back — while the selections run apart,
-  // each in its own clone, so no check reads a clone another path is moved out of.
-  const reads = await Promise.all(selections.map(async ({ selection, arms: pulling }) => {
-    const reader: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
+  // One path at a time within a clone — each check renames its path out and back — while the sources run apart, each
+  // in its own clone, so no check reads a clone another path is moved out of.
+  const reads = await Promise.all(sources.map(async ({ source, arms: installing }) => {
+    const listed = source.revision === revision ? { files } : await teamFilesAt(config, { paths: unique, revision: source.revision });
 
-    return withTeamRevision(reader, revision, async (at) => {
+    const at = source.revision.slice(0, 7);
+
+    if ('failed' in listed) return { failed: `git could not list it`, at };
+    // A path the arm runs without, or that its revision does not have, never reaches it; the rest are read.
+    const absent = (covered: string) => leavesOut(source.without, covered) || !listed.files.some((file) => leavesOut([covered], file));
+    const read = unique.filter((covered) => !absent(covered));
+    const { reader, excluded } = readerOf(config, member, source.role);
+
+    const checked = read.length === 0 ? [] : await withTeamRevision(reader, source.revision, async (clone) => {
       const unchangedByPath: Array<[string, string | undefined]> = [];
 
-      for (const covered of unique) {
-        unchangedByPath.push([covered, await firstUnchanged(at, { subject: 'A task covers', advice: TASK_FIX, paths: [covered], files, short, excluded: selection.excludedSkills })]);
+      for (const covered of read) {
+        unchangedByPath.push([covered, await firstUnchanged(clone, { subject: 'A task covers', advice: TASK_FIX, paths: [covered], aside: source.without, files: listed.files, short: at, excluded })]);
       }
 
-      return { arms: pulling, unchangedByPath };
+      return unchangedByPath;
     });
+
+    if ('failed' in checked) return { failed: checked.failed, at };
+    const reasons = new Map(checked);
+
+    // By covered path: received (undefined), withheld with the reason pull's resolvers give, or withheld with none.
+    return { arms: installing, withheld: unique.map((covered): [string, { reason: string | undefined } | undefined] => [covered, absent(covered) ? { reason: undefined } : reasons.get(covered) === undefined ? undefined : { reason: reasons.get(covered) }]) };
   }));
 
-  const failed = reads.find((read) => 'failed' in read);
+  const failed = reads.find((one) => 'failed' in one);
 
   if (failed && 'failed' in failed) {
-    return { refusal: { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${failed.failed}. Repair the team repo, or run teamai pull, and start again.` } };
+    return { refusal: { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and what teamai pull delivers at team revision ${failed.at} could not be read: ${failed.failed}. Repair the team repo, or run teamai pull, and start again.` } };
   }
 
   const read = reads.flatMap((one) => ('failed' in one ? [] : [one]));
+  const withheldOf = (covered: string) => read.flatMap(({ arms: installing, withheld }) => withheld.flatMap(([one, why]) => (one === covered && why !== undefined ? [{ arms: installing, reason: why.reason }] : [])));
 
-  // A path refuses only when every selection's delivery leaves it unchanged; one role arm that receives it is enough.
-  const unchangedFor = (covered: string) => read.flatMap(({ arms: pulling, unchangedByPath }) => unchangedByPath.flatMap(([one, unchanged]) => (one === covered && unchanged !== undefined ? [{ arms: pulling, unchanged }] : [])));
+  // A path refuses only when no arm receives it; one arm that receives it is enough.
+  for (const covered of unique) {
+    const withheld = withheldOf(covered);
 
-  const refused = unique.map(unchangedFor).find((ones) => ones.length === read.length)?.[0];
+    if (withheld.length < read.length) continue;
+    const reasons = withheld.flatMap(({ reason }) => (reason === undefined ? [] : [reason]));
 
-  if (refused !== undefined) return { refusal: { code: 'arm_team_unresolved', message: refused.unchanged } };
+    return {
+      refusal: {
+        code: 'arm_team_unresolved',
+        // Every arm's pull leaves it out for a reason its resolvers give: the first. Otherwise some arm runs without it
+        // or on a revision that lacks it.
+        message: reasons.length === withheld.length && reasons[0] !== undefined
+          ? reasons[0]
+          : `A task covers ${covered}, and no arm receives it: each arm that pulls team assets runs without it, on a team revision that does not have it, or with roles or projects that leave it out. ${TASK_FIX}`,
+      },
+    };
+  }
 
-  return { withheldFrom: Object.fromEntries(unique.map((covered) => [covered, unchangedFor(covered).flatMap(({ arms: pulling }) => pulling)])) };
+  return { withheldFrom: Object.fromEntries(unique.map((covered) => [covered, withheldOf(covered).flatMap(({ arms: installing }) => installing)])) };
 }
 
 /**
  * Why pull delivers the same with the first of `paths` that it does as without it, at the checkout of the team revision
  * `at` names, whose files are `files`, or undefined when each path changes what it delivers. Each path is set aside in
- * turn, with the others out of the checkout, and every path is back in the checkout when it returns.
+ * turn, with the others out of the checkout, `aside` stays out throughout, and every path is back in the checkout when
+ * it returns.
  */
 async function firstUnchanged(
   at: LocalConfig,
-  { subject, advice, paths, files, short, excluded }: { subject: string; advice: string; paths: readonly string[]; files: readonly string[]; short: string; excluded: readonly string[] },
+  { subject, advice, paths, aside = [], files, short, excluded }: { subject: string; advice: string; paths: readonly string[]; aside?: readonly string[]; files: readonly string[]; short: string; excluded: readonly string[] },
 ): Promise<string | undefined> {
   const repo = at.repo.localPath;
   const held = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-without-'));
+  // Apart from `held`, so a checked path that holds one of `aside` moves out whole and back before it returns.
+  const apart = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-without-'));
+  const setAside: string[] = [];
 
   const out = new Set<string>();
 
@@ -221,9 +272,15 @@ async function firstUnchanged(
     else out.delete(one);
   };
 
-  const present = (left: readonly string[]): string[] => files.filter((file) => !leavesOut(left, file));
+  const present = (left: readonly string[]): string[] => files.filter((file) => !leavesOut([...aside, ...left], file));
 
   try {
+    for (const one of aside) {
+      await fs.mkdir(path.dirname(path.join(apart, one)), { recursive: true });
+      await fs.rename(path.join(repo, one), path.join(apart, one));
+      setAside.push(one);
+    }
+
     for (const one of paths) await move(repo, held, one);
     const without = await deliveryAt(at, present(paths));
 
@@ -248,7 +305,10 @@ async function firstUnchanged(
   } finally {
     // Every path goes back, so the next check in this checkout reads the whole tree.
     for (const one of out) await move(held, repo, one);
+
+    for (const one of setAside) await fs.rename(path.join(apart, one), path.join(repo, one));
     await fs.rm(held, { recursive: true });
+    await fs.rm(apart, { recursive: true });
   }
 }
 

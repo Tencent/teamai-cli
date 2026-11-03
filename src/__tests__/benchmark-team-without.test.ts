@@ -214,6 +214,12 @@ describe('withoutRefusal', () => {
     expect(await withoutRefusal(config, { arm: 'ablated', paths: ['skills/dev/deploy'], revision, selection })).toBeUndefined();
   });
 
+  it("lets an arm with a role run without a skill the member excludes, which the role's clone receives", async () => {
+    const { config, revision, selection } = team({ excluded: ['deploy'] });
+
+    expect(await withoutRefusal(config, { arm: 'ablated', paths: ['skills/dev/deploy'], revision, selection, role: 'dev' })).toBeUndefined();
+  });
+
   it('refuses an arm whose revision the team repo cannot read', async () => {
     const { config, selection } = team();
 
@@ -249,8 +255,9 @@ describe('coveredDelivery', () => {
     const arms = [{ name: 'pulled' }, { name: 'dev', role: 'dev' }, { name: 'ops', role: 'ops' }];
 
     expect(await coveredDelivery(config, { paths: ['skills/dev/deploy', 'skills/ops/runbook', 'skills/lint'], revision, arms, member: selection, files })).toEqual({
-      // ops gets its own lint in place of the shared one.
-      withheldFrom: { 'skills/dev/deploy': ['ops'], 'skills/ops/runbook': ['pulled', 'dev'], 'skills/lint': ['ops'] },
+      // ops gets its own lint in place of the shared one; dev's clone pulls with its role and none of the member's
+      // tags, and only the member's tag quality brings the shared lint.
+      withheldFrom: { 'skills/dev/deploy': ['ops'], 'skills/ops/runbook': ['pulled', 'dev'], 'skills/lint': ['dev', 'ops'] },
     });
   });
 
@@ -341,5 +348,47 @@ describe('coveredDelivery', () => {
 
     expect(refusal?.code).toBe(code);
     expect(refusal?.message).toBe(message.replaceAll('{r}', revision.slice(0, 7)));
+  });
+
+  it("reads a role arm as its clone installs, so the member's excluded skills do not withhold it", async () => {
+    const { config, revision, selection, files } = team({ excluded: ['deploy'] });
+
+    expect(await coveredDelivery(config, { paths: ['skills/dev/deploy'], revision, arms: [{ name: 'dev', role: 'dev' }], member: selection, files })).toEqual({
+      withheldFrom: { 'skills/dev/deploy': [] },
+    });
+  });
+
+  it('refuses a path whose only receiving arm runs without it', async () => {
+    const { config, revision, selection, files } = team();
+    const arms = [{ name: 'ops', role: 'ops' }, { name: 'dev', role: 'dev', team: { kind: 'without' as const, paths: ['skills/dev/deploy'] as [string], revision } }];
+    const refusal = await coveredRefusal(config, { paths: ['skills/dev/deploy'], revision, arms, member: selection, files });
+
+    expect(refusal?.code).toBe('arm_team_unresolved');
+    expect(refusal?.message).toContain('A task covers skills/dev/deploy');
+  });
+
+  it('accepts a path a pulled arm receives and withholds it from the arm that runs without it', async () => {
+    const { config, revision, selection, files } = team();
+    const arms = [{ name: 'pulled' }, { name: 'no-deploy', team: { kind: 'without' as const, paths: ['skills/dev/deploy'] as [string], revision } }];
+
+    expect(await coveredDelivery(config, { paths: ['skills/dev/deploy'], revision, arms, member: selection, files })).toEqual({
+      withheldFrom: { 'skills/dev/deploy': ['no-deploy'] },
+    });
+  });
+
+  it('checks an arm on another team ref at its own revision, which predates the covered skill', async () => {
+    const { config, revision: older, selection } = team();
+    const repo = config.repo.localPath;
+    fs.mkdirSync(path.join(repo, 'skills/dev/fresh'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'skills/dev/fresh/SKILL.md'), SKILL('fresh'));
+    git(repo, 'add', '-A');
+    git(repo, '-c', 'user.name=Seed', '-c', 'user.email=seed@example.com', 'commit', '-qm', 'fresh');
+    const revision = git(repo, 'rev-parse', 'HEAD');
+    const files = git(repo, 'ls-tree', '-r', '--name-only', revision).split('\n');
+    const arms = [{ name: 'pulled' }, { name: 'old', team: { kind: 'ref' as const, ref: 'old', revision: older } }];
+
+    expect(await coveredDelivery(config, { paths: ['skills/dev/fresh'], revision, arms, member: selection, files })).toEqual({
+      withheldFrom: { 'skills/dev/fresh': ['old'] },
+    });
   });
 });
