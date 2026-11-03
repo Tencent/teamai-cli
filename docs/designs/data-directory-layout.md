@@ -4,6 +4,17 @@
 > #406 / #414 / #417 (partition routing) and #439 (P1-3 auto-migration). P2 (self
 > mode slimming, #455) and P3 (constant functionization + `status --all`) are below.
 
+## Session-start refresh cache
+
+For git teams, `last-fetch.json` beside the team clone records a successful
+refresh, including any required submodule update. Session-start pulls reuse it
+for 60 seconds without extending its timestamp. They wait up to 60 seconds for
+the partition sync lock, then check the stamp under that lock. Each checkout
+still runs its own local delivery and reconciliation. Failed fetches and
+submodule updates invalidate the stamp so the next start retries. Manual pulls,
+forced pulls and explicit team-ref changes bypass this short cooldown. The
+existing inline checkout-preparation TTL is unchanged.
+
 ## Problem
 
 teamai's machine-local data currently lives inside the business repository. In a

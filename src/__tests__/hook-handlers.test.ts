@@ -485,7 +485,7 @@ describe('hook-handlers registry', () => {
     await handler.execute({ session_id: 's-pull', cwd: '/tmp/some-project' }, 'claude', null);
 
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/tmp/some-project');
-    expect(mockPull).toHaveBeenCalledWith({ silent: true });
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, sessionStart: true });
     expect(mockStashPackageHint).toHaveBeenCalledWith(
       '/tmp/some-project',
       's-pull',
@@ -1754,7 +1754,7 @@ describe('a checkout no pull delivered into (#1424)', () => {
 
     await handler?.execute({ session_id: 's-roots', cwd: path.join(root, 'project') }, 'claude', projectConfig('git'));
 
-    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once' });
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, prepareCheckout: 'once', sessionStart: true });
   });
 });
 

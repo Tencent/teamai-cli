@@ -1782,6 +1782,12 @@ export interface GlobalOptions {
    */
   force?: boolean;
   /**
+   * Internal (SessionStart, `pull` only): wait for the scope's sync lock and
+   * reuse a successful team-repo refresh for 60 seconds. Local delivery still
+   * runs; manual pulls, force and explicit team refs bypass the cooldown.
+   */
+  sessionStart?: boolean;
+  /**
    * Internal (git hooks and checkout preparation, `pull` only): deliver what
    * the next session reads, without network when the team clone was fetched within
    * SOURCE_PULL_TTL_MS; sources come from their cached clones. Learnings,
