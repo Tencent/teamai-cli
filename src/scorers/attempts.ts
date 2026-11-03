@@ -10,9 +10,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import { AgentObservationSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
-import { getDataHome, type LocalConfig } from '../types.js';
-import { acquireLock, releaseLock } from '../update.js';
+import type { LocalConfig } from '../types.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
+import { scoresDir, scoresLocked } from './home.js';
 import { ACCESS_LEVELS, DECIDERS, isStageDecider, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
 import { PinnedScorerSchema } from './pin.js';
 
@@ -139,9 +139,7 @@ export function newAttemptId(): string {
   return `a${randomBytes(4).toString('hex')}`;
 }
 
-export function scoresDir(config: LocalConfig): string {
-  return path.join(getDataHome(config), 'scores');
-}
+export { scoresDir };
 
 function attemptsDir(config: LocalConfig): string {
   return path.join(scoresDir(config), 'attempts');
@@ -155,9 +153,6 @@ function rubricPath(config: LocalConfig, sourceHash: string): string {
 export function rawOutputPath(config: LocalConfig, attempt: string): string {
   return path.join(scoresDir(config), 'raw', `${attempt}.txt`);
 }
-
-const LOCK_ATTEMPTS = 40;
-const LOCK_WAIT_MS = 25;
 
 async function readRecord<T>(file: string, schema: z.ZodType<T>): Promise<T | undefined> {
   const raw = await readFileSafe(file);
@@ -270,22 +265,6 @@ export const AttemptStore = {
 
   /** Runs `change` under `scores/attempts.lock`; `change` re-reads what it decides on. */
   async locked<T>(config: LocalConfig, change: () => Promise<T>): Promise<{ status: 'done'; value: T } | { status: 'busy' }> {
-    const lock = path.join(scoresDir(config), 'attempts.lock');
-    await fs.mkdir(scoresDir(config), { recursive: true });
-    let held = false;
-
-    for (let tries = 0; tries < LOCK_ATTEMPTS && !held; tries += 1) {
-      held = await acquireLock(lock);
-
-      if (!held) await new Promise((resolve) => setTimeout(resolve, LOCK_WAIT_MS));
-    }
-
-    if (!held) return { status: 'busy' };
-
-    try {
-      return { status: 'done', value: await change() };
-    } finally {
-      await releaseLock(lock);
-    }
+    return scoresLocked(config, 'attempts', change);
   },
 } as const;
