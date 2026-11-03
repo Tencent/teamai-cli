@@ -16,6 +16,7 @@ import type { LocalConfig, ResourceItem } from '../types.js';
 import { withTeamRevision } from '../workflow/cache.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import { git } from '../workflow/worktree.js';
+import type { Arm } from './suite.js';
 
 /** Why plan refuses the arm: git could not read its team revision, or a path changes nothing its trials get. */
 type Refusal = { code: 'arm_team_unreadable' | 'arm_team_unresolved'; message: string };
@@ -109,11 +110,25 @@ export function coveredSkillName(listed: string, files: readonly string[]): stri
   return files.includes(`${listed}/SKILL.md`) ? listed.split('/').at(-1) : undefined;
 }
 
+/**
+ * Every selection the run's arms pull under, with the arms that pull under it: the member's own when an arm runs with no
+ * role, then each arm's role, so a path only one role receives is not refused and one no arm receives is.
+ */
+export function armSelections(arms: ReadonlyArray<Pick<Arm, 'name' | 'role'>>, member: TeamSelection): Array<{ selection: TeamSelection; arms: string[] }> {
+  const roles = [...new Set(arms.flatMap(({ role }) => (role !== undefined ? [role] : [])))];
+  const own = arms.some(({ role }) => role === undefined) ? [member] : [];
+
+  return [...own, ...roles.map((role) => ({ ...member, primaryRole: role }))]
+    .filter((one, index, all) => all.findIndex((other) => other.primaryRole === one.primaryRole) === index)
+    .map((selection) => ({ selection, arms: arms.filter(({ role }) => (role ?? member.primaryRole) === selection.primaryRole).map(({ name }) => name) }));
+}
+
 export async function coveredRefusal(
   config: LocalConfig,
-  { paths, revision, selections, files }: { paths: readonly string[]; revision: string; selections: readonly TeamSelection[]; files: readonly string[] },
+  { paths, revision, arms, member, files }: { paths: readonly string[]; revision: string; arms: ReadonlyArray<Pick<Arm, 'name' | 'role'>>; member: TeamSelection; files: readonly string[] },
 ): Promise<Refusal | undefined> {
   const short = revision.slice(0, 7);
+  const selections = armSelections(arms, member).map(({ selection }) => selection);
   const missing = paths.find((one) => !files.some((file) => leavesOut([one], file)));
 
   if (missing !== undefined) {

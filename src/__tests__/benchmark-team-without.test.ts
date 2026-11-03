@@ -240,14 +240,14 @@ describe('coveredRefusal', () => {
   it('accepts the paths a task covers that an arm could run without', async () => {
     const { config, revision, selection, files } = team();
 
-    expect(await coveredRefusal(config, { paths: ['rules/commits.md', 'skills/lint'], revision, selections: [selection], files })).toBeUndefined();
+    expect(await coveredRefusal(config, { paths: ['rules/commits.md', 'skills/lint'], revision, arms: [{ name: 'pulled' }], member: selection, files })).toBeUndefined();
   });
 
   it('still refuses a path no arm receives when another covered path is delivered — one path at a time per clone (#1684 review)', async () => {
     const { config, revision, selection, files } = team();
 
     // skills/lint is delivered to dev, skills/ops/runbook is not: the delivered path must not mask the refusal.
-    const refusal = await coveredRefusal(config, { paths: ['skills/lint', 'skills/ops/runbook'], revision, selections: [selection], files });
+    const refusal = await coveredRefusal(config, { paths: ['skills/lint', 'skills/ops/runbook'], revision, arms: [{ name: 'pulled' }], member: selection, files });
 
     expect(refusal?.code).toBe('arm_team_unresolved');
     expect(refusal?.message).toContain('skills/ops/runbook');
@@ -256,7 +256,20 @@ describe('coveredRefusal', () => {
   it('accepts a namespace directory and a skill inside it as covers without an ENOENT (#1684 review)', async () => {
     const { config, revision, selection, files } = team();
 
-    expect(await coveredRefusal(config, { paths: ['skills/dev', 'skills/dev/deploy'], revision, selections: [selection], files })).toBeUndefined();
+    expect(await coveredRefusal(config, { paths: ['skills/dev', 'skills/dev/deploy'], revision, arms: [{ name: 'pulled' }], member: selection, files })).toBeUndefined();
+  });
+
+  it("refuses a path only the member's own roles receive when every arm runs with a role", async () => {
+    const { config, revision, selection, files } = team();
+    const refusal = await coveredRefusal(config, { paths: ['skills/dev/deploy'], revision, arms: [{ name: 'ops', role: 'ops' }], member: selection, files });
+
+    expect(refusal?.message).toBe(`A task covers skills/dev/deploy, which is in namespace dev, and the arm's roles or projects don't receive dev, so leaving it out changes nothing. Fix the team's tasks, push them, run teamai pull, and start again.`);
+  });
+
+  it('accepts a path only one arm role receives', async () => {
+    const { config, revision, selection, files } = team();
+
+    expect(await coveredRefusal(config, { paths: ['skills/ops/runbook'], revision, arms: [{ name: 'pulled' }, { name: 'ops', role: 'ops' }], member: selection, files })).toBeUndefined();
   });
 
   it.each([
@@ -264,7 +277,7 @@ describe('coveredRefusal', () => {
     ['claudemd', 'claudemd/team.md', 'claudemd/dev/team.md'],
   ])('checks each covered %s path against the whole team tree, whichever order the covers come in', async (_kind, shared, namespaced) => {
     const { config, revision, selection, files } = team();
-    const check = async (paths: string[]) => coveredRefusal(config, { paths, revision, selections: [selection], files });
+    const check = async (paths: string[]) => coveredRefusal(config, { paths, revision, arms: [{ name: 'pulled' }], member: selection, files });
 
     const alone = await check([shared]);
 
@@ -277,7 +290,7 @@ describe('coveredRefusal', () => {
 
   it('still refuses a skill inside a covered namespace directory when no arm receives it', async () => {
     const { config, revision, selection, files } = team({ excluded: ['deploy'] });
-    const refusal = await coveredRefusal(config, { paths: ['skills/dev', 'skills/dev/deploy'], revision, selections: [selection], files });
+    const refusal = await coveredRefusal(config, { paths: ['skills/dev', 'skills/dev/deploy'], revision, arms: [{ name: 'pulled' }], member: selection, files });
 
     expect(refusal?.message).toContain('A task covers skills/dev/deploy, skill deploy, which the member excludes');
   });
@@ -293,7 +306,7 @@ describe('coveredRefusal', () => {
       'A task covers skills/ops/runbook, which is in namespace ops, and the arm\'s roles or projects don\'t receive ops, so leaving it out changes nothing. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
   ])('refuses %s', async (_case, paths, code, message) => {
     const { config, revision, selection, files } = team();
-    const refusal = await coveredRefusal(config, { paths, revision, selections: [selection], files });
+    const refusal = await coveredRefusal(config, { paths, revision, arms: [{ name: 'pulled' }], member: selection, files });
 
     expect(refusal?.code).toBe(code);
     expect(refusal?.message).toBe(message.replaceAll('{r}', revision.slice(0, 7)));
