@@ -195,9 +195,9 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
     expect((await LabelStore.local(config))[0]?.judge).toMatchObject({ isolation: 'verified' });
   });
 
-  it('counts the tokens of a local judge call whose answer does not fit the lease', async () => {
+  it('adds the tokens of a local judge call whose answer does not fit the lease to the label of the answer that does', async () => {
     const config = fixture(scorer(100));
-    const runId = await settledRun(config);
+    await settledRun(config);
     const bin = path.join(config.projectRoot ?? '', 'bin');
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
@@ -209,11 +209,9 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'great'
     const lease = leaseOf(await nextJudgeLease(config, request()));
 
     expect(await runJudgeLease(config, lease.ref, { driver: judgeDriver })).toMatchObject({ error: { code: 'judge_answer_invalid' } });
-    expect(await LabelStore.scoringTotal(config, runId, 'local')).toEqual({ judged: 1, inputTokens: 1200, outputTokens: 60 });
 
     data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' }, judge: { usage: { inputTokens: 10, outputTokens: 2 } } }));
     expect((await LabelStore.local(config))[0]?.judge).toMatchObject({ usage: { inputTokens: 1210, outputTokens: 62 } });
-    expect(await LabelStore.scoringTotal(config, runId, 'local')).toEqual({ judged: 1, inputTokens: 1210, outputTokens: 62 });
   });
 
   it('skips a scorer whose model the driver\'s tools cannot run, and leaves it open for a driver whose tools can', async () => {
@@ -603,7 +601,7 @@ describe('scoring totals', () => {
 
     const detail = await workflowRunDetail(sampled.config, 'local', sampled.runId);
     expect(detail?.steps).toEqual([expect.objectContaining({ step: 'review', pass: 1, scores: [{ scorer: 'quality', label: 'good', passed: true, decidedBy: 'judge' }] })]);
-    expect(detail?.scoring).toEqual({ judged: 2, inputTokens: 2000, outputTokens: 100 });
+    expect(detail?.scoring).toEqual({ judged: 1, inputTokens: 1000, outputTokens: 50 });
     expect(JSON.stringify(detail)).not.toContain('Quokka-marmalade');
     expect((await workflowRunDetail(unsampled.config, 'local', unsampled.runId))?.scoring).toEqual({ judged: 0, inputTokens: 0, outputTokens: 0 });
   });

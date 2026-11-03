@@ -10,7 +10,6 @@ import { loadTeamConfig } from '../config.js';
 import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { AttemptStore, isDecidedBeforeJudge, isRunAttempt } from './attempts.js';
 import { scoresDir, scoresLocked } from './home.js';
 import { isStageDecider, labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
 
@@ -92,6 +91,13 @@ export type LabelDelivery = { state: 'published' } | { state: 'pending' | 'unsup
 export type PassScore = Pick<ScoreLabel, 'scorer' | 'label' | 'passed'> & Pick<RunLabel, 'decidedBy'>;
 
 type RunLabel = Extract<ScoreLabel, { source: 'workflow' }>;
+
+/** What judging a run cost, kept apart from the run's own tokens. */
+export interface ScoringTotal {
+  judged: number;
+  inputTokens: number;
+  outputTokens: number;
+}
 
 /** A label as Workflow Runs shows it; `decidedBy` only when the label recorded it. */
 function passScoreOf(label: RunLabel): PassScore {
@@ -334,23 +340,11 @@ export const LabelStore = {
     ]))]));
   },
 
-  /** What judging run `runId` cost: every judge attempt on this machine, or, for a published run, its judge labels. */
-  async scoringTotal(config: LocalConfig, runId: string, source: 'local' | 'published'): Promise<{ judged: number; inputTokens: number; outputTokens: number }> {
+  /** What the judge labels of run `runId` cost, from this machine's labels or the published ones; a stage decision is no judge call. */
+  async scoringTotal(config: LocalConfig, runId: string, source: 'local' | 'published'): Promise<ScoringTotal> {
     const total = { judged: 0, inputTokens: 0, outputTokens: 0 };
 
-    if (source === 'local') {
-      for (const attempts of (await AttemptStore.read(config)).values()) {
-        for (const attempt of attempts) {
-          if (!isRunAttempt(attempt) || attempt.subject.runId !== runId || isDecidedBeforeJudge(attempt)) continue;
-          total.judged += 1;
-          addUsage(total, attempt.usage);
-        }
-      }
-
-      return total;
-    }
-
-    for (const label of newestLabels(await publishedLabels(config))) {
+    for (const label of source === 'local' ? await LabelStore.local(config) : newestLabels(await publishedLabels(config))) {
       if (label.source !== 'workflow' || label.subject.runId !== runId || label.judge.kind !== 'model' || isStageDecider(label.decidedBy)) continue;
       total.judged += 1;
       addUsage(total, label.judge.usage);

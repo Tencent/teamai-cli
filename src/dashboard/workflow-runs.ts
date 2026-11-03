@@ -19,7 +19,8 @@ import { RunOriginSchema, type RunOrigin } from '../default-workflows.js';
 import { agentHarnessOf, harnessChanges, readRecordedAgent, type AgentHarness, type HarnessChange } from '../agent-observation.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
-import { LabelStore, type PassScore } from '../scorers/label-store.js';
+import { LabelStore, type PassScore, type ScoringTotal } from '../scorers/label-store.js';
+import { RunJudging } from '../scorers/run-judging.js';
 import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { benchmarkRecordFile, BenchmarkRunRecordSchema } from '../benchmark/result.js';
 import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmark/table.js';
@@ -154,9 +155,6 @@ interface StepRow {
   /** What changed in `harness` since the previous pass of the step that recorded one, when anything did. */
   harnessChanges?: HarnessChange[];
 }
-
-/** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
-type ScoringTotal = Awaited<ReturnType<typeof LabelStore.scoringTotal>>;
 
 /** `benchmark` holds an ended benchmark run's tables, as the CLI prints them. */
 export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal; benchmark?: BenchmarkCells };
@@ -406,7 +404,7 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
     const [records, scores, scoring, benchmark] = await Promise.all([
       runRecordStates(config, run.status === 'running' ? [] : [run]),
       LabelStore.ofRuns(config, [runId], { published: false }),
-      LabelStore.scoringTotal(config, runId, 'local'),
+      RunJudging.total(config, run, new Date().toISOString()),
       benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
     ]);
 
