@@ -843,7 +843,7 @@ steps:
 
 保留这六个输入，或者同时替换 `teamai-share-learnings`。
 
-把 `teamai-share-session` 作为步骤运行的团队工作流要传 `demand`：本人或 agent 点名要评这个会话时传 `named`，每个评分器都评它；后台评分传 `auto`，按抽样评。没传的，pull 拒绝：
+把 `teamai-share-session` 作为步骤运行的团队工作流要传 `demand`：本人或 agent 点名要评这个会话时传 `named`，每个评分器都评它；`teamai-finished-sessions` 传 `auto`，按抽样评。没传的，pull 拒绝：
 
 ```text
 ⚠ [workflows] workflows/wrap-up.yaml:8: field "steps[0].with": step "share" with does not pass input "demand", which workflow "teamai-share-session" declares as auto | named
@@ -881,7 +881,7 @@ agent 运行 describe，它为调用它的会话给每个输入提议一个 `val
 | `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing. |
 | `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
 | `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
-| `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as a background pass does. |
+| `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as teamai-finished-sessions does. |
 
 带 `--confirmed` 启动运行的 agent 可以替本人保留 `publish: true`，teamai 无法核实本人是否选过。
 
@@ -891,7 +891,7 @@ agent 运行 describe，它为调用它的会话给每个输入提议一个 `val
 |---|---|---|
 | `publish` | 有人值守的发布策略为 `ask`（默认） | `true` |
 | | `off`；或 `auto`，会话空闲 6 小时后反正会发布 | `false` |
-| `scorers` | 有人值守的评分策略为 `ask` | 设置了 `sessions: true` 且抽样选中该会话的评分器，与 `auto` 下后台评审选中的相同 |
+| `scorers` | 有人值守的评分策略为 `ask` | 设置了 `sessions: true` 且抽样选中该会话的评分器，与 `auto` 下 `teamai-finished-sessions` 选中的相同 |
 | | `off` 或 `auto` | `[]` |
 | | `judge: driver`，且某评分器要求 `verified` 隔离 | 不提议该评分器，`why` 说明是哪个文件要求的 |
 | `publish`、`scorers` | teamai 不读取其会话的工具 | `false`、`[]` |

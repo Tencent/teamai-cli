@@ -445,7 +445,7 @@ pull 之后跑 `teamai packages`。
 
 ## 会话
 
-无人值守的运行现在默认发布自己的会话。在 CI、云虚拟机或托管任务中，[`teamai score --drain`](scorers.md#无人值守任务结束前运行-drain) 会把本机记录为无人值守的已捕获会话，以及在这里驱动的工作流运行的步骤会话，脱敏后归档到 `teamai-reports`。本地驱动在无人值守运行结束时执行它。要保持原来的行为，设置 `unattended: off`：
+无人值守的运行现在默认发布自己的会话。在 CI、云虚拟机或托管任务中，[`teamai score --drain`](scorers.md#无人值守任务结束前运行-drain) 会通过一次 `teamai-finished-sessions` 运行，把本机记录为无人值守的已捕获会话，以及在这里驱动的工作流运行的步骤会话，脱敏后归档到 `teamai-reports`。本地驱动在无人值守运行结束时执行它。要保持原来的行为，设置 `unattended: off`：
 
 ```yaml
 # teamai.yaml
@@ -460,7 +460,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由评判已结束会话的后台任务完成。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
+有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由会话启动时开始的 [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) 运行完成，该运行也评判已结束的会话。在结束前手动推送过的会话，在那次推送之后又有活动时会被再次归档。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
 
 成员的 `config.yaml` 优先，按模式分别生效。它没有写的模式沿用 `teamai.yaml`：
 

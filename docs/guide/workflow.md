@@ -843,7 +843,7 @@ An enum's values may come in any order: `judge: driver | here` is the same type 
 
 Keep the six inputs, or replace `teamai-share-learnings` too.
 
-A team workflow that runs `teamai-share-session` as a step passes `demand`: `named` when a person or an agent asks for the session, so every scorer judges it, `auto` from a background pass, which samples it. Pull refuses one that does not:
+A team workflow that runs `teamai-share-session` as a step passes `demand`: `named` when a person or an agent asks for the session, so every scorer judges it, `auto` from `teamai-finished-sessions`, which samples it. Pull refuses one that does not:
 
 ```text
 ⚠ [workflows] workflows/wrap-up.yaml:8: field "steps[0].with": step "share" with does not pass input "demand", which workflow "teamai-share-session" declares as auto | named
@@ -881,7 +881,7 @@ The agent runs describe, which proposes a `value` and a `why` for each input, fo
 | `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing. |
 | `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
 | `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
-| `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as a background pass does. |
+| `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as teamai-finished-sessions does. |
 
 An agent that starts the run with `--confirmed` can keep `publish: true` for you, and teamai cannot check that you chose it.
 
@@ -891,7 +891,7 @@ The proposal follows the team's [publish policy](sharing.md#sessions) and [scori
 |---|---|---|
 | `publish` | attended publish policy `ask` (the default) | `true` |
 | | `off`; or `auto`, which publishes the session once it has been idle 6 hours anyway | `false` |
-| `scorers` | attended scoring policy `ask` | the scorers with `sessions: true` that sample this session, the same ones the background judge picks under `auto` |
+| `scorers` | attended scoring policy `ask` | the scorers with `sessions: true` that sample this session, the same ones `teamai-finished-sessions` picks under `auto` |
 | | `off` or `auto` | `[]` |
 | | `judge: driver`, and a scorer that requires `verified` isolation | that scorer is left out, and `why` names the file that asks for it |
 | `publish`, `scorers` | a tool teamai reads no sessions from | `false`, `[]` |

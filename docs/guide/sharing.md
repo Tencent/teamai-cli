@@ -454,7 +454,7 @@ After pull, run `teamai packages`.
 
 ## Sessions
 
-Unattended runs now publish their sessions by default. In CI, on a cloud VM or in a hosted job, [`teamai score --drain`](scorers.md#drain-before-an-unattended-job-ends) archives the sessions this machine captured as unattended, and the step sessions of the workflow runs driven here, scrubbed, on `teamai-reports`. The local driver runs it at the end of an unattended run. To keep the old behavior, set `unattended: off`:
+Unattended runs now publish their sessions by default. In CI, on a cloud VM or in a hosted job, [`teamai score --drain`](scorers.md#drain-before-an-unattended-job-ends) archives, through a `teamai-finished-sessions` run, the sessions this machine captured as unattended, and the step sessions of the workflow runs driven here, scrubbed, on `teamai-reports`. The local driver runs it at the end of an unattended run. To keep the old behavior, set `unattended: off`:
 
 ```yaml
 # teamai.yaml
@@ -469,7 +469,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-Attended `ask` proposes publishing when the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), and the person confirms it once, at the start. An agent that starts the run with `--confirmed` can confirm it for them, and teamai cannot check that they did. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, in the background pass that judges finished sessions. Publishing always scrubs, which also rewrites local paths ([what a scrubbed session keeps](dashboard.md#what-a-scrubbed-session-keeps)). An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
+Attended `ask` proposes publishing when the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), and the person confirms it once, at the start. An agent that starts the run with `--confirmed` can confirm it for them, and teamai cannot check that they did. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, in the [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) run a session start begins, which also judges finished sessions. A session pushed by hand before it finished is archived again once something happened in it after that push. Publishing always scrubs, which also rewrites local paths ([what a scrubbed session keeps](dashboard.md#what-a-scrubbed-session-keeps)). An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
 
 A member's `config.yaml` wins, one mode at a time. A mode it does not name falls through to `teamai.yaml`:
 

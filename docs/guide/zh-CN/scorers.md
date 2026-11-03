@@ -123,7 +123,7 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 
 ### 在下一步之前拿到标签
 
-`scorers.start: workflow` 把步骤各轮次的评分交给工作流自己的步骤。teamai 不为它们启动 teamai-score 运行，评审租约也不会领取它们。`teamai score subjects` 列出它们，再由一个 `workflow: teamai-score` 步骤为每个轮次打标签。如果这样的步骤之后没有 `workflow: teamai-score` 步骤读取针对它的 `teamai score subjects --step`，pull 会发出警告，因为没有任何东西会为它的轮次评分：
+`scorers.start: workflow` 把步骤各轮次的评分交给工作流自己的步骤。teamai 不为它们启动 teamai-score 运行，评审租约也不会领取它们。`teamai score subjects` 列出它们，再由一个 `workflow: teamai-score` 步骤为每个轮次打标签。如果这样的步骤之后没有 `workflow: teamai-score` 步骤读取针对它的 `teamai score subjects --step`，pull 会发出警告：这样它的轮次只会在运行结束后，由 `teamai score --drain` 或会话启动运行的下一次 `teamai-finished-sessions` 评分：
 
 ```yaml
 # workflows/fix-until-good.yaml
@@ -525,7 +525,7 @@ daily_limit: 10                                  # 按数据目录计数：在�
 |---|---|---|
 | `off` | 什么都不做。默认值。 | 什么都不做。 |
 | `ask` | 摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
-| `auto` | 会话六小时没有任何活动后，由后台评审评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
+| `auto` | 会话六小时没有任何活动后，由会话启动时开始的 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
 `skill_routing` 为 `sessions` 已经在评判的会话开启 #1469 的路由问题，默认关闭：
 
@@ -534,7 +534,7 @@ daily_limit: 10                                  # 按数据目录计数：在�
 skill_routing: true
 ```
 
-每个完结的会话随后按它自己的 captures 交付过的团队技能各生成一个问题——根技能是 `teamai:routing:<skill>`，带命名空间的是 `teamai:routing:<namespace>:<skill>`——无论技能描述写什么，都由同一份评分规则评判：fit（加载了，且会话需要它）和 idle（没加载，且会话不需要）通过，extra（加载了但不需要）和 missed（需要但没加载）不通过。交付记录说不出命名空间的技能没有问题：评判它可能评到同名的另一个技能。这些问题从不抽样，无论多少个都共用一次评审调用，计入同一个 `daily_limit`；开着 `batch` 时一个会话仍只花一次调用。这些名字也可以按需解析，不受 `skill_routing` 影响——`teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>`——但只对出现在该会话 `skills.available` 里的技能有效，否则 `scorer_not_found`。
+每个完结的会话随后按它自己的 captures 交付过的团队技能各生成一个问题——根技能是 `teamai:routing:<skill>`，带命名空间的是 `teamai:routing:<namespace>:<skill>`——无论技能描述写什么，都由同一份评分规则评判：fit（加载了，且会话需要它）和 idle（没加载，且会话不需要）通过，extra（加载了但不需要）和 missed（需要但没加载）不通过。交付记录说不出命名空间的技能没有问题：评判它可能评到同名的另一个技能。这些问题从不抽样，无论多少个都共用一次评审调用，计入同一个 `daily_limit`；开着 `batch` 时一个会话仍只花一次调用。这些名字也可以按需解析，不受 `skill_routing` 影响——`teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>`——但只对出现在该会话 `skills.available` 里的技能有效，否则 `scorer_not_found`。`teamai-finished-sessions` 目前不会提出这些问题，因为 `teamai-score` 不规划路由问题：只有用 `score --next` 领取会话工作的 driver 会提出它们。
 
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：
 
@@ -573,13 +573,40 @@ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended
 
 命名空间中的评分器只在会话每次启动时记录的角色和项目都使该命名空间生效时，才评判该会话。`score --next` 先分发工作流的评审工作，再分发会话。会话租约带有 `"source":"session"`，其 `cwd` 是提交答案时所在的目录。
 
-每个会话对同一评分器和评分标准只评判一次。释放、过期或本地评审失败都会关闭它。过期租约的答案仍会被记录，除非之后已有评审者为该会话打了标签，或[你自己的评审者](#用自己的评审者)又租走了它。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多租出多少个会话，默认 10，失败或无法读取的会话也计入。在全新的 CI runner 上，每次任务都从新的数据目录开始，所以这个上限限制的是一次任务，而不是一天。`0` 关闭会话评分。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
+每个会话对同一评分器和评分标准只评判一次。标签或失败的评审会关闭它。过期（例如评审被自身的超时取消）会由下一次 `teamai-finished-sessions` 重新开始，直到第四次过期为止；在此版本之前，过期会关闭它。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多开始多少次会话评审，默认 10，每次重新开始的过期都计入，同一会话上一批评分器只算一次。在全新的 CI runner 上，每次任务都从新的数据目录开始，所以这个上限限制的是一次任务，而不是一天。`0` 关闭会话评分。由人指定的评分器计入上限，但从不因上限被拒绝。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
 
-设置 `attended: auto` 后，你不需要自己运行 driver。会话启动时的 pull 之后，如果会话所在项目或你的用户作用域开启了会话评分，teamai 会为这两个作用域在后台启动评审。它用本机安装的评审工具评判每个已结束的会话，30 分钟后不再领取新工作，标签保持待发布，由下一次 `teamai pull` 发布。每个租约是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: { attended: off }`；写在 `~/.teamai/config.yaml` 中则对本机所有 workspace 生效。
+设置 `attended: auto` 后，你不需要自己运行 driver。会话启动时的 pull 之后，teamai 会在会话目录能到达的每个作用域（它的项目和你的用户作用域）中，只要该作用域自动评判或归档有人值守的会话，就启动一次 `teamai-finished-sessions` 运行，并在一个分离的进程中驱动它。该运行用本机安装的评审工具归档并评判每个已结束的会话，并为评审过期的每个 pass 和会话重新启动 `teamai-score`。因此成员的会话启动也会重新评分该数据目录中过期的工作流 pass。运行在 30 分钟后结束，标签保持待发布，由下一次 `teamai pull` 发布。找不到任何工作的启动不会创建运行，已在处理该数据目录的运行会被留给它自己完成。每次评审是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: { attended: off }`；写在 `~/.teamai/config.yaml` 中则对本机所有 workspace 生效。
 
-后台评审使用 `teamai init` 记录的工具主目录，例如移动过的 `CLAUDE_CONFIG_DIR`。它看不到只在你的 shell 中设置的凭据或 base URL，在 Windows 上尤其如此。请把它们放在工具的登录状态、用户环境变量或工具 `settings.json` 的 `env` 中。
+分离的运行使用 `teamai init` 记录的工具主目录，例如移动过的 `CLAUDE_CONFIG_DIR`。它看不到只在你的 shell 中设置的凭据或 base URL，在 Windows 上尤其如此。请把它们放在工具的登录状态、用户环境变量或工具 `settings.json` 的 `env` 中。
 
 比当前版本更旧的 teamai 会拒绝带有 `sessions: true` 的评分器，因此团队添加这样的评分器之前，请先在每位成员的机器上更新 teamai。在你的机器上领取评审工作的旧版 teamai（例如某个驱动自带的副本）会删除会话租约的评分标准，因此开启 `scoring.sessions` 之前，请先更新机器上的每一份 teamai。
+
+### teamai-finished-sessions
+
+```text
+teamai-finished-sessions   private, invoke: deny, timeout 30m
+  sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
+  share      teamai-share-session, for each             its publish step, then its teamai-score step
+  lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored
+  rescore    teamai-score, for each                     starts their judging again
+```
+
+会话启动和 `teamai score --drain` 用 `{"publish":"policy","scorers":[]}` 启动它，因此由会话策略决定。在你自己的终端中可以传入其他输入，例如不管策略怎么说，用一个评分器评判每个已结束的会话且不归档任何会话：
+
+```console
+$ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publish":"never","scorers":["review-quality"]}'
+```
+
+`publish` 取 `policy`、`always` 或 `never`。`scorers` 指定评判每个已结束会话的评分器，不抽样，计入 `daily_limit` 但从不因它被拒绝；`[]` 则交给 `scoring.sessions`。由会话启动、drain 或 agent 启动的运行只能用 `policy` 和 `[]` 列出会话，其他输入会以 `policy_override_refused` 失败。
+
+| 时钟 | 设置位置 | 默认 |
+|---|---|---|
+| 会话算作已结束 | `sessions` 步骤的 `--idle` | 最后一次活动后 6 小时；无人值守的会话在 drain 到达它时 |
+| 运行结束 | 文件的 `timeout` | 30 分钟；它取消的工作会过期，下一次运行会重新开始 |
+| 本机没有 driver 领取的评审 | share-session 的 `score` 步骤的 `timeout` | 30 分钟；会话保持已发布，它的评审过期 |
+| 过期被重新开始 | 评分标记 | 直到第四次过期，且只在运行最后一次变更后的 14 天内 |
+
+团队在团队仓库的 `workflows/teamai-finished-sessions.yaml` 中修改这些，它会替换默认文件：`--idle 1h` 在会话最后一次活动一小时后就处理它，`timeout` 限定一次运行的时长。也可以在那里添加或调整步骤的顺序。团队不能改变的部分留在 CLI 中：自动启动不传递 agent 证据，只传策略输入。
 
 ### 无人值守任务结束前运行 drain
 
@@ -589,21 +616,21 @@ $ teamai score --drain
 ✔ Published 1 label to teamai-reports
 ✔ Archived 1 captured session to teamai-reports (scrubbed)
 ✔ Reported usage to stats/<member>.yaml
-ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). A driver whose tools run it takes it with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'
+ℹ Left open: the judge of 1 session in run rffc…: … A driver whose tools judge it takes it with: teamai workflow next rffc… --json '{"driver":{…,"can":{…}}}'
 ```
 
-每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它，除非无人值守会话的发布和评判都设为 `off`。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
+每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它，除非无人值守会话的发布和评判都设为 `off`，或该运行本身是 `teamai-finished-sessions` 运行。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
 
 1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按六小时规则。
-2. 评判本机能评判的每个未完成的评审项：抽样的步骤 pass，以及策略允许的抽样会话，受 `daily_limit` 限制。本机有另一个评审过程（例如后台评审）正在运行时，它不评判任何评审项，并会说明这一点。等那个过程结束后再运行一次 drain。
+2. 像会话启动那样在这里启动一次 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行，并用本地驱动驱动它。该运行在会话所属模式的 `publish` 为 `auto` 时归档已结束的会话，并在 `daily_limit` 内评判策略允许的抽样会话。它为评审过期的每个 pass 和会话、运行未评分的每个 `start: workflow` pass，以及升级时从评审尝试带过来的未完成 pass 和会话重新启动 `teamai-score`，但运行最后一次变更已超过 14 天的 pass 除外。已在处理该数据目录的运行会被留给它，drain 会说明这一点：等它结束后再运行一次 drain。
 3. 像 `score --push` 一样发布每个待发布的标签，并像 `teamai pull` 一样发布运行当时没能发布的工作流运行记录。
-4. 当前模式的 `publish` 为 `auto` 时，把该模式下已结束、尚未归档的已捕获会话，以及在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。
+4. 当前模式的 `publish` 为 `auto` 时，把在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。
 5. 像 `teamai pull` 一样把用量上报到 `stats/<member>.yaml`，让临时 runner 的计数到达团队。
-6. 输出剩下的工作：评分器固定的模型本机没有评审工具能运行（`judge_model_unavailable`），或本机达不到其隔离要求的评审项；本机没有安装评审工具时，是所有未完成的评审项。它们等待其他 driver 的 `score --next`。
+6. 输出剩下的工作：它的运行中本机没有 driver 能领取的评审步骤（例如评分器固定的模型本机没有评审工具能运行），它们等待其他 driver 的 `workflow next`；以及 CI 尚未结束的每个 pass 或会话，下一次 drain 会为它们打标签。
 
 drain 只结束并发布与其运行模式相同的会话，因此在不处于无人值守模式的机器上，要处理无人值守会话，请运行 `TEAMAI_MODE=unattended teamai score --drain`。
 
-在这里没有能做的事时，drain 以 0 退出，留给其他 driver 的评审项也算在内。评审、发布或用量上报失败时以 1 退出。发布或上报失败的内容保持待发布，下一次 `--drain` 会重试。评审失败是最终结果：drain 输出这次失败，但从不重试。要重新请求评审，运行 `teamai score --session <id> --source <platform> --scorer <name>`。
+在这里没有能做的事时，drain 以 0 退出，留给其他 driver 的评审也算在内。评审、发布、用量上报或它的运行失败时以 1 退出。发布或上报失败的内容保持待发布，下一次 `--drain` 会重试。评审失败是最终结果：drain 输出这次失败，但从不重试。要重新请求评审，运行 `teamai score --session <id> --source <platform> --scorer <name>`。
 
 drain 在哪里运行，决定它看到的调用会话是什么样子：
 
@@ -614,7 +641,7 @@ skill:   … last turn of an unattended session → teamai score --drain  # 会�
 
 作为任务的最后一步、在工具退出后运行时，drain 看到的是完整的会话。在会话内部运行时，它按会话此刻的样子评判并发布该会话，之后的对话轮次不会再被评判或发布。
 
-运行、评审尝试和租约都保存在 runner 的数据目录中。过期的会话租约或失败的评审尝试是最终结果，在 drain 之前被终止的 runner 会丢失那次评审。长期运行的虚拟机在每次任务结束时运行 `teamai score --drain`。
+运行和评分标记都保存在 runner 的数据目录中，因此在 drain 之前被终止的 runner 会丢失那次评审。长期运行的虚拟机在每次任务结束时运行 `teamai score --drain`。
 
 ## teamai-score 工作流
 
