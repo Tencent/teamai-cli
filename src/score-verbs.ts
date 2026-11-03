@@ -11,6 +11,7 @@ import { DEMANDS } from './scorers/marks.js';
 import { ScoreAttempt } from './scorers/score-attempt.js';
 import { readJudgeRun, ScoreLabels, type ReadJudgeRun } from './scorers/score-labels.js';
 import { planGroups } from './scorers/score-plan.js';
+import { ScoreSubjects } from './scorers/score-subjects.js';
 import { ScoreStage } from './scorers/score-stage.js';
 import { Subject } from './scorers/subject.js';
 import type { JsonObject, LocalConfig } from './types.js';
@@ -178,7 +179,28 @@ async function settle(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<
   return settled.ok ? { ok: true, output: { settled: settled.settled } } : settled;
 }
 
-export const ScoreVerbs = { plan, evidence, stage, label, write, settle } as const;
+export interface SubjectsOptions {
+  run?: string;
+  step?: string;
+  lapsed?: boolean;
+}
+
+async function subjects(options: SubjectsOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  if (options.lapsed) {
+    if (options.run !== undefined || options.step !== undefined) return refused('invalid_arguments', '--lapsed lists this machine\'s subjects and takes no --run or --step.');
+
+    if (!ctx.current) return refused('not_initialized', 'teamai is not set up in this directory, so it has no marks to read. Run teamai init.');
+
+    return { ok: true, output: { list: await ScoreSubjects.lapsed(ctx.current, ctx.now) } };
+  }
+
+  if (options.run === undefined) return refused('invalid_arguments', 'Pass --run <id>, the run whose passes to list, or --lapsed.');
+  const listed = await ScoreSubjects.ofRun(ctx.current, ctx.env, { runId: options.run, step: options.step });
+
+  return listed.ok ? { ok: true, output: { list: listed.list } } : listed;
+}
+
+export const ScoreVerbs = { plan, evidence, stage, label, write, settle, subjects } as const;
 
 async function currentConfig(): Promise<LocalConfig | undefined> {
   try {

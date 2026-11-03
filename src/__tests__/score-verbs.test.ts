@@ -564,3 +564,55 @@ describe('score label and score write', () => {
     expect(await marksOf(config, runId, ['quality'])).toEqual([{ kind: 'failed', code: 'judge_failed' }]);
   });
 });
+
+const FIXES = `schemaVersion: v1alpha1
+name: fixes
+description: Fix a change, then list its passes to score.
+steps:
+  - id: outer
+    workflow:
+      steps:
+        - id: fix
+          prompt: Fix the change.
+          scorers: { names: [quality], start: workflow }
+        - id: lister
+          needs: [fix]
+          command: teamai score subjects
+  - id: other
+    needs: [outer]
+    prompt: Do something else.
+    scorers: [quality]
+`;
+
+describe('score subjects', () => {
+  it('lists the passes of steps that start their own scoring, --step read from the calling attempt\'s workflow', async () => {
+    const config = await team({ fixes: FIXES }, { quality: scorer() });
+    const runId = String(data(await startRun(config, 'fixes', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
+    const fix = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+    plantSession(config.projectRoot ?? '', 'session-fix', 'Fix the change.');
+    data(await reportAttempt(config, runId, { attempt: fix.attempt, revision: fix.revision, outcome: 'success', driver: external, tool: 'claude', session: 'session-fix' }));
+    const lister = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+    const ctx = { env: attemptEnv(config, runId, lister.attempt, 'unattended'), current: config, now: NOW };
+
+    expect(lister.step).toBe('outer.lister');
+    expect(await ScoreVerbs.subjects({ run: runId, step: 'fix' }, ctx)).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
+    expect(await ScoreVerbs.subjects({ run: runId, step: 'lister' }, ctx)).toEqual({ ok: true, output: { list: [] } });
+    expect(await ScoreVerbs.subjects({ run: runId }, { env: {}, current: config, now: NOW })).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
+  });
+
+  it('lists a lapse, and a pass that waited on CI once its CI finished, but not one still waiting', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const runId = await deliveredRun(config);
+    const pass = { kind: 'run' as const, subject: { runId, step: 'change', pass: 1 } };
+    const session = { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: 'one' } };
+    const facts = { now: NOW, readRun: async () => undefined };
+    await Marks.open(config, { run: 'r0000000000000001', demand: 'auto', groups: [{ group: 'clarity', keys: [{ scorer: 'clarity', subject: pass }] }, { group: 'q', keys: [{ scorer: 'q', subject: session, sourceHash: 'h' }] }] }, facts);
+    await Marks.close(config, [{ scorer: 'clarity', subject: pass }], { kind: 'waiting' }, facts);
+    const lapsed = () => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
+
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: ['session:claude-code:one'] } });
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'passed' });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${runId}:change:1`, 'session:claude-code:one'] } });
+  });
+});

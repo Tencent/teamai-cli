@@ -6,7 +6,7 @@ import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
-import type { EvidenceOptions, LabelOptions, PlanOptions, StageOptions, WriteOptions } from './score-verbs.js';
+import type { EvidenceOptions, LabelOptions, PlanOptions, StageOptions, SubjectsOptions, WriteOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -1104,6 +1104,17 @@ scoreCmd
   .action(async (_cmdOpts, command: Command) => {
     const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
     await scoreVerbCommand((ctx) => ScoreVerbs.settle(command.optsWithGlobals<EvidenceOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('subjects')
+  .description('List subjects to start teamai-score on, as {"list":["run:<runId>:<step path>:<pass>",…]}. --run <id> [--step <path>]: the judge-work passes of the run, settled on this machine, whose step says scorers.start: workflow; --step is relative to the workflow of the step that runs this, and takes that step and every step inside it. --lapsed: the passes and sessions of this machine whose mark lapsed, and those that waited for CI that has since finished.')
+  .option('--run <id>', 'The run whose passes to list')
+  .option('--step <path>', 'With --run: only that step and the steps inside it')
+  .option('--lapsed', 'This machine\'s subjects that automatic judging starts again')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.subjects(command.optsWithGlobals<SubjectsOptions>(), ctx));
   });
 
 // ─── Hooks commands ─────────────────────────────────────
