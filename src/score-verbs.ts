@@ -166,7 +166,7 @@ async function write(options: WriteOptions, ctx: ScoreVerbContext): Promise<Scor
   if (!at.ok) return at;
   const written = await ScoreLabels.write(at.attempt, at.dir, at.group, { now: ctx.now });
 
-  return written.ok ? { ok: true, output: { written: written.written } } : written;
+  return written.ok ? { ok: true, output: { written: written.written.length, labels: written.written } } : written;
 }
 
 async function settle(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {

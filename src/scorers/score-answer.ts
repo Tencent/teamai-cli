@@ -15,6 +15,8 @@ const DoneSchema = z.object({ outcome: z.string() });
 
 const LabelEntriesSchema = z.object({ labels: z.array(z.object({ scorer: z.string(), label: z.string(), code: z.string() })) });
 
+const WrittenSchema = z.object({ labels: z.array(z.string()) });
+
 const GroupsSchema = z.object({ groups: z.array(z.object({ scorers: z.string() })) });
 
 /** Why a scorer of the run got no label, as the member reads it. */
@@ -38,6 +40,8 @@ type ItemEnd = { kind: 'open' } | { kind: 'broke'; why: string } | { kind: 'done
 
 interface Item {
   entries: ReadonlyMap<string, Entry>;
+  /** The version of each label its write step wrote. */
+  written: ReadonlySet<string>;
   end: ItemEnd;
 }
 
@@ -74,7 +78,10 @@ function endOf(steps: readonly StepState[]): ItemEnd {
 function itemOf(run: RunState, index: number): Item {
   const steps = run.steps.filter((step) => step.id.startsWith(`score[${index}].`));
 
-  return { entries: entriesOf(steps, index), end: endOf(steps) };
+  const write = steps.find((step) => step.id === `score[${index}].write`);
+  const written = new Set(WrittenSchema.safeParse(write?.status === 'succeeded' ? write.outputs : undefined).data?.labels ?? []);
+
+  return { entries: entriesOf(steps, index), written, end: endOf(steps) };
 }
 
 /** What a scorer the run gave no label, and no code, gets from how its item stands. */
@@ -101,13 +108,13 @@ function coded(scorer: string, entry: Entry): Outcome {
   return { scorer, kind: 'unlabelled', code: entry.code, message: `${UNLABELLED.get(entry.code) ?? entry.code}${why}` };
 }
 
-/** What `scorer` got from `item`, its group's item, of which `written` holds the labels written since the run started. */
-function outcomeOf(scorer: string, item: Item | undefined, written: readonly ScoreLabel[]): Outcome {
+/** What `scorer` got from `item`, its group's item, whose write step wrote the labels of `stored` it names. */
+function outcomeOf(scorer: string, item: Item | undefined, stored: readonly ScoreLabel[]): Outcome {
   if (item === undefined) return { scorer, kind: 'unlabelled', code: 'not_planned', message: NOT_PLANNED };
   const entry = item.entries.get(scorer);
 
   if (entry && entry.code !== '') return coded(scorer, entry);
-  const [label] = written.filter((one) => one.scorer === scorer).sort((left, right) => (left.scoredAt < right.scoredAt ? 1 : -1));
+  const label = stored.find((one) => one.scorer === scorer && item.written.has(labelVersion(one)));
 
   return entry && label ? { scorer, kind: 'labelled', label } : unwritten(scorer, item.end);
 }
@@ -117,9 +124,8 @@ function outcomesOf(run: RunState, scorers: readonly string[], stored: readonly 
   const plan = run.steps.find((step) => step.id === 'plan');
   const groups = GroupsSchema.safeParse(plan?.status === 'succeeded' ? plan.outputs : undefined).data?.groups ?? [];
   const items = new Map(groups.flatMap((group, index) => group.scorers.split(',').map((name): [string, Item] => [name, itemOf(run, index)])));
-  const written = stored.filter((one) => one.scoredAt >= run.createdAt);
 
-  return scorers.map((scorer) => outcomeOf(scorer, items.get(scorer), written));
+  return scorers.map((scorer) => outcomeOf(scorer, items.get(scorer), stored));
 }
 
 /** What the answer of teamai score carries of one label it wrote. */

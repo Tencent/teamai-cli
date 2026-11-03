@@ -20,6 +20,7 @@ import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { ScoreAnswer } from '../scorers/score-answer.js';
 import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
+import { labelVersion } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { log } from '../utils/logger.js';
 import { Marks } from '../scorers/marks.js';
@@ -632,7 +633,7 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
       ? await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, taken.ctx)
       : id === 'evidence' ? await ScoreVerbs.evidence({ subject: item?.subject, scorers: item?.scorers }, taken.ctx)
         : id === 'check' || id === 'ci' || id === 'protected' ? await ScoreVerbs.stage({ stage: id, evidence: dir, wait: '2h' }, taken.ctx)
-          : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1.' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
+          : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1..' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
             : id === 'label' ? await ScoreVerbs.label({ evidence: dir, answer: judged?.ok ? JSON.stringify(judged.output.answer) : '', judge: judged === undefined ? '' : judged.ok ? 'success' : 'failed' }, taken.ctx)
               : id === 'write' ? await ScoreVerbs.write({ evidence: dir }, taken.ctx)
                 : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
@@ -651,7 +652,7 @@ describe('score label and score write', () => {
     const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { batch: true }, judge: { answer: { quality: { label: 'good', reasoning: 'Covers it.' }, coverage: { label: 'bad', reasoning: 'No tests.' } } } });
 
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }, { scorer: 'coverage', label: 'bad', code: '' }] } });
-    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 2 } });
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 2, labels: (await LabelStore.local(config)).map(labelVersion) } });
     const labels = await LabelStore.local(config);
     expect(labels).toEqual(expect.arrayContaining([
       expect.objectContaining({ scorer: 'quality', label: 'good', passed: true, decidedBy: 'judge', evidenceHash: expect.stringMatching(/^sha256:/), judge: { kind: 'model', ...JUDGED, batched: true } }),
@@ -670,7 +671,7 @@ describe('score label and score write', () => {
     const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge });
 
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code }] } });
-    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 0 } });
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 0, labels: [] } });
     expect(await LabelStore.local(config)).toEqual([]);
     expect(await marksOf(config, runId, ['quality'])).toEqual([{ kind: 'failed', code }]);
   });
@@ -929,7 +930,7 @@ describe('score label and score write read what the run recorded', () => {
 
     expect(labelled).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
     await run.report(label, labelled);
-    expect(await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx)).toEqual({ ok: true, output: { written: 1 } });
+    expect(await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx)).toEqual({ ok: true, output: { written: 1, labels: (await LabelStore.local(config)).map(labelVersion) } });
     const [stored] = await LabelStore.local(config);
     expect(stored).toMatchObject({ judge: { kind: 'model', tool: 'claude', usage: { inputTokens: 10, outputTokens: 2 } } });
     expect(stored?.judge).not.toHaveProperty('batched');
@@ -962,7 +963,7 @@ describe('score label and score write read what the run recorded', () => {
     const holder = await plannedGroup(config, subject, { scorers: ['quality'] });
     const { answers } = await walk(config, subject, { inputs: { scorers: ['quality'], label: 'good', demand: 'named' }, startedBy: 'person' });
 
-    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 1 } });
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 1, labels: (await LabelStore.local(config)).map(labelVersion) } });
     const held = { scorer: 'quality', subject: { kind: 'run' as const, subject: { runId, step: 'review', pass: 1 } } };
     expect(await Marks.states(config, [held], { now: NOW, readRun: async () => ({ ended: false, changedAt: NOW }) })).toMatchObject([{ kind: 'open', run: holder.run.runId }]);
   });
@@ -1033,9 +1034,9 @@ describe('what teamai score answers for a run its local driver drove', () => {
   it('gives no label to a scorer whose label the write step failed to store, and says which step failed', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer() });
     const reviewed = await reviewedRun(config);
-    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { write: { ok: false, code: 'write_failed', message: 'The disk is full.' } } });
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { write: { ok: false, code: 'write_failed', message: 'The disk is full..' } } });
 
-    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].write failed: The disk is full..`, labels: [] } });
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].write failed: The disk is full.`, labels: [] } });
   });
 
   it('answers the label the run wrote for the one scorer named, with where its reasoning is', async () => {
@@ -1044,6 +1045,16 @@ describe('what teamai score answers for a run its local driver drove', () => {
     const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
 
     expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ data: { run: runId, label: expect.objectContaining({ scorer: 'quality', label: 'good', passed: true, judge: { kind: 'model', tool: 'claude' }, decidedBy: 'judge', reasoning: expect.stringContaining(path.join(config.dataHome ?? '', '')) }) } });
+  });
+
+  it('answers the label its own run wrote, not a newer one another run wrote for the same scorer on another pass', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const first = await reviewedRun(config);
+    const second = await reviewedRun(config);
+    const { runId, ended } = await walk(config, `run:${first}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+    await walk(config, `run:${second}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'bad', reasoning: 'no' } } });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ data: { run: runId, label: expect.objectContaining({ scorer: 'quality', label: 'good', subject: { runId: first, step: 'review', pass: 1 } }) } });
   });
 
   it('answers every label of a batch', async () => {
@@ -1077,9 +1088,9 @@ describe('what teamai score answers for a run its local driver drove', () => {
   it('gives no label to a scorer whose evidence could not be gathered, and says why', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer() });
     const reviewed = await reviewedRun(config);
-    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, fake: { evidence: { ok: false, code: 'evidence_missing', message: 'The session is gone.' } } });
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, fake: { evidence: { ok: false, code: 'evidence_missing', message: 'The session is gone..' } } });
 
-    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].evidence failed: The session is gone..`, labels: [] } });
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].evidence failed: The session is gone.`, labels: [] } });
   });
 
   it('answers the code of a scorer its judge left unlabelled', async () => {
@@ -1087,7 +1098,7 @@ describe('what teamai score answers for a run its local driver drove', () => {
     const reviewed = await reviewedRun(config);
     const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: 'failed' });
 
-    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'judge_failed', message: `Run ${runId}: quality got no label (judge_failed): its judge failed: The judge exited 1..`, labels: [] } });
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'judge_failed', message: `Run ${runId}: quality got no label (judge_failed): its judge failed: The judge exited 1.`, labels: [] } });
   });
 
   it('answers not_planned for a scorer another teamai-score run holds, beside the label of one it judged', async () => {

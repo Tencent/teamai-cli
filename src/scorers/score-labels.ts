@@ -19,7 +19,7 @@ import { pinScorers } from './cache.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
 import { EvidenceDir, readRecord, type GroupRecord } from './evidence-dir.js';
 import { chooseJudgeModel } from './judge-model.js';
-import { JUDGE_FAILURES, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
+import { JUDGE_FAILURES, labelVersion, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
 import { Marks, type MarkKey, type MarkOutcome } from './marks.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
@@ -307,9 +307,10 @@ export const ScoreLabels = {
 
   /**
    * Writes the labels `label` left in `dir` to local storage, after checking each again; one that fails writes none. A
-   * label of a private or isolated run stays out of the outbox. Each scorer's mark the root run holds closes.
+   * label of a private or isolated run stays out of the outbox. Each scorer's mark the root run holds closes. Answers
+   * the version of each label written, so a reader takes the labels this run wrote and no other run's.
    */
-  async write(attempt: ScoreAttempt, dir: string, group: GroupRecord, { now }: { now: string }): Promise<{ ok: true; written: number } | Refusal> {
+  async write(attempt: ScoreAttempt, dir: string, group: GroupRecord, { now }: { now: string }): Promise<{ ok: true; written: string[] } | Refusal> {
     const members = membersOf(group);
     const entries = await readEntries(dir);
 
@@ -338,7 +339,7 @@ export const ScoreLabels = {
 
     const closed = await closeHeld(attempt, outcomes, now);
 
-    return closed.ok ? { ok: true, written: entries.filter((entry) => entry.kind === 'labelled').length } : closed;
+    return closed.ok ? { ok: true, written: entries.flatMap((entry) => (entry.kind === 'labelled' ? [labelVersion(entry.label)] : [])) } : closed;
   },
 
   /** Records a failed attempt of each scorer the root run holds open on `subject`, so automatic judging does not start it again. */

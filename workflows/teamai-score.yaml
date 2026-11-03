@@ -80,6 +80,7 @@ steps:
           needs: [label]
           command: teamai score write --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
+          output: { written: number, labels: [string] }   # labels: the version of each label written, which teamai score answers with
         - id: settle
           needs: [evidence, write]
           # After a verb that broke: records the failed attempt. Reading the outcomes keeps it from being skipped.
