@@ -10,17 +10,17 @@ import type { LocalConfig } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { redact } from '../utils/redact.js';
-import { scoresDir } from '../scorers/attempts.js';
+import { scoresDir } from './home.js';
 import {
   fencedEvidence, isEvidenceReady, rubricPrompt, subjectEvidenceDirOf, writeEvidence, SESSION_MAX_CHARS, SUBAGENT_MAX_CHARS, type EvidenceGap, type Rubrics,
-} from '../scorers/evidence.js';
-import type { RunSubject } from '../scorers/label.js';
-import { firstSettled, isUnder, passRange, passesWithin, runPasses, type RunPass } from './loop.js';
-import { stepDefinitions } from './scope.js';
-import { agentPassOf, type StepPass } from './step-state.js';
-import type { RunState } from './types.js';
-import { branchName, cloneBranchOf } from './workspace.js';
-import { stepCheckout, UNTRUSTED_CONFIG } from './worktree.js';
+} from './evidence.js';
+import type { RunSubject } from './label.js';
+import { firstSettled, isUnder, passRange, passesWithin, runPasses, type RunPass } from '../workflow/loop.js';
+import { stepDefinitions } from '../workflow/scope.js';
+import { agentPassOf, type StepPass } from '../workflow/step-state.js';
+import type { RunState } from '../workflow/types.js';
+import { branchName, cloneBranchOf } from '../workflow/workspace.js';
+import { stepCheckout, UNTRUSTED_CONFIG } from '../workflow/worktree.js';
 
 const exec = promisify(execFile);
 

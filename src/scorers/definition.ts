@@ -4,7 +4,7 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { CheckRunSchema } from '../workflow/check.js';
+import { CheckRunSchema } from './check.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
 

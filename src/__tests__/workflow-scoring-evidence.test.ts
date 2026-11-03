@@ -12,7 +12,7 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 import type { LocalConfig } from '../types.js';
-import { collectEvidence, evidencePlan } from '../workflow/scoring-evidence.js';
+import { collectEvidence, evidencePlan } from '../scorers/scoring-evidence.js';
 import { readRun, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';

@@ -13,7 +13,7 @@ import { attemptEnv } from '../attempt-marker.js';
 import type { LeaseWire } from '../lease-wire.js';
 import type { ReportInput } from '../engine.js';
 import type { RunPass } from '../loop.js';
-import { stageEvidence } from '../scoring-evidence.js';
+import { stageEvidence } from '../../scorers/scoring-evidence.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { type CopyContract, type WorkspaceContract } from '../workspace.js';

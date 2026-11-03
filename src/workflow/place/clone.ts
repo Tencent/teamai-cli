@@ -40,7 +40,7 @@ import { CommitSchema, type ClonePlace, type InstalledTeam, type TeamSelection }
 import { runDeadline } from '../limits.js';
 import { runPasses } from '../loop.js';
 import { stepDefinitions } from '../scope.js';
-import { stageEvidence } from '../scoring-evidence.js';
+import { stageEvidence } from '../../scorers/scoring-evidence.js';
 import { settled } from '../step-state.js';
 import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';

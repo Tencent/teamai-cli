@@ -5,8 +5,8 @@
  * back from a failure code.
  */
 import { z } from 'zod';
-import { CommitSchema } from './clone.js';
-import type { CommandExit } from './shell-command.js';
+import { CommitSchema } from '../workflow/clone.js';
+import type { CommandExit } from '../workflow/shell-command.js';
 
 /** What a check says about the repo it ran in. */
 export type CheckVerdict =

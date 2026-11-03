@@ -29,8 +29,8 @@ import { defaultsArmOf, parseSuite, type Arm, type Suite, type TaskJudge } from 
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import type { ArmTeam, SkillChanges } from './terms.js';
-import type { Added } from '../workflow/check.js';
-import { runCheckAt, type CheckRun } from '../workflow/check-run.js';
+import type { Added } from '../scorers/check.js';
+import { runCheckAt, type CheckRun } from '../scorers/check-run.js';
 import { commitCacheOf } from '../workflow/place/place.js';
 import { leavesOut, withoutRefusal } from './team-without.js';
 import { commitCheckFiles, trialBlocker, type CommittedSuite } from './trial.js';

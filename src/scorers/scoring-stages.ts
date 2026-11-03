@@ -4,15 +4,15 @@
  * the delivery's protected-path refusal (#1090). The first stage that fails decides the label; one that passes or has
  * nothing to say hands the pass on, and the judge runs only once every stage did.
  */
-import type { ScorerDefinition, ScorerLabel } from '../scorers/definition.js';
-import type { Decider, RunSubject } from '../scorers/label.js';
+import type { ScorerDefinition, ScorerLabel } from './definition.js';
+import type { Decider, RunSubject } from './label.js';
 import { log } from '../utils/logger.js';
 import { runCheckAt } from './check-run.js';
-import { runPasses } from './loop.js';
-import { deliveredCi } from './pr-delivery.js';
+import { runPasses } from '../workflow/loop.js';
+import { deliveredCi } from '../workflow/pr-delivery.js';
 import { evidencePlan, isDelivered } from './scoring-evidence.js';
-import { agentPassOf, type StepPass } from './step-state.js';
-import type { RunState } from './types.js';
+import { agentPassOf, type StepPass } from '../workflow/step-state.js';
+import type { RunState } from '../workflow/types.js';
 
 /**
  * What the stages say of a pass: a stage decided it, with the reasoning its label keeps locally; the scorer's check

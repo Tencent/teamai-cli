@@ -11,12 +11,12 @@ import path from 'node:path';
 import { stepEnvironment } from '../env-exec.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { checkVerdict, type Added, type CheckVerdict } from './check.js';
-import { freshClone, scratchCloneRoot } from './place/place.js';
-import { runSetup } from './place/setup.js';
-import { SANDBOX_WITHHELD_ENV, type EnvScope, type LeaseSetup, type Setup } from './requirements.js';
-import { runShellCommand } from './shell-command.js';
-import type { WorkflowFailure } from './types.js';
-import { untrustedGit, type Git } from './worktree.js';
+import { freshClone, scratchCloneRoot } from '../workflow/place/place.js';
+import { runSetup } from '../workflow/place/setup.js';
+import { SANDBOX_WITHHELD_ENV, type EnvScope, type LeaseSetup, type Setup } from '../workflow/requirements.js';
+import { runShellCommand } from '../workflow/shell-command.js';
+import type { WorkflowFailure } from '../workflow/types.js';
+import { untrustedGit, type Git } from '../workflow/worktree.js';
 
 /** Setup with only its own keys, as the lease scopes them. */
 async function setupIn(trial: Runner, dir: string, setup: LeaseSetup, expiresAt: string | undefined): Promise<WorkflowFailure | undefined> {
