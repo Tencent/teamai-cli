@@ -1325,7 +1325,7 @@ async function labelMembers<T extends LeasedAttempt>({ config, submission, now, 
     return error('isolation_unmet', `This answer comes from a ${isolation} judge, and ${required.setBy.join(' and ')} asks for ${required.level}. The lease stays open: judge it at ${required.level} isolation, then submit again.`);
   }
 
-  const settle = async ({ judged: { attempt, pin }, ...verdict }: (typeof verdicts.verdicts)[number]): Promise<SucceededAttempt> => {
+  const settle = async ({ judged: { attempt, pin }, ...verdict }: (typeof verdicts.verdicts)[number]): Promise<SucceededAttempt | Refusal> => {
     const judge: Extract<ScoreLabel['judge'], { kind: 'model' }> = {
       kind: 'model',
       tool,
@@ -1347,7 +1347,10 @@ async function labelMembers<T extends LeasedAttempt>({ config, submission, now, 
       scoredAt: now,
     });
 
-    const { id, version } = await LabelStore.append(config, label, verdict.reasoning, prompt);
+    const appended = await LabelStore.append(config, [{ label, reasoning: verdict.reasoning, prompt }]);
+
+    if (appended.status === 'busy') return error('busy', 'Another teamai process holds the label store, so no label was written. Submit the lease again.');
+    const [{ id, version }] = appended.kept;
 
     if (!label.passed) log.info(shareFailedLabelHint(reasoningPath(config, version), sessionId));
 
@@ -1370,7 +1373,12 @@ async function labelMembers<T extends LeasedAttempt>({ config, submission, now, 
 
   const labelled: SucceededAttempt[] = [];
 
-  for (const verdict of verdicts.verdicts) labelled.push(await settle(verdict));
+  for (const verdict of verdicts.verdicts) {
+    const settled = await settle(verdict);
+
+    if ('error' in settled) return settled;
+    labelled.push(settled);
+  }
 
   return { kind: 'labelled', attempts: labelled };
 }

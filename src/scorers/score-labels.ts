@@ -324,9 +324,7 @@ export const ScoreLabels = {
     const run = await subjectRun(attempt, group);
     const keepLocal = group.judged.kind === 'run' && run !== undefined && (privateSteps(run)(group.judged.subject.step) || isIsolated(run));
 
-    const written = await LabelStore.locked(attempt.config, async () => {
-      for (const entry of entries) if (entry.kind === 'labelled') await LabelStore.append(attempt.config, entry.label, entry.reasoning, entry.prompt, { outbox: !keepLocal });
-    });
+    const written = await LabelStore.append(attempt.config, entries.flatMap((entry) => (entry.kind === 'labelled' ? [entry] : [])), { outbox: !keepLocal });
 
     if (written.status === 'busy') return refused('busy', 'Another teamai process holds the label store, so no label was written. Run the step again.');
     const subject = Subject.parse(group.subject);

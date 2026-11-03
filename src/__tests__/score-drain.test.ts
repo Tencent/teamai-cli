@@ -268,10 +268,10 @@ describe('teamai score --drain', () => {
 
   it('exits 1 when it cannot publish, and the next drain publishes what stayed pending', async () => {
     const { origin, config } = await team();
-    await LabelStore.append(config, {
+    await LabelStore.append(config, [{ label: {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
-    }, 'Did the work.');
+    }, reasoning: 'Did the work.' }]);
     vi.stubEnv('CI', 'true');
     const hook = path.join(origin, 'hooks', 'pre-receive');
     fs.writeFileSync(hook, '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
@@ -295,10 +295,10 @@ describe('teamai score --drain', () => {
 
   it('says the cause ssh gives when it cannot publish, in one sentence', async () => {
     const { config } = await team();
-    await LabelStore.append(config, {
+    await LabelStore.append(config, [{ label: {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
-    }, 'Did the work.');
+    }, reasoning: 'Did the work.' }]);
     fakeClaude();
     vi.stubEnv('CI', 'true');
     const ssh = path.join(root, 'bin', 'ssh-denied');
@@ -317,10 +317,10 @@ describe('teamai score --drain', () => {
 
   it('says that another process is writing teamai-reports', async () => {
     const { config } = await team();
-    await LabelStore.append(config, {
+    await LabelStore.append(config, [{ label: {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
-    }, 'Did the work.');
+    }, reasoning: 'Did the work.' }]);
     vi.stubEnv('CI', 'true');
     const lock = path.join(path.dirname(getReportsDir(config)), REPORTS_LOCK_FILENAME);
     expect(await acquireLock(lock)).toBe(true);
@@ -718,10 +718,10 @@ steps:
   it('runs at the end of an unattended local run, which keeps the run\'s outcome as its exit code when a publish fails', async () => {
     const { origin, config } = await team({ 'workflows/mark.yaml': MARK });
     await syncWorkflowDefinitions(config);
-    await LabelStore.append(config, {
+    await LabelStore.append(config, [{ label: {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
-    }, 'Did the work.');
+    }, reasoning: 'Did the work.' }]);
     fs.writeFileSync(path.join(origin, 'hooks', 'pre-receive'), '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
     vi.stubEnv('CI', 'true');
 

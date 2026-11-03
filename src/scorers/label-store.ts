@@ -113,13 +113,44 @@ function passScoreOf(label: RunLabel): PassScore {
 }
 
 /**
+ * Runs `change` under `scores/labels.lock`, which `publish` takes to clear the outbox, so a label `change` appends is
+ * never cleared unpublished.
+ */
+async function locked<T>(config: LocalConfig, change: () => Promise<T>): Promise<{ status: 'done'; value: T } | { status: 'busy' }> {
+  return scoresLocked(config, 'labels', change);
+}
+
+/** One label `LabelStore.append` keeps, with a model judge's reasoning and the redacted prompt that heads its file. */
+export interface KeptLabel {
+  label: ScoreLabel;
+  reasoning?: string;
+  prompt?: string;
+}
+
+/**
+ * The outbox entry commits the label: a failure before it records no label, and one after it leaves a label that
+ * `local` reads and `publish` still sends. Only `LabelStore.append` calls it, under the label store lock.
+ */
+async function appendOne(config: LocalConfig, { label, reasoning, prompt }: KeptLabel, outbox: boolean): Promise<{ id: string; version: string }> {
+  const id = labelId(label);
+  const version = labelVersion(label);
+
+  if (reasoning !== undefined) await writeFileAtomic(reasoningPath(config, version), reasoningText(label, reasoning, prompt));
+
+  if (outbox) await writeJsonAtomic(path.join(pendingDir(config), `${id}.json`), label);
+  await fs.appendFile(labelsFile(config), `${JSON.stringify(label)}\n`, 'utf8');
+
+  return { id, version };
+}
+
+/**
  * Takes the labels of `sent` out of the outbox, each while its pending file still holds that label, so a rescore written
  * meanwhile stays pending, and appends one an interrupted `append` left out of `labels.jsonl`.
  */
 async function clearSent(config: LocalConfig, sent: ReadonlyArray<{ id: string; label: ScoreLabel }>): Promise<'cleared' | 'busy'> {
   if (sent.length === 0) return 'cleared';
 
-  const cleared = await LabelStore.locked(config, async () => {
+  const cleared = await locked(config, async () => {
     const appended = new Set(parseScoreLabels(await readFileSafe(labelsFile(config)) ?? '').map(labelVersion));
 
     for (const { id, label } of sent) {
@@ -148,30 +179,23 @@ function addUsage(total: { inputTokens: number; outputTokens: number }, usage: J
 
 export const LabelStore = {
   /**
-   * Runs `change` under `scores/labels.lock`, which `publish` takes to clear the outbox, so a label `change` appends is
-   * never cleared unpublished.
+   * Keeps every label of `labels` under `scores/labels.lock`, which `publish` takes to clear the outbox, or none while
+   * another process holds it (`busy`). Answers each of `labels` with the label's `id` and the `version` that names its
+   * reasoning file, in order. A hand label has no `reasoning`, and no reasoning file. With `outbox: false` the labels stay on this machine,
+   * as those of a private or isolated run do, and no publish sends them. An empty batch takes no lock.
    */
-  async locked<T>(config: LocalConfig, change: () => Promise<T>): Promise<{ status: 'done'; value: T } | { status: 'busy' }> {
-    return scoresLocked(config, 'labels', change);
-  },
+  async append<TLabel extends KeptLabel>(config: LocalConfig, labels: readonly TLabel[], { outbox = true }: { outbox?: boolean } = {}): Promise<{ status: 'done'; kept: Array<TLabel & { id: string; version: string }> } | { status: 'busy' }> {
+    if (labels.length === 0) return { status: 'done', kept: [] };
 
-  /**
-   * The outbox entry commits the label: a failure before it records no label, and one after it leaves a label that
-   * `local` reads and `publish` still sends. Returns the label's `id` and the `version` that names its reasoning file.
-   * `prompt`, the redacted first prompt of a judged session, heads the reasoning file so a member finds it with grep.
-   * A hand label has no `reasoning`, and no reasoning file. With `outbox: false` the label stays on this machine, as one
-   * of a private or isolated run does, and no publish sends it.
-   */
-  async append(config: LocalConfig, label: ScoreLabel, reasoning: string | undefined, prompt?: string, { outbox = true }: { outbox?: boolean } = {}): Promise<{ id: string; version: string }> {
-    const id = labelId(label);
-    const version = labelVersion(label);
+    const written = await locked(config, async () => {
+      const kept: Array<TLabel & { id: string; version: string }> = [];
 
-    if (reasoning !== undefined) await writeFileAtomic(reasoningPath(config, version), reasoningText(label, reasoning, prompt));
+      for (const one of labels) kept.push({ ...one, ...await appendOne(config, one, outbox) });
 
-    if (outbox) await writeJsonAtomic(path.join(pendingDir(config), `${id}.json`), label);
-    await fs.appendFile(labelsFile(config), `${JSON.stringify(label)}\n`, 'utf8');
+      return kept;
+    });
 
-    return { id, version };
+    return written.status === 'busy' ? written : { status: 'done', kept: written.value };
   },
 
   /** The labels on the reports checkout as it is, every version of each, with the member who published it. */

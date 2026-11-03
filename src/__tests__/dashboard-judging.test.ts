@@ -80,11 +80,11 @@ async function sourceHash(config: LocalConfig, runId: string, name: string): Pro
 /** A label of pass 1 of `review` in `runId`, as `teamai score write` appends one; a hand label has no `decidedBy`. */
 async function label(config: LocalConfig, runId: string, fields: { scorer: string; label: 'good' | 'bad'; decidedBy?: 'judge' | 'ci' | 'check' | 'protected' } & Partial<Pick<ScoreLabel, 'judge' | 'scoredAt'>>): Promise<void> {
   const { scorer: name, label: value, ...rest } = fields;
-  await LabelStore.append(config, {
+  await LabelStore.append(config, [{ label: {
     source: 'workflow', scorer: name, rubric: { sourceHash: await sourceHash(config, runId, name) }, label: value, score: value === 'good' ? 1 : 0, passed: value === 'good',
     judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' }, scoredAt: new Date().toISOString(),
     subject: { runId, step: 'review', pass: 1 }, ...rest,
-  }, undefined);
+  } }]);
 }
 
 const keyOf = (runId: string, name: string): MarkKey => ({ scorer: name, subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } });

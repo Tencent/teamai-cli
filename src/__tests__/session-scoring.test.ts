@@ -23,7 +23,6 @@ import type { Session } from '../session-flow/ir.js';
 import { defaultSyncMeta, getRepoIdentity, SyncManager } from '../session-flow/sync.js';
 import { localAliasesPath } from '../models/aliases.js';
 import { AttemptStore } from '../scorers/attempts.js';
-import { LabelStore } from '../scorers/label-store.js';
 import { parseScoreLabels } from '../scorers/label.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -34,6 +33,7 @@ import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { submitJudgeLease } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import * as cliPaths from '../utils/cli-path.js';
+import { whileLabelsLocked } from './helpers/label-lock.js';
 
 const SCORER = `---
 labels:
@@ -642,8 +642,8 @@ describe('teamai score --session', () => {
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('good');
 
-    const held = await LabelStore.locked(config, () => scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] }));
-    expect(held).toMatchObject({ status: 'done', value: { error: { code: 'busy' } } });
+    const held = await whileLabelsLocked(config, () => scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'] }));
+    expect(held).toMatchObject({ error: { code: 'busy' } });
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'labels.jsonl'))).toBe(false);
   });
 
@@ -773,8 +773,8 @@ describe('teamai score --session', () => {
       const { file } = draft();
       fakeClaude('good');
 
-      const held = await LabelStore.locked(config, () => scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
-      expect(held).toMatchObject({ status: 'done', value: { data: { label: { label: 'good', stored: false }, control: { passed: true } } } });
+      const held = await whileLabelsLocked(config, () => scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
+      expect(held).toMatchObject({ data: { label: { label: 'good', stored: false }, control: { passed: true } } });
     });
 
     it('runs no control for a cached scorer', async () => {

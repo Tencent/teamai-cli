@@ -1150,7 +1150,7 @@ steps:
     const lease = BatchLeaseSchema.parse(data(await nextJudgeLease(config, request())).lease);
     const append = LabelStore.append;
     const interrupted = vi.spyOn(LabelStore, 'append').mockImplementation(async (...args) => {
-      if (args[1].scorer === 'tests') throw new Error('interrupted');
+      if (args[1][0]?.label.scorer === 'tests') throw new Error('interrupted');
       return append(...args);
     });
     await expect(submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: both })).rejects.toThrow('interrupted');

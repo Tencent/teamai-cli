@@ -171,10 +171,10 @@ describe('the session sharing read model', () => {
   it('counts pending labels, and names the drain of the run mode whose sessions wait for it', async () => {
     const config = await team();
     captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
-    await LabelStore.append(config, {
+    await LabelStore.append(config, [{ label: {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: ATTENDED_FINISHED }, judge: { kind: 'human' }, scoredAt: NOW,
-    }, 'Did the work.');
+    }, reasoning: 'Did the work.' }]);
 
     expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       pendingLabels: 1,
@@ -216,7 +216,7 @@ describe('the session sharing read model', () => {
       source: 'session', subject: { platform: 'claude-code', sessionId: ATTENDED_FINISHED }, judge: { kind: 'human' }, scoredAt: NOW,
     } as const;
     const config = await team();
-    await LabelStore.append(config, label, 'Did the work.');
+    await LabelStore.append(config, [{ label, reasoning: 'Did the work.' }]);
 
     expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({ next: [{ mode: 'attended', command: 'teamai score --drain' }] });
     expect(await readSessionSharing({ ...config, repo: { ...config.repo, kind: 'http' } }, { env: {}, platform: 'linux', now: NOW })).toMatchObject({ pendingLabels: 1, next: [] });

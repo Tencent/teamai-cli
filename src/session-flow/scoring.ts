@@ -498,27 +498,19 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
       }, subject, judged.context) };
     });
 
-    const write = async () => {
-      const outcomes: Array<(typeof labels)[number] & ({ kind: 'stored'; kept: { id: string; version: string } } | { kind: 'tried'; file: string })> = [];
+    // Only a cached scorer's label is written, so a group of scorer files appends an empty batch, which takes no lock.
+    const appended = await LabelStore.append(config, labels.flatMap((one) => (one.member.file === undefined ? [{ ...one, prompt }] : [])));
 
-      for (const one of labels) {
-        const { file } = one.member;
-        outcomes.push(file === undefined ? { ...one, kind: 'stored', kept: await LabelStore.append(config, one.label, one.reasoning, prompt) } : { ...one, kind: 'tried', file });
-      }
-
-      return outcomes;
-    };
-
-    // Only a cached scorer's label is written, so a group of scorer files never waits on the label store's lock.
-    const written = labels.some(({ member }) => member.file === undefined) ? await LabelStore.locked(config, write) : { status: 'done' as const, value: await write() };
-
-    if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Score the session again.');
+    if (appended.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Score the session again.');
+    const storedOutcomes = appended.kept.map(({ id, version, prompt: _prompt, ...one }) => ({ ...one, kind: 'stored' as const, kept: { id, version } }));
+    const triedOutcomes = labels.flatMap((one) => (one.member.file === undefined ? [] : [{ ...one, kind: 'tried' as const, file: one.member.file }]));
+    const outcomes = [...storedOutcomes, ...triedOutcomes].sort((a, b) => labels.findIndex(({ member }) => member === a.member) - labels.findIndex(({ member }) => member === b.member));
     const [fileHead, ...fileTail] = members.filter((member) => member.file !== undefined);
     // After the labels are kept, so a control that fails loses none of them.
     const controlled = control && fileHead ? await judgeOnce(config, control, [fileHead, ...fileTail], choice, required) : undefined;
     const storedLabels = fileHead ? await LabelStore.local(config) : [];
 
-    for (const outcome of written.value) {
+    for (const outcome of outcomes) {
       const { member, label } = outcome;
       const verdict = `${label.label} (score ${label.score}, ${label.passed ? 'passed' : 'did not pass'})`;
       const answer: ScoreAnswer = { scorer: label.scorer, subject, label: label.label, score: label.score, passed: label.passed };
@@ -602,10 +594,11 @@ async function labelByHand(config: LocalConfig, { member, given, judged, now }: 
     scoredAt: now,
   }, judged.subject, judged.context);
 
-  const written = await LabelStore.locked(config, () => LabelStore.append(config, label, undefined));
+  const written = await LabelStore.append(config, [{ label }]);
+  const [kept] = written.status === 'done' ? written.kept : [];
 
-  if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Label the session again.');
+  if (!kept) return failure('busy', 'Another teamai process holds the label store, so no label was written. Label the session again.');
   log.info(`${scorer}: ${given.value} (score ${given.score}, ${passed ? 'passed' : 'did not pass'}), by hand. No judge ran.`);
 
-  return { label: { scorer, subject: judged.subject, label: given.value, score: given.score, passed, judge: { kind: 'human' }, labelId: written.value.id } };
+  return { label: { scorer, subject: judged.subject, label: given.value, score: given.score, passed, judge: { kind: 'human' }, labelId: kept.id } };
 }
