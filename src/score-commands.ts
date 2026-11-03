@@ -124,9 +124,22 @@ function namesSession(options: ScoreOptions): boolean {
   return [options.session, options.source, options.teamSession, options.author, options.label].some((flag) => flag !== undefined);
 }
 
+/** The refusal of `--label` beside a pass, with the teamai-score start that labels that pass by hand. */
+function passLabelRefusal(options: ScoreOptions & { label: string }): WorkflowEnvelope {
+  const run = options.run ?? '<run id>';
+  const step = options.step ?? '<step path>';
+  const pass = options.pass ?? '<pass>';
+  const inputs = { subject: `run:${run}:${step}:${pass}`, scorers: options.scorer ?? ['<scorer>'], label: options.label, batch: false, demand: 'named' };
+
+  return failure('invalid_arguments', `--label labels a session. To label pass ${pass} of step ${step} of run ${run} by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs ${shellWord(JSON.stringify(inputs))}`);
+}
+
 /** Why the flags of `options` cannot go together, or undefined. */
 function flagConflict(options: ScoreOptions): WorkflowEnvelope | undefined {
   if (options.drain) return failure('invalid_arguments', '--drain goes alone: teamai score --drain');
+  const { label } = options;
+
+  if (namesPass(options) && label !== undefined && [options.session, options.source, options.teamSession, options.author].every((flag) => flag === undefined)) return passLabelRefusal({ ...options, label });
 
   if (namesPass(options) && namesSession(options)) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
   const file = options.push ? options.scorer?.find(isScorerFile) : undefined;

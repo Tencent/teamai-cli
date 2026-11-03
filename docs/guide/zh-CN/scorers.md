@@ -410,8 +410,8 @@ $ teamai score --session 7c1e… --scorer review-quality --label good       # �
 `--label` 只标注会话。要手动标注某个工作流 pass，请在你自己的终端中启动 `teamai-score`，把标签写进它的 inputs。主体为 `run:<run id>:<step path>:<pass>`：
 
 ```console
-$ teamai score --run r24df… --step review --scorer review-quality --label missed-bug
-{"error":{"code":"invalid_arguments","message":"Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both"}}
+$ teamai score --run r24df… --step review --pass 1 --scorer review-quality --label missed-bug
+{"error":{"code":"invalid_arguments","message":"--label labels a session. To label pass 1 of step review of run r24df… by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs '{\"subject\":\"run:r24df…:review:1\",\"scorers\":[\"review-quality\"],\"label\":\"missed-bug\",\"batch\":false,\"demand\":\"named\"}'"}}
 $ teamai workflow start teamai-score --driver local --inputs '{"subject":"run:r24df…:review:1","scorers":["review-quality"],"label":"missed-bug","batch":false,"demand":"named"}'
 ℹ Run re440… started. If it stops before it ends, continue it with: teamai workflow resume re440…
 {"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}]}}]}},"cancelled":[]}}
