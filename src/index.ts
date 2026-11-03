@@ -1044,10 +1044,9 @@ const scoreCmd = program
 // reads them with optsWithGlobals.
 scoreCmd
   .command('plan')
-  .description('A step of a teamai-score run: sample each scorer on the subject, group the sampled ones that share a judge launch and take the same stages, and open their marks for the run. Prints {"groups":[{"subject","hand","scorers","model","ci","protected"}]}: empty when nothing is sampled, every scorer is judged or held, or past daily_limit for an auto demand. Refused outside a leased attempt of a teamai-score step.')
+  .description('A step of a teamai-score run: sample each scorer on the subject, group the sampled ones that share a judge launch and take the same stages, and open their marks for the run. A non-empty label input of the teamai-score run is a hand label of its one scorer, honoured only when a person started the root run. Prints {"groups":[{"subject","hand","scorers","model","ci","protected"}]}: empty when nothing is sampled, every scorer is judged or held, or past daily_limit for an auto demand. Refused outside a leased attempt of a teamai-score step.')
   .option('--subject <subject>', 'run:<runId>:<step path>:<pass>, session:<source>:<sessionId> or team-session:<author>:<archive name>')
   .option('--scorers <json>', 'A JSON array of scorer names; [] takes the scorers the pass\'s step pinned, or for a session every scorer with sessions: true')
-  .option('--label <value>', 'A hand label of the one scorer, honoured only in a run a person started; \'\' for none')
   .option('--batch <bool>', 'true: the scorers share a judge launch where they can; false: as the step, the workflow\'s defaults.scorers.batch and scoring.yaml say')
   .option('--demand <demand>', 'auto: sample, and stop at daily_limit; named: someone asked, so every scorer is taken, a closed mark opens again, and daily_limit counts it but never refuses it', 'auto')
   .action(async (_cmdOpts, command: Command) => {

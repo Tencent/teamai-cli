@@ -269,7 +269,7 @@ describe('score plan', () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
 
-    expect(await ScoreVerbs.plan({ subject: `run:${runId}:review:1`, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, { env: {}, current: config, now: NOW })).toEqual({
+    expect(await ScoreVerbs.plan({ subject: `run:${runId}:review:1`, scorers: '[]', batch: 'false', demand: 'auto' }, { env: {}, current: config, now: NOW })).toEqual({
       ok: false,
       code: 'score_attempt_required',
       message: 'teamai score plan runs only as a step of a teamai-score run, in the attempt the engine leased it: TEAMAI_WORKFLOW_ATTEMPT and TEAMAI_RUN_DIR name no workflow attempt. Nothing was written.',
@@ -284,7 +284,7 @@ describe('score plan', () => {
     const run = await scoreRun(config, { subject });
     const { ctx } = await run.next('plan');
 
-    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, ctx)).toEqual({ ok: true, output: { groups: [
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', batch: 'false', demand: 'auto' }, ctx)).toEqual({ ok: true, output: { groups: [
       { subject, hand: '', scorers: 'quality', model: '', ci: false, protected: false },
       { subject, hand: '', scorers: 'coverage', model: '', ci: false, protected: false },
     ] } });
@@ -296,7 +296,7 @@ describe('score plan', () => {
     const subject = `run:${runId}:change:1`;
     const { ctx } = await (await scoreRun(config, { subject, batch: true })).next('plan');
 
-    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'true', demand: 'auto' }, ctx)).toEqual({ ok: true, output: { groups: [
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', batch: 'true', demand: 'auto' }, ctx)).toEqual({ ok: true, output: { groups: [
       { subject, hand: '', scorers: 'clarity', model: '', ci: false, protected: true },
       { subject, hand: '', scorers: 'delivered', model: '', ci: true, protected: true },
     ] } });
@@ -309,7 +309,7 @@ describe('score plan', () => {
     const subject = `run:${runId}:change:1`;
     const { ctx } = await (await scoreRun(config, { subject, batch: true })).next('plan');
 
-    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'true', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', batch: 'true', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [
       { scorers: 'clarity,tests', ci: true, protected: true },
       { scorers: 'delivered', ci: true, protected: true },
     ] } });
@@ -322,13 +322,13 @@ describe('score plan', () => {
     const first = await (await scoreRun(config, { subject })).next('plan');
     const second = await (await scoreRun(config, { subject })).next('plan');
 
-    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, first.ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'coverage' }] } });
-    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, second.ctx)).toEqual({ ok: true, output: { groups: [] } });
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', batch: 'false', demand: 'auto' }, first.ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'coverage' }] } });
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', batch: 'false', demand: 'auto' }, second.ctx)).toEqual({ ok: true, output: { groups: [] } });
   });
 
   it('counts a batch of scorers on one session once toward the daily limit, and past it plans nothing', async () => {
     const config = { ...await team({}, { quality: scorer(), coverage: scorer() }), scoring: { daily_limit: 1 } };
-    const plan = async (subject: string, demand = 'auto') => ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', label: '', batch: 'true', demand },
+    const plan = async (subject: string, demand = 'auto') => ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', batch: 'true', demand },
       (await (await scoreRun(config, { subject, demand })).next('plan')).ctx);
 
     expect(await plan('session:claude-code:one')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
@@ -352,16 +352,17 @@ describe('score plan', () => {
     expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality', model: 'gpt-5.4' }] } });
   });
 
-  it('takes a hand label only from a run a person started, as one group with no stage', async () => {
+  it('takes a hand label only from the label input of a run a person started, as one group with no stage', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const subject = 'session:claude-code:one';
-    const options = { subject, scorers: '["quality"]', label: 'good', batch: 'false', demand: 'named' };
+    const options = { subject, scorers: '["quality"]', batch: 'false', demand: 'named' };
+    const planAt = async (label: string, startedBy: StartedBy) => ScoreVerbs.plan(options, (await (await scoreRun(config, { subject, label, demand: 'named' }, startedBy)).next('plan')).ctx);
 
-    expect(await ScoreVerbs.plan(options, (await (await scoreRun(config, { subject, label: 'good' })).next('plan')).ctx)).toMatchObject({ ok: false, code: 'hand_label_refused' });
-    const byPerson = (await (await scoreRun(config, { subject, label: 'good' }, 'person')).next('plan')).ctx;
-    expect(await ScoreVerbs.plan(options, byPerson)).toEqual({ ok: true, output: { groups: [{ subject, hand: 'good', scorers: 'quality', model: '', ci: false, protected: false }] } });
-    expect(await ScoreVerbs.plan({ ...options, label: 'great' }, byPerson)).toEqual({ ok: false, code: 'label_invalid', message: '"great" is not a label of scorer quality. Use one of: good, bad.' });
+    expect(await planAt('good', 'cli')).toMatchObject({ ok: false, code: 'hand_label_refused' });
+    expect(await planAt('great', 'person')).toEqual({ ok: false, code: 'label_invalid', message: '"great" is not a label of scorer quality. Use one of: good, bad.' });
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'marks.jsonl'))).toBe(false);
+    expect(await planAt('good', 'person')).toEqual({ ok: true, output: { groups: [{ subject, hand: 'good', scorers: 'quality', model: '', ci: false, protected: false }] } });
+    expect(await planAt('', 'person')).toEqual({ ok: true, output: { groups: [{ subject, hand: '', scorers: 'quality', model: '', ci: false, protected: false }] } });
   });
 });
 
@@ -398,7 +399,7 @@ describe('score plan reads the workflow a step is in', () => {
     const subject = `run:${runId}:review:1`;
     const { ctx } = await (await scoreRun(config, { subject })).next('plan');
 
-    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', batch: 'false', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
   });
 
   it('batches a step of an inline workflow as the workflow around it says, and one of a workflow file as that file says', async () => {
@@ -436,7 +437,7 @@ steps:
     const subject = `run:${await reviewedRun(config)}:review:1`;
     const run = runOf(config, String(data(await startRun(config, 'rescore', { subject }, { secrets: await knownSecrets(config), startedBy: 'person' })).run));
     const plan = await run.next('again.plan');
-    const planned = await ScoreVerbs.plan({ subject, scorers: '["quality"]', label: 'good', demand: 'named' }, plan.ctx);
+    const planned = await ScoreVerbs.plan({ subject, scorers: '["quality"]', demand: 'named' }, plan.ctx);
 
     expect(planned).toMatchObject({ ok: true, output: { groups: [{ hand: 'good', scorers: 'quality', ci: false, protected: false }] } });
     await run.report(plan, planned);
@@ -471,7 +472,7 @@ steps:
 async function plannedGroup(config: LocalConfig, subject: string, inputs: Record<string, unknown> = {}, startedBy: StartedBy = 'cli'): Promise<{ run: ScoreRun; evidence: Taken; scorers: string }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const plan = await run.next('plan');
-  const planned = await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), label: String(inputs.label ?? ''), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, plan.ctx);
+  const planned = await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, plan.ctx);
   await run.report(plan, planned);
   const groups = z.object({ groups: z.array(z.object({ scorers: z.string() })) }).parse(planned.ok ? planned.output : {});
   return { run, evidence: await run.next('score[0].evidence'), scorers: groups.groups[0]?.scorers ?? '' };
@@ -655,7 +656,7 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
     const { item, dir } = items(index);
     const judged = answers.get(`score[${index}].judge`);
     const answer: ScoreVerbAnswer = fake[id] ?? (id === 'plan'
-      ? await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), label: String(inputs.label ?? ''), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, taken.ctx)
+      ? await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, taken.ctx)
       : id === 'evidence' ? await ScoreVerbs.evidence({ subject: item?.subject, scorers: item?.scorers }, taken.ctx)
         : id === 'check' || id === 'ci' || id === 'protected' ? await ScoreVerbs.stage({ stage: id, evidence: dir, wait: '2h' }, taken.ctx)
           : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1.' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
@@ -862,14 +863,21 @@ describe('score verbs refuse what they cannot act on', () => {
     ['a batch that is not a boolean', { batch: 'yes' }, 'invalid_arguments'],
     ['a pass the run does not have', { subject: 'run:RUN:review:2' }, 'pass_not_found'],
     ['a scorer the run did not pin', { scorers: '["tests"]' }, 'scorer_not_found'],
-    ['a hand label of two scorers', { scorers: '["quality","coverage"]', label: 'good', demand: 'named' }, 'invalid_arguments'],
   ])('plan refuses %s', async (_case, options, code) => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
     const subject = (options.subject ?? 'run:RUN:review:1').replace('RUN', runId);
     const { ctx } = await (await scoreRun(config, { subject: `run:${runId}:review:1` })).next('plan');
 
-    expect(await ScoreVerbs.plan({ scorers: '[]', label: '', batch: 'false', demand: 'auto', ...options, subject }, ctx)).toMatchObject({ ok: false, code });
+    expect(await ScoreVerbs.plan({ scorers: '[]', batch: 'false', demand: 'auto', ...options, subject }, ctx)).toMatchObject({ ok: false, code });
+  });
+
+  it('plan refuses a hand label of two scorers', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject, scorers: ['quality', 'coverage'], label: 'good', demand: 'named' }, 'person')).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', demand: 'named' }, ctx)).toMatchObject({ ok: false, code: 'invalid_arguments' });
   });
 
   it.each<[string, 'evidence' | 'settle', EvidenceOptions, string]>([

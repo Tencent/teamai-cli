@@ -75,7 +75,6 @@ async function subjectAt(verb: string, options: EvidenceOptions, ctx: ScoreVerbC
 }
 
 export interface PlanOptions extends EvidenceOptions {
-  label?: string;
   batch?: string;
   demand?: string;
 }
@@ -92,7 +91,7 @@ async function plan(options: PlanOptions, ctx: ScoreVerbContext): Promise<ScoreV
   const batch = BatchSchema.safeParse(options.batch);
 
   if (!batch.success) return refused('invalid_arguments', `--batch=${options.batch ?? ''} is neither true nor false.`);
-  const planned = await planGroups({ attempt: at.attempt, subject: at.subject, scorers: at.scorers, label: options.label ?? '', batch: batch.data === 'true', demand, now: ctx.now });
+  const planned = await planGroups({ attempt: at.attempt, subject: at.subject, scorers: at.scorers, label: at.attempt.hand, batch: batch.data === 'true', demand, now: ctx.now });
 
   return planned.ok ? { ok: true, output: { groups: planned.groups.map((group) => ({ ...group })) } } : planned;
 }
