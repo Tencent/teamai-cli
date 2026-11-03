@@ -161,7 +161,7 @@ function piSettingsPath(): string {
 /**
  * Pi 1.4.0 reads models.json as `JSON.parse(stripJsonComments(stripBom(text)))`
  * (dist/core/model-config.js:140), which drops `//` comments and trailing
- * commas. It does not take `/* *\/`, which this syntax also takes.
+ * commas. It does not take block comments, which this syntax also takes.
  */
 const PI_MODELS_SYNTAX: JsonSyntax = 'jsonc';
 
