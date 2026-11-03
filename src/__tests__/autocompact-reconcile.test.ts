@@ -78,7 +78,7 @@ describe('auto-compact reconcile', () => {
     expect(Object.keys(managed)).toHaveLength(5);
   });
 
-  // CodeBuddy Code 2.179.1 reads settings.json with jsonc-parser; Claude Code refuses a comment.
+  // CodeBuddy Code 2.179.1 reads settings.json with jsonc-parser; Claude Code 2.1.316 refuses a comment.
   it('writes into a commented CodeBuddy settings.json, keeping the comment, and leaves a commented Claude one alone', async () => {
     const commented = '{\n  // the member\'s note\n  "theme": "dark",\n}\n';
     await fse.writeFile(path.join(home, '.codebuddy', 'settings.json'), commented);

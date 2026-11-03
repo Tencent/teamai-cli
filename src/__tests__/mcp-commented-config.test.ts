@@ -64,7 +64,7 @@ describe('MCP reconcile with a commented config file', () => {
     expect(Object.keys(Object(Object(servers)[key]))).toContain('team-server');
   });
 
-  it('leaves a commented Claude ~/.claude.json alone: Claude Code refuses it', async () => {
+  it('leaves a commented Claude ~/.claude.json alone: Claude Code 2.1.316 refuses it', async () => {
     const target = path.join(homeDir, '.claude.json');
     const text = '{\n  // note\n  "mcpServers": {}\n}\n';
     await fse.outputFile(target, text);

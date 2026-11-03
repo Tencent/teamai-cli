@@ -487,6 +487,8 @@ export const TOOLS = {
     },
     hooks: {
       user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude/settings.json', evidence: 'verified' }], readGates: ['claude-hooks-enabled'] },
+      // No workspace-trust gate: Claude Code 2.1.316 shows its trust dialog before SessionStart and exits on "No",
+      // and `claude -p` runs a project's hooks in an untrusted folder, so no session runs while it skips them.
       self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.claude/settings.json', when: 'workspaceUnder', evidence: 'verified' }, { base: 'project', path: '.claude/settings.local.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['claude-hooks-enabled'] },
       subagentStop: true,
       stopReply: true,
@@ -812,7 +814,7 @@ export const TOOLS = {
   joycode: {
     // JoyCode Desktop 0.6.0's dist/main.js resolves JOYCODE_HOME (default ~/.joycode) and passes it on as CODEX_HOME (#1572).
     // The JoyCode 3.8.71 IDE extension never reads it and keeps everything under os.homedir()/.joycode.
-    home: { dir: '.joycode', moves:{ by: [{ kind: 'env', name: 'JOYCODE_HOME', evidence: 'source' }] } },
+    home: { dir: '.joycode', moves: { by: [{ kind: 'env', name: 'JOYCODE_HOME', evidence: 'source' }] } },
     skillLoad: { calls: [] },
     skills: UNKNOWN_READS,
     rules: {

@@ -59,7 +59,7 @@ describe('reconcileHooks with a commented hook file', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(text);
   });
 
-  it('leaves a commented Claude settings.json as it is: Claude Code refuses it', async () => {
+  it('leaves a commented Claude settings.json as it is: Claude Code 2.1.316 refuses it', async () => {
     const file = path.join(dir, 'settings.json');
     const text = '{\n  // note\n  "hooks": {}\n}\n';
     fs.writeFileSync(file, text);
