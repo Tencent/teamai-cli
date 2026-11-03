@@ -5,6 +5,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import { ATTEMPT_ENV, RUN_DIR_ENV } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -34,6 +35,8 @@ export interface ScoreAttempt {
   instance: ScoreInstance;
   /** `$TEAMAI_RUN_DIR/<attempt>`: the attempt's own directory, which no parallel item shares. */
   dir: string;
+  /** The instance's `label` input, a hand label; '' for none. */
+  hand: string;
 }
 
 export type ScoreAttemptRead = { ok: true; attempt: ScoreAttempt } | { ok: false; code: 'score_attempt_required'; message: string };
@@ -103,9 +106,11 @@ export const ScoreAttempt = {
 
     if (!instance) return refused(verb, `step ${leased.id} of run ${run.id} is not inside a ${SCORE_WORKFLOW} instance`);
 
+    const inputs = inputsAt(run, instance.prefix);
+
     return {
       ok: true,
-      attempt: { config, run, attempt: attemptId.data, step: leased.id, instance: { ...instance, inputs: inputsAt(run, instance.prefix) }, dir: path.join(runDir, attemptId.data) },
+      attempt: { config, run, attempt: attemptId.data, step: leased.id, instance: { ...instance, inputs }, dir: path.join(runDir, attemptId.data), hand: z.string().catch('').parse(inputs.label) },
     };
   },
 

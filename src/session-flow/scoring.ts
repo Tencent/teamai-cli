@@ -139,7 +139,7 @@ async function scopeOf(config: LocalConfig, platform: string, session: Session):
  * The session a scoring names, read redacted, and the scope its labels are kept in. A pushed one names the member who
  * pushed it, and has no captures here.
  */
-interface NamedSession {
+export interface NamedSession {
   platform: string;
   found: { session: Session; subagents?: SubagentsRead };
   config: LocalConfig;
@@ -175,7 +175,7 @@ async function nativeSession(from: LocalConfig, demand: SessionDemand): Promise<
  * that holds the name. Its subject is its origin, so its labels pair with those of the same session scored where it ran.
  * It is redacted as `AgentSession.find` redacts a session.
  */
-async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<NamedSession | Failure> {
+export async function pushedSession(config: LocalConfig, { name, author }: TeamSession): Promise<NamedSession | Failure> {
   let archives: Awaited<ReturnType<typeof sessionArchives>>;
 
   try {

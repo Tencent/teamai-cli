@@ -17,7 +17,11 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
-import { ScoreVerbs, type ScoreVerbContext } from '../score-verbs.js';
+import { ScoreVerbs, type ScoreVerbAnswer, type ScoreVerbContext } from '../score-verbs.js';
+import { evidenceHash } from '../scorers/scoring-evidence.js';
+import { encodeCwdClaude } from '../session-flow/fs.js';
+import { nextJudgeLease } from '../workflow/scoring.js';
+import { runScratchDir } from '../workflow/store.js';
 
 const external: DriverIdentity = { kind: 'external', machine: 'm1', workspace: '/w' };
 const NOW = '2026-11-03T10:00:00.000Z';
@@ -160,11 +164,22 @@ async function team(workflows: Record<string, string>, scorers: Record<string, s
 
 const LeaseSchema = z.object({ attempt: z.string(), revision: z.number(), step: z.string() });
 
-/** A run of `review` whose one pass succeeded, as a driver reports it. */
-async function reviewedRun(config: LocalConfig): Promise<string> {
+/** A Claude session `sessionId` in `cwd`, with one prompt. */
+function plantSession(cwd: string, sessionId: string, text: string): void {
+  const project = path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(cwd));
+  fs.mkdirSync(project, { recursive: true });
+  const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
+  fs.writeFileSync(path.join(project, `${sessionId}.jsonl`),
+    line({ type: 'user', uuid: 'u1', parentUuid: null, cwd, timestamp: '2026-11-03T09:00:00.000Z', message: { role: 'user', content: text } })
+    + line({ type: 'assistant', uuid: 'u2', parentUuid: 'u1', cwd, timestamp: '2026-11-03T09:00:01.000Z', message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: 'Reviewed.' }] } }));
+}
+
+/** A run of `review` whose one pass succeeded in session `session-review`, as a driver reports it. */
+async function reviewedRun(config: LocalConfig, session = 'session-review'): Promise<string> {
   const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
   const lease = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
-  data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, tool: 'claude' }));
+  if (session === 'session-review') plantSession(config.projectRoot ?? '', session, 'Review the change.');
+  data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, tool: 'claude', session }));
   return runId;
 }
 
@@ -186,10 +201,18 @@ async function deliveredRun(config: LocalConfig): Promise<string> {
   return runId;
 }
 
+interface Taken {
+  ctx: ScoreVerbContext;
+  attempt: string;
+  revision: number;
+}
+
 interface ScoreRun {
   runId: string;
   /** The context of the attempt the engine leased next, for the step `step`. */
-  next(step: string): Promise<{ ctx: ScoreVerbContext; attempt: string; revision: number }>;
+  next(step: string): Promise<Taken>;
+  /** Reports what a verb answered as the attempt's outputs, or its failure. */
+  report(taken: Taken, answer: ScoreVerbAnswer): Promise<void>;
 }
 
 /** A teamai-score run of `inputs`, started by `startedBy`, whose leases a test takes one by one. */
@@ -201,6 +224,11 @@ async function scoreRun(config: LocalConfig, inputs: Record<string, unknown>, st
       const lease = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
       expect(lease.step).toBe(step);
       return { ctx: { env: attemptEnv(config, runId, lease.attempt, 'unattended'), current: config, now: NOW }, attempt: lease.attempt, revision: lease.revision };
+    },
+    async report({ attempt, revision }, answer) {
+      data(await reportAttempt(config, runId, answer.ok
+        ? { attempt, revision, outcome: 'success', driver: external, outputs: answer.output }
+        : { attempt, revision, outcome: 'failed', driver: external, failure: { code: 'command_failed', message: answer.message } }));
     },
   };
 }
@@ -287,5 +315,46 @@ describe('score plan', () => {
     expect(await ScoreVerbs.plan(options, byPerson)).toEqual({ ok: true, output: { groups: [{ subject, hand: 'good', scorers: 'quality', model: '', ci: false, protected: false }] } });
     expect(await ScoreVerbs.plan({ ...options, label: 'great' }, byPerson)).toEqual({ ok: false, code: 'label_invalid', message: '"great" is not a label of scorer quality. Use one of: good, bad.' });
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'marks.jsonl'))).toBe(false);
+  });
+});
+
+/** Plans `subject` in a new teamai-score run, reports the plan, and leases the first group's evidence step. */
+async function plannedGroup(config: LocalConfig, subject: string, inputs: Record<string, unknown> = {}, startedBy: StartedBy = 'cli'): Promise<{ run: ScoreRun; evidence: Taken; scorers: string }> {
+  const run = await scoreRun(config, { subject, ...inputs }, startedBy);
+  const plan = await run.next('plan');
+  const planned = await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), label: String(inputs.label ?? ''), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, plan.ctx);
+  await run.report(plan, planned);
+  const groups = z.object({ groups: z.array(z.object({ scorers: z.string() })) }).parse(planned.ok ? planned.output : {});
+  return { run, evidence: await run.next('score[0].evidence'), scorers: groups.groups[0]?.scorers ?? '' };
+}
+
+describe('score evidence', () => {
+  it('writes the evidence of a pass into the attempt\'s own directory, hashed as the judge lease of main hashes it', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer({ extra: 'isolation: verified\n' }) });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['coverage'] });
+    const dir = path.join(runScratchDir(config, run.runId), evidence.attempt);
+
+    expect(await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx)).toEqual({ ok: true, output: {
+      dir, rubric: expect.stringContaining('Judge the work.'), schema: path.join(dir, 'answer.schema.json'), delivers: false,
+    } });
+    const lease = z.object({ evidence: z.string() }).parse(data(await nextJudgeLease(config, { driver: external, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).lease);
+    expect(await evidenceHash(dir)).toBe(await evidenceHash(lease.evidence));
+    expect(await evidenceHash(dir)).toMatch(/^sha256:/);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'confined.json'), 'utf8'))).toEqual({
+      level: 'verified', prefer: 'claude',
+      schema: { type: 'object', properties: { answer: JSON.parse(fs.readFileSync(path.join(dir, 'answer.schema.json'), 'utf8')) }, required: ['answer'], additionalProperties: false },
+    });
+  });
+
+  it('refuses with evidence_missing when a session the pass recorded is gone, and writes no evidence', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config, 'session-gone');
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject);
+
+    expect(await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx)).toMatchObject({ ok: false, code: 'evidence_missing', message: expect.stringContaining('session-gone') });
+    expect(fs.existsSync(path.join(runScratchDir(config, run.runId), evidence.attempt))).toBe(false);
   });
 });

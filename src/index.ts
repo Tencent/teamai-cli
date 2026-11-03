@@ -6,7 +6,7 @@ import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
-import type { PlanOptions } from './score-verbs.js';
+import type { EvidenceOptions, PlanOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -1053,6 +1053,16 @@ scoreCmd
   .action(async (_cmdOpts, command: Command) => {
     const { scoreVerbCommand } = await import('./score-verbs.js');
     await scoreVerbCommand('plan', command.optsWithGlobals<PlanOptions>());
+  });
+
+scoreCmd
+  .command('evidence')
+  .description('A step of a teamai-score run: write the evidence of one group into $TEAMAI_RUN_DIR/<attempt>/: the redacted transcript and diff, evidence.json, the rubric prompt, the answer schema, and confined.json with the isolation level the team, the scorers and this machine require and the tool that ran the work. Prints {"dir","rubric","schema","delivers"}. A hand label only resolves the subject. Fails evidence_missing when a commit or session the pass recorded is gone, evidence_empty when nothing of it was kept.')
+  .option('--subject <subject>', 'The group\'s subject, as plan printed it')
+  .option('--scorers <names>', 'The group\'s scorers, joined by , as plan printed them')
+  .action(async (_cmdOpts, command: Command) => {
+    const { scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand('evidence', command.optsWithGlobals<EvidenceOptions>());
   });
 
 // ─── Hooks commands ─────────────────────────────────────

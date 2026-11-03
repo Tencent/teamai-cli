@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { autoDetectInit } from './config.js';
+import { EvidenceDir } from './scorers/evidence-dir.js';
 import { DEMANDS } from './scorers/marks.js';
 import { ScoreAttempt } from './scorers/score-attempt.js';
 import { planGroups } from './scorers/score-plan.js';
@@ -71,7 +72,27 @@ async function plan(options: PlanOptions, ctx: ScoreVerbContext): Promise<ScoreV
   return planned.ok ? { ok: true, output: { groups: planned.groups.map((group) => ({ ...group })) } } : planned;
 }
 
-export const ScoreVerbs = { plan } as const;
+export interface EvidenceOptions {
+  subject?: string;
+  scorers?: string;
+}
+
+async function evidence(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const read = await ScoreAttempt.read('evidence', ctx.env, ctx.current);
+
+  if (!read.ok) return read;
+  const subject = Subject.parse(options.subject ?? '');
+
+  if (!subject.ok) return subject;
+  const scorers = scorersOf(options.scorers);
+
+  if (!scorers) return refused('invalid_arguments', `--scorers ${options.scorers ?? ''} is neither a JSON array of scorer names nor names joined by ",".`);
+  const written = await EvidenceDir.write(read.attempt, { subject: subject.subject, scorers, hand: read.attempt.hand !== '' });
+
+  return written.ok ? { ok: true, output: { ...written.output } } : written;
+}
+
+export const ScoreVerbs = { plan, evidence } as const;
 
 export type ScoreVerb = keyof typeof ScoreVerbs;
 

@@ -76,8 +76,6 @@ function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
 
-const ROUTING = 'teamai:routing:';
-
 /** What the store needs of a run: whether it ended, and when it last changed; a run gone reads as undefined. */
 export function markFacts(config: LocalConfig, now: string): MarkFacts {
   return {
@@ -189,7 +187,7 @@ async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[
     }
 
     const { tool, model, by, noModel } = chosen.choice;
-    const shared = !judged.alone(candidate) && (batch || candidate.name.startsWith(ROUTING));
+    const shared = batch && !judged.alone(candidate);
     const key = shared ? canonicalJson({ tool, model: model ?? null, by, noModel: noModel ?? null, stages: judged.stagesOf(candidate) }) : `${candidate.name}\n`;
     groups.set(key, [...groups.get(key) ?? [], candidate]);
   }
