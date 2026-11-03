@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import { workflowGitConformanceScenarios, type GitConformanceName } from '../wor
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
@@ -43,6 +44,15 @@ function valueOf(run: RunState, name: GitConformanceName): string {
   const changes = changesOf(run, id);
   return field === 'commit' ? changes.to : changes.branch;
 }
+
+/** The scenario's agent: it runs a prompt as a shell command in the step's place. */
+const promptAsCommand: LocalToolAdapter = {
+  run: async (_tool, input) => {
+    const ran = spawnSync(input.prompt, { shell: true, cwd: input.cwd });
+    return { started: true, exitCode: ran.status ?? 1 };
+  },
+  runInteractive: async () => ({ started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'no scenario is interactive' } }),
+};
 
 function asWord(value: string): RegExp {
   return new RegExp(`(^|[^\\w/.-])${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\w/-])`);
@@ -90,7 +100,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         additionalRoles: [],
         projectRoot,
         dataHome: path.join(root, `data-${name}`),
-        workflows: { tools: {}, max_parallel: 1 },
+        workflows: { tools: { default: 'claude' }, max_parallel: 1 },
       });
       const config = install('tester', checkout, knowledge);
       await syncWorkflowDefinitions(config);
@@ -131,7 +141,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         fs.chmodSync(hook, 0o755);
       }
 
-      if (profile === 'local') await runLocalDriver(config, runId, checkout);
+      if (profile === 'local') await runLocalDriver(config, runId, checkout, { adapter: promptAsCommand });
       else {
         const client = inProcessConformanceClient(inProcessClient({ config, env: await resolveWorkflowEnv(config) }));
         const driver = { ...profileDriver(profile), workspace: checkout };

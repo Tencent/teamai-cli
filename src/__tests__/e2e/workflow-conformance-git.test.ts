@@ -75,12 +75,29 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
       git(knowledge, 'commit', '-qm', 'team');
       git(root, 'clone', '-q', '--bare', knowledge, team);
 
+      // The scenario's agent: it runs the prompt, up to the result instruction the driver appends, as a shell command.
+      const bin = path.join(root, 'bin');
+      const claude = path.join(bin, 'claude');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(claude, `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+const ran = spawnSync(String(args[args.indexOf('-p') + 1]).split('\\n\\n')[0], { shell: true, stdio: 'ignore' });
+process.stdout.write(JSON.stringify({ type: 'result', result: '' }) + '\\n');
+process.exit(ran.status ?? 1);
+`);
+      fs.chmodSync(claude, 0o755);
+      if (process.platform === 'win32') {
+        fs.copyFileSync(claude, `${claude}.cjs`);
+        fs.writeFileSync(`${claude}.cmd`, `@echo off\r\n"${process.execPath}" "${claude}.cjs" %*\r\n`);
+      }
+
       // An install is a HOME with teamai initialized against the team origin, which git maps from the forge URL init needs.
       const install = async (name: string): Promise<NodeJS.ProcessEnv> => {
         const home = path.join(root, name);
         fs.mkdirSync(home);
         fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = ${name}\n\temail = ${name}@example.com\n[url "file://${team}"]\n\tinsteadOf = ${TEAM_URL}\n`);
-        const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig') };
+        const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
         for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'], ['pull']]) {
           const result = await runCLI(command, root, env);
           expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -126,7 +143,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
 
       // A handoff run is not on this install yet: resume, or the first next, claims it before it drives.
       if (profile === 'local') {
-        const resumed = await runCLI(['workflow', 'resume', runId], checkout, tester);
+        const resumed = await runCLI(['workflow', 'resume', runId, '--tools', 'default=claude'], checkout, tester);
         expect(envelope(resumed.stdout), resumed.stderr).toMatchObject({ data: { done: { run: runId } } });
         const merge = scenario.expectMergeBranch?.replace('<run>', runId);
         if (merge) expect(resumed.stderr).toContain(`Run ${runId} left its changes on branch ${merge}. Bring them in with: git merge ${merge}`);

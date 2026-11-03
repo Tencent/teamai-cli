@@ -10,7 +10,7 @@ export type GitConformanceName = 'base.commit' | 'base.ref' | `steps.${string}.c
  * driver of that machine then runs the `elsewhere` steps through `next` and `report`, the driver under test drives the
  * run from its checkout until it ends, and the runner checks the persisted run and origin. With `handoff`, the other
  * machine has an install of its own: it starts the run there and publishes it after its steps, and the driver under
- * test claims the run before it drives it.
+ * test claims the run before it drives it. A prompt is a shell command: the scenario's agent runs it in the step's place.
  */
 export interface GitConformanceScenario {
   name: string;
@@ -129,7 +129,8 @@ steps:
 
 /**
  * `review-and-fix` reviews, fixes what the review finds, and reviews again, in one copy: the second review sees the
- * fix, and passes. It runs on its own, in a copy the run opens, or in the copy of the step that runs it.
+ * fix, and passes. It runs on its own, in a copy the run opens, or in the copy of the step that runs it. `fix` is a
+ * prompt with no `workspace`, so it continues whichever copy that is.
  */
 const REVIEW_AND_FIX = `schemaVersion: v1alpha1
 name: review-and-fix
@@ -145,8 +146,7 @@ steps:
   - id: fix
     needs: [review]
     if: steps.review.outputs.verdict == 'fix'
-    workspace: continue
-    command: node -e "require('fs').writeFileSync('fixed.txt', 'F')"
+    prompt: node -e "require('fs').writeFileSync('fixed.txt', 'F')"
     loop: { back_to: review, max_iterations: 2 }
 `;
 
