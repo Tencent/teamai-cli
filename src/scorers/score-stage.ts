@@ -105,7 +105,8 @@ export const ScoreStage = {
       case 'check': {
         // Plan keeps a scorer with a check alone in its group on a delivered pass.
         const checked = rubrics.find((definition) => definition.check !== undefined);
-        const expiresAt = new Date(Date.parse(now) + CHECK_TIMEOUT_MS).toISOString();
+        // A deadline for a process this machine runs: the wall clock's, never the verb's `now`, which records use.
+        const expiresAt = new Date(Date.now() + CHECK_TIMEOUT_MS).toISOString();
 
         record = checked?.check ? await checkStage(run, subject, pass, { scorer: checked.name, check: checked.check, expiresAt }) : { kind: 'judge' };
         break;
