@@ -836,8 +836,27 @@ describe('teamai score of a subject the person names', () => {
     ['a pushed session and a session here', { teamSession: 'retries', session: SESSION, scorer: ['quality'] }, 'invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.'],
     ['a pushed session and a source', { teamSession: 'retries', source: 'claude-code', scorer: ['quality'] }, 'invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.'],
     ['an author with no pushed session', { author: 'alice', scorer: ['quality'] }, 'invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.'],
+    ['--batch with no scorer, which asks for a session', { batch: true }, 'invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]'],
+    ['a run and a session at once', { run: 'r1', session: SESSION, scorer: ['quality'] }, 'invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both'],
+    ['--push with a scorer file', { push: true, scorer: ['./draft.md'] }, 'invalid_arguments', '--push publishes stored labels, and the label of the scorer file ./draft.md is never stored. Leave out --push to try the file'],
+    ['no subject', {}, 'invalid_arguments', 'Pass --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels'],
+    ['--driver with no subject', { driver: 'none' }, 'invalid_arguments', '--driver picks who drives the teamai-score run that --run, --session or --team-session starts. Pass one of them.'],
   ])('refuses %s, and says what to pass', async (_case, options, code, message) => {
     expect(await scored(options)).toEqual({ envelope: { error: { code, message } }, code: 1 });
+  });
+
+  it('refuses --driver for a scorer file, which is judged here without a teamai-score run', async () => {
+    await team();
+
+    expect(await scored({ scorer: ['./draft.md'], driver: 'none' })).toEqual({ envelope: { error: {
+      code: 'invalid_arguments', message: '--driver picks who drives a teamai-score run, and a scorer file is judged here without one. Leave out --driver.',
+    } }, code: 1 });
+  });
+
+  it('publishes with --push alone, with nothing pending', async () => {
+    await team();
+
+    expect(await scored({ push: true })).toEqual({ envelope: { data: { published: true } }, code: 0 });
   });
 
   it('names, in an agent session, the teamai score of a session the person runs and what the agent runs', async () => {
