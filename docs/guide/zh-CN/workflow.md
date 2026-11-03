@@ -219,6 +219,15 @@ $ teamai workflow start build --driver local
 ℹ Retry it with teamai workflow retry re907e4818f6db47b test, then continue the run with teamai workflow resume re907e4818f6db47b
 ```
 
+整个运行的限制（例如它的 `timeout` 或 `budget`）不会让某个步骤失败。这时 stderr 会说明运行为什么失败，并给出限制在运行中停下的每个步骤的重试命令：
+
+```text
+$ teamai workflow start nightly-small --driver local --tools default=claude
+ℹ Run rdcfd8a2eb4ffe5ca started. If it stops before it ends, continue it with: teamai workflow resume rdcfd8a2eb4ffe5ca
+{"data":{"done":{"run":"rdcfd8a2eb4ffe5ca","outcome":"failed","failure":{"code":"budget_exceeded","message":"workflow \"nightly-small\" spent 350 of its 300-token budget"}},"cancelled":[]}}
+✖ Run rdcfd8a2eb4ffe5ca failed with budget_exceeded: workflow "nightly-small" spent 350 of its 300-token budget
+```
+
 等待 HITL 请求用 `workflow respond <run> <step> <choice>` 回答，失败或卡住的步骤用 `workflow retry <run> <step>` 重试，`workflow cancel <run> [step]` 停止工作，`workflow resume <run>` 继续本地执行，`workflow publish <run>` 让另一台机器接着运行（见[在另一台机器上继续运行](#在另一台机器上继续运行)）。next 返回 lease、hitl、wait 或 done。参见[HITL](workflow-advanced.md#hitl人在回路中)和[重试、取消和继续运行](workflow-advanced.md#重试取消和继续运行)。本地运行以 failed 或 cancelled 结束时退出码为 1。结束运行的操作在锁内排队写入结束记录，在释放锁后发布；重试后仍更新同一路径。回答记录只发布 choice、channel 和 agent，备注、回答时间和回答驱动身份只保存在本地。
 
 ## 工作区
@@ -456,6 +465,12 @@ teamai workflow resume <run>      # 在另一台机器上，位于同一个仓�
 
 `publish` 把运行状态写到团队的 `teamai-reports` 分支，并让本安装实例成为该运行的所有者。先停止驱动，让没有步骤在执行。发布时仍处于租约中的步骤会在另一台机器上重新运行。按 Ctrl-C 后，正在执行的步骤写下的内容会留在本机该步骤的工作树里，另一台机器仍然可以认领这个运行。之后你在运行仍在进行时把它接管回本机，认领会让本安装实例成为所有者，但 `resume` 会返回 `branch_diverged` 并指出那个工作树。把这些改动移到别处或删除，再执行 `resume`。在没有这个运行的机器上，`resume` 从 `teamai-reports` 取得它，让该安装实例成为所有者，并用本地驱动运行它。
 
+另一台机器不会带上运行启动时的 `--tools`、`--auto-approve` 或 `--sandbox`：它们描述的是启动它的机器和人。在那里传入合适的参数：
+
+```text
+teamai workflow resume <run> --tools default=claude --sandbox     # 装有 claude、跑在容器里的 CI runner
+```
+
 已发布的运行只有所有者能继续。在另一个已有该运行的安装实例上，`resume` 和 `publish` 都返回 `not_owner`，带上所有者的用户名和安装实例 id。同一成员的两个安装实例显示相同的用户名，靠安装实例 id 区分。要接管这个运行，执行 `teamai workflow resume <run> --claim`。认领会替换本机的运行副本，并释放其他机器持有的租约。此后原所有者不能再发布或继续这个运行，除非它再认领回来。
 
 要在编程会话中继续这个运行，由 agent 执行 `teamai workflow resume <run> --driver skill`，加 `--claim` 则从所有者那里接管。它以同样的方式认领运行，然后在会话的运行模式下用 skill 驱动运行它，选项与 skill 启动相同：`--parallel`、`--hitl` 或 `--auto-approve`，以及 `--no-judge`。不带这些选项时，一次只运行一个步骤，agent 在回答可选关卡前会先问你。在无人值守的运行中，它像 `--auto-approve` 那样回答可选关卡，并在认领之前拒绝剩余步骤需要人参与的运行（`unattended_denied`）；已经执行过的审批或交互步骤不再计入，除非循环可能再次执行它。已经结束的运行不需要任何人，所以从不因此被拒绝。无人值守的运行中会拒绝 `--hitl person`（`invalid_arguments`）：没有人会回答。它的第一个回合在工作流有 prompt 步骤或由会话评审时提出宿主问题，并重新派发另一台机器持有租约的步骤。必须用本地驱动运行的工作流会以 `teamai workflow resume <run>` 交还给你。接管运行由你决定，所以 agent 执行这两条命令前都会先问你。
@@ -562,6 +577,7 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 | 剩余的某个步骤有必需审批、是 `interactive`，或是没有默认值的选择 | 跳过：列为 `needs a person` | 在终端中接手；没有终端（如 cron）时跳过 |
 | 剩余的某个步骤要求的 env 在本机没有值 | 跳过：列为 `cannot run here` | 跳过 |
 | 剩余的某个提示词步骤在本机没有工具：`--tools`、`workflows.tools` 和你的 AI 工具都没有指定，或指定的工具不在 `PATH` 上 | 跳过：列为 `cannot run here` | 跳过 |
+| 剩余的某个步骤需要沙箱（`requires: { isolation: sandbox, strict: true }`），而本机既没有传 `--sandbox` 也没有设置 `workflows.sandbox` | 跳过：列为 `cannot run here` | 跳过 |
 | 你从本安装实例发布了它 | 跳过 | 跳过 |
 | 它在另一个业务仓库中工作 | 跳过 | 跳过 |
 | 另一个运行器刚刚抢先认领了它 | 接手下一个 | 接手下一个 |

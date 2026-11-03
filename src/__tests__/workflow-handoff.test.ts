@@ -446,6 +446,21 @@ describe('workflow handoff through teamai-reports', () => {
     });
   });
 
+  it('leaves the flags a run was driven with on the install that gave them: a claim starts without them, and taking it back keeps them', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await start(alice);
+    const flags = { tools: { default: 'claude' }, autoApprove: true, sandbox: true } as const;
+    expect(await runLocalDriver(alice.config, runId, alice.checkout, { hitl: false, ...flags })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+    expect(await readRun(bob.config, runId)).not.toHaveProperty('driveOptions');
+    expect(await claimRun(alice.config, runId, { checkout: alice.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    expect(await readRun(alice.config, runId)).toMatchObject({ driveOptions: flags });
+  });
+
   it('names the owner by the team username, as the run records do', async () => {
     const acme = team();
     const alice = await acme.member('alice');
@@ -2804,8 +2819,8 @@ steps:
 `;
 
   /** A process that runs teamai in a CI job, with no agent session: unattended unless `mode` says otherwise. */
-  function runnerTaker(mode: 'attended' | 'unattended' = 'unattended') {
-    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const, tools: {}, hasPerson: false };
+  function runnerTaker(mode: 'attended' | 'unattended' = 'unattended', { sandbox = false } = {}) {
+    return { caller: { evidence: { kind: 'none' as const }, confirmed: false, mode }, driver: 'local' as const, tools: {}, sandbox, hasPerson: false };
   }
 
   /** What `member` reads of teamai-reports after a pull. */
@@ -2897,6 +2912,53 @@ steps:
     }]);
     const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'attended' as const }, driver: 'skill' as const, hasPerson: true };
     expect((await publishedRuns(runner, skill))[0]?.offer?.lacks).toEqual([]);
+  });
+
+  it('lists an offered run whose steps left need a sandbox as lacking --sandbox on a machine that does not declare one, which no runner there takes', async () => {
+    const acme = team({ sealed: `schemaVersion: v1alpha1
+name: sealed
+description: A build that runs only on a sandbox.
+steps:
+  - id: build
+    requires: { isolation: sandbox, strict: true }
+    command: echo build
+` });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'sealed', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    const self = (await installOwner(runner.config)).id;
+
+    const runs = await publishedRuns(runner);
+    expect(runs[0]?.offer?.lacks).toEqual([{
+      reason: 'build needs a sandbox, which this machine does not declare',
+      fix: 'pass --sandbox on a disposable host, such as a CI runner or a container, or set workflows.sandbox: true',
+    }]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self })).toEqual([]);
+    expect((await publishedRuns(runner, runnerTaker('unattended', { sandbox: true })))[0]?.offer?.lacks).toEqual([]);
+  });
+
+  it('names one --tools default=<tool> for every prompt step left with no tool configured here, whichever agent each runs', async () => {
+    vi.stubEnv('TEAMAI_AI_TOOL', '');
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const acme = team({ docs: `${DOCS}    agent: writer
+  - id: review
+    needs: [notes]
+    agent: reviewer
+    prompt: Review the release notes.
+` });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'docs', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect((await publishedRuns(runner))[0]?.offer?.lacks).toEqual([{
+      reason: 'no tool is configured here for the prompt steps notes and review', fix: 'pass --tools default=<tool>, or set workflows.tools.default',
+    }]);
   });
 
   it('lets a runner with no agent session take an offered run of an invoke: deny workflow, and refuses it to the skill driver', async () => {
