@@ -19,7 +19,7 @@ import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { cancelRun } from '../workflow/run-controls.js';
 import { openJudgeEntries } from '../workflow/scoring.js';
-import { readRun, RunIdSchema, runsDir } from '../workflow/store.js';
+import { readRun, runFilePath, RunIdSchema, runsDir } from '../workflow/store.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
 
 const skill: DriverIdentity = { kind: 'skill', machine: 'm1', workspace: '/w' };
@@ -167,6 +167,41 @@ describe('PassScoring.start', () => {
     const own = await team(review('{ names: [quality], start: workflow }'));
     await reviewedRun(own);
     expect(await openJudgeEntries(own, new Date().toISOString())).toBe(0);
+  });
+});
+
+/** Ends run `runId` and dates its last change, and its start keys, 15 days ago: past the 14 days a mark lasts. */
+async function agedRun(config: LocalConfig, runId: string): Promise<void> {
+  data(await leaseNext(config, runId, skill));
+  const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+  const file = runFilePath(config, runId);
+  fs.writeFileSync(file, JSON.stringify({ ...z.record(z.string(), z.unknown()).parse(JSON.parse(fs.readFileSync(file, 'utf8'))), updatedAt: old.toISOString() }));
+  const keys = path.join(scoresDir(config), 'started', runId);
+  if (fs.existsSync(keys)) fs.utimesSync(keys, old, old);
+}
+
+describe('PassScoring.start past the 14 days a mark lasts', () => {
+  it('starts nothing for a run that ended more than 14 days ago', async () => {
+    const config = await team(review('[quality]'));
+    const runId = await reviewedRun(config);
+    await agedRun(config, runId);
+
+    expect(await start(config, runId)).toEqual({ runs: [], refused: [] });
+    expect(await scoreRuns(config)).toEqual([]);
+  });
+
+  it('removes the start keys of a run that ended more than 14 days ago, and of a run that is gone, and keeps a recent run\'s', async () => {
+    const config = await team(review('[quality]'));
+    const [ended, gone, recent] = [await reviewedRun(config), await reviewedRun(config), await reviewedRun(config)];
+    for (const runId of [ended, gone]) await start(config, runId);
+    await agedRun(config, ended);
+    await agedRun(config, gone);
+    fs.rmSync(runFilePath(config, gone));
+
+    await start(config, recent);
+
+    const started = (runId: string) => PassScoring.started(config, { runId, step: 'review', pass: 1 });
+    expect([await started(ended), await started(gone), await started(recent)]).toEqual([false, false, true]);
   });
 });
 

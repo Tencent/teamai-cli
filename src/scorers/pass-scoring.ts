@@ -2,7 +2,7 @@
  * The scoring of a run's passes that the driver of the run starts: one root `teamai-score` run per settled pass of a
  * scored step this install judges, as the session-start hook starts one per finished session. A start key per pass,
  * made by an exclusive create under `<dataHome>/scores/started/<run>/`, keeps a retried settle or a second process
- * from starting a pass twice.
+ * from starting a pass twice. A run that ended more than the 14 days a mark lasts ago starts nothing, so its keys go.
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -10,7 +10,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
-import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
+import { getFileMtime, listDirs, readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import { stepDefinitions } from '../workflow/scope.js';
@@ -18,6 +18,7 @@ import { installOwner, readRun, RunIdSchema, type RunId } from '../workflow/stor
 import type { DriverIdentity, RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { scoresDir } from './home.js';
 import type { RunSubject } from './label.js';
+import { MARK_WINDOW_MS } from './marks.js';
 import { Subject } from './subject.js';
 
 /** What a start did: the `teamai-score` runs of the run's passes still to drive, and the passes whose start was refused. */
@@ -86,6 +87,26 @@ async function startable(config: LocalConfig, run: RunState): Promise<ScorablePa
   });
 }
 
+/** Whether `run` ended and last changed longer ago than a mark lasts, so none of its passes is scored again. */
+function isPastScoring(run: RunState, now: number): boolean {
+  return run.status !== 'running' && Date.parse(run.updatedAt) + MARK_WINDOW_MS <= now;
+}
+
+/** Removes the start keys of each run that is gone or past scoring; a run's keys untouched for 14 days are the only ones read. */
+async function prune(config: LocalConfig, now: number): Promise<void> {
+  const dir = path.join(scoresDir(config), 'started');
+
+  for (const name of await listDirs(dir)) {
+    const runId = RunIdSchema.safeParse(name);
+    const keys = path.join(dir, name);
+
+    if (!runId.success || await getFileMtime(keys) + MARK_WINDOW_MS > now) continue;
+    const run = await readRun(config, runId.data);
+
+    if (run === 'missing' || (run !== 'corrupt' && isPastScoring(run, now))) await fs.rm(keys, { recursive: true, force: true });
+  }
+}
+
 async function isRunning(config: LocalConfig, runId: RunId): Promise<boolean> {
   const run = await readRun(config, runId);
 
@@ -97,13 +118,16 @@ export const PassScoring = {
    * Starts a root `teamai-score` run, as the CLI's own start with no agent evidence, for each settled scored pass of
    * `runId` that no call started yet, recorded for the scored run's driver and from its checkout, so that driver drives
    * it as its own, its commands in the same checkout. Answers
-   * those runs and the ones an earlier call started that have not ended, which the caller drives.
+   * those runs and the ones an earlier call started that have not ended, which the caller drives. Removes the start keys
+   * of every run that is gone or ended more than 14 days ago first.
    */
   async start(config: LocalConfig, runId: string, { client, mode }: { client: Pick<WorkflowClient, 'start'>; mode: RunMode }): Promise<PassStarts> {
+    const now = Date.now();
+    await prune(config, now);
     const run = await readRun(config, runId);
     const starts: PassStarts = { runs: [], refused: [] };
 
-    if (run === 'missing' || run === 'corrupt') return starts;
+    if (run === 'missing' || run === 'corrupt' || isPastScoring(run, now)) return starts;
     const driver: DriverIdentity | undefined = run.driver;
 
     for (const { subject, scorers } of await startable(config, run)) {
