@@ -7,7 +7,7 @@ import {
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
 } from './types.js';
-import { INVOKE_VALUES, STEP_ACTIONS, stepWorkflow } from './types.js';
+import { INVOKE_VALUES, SCORING_STARTS, STEP_ACTIONS, stepWorkflow } from './types.js';
 import {
   isYamlNode, locate, position, scalarOf, scalarString, scalarText, unknownKey, valueNode, unavailableField, undeclaredField, undeclaredOutput,
   type Child, type GraphNode, type ParseContext, type WorkflowFiles,
@@ -1556,12 +1556,13 @@ function parseDefaultScorers(node: Node | undefined, ctx: ParseContext): { batch
   return batch === undefined ? undefined : { batch };
 }
 
-/** A step's `scorers`: a list of names, or `{ names, batch, sampling }`. */
+/** A step's `scorers`: a list of names, or `{ names, batch, sampling, start }`. */
 function parseScorers(node: Node | null | undefined, field: string, ctx: ParseContext): StepScorers | undefined {
   const { file, lineCounter, diagnostics } = ctx;
   let list: Node | null | undefined = node;
   let batch: boolean | undefined;
   let sampling: 'all' | undefined;
+  let start: StepScorers['start'];
 
   if (isMap(node)) {
     list = undefined;
@@ -1573,6 +1574,7 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
       if (key === 'names') list = valueNode(node, 'names');
       else if (key === 'batch') batch = parseBatch(valueNode(node, 'batch'), `${field}.batch`, ctx);
       else if (key === 'sampling') sampling = parseSampling(valueNode(node, 'sampling'), `${field}.sampling`, ctx);
+      else if (key === 'start') start = parseScoringStart(valueNode(node, 'start'), `${field}.start`, ctx);
       else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `${field}.${key ?? 'key'}`, key ?? 'key'));
     }
   }
@@ -1603,7 +1605,17 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
 
   if (sampling) scorers.sampling = sampling;
 
+  if (start) scorers.start = start;
+
   return scorers;
+}
+
+function parseScoringStart(node: Node | undefined, field: string, ctx: ParseContext): StepScorers['start'] {
+  const start = isScalar(node) ? SCORING_STARTS.find((value) => value === node.value) : undefined;
+
+  if (start === undefined) ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, 'start must be auto, where teamai starts the scoring of each pass, or workflow, where the workflow\'s own steps score them'));
+
+  return start;
 }
 
 function parseSampling(node: Node | undefined, field: string, ctx: ParseContext): 'all' | undefined {

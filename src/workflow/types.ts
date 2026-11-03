@@ -296,7 +296,13 @@ export interface StepScorers {
    * and an entry still open when its steps end is frozen unscored in `run.verdicts`.
    */
   sampling?: 'all';
+  /** Who starts the scoring of the step's passes: teamai after each pass (`auto`), or the workflow's own steps (`workflow`). */
+  start?: ScoringStart;
 }
+
+export const SCORING_STARTS = ['auto', 'workflow'] as const;
+
+export type ScoringStart = (typeof SCORING_STARTS)[number];
 
 /**
  * Who started a run: a person, from a process with no agent evidence; an agent session; or one of the CLI's own automatic

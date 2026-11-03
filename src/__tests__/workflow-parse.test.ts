@@ -1701,6 +1701,41 @@ steps:
     ]);
   });
 
+  it('reads who starts the scoring of a step\'s passes, start: auto or workflow, and refuses any other start', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: fix
+    prompt: Fix it.
+    scorers: { names: [quality], sampling: all, start: workflow }
+  - id: review
+    needs: [fix]
+    prompt: Review it.
+    scorers: { names: [quality], start: auto }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.scorers)).toEqual([
+      { names: ['quality'], sampling: 'all', start: 'workflow' },
+      { names: ['quality'], start: 'auto' },
+    ]);
+
+    const refused = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: fix
+    prompt: Fix it.
+    scorers: { names: [quality], start: later }
+`);
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].scorers.start": start must be auto, where teamai starts the scoring of each pass, or workflow, where the workflow\'s own steps score them',
+    ]);
+  });
+
   it('reports a long form without names, and a name that is not a scalar', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
