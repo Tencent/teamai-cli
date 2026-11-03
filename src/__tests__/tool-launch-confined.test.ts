@@ -144,3 +144,24 @@ it('fails a reply that is not JSON, keeping what the tool printed', async () => 
 
   expect(result).toEqual({ ok: false, code: 'confined_reply_invalid', message: 'cursor did not reply with JSON. See the saved output, then retry.', raw: expect.stringContaining('The fix landed.') });
 });
+
+it.each([
+  ['inlines a provider key OpenCode reads from the env, which the confined env does not carry', 'provider-key', { ok: true, reply: { verdict: 'fixed' } }, 'provider-key'],
+  ['fails when that provider key is not set', undefined, { ok: false, code: 'confined_failed', message: 'opencode could not run confined: OpenCode provider credential JUDGE_PROVIDER_KEY is not set. Fix that, then retry.' }, undefined],
+])('%s', async (_, key, expected, inlined) => {
+  const { dir } = await evidenceDir();
+  const record = path.join(root, 'config.json');
+  const settings = path.join(root, 'opencode.json');
+  await fs.writeFile(settings, JSON.stringify({ provider: { gateway: { options: { baseURL: 'https://gateway.test', apiKey: '{env:JUDGE_PROVIDER_KEY}' } } } }));
+  vi.stubEnv('OPENCODE_CONFIG', settings);
+  vi.stubEnv('JUDGE_PROVIDER_KEY', key);
+  const opencode = await fakeTool('opencode', 'opencode v2.1.2', `
+fs.writeFileSync(${JSON.stringify(record)}, fs.readFileSync(require('path').join(process.env.OPENCODE_CONFIG_DIR, 'opencode.json'), 'utf8'));
+console.log(JSON.stringify({ type: 'text', part: { text: '{"verdict":"fixed"}' } }));`);
+
+  const result = await runConfined({ tool: 'opencode', dir, prompt: 'Say whether the fix landed.', level: 'best-effort', timeoutMs: 60_000 }, { resolveTool: machineWith({ opencode }) });
+
+  expect(result).toMatchObject(expected);
+  const written = await fs.readFile(record, 'utf8').then((text) => z.object({ provider: z.object({ gateway: z.object({ options: z.object({ apiKey: z.string() }) }) }) }).parse(JSON.parse(text)).provider.gateway.options.apiKey, () => undefined);
+  expect(written).toBe(inlined);
+});

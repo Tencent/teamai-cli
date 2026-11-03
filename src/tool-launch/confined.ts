@@ -19,8 +19,8 @@ import { agyGatewayEnv } from '../models/agy-gateway.js';
 import { JsonValueSchema, type JsonValue } from '../types.js';
 import type { Isolation, JudgeAccess, JudgeUsage } from '../scorers/label.js';
 import { LAUNCH_ADAPTERS, type CallLaunch, type ConfinedLaunch } from './adapters.js';
-import { runTool } from './run.js';
-import { toolStdout } from './stdout.js';
+import { runTool, type ToolRun } from './run.js';
+import { toolStdout, type TokenUsage } from './stdout.js';
 import { CONFINED_TOOLS, executableOf, launchAdapterIdOf, opencodeModelArgs, type ConfinedTool } from './tools.js';
 
 /** A JSON line a tool prints; a field of the wrong type reads as absent. */
@@ -200,47 +200,62 @@ function credentialEnv(key: string): string | undefined {
   return memberEnv()[key];
 }
 
-async function codexSettings(tool: ConfinedTool, env: NodeJS.ProcessEnv) {
-  const text = await optionalFile(path.join(env.CODEX_HOME || toolHome(tool), 'config.toml'));
+const CodexProviderSchema = z.object({ name: z.string().optional(), base_url: z.string().optional(), wire_api: z.string().optional(), env_key: z.string().optional(), experimental_bearer_token: z.string().optional() });
 
-  if (!text) return { args: [], model: undefined };
-  const config = z.object({ model: z.string().optional(), model_provider: z.string().optional(), model_providers: z.record(z.string(), z.object({ name: z.string().optional(), base_url: z.string().optional(), wire_api: z.string().optional(), env_key: z.string().optional(), experimental_bearer_token: z.string().optional() })).optional() }).parse(parseToml(withoutTomlBom(text)));
-  const model = config.model ? ['-c', `model=${JSON.stringify(config.model)}`] : [];
-  const provider = config.model_provider && config.model_providers?.[config.model_provider];
+const CodexConfigSchema = z.object({ model: z.string().optional(), model_provider: z.string().optional(), model_providers: z.record(z.string(), CodexProviderSchema).optional() });
 
-  if (!provider) return { args: model, model: config.model };
-  const overrides = ['-c', `model_provider=${JSON.stringify(config.model_provider)}`, ...model];
+/** The overrides that keep the member's provider `name`, with its credential in a variable the confined env carries. */
+function codexProviderArgs(name: string, provider: z.infer<typeof CodexProviderSchema>, env: NodeJS.ProcessEnv): string[] {
+  const overrides: string[] = [];
 
   for (const key of ['name', 'base_url', 'wire_api'] as const) {
-    if (provider[key]) overrides.push('-c', `model_providers.${config.model_provider}.${key}=${JSON.stringify(provider[key])}`);
+    if (provider[key]) overrides.push('-c', `model_providers.${name}.${key}=${JSON.stringify(provider[key])}`);
   }
 
   const credential = provider.experimental_bearer_token ?? (provider.env_key && credentialEnv(provider.env_key));
 
   if (credential) {
     env.TEAMAI_JUDGE_API_KEY = credential;
-    overrides.push('-c', `model_providers.${config.model_provider}.env_key="TEAMAI_JUDGE_API_KEY"`);
+    overrides.push('-c', `model_providers.${name}.env_key="TEAMAI_JUDGE_API_KEY"`);
   }
 
-  return { args: overrides, model: config.model };
+  return overrides;
+}
+
+async function codexSettings(tool: ConfinedTool, env: NodeJS.ProcessEnv) {
+  const text = await optionalFile(path.join(env.CODEX_HOME || toolHome(tool), 'config.toml'));
+
+  if (!text) return { args: [], model: undefined };
+  const config = CodexConfigSchema.parse(parseToml(withoutTomlBom(text)));
+  const model = config.model ? ['-c', `model=${JSON.stringify(config.model)}`] : [];
+  const name = config.model_provider;
+  const provider = name ? config.model_providers?.[name] : undefined;
+
+  if (!name || !provider) return { args: model, model: config.model };
+
+  return { args: ['-c', `model_provider=${JSON.stringify(name)}`, ...model, ...codexProviderArgs(name, provider, env)], model: config.model };
+}
+
+const OpenCodeProviderSchema = z.object({ npm: z.enum(['@ai-sdk/openai-compatible', '@ai-sdk/openai', '@ai-sdk/anthropic']).optional(), name: z.string().optional(), options: z.object({ baseURL: z.string().optional(), apiKey: z.string().optional() }).optional(), models: z.record(z.string(), z.object({ name: z.string().optional() })).optional() });
+
+const OpenCodeConfigSchema = z.object({ model: z.string().optional(), provider: z.record(z.string(), OpenCodeProviderSchema.nullable()).optional() });
+
+/** Replaces an `{env:KEY}` API key with that variable's value, which the confined env does not carry. */
+function inlineEnvKey(options: { apiKey?: string } | undefined): void {
+  const key = options?.apiKey?.match(/^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/)?.[1];
+
+  if (options === undefined || key === undefined) return;
+  const credential = credentialEnv(key);
+
+  if (!credential) throw new Error(`OpenCode provider credential ${key} is not set`);
+  options.apiKey = credential;
 }
 
 async function openCodeSettings(env: NodeJS.ProcessEnv, tmp: string): Promise<string | undefined> {
-  const file = process.env.OPENCODE_CONFIG || path.join(toolHome('opencode'), 'opencode.json');
-  const text = await optionalFile(file);
-  const provider = z.object({ npm: z.enum(['@ai-sdk/openai-compatible', '@ai-sdk/openai', '@ai-sdk/anthropic']).optional(), name: z.string().optional(), options: z.object({ baseURL: z.string().optional(), apiKey: z.string().optional() }).optional(), models: z.record(z.string(), z.object({ name: z.string().optional() })).optional() });
-  const settings = text ? z.object({ model: z.string().optional(), provider: z.record(z.string(), provider.nullable()).optional() }).parse(JSON.parse(text)) : {};
+  const text = await optionalFile(process.env.OPENCODE_CONFIG || path.join(toolHome('opencode'), 'opencode.json'));
+  const settings = text ? OpenCodeConfigSchema.parse(JSON.parse(text)) : {};
 
-  for (const entry of Object.values(settings.provider ?? {})) {
-    const key = entry?.options?.apiKey?.match(/^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/)?.[1];
-
-    if (key && entry?.options) {
-      const credential = credentialEnv(key);
-
-      if (!credential) throw new Error(`OpenCode provider credential ${key} is not set`);
-      entry.options.apiKey = credential;
-    }
-  }
+  for (const entry of Object.values(settings.provider ?? {})) inlineEnvKey(entry?.options);
 
   const auth = await optionalFile(path.join(env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode', 'auth.json'));
 
@@ -287,46 +302,6 @@ function records(stdout: string): Array<z.infer<typeof RecordSchema>> {
   });
 }
 
-/** The reply in what the tool left: Codex's answer file, a result record, OpenCode's text parts, or a reply. */
-async function replyFrom(tool: ConfinedTool, stdout: string, tmp: string): Promise<JsonValue | undefined> {
-  const family = launchAdapterIdOf(tool);
-
-  switch (family) {
-    case 'codex':
-      return parseReply(await optionalFile(path.join(tmp, 'answer.json')) ?? '');
-    // Claude's result record, which CodeBuddy and Cursor print too; only Claude and CodeBuddy fill structured_output.
-    case 'claude':
-    case 'codebuddy':
-    case 'cursor': {
-      const last = records(stdout).findLast((record) => record.type === 'result');
-
-      return last?.structured_output ?? parseReply(last?.result ?? '');
-    }
-
-    case 'opencode': {
-      const texts = records(stdout).flatMap((record) => {
-        const parsed = z.object({ type: z.string().optional(), part: z.object({ text: z.string().optional() }).optional() }).safeParse(record);
-
-        return parsed.success && parsed.data.type === 'text' ? parsed.data.part?.text ?? [] : [];
-      });
-
-      return parseReply(texts.join('\n'));
-    }
-
-    case 'pi':
-    case 'agy': {
-      const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
-
-      return reading.ok ? parseReply(reading.text) : undefined;
-    }
-
-    default: {
-      const unhandled: never = family;
-      throw new Error(`No confined reply reader for adapter ${String(unhandled)}`);
-    }
-  }
-}
-
 function parseReply(text: string): JsonValue | undefined {
   try {
     const parsed = JsonValueSchema.safeParse(JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')));
@@ -357,10 +332,14 @@ interface Spend {
   usage?: JudgeUsage;
 }
 
-function spendOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): Spend {
-  const report = toolStdout(family, stdout);
+function tokensOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): TokenUsage | undefined {
   const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
-  const tokens = report?.tokens ?? (reading.ok ? reading.tokens : undefined);
+
+  return toolStdout(family, stdout)?.tokens ?? (reading.ok ? reading.tokens : undefined);
+}
+
+function spendOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): Spend {
+  const tokens = tokensOf(family, stdout);
   const cost = records(stdout).findLast((record) => record.total_cost_usd !== undefined)?.total_cost_usd;
 
   if (!tokens && cost === undefined) return {};
@@ -373,6 +352,200 @@ function spendOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, std
   if (cost !== undefined) usage.cost = { amount: cost, unit: 'USD' };
 
   return { usage };
+}
+
+type Family = ReturnType<typeof launchAdapterIdOf<ConfinedTool>>;
+
+type ConfinedFailure = Extract<ConfinedResult, { ok: false }>;
+
+/** What a family's launch is given: the run, where its tool runs, and the env and temporary directory it may set up. */
+interface LaunchContext {
+  input: ConfinedInput;
+  executable: string;
+  /** The real path of `input.dir`. */
+  dir: string;
+  cwd: string;
+  tmp: string;
+  env: NodeJS.ProcessEnv;
+}
+
+/** How a family runs: its arguments and stdin, the model its own config names, and a failure its run shows besides its exit code. */
+interface Launch {
+  args: string[];
+  stdin: string;
+  configuredModel?: string;
+  failureOf?(run: ToolRun, spent: Spend): Promise<ConfinedFailure | undefined>;
+}
+
+const modelArgs = ({ input }: LaunchContext): string[] => input.model ? ['--model', input.model.name] : [];
+
+const jsonSchemaArgs = ({ input }: LaunchContext): string[] => input.schema === undefined ? [] : ['--json-schema', JSON.stringify(input.schema)];
+
+const asked = ({ input }: LaunchContext): string => REQUEST + input.prompt;
+
+const rawOf = (run: ToolRun): string => run.stdout + '\n' + run.stderr;
+
+/** How each family is set up and started confined. */
+// oxlint-disable-next-line teamai/tool-facts -- keyed by launch adapter id, as LAUNCH_ADAPTERS is; a tool picks one with TOOLS.launch
+const LAUNCHES = {
+  async claude(context) {
+    const { input, env, tmp } = context;
+    const settings = await claudeSettings(input.tool, env, tmp);
+    const prompt = path.join(tmp, 'prompt.md');
+    await fs.writeFile(prompt, input.prompt);
+
+    return { stdin: REQUEST, args: ['-p', '--restricted', '--tools=Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--permission-prompts', 'none', '--output-format', 'stream-json', '--verbose', ...jsonSchemaArgs(context), '--append-system-prompt-file', prompt, '--settings', settings, ...modelArgs(context), ...(input.model?.effort ? ['--effort', input.model.effort] : [])] };
+  },
+  async codex(context) {
+    const { input, env, tmp, dir } = context;
+    const settings = await codexSettings(input.tool, env);
+    const auth = await optionalFile(path.join(env.CODEX_HOME || toolHome(input.tool), 'auth.json'));
+    env.CODEX_HOME = path.join(tmp, 'codex');
+    await fs.mkdir(env.CODEX_HOME);
+
+    if (auth !== undefined) await fs.writeFile(path.join(env.CODEX_HOME, 'auth.json'), auth, { mode: 0o600 });
+    await fs.writeFile(path.join(env.CODEX_HOME, 'config.toml'), codexProfile(dir));
+    const schema = path.join(tmp, 'schema.json');
+
+    if (input.schema !== undefined) await fs.writeFile(schema, JSON.stringify(input.schema));
+
+    return {
+      stdin: asked(context),
+      configuredModel: settings.model,
+      args: ['-a', 'never', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--ignore-rules', ...(input.schema === undefined ? [] : ['--output-schema', schema]), ...CODEX_DISABLED.flatMap((feature) => ['--disable', feature]), '-o', path.join(tmp, 'answer.json'), ...settings.args, ...modelArgs(context), ...(input.model?.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.model.effort)}`] : []), '-'],
+    };
+  },
+  async codebuddy(context) {
+    return {
+      stdin: asked(context),
+      args: ['-p', '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--setting-sources', '', '--permission-mode', 'dontAsk', '--settings', JSON.stringify({ permissions: { allow: ['Read(./**)'] } }), '--output-format', 'json', ...jsonSchemaArgs(context), ...modelArgs(context)],
+      // CodeBuddy exits 0 when it is not signed in.
+      async failureOf(run) {
+        if (!/Authentication required/.test(rawOf(run))) return undefined;
+
+        return { ok: false, code: 'confined_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or use another tool or driver.', raw: rawOf(run) };
+      },
+    };
+  },
+  async cursor(context) {
+    return { stdin: asked(context), args: ['-p', '--output-format', 'json', '--mode', 'ask', '--sandbox', 'enabled', '--trust', ...modelArgs(context)] };
+  },
+  async pi(context) {
+    return { stdin: asked(context), args: ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls', '--no-context-files', '--no-extensions', '--no-skills', '--no-session', ...modelArgs(context)] };
+  },
+  async agy(context) {
+    return { stdin: asked(context), args: ['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', ...modelArgs(context)] };
+  },
+  async opencode(context) {
+    const { input, executable, dir, cwd, env, tmp } = context;
+    await fs.cp(dir, cwd, { recursive: true, dereference: false });
+    const entries = await fs.readdir(cwd, { recursive: true, withFileTypes: true });
+
+    if (entries.some((entry) => entry.isSymbolicLink())) throw new Error(`OpenCode would follow a symlink in ${dir}. Remove the symlink before running it confined`);
+    await noInstructionsAbove(cwd);
+
+    return {
+      stdin: asked(context),
+      configuredModel: await openCodeSettings(env, tmp),
+      args: ['run', '--standalone', '--format', 'json', ...opencodeModelArgs(input.model, input.model?.effort ? await opencodeMajorVersion(executable) : 2)],
+      // OpenCode keeps every run as a session in its database; the confined one must not outlive the run.
+      async failureOf(run, spent) {
+        const session = toolStdout('opencode', run.stdout)?.session;
+
+        if (!session) return undefined;
+        const deleted = await runTool({ executable, args: ['session', 'delete', session, '--standalone'], cwd, env, stdin: '', timeoutMs: input.timeoutMs, detached: true });
+
+        if (deleted.code === 0) return undefined;
+
+        return { ok: false, code: 'confined_failed', message: `OpenCode could not delete its session ${session}. Delete it with opencode session delete before retrying.`, raw: deleted.stderr, ...spent };
+      },
+    };
+  },
+} satisfies { [F in Family]: (context: LaunchContext) => Promise<Launch> };
+
+/** Claude's result record, which CodeBuddy and Cursor print too; only Claude and CodeBuddy fill structured_output. */
+async function resultRecordReply(stdout: string): Promise<JsonValue | undefined> {
+  const last = records(stdout).findLast((record) => record.type === 'result');
+
+  return last?.structured_output ?? parseReply(last?.result ?? '');
+}
+
+async function adapterReply(family: 'pi' | 'agy', stdout: string): Promise<JsonValue | undefined> {
+  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
+
+  return reading.ok ? parseReply(reading.text) : undefined;
+}
+
+const OpenCodeText = z.object({ type: z.literal('text'), part: z.object({ text: z.string() }) });
+
+/** Where each family leaves its reply: Codex's answer file, a result record, OpenCode's text parts, or the adapter's reading. */
+// oxlint-disable-next-line teamai/tool-facts -- keyed by launch adapter id, as LAUNCH_ADAPTERS is; a tool picks one with TOOLS.launch
+const REPLIES = {
+  codex: async (_stdout, tmp) => parseReply(await optionalFile(path.join(tmp, 'answer.json')) ?? ''),
+  claude: resultRecordReply,
+  codebuddy: resultRecordReply,
+  cursor: resultRecordReply,
+  opencode: async (stdout) => parseReply(records(stdout).flatMap((record) => {
+    const parsed = OpenCodeText.safeParse(record);
+
+    return parsed.success ? [parsed.data.part.text] : [];
+  }).join('\n')),
+  pi: async (stdout) => adapterReply('pi', stdout),
+  agy: async (stdout) => adapterReply('agy', stdout),
+} satisfies { [F in Family]: (stdout: string, tmp: string) => Promise<JsonValue | undefined> };
+
+/** The level `context`'s tool reaches here, or why it does not reach `context.input.level`. */
+async function levelReached({ input, executable, dir, cwd, env, tmp }: LaunchContext): Promise<{ ok: true; isolation: Isolation } | ConfinedFailure> {
+  const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env, cwd: tmp }));
+  const checkout = launchAdapterIdOf(input.tool) === 'opencode' && await insideCheckout(cwd);
+  const isolation = version ? profileIsolation(input.tool, version, checkout) : 'best-effort';
+
+  if (input.level !== 'verified' || isolation === 'verified') return { ok: true, isolation };
+
+  return { ok: false, code: 'confined_tool_unavailable', message: checkout
+    ? `OpenCode would read ${dir} inside the checkout above ${cwd}, which it lets its file tools read. Move the temp dir (TMPDIR) outside any git or hg checkout, or use another driver.`
+    : `${input.tool} ${version || '(version unknown)'} has no verified judge profile. Install a supported version or use another driver.` };
+}
+
+/** The error the tool reported, or '' when it reported none. */
+function reportedError(family: Family, run: ToolRun): string {
+  const reading = LAUNCH_ADAPTERS[family].call.read({ stdout: run.stdout, lastMessage: undefined });
+
+  if (!reading.ok && reading.message) return reading.message;
+
+  // agy exits 1 with the reason in its result, or on stderr when it refuses to start.
+  return family === 'agy' && run.code !== 0 && !run.stdout.trim() ? run.stderr.trim() : '';
+}
+
+/** What ran, as far as the run showed it. A model or effort it did not observe stays undefined, which the JSON leaves out. */
+function ranOn(input: ConfinedInput, launch: Launch, run: ToolRun, isolation: Isolation): ConfinedRun {
+  const model = observedModel({ requested: input.model?.name ?? launch.configuredModel, reported: toolStdout(launchAdapterIdOf(input.tool), run.stdout)?.model });
+  const effort = observedEffort({ requested: input.model?.effort });
+
+  return { tool: input.tool, model: model || undefined, effort: effort || undefined, isolation, access: confinedAccess(input.tool) };
+}
+
+/** What a finished run gave: the error the tool reported, its exit code, or its reply. */
+async function outcomeOf({ input, tmp }: LaunchContext, launch: Launch, run: ToolRun, isolation: Isolation): Promise<ConfinedResult> {
+  const family = launchAdapterIdOf(input.tool);
+  const raw = rawOf(run);
+  const spent = spendOf(family, run.stdout);
+  const failure = await launch.failureOf?.(run, spent);
+
+  if (failure) return failure;
+  const reported = reportedError(family, run);
+
+  const toolError: ConfinedFailure | undefined = reported
+    ? { ok: false, code: 'confined_failed', message: `${input.tool} reported an error: ${reported.replace(/\.?$/, '.')} Fix that, then retry or use another tool or driver.`, raw, reported, ...spent }
+    : undefined;
+
+  if (run.code !== 0) return toolError ?? { ok: false, code: 'confined_failed', message: `${input.tool} exited with code ${run.code}${run.timedOut ? ` after its ${input.timeoutMs} ms limit` : ''}. See the saved output, then retry or use another tool or driver.`, raw, ...spent };
+  const reply = await REPLIES[family](run.stdout, tmp);
+
+  // pi exits 0 on a provider error, which its reply carries.
+  if (reply === undefined) return toolError ?? { ok: false, code: 'confined_reply_invalid', message: `${input.tool} did not reply with JSON. See the saved output, then retry.`, raw, ...spent };
+
+  return { ok: true, reply, run: { ...ranOn(input, launch, run, isolation), ...spent } };
 }
 
 /**
@@ -388,121 +561,17 @@ export async function runConfined(input: ConfinedInput, { resolveTool = resolveC
 
   try {
     const dir = await fs.realpath(input.dir);
-    const env = confinedEnv(input.tool);
     const family = launchAdapterIdOf(input.tool);
-    const codex = family === 'codex' ? await codexSettings(input.tool, env) : { args: [], model: undefined };
-    let configuredModel = codex.model;
+    // OpenCode reads a copy, so a checkout above the directory is checked where the copy goes.
+    const context: LaunchContext = { input, executable, dir, cwd: family === 'opencode' ? path.join(tmp, 'dir') : dir, tmp, env: confinedEnv(input.tool) };
+    const level = await levelReached(context);
 
-    if (family === 'codex') {
-      const auth = await optionalFile(path.join(env.CODEX_HOME || toolHome(input.tool), 'auth.json'));
-      env.CODEX_HOME = path.join(tmp, 'codex');
-      await fs.mkdir(env.CODEX_HOME);
-
-      if (auth !== undefined) await fs.writeFile(path.join(env.CODEX_HOME, 'auth.json'), auth, { mode: 0o600 });
-      await fs.writeFile(path.join(env.CODEX_HOME, 'config.toml'), codexProfile(dir));
-    }
-
-    const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env, cwd: tmp }));
-    const cwd = family === 'opencode' ? path.join(tmp, 'dir') : dir;
-    const checkout = family === 'opencode' && await insideCheckout(cwd);
-    const isolation = version ? profileIsolation(input.tool, version, checkout) : 'best-effort';
-
-    if (input.level === 'verified' && isolation !== 'verified') {
-      return { ok: false, code: 'confined_tool_unavailable', message: checkout
-        ? `OpenCode would read ${dir} inside the checkout above ${cwd}, which it lets its file tools read. Move the temp dir (TMPDIR) outside any git or hg checkout, or use another driver.`
-        : `${input.tool} ${version || '(version unknown)'} has no verified judge profile. Install a supported version or use another driver.` };
-    }
-
-    let stdin = REQUEST + input.prompt;
-    let args: string[];
-    const model = input.model ? ['--model', input.model.name] : [];
-    const jsonSchema = input.schema === undefined ? [] : ['--json-schema', JSON.stringify(input.schema)];
-
-    switch (family) {
-    case 'claude': {
-      const settings = await claudeSettings(input.tool, env, tmp);
-      const prompt = path.join(tmp, 'prompt.md');
-      await fs.writeFile(prompt, input.prompt);
-      stdin = REQUEST;
-      args = ['-p', '--restricted', '--tools=Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--permission-prompts', 'none', '--output-format', 'stream-json', '--verbose', ...jsonSchema, '--append-system-prompt-file', prompt, '--settings', settings, ...model, ...(input.model?.effort ? ['--effort', input.model.effort] : [])];
-      break;
-    }
-
-    case 'codex': {
-      const schema = path.join(tmp, 'schema.json');
-
-      if (input.schema !== undefined) await fs.writeFile(schema, JSON.stringify(input.schema));
-      args = ['-a', 'never', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--ignore-rules', ...(input.schema === undefined ? [] : ['--output-schema', schema]), ...CODEX_DISABLED.flatMap((feature) => ['--disable', feature]), '-o', path.join(tmp, 'answer.json'), ...codex.args, ...model, ...(input.model?.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.model.effort)}`] : []), '-'];
-      break;
-    }
-
-    case 'codebuddy':
-      args = ['-p', '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--setting-sources', '', '--permission-mode', 'dontAsk', '--settings', JSON.stringify({ permissions: { allow: ['Read(./**)'] } }), '--output-format', 'json', ...jsonSchema, ...model];
-      break;
-    case 'cursor':
-      args = ['-p', '--output-format', 'json', '--mode', 'ask', '--sandbox', 'enabled', '--trust', ...model];
-      break;
-    case 'pi':
-      args = ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls', '--no-context-files', '--no-extensions', '--no-skills', '--no-session', ...model];
-      break;
-    case 'agy':
-      args = ['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', ...model];
-      break;
-    case 'opencode': {
-      await fs.cp(dir, cwd, { recursive: true, dereference: false });
-      const entries = await fs.readdir(cwd, { recursive: true, withFileTypes: true });
-
-      if (entries.some((entry) => entry.isSymbolicLink())) throw new Error(`OpenCode would follow a symlink in ${dir}. Remove the symlink before running it confined`);
-      await noInstructionsAbove(cwd);
-      configuredModel = await openCodeSettings(env, tmp);
-      args = ['run', '--standalone', '--format', 'json', ...opencodeModelArgs(input.model, input.model?.effort ? await opencodeMajorVersion(executable) : 2)];
-      break;
-    }
-
-    default: {
-      const unhandled: never = family;
-      throw new Error(`No confined profile for adapter ${String(unhandled)}`);
-    }
-    }
-
+    if (!level.ok) return level;
+    const launch = await LAUNCHES[family](context);
     const { stdinOf }: CallLaunch = LAUNCH_ADAPTERS[family].call;
-    const result = await runTool({ executable, args, cwd, env, stdin: stdinOf ? stdinOf(stdin) : stdin, timeoutMs: input.timeoutMs, detached: true, group: input.group, signal: input.signal });
-    const raw = result.stdout + '\n' + result.stderr;
+    const run = await runTool({ executable, args: launch.args, cwd: context.cwd, env: context.env, stdin: stdinOf ? stdinOf(launch.stdin) : launch.stdin, timeoutMs: input.timeoutMs, detached: true, group: input.group, signal: input.signal });
 
-    if (family === 'codebuddy' && /Authentication required/.test(raw)) {
-      return { ok: false, code: 'confined_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or use another tool or driver.', raw };
-    }
-
-    const report = toolStdout(family, result.stdout);
-    const spent = spendOf(family, result.stdout);
-
-    if (family === 'opencode' && report?.session) {
-      const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: input.timeoutMs, detached: true });
-
-      if (deleted.code !== 0) return { ok: false, code: 'confined_failed', message: `OpenCode could not delete its session ${report.session}. Delete it with opencode session delete before retrying.`, raw: deleted.stderr, ...spent };
-    }
-
-    const reading = LAUNCH_ADAPTERS[family].call.read({ stdout: result.stdout, lastMessage: undefined });
-
-    // agy exits 1 with the reason in its result, or on stderr when it refuses to start.
-    const reported = !reading.ok && reading.message ? reading.message : family === 'agy' && result.code !== 0 && !result.stdout.trim() ? result.stderr.trim() : '';
-
-    const toolError = reported
-      ? { ok: false as const, code: 'confined_failed' as const, message: `${input.tool} reported an error: ${reported.replace(/\.?$/, '.')} Fix that, then retry or use another tool or driver.`, raw, reported, ...spent }
-      : undefined;
-
-    if (result.code !== 0) return toolError ?? { ok: false, code: 'confined_failed', message: `${input.tool} exited with code ${result.code}${result.timedOut ? ` after its ${input.timeoutMs} ms limit` : ''}. See the saved output, then retry or use another tool or driver.`, raw, ...spent };
-    const reply = await replyFrom(input.tool, result.stdout, tmp);
-
-    // pi exits 0 on a provider error, which its reply carries.
-    if (reply === undefined && toolError) return toolError;
-
-    if (reply === undefined) return { ok: false, code: 'confined_reply_invalid', message: `${input.tool} did not reply with JSON. See the saved output, then retry.`, raw, ...spent };
-    const ranModel = observedModel({ requested: input.model?.name ?? configuredModel, reported: report?.model });
-    const ranEffort = observedEffort({ requested: input.model?.effort });
-
-    // A model or effort it did not observe stays undefined, which the JSON leaves out.
-    return { ok: true, reply, run: { tool: input.tool, model: ranModel || undefined, effort: ranEffort || undefined, isolation, access: confinedAccess(input.tool), ...spent } };
+    return await outcomeOf(context, launch, run, level.isolation);
   } catch (error) {
     return { ok: false, code: 'confined_failed', message: `${input.tool} could not run confined: ${error instanceof Error ? error.message : String(error)}. Fix that, then retry.` };
   } finally { await fs.rm(tmp, { recursive: true, force: true, maxRetries: 3 }); }
