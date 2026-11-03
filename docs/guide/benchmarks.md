@@ -687,7 +687,7 @@ Yours must take input `suite`, input `aliases` to run with `--member-aliases`, i
 
 You may change `score`'s `timeout`, or drop `subjects` and `score` to run without judging. Every trial a judge would decide then ends `unscored`:
 
-```yaml
+```yaml fragment
 # workflows/teamai-benchmark.yaml: the trials, never judged
 steps:
   # plan, as teamai's

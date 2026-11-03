@@ -687,7 +687,7 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 
 你可以修改 `score` 的 `timeout`，或者去掉 `subjects` 和 `score`，不经评判地运行。这样一来，每个本该由评判决定的 trial 都以 `unscored` 结束：
 
-```yaml
+```yaml fragment
 # workflows/teamai-benchmark.yaml：只运行 trial，从不评判
 steps:
   # plan，同 teamai 的

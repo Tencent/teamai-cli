@@ -73,6 +73,9 @@ Each label records what judged:
 
 ```yaml
 # workflows/review-and-fix.yaml
+schemaVersion: v1alpha1
+name: review-and-fix
+description: Review the change, judged by review-quality.
 steps:
   - id: review
     prompt: Review the change.
@@ -273,6 +276,9 @@ A step with `deliver: pr` hands its work to review as a pull request. A scorer o
 
 ```yaml
 # workflows/ship-issue.yaml
+schemaVersion: v1alpha1
+name: ship-issue
+description: Make the change an issue asks for, and deliver it as a pull request.
 inputs: { issue: number }
 steps:
   - id: read-issue
@@ -698,6 +704,10 @@ A project runs teamai's default, or the project team's file, never a user scope'
 
 ```yaml
 # workflows/wrap-up.yaml (team file)
+schemaVersion: v1alpha1
+name: wrap-up
+description: Label the session that just ended with the scorers it names.
+inputs: { source: string, session: string, scorers: [string] }
 steps:
   - id: score
     workflow: teamai-score
@@ -723,10 +733,25 @@ A judging run is never judged. Pull refuses `scorers:` on a step that runs `team
 ## Batching
 
 ```yaml
+schemaVersion: v1alpha1
+description: Review the change, judged by two scorers in one judge call.
 steps:
   - id: review
     prompt: Review the change.
     scorers: { names: [review-quality, test-coverage], batch: true }
+```
+
+`scorers/test-coverage.md`:
+
+```markdown
+---
+labels:
+  - { value: covered, score: 1, description: Tests cover each behavior the change adds or alters. }
+  - { value: thin, score: 0.5, description: Tests cover the main path only. }
+  - { value: none, score: 0, description: No test covers the change. }
+passingScore: 1
+---
+Judge whether the tests in the diff cover what the change does.
 ```
 
 The scorers of one pass that resolve to the same tool and model share one judge step, one evidence directory and one prompt, and the answer has one label per scorer:

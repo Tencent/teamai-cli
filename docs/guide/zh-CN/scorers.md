@@ -73,6 +73,9 @@ aliases:
 
 ```yaml
 # workflows/review-and-fix.yaml
+schemaVersion: v1alpha1
+name: review-and-fix
+description: Review the change, judged by review-quality.
 steps:
   - id: review
     prompt: Review the change.
@@ -273,6 +276,9 @@ $ teamai score --run r3f9… --scorer delivered
 
 ```yaml
 # workflows/ship-issue.yaml
+schemaVersion: v1alpha1
+name: ship-issue
+description: Make the change an issue asks for, and deliver it as a pull request.
 inputs: { issue: number }
 steps:
   - id: read-issue
@@ -698,6 +704,10 @@ pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
 
 ```yaml
 # workflows/wrap-up.yaml（团队文件）
+schemaVersion: v1alpha1
+name: wrap-up
+description: Label the session that just ended with the scorers it names.
+inputs: { source: string, session: string, scorers: [string] }
 steps:
   - id: score
     workflow: teamai-score
@@ -723,10 +733,25 @@ steps:
 ## 批量评审
 
 ```yaml
+schemaVersion: v1alpha1
+description: Review the change, judged by two scorers in one judge call.
 steps:
   - id: review
     prompt: Review the change.
     scorers: { names: [review-quality, test-coverage], batch: true }
+```
+
+`scorers/test-coverage.md`：
+
+```markdown
+---
+labels:
+  - { value: covered, score: 1, description: Tests cover each behavior the change adds or alters. }
+  - { value: thin, score: 0.5, description: Tests cover the main path only. }
+  - { value: none, score: 0, description: No test covers the change. }
+passingScore: 1
+---
+Judge whether the tests in the diff cover what the change does.
 ```
 
 同一轮中解析到相同工具和模型的评分器共用一个评审步骤、一个证据目录和一个提示，答案为每个评分器给出一个标签：

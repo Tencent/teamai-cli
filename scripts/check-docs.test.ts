@@ -92,6 +92,16 @@ it('check rejects a syntactically valid workflow example the engine cannot run',
   expect(checked.output).toContain('docs/guide/workflow.md');
   expect(checked.output).toContain('missing-build-step');
 });
+it('check pulls an unnamed workflow fragment on a page that is not a workflow page, and names its page and line', () => {
+  const root = checkout();
+  const page = path.join(root, 'docs/guide/dashboard.md');
+  const before = fs.readFileSync(page, 'utf8');
+  fs.writeFileSync(page, `${before}\n\`\`\`yaml\nschemaVersion: v1alpha1\ndescription: Review the change.\nsteps:\n  - id: review\n    prompt: Review the change.\n    retries_forever: true\n\`\`\`\n`);
+  const checked = run(root);
+  expect(checked.status).toBe(1);
+  expect(checked.output).toContain(`docs/guide/dashboard.md:${before.split('\n').length + 2}`);
+  expect(checked.output).toContain('retries_forever');
+});
 it.each([
   ['teamai codebase --no-such-flag', 'unknown flag "--no-such-flag"'],
   ['teamai skill gett core', 'unknown subcommand "gett"'],
