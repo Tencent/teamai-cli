@@ -489,9 +489,12 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
 
     for (const without of withoutArms.length > 0 ? withoutArms : [undefined]) {
       // The arm that leaves nothing out: the pulled arm that differs from `without` only by that, or, when no arm
-      // leaves the path out, the first pulled arm that receives the path, so the rows and loads still show.
+      // leaves the path out, the first pulled arm that receives the path, else the first arm on another team ref that
+      // does, so the rows and loads still show.
+      const receives = (arm: (typeof arms)[number]): boolean => !withheld.has(arm.name);
+
       const has = without === undefined
-        ? arms.find((arm) => arm.team.kind === 'pulled' && !withheld.has(arm.name))
+        ? arms.find((arm) => arm.team.kind === 'pulled' && receives(arm)) ?? arms.find((arm) => arm.team.kind === 'ref' && receives(arm))
         : arms.find((arm) => arm !== without && arm.tool === without.tool && (arm.model ?? undefined) === (without.model ?? undefined)
           && (arm.effort ?? undefined) === (without.effort ?? undefined) && (arm.role ?? undefined) === (without.role ?? undefined)
           && (arm.workflow?.sourceHash ?? undefined) === (without.workflow?.sourceHash ?? undefined) && arm.team.kind === 'pulled');

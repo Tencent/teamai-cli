@@ -239,6 +239,27 @@ describe('asset effects', () => {
     expect(auth.rows.map(({ task, with: withIt }) => ({ task, with: withIt }))).toEqual([{ task: 'login', with: { passed: 1, planned: 1 } }]);
   });
 
+  it('shows a covered path no pulled arm receives on the arm on another team ref that does', () => {
+    const record = {
+      benchmark: {
+        suite: { name: 'auth', sourceHash: 'h' }, repetitions: 1, baselineTeamRevision: RUN_TEAM, scorers: [],
+        tasks: [{ id: 'login', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const, covers: ['skills/dev/auth'] as [string], coversSkills: ['auth'] as [string], coversWithheldFrom: [['ops']] as [string[]] }],
+        arms: [
+          { name: 'ops', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM }, role: 'ops' },
+          { name: 'dev', tool: 'claude', source: 'team' as const, team: { kind: 'ref' as const, ref: 'next', revision: RUN_TEAM }, role: 'dev' },
+        ],
+        trials: [
+          { task: 'login', arm: 'ops', repetition: 1, order: 1, step: 'r1.login.ops.prompt', result: 'failed' as const },
+          { task: 'login', arm: 'dev', repetition: 1, order: 2, step: 'r1.login.dev.prompt', result: 'passed' as const, routing: { auth: 'fit' as const } },
+        ],
+      },
+    };
+    const [auth] = assetEffects(record);
+
+    expect(auth.has).toBe('dev');
+    expect(auth.rows.map(({ task, with: withIt }) => ({ task, with: withIt }))).toEqual([{ task: 'login', with: { passed: 1, planned: 1 } }]);
+  });
+
   it('prints the tables with the example\'s lines, and unknown loads never read as idle or missed', () => {
     const trials = paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] });
     const withArm = trials.filter(({ arm }) => arm === 'pulled');
