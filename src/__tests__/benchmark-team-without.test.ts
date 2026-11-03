@@ -260,6 +260,27 @@ describe('coveredRefusal', () => {
   });
 
   it.each([
+    ['rules', 'rules/review.md', 'rules/dev/review.md'],
+    ['claudemd', 'claudemd/team.md', 'claudemd/dev/team.md'],
+  ])('checks each covered %s path against the whole team tree, whichever order the covers come in', async (_kind, shared, namespaced) => {
+    const { config, revision, selection, files } = team();
+    const check = async (paths: string[]) => coveredRefusal(config, { paths, revision, selections: [selection], files });
+
+    const alone = await check([shared]);
+
+    expect(alone?.message).toContain(`A task covers ${shared}, but its namespace dev delivers ${namespaced} in its place`);
+    expect(await check([namespaced, shared])).toEqual(alone);
+    expect(await check([shared, namespaced])).toEqual(alone);
+  });
+
+  it('still refuses a skill inside a covered namespace directory when no arm receives it', async () => {
+    const { config, revision, selection, files } = team({ excluded: ['deploy'] });
+    const refusal = await coveredRefusal(config, { paths: ['skills/dev', 'skills/dev/deploy'], revision, selections: [selection], files });
+
+    expect(refusal?.message).toContain('A task covers skills/dev/deploy, skill deploy, which the member excludes');
+  });
+
+  it.each([
     ['a path the revision does not have', ['skills/db/migrations'], 'arm_team_unresolved',
       'A task covers skills/db/migrations, which team revision {r} does not have. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
     ['teamai.yaml', ['teamai.yaml'], 'arm_team_unresolved',

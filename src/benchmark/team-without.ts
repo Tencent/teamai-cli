@@ -127,10 +127,8 @@ export async function coveredRefusal(
   // Every selection the run's arms pull under, so a path only a role arm receives is not refused. A path refuses
   // only when every selection's delivery leaves it unchanged: each read is the member as the clone's own pull reads
   // it, on a scope with no state of its own.
-  // Each path once, however many tasks cover it. A path an ancestor of another covered path covers subsumes:
-  // checking the ancestor answers both, and moving each out in turn would take the other with it.
-  const once = [...new Set(paths)];
-  const unique = once.filter((covered) => !once.some((other) => other !== covered && covered.startsWith(`${other}/`)));
+  // Each path once, however many tasks cover it, each checked on its own against the whole tree.
+  const unique = [...new Set(paths)];
 
   // One path at a time within a clone — each check renames its path out and back — while the selections run apart,
   // each in its own clone, so no check reads a clone another path is moved out of.
@@ -169,7 +167,7 @@ export async function coveredRefusal(
 /**
  * Why pull delivers the same with the first of `paths` that it does as without it, at the checkout of the team revision
  * `at` names, whose files are `files`, or undefined when each path changes what it delivers. Each path is set aside in
- * turn, with the others out of the checkout, and put back after.
+ * turn, with the others out of the checkout, and every path is back in the checkout when it returns.
  */
 async function firstUnchanged(
   at: LocalConfig,
@@ -178,9 +176,14 @@ async function firstUnchanged(
   const repo = at.repo.localPath;
   const held = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-without-'));
 
+  const out = new Set<string>();
+
   const move = async (from: string, to: string, one: string): Promise<void> => {
     await fs.mkdir(path.dirname(path.join(to, one)), { recursive: true });
     await fs.rename(path.join(from, one), path.join(to, one));
+
+    if (to === held) out.add(one);
+    else out.delete(one);
   };
 
   const present = (left: readonly string[]): string[] => files.filter((file) => !leavesOut(left, file));
@@ -208,6 +211,8 @@ async function firstUnchanged(
 
     return undefined;
   } finally {
+    // Every path goes back, so the next check in this checkout reads the whole tree.
+    for (const one of out) await move(held, repo, one);
     await fs.rm(held, { recursive: true });
   }
 }
