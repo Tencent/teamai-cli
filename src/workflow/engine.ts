@@ -2094,6 +2094,12 @@ export interface ParsedReport {
   ignored: string[];
 }
 
+/** Why a report's confined.model or confined.effort does not parse: each is an observation, never a bare name. */
+const CONFINED_OBSERVED = {
+  model: 'confined.model must be {"reported": "<model>"}, with "requested" and "alias" when known',
+  effort: 'confined.effort must be {"reported": "<effort>"}, with "requested" when known',
+} as const;
+
 /** A parsed `next` payload and the fields the CLI did not read from it. */
 export interface ParsedNextPayload {
   request: NextRequest;
@@ -2247,7 +2253,12 @@ export function parseReport(value: unknown): ParsedReport | string {
   if (record.confined !== undefined) {
     const confined = ConfinedRunReportSchema.safeParse(record.confined);
 
-    if (!confined.success) return 'confined must be what the confined run measured: its tool, isolation and access, and its model, effort and usage when known';
+    if (!confined.success) {
+      const field = confined.error.issues[0]?.path[0];
+
+      return field === 'model' || field === 'effort' ? CONFINED_OBSERVED[field] : 'confined must be what the confined run measured: its tool, isolation and access, and its model, effort and usage when known';
+    }
+
     report.confined = confined.data;
   }
 

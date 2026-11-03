@@ -152,6 +152,9 @@ describe('workflow engine', () => {
     [{ cost: { amount: 1 } }, 'cost must be an amount and a unit, as the tool stated it'],
     [{ cost: { amount: -1, unit: 'USD' } }, 'cost must be an amount and a unit, as the tool stated it'],
     [{ limit: 'turns' }, 'limit must be the lease limit that ended the turn: timeout, budget or max_turns'],
+    [{ confined: { tool: 'claude', model: 'claude-sonnet-5-5', isolation: 'verified', access: 'read' } }, 'confined.model must be {"reported": "<model>"}, with "requested" and "alias" when known'],
+    [{ confined: { tool: 'claude', effort: 'high', isolation: 'verified', access: 'read' } }, 'confined.effort must be {"reported": "<effort>"}, with "requested" when known'],
+    [{ confined: { tool: 'claude', isolation: 'sealed', access: 'read' } }, 'confined must be what the confined run measured: its tool, isolation and access, and its model, effort and usage when known'],
   ])('refuses a report with %j', (fields, message) => {
     expect(parseReport({ attempt: 'a00000000', revision: 1, outcome: 'success', driver: driverA, ...fields })).toBe(message);
   });
