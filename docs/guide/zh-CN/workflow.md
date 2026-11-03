@@ -294,9 +294,11 @@ steps:
 ```text
 $ teamai workflow start review-and-fix --driver local --tools default=claude
 ℹ Run r3f9a1c27d4e8b605 started. If it stops before it ends, continue it with: teamai workflow resume r3f9a1c27d4e8b605
-{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded"}}}
+{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded","branch":"teamai/r3f9a1c27d4e8b605/_run","record":"published"},"cancelled":[]}}
 ℹ Run r3f9a1c27d4e8b605 left its changes on branch teamai/r3f9a1c27d4e8b605/_run. Bring them in with: git merge teamai/r3f9a1c27d4e8b605/_run
 ```
+
+在编码会话中用 `--driver skill` 启动时，运行结束后 agent 会告诉你同一条分支和 `git merge` 命令。
 
 由一个有副本、或者位于副本里的步骤运行时，它的步骤沿用那份副本，不再打开别的副本。下面的 `fix` 提交到 `change` 的分支 `teamai/<run>/change/p1`，拉取请求里既有改动，也有对它的修复：
 

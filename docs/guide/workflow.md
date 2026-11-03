@@ -294,9 +294,11 @@ Started on its own, the run opens the copy on `teamai/<run>/_run`. `review` read
 ```text
 $ teamai workflow start review-and-fix --driver local --tools default=claude
 ℹ Run r3f9a1c27d4e8b605 started. If it stops before it ends, continue it with: teamai workflow resume r3f9a1c27d4e8b605
-{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded"}}}
+{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded","branch":"teamai/r3f9a1c27d4e8b605/_run","record":"published"},"cancelled":[]}}
 ℹ Run r3f9a1c27d4e8b605 left its changes on branch teamai/r3f9a1c27d4e8b605/_run. Bring them in with: git merge teamai/r3f9a1c27d4e8b605/_run
 ```
+
+Started from a coding session with `--driver skill`, the agent names the same branch and `git merge` line when the run ends.
 
 Run by a step that has a copy, or that is inside one, its steps continue that copy and open no other. Here `fix` commits to `change`'s branch, `teamai/<run>/change/p1`, and the pull request holds the change and its fixes:
 
