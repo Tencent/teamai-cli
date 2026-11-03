@@ -46,6 +46,8 @@ export const BenchmarkRecordSchema = z.object({
   /** The limits every trial's prompt ran under; absent when the suite set none. */
   limits: TrialLimitsSchema.optional(),
   baselineTeamRevision: z.string(),
+  /** The run ran only the tasks and arms `--task` and `--arm` chose, so it is never its suite's current version; absent: the whole suite. */
+  subset: z.literal(true).optional(),
   scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) })),
   tasks: z.array(z.object({ id: z.string(), startingCommit: z.string(), sourceHash: z.string(), baseline: z.enum(BASELINES) })),
   arms: z.array(z.object({
@@ -127,6 +129,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     repetitions: plan.repetitions,
     limits: plan.limits,
     baselineTeamRevision: plan.baselineTeamRevision,
+    subset: plan.subset,
     scorers: plan.scorers,
     tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task) })),
     arms: plan.arms,

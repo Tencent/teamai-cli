@@ -5,7 +5,8 @@
  *
  * Runs of one suite compare only while the suite's files stay the same, so what the page pools (an arm's pass rate and
  * usage, the task by arm heatmap) covers the runs of the suite's current version: the run `sourceHash` of the newest
- * run, over its suite file and each task file.
+ * run that ran the whole suite, over its suite file and each task file. A run of only some tasks or arms is current only
+ * while the suite has no whole run.
  * Each run still shows as a point of its own.
  */
 import { definedFields } from '../utils/defined-fields.js';
@@ -83,7 +84,7 @@ export interface ArmSeries {
   workflow?: string;
   /** The team role the arm's trial clones ran with; absent: the member's roles. */
   role?: string;
-  /** In the newest run of the suite. */
+  /** In the newest run that ran the whole suite. */
   isCurrent: boolean;
   /** Over the runs of the current version; absent for a configuration none of them ran. */
   pooled?: PooledArm;
@@ -164,7 +165,7 @@ export interface SuiteView {
   versions: SuiteVersion[];
   /** Current configurations in the suite's order, then the others, the one run last first. */
   arms: ArmSeries[];
-  /** The newest run's tasks, in its order. */
+  /** The tasks of the newest run that ran the whole suite, in its order. */
   tasks: TaskView[];
   /** Newest first. */
   runs: RunRow[];
@@ -302,7 +303,7 @@ function versionsOf(runs: readonly BenchmarkRunInput[]): SuiteVersion[] {
   return [...versions.values()].sort((left, right) => right.lastRunAt.localeCompare(left.lastRunAt));
 }
 
-/** The runs of one suite in the window, oldest first: those of its current version, and the newest. */
+/** The runs of one suite in the window, oldest first: those of its current version, and the newest that ran the whole suite, or the newest when none did. */
 interface SuiteRuns {
   runs: readonly BenchmarkRunInput[];
   current: readonly BenchmarkRunInput[];
@@ -627,15 +628,18 @@ export const BenchmarkHistory = {
     const newest = own.at(-1);
 
     if (!chosen || !newest) return { window, suites };
-    const version = runSourceHash(newest.benchmark);
-    const suiteRuns = { runs: own, current: own.filter(({ benchmark }) => runSourceHash(benchmark) === version), newest };
+    const whole = own.filter(({ benchmark }) => benchmark.subset === undefined);
+    const versioned = whole.length > 0 ? whole : own;
+    const reference = versioned.at(-1) ?? newest;
+    const version = runSourceHash(reference.benchmark);
+    const suiteRuns = { runs: own, current: own.filter(({ benchmark }) => runSourceHash(benchmark) === version), newest: reference };
 
     return {
       window,
       suites,
       selected: {
         suite: chosen.suite,
-        versions: versionsOf(own),
+        versions: versionsOf(versioned),
         arms: armsOf(suiteRuns),
         tasks: tasksOf(suiteRuns),
         runs: own.map(runRow).toReversed(),

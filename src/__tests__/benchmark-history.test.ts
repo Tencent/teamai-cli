@@ -17,7 +17,7 @@ const CODEX: Arm = { name: 'codex', tool: 'codex' };
  * first. A trial of an arm in `usage` ran its prompt, on the arm's tool or on the one `ranOn` names, unless its task is
  * in `unstarted`, and reported the tool version `versions` names for its tool.
  */
-function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {} }: {
+function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt, username = 'alice', source = 'reported', arms = [CLAUDE, CODEX], trials, invalid = [], notRun = [], usage = {}, ranOn = {}, unstarted = [], versions = {}, subset = false }: {
   id: string;
   suite?: string;
   version?: string;
@@ -34,6 +34,8 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt,
   ranOn?: Record<string, string>;
   unstarted?: string[];
   versions?: Record<string, string>;
+  /** The run ran only the tasks and arms `--task` and `--arm` chose. */
+  subset?: boolean;
 }): BenchmarkRunInput {
   const tasks = [...Object.keys(trials), ...invalid, ...notRun];
   const baseline = (task: string): Baseline => (invalid.includes(task) ? 'invalid' : notRun.includes(task) ? 'not_run' : 'valid');
@@ -41,7 +43,7 @@ function run({ id, suite = 'fix-auth', version = 'v1', taskEdit = '', startedAt,
   return {
     run: id, source, username, startedAt, outcome: 'succeeded',
     benchmark: {
-      suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [],
+      suite: { name: suite, sourceHash: version }, repetitions: 1, baselineTeamRevision: `team-${id}`, scorers: [], ...(subset ? { subset: true as const } : {}),
       tasks: tasks.map((task) => ({ id: task, startingCommit: 'a'.repeat(40), sourceHash: `task-${task}${taskEdit}`, baseline: baseline(task) })),
       arms: arms.map(({ team, ...arm }) => ({ ...arm, source: 'team', team: team ?? { kind: 'pulled' as const, revision: `team-${id}` } })),
       trials: Object.entries(trials).flatMap(([task, byArm]) => Object.entries(byArm).flatMap(([arm, results]) => results.map((result, repetition) => {
@@ -249,6 +251,32 @@ describe('BenchmarkHistory comparisons', () => {
       tasks: [{ task: 'login', from: { passed: 1, planned: 2 }, to: { passed: 2, planned: 2 } }, { task: 'logout', from: { passed: 0, planned: 1 }, to: { passed: 1, planned: 1 } }],
     });
     expect(arms.map(({ arm, team }) => ({ arm, team }))).toEqual(matrix.map(({ name, team }) => ({ arm: name, team: { kind: team?.kind } })));
+  });
+
+  it('keeps the newest whole-suite run as the current version after a run of some tasks and arms, and shows that run as the latest', () => {
+    const whole = run({ id: 'r1', startedAt: '2026-10-20T09:00:00Z', arms: matrix, trials: {
+      login: { 'claude-pulled': ['passed'], 'claude-none': ['failed'], 'codex-pulled': ['passed'], 'codex-none': ['failed'] },
+      logout: { 'claude-pulled': ['passed'], 'claude-none': ['failed'], 'codex-pulled': ['failed'], 'codex-none': ['passed'] },
+    } });
+    const chosen = run({ id: 'r2', startedAt: '2026-10-21T09:00:00Z', subset: true, arms: matrix.slice(0, 1), trials: { login: { 'claude-pulled': ['failed'] } } });
+
+    const selected = BenchmarkHistory.of({ runs: [whole, chosen], query: { windowDays: 90 }, now: NOW }).selected;
+
+    expect(selected?.versions[0]?.sourceHash).toBe(versionOf(whole));
+    expect(selected?.arms.map(({ arm, isCurrent }) => `${arm} ${isCurrent}`)).toEqual(matrix.map(({ name }) => `${name} true`));
+    expect(selected?.tasks.map(({ task }) => task)).toEqual(['login', 'logout']);
+    expect(selected?.comparisons.map(({ dimension, pairs }) => `${dimension} ${pairs}`)).toEqual(['team 2', 'team 2', 'tool 2', 'tool 2']);
+    expect(selected?.latest.run).toBe('r2');
+    expect(selected?.runs.map(({ run: id }) => id)).toEqual(['r2', 'r1']);
+  });
+
+  it('takes the newest run as the current version while every run of the suite ran only some of it', () => {
+    const chosen = run({ id: 'r1', startedAt: '2026-10-21T09:00:00Z', subset: true, arms: matrix.slice(0, 2), trials: { login: { 'claude-pulled': ['passed'], 'claude-none': ['failed'] } } });
+
+    const selected = BenchmarkHistory.of({ runs: [chosen], query: { windowDays: 90 }, now: NOW }).selected;
+
+    expect(selected?.versions.map(({ sourceHash }) => sourceHash)).toEqual([versionOf(chosen)]);
+    expect(selected?.comparisons.map(({ dimension, pairs }) => `${dimension} ${pairs}`)).toEqual(['team 1']);
   });
 
   it("pairs two arms that differ only in team over every trial, an error counted as not passed, in a run's pairs as in its history", () => {
