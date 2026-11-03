@@ -183,7 +183,7 @@ function verdictsIn(members: readonly [Member, ...Member[]], answer: string | un
 
 /** The entries of the judge's answer: one label per member, or one code for all of them. */
 function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run }: { answer: string | undefined; judged: string | undefined; run: JudgeRun | undefined }): Entry[] {
-  if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged === undefined || judged === '' ? 'without running' : judged}, so it gave no answer.`);
+  if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged || 'without running'}, so it gave no answer.`);
   const verdicts = verdictsIn(members, answer);
 
   if (!verdicts.ok) return failedAll(members, 'judge_answer_invalid', verdicts.message);

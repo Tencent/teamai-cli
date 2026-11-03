@@ -57,13 +57,9 @@ async function pastWait(attempt: ScoreAttempt, head: string, waitMs: number, now
   const file = pendingSinceFile(attempt, head);
   const since = await readFileIfExists(file);
 
-  if (since === null) {
-    await writeFileAtomic(file, now);
+  if (since === null) await writeFileAtomic(file, now);
 
-    return waitMs <= 0;
-  }
-
-  return Date.parse(since) + waitMs <= Date.parse(now);
+  return Date.parse(since ?? now) + waitMs <= Date.parse(now);
 }
 
 function outputOf(record: StageRecord): StageOutput {
