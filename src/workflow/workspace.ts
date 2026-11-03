@@ -310,16 +310,10 @@ export function levelsInside<TLevel extends Level>(outer: readonly TLevel[], lev
 }
 
 /**
- * A level on the way to a step instance: the run itself (`isRunLevel`, whose `instance` '' no step path equals), or a
- * step instance on the path, with its pass, the `defaults.role` in effect where it sits, and the `for_each` item it
- * runs for, at any depth.
+ * A level on the way to a step instance, with the `defaults.role` in effect where it sits: the run itself, or a step
+ * instance on the path, with its pass and the `for_each` item it runs for, at any depth.
  */
-interface PathLevel extends Level {
-  instance: string;
-  pass: number;
-  defaultRole?: string;
-  item?: { value: unknown };
-}
+type PathLevel = Level & { defaultRole?: string } & ({ kind: 'run' } | { kind: 'step'; instance: string; pass: number; item?: { value: unknown } });
 
 /**
  * The levels to step instance `path` in the run's definitions, outermost first: the run's own copy, then one level per
@@ -333,7 +327,7 @@ function levelsTo(run: StepTree, path: string): PathLevel[] {
   let item: { value: unknown } | undefined;
 
   for (const step of runLevels(run.definition)) {
-    const level: PathLevel = { instance: '', step, pass: 1 };
+    const level: PathLevel = { kind: 'run', step };
 
     if (defaultRole !== undefined) level.defaultRole = defaultRole;
     levels.push(level);
@@ -348,7 +342,7 @@ function levelsTo(run: StepTree, path: string): PathLevel[] {
 
     if (parsed?.index !== undefined) item = { value: instanceOf(run, instance)?.item };
     workflow = workflowRunBy(run, step, prefix);
-    const level: PathLevel = { instance, step, pass: instanceOf(run, instance)?.pass ?? 1 };
+    const level: PathLevel = { kind: 'step', instance, step, pass: instanceOf(run, instance)?.pass ?? 1 };
 
     if (defaultRole !== undefined) level.defaultRole = defaultRole;
 
@@ -363,10 +357,10 @@ function levelsTo(run: StepTree, path: string): PathLevel[] {
 }
 
 /** `levels` to `path` as the step itself, when the definitions have it, and the levels around it. */
-function splitLevels<TLevel extends { instance: string }>(levels: TLevel[], path: string): { own?: TLevel; ancestors: TLevel[] } {
+function splitLevels(levels: PathLevel[], path: string): { own?: PathLevel; ancestors: PathLevel[] } {
   const last = levels.at(-1);
 
-  return last?.instance === path ? { own: last, ancestors: levels.slice(0, -1) } : { ancestors: levels };
+  return last?.kind === 'step' && last.instance === path ? { own: last, ancestors: levels.slice(0, -1) } : { ancestors: levels };
 }
 
 /** The nearest level around `path` that opens the copy the steps inside it work in, the run's own included. */
@@ -376,7 +370,15 @@ function copyOwner(run: StepTree, path: string): PathLevel | undefined {
 
 /** The branch of the copy `owner` opens: the run's own copy, or the branch of the step instance and its pass. */
 function ownerBranch(runId: string, owner: PathLevel): string {
-  return isRunLevel(owner.step) ? runCopyBranch(runId) : branchName(runId, owner.instance, owner.pass);
+  switch (owner.kind) {
+    case 'run': return runCopyBranch(runId);
+    case 'step': return branchName(runId, owner.instance, owner.pass);
+    default: {
+      const unhandled: never = owner;
+
+      return unhandled;
+    }
+  }
 }
 
 /** The branch that pins the commit run `runId` started from on origin, so a driver's fetch of the run's branches brings it in. */
@@ -863,8 +865,8 @@ export function planWorkspace(
   const owner = ancestors.toReversed().find((ancestor) => opensCopy(ancestor.step));
   const modes = request.modes ?? ['read-only'];
 
-  const cloned = mode === 'clone' ? { clone: cloneOf(definition), instance: state.id, pass: state.pass ?? 1 }
-    : owner && cloneOf(owner.step) ? { clone: cloneOf(owner.step), instance: owner.instance, pass: owner.pass } : undefined;
+  const cloned = mode === 'clone' ? { clone: cloneOf(definition), branch: branchName(run.id, state.id, state.pass ?? 1) }
+    : owner && cloneOf(owner.step) ? { clone: cloneOf(owner.step), branch: ownerBranch(run.id, owner) } : undefined;
 
   // A copy runs with the role it was opened with; a step another file runs there may resolve another only by mistake.
   const conflict = copyRoleConflict(levels);
@@ -966,13 +968,7 @@ export function planWorkspace(
  * run, opened: what each runs with, and where to set the role instead.
  */
 function copyRoleFailure(path: string, levels: readonly PathRoleLevel[], { copy, resolved }: NonNullable<ReturnType<typeof copyRoleConflict<RoleIdSpec>>>): WorkflowFailure {
-  const opening = levels[copy.opener];
-  const instance = opening?.instance;
-
-  // The run's own copy gets its role from defaults.role, as a step's gets it from the step.
-  const opener = opening && isRunLevel(opening.step) ? { label: 'the run', on: 'as defaults.role', from: 'from defaults.role' }
-    : { label: `step "${instance}"`, on: `on step "${instance}"`, from: `from step "${instance}"` };
-
+  const opener = copyOpenerWords(levels[copy.opener]);
   const copyRole = copy.runsWith.kind === 'role' ? copy.runsWith.role.id : undefined;
   const failed = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
 
@@ -983,42 +979,65 @@ function copyRoleFailure(path: string, levels: readonly PathRoleLevel[], { copy,
   }
 
   const role = resolved.role.id;
+  const named = resolved.from === 'defaults' ? undefined : levels[resolved.from];
 
-  if (resolved.from === 'defaults') {
-    return failed(copyRole === undefined
-      ? `step "${path}" gets role ${role} from defaults.role but continues the copy ${opener.label} opened without a role, which every step there runs with; give the steps continuing that copy its role, or set role ${role} ${opener.on}`
-      : `step "${path}" gets role ${role} from defaults.role but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; give the steps continuing that copy its role, or set role ${role} ${opener.on}`);
+  switch (named?.kind) {
+    // The run names no role of its own: a role it gives is its defaults.role.
+    case undefined:
+    case 'run':
+      return failed(copyRole === undefined
+        ? `step "${path}" gets role ${role} from defaults.role but continues the copy ${opener.label} opened without a role, which every step there runs with; give the steps continuing that copy its role, or set role ${role} ${opener.on}`
+        : `step "${path}" gets role ${role} from defaults.role but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; give the steps continuing that copy its role, or set role ${role} ${opener.on}`);
+    case 'step': {
+      const { instance } = named;
+
+      if (instance === path) {
+        return failed(copyRole === undefined
+          ? `step "${path}" has role ${role} but continues the copy ${opener.label} opened without a role, which every step there runs with; remove role from step "${path}", or set it ${opener.on}`
+          : `step "${path}" has role ${role} but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; remove role from step "${path}", or set it ${opener.on}`);
+      }
+
+      return failed(copyRole === undefined
+        ? `step "${path}" gets role ${role} from step "${instance}" but continues the copy ${opener.label} opened without a role, which every step there runs with; remove role from step "${instance}", or set it ${opener.on}`
+        : `step "${path}" gets role ${role} from step "${instance}" but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; remove role from step "${instance}", or set it ${opener.on}`);
+    }
+
+    default: {
+      const unhandled: never = named;
+
+      return unhandled;
+    }
   }
+}
 
-  const named = levels[resolved.from]?.instance;
+/** How a role failure names the level that opened a copy, where to set its role, and where to remove it from. */
+function copyOpenerWords(opening: PathRoleLevel) {
+  switch (opening.kind) {
+    // The run's own copy gets its role from defaults.role, as a step's gets it from the step.
+    case 'run': return { label: 'the run', on: 'as defaults.role', from: 'from defaults.role' };
+    case 'step': return { label: `step "${opening.instance}"`, on: `on step "${opening.instance}"`, from: `from step "${opening.instance}"` };
+    default: {
+      const unhandled: never = opening;
 
-  if (named === path) {
-    return failed(copyRole === undefined
-      ? `step "${path}" has role ${role} but continues the copy ${opener.label} opened without a role, which every step there runs with; remove role from step "${path}", or set it ${opener.on}`
-      : `step "${path}" has role ${role} but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; remove role from step "${path}", or set it ${opener.on}`);
+      return unhandled;
+    }
   }
-
-  return failed(copyRole === undefined
-    ? `step "${path}" gets role ${role} from step "${named}" but continues the copy ${opener.label} opened without a role, which every step there runs with; remove role from step "${named}", or set it ${opener.on}`
-    : `step "${path}" gets role ${role} from step "${named}" but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; remove role from step "${named}", or set it ${opener.on}`);
 }
 
 /**
- * The contract of a step in the clone `instance` opened, `instance` itself or its nearest enclosing copy: the clone's
+ * The contract of a step in the clone on `branch`, opened by the step itself or its nearest enclosing copy: the clone's
  * commit is its base, whatever the run's, and its agent configuration; it merges nothing, as `needs` only order steps
  * there. It continues the clone's branch, held by the driver that opened it. A read-only step is refused: a clone has
  * no reader place.
  */
 function planClone(run: RunState, state: StepState, request: WorkspaceRequest, input: {
-  clone: ClonePlace; instance: string; pass: number; mode: WorkspaceMode; session: { session?: LeaseSession }; handback: boolean;
+  clone: ClonePlace; branch: string; mode: WorkspaceMode; session: { session?: LeaseSession }; handback: boolean;
 }): WorkspacePlan {
-  const { clone, mode, session, handback } = input;
+  const { clone, branch, mode, session, handback } = input;
 
   if (mode === 'read-only') {
     return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" runs read-only inside a clone, which has no reader place; give it workspace: continue` } };
   }
-
-  const branch = branchName(run.id, input.instance, input.pass);
 
   if (!handback && !(request.modes ?? []).includes('clone')) {
     return { mode, defer: { reason: `step "${state.id}" runs in a clone, which this driver does not provide`, needs: 'clone' } };
@@ -1189,8 +1208,8 @@ export function copyRoleConflict<TRole extends StepRoleSpec>(levels: readonly Ro
   return (resolved && writtenRole(resolved.role)) === copyRole ? undefined : { copy, resolved };
 }
 
-/** A level to a step instance as its role resolves, with the instance it is, as `PathLevel` has it. */
-type PathRoleLevel = RoleLevel<RoleIdSpec> & { instance: string };
+/** A level to a step instance as its role resolves: the run, or the step instance it is, as `PathLevel` has it. */
+type PathRoleLevel = RoleLevel<RoleIdSpec> & ({ kind: 'run' } | { kind: 'step'; instance: string });
 
 /**
  * The role levels to step instance `path` in the run's definitions, or none when they have no such step. A role
@@ -1203,17 +1222,35 @@ function roleLevelsOf(run: StepTree, path: string): PathRoleLevel[] | WorkflowFa
   if (!splitLevels(levels, path).own) return [];
   const rendered: PathRoleLevel[] = [];
 
-  for (const { instance, step, defaultRole, item } of levels) {
-    const written = roleLevelOf(step, defaultRole);
-    const role = written.role === undefined ? undefined : itemRoleOf({ path: instance, role: written.role, item });
+  for (const level of levels) {
+    const { step, defaultRole } = level;
+    let roleLevel: PathRoleLevel;
 
-    if (role !== undefined && 'code' in role) return role;
-    const level: PathRoleLevel = { instance, step };
+    switch (level.kind) {
+      // The run names no role of its own: its copy gets the one in defaults.role.
+      case 'run':
+        roleLevel = { kind: 'run', step };
+        break;
+      case 'step': {
+        const written = roleLevelOf(step, defaultRole);
+        const role = written.role === undefined ? undefined : itemRoleOf({ path: level.instance, role: written.role, item: level.item });
 
-    if (role !== undefined) level.role = role;
+        if (role !== undefined && 'code' in role) return role;
+        roleLevel = { kind: 'step', instance: level.instance, step };
 
-    if (defaultRole !== undefined) level.defaultRole = defaultRole;
-    rendered.push(level);
+        if (role !== undefined) roleLevel.role = role;
+        break;
+      }
+
+      default: {
+        const unhandled: never = level;
+
+        return unhandled;
+      }
+    }
+
+    if (defaultRole !== undefined) roleLevel.defaultRole = defaultRole;
+    rendered.push(roleLevel);
   }
 
   return rendered;
