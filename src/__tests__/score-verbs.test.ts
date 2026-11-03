@@ -841,6 +841,19 @@ describe('score label and score write', () => {
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
   });
 
+  it('write a session\'s label with the agent its captures agree on and the one model its messages name', async () => {
+    const config = await team({}, { quality: scorer() });
+    plantSession(path.join(root, 'app'), 'one', 'Fix the login bug.');
+    const observed = { v: 1, tool: { name: 'claude', version: '2.1.308' }, model: { requested: 'claude-x' }, teamai: '1.0.0', driver: 'session' };
+    const captures = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 'one');
+    fs.mkdirSync(captures, { recursive: true });
+    const captureId = '0b6f2a52-5d7e-4c7e-9a43-6a3c1d0e2f10';
+    fs.writeFileSync(path.join(captures, `${captureId}.json`), JSON.stringify({ captureId, platform: 'claude-code', sessionId: 'one', capturedAt: '2026-11-03T09:00:00.000Z', agent: observed }));
+    await walk(config, 'session:claude-code:one', { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'It fixed the bug.' } } });
+
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good', agent: { tool: observed.tool, model: { requested: 'claude-x', reported: 'claude-x' } } }]);
+  });
+
   it('settle a group whose evidence failed as a failed attempt, so automatic judging does not start it again', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config, 'session-gone');
