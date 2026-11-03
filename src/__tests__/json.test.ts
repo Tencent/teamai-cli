@@ -155,6 +155,14 @@ describe('editJsonText', () => {
     expect(editJsonText(stale, { Stop: [{ command: 'lint' }] })).toBe('{\n  "Stop": [\n    // runs my linter\n    { "command": "lint" }\n  ]\n}\n');
   });
 
+  it('finds a comma written after a comment, when it removes or appends next to a key', () => {
+    const noted = '{"a": 1 /* note */, "b": 2}';
+
+    expect(editJsonText(noted, { b: 2 })).toBe('{"b": 2}');
+    expect(parseJsonAs(editJsonText(noted, { a: 1 }), 'json-comments')).toEqual({ a: 1 });
+    expect(parseJsonAs(editJsonText('{\n  "a": 1 /* note */,\n}\n', { a: 1, b: 2 }), 'jsonc')).toEqual({ a: 1, b: 2 });
+  });
+
   it('leaves the text as it is when the value has not changed', () => {
     expect(editJsonText(settings, parseJsonAs(settings, 'jsonc'))).toBe(settings);
   });

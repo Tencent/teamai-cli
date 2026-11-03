@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { applyEdits, findNodeAtLocation, modify, parseTree, printParseErrorCode, type FormattingOptions, type JSONPath, type Node, type ParseError } from 'jsonc-parser';
+import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree, printParseErrorCode, type FormattingOptions, type JSONPath, type Node, type ParseError, SyntaxKind } from 'jsonc-parser';
 import JSON5 from 'json5';
 import { z } from 'zod';
 import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue } from '../types.js';
@@ -160,6 +160,15 @@ function keptElements(before: readonly JsonValue[], after: readonly JsonValue[])
 /** A comment that ends on its line, after optional blanks: `// …` or a one-line `/* … *\/`. */
 const LINE_COMMENT = /^[ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)?/;
 
+/** Where the comma after `from` ends, when the next token there is one, past any blank or comment between them. */
+function commaAfter(text: string, from: number): number | undefined {
+  const scanner = createScanner(text, true);
+
+  scanner.setPosition(from);
+
+  return scanner.scan() === SyntaxKind.CommaToken ? scanner.getTokenOffset() + scanner.getTokenLength() : undefined;
+}
+
 /** The node at `path` in `text`, read as `jsonc`, which accepts every syntax `editJsonText` edits. */
 function nodeAt(text: string, path: JSONPath): Node | undefined {
   const root = parseTree(text, [], { allowTrailingComma: true });
@@ -176,9 +185,9 @@ function withoutNode(text: string, path: JSONPath): string {
   if (node === undefined || siblings === undefined) return text;
   let start = node.offset;
   let end = node.offset + node.length;
-  const ownComma = /^[ \t]*,/.exec(text.slice(end));
+  const ownComma = commaAfter(text, end);
 
-  if (ownComma) end += ownComma[0].length;
+  if (ownComma !== undefined) end = ownComma;
   end += LINE_COMMENT.exec(text.slice(end))?.[0].length ?? 0;
   const lineStart = text.lastIndexOf('\n', start - 1) + 1;
   const lineEnd = /^[ \t]*(?:\r?\n|$)/.exec(text.slice(end));
@@ -196,11 +205,10 @@ function withoutNode(text: string, path: JSONPath): string {
   const previous = index > 0 ? siblings[index - 1] : undefined;
 
   // The last one goes with no comma of its own: the one before it loses the comma that would now trail.
-  if (ownComma || previous === undefined || index !== siblings.length - 1) return removed;
-  const previousEnd = previous.offset + previous.length;
-  const comma = /^[ \t]*,/.exec(removed.slice(previousEnd));
+  if (ownComma !== undefined || previous === undefined || index !== siblings.length - 1) return removed;
+  const comma = commaAfter(removed, previous.offset + previous.length);
 
-  return comma ? removed.slice(0, previousEnd + comma[0].length - 1) + removed.slice(previousEnd + comma[0].length) : removed;
+  return comma === undefined ? removed : removed.slice(0, comma - 1) + removed.slice(comma);
 }
 
 /**
@@ -222,12 +230,12 @@ function withAppended(text: string, path: JSONPath, key: string | null, value: J
   const eol = formattingOptions.eol ?? '\n';
   const rendered = (key === null ? '' : `${JSON.stringify(key)}: `) + JSON.stringify(value, null, unit).split('\n').join(`${eol}${indent}`);
   let at = last.offset + last.length;
-  const comma = /^[ \t]*,/.exec(text.slice(at));
+  const comma = commaAfter(text, at);
   const lineComment = (from: number): number => from + (LINE_COMMENT.exec(text.slice(from))?.[0].length ?? 0);
 
   // A member list written with a trailing comma keeps one.
-  if (comma) {
-    at = lineComment(at + comma[0].length);
+  if (comma !== undefined) {
+    at = lineComment(comma);
 
     return `${text.slice(0, at)}${eol}${indent}${rendered},${text.slice(at)}`;
   }
