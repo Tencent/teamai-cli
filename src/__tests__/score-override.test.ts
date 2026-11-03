@@ -98,6 +98,18 @@ describe('a team teamai-score.yaml', () => {
     ]);
   });
 
+  it('is refused when it renames the plan or the judge step, which teamai score and its drain read the run by', async () => {
+    const renamedPlan = SHIPPED.replace('  - id: plan\n', '  - id: sample\n').replace('needs: [plan]', 'needs: [sample]').replaceAll('steps.plan.outputs.groups', 'steps.sample.outputs.groups');
+    const renamedJudge = SHIPPED.replace('        - id: judge\n', '        - id: verdict\n').replace('needs: [evidence, judge]', 'needs: [evidence, verdict]').replaceAll('steps.judge.', 'steps.verdict.');
+
+    expect(await pulled({ 'teamai-score': renamedPlan })).toMatchObject({ source: 'default', refused: [
+      'workflows/teamai-score.yaml:1: field "steps": drops step plan, which teamai score and its drain read the groups of a run from. Keep it',
+    ] });
+    expect((await pulled({ 'teamai-score': renamedJudge })).refused).toContain(
+      'workflows/teamai-score.yaml:1: field "steps": drops step score.judge, which teamai score and its drain read a judge still open from. Keep it',
+    );
+  });
+
   it('says where the publish step must publish', async () => {
     expect((await pulled({ 'teamai-score': shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }') })).refused).toEqual([
       'workflows/teamai-score.yaml:1: field "steps.score.publish": step "score.publish" runs teamai score publish without deliver: publish in workspace: { team: { branch: teamai-reports } }, where every member\'s labels are. Give it both, as teamai\'s default teamai-score does',

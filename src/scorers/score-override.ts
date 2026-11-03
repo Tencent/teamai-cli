@@ -10,8 +10,18 @@ import { canonicalJson } from '../utils/canonical-json.js';
 import { stepWorkflow, type ScoreOverrideCode, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
 import { confinedOf } from '../workflow/workspace.js';
 
-/** The steps of the inline `score` workflow a team file must keep; `check` too while a scorer here has a check. */
-const KEPT = ['evidence', 'label', 'write', 'publish', 'settle'] as const;
+const LABELS_GO_THROUGH = 'which every label of teamai\'s default teamai-score goes through';
+
+/** The steps a team file must keep, by path, with why; `score.check` too while a scorer here has a check. */
+const KEPT = {
+  plan: 'which teamai score and its drain read the groups of a run from',
+  'score.evidence': LABELS_GO_THROUGH,
+  'score.judge': 'which teamai score and its drain read a judge still open from',
+  'score.label': LABELS_GO_THROUGH,
+  'score.write': LABELS_GO_THROUGH,
+  'score.publish': LABELS_GO_THROUGH,
+  'score.settle': LABELS_GO_THROUGH,
+} as const;
 
 const PUBLISH = 'teamai score publish';
 
@@ -151,8 +161,12 @@ function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefin
 
   const kept = new Set(steps.flatMap(({ list, path }) => (list === 'steps' ? [path] : [])));
 
-  for (const id of [...KEPT, ...(scorerHasCheck ? ['check'] : [])]) {
-    if (!kept.has(`score.${id}`)) found.push({ code: 'score_override_step_missing', field: 'steps', message: `drops step score.${id}, which every label of teamai's default teamai-score goes through${id === 'check' ? ' while a scorer here has a check' : ''}. Keep it` });
+  const required: Array<[string, string]> = Object.entries(KEPT);
+
+  if (scorerHasCheck) required.push(['score.check', `${LABELS_GO_THROUGH} while a scorer here has a check`]);
+
+  for (const [path, why] of required) {
+    if (!kept.has(path)) found.push({ code: 'score_override_step_missing', field: 'steps', message: `drops step ${path}, ${why}. Keep it` });
   }
 
   return found.map((problem) => ({ file, line: 1, column: 1, ...problem }));
