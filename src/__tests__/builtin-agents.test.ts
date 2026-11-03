@@ -17,6 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { deployBuiltinAgents, BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam } from '../builtin-agents.js';
 import { contentHash, openLedger } from '../resources/delivered-copies.js';
+import { recordDelivery } from './helpers/delivered-checkout.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 
@@ -178,6 +179,28 @@ describe('deployBuiltinAgents', () => {
     await deployBuiltinAgents(recallOn({ claude: { agents: '.claude/agents' } }), localConfig);
 
     expect(await fse.readFile(path.join(homeDir, '.claude/agents/teamai-recall.md'), 'utf8')).toContain('knowledge retrieval agent');
+  });
+
+  it('counts a team teamai-recall held for its model only where its copy still is', async () => {
+    await fse.outputFile(
+      path.join(localConfig.repo.localPath, 'agents', 'teamai-recall.yaml'),
+      'name: teamai-recall\ndescription: Our recall\ninstructions: Search the wiki.\nmodel: strong\n',
+    );
+    // An aliases file that does not parse holds the agent; the record says what an earlier pull rendered it with.
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'models/aliases.yaml'), 'aliases: 5\n');
+    const copy = path.join(homeDir, '.claude/agents/teamai-recall.md');
+    await recordDelivery(localConfig, {
+      rev: 'abc123', targets: ['claude'], agentModels: { 'teamai-recall': { claude: { step: 'strong', model: 'opus', alias: 'strong' } } },
+    });
+    const config = recallOn({ claude: { agents: '.claude/agents' } });
+
+    await fse.writeFile(copy, '# the held team copy');
+    await deployBuiltinAgents(config, localConfig);
+    expect(await fse.readFile(copy, 'utf8')).toBe('# the held team copy');
+
+    await fse.remove(copy);
+    await deployBuiltinAgents(config, localConfig);
+    expect(await fse.readFile(copy, 'utf8')).toContain('knowledge retrieval agent');
   });
 
   it('leaves the team copy in a directory two tools share when the team agent targets only one of them', async () => {

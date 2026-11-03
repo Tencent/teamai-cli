@@ -125,7 +125,7 @@ async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: false });
 
   // Pull delivers the team's copy, which recall disable removed.
-  if ((await builtinAgentsReplacedByTeam(teamConfig, localConfig)).has(RECALL_AGENT)) {
+  if (((await builtinAgentsReplacedByTeam(teamConfig, localConfig)).get(RECALL_AGENT)?.size ?? 0) > 0) {
     log.info("Your team replaces the teamai-recall agent: run `teamai pull` to get the team's copy back.");
   }
 

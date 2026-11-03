@@ -1405,8 +1405,8 @@ export class AgentsHandler extends ResourceHandler {
    * Where pull writes team agent `item` in this directory, one destination per
    * tool that receives it (`resolveRenders`: targets, a tool that rejects it,
    * a model that resolves), or why it writes it nowhere: the file cannot be
-   * read, or does not parse. A copy held for its model counts at the
-   * destination it occupies, rendered with the model recorded for it.
+   * read, or does not parse. A copy held for its model counts where it still
+   * is, at the destination the model recorded for it renders.
    */
   async deliveryDestinations(
     teamConfig: TeamaiConfig,
@@ -1425,9 +1425,14 @@ export class AgentsHandler extends ResourceHandler {
 
     const { recordedAgentModels } = await import('../pull.js');
     const recorded = (await recordedAgentModels(localConfig))[item.name];
-    const renders = await this.resolveRenders(teamConfig, localConfig, item, undefined, recorded);
+    const delivered = (await this.resolveRenders(teamConfig, localConfig, item)).map((render) => render.dest);
+    const held: string[] = [];
 
-    return { ok: true, dests: renders.map((render) => render.dest) };
+    for (const { dest } of recorded ? await this.resolveRenders(teamConfig, localConfig, item, undefined, recorded) : []) {
+      if (!delivered.includes(dest) && await pathExists(dest)) held.push(dest);
+    }
+
+    return { ok: true, dests: [...delivered, ...held] };
   }
 
   private async parsedSpec(item: AgentResourceItem): Promise<AgentSpec | undefined> {
