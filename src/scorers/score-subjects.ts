@@ -10,6 +10,8 @@ import { stepDefinitions } from '../workflow/scope.js';
 import { installOwner, readRuns, RunIdSchema } from '../workflow/store.js';
 import { stepWorkflow, type RunState, type WorkflowDefinition, type WorkflowStep } from '../workflow/types.js';
 import type { RunSubject } from './label.js';
+import { removeSubjectEvidence } from './evidence.js';
+import { scoresDir } from './home.js';
 import { Marks, type MarkFacts } from './marks.js';
 import { PassScoring } from './pass-scoring.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
@@ -166,9 +168,11 @@ export const ScoreSubjects = {
   /**
    * The subjects automatic judging starts again, once each, sorted: those whose mark is a lapse, or waits on CI that has
    * since finished or outwaited the ci step's `--wait`, and the passes no teamai-score run planned, of each run inside its 14 days.
+   * The evidence staged for a pass whose marks all closed or expired is removed first.
    */
   async lapsed(config: LocalConfig, now: string): Promise<string[]> {
     const facts = markFacts(config, now);
+    await removeSubjectEvidence(scoresDir(config), await Marks.closedPasses(config, facts));
     const marks = await Marks.restartable(config, facts);
     const list = new Set<string>();
     const install = (await installOwner(config)).id;

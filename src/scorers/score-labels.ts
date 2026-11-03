@@ -18,7 +18,9 @@ import { isIsolated } from '../workflow/workspace.js';
 import { JudgeAnswerSchema, verdictsOf } from './batch.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
+import { removeSubjectEvidence } from './evidence.js';
 import { EvidenceDir, readRecord, type GroupRecord } from './evidence-dir.js';
+import { scoresDir } from './home.js';
 import { chooseJudgeModel } from './judge-model.js';
 import { JUDGE_FAILURES, labelVersion, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
@@ -291,7 +293,10 @@ function keysOf(subject: Subject, scorers: ReadonlyArray<{ name: string; pin?: P
   });
 }
 
-/** Closes each key the attempt's root run holds open with its outcome; a key it does not hold, as a hand label's, is left alone. */
+/**
+ * Closes each key the attempt's root run holds open with its outcome; a key it does not hold, as a hand label's, is left
+ * alone. A pass whose every mark is then closed has its evidence staged from a clone removed: no judge reads it again.
+ */
 async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: MarkKey; outcome: MarkOutcome }>, now: string): Promise<{ ok: true; closed: number } | Refusal> {
   const facts = markFacts(attempt.config, now);
   const states = await Marks.states(attempt.config, outcomes.map(({ key }) => key), facts);
@@ -305,6 +310,8 @@ async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: M
   for (const { key, outcome } of held) {
     if ((await Marks.close(attempt.config, [key], outcome, facts)).status === 'busy') return refused('busy', 'Another teamai process is writing the scoring marks of this data home. Run the step again.');
   }
+
+  await removeSubjectEvidence(scoresDir(attempt.config), await Marks.closedPasses(attempt.config, facts));
 
   return { ok: true, closed: held.length };
 }

@@ -27,7 +27,7 @@ import { Marks } from '../scorers/marks.js';
 import { PassScoring } from '../scorers/pass-scoring.js';
 import { RunScorers } from '../scorers/run-scorers.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
-import { evidenceHash } from '../scorers/scoring-evidence.js';
+import { evidenceHash, stageEvidence } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { checkConfinedDir } from '../workflow/confined-place.js';
 import { readRun, RunIdSchema, runScratchDir, updateRun } from '../workflow/store.js';
@@ -803,6 +803,39 @@ const marksOf = async (config: LocalConfig, runId: string, scorers: string[]) =>
   Marks.states(config, scorers.map((name) => ({ scorer: name, subject: { kind: 'run' as const, subject: { runId, step: 'review', pass: 1 } } })), { now: NOW, readRun: async () => ({ ended: true, changedAt: NOW }) });
 
 describe('score label and score write', () => {
+  it('remove the evidence staged from a clone once every mark of its pass closed, and keep it while one waits for CI', async () => {
+    const config = await team({ ship: SHIP }, { clarity: scorer({ extra: 'stages: [protected]\n' }), delivered: scorer() });
+    const runId = await deliveredRun(config);
+    const run = await readRun(config, runId);
+    if (run === 'missing' || run === 'corrupt') throw new Error(run);
+    const copy = await stageEvidence(config, run, { runId, step: 'change', pass: 1 }, { checkout: config.projectRoot ?? '', untrustedEnv: process.env });
+    const judged = { judge: { answer: { label: 'good', reasoning: 'ok' } }, inputs: { batch: true } };
+
+    expect(copy !== undefined && fs.existsSync(copy)).toBe(true);
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
+    expect((await walk(config, `run:${runId}:change:1`, judged)).answers.get('score[1].label')).toMatchObject({ ok: true, output: { labels: [{ scorer: 'delivered', code: 'ci_pending' }] } });
+    expect(fs.existsSync(copy ?? '')).toBe(true);
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'passed' });
+    expect((await walk(config, `run:${runId}:change:1`, judged)).answers.get('score[0].label')).toMatchObject({ ok: true, output: { labels: [{ scorer: 'delivered' }] } });
+    expect(fs.existsSync(copy ?? '')).toBe(false);
+  });
+
+  it('remove, when the next run lists what lapsed, the evidence staged for a pass whose marks expired', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const runId = await deliveredRun(config);
+    const run = await readRun(config, runId);
+    if (run === 'missing' || run === 'corrupt') throw new Error(run);
+    const copy = await stageEvidence(config, run, { runId, step: 'change', pass: 1 }, { checkout: config.projectRoot ?? '', untrustedEnv: process.env });
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
+    await walk(config, `run:${runId}:change:1`);
+    const lapsed = (now: string) => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now });
+
+    expect(await lapsed(NOW)).toEqual({ ok: true, output: { list: [] } });
+    expect(fs.existsSync(copy ?? '')).toBe(true);
+    expect(await lapsed('2027-01-01T00:00:00.000Z')).toEqual({ ok: true, output: { list: [] } });
+    expect(fs.existsSync(copy ?? '')).toBe(false);
+  });
+
   it('label each scorer of a batch from the judge\'s answer, print no reasoning, and write them with what judged, closing their marks', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);

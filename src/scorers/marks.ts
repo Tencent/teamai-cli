@@ -12,7 +12,7 @@ import type { LocalConfig } from '../types.js';
 import { pathExists, readFileSafe, writeFileAtomic } from '../utils/fs.js';
 import { carriedMarks, type CarriedMark } from './attempts-upgrade.js';
 import { scoresDir, scoresLocked } from './home.js';
-import { JUDGE_FAILURES, type JudgeFailureCode } from './label.js';
+import { JUDGE_FAILURES, type JudgeFailureCode, type RunSubject } from './label.js';
 import { Subject } from './subject.js';
 
 /** The fourth lapse closes a mark. */
@@ -415,6 +415,18 @@ export const Marks = {
 
   /** Whether automatic judging starts a mark in `state`: never marked, waiting for CI, or a lapse before the fourth. */
   startsAgain,
+
+  /** The passes with a mark, each of whose marks is closed or expired: none open, waiting for CI or to start again. */
+  async closedPasses(config: LocalConfig, facts: MarkFacts): Promise<RunSubject[]> {
+    const { newest } = await readLedger(config, facts.now);
+    const passes = [...newest.values()].flatMap(({ key, line }) => (key.subject.kind === 'run' ? [{ key, line, pass: key.subject.subject }] : []));
+    const states = await Promise.all(passes.map(async ({ key, line }) => (await derive(key, line, facts)).state));
+    const isLive = (state: MarkState | undefined) => state !== undefined && (state.kind === 'open' || startsAgain(state));
+    const live = new Set(passes.flatMap(({ key }, at) => (isLive(states[at]) ? [Subject.format(key.subject)] : [])));
+    const byId = new Map(passes.map(({ key, pass }) => [Subject.format(key.subject), pass]));
+
+    return [...byId].flatMap(([id, pass]) => (live.has(id) ? [] : [pass]));
+  },
 
   /** The marks automatic judging starts again: lapses before the fourth, and marks waiting for CI, none expired. */
   async restartable(config: LocalConfig, facts: MarkFacts): Promise<Array<{ key: MarkKey; state: Extract<MarkState, { kind: 'lapsed' | 'waiting' }> }>> {
