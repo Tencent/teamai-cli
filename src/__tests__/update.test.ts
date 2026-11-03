@@ -388,6 +388,20 @@ describe('checkForUpdate', () => {
 // ─── Test #7: Policy=auto, npm install executes ─────────
 
 describe('doUpdate', () => {
+  it('keeps the negative cache for automatic updates', async () => {
+    mockedLoadState.mockResolvedValue({
+      ...defaultState,
+      lastUpdateCheck: new Date().toISOString(),
+      availableUpdate: null,
+    });
+
+    await doUpdate(null);
+
+    expect(mockedExecSync).not.toHaveBeenCalled();
+    expect(mockedSaveState).not.toHaveBeenCalled();
+    expect(mockedLog.info).toHaveBeenCalledWith(expect.stringContaining('Already up to date'));
+  });
+
   it('should execute npm install when policy is auto and update available', async () => {
     mockedExecSync
       .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' }) // npm view
@@ -689,6 +703,74 @@ describe('checkForUpdate with corrupted state', () => {
 // ─── Test: update() entry point ─────────────────────────
 
 describe('update', () => {
+  it.each([{}, { check: true }, { dryRun: true }, { check: true, dryRun: true }])(
+    'queries the registry despite a fresh negative cache (%j)', async (options) => {
+      mockedLoadState.mockResolvedValue({
+        ...defaultState,
+        lastUpdateCheck: new Date().toISOString(),
+        availableUpdate: null,
+      });
+      mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+      await update(options);
+
+      expect(mockedExecSync).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.arrayContaining(['view', 'version']),
+        expect.any(Object),
+      );
+      if (options.check || options.dryRun) {
+        expect(mockedLog.info).toHaveBeenCalledWith(expect.stringContaining('v99.0.0'));
+        expectNoInstall();
+      } else {
+        expect(mockedLog.success).toHaveBeenCalledWith('Updated teamai to v99.0.0');
+      }
+      if (options.dryRun) expect(mockedSaveState).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([{ check: true }, { dryRun: true }])(
+    'reports the last check when the registry cannot be reached (%j)', async (options) => {
+      mockedLoadState.mockResolvedValue({
+        ...defaultState,
+        lastUpdateCheck: new Date().toISOString(),
+        availableUpdate: '99.0.0',
+      });
+      mockedExecSync.mockRejectedValue(new Error('E500'));
+
+      await update(options);
+
+      expect(mockedLog.info).not.toHaveBeenCalledWith(expect.stringContaining('Already up to date'));
+      expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining('the last check found v99.0.0'));
+      expectNoInstall();
+    },
+  );
+
+  it.each([{ check: true }, {}])(
+    'says the update status is unknown without a recent check (%j)', async (options) => {
+      mockedExecSync.mockRejectedValue(new Error('E500'));
+
+      await update(options);
+
+      expect(mockedLog.info).not.toHaveBeenCalledWith(expect.stringContaining('Already up to date'));
+      expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining('update status is unknown'));
+    },
+  );
+
+  it('refreshes a cached available version on an explicit check', async () => {
+    mockedLoadState.mockResolvedValue({
+      ...defaultState,
+      lastUpdateCheck: new Date().toISOString(),
+      availableUpdate: '98.0.0',
+    });
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+    await update({ check: true });
+
+    expect(mockedLog.info).toHaveBeenCalledWith(expect.stringContaining('v99.0.0'));
+    expect(mockedSaveState).toHaveBeenCalledWith(expect.objectContaining({ availableUpdate: '99.0.0' }));
+  });
+
   it.each([{}, { check: true }])('only checks without saving state under --dry-run (%j)', async (options) => {
     mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
