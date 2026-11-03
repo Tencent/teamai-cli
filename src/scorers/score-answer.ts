@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
+import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
 import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { labelId, labelVersion, type ScoreLabel } from './label.js';
@@ -16,8 +17,6 @@ const LabelEntriesSchema = z.object({ labels: z.array(z.object({ scorer: z.strin
 
 const GroupsSchema = z.object({ groups: z.array(z.object({ scorers: z.string() })) });
 
-const NOT_PLANNED = 'it was not planned: another teamai-score run holds its judge work';
-
 /** Why a scorer of the run got no label, as the member reads it. */
 const UNLABELLED = new Map([
   ['check_could_not_run', 'its check could not run, so no judge ran'],
@@ -25,51 +24,83 @@ const UNLABELLED = new Map([
   ['judge_failed', 'its judge failed'],
   ['judge_answer_invalid', 'its judge answered outside the answer schema'],
   ['judge_tool_unavailable', 'no judge tool here runs it'],
-  ['not_planned', NOT_PLANNED],
 ]);
 
-type Outcome = { scorer: string } & ({ kind: 'labelled'; label: ScoreLabel | undefined; value: string } | { kind: 'unlabelled'; code: string; message: string } | { kind: 'pending' });
+const NOT_PLANNED = 'it was not planned: another teamai-score run holds its judge work';
 
-/** What run `run` gave each scorer the person named: a label, a code, or a judge step still open. */
+const OPEN = new Set(['pending', 'waiting', 'leased', 'running']);
+
+/** What the label step of one item gave a scorer, with what its judge step said when that failed. */
+type Entry = z.infer<typeof LabelEntriesSchema>['labels'][number] & { why?: string };
+
+/** How the item of one plan group stands: a step still open for a driver, a step that broke, or every step done. */
+type ItemEnd = { kind: 'open' } | { kind: 'broke'; why: string } | { kind: 'done' };
+
+interface Item {
+  entries: ReadonlyMap<string, Entry>;
+  end: ItemEnd;
+}
+
+type Outcome = { scorer: string } & ({ kind: 'labelled'; label: ScoreLabel } | { kind: 'unlabelled'; code: string; message: string } | { kind: 'pending' });
+
+/** What a step that failed or was cancelled says of why; undefined for any other step. */
+function reasonOf(step: StepState | undefined): string | undefined {
+  return step?.status === 'failed' || step?.status === 'cancelled' ? step.failure?.message : undefined;
+}
+
+/** The item of plan group `index` in `run`. */
+function itemOf(run: RunState, index: number): Item {
+  const steps = run.steps.filter((step) => step.id.startsWith(`score[${index}].`));
+  const labelled = steps.find((step) => step.id === `score[${index}].label`);
+  const why = reasonOf(steps.find((step) => step.id === `score[${index}].judge`));
+  const listed = LabelEntriesSchema.safeParse(labelled?.status === 'succeeded' ? labelled.outputs : undefined).data?.labels ?? [];
+  const entries = new Map(listed.map((entry): [string, Entry] => [entry.scorer, entry.code === 'judge_failed' && why !== undefined ? { ...entry, why } : entry]));
+  const broke = steps.find((step) => step.status === 'failed' || step.status === 'cancelled');
+
+  if (steps.some((step) => OPEN.has(step.status))) return { entries, end: { kind: 'open' } };
+
+  if (!broke) return { entries, end: { kind: 'done' } };
+  const reason = reasonOf(broke);
+
+  return { entries, end: { kind: 'broke', why: `step ${broke.id} ${broke.status}${reason === undefined ? '' : `: ${reason}`}` } };
+}
+
+/** What a scorer the run gave no label, and no code, gets from how its item stands. */
+function unwritten(scorer: string, end: ItemEnd): Outcome {
+  switch (end.kind) {
+    case 'open':
+      return { scorer, kind: 'pending' };
+    case 'broke':
+      return { scorer, kind: 'unlabelled', code: 'score_step_failed', message: end.why };
+    case 'done':
+      return { scorer, kind: 'unlabelled', code: 'score_step_failed', message: 'the run wrote no label for it' };
+    default: {
+      const unhandled: never = end;
+
+      return unhandled;
+    }
+  }
+}
+
+/** What `scorer` got from `item`, its group's item, of which `written` holds the labels written since the run started. */
+function outcomeOf(scorer: string, item: Item | undefined, written: readonly ScoreLabel[]): Outcome {
+  if (item === undefined) return { scorer, kind: 'unlabelled', code: 'not_planned', message: NOT_PLANNED };
+  const entry = item.entries.get(scorer);
+
+  if (entry && entry.code !== '') return { scorer, kind: 'unlabelled', code: entry.code, message: `${UNLABELLED.get(entry.code) ?? entry.code}${entry.why === undefined ? '' : `: ${entry.why}`}` };
+  const [label] = written.filter((one) => one.scorer === scorer).sort((left, right) => (left.scoredAt < right.scoredAt ? 1 : -1));
+
+  return entry && label ? { scorer, kind: 'labelled', label } : unwritten(scorer, item.end);
+}
+
+/** What run `run` gave each scorer the person named: a label it wrote, a code, or a judge step still open. */
 function outcomesOf(run: RunState, scorers: readonly string[], stored: readonly ScoreLabel[]): Outcome[] {
   const plan = run.steps.find((step) => step.id === 'plan');
   const groups = GroupsSchema.safeParse(plan?.status === 'succeeded' ? plan.outputs : undefined).data?.groups ?? [];
-  const entries = new Map<string, { label: string; code: string; why?: string }>();
-  const settled = new Map<string, string | undefined>();
+  const items = new Map(groups.flatMap((group, index) => group.scorers.split(',').map((name): [string, Item] => [name, itemOf(run, index)])));
+  const written = stored.filter((one) => one.scoredAt >= run.createdAt);
 
-  groups.forEach((group, index) => {
-    const inItem = run.steps.filter((step) => step.id.startsWith(`score[${index}].`));
-    const labelled = inItem.find((step) => step.id === `score[${index}].label`);
-    const listed = LabelEntriesSchema.safeParse(labelled?.status === 'succeeded' ? labelled.outputs : undefined);
-
-    const judge = inItem.find((step) => step.id === `score[${index}].judge`);
-    const why = judge && 'message' in judge && judge.message ? judge.message : undefined;
-
-    for (const entry of listed.data?.labels ?? []) entries.set(entry.scorer, why === undefined || entry.code !== 'judge_failed' ? entry : { ...entry, why });
-    const broke = inItem.find((step) => step.status === 'failed' || step.status === 'cancelled');
-    const open = inItem.some((step) => ['pending', 'waiting', 'leased', 'running'].includes(step.status));
-
-    for (const name of group.scorers.split(',')) settled.set(name, open ? undefined : broke ? `step ${broke.id} ${broke.status}${'message' in broke && broke.message ? `: ${broke.message}` : ''}` : '');
-  });
-
-  return scorers.map((scorer): Outcome => {
-    const entry = entries.get(scorer);
-
-    if (entry && entry.code === '') {
-      const label = stored.filter((one) => one.scorer === scorer && one.scoredAt >= run.createdAt).sort((left, right) => (left.scoredAt < right.scoredAt ? 1 : -1))[0];
-
-      return { scorer, kind: 'labelled', label, value: entry.label };
-    }
-
-    if (entry) return { scorer, kind: 'unlabelled', code: entry.code, message: `${UNLABELLED.get(entry.code) ?? entry.code}${entry.why === undefined ? '' : `: ${entry.why}`}` };
-
-    if (!settled.has(scorer)) return { scorer, kind: 'unlabelled', code: 'not_planned', message: NOT_PLANNED };
-    const broke = settled.get(scorer);
-
-    if (broke === undefined) return { scorer, kind: 'pending' };
-
-    return { scorer, kind: 'unlabelled', code: 'score_step_failed', message: broke === '' ? 'the run wrote no label for it' : broke };
-  });
+  return scorers.map((scorer) => outcomeOf(scorer, items.get(scorer), written));
 }
 
 /** What the answer of teamai score carries of one label it wrote. */
@@ -103,23 +134,12 @@ function answerOf(config: LocalConfig, label: ScoreLabel): LabelAnswer {
   return answer;
 }
 
-/**
- * The answer for the scorers the person named of teamai-score run `runId`, which the local driver answered `driven`:
- * the labels it wrote, or, when a scorer got none, the code that says why, with the labels the others got. Undefined
- * when the run did not end succeeded and no confined step holds it, so the driver's own answer is printed.
- */
-async function of(config: LocalConfig, runId: string, driven: WorkflowEnvelope, scorers: readonly string[]): Promise<WorkflowEnvelope | undefined> {
-  const held = 'error' in driven && driven.error.code === 'confined_pending' ? driven.error.message : undefined;
-
-  if (held === undefined && ('error' in driven || DoneSchema.safeParse(driven.data.done).data?.outcome !== 'succeeded')) return undefined;
-  const run = await readRun(config, runId);
-
-  if (run === 'missing' || run === 'corrupt') return undefined;
-  const outcomes = outcomesOf(run, scorers, await LabelStore.local(config));
-  const labels = outcomes.flatMap((outcome) => (outcome.kind === 'labelled' && outcome.label ? [answerOf(config, outcome.label)] : outcome.kind === 'labelled' ? [{ scorer: outcome.scorer, label: outcome.value }] : []));
-  const kept = outcomes.flatMap((outcome) => (outcome.kind === 'labelled' ? [`${outcome.scorer}: ${outcome.value}`] : []));
-  const keeping = kept.length > 0 ? ` Kept the label of ${kept.join(', ')}.` : '';
-  const pending = outcomes.filter((outcome) => outcome.kind === 'pending').map((outcome) => outcome.scorer);
+/** The answer for `outcomes` of run `runId`; `held`: why the local driver left a confined step open, when it did. */
+function envelopeOf(config: LocalConfig, runId: string, outcomes: readonly Outcome[], held: string | undefined): WorkflowEnvelope {
+  const written = outcomes.flatMap((outcome) => (outcome.kind === 'labelled' ? [outcome.label] : []));
+  const labels = written.map((label) => answerOf(config, label));
+  const keeping = written.length > 0 ? ` Kept the label of ${written.map((label) => `${label.scorer}: ${label.label}`).join(', ')}.` : '';
+  const pending = outcomes.flatMap((outcome) => (outcome.kind === 'pending' ? [outcome.scorer] : []));
 
   if (held !== undefined || pending.length > 0) {
     return { error: { code: 'judge_pending', message: `Run ${runId} left the judge of ${pending.join(', ') || 'a scorer'} open for a driver that can run it: ${held ?? 'its judge step is still open'} The run waits for one until its timeout, and teamai score --drain lists it.${keeping}`, labels } };
@@ -137,6 +157,22 @@ async function of(config: LocalConfig, runId: string, driven: WorkflowEnvelope, 
   const [only, ...more] = labels;
 
   return { data: only && more.length === 0 ? { run: runId, label: only } : { run: runId, labels } };
+}
+
+/**
+ * The answer for the scorers the person named of teamai-score run `runId`, which the local driver answered `driven`.
+ * Undefined when the run did not end succeeded and no confined step holds it, so the driver's own answer is printed.
+ */
+async function of(config: LocalConfig, runId: string, driven: WorkflowEnvelope, scorers: readonly string[]): Promise<WorkflowEnvelope | undefined> {
+  const held = 'error' in driven && driven.error.code === 'confined_pending' ? driven.error.message : undefined;
+  const succeeded = 'data' in driven && DoneSchema.safeParse(driven.data.done).data?.outcome === 'succeeded';
+
+  if (held === undefined && !succeeded) return undefined;
+  const run = await readRun(config, runId);
+
+  if (run === 'missing' || run === 'corrupt') return undefined;
+
+  return envelopeOf(config, runId, outcomesOf(run, scorers, await LabelStore.local(config)), held);
 }
 
 export const ScoreAnswer = { of } as const;

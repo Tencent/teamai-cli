@@ -18,6 +18,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
+import { ScoreAnswer } from '../scorers/score-answer.js';
 import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { Marks } from '../scorers/marks.js';
@@ -604,8 +605,11 @@ interface Walk {
   fake?: Record<string, ScoreVerbAnswer>;
 }
 
-/** Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step path. */
-async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun, inputs = {}, startedBy = 'cli', fake = {} }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer> }> {
+/**
+ * Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step
+ * path, and what the engine answered when the run ended.
+ */
+async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun, inputs = {}, startedBy = 'cli', fake = {} }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const answers = new Map<string, ScoreVerbAnswer>();
   const items = (index: string) => {
@@ -615,8 +619,9 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
     return { item: groups[Number(index)], dir: z.object({ dir: z.string() }).safeParse(evidence?.ok ? evidence.output : {}).data?.dir };
   };
   for (;;) {
-    const next = data(await leaseNext(config, run.runId, external, { can: JUDGING }));
-    if (next.done) return { runId: run.runId, answers };
+    const leased = await leaseNext(config, run.runId, external, { can: JUDGING });
+    const next = data(leased);
+    if (next.done) return { runId: run.runId, answers, ended: leased };
     const lease = LeaseSchema.parse(next.lease);
     const taken = { ctx: { env: attemptEnv(config, run.runId, lease.attempt, 'unattended'), current: config, now: NOW, readJudgeRun }, attempt: lease.attempt, revision: lease.revision };
     const [, index = '0', id = lease.step] = /^score\[(\d+)\]\.(.+)$/u.exec(lease.step) ?? [];
@@ -1020,5 +1025,81 @@ describe('labels a stage decided', () => {
     expect(answers.get('score[0].label')).toMatchObject({ ok: false, code: 'stage_record_missing' });
     expect(answers.get('score[0].settle')).toEqual({ ok: true, output: { settled: 1 } });
     expect(await LabelStore.local(config)).toEqual([]);
+  });
+});
+
+describe('what teamai score answers for a run its local driver drove', () => {
+  it('gives no label to a scorer whose label the write step failed to store, and says which step failed', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { write: { ok: false, code: 'write_failed', message: 'The disk is full.' } } });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].write failed: The disk is full..`, labels: [] } });
+  });
+
+  it('answers the label the run wrote for the one scorer named, with where its reasoning is', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ data: { run: runId, label: expect.objectContaining({ scorer: 'quality', label: 'good', passed: true, judge: { kind: 'model', tool: 'claude' }, decidedBy: 'judge', reasoning: expect.stringContaining(path.join(config.dataHome ?? '', '')) }) } });
+  });
+
+  it('answers every label of a batch', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const reviewed = await reviewedRun(config);
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { batch: true, demand: 'named' }, judge: { answer: { quality: { label: 'good', reasoning: 'Covers it.' }, coverage: { label: 'bad', reasoning: 'No tests.' } } } });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality', 'coverage'])).toEqual({ data: { run: runId, labels: [expect.objectContaining({ scorer: 'quality', label: 'good' }), expect.objectContaining({ scorer: 'coverage', label: 'bad' })] } });
+  });
+
+  it('answers the code of a scorer its judge left unlabelled', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: 'failed' });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'judge_failed', message: `Run ${runId}: quality got no label (judge_failed): its judge failed: The judge exited 1..`, labels: [] } });
+  });
+
+  it('answers not_planned for a scorer another teamai-score run holds, beside the label of one it judged', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const reviewed = await reviewedRun(config);
+    const holder = await scoreRun(config, { subject: `run:${reviewed}:review:1`, scorers: ['coverage'], demand: 'named' });
+    const planning = await holder.next('plan');
+    await holder.report(planning, await ScoreVerbs.plan({ subject: `run:${reviewed}:review:1`, scorers: '["coverage"]', batch: 'false', demand: 'named' }, planning.ctx));
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality', 'coverage'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality', 'coverage'])).toEqual({ error: {
+      code: 'not_planned',
+      message: `Run ${runId}: coverage got no label (not_planned): it was not planned: another teamai-score run holds its judge work. Kept the label of quality: good.`,
+      labels: [expect.objectContaining({ scorer: 'quality', label: 'good' })],
+    } });
+  });
+
+  it('answers judge_pending for a scorer whose judge step the local driver left open', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const run = await scoreRun(config, { subject: `run:${reviewed}:review:1`, scorers: ['quality'], demand: 'named' });
+    const planning = await run.next('plan');
+    await run.report(planning, await ScoreVerbs.plan({ subject: `run:${reviewed}:review:1`, scorers: '["quality"]', batch: 'false', demand: 'named' }, planning.ctx));
+    const gathering = await run.next('score[0].evidence');
+    await run.report(gathering, await ScoreVerbs.evidence({ subject: `run:${reviewed}:review:1`, scorers: 'quality' }, gathering.ctx));
+    const held: WorkflowEnvelope = { error: { code: 'confined_pending', message: 'No judge tool here runs model fast.' } };
+
+    expect(await ScoreAnswer.of(config, run.runId, held, ['quality'])).toEqual({ error: {
+      code: 'judge_pending',
+      message: `Run ${run.runId} left the judge of quality open for a driver that can run it: No judge tool here runs model fast. The run waits for one until its timeout, and teamai score --drain lists it.`,
+      labels: [],
+    } });
+  });
+
+  it('answers nothing of its own for a run that did not succeed, or one it cannot read, so the driver\'s answer stands', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const { runId } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+
+    expect(await ScoreAnswer.of(config, runId, { data: { run: runId, done: { outcome: 'failed' } } }, ['quality'])).toBeUndefined();
+    expect(await ScoreAnswer.of(config, runId, { error: { code: 'step_failed', message: 'The run failed.' } }, ['quality'])).toBeUndefined();
+    expect(await ScoreAnswer.of(config, 'r0000000000000000', { data: { run: 'r0000000000000000', done: { outcome: 'succeeded' } } }, ['quality'])).toBeUndefined();
   });
 });
