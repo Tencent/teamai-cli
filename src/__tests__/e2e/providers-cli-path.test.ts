@@ -18,12 +18,12 @@ import { cnbExec, isCnbInstalled } from '../../providers/cnb/cnb-cli.js';
  * These tests plant real executables in a temp dir, prepend it to PATH, and drive
  * the real resolver + launcher. Both an extensionless POSIX shim and a `.cmd`
  * shim are written, the way `npm install -g` does on Windows, so the picker has a
- * wrong candidate to skip.
+ * wrong candidate to skip. Which sibling CreateProcess launches is
+ * `providers-cli-cmd.test.ts`.
  *
  * Run with `npm run test:e2e`. This directory is excluded from the default
  * `vitest run` (see `vitest.config.ts`). CI runs the file on macOS, where
- * `path_helper` can drop a prepended PATH entry, and on Windows, where the
- * `.cmd` sibling is the one CreateProcess can launch.
+ * `path_helper` can drop a prepended PATH entry.
  */
 const MARKER = 'teamai-fake-cli';
 
@@ -88,16 +88,6 @@ describe('resolveCliPath against the real PATH', () => {
     // detection said "installed" while the launcher got ENOENT.
     expect(fs.existsSync(resolved!)).toBe(true);
   });
-
-  it.skipIf(process.platform !== 'win32')(
-    "prefers the .cmd sibling over the extensionless npm shim, which CreateProcess cannot launch",
-    () => {
-      writeShims('teamai-probe-cli');
-      const resolved = resolveCliPath('teamai-probe-cli');
-      expect(resolved!.toLowerCase().endsWith('.cmd')).toBe(true);
-      expect(resolved!.toLowerCase().endsWith(`${path.sep}teamai-probe-cli.cmd`)).toBe(true);
-    },
-  );
 
   it('returns null for a command that is not on PATH', () => {
     expect(resolveCliPath('teamai-definitely-absent-cmd')).toBeNull();

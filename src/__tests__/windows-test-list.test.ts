@@ -9,11 +9,4 @@ describe('Windows test list', () => {
     expect(new Set(WINDOWS_TESTS).size).toBe(WINDOWS_TESTS.length);
     expect(WINDOWS_TESTS).toContain('src/__tests__/locate-matrix.test.ts');
   });
-
-  it('keeps the cases the Windows job selects by name', async () => {
-    const exclude = await readFile('src/__tests__/git-exclude.test.ts', 'utf8');
-    const hooks = await readFile('src/__tests__/project-hook-rules.test.ts', 'utf8');
-    expect(exclude).toContain('on a case-insensitive filesystem');
-    expect(hooks).toContain('launcher drops the dispatch');
-  });
 });

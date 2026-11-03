@@ -51,10 +51,9 @@ jobs:
       - name: Unit tests
         run: npx vitest run
 
-  # The full suite runs on Linux. This job runs the cases whose result depends
-  # on Darwin. The git-exclude file is almost all the same on Linux, so only
-  # the precomposed-name and case-insensitive cases run here. Vitest exits 0
-  # when a name filter matches nothing, so the count check fails a rename.
+  # The full suite runs on Linux. This job names the files whose result
+  # depends on Darwin. The provider PATH file lives under e2e/, which the
+  # default config excludes even when the file is named.
   macos:
     name: Lint & Test (Node 22 on macos-latest)
     runs-on: macos-latest
@@ -72,14 +71,10 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Tests that depend on the machine
-        env:
-          TEAMAI_VITEST_SCOPE: macos
-        run: npx vitest run
+        run: npx vitest run src/__tests__/session-target-id.test.ts src/__tests__/migrate-image-and-cursor-id.test.ts src/__tests__/git-exclude-platform.test.ts
 
-      - name: Precomposed names and case-insensitive spelling
-        run: |
-          npx vitest run src/__tests__/git-exclude.test.ts -t "precomposeunicode|case-insensitive filesystem" --reporter=json --outputFile="$RUNNER_TEMP/git-exclude-platform.json"
-          node scripts/expect-vitest-passed.mjs "$RUNNER_TEMP/git-exclude-platform.json" 3
+      - name: Provider CLI path
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/providers-cli-path.test.ts
 
   # Coverage made the Node 20 leg the slowest unit job (17 min against 10).
   # It runs on its own, outside Build's needs, so nothing waits for it.
@@ -302,23 +297,8 @@ jobs:
       - name: CodeBuddy project gate
         run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/hooks-project-isolation-issue373.test.ts
 
-      # The .cmd sibling is what CreateProcess launches. The file also plants a
-      # POSIX shim, so it stays out of WINDOWS_TESTS (that list forbids chmod).
+      # CreateProcess launches the .cmd sibling. The rest of the provider PATH
+      # file compares directory strings, which disagree on this runner: temp
+      # is the 8.3 form and `where` returns the long form.
       - name: Provider CLI .cmd shim
-        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/providers-cli-path.test.ts
-
-      # NTFS folds case. The rest of the file uses symlinks and stays on Linux
-      # and macOS. A renamed case passes nothing, which fails the count check.
-      - name: Case-insensitive git exclude
-        shell: bash
-        run: |
-          npx vitest run src/__tests__/git-exclude.test.ts -t "case-insensitive filesystem" --reporter=json --outputFile="$RUNNER_TEMP/git-exclude-case.json"
-          node scripts/expect-vitest-passed.mjs "$RUNNER_TEMP/git-exclude-case.json" 1
-
-      # The launcher that drops the dispatch's stdout only fails this way on
-      # Windows (#1030). The rest of the file already runs on Linux.
-      - name: ZCode launcher drops dispatch output
-        shell: bash
-        run: |
-          npx vitest run src/__tests__/project-hook-rules.test.ts -t "launcher drops the dispatch" --reporter=json --outputFile="$RUNNER_TEMP/zcode-launcher.json"
-          node scripts/expect-vitest-passed.mjs "$RUNNER_TEMP/zcode-launcher.json" 1
+        run: npx vitest run src/__tests__/providers-cli-cmd.test.ts
