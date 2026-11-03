@@ -11,7 +11,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(): { adapter: MuseAdapter; file: string; cwd: string; id: string } {
+type Records = {
+  record: (payloadType: string, payload: object, stream?: string) => object;
+  run: (event: object) => object;
+  cwd: string;
+};
+
+function fixture(edit?: (records: object[], make: Records) => object[]): { adapter: MuseAdapter; file: string; cwd: string; id: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-muse-'));
   roots.push(root);
   const id = '123e4567-e89b-12d3-a456-426614174000';
@@ -29,7 +35,7 @@ function fixture(): { adapter: MuseAdapter; file: string; cwd: string; id: strin
   const records = [
     record('runtime.session.metadata', { kind: 'metadata', record: { workspace_root: cwd, model_id: 'muse-spark' } }),
     run({ kind: 'started', prompt: 'Fix the parser' }),
-    // Task-stream records in the parent file are subagent bookkeeping, not conversation.
+    // A record of another stream is not this session's conversation.
     record('runtime.session', { kind: 'run', run_id: 'child', event: { kind: 'started', prompt: 'subagent noise' } }, 'child-stream'),
     run({ kind: 'reasoning_committed', message_id: 'a1', text: 'Inspect first' }),
     run({ kind: 'assistant_tool_calls_committed', message_id: 'a1', tool_calls: [
@@ -41,7 +47,8 @@ function fixture(): { adapter: MuseAdapter; file: string; cwd: string; id: strin
     run({ kind: 'assistant_message_committed', message_id: 'a2', text: 'Done' }),
     run({ kind: 'model_completed', model: 'muse-spark-2', usage: {} }),
   ];
-  fs.writeFileSync(file, `${records.map((value) => JSON.stringify(value)).join('\n')}\n{partial`, 'utf8');
+  const written = edit ? edit(records, { record, run, cwd }) : records;
+  fs.writeFileSync(file, `${written.map((value) => JSON.stringify(value)).join('\n')}\n{partial`, 'utf8');
 
   return { adapter: new MuseAdapter(root), file, cwd, id };
 }
@@ -62,6 +69,55 @@ describe('MuseAdapter', () => {
       { type: 'tool_result', callId: 'call-1', content: 'source', isError: false },
     ]);
     expect(session.metadata?.model).toBe('muse-spark-2');
+  });
+
+  it('archives a steering prompt as a user message in order and leaves other inbox deliveries out', async () => {
+    const queued = (source: string, fields: object): object => ({ kind: 'inbox_item_queued', source: { source }, ...fields });
+    const { adapter, file, id } = fixture((records, { run }) => [
+      ...records.slice(0, 2),
+      run(queued('user_steer', { summary: 'steer', payload: { prompt: 'Also cover the lexer' } })),
+      run(queued('background_task_terminal', { body: 'background task finished' })),
+      run(queued('scheduled', { payload: { prompt: 'scheduled reminder' } })),
+      run(queued('user_steer', { payload: null, body: 'Keep the old API' })),
+      ...records.slice(2),
+    ]);
+    const session = await adapter.readSession({ sessionId: id, filePath: file });
+    const userTexts = session.messages.flatMap((message) => message.role === 'user'
+      ? message.content.flatMap((block) => block.type === 'text' ? [block.text] : [])
+      : []);
+
+    expect(userTexts).toEqual(['Fix the parser', 'Also cover the lexer', 'Keep the old API']);
+    expect(JSON.stringify(session.messages)).not.toMatch(/background task finished|scheduled reminder/);
+  });
+
+  it('keeps a model recorded as { model_id }', async () => {
+    const { adapter, file, id } = fixture((records, { run }) => [
+      ...records.slice(0, -1),
+      run({ kind: 'model_completed', model: { model_id: 'muse-spark-3' }, usage: {} }),
+    ]);
+
+    expect((await adapter.readSession({ sessionId: id, filePath: file })).metadata?.model).toBe('muse-spark-3');
+  });
+
+  it('attributes a session whose workspace is recorded only in a checkpoint', async () => {
+    const { adapter, cwd, id } = fixture((records, { record, run, cwd: app }) => [
+      record('runtime.session.metadata', { kind: 'metadata', record: { model_id: 'muse-spark' } }),
+      ...records.slice(1),
+      record('runtime.session', { kind: 'context', event: { kind: 'context_projection_checkpoint', session_metadata: { workspace_root: app } } }),
+      run({ kind: 'assistant_message_committed', message_id: 'a3', text: 'After checkpoint' }),
+    ]);
+
+    expect(await adapter.existingSessionId(id, cwd)).toBe(id);
+  });
+
+  it('prefers a metadata record\'s top-level workspace over its nested one', async () => {
+    const { adapter, cwd, id } = fixture((records, { record, cwd: app }) => [
+      record('runtime.session.metadata', { kind: 'metadata', workspace_root: app, record: { workspace_root: path.join(app, 'nested') } }),
+      ...records.slice(1),
+    ]);
+
+    expect(await adapter.existingSessionId(id, cwd)).toBe(id);
+    expect(await adapter.listConversations(path.join(cwd, 'nested'))).toEqual([]);
   });
 
   it('filters by recorded workspace and rejects unsafe ids', async () => {

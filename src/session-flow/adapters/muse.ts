@@ -9,16 +9,25 @@ import { JsonValueSchema } from '../../types.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** A model is a bare id or `{ model_id }`, as the Muse token reader accepts. */
+const ModelId = z.union([z.string(), z.object({ model_id: z.string() }).transform((model) => model.model_id)]);
+
 const Envelope = z.object({
   stream: z.object({ id: z.string().optional() }).optional(),
   recorded_at: z.number().optional(),
   payload_type: z.string().nullable().optional(),
   payload: z.object({
     kind: z.string().optional(),
+    workspace_root: z.string().optional().catch(undefined),
     record: z.object({ workspace_root: z.string().optional(), model_id: z.string().optional() }).passthrough().optional(),
     event: z.object({
       kind: z.string().optional(), prompt: z.string().optional(), text: z.string().optional(),
-      message_id: z.string().optional(), model: z.string().optional(),
+      message_id: z.string().optional(), model: ModelId.optional().catch(undefined),
+      // `inbox_item_queued`: a steer's text is `payload.prompt`, or `body` when the record carries no payload.
+      source: z.object({ source: z.string().optional() }).passthrough().optional().catch(undefined),
+      payload: z.object({ prompt: z.string().optional() }).passthrough().nullable().optional().catch(undefined),
+      body: z.string().optional().catch(undefined),
+      session_metadata: z.object({ workspace_root: z.string().optional() }).passthrough().optional().catch(undefined),
       tool_calls: z.array(z.object({ call_id: z.string(), name: z.string(), args: JsonValueSchema.optional() })).optional(),
       results: z.array(z.object({ tool_call_id: z.string(), text: z.string() })).optional(),
     }).passthrough().optional(),
@@ -75,7 +84,7 @@ function parseMuseFile(filePath: string): ParsedMuse | undefined {
     if (!parsed.success) continue;
     const record = parsed.data;
 
-    // A parent log also contains subagent task streams. Only its own stream is conversation.
+    // Subagents log under subagent/<id>/. Keep only records of this session's own stream.
     if (record.stream?.id && record.stream.id !== sessionId) continue;
     const timestamp = iso(record.recorded_at);
 
@@ -86,17 +95,26 @@ function parseMuseFile(filePath: string): ParsedMuse | undefined {
 
     const payload = record.payload;
 
+    // The workspace is the latest one recorded, as Muse's session-evidence helper reads it:
+    // a metadata record's `workspace_root`, else its `record.workspace_root`, or a checkpoint's.
     if (record.payload_type === 'runtime.session.metadata') {
-      const metadata = payload?.record;
+      const workspace = payload?.workspace_root ?? payload?.record?.workspace_root;
 
-      if (!cwd && metadata?.workspace_root) cwd = metadata.workspace_root;
+      if (workspace) cwd = workspace;
 
-      if (!model && metadata?.model_id) model = metadata.model_id;
+      if (!model && payload?.record?.model_id) model = payload.record.model_id;
       continue;
     }
 
-    if (record.payload_type !== 'runtime.session' || payload?.kind !== 'run') continue;
-    const event = payload.event;
+    if (record.payload_type !== 'runtime.session') continue;
+    const event = payload?.event;
+
+    if (event?.kind === 'context_projection_checkpoint') {
+      if (event.session_metadata?.workspace_root) cwd = event.session_metadata.workspace_root;
+      continue;
+    }
+
+    if (payload?.kind !== 'run') continue;
 
     if (!event) continue;
     const kind = event?.kind;
@@ -128,6 +146,11 @@ function parseMuseFile(filePath: string): ParsedMuse | undefined {
       }
 
       if (content.length) messages.push({ role: 'user', content, timestamp });
+    } else if (kind === 'inbox_item_queued' && event.source?.source === 'user_steer') {
+      // A prompt typed while a run was active. Background, scheduled and subagent deliveries share this kind.
+      const prompt = event.payload?.prompt ?? event.body;
+
+      if (prompt !== undefined) messages.push({ role: 'user', content: [{ type: 'text', text: prompt }], timestamp });
     } else if (kind === 'model_completed' && event.model) {
       model = event.model;
     }
