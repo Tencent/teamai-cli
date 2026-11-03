@@ -51,19 +51,18 @@ export function sumUsage(first: JudgeUsage | undefined, second: JudgeUsage | und
  * and `effort` have an agent observation's shape: `requested` is what the judge was launched with, `reported` what its
  * tool reports, `alias` the scorer's model when it is an alias.
  */
-const JudgeSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('model'),
-    tool: z.string().min(1),
-    model: ObservedModelSchema.optional(),
-    effort: ObservedEffortSchema.optional(),
-    usage: JudgeUsageSchema.optional(),
-    isolation: z.enum(ISOLATIONS),
-    access: z.enum(ACCESS_LEVELS),
-    batched: z.literal(true).optional(),
-  }),
-  z.object({ kind: z.literal('human') }),
-]);
+export const ModelJudgeSchema = z.object({
+  kind: z.literal('model'),
+  tool: z.string().min(1),
+  model: ObservedModelSchema.optional(),
+  effort: ObservedEffortSchema.optional(),
+  usage: JudgeUsageSchema.optional(),
+  isolation: z.enum(ISOLATIONS),
+  access: z.enum(ACCESS_LEVELS),
+  batched: z.literal(true).optional(),
+});
+
+const JudgeSchema = z.discriminatedUnion('kind', [ModelJudgeSchema, z.object({ kind: z.literal('human') })]);
 
 const LabelFields = {
   scorer: z.string().min(1),

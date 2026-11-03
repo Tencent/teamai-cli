@@ -1,0 +1,349 @@
+/**
+ * `teamai score label`, `write` and `settle`: the labels of one group, from its hand label, else the stage that decided
+ * it, else its judge's answer; the same labels checked again and written to local storage, which closes their marks;
+ * and the failed attempt of a group whose verbs broke.
+ */
+import path from 'node:path';
+import { z } from 'zod';
+import { observedModel } from '../agent-observation.js';
+import { loadModelAliases } from '../models/aliases.js';
+import { confinedAccess, installedConfinedTools } from '../tool-launch/confined.js';
+import { canonicalJson } from '../utils/canonical-json.js';
+import { writeFileAtomic } from '../utils/fs.js';
+import { findRunConfig } from '../workflow/run-location.js';
+import { privateSteps } from '../workflow/scope.js';
+import type { RunState } from '../workflow/types.js';
+import { isIsolated } from '../workflow/workspace.js';
+import { JudgeAnswerSchema, verdictsOf } from './batch.js';
+import { pinScorers } from './cache.js';
+import type { ScorerDefinition, ScorerLabel } from './definition.js';
+import { EvidenceDir, readRecord, rubricsOf, type GroupRecord } from './evidence-dir.js';
+import { chooseJudgeModel } from './judge-model.js';
+import { JUDGE_FAILURES, ModelJudgeSchema, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
+import { LabelStore } from './label-store.js';
+import { Marks, type MarkKey, type MarkOutcome } from './marks.js';
+import type { PinnedScorer } from './pin.js';
+import type { ScoreAttempt } from './score-attempt.js';
+import { markFacts, scorerStages, type Refusal } from './score-plan.js';
+import { ScoreStage, type StageRecord } from './score-stage.js';
+import { evidenceHash, judgedFacts, type JudgedFacts } from './scoring-evidence.js';
+import { failingLabel } from './scoring-stages.js';
+import { Subject } from './subject.js';
+
+/** What the confined run of a judge step recorded: the tool, model and effort it ran, what it cost, and how confined it was. */
+export const JudgeRunSchema = ModelJudgeSchema.omit({ kind: true, batched: true });
+
+export type JudgeRun = z.infer<typeof JudgeRunSchema>;
+
+/** The confined run that judge step `step` of `run` recorded on its pass, or undefined when it recorded none. */
+export type ReadJudgeRun = (run: RunState, step: string) => JudgeRun | undefined;
+
+export const readJudgeRun: ReadJudgeRun = (run, step) => z.object({ confined: JudgeRunSchema }).safeParse(run.steps.find((state) => state.id === step)).data?.confined;
+
+const CODES = [...JUDGE_FAILURES, 'ci_pending'] as const;
+
+/** A scorer's entry: its label, with the reasoning kept locally, or the code of why it has none. */
+const EntrySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('labelled'), scorer: z.string().min(1), label: ScoreLabelSchema, reasoning: z.string().optional(), prompt: z.string().optional() }),
+  z.object({ kind: z.literal('failed'), scorer: z.string().min(1), code: z.enum(CODES), message: z.string() }),
+]);
+
+type Entry = z.infer<typeof EntrySchema>;
+
+const LabelsFileSchema = z.object({ entries: z.array(EntrySchema) });
+
+const LABELS = 'labels.json';
+
+/** What an entry's step output holds for a field it has no value of: the output declares a string, so not null. */
+const NONE = '';
+
+/** What `score label` prints of each planned scorer: never the reasoning. */
+export interface LabelOutput {
+  scorer: string;
+  label: string;
+  code: string;
+}
+
+interface Member {
+  name: string;
+  pin: PinnedScorer;
+  definition: ScorerDefinition;
+}
+
+/** What the label of a member records, besides the judge: the subject's facts, the rubric, and the verdict. */
+interface Labelling {
+  attempt: ScoreAttempt;
+  group: GroupRecord;
+  run: RunState | undefined;
+  now: string;
+  hash: string | undefined;
+}
+
+function refused(code: string, message: string): Refusal {
+  return { ok: false, code, message };
+}
+
+function failedAll(members: readonly Member[], code: (typeof CODES)[number], message: string): Entry[] {
+  return members.map(({ name }) => ({ kind: 'failed', scorer: name, code, message }));
+}
+
+function membersOf(group: GroupRecord): Member[] | undefined {
+  const rubrics = rubricsOf(group.scorers);
+
+  return rubrics && group.scorers.map(({ name, pin }, index) => ({ name, pin, definition: rubrics[index] ?? rubrics[0] }));
+}
+
+/** The label of `member` with `given`, as a pass's or a session's label holds it. */
+function labelOf({ group, run, now, hash }: Labelling, member: Member, given: ScorerLabel, judge: ScoreLabel['judge'], decidedBy: Decider | undefined): ScoreLabel {
+  const rubric = member.pin.teamRevision ? { sourceHash: member.pin.sourceHash, teamRevision: member.pin.teamRevision } : { sourceHash: member.pin.sourceHash };
+  const verdict = { scorer: member.name, rubric, label: given.value, score: given.score, passed: given.score >= member.definition.passingScore, judge, scoredAt: now };
+
+  if (group.judged.kind === 'session') {
+    const { context, subject } = group.judged;
+    const label: ScoreLabel = { ...verdict, source: 'session', subject };
+
+    if (context?.used) label.used = context.used;
+
+    if (context?.agent) label.agent = context.agent;
+
+    if (context?.runMode) label.runMode = context.runMode;
+
+    return label;
+  }
+
+  const facts: JudgedFacts = run ? judgedFacts(run, group.judged.subject) : {};
+  const label: ScoreLabel = { ...verdict, source: 'workflow', subject: group.judged.subject, ...facts };
+
+  if (decidedBy) label.decidedBy = decidedBy;
+
+  if (hash) label.evidenceHash = hash;
+
+  return label;
+}
+
+/** The judge a stage decided in place of: the tool and model the group's judge would have run, at the level it needed. */
+async function stageJudge(attempt: ScoreAttempt, dir: string, member: Member): Promise<ScoreLabel['judge'] | undefined> {
+  const confined = await EvidenceDir.confined(dir);
+  const chosen = confined && chooseJudgeModel(await loadModelAliases(attempt.config), member.definition, installedConfinedTools(confined.prefer ? [confined.prefer] : []));
+
+  if (!confined || !chosen?.ok) return undefined;
+  const { tool, model, alias } = chosen.choice;
+  const observed = observedModel({ requested: model?.name, alias });
+  const judge: ScoreLabel['judge'] = { kind: 'model', tool, isolation: confined.level, access: confinedAccess(tool) };
+
+  if (observed) judge.model = observed;
+
+  return judge;
+}
+
+async function stageEntries(labelling: Labelling, dir: string, members: readonly Member[], { stage, record }: { stage: string; record: Exclude<StageRecord, { kind: 'judge' }> }): Promise<Entry[]> {
+  switch (record.kind) {
+    case 'unrunnable':
+      return failedAll(members, 'check_could_not_run', record.message);
+    case 'pending':
+      return failedAll(members, 'ci_pending', `The CI of commit ${record.head} has not finished; the group is judged once it has.`);
+    case 'decided': {
+      const entries: Entry[] = [];
+
+      for (const member of members) {
+        const judge = await stageJudge(labelling.attempt, dir, member);
+
+        entries.push(judge
+          ? { kind: 'labelled', scorer: member.name, label: labelOf(labelling, member, failingLabel(member.definition), judge, record.by), reasoning: record.reasoning }
+          : { kind: 'failed', scorer: member.name, code: 'judge_tool_unavailable', message: `The ${stage} stage decided scorer ${member.name}, and no judge tool on this machine runs its model, so its label could not be recorded.` });
+      }
+
+      return entries;
+    }
+
+    default: {
+      const unhandled: never = record;
+
+      return unhandled;
+    }
+  }
+}
+
+/** The entries of the judge's answer: one label per member, or one code for all of them. */
+function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run }: { answer: string | undefined; judged: string | undefined; run: JudgeRun | undefined }): Entry[] {
+  if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged === undefined || judged === '' ? 'without running' : judged}, so it gave no answer.`);
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(answer ?? '');
+  } catch {
+    parsed = undefined;
+  }
+
+  const given = JudgeAnswerSchema.safeParse(parsed);
+  const verdicts = given.success ? verdictsOf(members, (member) => member.definition, given.data) : { ok: false as const, message: 'The answer is not JSON of the answer schema.' };
+
+  if (!verdicts.ok) return failedAll(members, 'judge_answer_invalid', verdicts.message);
+
+  if (!run) return failedAll(members, 'judge_failed', 'The judge step recorded no confined run, so what judged is unknown.');
+
+  return verdicts.verdicts.map(({ judged: member, label, reasoning }, index) => {
+    const { usage, ...ran } = run;
+    const judge: ScoreLabel['judge'] = { kind: 'model', ...ran };
+
+    // The usage of one launch is counted once, on the first label.
+    if (usage && index === 0) judge.usage = usage;
+
+    if (members.length > 1) judge.batched = true;
+
+    return { kind: 'labelled', scorer: member.name, label: labelOf(labelling, member, label, judge, 'judge'), reasoning };
+  });
+}
+
+/** Why an entry is not the label its group may give: the same rules `label` built it by, read again. */
+function entryProblem(group: GroupRecord, members: readonly Member[], entry: Entry, index: number, byHand: boolean): string | undefined {
+  const member = members[index];
+
+  if (!member || member.name !== entry.scorer) return `entry ${index + 1} is not of scorer ${member?.name ?? '(none)'}`;
+
+  if (entry.kind === 'failed') return undefined;
+  const { label } = entry;
+  const given = member.definition.labels.find((candidate) => candidate.value === label.label);
+
+  if (label.scorer !== member.name || label.rubric.sourceHash !== member.pin.sourceHash) return `the label of ${member.name} is not of its pinned rubric`;
+
+  if (!given || label.score !== given.score || label.passed !== given.score >= member.definition.passingScore) return `"${label.label}" with score ${label.score} is not a label of scorer ${member.name}`;
+
+  if ((label.judge.kind === 'human') !== byHand) return `the label of ${member.name} ${byHand ? 'is not' : 'is'} a hand label, which only a run a person started gives`;
+
+  if (canonicalJson(label.subject) !== canonicalJson(group.judged.subject)) return `the label of ${member.name} is of another subject`;
+
+  return undefined;
+}
+
+/** The run of a pass subject, when it is still on this machine. */
+async function subjectRun(attempt: ScoreAttempt, group: GroupRecord): Promise<RunState | undefined> {
+  if (group.judged.kind !== 'run') return undefined;
+  const found = await findRunConfig(group.judged.subject.runId, attempt.config);
+
+  return 'run' in found ? found.run : undefined;
+}
+
+/** Whether the group's hand label is the person's: the instance has one, and a person started the root run. */
+const isByHand = (attempt: ScoreAttempt, group: GroupRecord) => group.hand && attempt.hand !== '' && attempt.run.startedBy === 'person';
+
+async function readEntries(dir: string): Promise<Entry[] | undefined> {
+  return (await readRecord(path.join(dir, LABELS), LabelsFileSchema))?.entries;
+}
+
+/** The marks keys of `scorers` on `subject`; a session's are keyed by rubric too. */
+function keysOf(subject: Subject, scorers: ReadonlyArray<{ name: string; pin?: PinnedScorer }>): MarkKey[] {
+  return scorers.flatMap(({ name, pin }): MarkKey[] => {
+    if (subject.kind === 'run') return [{ scorer: name, subject }];
+
+    return pin ? [{ scorer: name, subject, sourceHash: pin.sourceHash }] : [];
+  });
+}
+
+/** Closes each key the attempt's root run holds open with its outcome; a key it does not hold, as a hand label's, is left alone. */
+async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: MarkKey; outcome: MarkOutcome }>, now: string): Promise<{ ok: true; closed: number } | Refusal> {
+  const facts = markFacts(attempt.config, now);
+  const states = await Marks.states(attempt.config, outcomes.map(({ key }) => key), facts);
+
+  const held = outcomes.filter((_, index) => {
+    const state = states[index];
+
+    return state?.kind === 'open' && state.run === attempt.run.id;
+  });
+
+  for (const { key, outcome } of held) {
+    if ((await Marks.close(attempt.config, [key], outcome, facts)).status === 'busy') return refused('busy', 'Another teamai process is writing the scoring marks of this data home. Run the step again.');
+  }
+
+  return { ok: true, closed: held.length };
+}
+
+export const ScoreLabels = {
+  /**
+   * The labels of the group in `dir`, written with their reasoning to `<dir>/labels.json`, and one entry per scorer
+   * without it. A scorer with a check on a delivered pass is refused until its check stage recorded what it found.
+   */
+  async label(attempt: ScoreAttempt, dir: string, group: GroupRecord, { answer, judged, now, read }: { answer?: string; judged?: string; now: string; read: ReadJudgeRun }): Promise<{ ok: true; labels: LabelOutput[] } | Refusal> {
+    const members = membersOf(group);
+    const [first, ...rest] = members ?? [];
+
+    if (!first) return refused('evidence_unreadable', `${dir} names a scorer that does not parse.`);
+
+    if (group.hand && !isByHand(attempt, group)) return refused('hand_label_refused', `Run ${attempt.run.id} was not started by a person, so its label input is not a hand label.`);
+    const run = await subjectRun(attempt, group);
+    const labelling: Labelling = { attempt, group, run, now, hash: group.hand ? undefined : await evidenceHash(dir) };
+    const records = await ScoreStage.records(dir);
+    const unchecked = [first, ...rest].find((member) => member.definition.check && group.delivers && scorerStages(attempt, member.definition).includes('check'));
+
+    if (!group.hand && unchecked && !records.some(({ stage }) => stage === 'check')) {
+      return refused('stage_record_missing', `Scorer ${unchecked.name} has a check, and the delivered pass has no record of it in ${dir}: run teamai score stage check first.`);
+    }
+
+    const decided = records.flatMap(({ stage, record }) => (record.kind === 'judge' ? [] : [{ stage, record }]))[0];
+    let entries: Entry[];
+
+    if (group.hand) {
+      const given = first.definition.labels.find((label) => label.value === attempt.hand);
+
+      if (!given) return refused('label_invalid', `"${attempt.hand}" is not a label of scorer ${first.name}. Use one of: ${first.definition.labels.map((label) => label.value).join(', ')}.`);
+      entries = [{ kind: 'labelled', scorer: first.name, label: labelOf(labelling, first, given, { kind: 'human' }, undefined) }];
+    } else if (decided) {
+      entries = await stageEntries(labelling, dir, [first, ...rest], decided);
+    } else {
+      const step = [...attempt.step.split('.').slice(0, -1), 'judge'].join('.');
+
+      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: read(attempt.run, step) });
+    }
+
+    await writeFileAtomic(path.join(dir, LABELS), JSON.stringify({ entries }));
+
+    return { ok: true, labels: entries.map((entry) => (entry.kind === 'labelled' ? { scorer: entry.scorer, label: entry.label.label, code: NONE } : { scorer: entry.scorer, label: NONE, code: entry.code })) };
+  },
+
+  /**
+   * Writes the labels `label` left in `dir` to local storage, after checking each again; one that fails writes none. A
+   * label of a private or isolated run stays out of the outbox. Each scorer's mark the root run holds closes.
+   */
+  async write(attempt: ScoreAttempt, dir: string, group: GroupRecord, { now }: { now: string }): Promise<{ ok: true; written: number } | Refusal> {
+    const members = membersOf(group);
+    const entries = await readEntries(dir);
+
+    if (!members || !entries) return refused('evidence_unreadable', `${dir} holds no labels that teamai score label wrote. Run the label step first.`);
+
+    if (group.hand && !isByHand(attempt, group)) return refused('hand_label_refused', `Run ${attempt.run.id} was not started by a person, so its label input is not a hand label.`);
+    const problems = entries.length === members.length ? entries.flatMap((entry, index) => entryProblem(group, members, entry, index, group.hand) ?? []) : ['the entries are not one per scorer of the group'];
+
+    if (problems.length > 0) return refused('label_invalid', `${dir}/${LABELS} cannot be written: ${problems.join('; ')}. Nothing was written.`);
+    const run = await subjectRun(attempt, group);
+    const keepLocal = group.judged.kind === 'run' && run !== undefined && (privateSteps(run)(group.judged.subject.step) || isIsolated(run));
+
+    const written = await LabelStore.locked(attempt.config, async () => {
+      for (const entry of entries) if (entry.kind === 'labelled') await LabelStore.append(attempt.config, entry.label, entry.reasoning, entry.prompt, { outbox: !keepLocal });
+    });
+
+    if (written.status === 'busy') return refused('busy', 'Another teamai process holds the label store, so no label was written. Run the step again.');
+    const subject = Subject.parse(group.subject);
+
+    if (!subject.ok) return subject;
+
+    const outcomes = entries.flatMap((entry, index) => keysOf(subject.subject, [group.scorers[index] ?? { name: entry.scorer }]).map((key) => ({
+      key,
+      outcome: entry.kind === 'labelled' ? { kind: 'labelled' } as const : entry.code === 'ci_pending' ? { kind: 'waiting' } as const : { kind: 'failed', code: entry.code } as const,
+    })));
+
+    const closed = await closeHeld(attempt, outcomes, now);
+
+    return closed.ok ? { ok: true, written: entries.filter((entry) => entry.kind === 'labelled').length } : closed;
+  },
+
+  /** Records a failed attempt of each scorer the root run holds open on `subject`, so automatic judging does not start it again. */
+  async settle(attempt: ScoreAttempt, subject: Subject, scorers: readonly string[], { now }: { now: string }): Promise<{ ok: true; settled: number } | Refusal> {
+    if (attempt.hand !== '') return { ok: true, settled: 0 };
+    const pins = subject.kind === 'run' ? {} : await pinScorers(attempt.config, scorers);
+    const keys = keysOf(subject, scorers.map((name) => ({ name, pin: pins[name] })));
+    const code: JudgeFailureCode = 'judge_failed';
+    const closed = await closeHeld(attempt, keys.map((key) => ({ key, outcome: { kind: 'failed', code } })), now);
+
+    return closed.ok ? { ok: true, settled: closed.closed } : closed;
+  },
+} as const;

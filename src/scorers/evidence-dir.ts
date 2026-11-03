@@ -10,7 +10,7 @@ import { knownSecrets } from '../env-resolution.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { pushedSession } from '../session-flow/scoring.js';
 import { judgeSession, SessionWork, writeSessionEvidence, type JudgedSession } from '../session-flow/session-work.js';
-import type { JsonValue } from '../types.js';
+import { JsonValueSchema, type JsonValue } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
 import { redact } from '../utils/redact.js';
 import { judgeablePasses } from '../workflow/judge-work.js';
@@ -20,7 +20,7 @@ import { pinScorers } from './cache.js';
 import type { ScorerDefinition } from './definition.js';
 import { answerSchema, rubricPrompt, type Rubrics } from './evidence.js';
 import { requiredIsolation, scorerIsolationSource } from './isolation.js';
-import { RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type Isolation, type RunSubject } from './label.js';
+import { ISOLATIONS, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type RunSubject } from './label.js';
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import type { ScoreAttempt } from './score-attempt.js';
 import type { Refusal } from './score-plan.js';
@@ -127,14 +127,23 @@ async function sessionRead(attempt: ScoreAttempt, subject: Exclude<Subject, { ki
 }
 
 /** What a confined judge step reads in the directory: the isolation its scorers need, the tool to prefer, and its reply schema. */
-interface ConfinedRecord {
-  level: Isolation;
-  prefer?: string;
-  schema: JsonValue;
-}
+const ConfinedRecordSchema = z.object({ level: z.enum(ISOLATIONS), prefer: z.string().optional(), schema: JsonValueSchema });
+
+type ConfinedRecord = z.infer<typeof ConfinedRecordSchema>;
 
 async function writeJson(dir: string, name: string, value: GroupRecord | ConfinedRecord | JsonValue): Promise<void> {
   await fs.writeFile(path.join(dir, name), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** The record `schema` reads in `file`, or undefined when there is none or it does not parse. */
+export async function readRecord<T>(file: string, schema: z.ZodType<T>): Promise<T | undefined> {
+  const text = await readFileIfExists(file);
+
+  try {
+    return text === null ? undefined : schema.safeParse(JSON.parse(text)).data;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Writes the group record, and for a judge its confined record and answer schema. */
@@ -235,15 +244,13 @@ export const EvidenceDir = {
 
   /** The group record `score evidence` wrote in `dir`, or why `dir` holds none. */
   async read(dir: string): Promise<{ ok: true; group: GroupRecord } | Refusal> {
-    const text = await readFileIfExists(path.join(dir, GROUP));
-    let parsed: GroupRecord | undefined;
+    const group = await readRecord(path.join(dir, GROUP), GroupRecordSchema);
 
-    try {
-      parsed = text === null ? undefined : GroupRecordSchema.safeParse(JSON.parse(text)).data;
-    } catch {
-      parsed = undefined;
-    }
+    return group ? { ok: true, group } : refused('evidence_unreadable', `${dir} holds no group record that teamai score evidence wrote. Pass the dir its step printed.`);
+  },
 
-    return parsed ? { ok: true, group: parsed } : refused('evidence_unreadable', `${dir} holds no group record that teamai score evidence wrote. Pass the dir its step printed.`);
+  /** The isolation the group's judge needed and the tool it preferred, which a judge-group's evidence holds. */
+  async confined(dir: string): Promise<ConfinedRecord | undefined> {
+    return readRecord(path.join(dir, CONFINED), ConfinedRecordSchema);
   },
 } as const;

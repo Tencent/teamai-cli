@@ -19,6 +19,9 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { ScoreVerbs, type ScoreVerbAnswer, type ScoreVerbContext } from '../score-verbs.js';
+import { LabelStore } from '../scorers/label-store.js';
+import { Marks } from '../scorers/marks.js';
+import type { JudgeRun } from '../scorers/score-labels.js';
 import { evidenceHash } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { nextJudgeLease } from '../workflow/scoring.js';
@@ -433,5 +436,131 @@ describe('score stage', () => {
     const { next } = await deliveredGroup(config, await deliveredRun(config));
 
     expect(await ScoreVerbs.stage({ stage: 'protected', evidence: root }, next.ctx)).toMatchObject({ ok: false, code: 'evidence_unreadable' });
+  });
+});
+
+const JUDGED: JudgeRun = { tool: 'claude', model: { requested: 'claude-x' }, usage: { inputTokens: 10, outputTokens: 2 }, isolation: 'verified', access: 'read' };
+
+interface Walk {
+  /** The judge step's answer, or a failure. */
+  judge?: { answer: unknown } | 'failed';
+  readJudgeRun?: ScoreVerbContext['readJudgeRun'];
+  inputs?: Record<string, unknown>;
+  startedBy?: StartedBy;
+}
+
+/** Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step path. */
+async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun = () => JUDGED, inputs = {}, startedBy = 'cli' }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer> }> {
+  const run = await scoreRun(config, { subject, ...inputs }, startedBy);
+  const answers = new Map<string, ScoreVerbAnswer>();
+  const items = (index: string) => {
+    const plan = answers.get('plan');
+    const groups = z.object({ groups: z.array(z.object({ subject: z.string(), scorers: z.string() })) }).safeParse(plan?.ok ? plan.output : {}).data?.groups ?? [];
+    const evidence = answers.get(`score[${index}].evidence`);
+    return { item: groups[Number(index)], dir: z.object({ dir: z.string() }).safeParse(evidence?.ok ? evidence.output : {}).data?.dir };
+  };
+  for (;;) {
+    const next = data(await leaseNext(config, run.runId, external));
+    if (next.done) return { runId: run.runId, answers };
+    const lease = LeaseSchema.parse(next.lease);
+    const taken = { ctx: { env: attemptEnv(config, run.runId, lease.attempt, 'unattended'), current: config, now: NOW, readJudgeRun }, attempt: lease.attempt, revision: lease.revision };
+    const [, index = '0', id = lease.step] = /^score\[(\d+)\]\.(.+)$/u.exec(lease.step) ?? [];
+    const { item, dir } = items(index);
+    const judged = answers.get(`score[${index}].judge`);
+    const answer: ScoreVerbAnswer = id === 'plan'
+      ? await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), label: String(inputs.label ?? ''), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, taken.ctx)
+      : id === 'evidence' ? await ScoreVerbs.evidence({ subject: item?.subject, scorers: item?.scorers }, taken.ctx)
+        : id === 'check' || id === 'ci' || id === 'protected' ? await ScoreVerbs.stage({ stage: id, evidence: dir, wait: '2h' }, taken.ctx)
+          : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1.' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
+            : id === 'label' ? await ScoreVerbs.label({ evidence: dir, answer: judged?.ok ? JSON.stringify(judged.output.answer) : '', judge: judged === undefined ? '' : judged.ok ? 'success' : 'failed' }, taken.ctx)
+              : id === 'write' ? await ScoreVerbs.write({ evidence: dir }, taken.ctx)
+                : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx);
+    answers.set(lease.step, answer);
+    await run.report(taken, answer);
+  }
+}
+
+const marksOf = async (config: LocalConfig, runId: string, scorers: string[]) =>
+  Marks.states(config, scorers.map((name) => ({ scorer: name, subject: { kind: 'run' as const, subject: { runId, step: 'review', pass: 1 } } })), { now: NOW, readRun: async () => ({ ended: true, changedAt: NOW }) });
+
+describe('score label and score write', () => {
+  it('label each scorer of a batch from the judge\'s answer, print no reasoning, and write them with what judged, closing their marks', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { batch: true }, judge: { answer: { quality: { label: 'good', reasoning: 'Covers it.' }, coverage: { label: 'bad', reasoning: 'No tests.' } } } });
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }, { scorer: 'coverage', label: 'bad', code: '' }] } });
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 2 } });
+    const labels = await LabelStore.local(config);
+    expect(labels).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scorer: 'quality', label: 'good', passed: true, decidedBy: 'judge', evidenceHash: expect.stringMatching(/^sha256:/), judge: { kind: 'model', ...JUDGED, batched: true } }),
+      expect.objectContaining({ scorer: 'coverage', label: 'bad', passed: false, judge: { kind: 'model', tool: 'claude', model: { requested: 'claude-x' }, isolation: 'verified', access: 'read', batched: true } }),
+    ]));
+    expect(await LabelStore.unpublished(config)).toBe(2);
+    expect(await marksOf(config, runId, ['quality', 'coverage'])).toEqual([{ kind: 'labelled' }, { kind: 'labelled' }]);
+  });
+
+  it.each([
+    ['an answer outside the schema', { answer: { label: 'great', reasoning: 'x' } }, 'judge_answer_invalid'],
+    ['a judge that failed', 'failed' as const, 'judge_failed'],
+  ])('give each scorer a code for %s, and write records the failed attempt', async (_case, judge, code) => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge });
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code }] } });
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 0 } });
+    expect(await LabelStore.local(config)).toEqual([]);
+    expect(await marksOf(config, runId, ['quality'])).toEqual([{ kind: 'failed', code }]);
+  });
+
+  it('give judge_failed when the judge step recorded no confined run, so what judged is unknown', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } }, readJudgeRun: () => undefined });
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code: 'judge_failed' }] } });
+  });
+
+  it('refuse a call from a shell no teamai-score attempt runs, and write nothing', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const bare = { env: { TEAMAI_RUN_DIR: path.join(root, 'data') }, current: config, now: NOW };
+
+    expect(await ScoreVerbs.label({ evidence: path.join(root, 'data'), answer: '{"label":"good","reasoning":"x"}', judge: 'success' }, bare)).toMatchObject({ ok: false, code: 'score_attempt_required' });
+    expect(await ScoreVerbs.write({ evidence: path.join(root, 'data') }, bare)).toMatchObject({ ok: false, code: 'score_attempt_required' });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
+
+  it('keep the label of a private run\'s pass out of the outbox', async () => {
+    const config = await team({ review: REVIEW.replace('description: Review a change.', 'description: Review a change.\nprivate: true') }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } } });
+
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good' }]);
+    expect(await LabelStore.unpublished(config)).toBe(0);
+  });
+
+  it('label a session by hand only in a run a person started, and set no mark', async () => {
+    const config = await team({}, { quality: scorer() });
+    plantSession(path.join(root, 'app'), 'one', 'Fix the login bug.');
+    const subject = 'session:claude-code:one';
+    const inputs = { scorers: ['quality'], label: 'good', demand: 'named' };
+
+    expect((await walk(config, subject, { inputs })).answers.get('plan')).toMatchObject({ ok: false, code: 'hand_label_refused' });
+    const { answers } = await walk(config, subject, { inputs, startedBy: 'person' });
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good', source: 'session', subject: { platform: 'claude-code', sessionId: 'one' }, judge: { kind: 'human' } }]);
+    expect(fs.existsSync(path.join(root, 'data', 'scores', 'marks.jsonl'))).toBe(false);
+  });
+
+  it('settle a group whose evidence failed as a failed attempt, so automatic judging does not start it again', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config, 'session-gone');
+    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] } });
+
+    expect(answers.get('score[0].evidence')).toMatchObject({ ok: false, code: 'evidence_missing' });
+    expect(answers.get('score[0].settle')).toEqual({ ok: true, output: { settled: 1 } });
+    expect(await marksOf(config, runId, ['quality'])).toEqual([{ kind: 'failed', code: 'judge_failed' }]);
   });
 });

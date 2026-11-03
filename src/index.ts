@@ -6,7 +6,7 @@ import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
-import type { EvidenceOptions, PlanOptions, StageOptions } from './score-verbs.js';
+import type { EvidenceOptions, LabelOptions, PlanOptions, StageOptions, WriteOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -1074,6 +1074,36 @@ scoreCmd
   .action(async (stage: string, _cmdOpts, command: Command) => {
     const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
     await scoreVerbCommand((ctx) => ScoreVerbs.stage({ ...command.optsWithGlobals<Omit<StageOptions, 'stage'>>(), stage }, ctx));
+  });
+
+scoreCmd
+  .command('label')
+  .description('A step of a teamai-score run: the labels of one group, from the run\'s hand label when a person started the root run, else the first stage that decided it (check, ci, protected), else the judge\'s --answer, each checked against the answer schema and the pinned scorer, with score and passed computed here. Writes them with reasoning to <dir>/labels.json and prints {"labels":[{"scorer","label","code"}]}, one per scorer and no reasoning; code is check_could_not_run, ci_pending, judge_failed or judge_answer_invalid for a scorer with no label. Exits 0 with codes. Refused outside a leased attempt of a teamai-score step.')
+  .option('--evidence <dir>', 'The evidence directory its evidence step printed')
+  .option('--answer <json>', 'The judge step\'s answer, as its output rendered it; \'\' when it gave none')
+  .option('--judge <outcome>', 'The judge step\'s outcome: success, failed, timed_out, cancelled, or \'\' when it was skipped')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.label(command.optsWithGlobals<LabelOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('write')
+  .description('A step of a teamai-score run: check the labels label left in <dir>/labels.json again, then write them to scores/labels.jsonl, reasoning/ and the pending outbox, and close each scorer\'s mark: labelled, failed with its code, or waiting for CI. A label of a private or isolated run stays out of the outbox. Writes nothing when a label fails a check. Prints {"written":<n>}. Refused outside a leased attempt of a teamai-score step.')
+  .option('--evidence <dir>', 'The evidence directory its evidence step printed')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.write(command.optsWithGlobals<WriteOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('settle')
+  .description('A step of a teamai-score run, after a verb of a group broke: record a failed attempt of each scorer whose mark the run holds, so automatic judging does not start the subject again. Works when evidence failed. Prints {"settled":<n>}.')
+  .option('--subject <subject>', 'The group\'s subject, as plan printed it')
+  .option('--scorers <names>', 'The group\'s scorers, joined by , as plan printed them')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.settle(command.optsWithGlobals<EvidenceOptions>(), ctx));
   });
 
 // ─── Hooks commands ─────────────────────────────────────

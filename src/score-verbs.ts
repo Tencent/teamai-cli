@@ -9,6 +9,7 @@ import { STAGES } from './scorers/definition.js';
 import { EvidenceDir, type GroupRecord } from './scorers/evidence-dir.js';
 import { DEMANDS } from './scorers/marks.js';
 import { ScoreAttempt } from './scorers/score-attempt.js';
+import { readJudgeRun, ScoreLabels, type ReadJudgeRun } from './scorers/score-labels.js';
 import { planGroups } from './scorers/score-plan.js';
 import { ScoreStage } from './scorers/score-stage.js';
 import { Subject } from './scorers/subject.js';
@@ -21,6 +22,8 @@ export interface ScoreVerbContext {
   env: NodeJS.ProcessEnv;
   current: LocalConfig | undefined;
   now: string;
+  /** What the judge step's confined run recorded on its pass. */
+  readJudgeRun?: ReadJudgeRun;
 }
 
 export type ScoreVerbAnswer = { ok: true; output: JsonObject } | { ok: false; code: string; message: string };
@@ -132,7 +135,50 @@ async function stage(options: StageOptions, ctx: ScoreVerbContext): Promise<Scor
   return ran.ok ? { ok: true, output: { ...ran.output } } : ran;
 }
 
-export const ScoreVerbs = { plan, evidence, stage } as const;
+export interface LabelOptions {
+  evidence?: string;
+  answer?: string;
+  judge?: string;
+}
+
+async function label(options: LabelOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const at = await groupAt('label', options.evidence, ctx);
+
+  if (!at.ok) return at;
+  const labelled = await ScoreLabels.label(at.attempt, at.dir, at.group, { answer: options.answer, judged: options.judge, now: ctx.now, read: ctx.readJudgeRun ?? readJudgeRun });
+
+  return labelled.ok ? { ok: true, output: { labels: labelled.labels.map((entry) => ({ ...entry })) } } : labelled;
+}
+
+export interface WriteOptions {
+  evidence?: string;
+}
+
+async function write(options: WriteOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const at = await groupAt('write', options.evidence, ctx);
+
+  if (!at.ok) return at;
+  const written = await ScoreLabels.write(at.attempt, at.dir, at.group, { now: ctx.now });
+
+  return written.ok ? { ok: true, output: { written: written.written } } : written;
+}
+
+async function settle(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const read = await ScoreAttempt.read('settle', ctx.env, ctx.current);
+
+  if (!read.ok) return read;
+  const subject = Subject.parse(options.subject ?? '');
+
+  if (!subject.ok) return subject;
+  const scorers = scorersOf(options.scorers);
+
+  if (!scorers) return refused('invalid_arguments', `--scorers ${options.scorers ?? ''} is neither a JSON array of scorer names nor names joined by ",".`);
+  const settled = await ScoreLabels.settle(read.attempt, subject.subject, scorers, { now: ctx.now });
+
+  return settled.ok ? { ok: true, output: { settled: settled.settled } } : settled;
+}
+
+export const ScoreVerbs = { plan, evidence, stage, label, write, settle } as const;
 
 async function currentConfig(): Promise<LocalConfig | undefined> {
   try {

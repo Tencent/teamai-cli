@@ -9,8 +9,7 @@ import { z } from 'zod';
 import { readFileIfExists, writeFileAtomic } from '../utils/fs.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { STAGES, type Stage } from './definition.js';
-import type { GroupRecord } from './evidence-dir.js';
-import { rubricsOf } from './evidence-dir.js';
+import { readRecord, rubricsOf, type GroupRecord } from './evidence-dir.js';
 import { scoresDir } from './home.js';
 import type { ScoreAttempt } from './score-attempt.js';
 import { scorerStages, type Refusal } from './score-plan.js';
@@ -34,16 +33,7 @@ export type StageOutput = { decided: boolean; pending?: true };
 
 const recordFile = (dir: string, stage: Stage) => path.join(dir, `stage-${stage}.json`);
 
-/** The stage record in `file`, or undefined when there is none or it does not parse. */
-async function readRecord(file: string): Promise<StageRecord | undefined> {
-  const text = await readFileIfExists(file);
-
-  try {
-    return text === null ? undefined : StageRecordSchema.safeParse(JSON.parse(text)).data;
-  } catch {
-    return undefined;
-  }
-}
+const readStage = (file: string) => readRecord(file, StageRecordSchema);
 
 /** The CI verdict of each delivered commit this run read, so its groups read CI once. */
 const ciCacheFile = (attempt: ScoreAttempt, head: string) => path.join(path.dirname(attempt.dir), 'ci', `${head}.json`);
@@ -54,7 +44,7 @@ const pendingSinceFile = (attempt: ScoreAttempt, head: string) => path.join(scor
 async function cachedCi(attempt: ScoreAttempt, read: () => Promise<CiVerdict>, head: string | undefined): Promise<CiVerdict> {
   if (head === undefined) return read();
   const file = ciCacheFile(attempt, head);
-  const cached = await readRecord(file);
+  const cached = await readStage(file);
 
   if (cached) return cached;
   const verdict = await read();
@@ -150,7 +140,7 @@ export const ScoreStage = {
 
   /** The records the group's stages wrote, in the order they decide. */
   async records(dir: string): Promise<Array<{ stage: Stage; record: StageRecord }>> {
-    const read = await Promise.all(STAGES.map(async (stage) => ({ stage, record: await readRecord(recordFile(dir, stage)) })));
+    const read = await Promise.all(STAGES.map(async (stage) => ({ stage, record: await readStage(recordFile(dir, stage)) })));
 
     return read.flatMap(({ stage, record }) => (record ? [{ stage, record }] : []));
   },
