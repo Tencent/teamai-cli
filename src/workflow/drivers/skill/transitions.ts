@@ -9,7 +9,7 @@ import type { Judging, RunReadied, RunVersion } from '../../protocol.js';
 import type { EnvScope } from '../../requirements.js';
 import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
-import type { WorkflowFailure } from '../../types.js';
+import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
@@ -139,7 +139,7 @@ export type ReadLease = { attempt: AttemptId; step: string; revision: number; ex
    * `writes`: the step commits to a branch, in a workspace `new` or `continue`. `interactive`: the person works in the step.
    * `readOnly`: the step set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
    */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: unknown }
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: OutputSchema }
 );
 
 /** A gate as the engine asks it. */

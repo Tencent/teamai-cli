@@ -24,6 +24,22 @@ steps:
 
 `schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且只能使用 `command`、`prompt`、`prompt_file`、`workflow` 中的一种动作。带有 `end`、`approve` 或 `choose` 的步骤可以省略动作。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
 
+每个驱动都会把提示词步骤的 `output` 以 JSON Schema 的形式告诉 agent，提示词里不必重复。声明的字段都必填，多出的字段允许。这个步骤：
+
+```yaml
+- id: plan
+  prompt: "Plan the change for issue #{{ inputs.issue }}."
+  output: { summary: string, risk: low | high, files: [string] }
+```
+
+收到的提示词后面会说明结果写到哪里，并要求 `output` 是：
+
+```text
+a value that matches this JSON Schema: `{"type":"object","properties":{"summary":{"type":"string"},"risk":{"type":"string","enum":["low","high"]},"files":{"type":"array","items":{"type":"string"}}},"required":["summary","risk","files"]}`
+```
+
+没有 `output` 的步骤会被要求用一个 JSON 字符串简述做了什么。
+
 本地命令步骤以 UTF-8 读取 stdout 和 stderr。JSON 字符串中的非 ASCII 文本会原样保存到输出中，后续步骤读取时也保持原文。运行 `teamai` 的命令运行的是驱动该步骤的那个 teamai。
 
 提示词步骤可以设置 `model`：`models/aliases.yaml` 中的别名或模型名，不能含空格或模板。文件顶层的 `defaults: { model: fast }` 为其中的提示词步骤设置模型。提示词步骤使用以下第一个已设置的模型：

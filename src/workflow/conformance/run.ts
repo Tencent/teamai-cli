@@ -385,6 +385,18 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
     ],
   },
   {
+    // The schema a driver tells the agent its output must match comes from this field.
+    name: 'a prompt step lease carries the output it declares',
+    workflowName: 'build',
+    yaml: controlsYaml('  - id: plan\n    prompt: Plan the change.\n    output: { summary: string, risk: low | high }'),
+    operations: [
+      {
+        kind: 'next', saveAs: 'plan',
+        expect: { data: { lease: { step: 'plan', output: { type: 'object', fields: { summary: { type: 'string' }, risk: { type: 'enum', values: ['low', 'high'] } } } } } },
+      },
+    ],
+  },
+  {
     name: 'a driver that lists its running attempts gets parallel leases',
     workflowName: 'build',
     yaml: PARALLEL_ROOTS,

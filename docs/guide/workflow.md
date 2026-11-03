@@ -24,6 +24,22 @@ steps:
 
 `schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and exactly one action: `command`, `prompt`, `prompt_file`, or `workflow`. A step can omit the action when it has `end`, `approve`, or `choose`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
 
+Every driver tells a prompt step its `output` as JSON Schema, so the prompt does not need to repeat it. Each declared field is required, and extra fields are allowed. This step:
+
+```yaml
+- id: plan
+  prompt: "Plan the change for issue #{{ inputs.issue }}."
+  output: { summary: string, risk: low | high, files: [string] }
+```
+
+gets its prompt, followed by where to write its result, which asks for `output` to be:
+
+```text
+a value that matches this JSON Schema: `{"type":"object","properties":{"summary":{"type":"string"},"risk":{"type":"string","enum":["low","high"]},"files":{"type":"array","items":{"type":"string"}}},"required":["summary","risk","files"]}`
+```
+
+A step with no `output` is asked for a short summary of what it did, as a JSON string.
+
 Local command steps read stdout and stderr as UTF-8. Non-ASCII JSON string values are preserved in stored outputs and when later steps read them. A command that runs `teamai` runs the teamai that drives the step.
 
 A prompt step can set `model`: an alias from `models/aliases.yaml` or a model name, without spaces or templates. `defaults: { model: fast }` at the top of a file sets one for its prompt steps. A prompt step runs on the first of these that is set:

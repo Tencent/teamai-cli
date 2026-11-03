@@ -1,5 +1,6 @@
 /** The lease `next` answers with, as `leaseData` in `engine.ts` writes it, parsed by every driver with one schema. */
 import { z } from 'zod';
+import { OutputSchemaSchema } from './output.js';
 import { EnvScopeSchema, LeaseSetupSchema, RequirementsSchema, TurnLimitsSchema } from './requirements.js';
 import { StepModelSchema } from './step-model.js';
 import { AttemptIdSchema } from './store.js';
@@ -27,7 +28,8 @@ export const LeaseWireSchema = LeaseIdSchema.extend({
   model: z.union([z.string(), StepModelSchema]).optional(),
   /** The `defaults.model` in effect for a prompt step, as written. */
   defaultModel: z.string().optional(),
-  output: z.unknown().optional(),
+  /** The step's declared output, which the driver's result instruction asks the agent to match. */
+  output: OutputSchemaSchema.optional(),
   workspace: WorkspaceContractSchema.optional(),
   /** The team role the step's copy runs with, its clone's or its own: teamai delivers that role's knowledge there, for `can.role`. */
   role: z.string().optional(),
