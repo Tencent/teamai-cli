@@ -631,6 +631,7 @@ score          每组一次：
   judge        限定在证据目录里的提示步骤，除非某个阶段已经判定或设置了 label
   label        teamai score label → 每个评分器的标签
   write        teamai score write → scores/labels.jsonl 和待发布队列
+  publish      teamai score publish → 把本成员待发布的标签发布到 teamai-reports
   settle       teamai score settle，在该组的某个步骤出错之后
 ```
 
@@ -663,7 +664,8 @@ pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
 | `score_override_prompt` | 含有不限定在目录里的提示步骤，或列出 `scorers` 的提示步骤 |
 | `score_override_confined_dir` | 把评审者限定在的目录不是它所依赖步骤的输出 |
 | `score_override_judge_prompt` | 评审提示没有读取 `steps.evidence.outputs.rubric` 和 `steps.evidence.outputs.schema` |
-| `score_override_step_missing` | 去掉了 `evidence`、`label`、`write` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
+| `score_override_publish` | 运行 `teamai score publish` 却没有 `deliver: publish` 到 `teamai-reports`，或发布到其他分支 |
+| `score_override_step_missing` | 去掉了 `evidence`、`label`、`write`、`publish` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
 | `default_override_alias` | 是另一个带 `alias: teamai-score` 的工作流 |
 
 项目运行 teamai 的默认版本或项目团队的文件，从不运行用户作用域的 `teamai-score`，pull 会提示：
@@ -751,6 +753,6 @@ Judge tools here: claude 2.1.308 (Claude Code) is verified, codebuddy 2.3.0 is b
 | `<dataHome>/scores/reasoning/` | 评审者的理由，每个标签一个文件。从不发布。 |
 | `<dataHome>/scores/raw/` | 本机评审失败时的输出，保留到之后的评审尝试取代它。 |
 | `<dataHome>/sessions/captures/` | 每个会话启动时的运行配置，由会话启动 hook 写入。会话文件消失一天后删除。 |
-| `teamai-reports` 上的 `scores/<member>/<YYYY-MM>.jsonl` | 已发布的标签，每个评分器、评分标准、评分对象和评审者只保留最新一条：人，或每个模型评审者的工具和模型。推送成功前标签留在 `<dataHome>/scores/pending/`；关闭用量上报时一直留在那里。 |
+| `teamai-reports` 上的 `scores/<member>/<YYYY-MM>.jsonl` | 已发布的标签，每个评分器、评分标准、评分对象和评审者只保留最新一条：人，或每个模型评审者的工具和模型。标签留在 `<dataHome>/scores/pending/`，直到 `teamai-score` 的 `publish` 步骤、`teamai score --push` 或 `teamai pull` 在 `teamai-reports` 上找到它们；关闭用量上报时一直留在那里。 |
 
 标签从不进入工作流运行或它的记录。基准测试运行在结束时冻结每个 trial 的评判结果，其记录携带 trial 的结果，而不是标签。工作流运行页面显示每一轮的标签，以及评审开销，与运行本身的 token 分开统计。本机的运行统计每一次评审尝试；成员发布的运行只统计产生了标签的评审。仪表盘的[评分器页面](dashboard.md#评分器scorers)按时间和配置显示每个评分器的通过率。`teamai digest --json` 输出同样的度量，以及每个失败的标签和它的工作开始时的 commit，[`teamai self-improvement run`](self-improvement.md) 把它们变成一个 PR。

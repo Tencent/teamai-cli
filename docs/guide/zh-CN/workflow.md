@@ -355,6 +355,40 @@ teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
 - 分支的内容和默认分支相同时（比如它的 pull request 已被 squash 合并），步骤什么也不推送，也不打开 pull request。
 - 成员的团队仓库被 `teamai pull` 或 `push` 占用时，打开 pull request 会等待。
 
+### 发布到数据分支
+
+在 `workspace: { team: { branch: teamai-reports } }` 里的步骤上设 `deliver: publish`，会把步骤暂存的内容发布到这个数据分支，不开 pull request。`teamai-score` 的 `publish` 步骤就这样发布标签。
+
+```yaml
+schemaVersion: v1alpha1
+name: share-standup
+description: Publish this member's standup note for the month to teamai-reports.
+inputs: { member: string, note: string }
+steps:
+  - id: standup
+    workspace: { team: { branch: teamai-reports } }
+    deliver: publish
+    command: |
+      mkdir -p "standups/$MEMBER"
+      printf '%s\n' "$NOTE" >> "standups/$MEMBER/$(date -u +%Y-%m).md"
+      git add "standups/$MEMBER"
+    env: { MEMBER: "{{ inputs.member }}", NOTE: "{{ inputs.note }}" }
+```
+
+```text
+teamai workflow start share-standup --inputs '{"member":"alice","note":"Shipped the retry fix."}'
+  检出 origin 顶端的 teamai-reports      取自本机对它的检出；从不合并 main
+  在那里运行步骤                         它暂存 standups/alice/2026-11.md
+  检查它暂存了什么                       只能是 alice 自己的文件
+  应用、提交并推送                       持有那个检出的锁；origin 变动时 rebase 后再推
+```
+
+- `branch` 是 `teamai-reports` 或 `teamai-learnings`，原样写出。pull 以 `bad_delivery` 拒绝别的分支，也拒绝团队工作区之外的 `deliver: publish`。
+- 只发布步骤暂存的内容，且只限成员自己的文件：路径第二段去掉扩展名后等于成员用户名的文件，例如 `scores/alice/2026-11.jsonl` 或 `votes/alice.yaml`。其他任何文件或删除都会让步骤以 `push_failed` 失败，什么也不发布。
+- 什么也没暂存的步骤会成功，也不推送。它的运行不产生副本、不开 pull request，`workflow publish` 会接受它。
+- 离线、另一个 teamai 进程正在写该分支、团队仓库是 http，或者 origin 改动了步骤暂存的内容时，步骤成功，消息说明数据待发布。origin 没能接收的提交留在本机，`teamai score --push` 会发送它。生产者会保留它发布的内容，直到在 origin 顶端找到它，就像 `teamai score publish` 对标签所做的那样。
+- 本地驱动运行它；在会启动子 agent 的宿主上，skill 驱动也运行它。
+
 ### 限定在一个目录里的提示步骤
 
 `workspace: { confined: <dir> }` 让提示步骤的工具只读一个目录，别的都不读：不读检出、团队 env，也不读任何会话。前面的步骤在 `$TEAMAI_RUN_DIR` 下写好这个目录，放进证据和一个 `confined.json`，说明该步骤需要多强的隔离。判断只能依据这些证据时用它。

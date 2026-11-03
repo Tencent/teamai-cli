@@ -355,6 +355,40 @@ teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
 - When the branch holds what the default branch holds, as once its pull request was squash-merged, the step pushes nothing and opens no pull request.
 - Opening the pull request waits while a `teamai pull` or `push` holds the member's team repo.
 
+### Publish to a data branch
+
+`deliver: publish` on a step in `workspace: { team: { branch: teamai-reports } }` publishes what the step stages to that data branch, with no pull request. `teamai-score`'s `publish` step publishes labels this way.
+
+```yaml
+schemaVersion: v1alpha1
+name: share-standup
+description: Publish this member's standup note for the month to teamai-reports.
+inputs: { member: string, note: string }
+steps:
+  - id: standup
+    workspace: { team: { branch: teamai-reports } }
+    deliver: publish
+    command: |
+      mkdir -p "standups/$MEMBER"
+      printf '%s\n' "$NOTE" >> "standups/$MEMBER/$(date -u +%Y-%m).md"
+      git add "standups/$MEMBER"
+    env: { MEMBER: "{{ inputs.member }}", NOTE: "{{ inputs.note }}" }
+```
+
+```text
+teamai workflow start share-standup --inputs '{"member":"alice","note":"Shipped the retry fix."}'
+  check out teamai-reports at origin's tip    from this machine's checkout of it; main is never merged in
+  run the step there                          it stages standups/alice/2026-11.md
+  check what it staged                        alice's own files only
+  apply, commit and push                      under that checkout's lock, rebased and pushed again while origin moves
+```
+
+- `branch` is `teamai-reports` or `teamai-learnings`, as written. Pull refuses another branch, and `deliver: publish` outside the team workspace, with `bad_delivery`.
+- Only what the step staged is published, and only the member's own files: those whose second path segment, less its extension, is the member's username, such as `scores/alice/2026-11.jsonl` or `votes/alice.yaml`. Any other file, or a deletion, fails the step with `push_failed`, and nothing is published.
+- A step that stages nothing succeeds and pushes nothing. Its run makes no copy, opens no pull request, and `workflow publish` takes it.
+- Offline, while another teamai process writes the branch, with an http team repo, or when origin changed what the step staged, the step succeeds and its message says the data is pending. A commit origin could not take stays on this machine, and `teamai score --push` sends it. A producer keeps what it publishes until it finds it on origin's tip, as `teamai score publish` does with labels.
+- The local driver runs it, and so does the skill driver on a host that starts child agents.
+
 ### A prompt confined to a directory
 
 `workspace: { confined: <dir> }` runs a prompt step whose tool reads one directory and nothing else: not the checkout, the team's env, or a session. An earlier step writes that directory under `$TEAMAI_RUN_DIR`, with the evidence and a `confined.json` that says how isolated the step must be. Use it for a judgement that must rest on that evidence alone.

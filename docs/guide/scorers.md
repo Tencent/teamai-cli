@@ -631,6 +631,7 @@ score          once per group:
   judge        a prompt confined to the evidence directory, unless a stage decided or label is set
   label        teamai score label → each scorer's label
   write        teamai score write → scores/labels.jsonl and the pending outbox
+  publish      teamai score publish → this member's pending labels, published to teamai-reports
   settle       teamai score settle, after a step of the group broke
 ```
 
@@ -663,7 +664,8 @@ Pull refuses a file that changes what a label means, and teamai's default runs i
 | `score_override_prompt` | has a prompt step not confined to a directory, or one that lists `scorers` |
 | `score_override_confined_dir` | confines the judge to a directory that is not an output of a step it needs |
 | `score_override_judge_prompt` | has a judge prompt that does not read `steps.evidence.outputs.rubric` and `steps.evidence.outputs.schema` |
-| `score_override_step_missing` | drops `evidence`, `label`, `write` or `settle`, or `check` while a scorer here has a check |
+| `score_override_publish` | runs `teamai score publish` without `deliver: publish` to `teamai-reports`, or publishes to another branch |
+| `score_override_step_missing` | drops `evidence`, `label`, `write`, `publish` or `settle`, or `check` while a scorer here has a check |
 | `default_override_alias` | is another workflow with `alias: teamai-score` |
 
 A project runs teamai's default, or the project team's file, never a user scope's `teamai-score`, and pull says so:
@@ -751,6 +753,6 @@ A `best-effort` tool cannot judge for a scorer that requires `verified`, nor can
 | `<dataHome>/scores/reasoning/` | The judge's reasoning, one file per label. Never published. |
 | `<dataHome>/scores/raw/` | A failed local judge's output, until a later attempt replaces it. |
 | `<dataHome>/sessions/captures/` | What each session started as, written by the session-start hook. Removed a day after the session's file is gone. |
-| `scores/<member>/<YYYY-MM>.jsonl` on `teamai-reports` | Published labels, the newest per scorer, rubric, subject and judge: a person, or each model judge's tool and model. Labels wait in `<dataHome>/scores/pending/` until a push lands, and stay there while usage reporting is off. |
+| `scores/<member>/<YYYY-MM>.jsonl` on `teamai-reports` | Published labels, the newest per scorer, rubric, subject and judge: a person, or each model judge's tool and model. Labels wait in `<dataHome>/scores/pending/` until the `publish` step of `teamai-score`, `teamai score --push` or `teamai pull` finds them on `teamai-reports`, and stay there while usage reporting is off. |
 
 Labels never enter a workflow run or its record. A benchmark run freezes each trial's verdict when it ends, and its record carries the trial's result, not the label. Workflow Runs shows each pass's labels, and what judging cost apart from the run's own tokens. For a run on this machine that counts every judge attempt; for a run a member published, only the labelled ones. The dashboard's [Scorers page](dashboard.md#scorers) shows each scorer's pass rate over time and by configuration. `teamai digest --json` prints the same measurements with each failing label and the commit its work started at, which [`teamai self-improvement run`](self-improvement.md) turns into a PR.
