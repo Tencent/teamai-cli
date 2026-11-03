@@ -7,7 +7,7 @@ import { sameDriver } from '../driver-identity.js';
 import type { JsonValue } from '../types.js';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
-import { isUnder, passesWithin, runPasses } from './loop.js';
+import { isUnder, passesWithin, runPasses, type RunPass } from './loop.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
@@ -401,22 +401,37 @@ function workflowChildren(run: RunState, step: StepState): StepState[] {
   });
 }
 
+/** A branch and the commit a step starts from or merges there. */
+type BranchHead = Extract<WorkspaceContract, { mode: 'new' | 'continue' }>['merge'][number];
+
 /**
  * Where the current pass of step `state` left each branch it wrote: its own passes and those of every step under it,
- * current or archived by a loop, so a fix loop that ends on a skipped pass still leaves its fix. Passes record no
- * settle time, and a write starts from the commit the last one left, so the newest write on a branch is the one no
- * other write there goes on from.
+ * current or archived by a loop, so a fix loop that ends on a skipped pass still leaves its fix. A step instance holds
+ * only the branch of its latest pass that wrote; an earlier pass on another branch, such as a failed attempt a retry
+ * replaced, is not part of it. Passes record no settle time, and a write starts from the commit the last one left, so
+ * the newest write on a branch is the one no other write there goes on from.
  */
-function headsWritten(run: RunState, state: StepState): Array<{ branch: string; commit: string }> {
+function headsWritten(run: RunState, state: StepState): BranchHead[] {
   const current = passOf(state);
-  const passes = [...state.passes ?? [], ...(current ? [current] : []), ...passesWithin(run, runPasses(run), state.id, state.pass ?? 1)];
-  const writes = passes.flatMap((pass) => (pass.changes ? [pass.changes] : []));
+  const passes: RunPass[] = [
+    ...[...state.passes ?? [], ...(current ? [current] : [])].map((pass) => ({ ...pass, step: state.id })),
+    ...passesWithin(run, runPasses(run), state.id, state.pass ?? 1),
+  ];
+  const latest = new Map<string, RunPass>();
+
+  for (const pass of passes) {
+    const known = latest.get(pass.step);
+
+    if (pass.changes && (!known || pass.pass > known.pass)) latest.set(pass.step, pass);
+  }
+
+  const writes = passes.flatMap((pass) => (pass.changes && pass.changes.branch === latest.get(pass.step)?.changes?.branch ? [pass.changes] : []));
   const heads = new Map<string, string>();
 
   for (const write of writes) {
-    const goesOn = writes.some((other) => other.branch === write.branch && other.from === write.to && other.to !== write.to);
+    const hasLaterWrite = writes.some((other) => other.branch === write.branch && other.from === write.to && other.to !== write.to);
 
-    if (!goesOn || !heads.has(write.branch)) heads.set(write.branch, write.to);
+    if (!hasLaterWrite || !heads.has(write.branch)) heads.set(write.branch, write.to);
   }
 
   return [...heads].map(([branch, commit]) => ({ branch, commit }));
@@ -428,8 +443,8 @@ function headsWritten(run: RunState, state: StepState): Array<{ branch: string; 
  * settled, so the run's recorded tip of that branch is where they left it; when it is not, the run's records disagree
  * and the step fails rather than start without commits the branch may hold.
  */
-function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): Array<{ branch: string; commit: string }> | WorkflowFailure {
-  const ordered: Array<{ branch: string; commit: string; settledAt: number }> = [];
+function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): BranchHead[] | WorkflowFailure {
+  const ordered: Array<BranchHead & { settledAt: number }> = [];
   const visited = new Set<string>();
   let disagreement: WorkflowFailure | undefined;
 
@@ -462,7 +477,7 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
 
     const settledAt = 'settledAt' in step ? step.settledAt : 0;
     const under = isUnder(step.id);
-    const opened = new Set(run.steps.filter((item) => item.id === step.id || under(item.id)).map((item) => branchName(run.id, item.id, item.pass ?? 1)));
+    const opened = new Set(run.steps.filter((inside) => inside.id === step.id || under(inside.id)).map((inside) => branchName(run.id, inside.id, inside.pass ?? 1)));
 
     for (const head of heads) {
       const tip = run.copies?.[head.branch]?.commit;
@@ -470,11 +485,11 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
       if (opened.has(head.branch) && tip !== undefined && tip !== head.commit) {
         disagreement ??= {
           code: 'workspace_base',
-          message: `step "${state.id}" would start from branch ${head.branch} at ${head.commit}, where the steps of "${step.id}" left it, but the run recorded ${tip} as the tip of ${head.branch}. The run's records of that branch disagree, for a reason teamai does not know, so the step stops instead of leaving out commits the branch may hold. Check which commit ${head.branch} should hold, then report it with the run file.`,
+          message: `step "${state.id}" would start from branch ${head.branch} at ${head.commit}, where the steps of "${step.id}" left it, but the run recorded ${tip} as the tip of ${head.branch}. The run's records of that branch disagree, for a reason teamai does not know, so the step stops instead of leaving out commits the branch may hold. Run git log ${head.branch} to see which of the two it holds, and report this run to the teamai maintainers with its run file ${run.id}.json.`,
         };
       }
 
-      const earlier = ordered.find((item) => item.branch === head.branch);
+      const earlier = ordered.find((known) => known.branch === head.branch);
 
       if (!earlier) ordered.push({ ...head, settledAt });
       else if (settledAt > earlier.settledAt) Object.assign(earlier, { commit: head.commit, settledAt });

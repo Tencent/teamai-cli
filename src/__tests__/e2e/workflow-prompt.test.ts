@@ -180,6 +180,10 @@ steps:
       if ('error' in completed) throw new Error(completed.error.message);
       const runId = String((completed.data.done as { run: string }).run);
       const stored = JSON.parse(fs.readFileSync(path.join(await resolveProjectDataHome(work), 'workflows', 'runs', `${runId}.json`), 'utf8')) as RunState;
+      const build = stored.steps.find((step) => step.id === 'build');
+      const itemBranches = build && 'results' in build ? build.results?.map((item) => item.branch) : undefined;
+      const onItem = (index: number, file: string): string => execFileSync('git', ['show', `${itemBranches?.[index]}:${file}`], { cwd: origin, encoding: 'utf8' });
+      expect({ a: onItem(0, 'a.txt'), aInB: onItem(1, 'a.txt'), b: onItem(1, 'b.txt') }).toEqual({ a: 'fixed', aInB: 'fixed', b: 'fixed' });
       const docs = stored.steps.find((step) => step.id === 'docs');
       const branch = docs && 'changes' in docs ? docs.changes?.branch : undefined;
       if (!branch) throw new Error(`docs wrote no branch: ${JSON.stringify(docs)}`);

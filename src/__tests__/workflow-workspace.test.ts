@@ -694,6 +694,46 @@ steps:
     expect(branches).toEqual({ 'build[0].implement': branchName(runId, 'build[0]', 1), 'build[0].fix': branchName(runId, 'build[0]', 1) });
   });
 
+  it('starts from the retried pass of a need, not the branch of its failed one', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A step that failed is retried, and the step that needs it starts from the retry.
+steps:
+  - id: impl
+    workspace: new
+    command: echo impl
+  - id: after
+    needs: [impl]
+    workspace: new
+    command: echo after
+`);
+    const owner = driver(workspace);
+    const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
+    const can = { workspace: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
+    const sha = (text: string): string => createHash('sha1').update(text).digest('hex');
+    type Leased = { attempt: string; revision: number; step: string; workspace?: { branch: string; start: { commit: string }; merge: unknown[] } };
+    const lease = async (): Promise<Leased> => {
+      const leased = await leaseNext(config, runId, owner, { base, can });
+      const found = 'data' in leased ? leased.data.lease as Leased | undefined : undefined;
+      if (!found?.workspace) throw new Error(JSON.stringify(leased));
+      return found;
+    };
+    const report = async (leased: Leased, outcome: 'success' | 'failed', to: string): Promise<void> => {
+      const branch = leased.workspace?.branch ?? '';
+      await reportAttempt(config, runId, {
+        attempt: leased.attempt, revision: leased.revision, outcome, driver: owner, ...(outcome === 'failed' ? { exitCode: 1 } : {}),
+        changes: { branch, base: base.commit, from: base.commit, to, commits: [to] },
+      });
+    };
+    await report(await lease(), 'failed', sha('failed'));
+    expect(await retryStep(config, runId, await knownSecrets(config), 'impl')).toMatchObject({ data: { retried: { pass: 2 } } });
+    await report(await lease(), 'success', sha('retried'));
+
+    const after = await lease();
+
+    expect(after).toMatchObject({ step: 'after', workspace: { start: { commit: sha('retried') }, merge: [] } });
+  });
+
   it('fails workspace_base, naming both commits, when a need left its own branch elsewhere than the run recorded', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
