@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { JsonValueSchema, type JsonValue } from '../types.js';
-import type { JudgeAccess } from './confined-level.js';
+import type { ConfinedAccess } from './confined-level.js';
 import type { Evidence } from '../tools.js';
 import { agyRun, readToolMetadata, type TokenUsage } from './stdout.js';
 
@@ -56,7 +56,7 @@ export interface ConfinedLaunch {
   /** The versions whose confinement has been checked; any other version runs at best-effort. */
   readonly verified?: RegExp;
   /** What the run can do beyond answering. */
-  readonly access: JudgeAccess;
+  readonly access: ConfinedAccess;
 }
 
 export interface LaunchAdapter {

@@ -1,5 +1,5 @@
 /** The host question the agent answers once per run with prompt steps, and what the skill driver declares on every `next`. */
-import type { JudgeAccess } from '../../../tool-launch/confined-level.js';
+import type { ConfinedAccess } from '../../../tool-launch/confined-level.js';
 import { confinedAccess, isConfinedTool } from '../../../tool-launch/confined.js';
 import type { DriverCan } from '../../requirements.js';
 import type { SkillState } from './skill-state.js';
@@ -74,7 +74,7 @@ export function confinedCan(state: Pick<SkillState, 'judging' | 'sessionJudge' |
 /** The confined judge a driver offers `score --next`. */
 export interface JudgeOffer {
   isolation: 'verified';
-  access: JudgeAccess;
+  access: ConfinedAccess;
   tools: [string];
 }
 

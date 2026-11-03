@@ -10,7 +10,7 @@ import { driverIdentity } from './driver-identity.js';
 import { scoresDir } from './scorers/attempts.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { confinedToolLevels } from './tool-launch/confined.js';
-import type { Isolation } from './tool-launch/confined-level.js';
+import type { ConfinedLevel } from './tool-launch/confined-level.js';
 import { scopeScoring } from './scorers/settings.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
 import { SessionPublish } from './session-flow/session-publish.js';
@@ -29,9 +29,9 @@ const RUN_MAX_MS = 30 * 60 * 1000;
  * What the local judge tools can offer, strictest first: those whose profile reaches `verified`, then every installed
  * tool at `best-effort`. A tool is never offered at a level it cannot reach, since its judge would refuse the lease.
  */
-export async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; tools: [string, ...string[]] }>> {
+export async function localJudgeOffers(): Promise<Array<{ isolation: ConfinedLevel; tools: [string, ...string[]] }>> {
   const levels = await confinedToolLevels();
-  const offers: Array<{ isolation: Isolation; tools: [string, ...string[]] }> = [];
+  const offers: Array<{ isolation: ConfinedLevel; tools: [string, ...string[]] }> = [];
   const [verified, ...moreVerified] = levels.filter((level) => level.isolation === 'verified').map((level) => level.tool);
 
   if (verified) offers.push({ isolation: 'verified', tools: [verified, ...moreVerified] });

@@ -4,7 +4,7 @@ import { DriverSchema } from '../driver-identity.js';
 import { RunModeSchema } from '../launch-context.js';
 import { WorkOutcomeSchema } from '../outcomes.js';
 import { JudgeUsageSchema } from '../scorers/label.js';
-import { ACCESS_LEVELS, ISOLATIONS } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
@@ -81,7 +81,7 @@ export const ConfinedRunReportSchema = z.object({
   tool: z.string().min(1),
   model: ObservedModelSchema.optional(),
   effort: ObservedEffortSchema.optional(),
-  isolation: z.enum(ISOLATIONS),
+  isolation: z.enum(CONFINED_LEVELS),
   access: z.enum(ACCESS_LEVELS),
   usage: JudgeUsageSchema.optional(),
 });

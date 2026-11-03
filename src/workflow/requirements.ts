@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ENV_KEY_RE, sameEnvName } from '../resources/env-key.js';
-import { ACCESS_LEVELS, ISOLATIONS } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
 import { stepWorkflow, WORKSPACE_MODES, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
@@ -144,7 +144,7 @@ export type StrictKey = KeysOf<'strict'>;
 type BestEffortKey = KeysOf<'bestEffort'>;
 
 /** The level a confined step runs at, which its `confined.json` sets: `verified` or `best-effort`. */
-export const ConfinedLevelSchema = z.enum(ISOLATIONS);
+export const ConfinedLevelSchema = z.enum(CONFINED_LEVELS);
 
 /** One offer of `can.confined`: tools a driver runs confined at `level`, which can do `access` there. */
 export const ConfinedOfferSchema = z.object({

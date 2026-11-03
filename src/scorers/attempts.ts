@@ -12,7 +12,7 @@ import { AgentObservationSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import type { LocalConfig } from '../types.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
-import { ACCESS_LEVELS, ISOLATIONS } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
 import { scoresDir, scoresLocked } from './home.js';
 import { DECIDERS, isStageDecider, JUDGE_FAILURES, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type JudgeFailureCode } from './label.js';
 import { PinnedScorerSchema } from './pin.js';
@@ -36,7 +36,7 @@ const JudgeChoiceSchema = z.object({
   noModel: z.enum(['local', 'switched']).optional(),
   /** The scorer's `model` when it is an alias, also when the tool default judges in its place. */
   alias: z.string().optional(),
-  isolation: z.enum(ISOLATIONS),
+  isolation: z.enum(CONFINED_LEVELS),
   access: z.enum(ACCESS_LEVELS),
 });
 

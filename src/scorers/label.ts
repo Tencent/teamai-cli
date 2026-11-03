@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, UsedSchema } from '../agent-observation.js';
 import { RunModeSchema } from '../launch-context.js';
-import { ACCESS_LEVELS, ISOLATIONS } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import type { JsonValue } from '../types.js';
 
@@ -57,7 +57,7 @@ export const ModelJudgeSchema = z.object({
   model: ObservedModelSchema.optional(),
   effort: ObservedEffortSchema.optional(),
   usage: JudgeUsageSchema.optional(),
-  isolation: z.enum(ISOLATIONS),
+  isolation: z.enum(CONFINED_LEVELS),
   access: z.enum(ACCESS_LEVELS),
   batched: z.literal(true).optional(),
 });

@@ -27,7 +27,7 @@ import { observedEffort, observedModel } from '../agent-observation.js';
 import {
   JudgeUsageSchema, sumUsage, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel, type SessionSubject, type Decider,
 } from '../scorers/label.js';
-import { ACCESS_LEVELS, ISOLATIONS, type Isolation, type JudgeAccess } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS, type ConfinedLevel, type ConfinedAccess } from '../tool-launch/confined-level.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { runLocalJudge } from '../scorers/judge.js';
 import { installedConfinedTools, isConfinedTool } from '../tool-launch/confined.js';
@@ -55,7 +55,7 @@ import type { RunState, WorkflowEnvelope } from './types.js';
 export interface JudgeRequest {
   driver: JudgeDriver;
   /** `access` is what the driver's judge can do beyond answering; a driver that does not say counts as `full`. */
-  judge: { isolation: Isolation; access?: JudgeAccess; tools: [string, ...string[]] };
+  judge: { isolation: ConfinedLevel; access?: ConfinedAccess; tools: [string, ...string[]] };
   /** The lease refs the driver is still running; each is renewed. A live lease of this driver it leaves out is handed back. */
   running: string[];
   /**
@@ -75,7 +75,7 @@ const NextPayloadSchema = z.object({
   driver: DriverSchema.extend({
     can: z.object({
       judge: z.object({
-        isolation: z.enum(ISOLATIONS), access: z.enum(ACCESS_LEVELS).optional(),
+        isolation: z.enum(CONFINED_LEVELS), access: z.enum(ACCESS_LEVELS).optional(),
         tools: z.array(z.string().min(1)).nonempty('Array must contain at least 1 element(s)').pipe(z.tuple([z.string().min(1)], z.string().min(1))),
       }, {
         error: (issue) => issue.input === undefined ? 'driver.can.judge is required: {"isolation":"verified" or "best-effort","tools":["claude",…]}' : undefined,
@@ -91,7 +91,7 @@ const SubmitPayloadSchema = z.object({
   driver: DriverSchema,
   outcome: z.enum(['success', 'failed', 'released']),
   answer: JudgeAnswerSchema.optional(),
-  judge: z.object({ tool: z.string().min(1).optional(), model: z.string().min(1).optional(), usage: JudgeUsageSchema.optional(), isolation: z.enum(ISOLATIONS).optional() }).optional(),
+  judge: z.object({ tool: z.string().min(1).optional(), model: z.string().min(1).optional(), usage: JudgeUsageSchema.optional(), isolation: z.enum(CONFINED_LEVELS).optional() }).optional(),
 });
 
 type SubmitPayload = z.infer<typeof SubmitPayloadSchema>;
@@ -233,7 +233,7 @@ async function scoreEntries(config: LocalConfig, now: string, teamBatch: boolean
   });
 }
 
-function requiredFor(settings: readonly IsolationSetting[], { scorer, pin, definition }: Pick<ScoreEntry, 'scorer' | 'pin' | 'definition'>): Isolation {
+function requiredFor(settings: readonly IsolationSetting[], { scorer, pin, definition }: Pick<ScoreEntry, 'scorer' | 'pin' | 'definition'>): ConfinedLevel {
   return requiredIsolation([...settings, { source: scorerIsolationSource(scorer, pin.relativePath), value: definition.isolation }]).level;
 }
 
@@ -255,8 +255,8 @@ export async function verifiedScorers(config: LocalConfig, names: readonly strin
 }
 
 /** Whether a judge at `offered` isolation may judge for a scorer that asks for `required`. */
-function meets(offered: Isolation, required: Isolation): boolean {
-  return ISOLATIONS.indexOf(offered) >= ISOLATIONS.indexOf(required);
+function meets(offered: ConfinedLevel, required: ConfinedLevel): boolean {
+  return CONFINED_LEVELS.indexOf(offered) >= CONFINED_LEVELS.indexOf(required);
 }
 
 /** Whether the driver still offers what `attempt` was leased with: its tool, at its isolation or stricter. */

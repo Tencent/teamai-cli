@@ -4,7 +4,7 @@ import { runConfined, type ConfinedResult } from '../tool-launch/confined.js';
 import type { ConfinedTool } from '../tool-launch/tools.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
-import type { Isolation } from '../tool-launch/confined-level.js';
+import type { ConfinedLevel } from '../tool-launch/confined-level.js';
 import type { ScoreLabel, JudgeUsage } from './label.js';
 import type { JsonValue } from '../types.js';
 
@@ -16,7 +16,7 @@ export interface JudgeInput {
   evidence: string;
   /** The JSON Schema the judge's answer must follow. */
   schema: JsonValue;
-  isolation?: Isolation;
+  isolation?: ConfinedLevel;
   /** The directory the judge tool's process group is recorded in, where `stopRecordedGroup` finds it if its caller dies. */
   group?: string;
   /** Stops the judge tool, as its ten-minute limit does. */

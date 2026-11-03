@@ -4,11 +4,11 @@
  */
 
 /** `verified`: the tool's confined profile is known to keep it to its directory on this machine. */
-export const ISOLATIONS = ['best-effort', 'verified'] as const;
+export const CONFINED_LEVELS = ['best-effort', 'verified'] as const;
 
-export type Isolation = (typeof ISOLATIONS)[number];
+export type ConfinedLevel = (typeof CONFINED_LEVELS)[number];
 
 /** What a tool run confined can do beyond answering: nothing, read its directory, or whatever its tool allows. */
 export const ACCESS_LEVELS = ['answer', 'read', 'full'] as const;
 
-export type JudgeAccess = (typeof ACCESS_LEVELS)[number];
+export type ConfinedAccess = (typeof ACCESS_LEVELS)[number];
