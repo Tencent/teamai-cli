@@ -48,37 +48,55 @@ export const BUILTIN_AGENT_NAMES = new Set<string>([RECALL_AGENT]);
 
 /**
  * Each built-in agent a team agent of the same name replaces in this
- * directory, with the tools it replaces it for: those the team file reaches
- * (`teamAgentReach`), so a tool the team agent does not target keeps
- * teamai's. The team agent is one pull delivers here; while the team's agents
- * collide, pull keeps the installed ones, so every team file of a built-in's
- * name counts. A team file that cannot be read or parsed replaces nothing,
- * and pull says so, as for a team workflow with no runnable version.
+ * directory, with the destinations it replaces it at: where pull writes the
+ * team agent (`deliveryDestinations`), so a tool the team agent does not
+ * reach keeps teamai's, and tools sharing one directory agree. A team file
+ * that cannot be read or parsed replaces nothing, and pull says so, as for a
+ * team workflow with no runnable version. While the team's agents collide,
+ * pull delivers none and keeps the installed ones, so a built-in counts as
+ * replaced only where a team agent this directory could receive already has a
+ * file, and a new member still gets teamai's.
  */
 export async function builtinAgentsReplacedByTeam(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-): Promise<ReadonlyMap<string, (tool: string) => boolean>> {
+): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
   // Lazy: resources/agents.ts imports this module.
-  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }, { teamAgentReach }] = await Promise.all([
-    import('./resources/desired.js'), import('./resources/index.js'), import('./resources/agents.js'),
+  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }, { selectAgentsForDirectory }, { loadStateForScope }] = await Promise.all([
+    import('./resources/desired.js'), import('./resources/index.js'), import('./resources/agents.js'), import('./config.js'),
   ]);
 
-  const desired = await resolveTeamAgents(teamConfig, localConfig, await buildRolePullContext(localConfig));
-  const items = desired.kind === 'resolved' ? desired.items : await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
-  const replaced = new Map<string, (tool: string) => boolean>();
+  const roleContext = await buildRolePullContext(localConfig);
+  const desired = await resolveTeamAgents(teamConfig, localConfig, roleContext);
+  const handler = getHandler('agents');
+  const held = desired.kind === 'conflict';
+
+  const items = held
+    ? selectAgentsForDirectory(
+      await handler.scanTeamForPull(teamConfig, localConfig),
+      roleContext?.activeNamespaces.agents ?? null,
+      (await loadStateForScope(localConfig)).placedAgents,
+    )
+    : desired.items;
+
+  const replaced = new Map<string, Set<string>>();
 
   for (const item of items) {
     if (!BUILTIN_AGENT_NAMES.has(item.name)) continue;
-    const reach = await teamAgentReach(item);
+    const destinations = await handler.deliveryDestinations(teamConfig, localConfig, item);
 
-    if (!reach.ok) {
-      warnOnce(`[agents] ${item.relativePath} cannot be delivered (${reach.reason}), so teamai's ${item.name} stays in effect`);
+    if (!destinations.ok) {
+      warnOnce(`[agents] ${item.relativePath} cannot be delivered (${destinations.reason}), so teamai's ${item.name} stays in effect`);
       continue;
     }
 
-    const earlier = replaced.get(item.name);
-    replaced.set(item.name, earlier ? (tool) => earlier(tool) || reach.reaches(tool) : reach.reaches);
+    const dests = replaced.get(item.name) ?? new Set<string>();
+
+    for (const dest of destinations.dests) {
+      if (!held || await pathExists(dest)) dests.add(dest);
+    }
+
+    replaced.set(item.name, dests);
   }
 
   return replaced;
@@ -276,14 +294,14 @@ export async function deployBuiltinAgents(
     for (const file of agentFiles) {
       const src = path.join(builtinDir, file);
 
-      // The team's agent of this name is delivered here instead.
-      if (replaced.get(path.basename(file, '.md'))?.(tool)) continue;
-
       try {
         const stem = path.basename(file, '.md');
         const rendered = shippedAgentRender(stem, tool, localConfig.scope);
 
         if (rendered === undefined) throw new Error(`cannot read ${src}`);
+
+        // The team's agent of this name is delivered at this destination instead.
+        if (replaced.get(stem)?.has(path.join(targetAgentsDir, `${stem}${rendered.ext}`))) continue;
 
         if (options?.dryRun) {
           options.recorder?.report('builtin', path.join(targetAgentsDir, `${stem}${rendered.ext}`));

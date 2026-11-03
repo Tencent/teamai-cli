@@ -400,7 +400,7 @@ export class AgentsHandler extends ResourceHandler {
         // A built-in's copy is teamai's: only one pull delivered from a team
         // agent that replaces it here, on record, can be the team's.
         if (BUILTIN_AGENT_NAMES.has(stem)
-          && !(replacedBuiltins.get(stem)?.(tool) && delivered?.[path.join(agentsDir, file)] !== undefined)) continue;
+          && !(replacedBuiltins.get(stem)?.has(path.join(agentsDir, file)) && delivered?.[path.join(agentsDir, file)] !== undefined)) continue;
 
         if (directStems.has(stem)) continue; // canonical direct-pickup wins (self mode)
 
@@ -1401,6 +1401,35 @@ export class AgentsHandler extends ResourceHandler {
   }
 
   /** `item`'s spec, or undefined for a legacy `.md` or a team file that cannot be read or parsed. */
+  /**
+   * Where pull writes team agent `item` in this directory, one destination per
+   * tool that receives it (`resolveRenders`: targets, a tool that rejects it,
+   * a model that resolves), or why it writes it nowhere: the file cannot be
+   * read, or does not parse. A copy held for its model counts at the
+   * destination it occupies, rendered with the model recorded for it.
+   */
+  async deliveryDestinations(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    item: AgentResourceItem,
+  ): Promise<{ ok: true; dests: string[] } | { ok: false; reason: string }> {
+    const content = await readFileSafe(item.sourcePath);
+
+    if (content === null) return { ok: false, reason: `cannot read ${item.relativePath}` };
+
+    if (!isLegacyAgent(item)) {
+      const parsed = parseAgentYaml(content, `${item.name}.yaml`);
+
+      if (!parsed.ok) return { ok: false, reason: parsed.reason };
+    }
+
+    const { recordedAgentModels } = await import('../pull.js');
+    const recorded = (await recordedAgentModels(localConfig))[item.name];
+    const renders = await this.resolveRenders(teamConfig, localConfig, item, undefined, recorded);
+
+    return { ok: true, dests: renders.map((render) => render.dest) };
+  }
+
   private async parsedSpec(item: AgentResourceItem): Promise<AgentSpec | undefined> {
     if (isLegacyAgent(item)) return undefined;
     const content = await readFileSafe(item.sourcePath);
@@ -2345,28 +2374,6 @@ async function removeStaleAgentSiblings(
     await removeDelivered(ledger, sibling);
     log.debug(`Removed stale agent sibling ${file} for ${stem}`);
   }
-}
-
-/**
- * The tools a team agent file reaches, the way `pullItem` decides it before
- * any model is resolved: a legacy `.md` reaches the tools with
- * `legacyAgentMd`, a YAML spec its `targets`, or every tool without them. A
- * file that cannot be read or does not parse reaches none, with the reason.
- */
-export async function teamAgentReach(
-  item: AgentResourceItem,
-): Promise<{ ok: true; reaches: (tool: string) => boolean } | { ok: false; reason: string }> {
-  const content = await readFileSafe(item.sourcePath);
-
-  if (content === null) return { ok: false, reason: `cannot read ${item.relativePath}` };
-
-  if (isLegacyAgent(item)) return { ok: true, reaches: (tool) => isToolId(tool) && TOOLS[tool].legacyAgentMd };
-  const parsed = parseAgentYaml(content, `${item.name}.yaml`);
-
-  if (!parsed.ok) return { ok: false, reason: parsed.reason };
-  const { targets } = parsed.spec;
-
-  return { ok: true, reaches: (tool) => !targets || (isAgentToolId(tool) && targets.includes(tool)) };
 }
 
 /**

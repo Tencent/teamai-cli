@@ -167,12 +167,57 @@ describe('deployBuiltinAgents', () => {
     ]);
   });
 
+  it('deploys the built-in where the team teamai-recall is not delivered: its model cannot be resolved on a new install', async () => {
+    await fse.outputFile(
+      path.join(localConfig.repo.localPath, 'agents', 'teamai-recall.yaml'),
+      'name: teamai-recall\ndescription: Our recall\ninstructions: Search the wiki.\nmodel: strong\n',
+    );
+    // An aliases file that does not parse holds every agent with a `model`.
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'models/aliases.yaml'), 'aliases: 5\n');
+
+    await deployBuiltinAgents(recallOn({ claude: { agents: '.claude/agents' } }), localConfig);
+
+    expect(await fse.readFile(path.join(homeDir, '.claude/agents/teamai-recall.md'), 'utf8')).toContain('knowledge retrieval agent');
+  });
+
+  it('leaves the team copy in a directory two tools share when the team agent targets only one of them', async () => {
+    await fse.outputFile(
+      path.join(localConfig.repo.localPath, 'agents', 'teamai-recall.yaml'),
+      'name: teamai-recall\ndescription: Our recall\ninstructions: Search the wiki.\ntargets: [claude]\n',
+    );
+    const shared = path.join(homeDir, '.claude/agents/teamai-recall.md');
+    await fse.writeFile(shared, '# the team copy pull delivered');
+
+    await deployBuiltinAgents(recallOn({ claude: { agents: '.claude/agents' }, codebuddy: { agents: '.claude/agents' } }), localConfig);
+
+    expect(await fse.readFile(shared, 'utf8')).toBe('# the team copy pull delivered');
+  });
+
+  it('deploys the built-in to a new member while the team agents collide, and keeps an installed team copy', async () => {
+    const reviewer = (ns: string) => `name: reviewer\ndescription: ${ns} reviewer\ninstructions: Review.\n`;
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'agents', 'fe', 'reviewer.yaml'), reviewer('fe'));
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'agents', 'be', 'reviewer.yaml'), reviewer('be'));
+    await fse.outputFile(
+      path.join(localConfig.repo.localPath, 'agents', 'teamai-recall.yaml'),
+      'name: teamai-recall\ndescription: Our recall\ninstructions: Search the wiki.\n',
+    );
+    const copy = path.join(homeDir, '.claude/agents/teamai-recall.md');
+    const config = recallOn({ claude: { agents: '.claude/agents' } });
+
+    await deployBuiltinAgents(config, localConfig);
+    expect(await fse.readFile(copy, 'utf8')).toContain('knowledge retrieval agent');
+
+    await fse.writeFile(copy, '# the team copy an earlier pull delivered');
+    await deployBuiltinAgents(config, localConfig);
+    expect(await fse.readFile(copy, 'utf8')).toBe('# the team copy an earlier pull delivered');
+  });
+
   it('counts a team teamai-recall as replacing the built-in while recall is off', async () => {
     await fse.outputFile(path.join(localConfig.repo.localPath, 'agents', 'teamai-recall.md'), '---\nname: teamai-recall\ndescription: Team recall\n---\n');
 
     const replaced = await builtinAgentsReplacedByTeam(buildTeamConfig({ claude: { agents: '.claude/agents' } }), localConfig);
 
-    expect(replaced.get('teamai-recall')?.('claude')).toBe(true);
+    expect([...replaced.get('teamai-recall') ?? []]).toEqual([path.join(homeDir, '.claude/agents/teamai-recall.md')]);
   });
 
   it('keeps a team teamai-recall the member edited once the team no longer replaces the built-in', async () => {
