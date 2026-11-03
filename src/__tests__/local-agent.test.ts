@@ -3496,7 +3496,7 @@ describe('local-agent: project prompts reach every installed tool (#945)', () =>
 
   it('fails an OpenCode project prompt whose config teamai cannot list it in', async () => {
     const { ack } = await installProjectPrompt('opencode', ['.opencode/skills'], {
-      files: { '.opencode/opencode.json': '{\n  // my settings\n  "instructions": []\n}\n' },
+      files: { '.opencode/opencode.json': '{\n  "instructions": [\n' },
     });
 
     expect(ack?.status).toBe('failed');
