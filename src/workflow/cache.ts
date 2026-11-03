@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { loadLocalConfigForScope } from '../config.js';
 import { anyScorerChecks, syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
+import { ScoreSubjects } from '../scorers/score-subjects.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
@@ -476,7 +477,7 @@ export async function syncWorkflowDefinitions(
       continue;
     }
 
-    for (const warning of DefaultWorkflows.callerWarnings(relativePath, resolved.definition)) log.warn(`[workflows] ${warning}`);
+    for (const warning of [...DefaultWorkflows.callerWarnings(relativePath, resolved.definition), ...ScoreSubjects.unreadWarnings(relativePath, resolved.definition)]) log.warn(`[workflows] ${warning}`);
     const hash = createHash('sha256').update(content);
 
     for (const source of resolved.sources) {
