@@ -64,8 +64,8 @@ export function outputMismatch(schema: OutputSchema, value: unknown, path = 'out
 }
 
 /**
- * The JSON Schema of the values `outputMismatch` accepts. A workflow also requires `definition`, which admission
- * checks once the step reports.
+ * The JSON Schema of the values `outputMismatch` accepts. A workflow is held to what admission takes once the step
+ * reports: `definition`, and only the keys a bundle has.
  */
 function jsonSchemaOf(schema: OutputSchema): JsonObject {
   switch (schema.type) {
@@ -87,10 +87,13 @@ function jsonSchemaOf(schema: OutputSchema): JsonObject {
     case 'json':
       return {};
     case 'workflow':
+      // The keys admission's strict `BundleSchema` takes, and no others.
       return {
         type: 'object',
-        description: 'A workflow bundle: { definition, workflows?, scorers?, teamRevision? }, where definition is a workflow file as JSON.',
+        description: 'A workflow bundle, where definition is a workflow file as JSON.',
+        properties: { definition: { type: 'object' }, workflows: { type: 'object' }, scorers: { type: 'object' }, teamRevision: { type: 'string' } },
         required: ['definition'],
+        additionalProperties: false,
       };
     default: {
       const unhandled: never = schema;
