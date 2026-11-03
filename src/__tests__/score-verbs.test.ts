@@ -24,6 +24,7 @@ import { labelVersion } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { log } from '../utils/logger.js';
 import { Marks } from '../scorers/marks.js';
+import { PassScoring } from '../scorers/pass-scoring.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
 import { evidenceHash } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
@@ -936,6 +937,49 @@ describe('score subjects', () => {
     expect(await lapsed()).toEqual({ ok: true, output: { list: ['session:claude-code:one'] } });
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'passed' });
     expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${runId}:change:1`, 'session:claude-code:one'] } });
+  });
+
+  it('lists a pass of an ended run inside its 14 days that no teamai-score run planned, for a scorer that samples it', async () => {
+    const config = await team({ review: REVIEW.replace('scorers: [quality, coverage]', 'scorers: [quality, rare]'), own: REVIEW.replace('name: review', 'name: own').replace('scorers: [quality, coverage]', 'scorers: { names: [rare], start: workflow }') }, { quality: scorer(), rare: scorer({ rate: 0 }) });
+    const auto = await reviewedRun(config);
+    const ownRun = String(data(await startRun(config, 'own', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
+    const lease = LeaseSchema.parse(data(await leaseNext(config, ownRun, external)).lease);
+    data(await reportAttempt(config, ownRun, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, tool: 'claude', session: 'session-review' }));
+    for (const runId of [auto, ownRun]) expect(data(await leaseNext(config, runId, external))).toMatchObject({ done: { outcome: 'succeeded' } });
+    const lapsed = (now = NOW) => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now });
+
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${auto}:review:1`] } });
+    await Marks.open(config, { run: 'r0000000000000001', demand: 'auto', groups: [{ group: 'quality', keys: [{ scorer: 'quality', subject: { kind: 'run', subject: { runId: auto, step: 'review', pass: 1 } } }] }] }, { now: NOW, readRun: async () => undefined });
+    await Marks.close(config, [{ scorer: 'quality', subject: { kind: 'run', subject: { runId: auto, step: 'review', pass: 1 } } }], { kind: 'labelled' }, { now: NOW });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [] } });
+  });
+
+  it('lists a pass whose teamai-score run the scoring module started and nobody drove, while its run still runs', async () => {
+    const config = await team({ review: `${REVIEW}  - id: later\n    needs: [review]\n    prompt: Do the rest.\n` }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const lapsed = () => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
+
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [] } });
+    const secrets = await knownSecrets(config);
+    const started = await PassScoring.start(config, runId, { client: { start: (name, options) => startRun(config, name, options.inputs, { secrets, startedBy: 'cli' }) }, mode: 'attended' });
+
+    expect(started.runs).toHaveLength(1);
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${runId}:review:1`] } });
+  });
+
+  it('lists a start: workflow pass with no scoring step only once its run ended, and not past the run\'s 14 days', async () => {
+    const config = await team({ own: REVIEW.replace('name: review', 'name: own').replace('scorers: [quality, coverage]', 'scorers: { names: [quality], start: workflow }') }, { quality: scorer() });
+    const ownRun = String(data(await startRun(config, 'own', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
+    const lease = LeaseSchema.parse(data(await leaseNext(config, ownRun, external)).lease);
+    plantSession(config.projectRoot ?? '', 'session-own', 'Review the change.');
+    data(await reportAttempt(config, ownRun, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, tool: 'claude', session: 'session-own' }));
+    const lapsed = (now: string) => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now });
+    const later = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
+
+    expect(await lapsed(new Date().toISOString())).toEqual({ ok: true, output: { list: [] } });
+    expect(data(await leaseNext(config, ownRun, external))).toMatchObject({ done: { outcome: 'succeeded' } });
+    expect(await lapsed(new Date().toISOString())).toEqual({ ok: true, output: { list: [`run:${ownRun}:review:1`] } });
+    expect(await lapsed(later)).toEqual({ ok: true, output: { list: [] } });
   });
 });
 

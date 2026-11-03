@@ -1115,7 +1115,7 @@ scoreCmd
 
 scoreCmd
   .command('subjects')
-  .description('List subjects to start teamai-score on, as {"list":["run:<runId>:<step path>:<pass>",…]}. --run <id> [--step <path>]: the judge-work passes of the run, settled on this machine, whose step says scorers.start: workflow; --step is relative to the workflow of the step that runs this, and takes that step and every step inside it. --lapsed: the passes and sessions of this machine whose mark lapsed, and those that waited for CI that has since finished.')
+  .description('List subjects to start teamai-score on, as {"list":["run:<runId>:<step path>:<pass>",…]}. --run <id> [--step <path>]: the judge-work passes of the run, settled on this machine, whose step says scorers.start: workflow; --step is relative to the workflow of the step that runs this, and takes that step and every step inside it. --lapsed: what teamai-finished-sessions scores again on this machine: the passes and sessions whose mark lapsed (until the fourth lapse), those that waited for CI that has since finished, and the passes of a run inside its 14 days that no teamai-score run planned, for a scorer that samples them: one whose teamai-score run was started and never driven, and, once the run ended, one of a scorers.start: workflow step no step of its workflow scored.')
   .option('--run <id>', 'The run whose passes to list')
   .option('--step <path>', 'With --run: only that step and the steps inside it')
   .option('--lapsed', 'This machine\'s subjects that automatic judging starts again')

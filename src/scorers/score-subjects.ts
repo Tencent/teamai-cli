@@ -7,9 +7,13 @@ import type { LocalConfig } from '../types.js';
 import { scoredPasses } from '../workflow/judge-work.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { stepDefinitions } from '../workflow/scope.js';
-import { installOwner, RunIdSchema } from '../workflow/store.js';
+import { installOwner, readRuns, RunIdSchema } from '../workflow/store.js';
 import { stepWorkflow, type RunState, type WorkflowDefinition, type WorkflowStep } from '../workflow/types.js';
-import { Marks } from './marks.js';
+import type { RunSubject } from './label.js';
+import { Marks, type MarkFacts } from './marks.js';
+import { PassScoring } from './pass-scoring.js';
+import { pinnedDefinition } from './pin.js';
+import { isSampled } from './sampling.js';
 import { markFacts, type Refusal } from './score-plan.js';
 import { ciStage, passOf } from './scoring-stages.js';
 import { Subject } from './subject.js';
@@ -74,16 +78,48 @@ function unscored(steps: readonly WorkflowStep[], prefix: string): string[] {
   });
 }
 
+/** Whether a scorer `name` that run `run` pinned samples pass `subject`, every pass of a step that samples all. */
+function samples(run: RunState, name: string, subject: RunSubject, all: boolean): boolean {
+  const pin = run.scorers?.[name];
+  const definition = pin && pinnedDefinition(name, pin);
+
+  return definition !== undefined && (all || isSampled(name, subject, definition.samplingRate));
+}
+
+/**
+ * The passes of `run` that no teamai-score run planned, for a scorer that samples them: a pass whose scoring the scoring
+ * module started but whose run never planned it, and, once `run` ended, any other pass, such as one of a `start:
+ * workflow` step that no step of its workflow scored. A pass the engine judges itself (`sampling: all`) is left to it.
+ */
+async function unplannedOf(config: LocalConfig, run: RunState, install: string, facts: MarkFacts): Promise<string[]> {
+  const definitionOf = stepDefinitions(run);
+  const ended = run.status !== 'running';
+  const list: string[] = [];
+
+  for (const { subject, scorers } of scoredPasses(run, install)) {
+    const own = definitionOf(subject.step)?.scorers;
+    const all = own?.sampling === 'all';
+
+    if ((all && own?.start !== 'workflow') || (!ended && !await PassScoring.started(config, subject))) continue;
+    const keys = scorers.filter((name) => samples(run, name, subject, all)).map((scorer) => ({ scorer, subject: { kind: 'run' as const, subject } }));
+
+    if ((await Marks.states(config, keys, facts)).some((state) => state.kind === 'unmarked')) list.push(Subject.format({ kind: 'run', subject }));
+  }
+
+  return list;
+}
+
 export const ScoreSubjects = {
   /**
    * Why pull warns about `definition`, at `file`: a step says `scorers.start: workflow`, so the scoring module starts no
-   * run for its passes, and no `workflow: teamai-score` step after it reads `teamai score subjects` for that step.
+   * run for its passes, and no `workflow: teamai-score` step after it reads `teamai score subjects` for that step, so
+   * they wait for `score subjects --lapsed` once the run ended.
    */
   unreadWarnings(file: string, definition: WorkflowDefinition): string[] {
     return unscored(definition.steps, '').map((path) => {
       const id = path.split('.').at(-1) ?? path;
 
-      return `${file}: step "${path}" says scorers.start: workflow, and no workflow: teamai-score step after it reads teamai score subjects --step ${id}, so no run scores its passes. Add those steps, or drop start: workflow.`;
+      return `${file}: step "${path}" says scorers.start: workflow, and no workflow: teamai-score step after it reads teamai score subjects --step ${id}, so its passes are scored only after the run ended, by the next teamai-finished-sessions that teamai score --drain or a session start runs. Add those steps, or drop start: workflow.`;
     });
   },
 
@@ -107,10 +143,20 @@ export const ScoreSubjects = {
     return { ok: true, list };
   },
 
-  /** The subjects whose mark is a lapse automatic judging starts again, or waits on CI that has since finished, once each, sorted. */
+  /**
+   * The subjects automatic judging starts again, once each, sorted: those whose mark is a lapse, or waits on CI that has
+   * since finished, and the passes no teamai-score run planned, of each run inside its 14 days.
+   */
   async lapsed(config: LocalConfig, now: string): Promise<string[]> {
-    const marks = await Marks.restartable(config, markFacts(config, now));
+    const facts = markFacts(config, now);
+    const marks = await Marks.restartable(config, facts);
     const list = new Set<string>();
+    const install = (await installOwner(config)).id;
+
+    // A pass of a run that last changed 14 days ago reads as expired, not unmarked.
+    for (const run of await readRuns(config)) {
+      for (const subject of await unplannedOf(config, run, install, facts)) list.add(subject);
+    }
 
     for (const { key, state } of marks) {
       if (state.kind === 'waiting' && key.subject.kind === 'run') {

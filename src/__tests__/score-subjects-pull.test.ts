@@ -64,7 +64,7 @@ const SCORE = `  - id: score
     timeout: 1h
     continue_on_failure: true
 `;
-const UNREAD = '[workflows] workflows/fix-until-good.yaml: step "fix" says scorers.start: workflow, and no workflow: teamai-score step after it reads teamai score subjects --step fix, so no run scores its passes. Add those steps, or drop start: workflow.';
+const UNREAD = '[workflows] workflows/fix-until-good.yaml: step "fix" says scorers.start: workflow, and no workflow: teamai-score step after it reads teamai score subjects --step fix, so its passes are scored only after the run ended, by the next teamai-finished-sessions that teamai score --drain or a session start runs. Add those steps, or drop start: workflow.';
 
 describe('pull of a step that says scorers.start: workflow', () => {
   it('warns when no step after it scores its passes', async () => {
