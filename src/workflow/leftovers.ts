@@ -42,7 +42,7 @@ function refsUnder(listed: string, prefix: string): Map<string, string> {
 }
 
 /** The `teamai/<run>/…` branches of `checkout` and of its `origin`, or why they could not be listed. */
-async function runBranches(checkout: string, runId: string): Promise<Tips | { error: string }> {
+async function runBranches({ checkout, runId }: { checkout: string; runId: string }): Promise<Tips | { error: string }> {
   const prefix = `refs/heads/${runBranchPrefix(runId)}`;
   const local = await git(checkout, ['for-each-ref', '--format=%(objectname) %(refname)', prefix]);
 
@@ -85,7 +85,7 @@ function finalCopy(run: RunState): string | undefined {
   return latest?.branch;
 }
 
-async function contains(checkout: string, tip: string, holders: string[]): Promise<boolean> {
+async function contains({ checkout, tip, holders }: { checkout: string; tip: string; holders: string[] }): Promise<boolean> {
   for (const holder of holders) {
     if ((await git(checkout, ['merge-base', '--is-ancestor', tip, holder])).code === 0) return true;
   }
@@ -97,7 +97,9 @@ async function contains(checkout: string, tip: string, holders: string[]): Promi
  * Deletes `branches` on origin and in the checkout. A branch checked out in a worktree teamai made goes with that
  * worktree; one checked out where the host put it stays in the checkout, and is not a failure.
  */
-async function deleteBranches(checkout: string, runId: string, branches: string[], tips: Tips): Promise<Pick<RunLeftovers, 'deleted' | 'failed'>> {
+async function deleteBranches(
+  { checkout, runId, branches, tips }: { checkout: string; runId: string; branches: string[]; tips: Tips },
+): Promise<Pick<RunLeftovers, 'deleted' | 'failed'>> {
   const failed: RunLeftovers['failed'] = [];
   const onOrigin = branches.filter((branch) => tips.origin?.has(branch));
 
@@ -105,7 +107,7 @@ async function deleteBranches(checkout: string, runId: string, branches: string[
     const pushed = await git(checkout, ['push', '--quiet', 'origin', '--delete', ...onOrigin]);
 
     if (pushed.code !== 0) {
-      const left = await runBranches(checkout, runId);
+      const left = await runBranches({ checkout, runId });
       const reason = sanitizeGitUrl(pushed.stderr.trim()) || 'git push failed';
 
       for (const branch of onOrigin) {
@@ -157,8 +159,8 @@ export function warnNotDeleted(runId: string, failed: RunLeftovers['failed']): v
 }
 
 /** What a succeeded run keeps and deletes of its branches, deleted; undefined when `checkout` has none of them, or could not list them. */
-async function settleSucceeded(run: RunState, checkout: string, now: string): Promise<RunLeftovers | undefined> {
-  const tips = await runBranches(checkout, run.id);
+async function settleSucceeded(run: RunState, { checkout, now }: { checkout: string; now: string }): Promise<RunLeftovers | undefined> {
+  const tips = await runBranches({ checkout, runId: run.id });
 
   if ('error' in tips) {
     warnNotCleanedUp(run.id, tips.error);
@@ -193,13 +195,13 @@ async function settleSucceeded(run: RunState, checkout: string, now: string): Pr
     const pinned = branch === basePinBranch(run.id) && tipsOf(branch).every((tip) => tip === run.base?.commit);
     let held = true;
 
-    for (const tip of tipsOf(branch)) held &&= await contains(checkout, tip, holders);
+    for (const tip of tipsOf(branch)) held &&= await contains({ checkout, tip, holders });
 
     if (pinned || held) removable.push(branch);
     else kept.push({ branch, why: 'unmerged' });
   }
 
-  return { by: 'success', at: now, revision: run.revision, kept, ...await deleteBranches(checkout, run.id, removable, tips) };
+  return { by: 'success', at: now, revision: run.revision, kept, ...await deleteBranches({ checkout, runId: run.id, branches: removable, tips }) };
 }
 
 /**
@@ -226,7 +228,7 @@ export async function cleanUpSucceededRun(
     return;
   }
 
-  const leftovers = await settleSucceeded(run, checkout, new Date().toISOString());
+  const leftovers = await settleSucceeded(run, { checkout, now: new Date().toISOString() });
 
   if (!leftovers) return;
 
@@ -366,7 +368,7 @@ async function keptRefs(checkout: string, attempts: string[]): Promise<{ refs: s
 async function removeRun(
   { checkout, runId, keep, attempts }: { checkout: string; runId: string; keep: ReadonlySet<string>; attempts: string[] },
 ): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: string[] } | undefined> {
-  const tips = await runBranches(checkout, runId);
+  const tips = await runBranches({ checkout, runId });
 
   if ('error' in tips) return warnNotRemoved(runId, tips.error);
   const listed = await checkedOut(checkout);
@@ -393,7 +395,7 @@ async function removeRun(
   }
 
   const all = namesOf(tips);
-  const { deleted, failed } = await deleteBranches(checkout, runId, all.filter((branch) => !keep.has(branch)), tips);
+  const { deleted, failed } = await deleteBranches({ checkout, runId, branches: all.filter((branch) => !keep.has(branch)), tips });
 
   return { branches: deleted, worktrees, refs, failed, kept: all.filter((branch) => keep.has(branch)) };
 }
