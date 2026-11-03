@@ -26,14 +26,14 @@ steps:
 
 本地命令步骤以 UTF-8 读取 stdout 和 stderr。JSON 字符串中的非 ASCII 文本会原样保存到输出中，后续步骤读取时也保持原文。运行 `teamai` 的命令运行的是驱动该步骤的那个 teamai。
 
-提示词步骤可以设置 `model`：`models/aliases.yaml` 中的别名或模型名，不能含空格或模板。文件顶层的 `defaults: { model: fast }` 为其中的提示词步骤设置模型。提示词步骤使用以下第一个已设置的模型：
+提示词步骤可以设置 `model`：`models/aliases.yaml` 中的别名或模型名，不能含空格；也可以是在步骤被租出时渲染出别名或模型名的模板，例如 [`for_each`](workflow-advanced.md#对每一项运行一次步骤) 步骤中的 `"{{ item.model }}"`。模型模板只能读取输入、`item`，以及该步骤所需步骤的输出。文件顶层的 `defaults: { model: fast }` 为其中的提示词步骤设置模型，它不能用模板。提示词步骤使用以下第一个已设置的模型：
 
 1. 步骤的 `model`；
 2. 其 agent 定义为该工具设置的模型；
 3. `defaults.model`；
 4. 工具的默认模型。
 
-步骤的 `model` 替换 agent 的模型和推理强度（effort），保留其他设置。不是别名的模型名使用工具默认的推理强度。被另一个工作流运行的工作流文件使用自己的 `defaults.model`，没有时使用运行它的步骤所在处生效的那个。内联工作流使用外层的。别名没有该步骤工具的模型，或成员的 `~/.teamai/models/aliases.yaml` 关闭了它时，步骤会在工具启动前以 `model_unavailable` 失败。在 OpenCode 1 上，步骤的 `model` 是其 agent 自己的模型且没有推理强度、而 agent 文件设置了 `variant` 且 `mode` 不是 `subagent` 时，也会这样失败，因为 OpenCode 1 会套用那个 variant。OpenCode 2 不从 agent 文件读取模型和 variant，OpenCode 1 的 `opencode run --agent` 也不会启动 subagent，所以驱动在命令行上传入定义自己的模型和 variant。对 `mode: subagent` 的 agent 文件（pull 默认这样写），OpenCode 1 从提示词中获得 agent 的指令，驱动会对此时不生效的文件设置发出警告。租约原样携带 `model` 和 `defaultModel`，由驱动解析。
+步骤的 `model` 替换 agent 的模型和推理强度（effort），保留其他设置。不是别名的模型名使用工具默认的推理强度。被另一个工作流运行的工作流文件使用自己的 `defaults.model`，没有时使用运行它的步骤所在处生效的那个。内联工作流使用外层的。别名没有该步骤工具的模型，或成员的 `~/.teamai/models/aliases.yaml` 关闭了它时，步骤会在工具启动前以 `model_unavailable` 失败。在 OpenCode 1 上，步骤的 `model` 是其 agent 自己的模型且没有推理强度、而 agent 文件设置了 `variant` 且 `mode` 不是 `subagent` 时，也会这样失败，因为 OpenCode 1 会套用那个 variant。OpenCode 2 不从 agent 文件读取模型和 variant，OpenCode 1 的 `opencode run --agent` 也不会启动 subagent，所以驱动在命令行上传入定义自己的模型和 variant。对 `mode: subagent` 的 agent 文件（pull 默认这样写），OpenCode 1 从提示词中获得 agent 的指令，驱动会对此时不生效的文件设置发出警告。租约携带模板渲染后的 `model` 和原样的 `defaultModel`，由驱动解析。模板渲染为空时，租约两者都不带，步骤使用 agent 的模型或工具的默认模型。
 
 提示词步骤或工作流步骤可以列出[评分器](scorers.md)，用来评判它成功的执行：
 
@@ -55,7 +55,7 @@ steps:
 
 `scorers: { names: [review-quality], sampling: all }` 评判每一个成功的 pass，不管每个评分器的 `samplingRate`，运行会等这些评判完成后才运行它的 [`finally` 步骤](workflow-advanced.md#finally-步骤)并结束。见[一次运行和它的评审](scorers.md#一次运行和它的评审)。
 
-第一个步骤之后的每个步骤都要用 `needs` 列出它等待的步骤。`needs: []` 表示另起一个没有依赖的分支。每次 `next` 租出文件中第一个依赖都已完成的步骤。`--driver local` 一次运行一个步骤，除非 `workflows.max_parallel` 大于 1。某个依赖失败，或所有依赖都被跳过时，该步骤会被跳过。被跳过的步骤不会运行。一个步骤失败不会停止其他分支。没有可运行的步骤时，只要有步骤失败，运行结果就是 `failed`，否则是 `succeeded`。缺少 `needs`、`needs` 中的 id 不是本工作流的步骤，或依赖成环，都会让该文件无效。缺少 `needs` 时，即使之前有有效版本，该工作流也没有可运行版本。
+第一个步骤之后的每个步骤都要用 `needs` 列出它等待的步骤。`needs: []` 表示另起一个没有依赖的分支。每次 `next` 租出文件中第一个依赖都已完成的步骤。`--driver local` 一次运行一个步骤，除非 `workflows.max_parallel` 大于 1。某个依赖失败，或所有依赖都被跳过时，该步骤会被跳过。被跳过的步骤不会运行。一个步骤失败不会停止其他分支。没有可运行的步骤时，只要有步骤失败，运行结果就是 `failed`，否则是 `succeeded`。带 [`continue_on_failure: true`](workflow-advanced.md#让步骤失败而不让工作流失败) 的步骤失败时不会让运行失败。缺少 `needs`、`needs` 中的 id 不是本工作流的步骤，或依赖成环，都会让该文件无效。缺少 `needs` 时，即使之前有有效版本，该工作流也没有可运行版本。
 
 步骤可以带 `if` 表达式。表达式为假时跳过该步骤，这不会让运行失败。表达式可以读取 `steps.<id>.outcome`（`success`、`failed` 或 `skipped`）和 `steps.<id>.outputs.<field>`，且只能读取该步骤直接或间接依赖的步骤。可用 `==`、`!=`、`<`、`<=`、`>`、`>=`、`&&`、`||`、`!`、括号，以及字面量 `'text'`、数字、`true`、`false`、`null` 和 `[]`。路径可以用下标读取数组元素，例如 `steps.review.outputs.files[0]`。函数 `length`、`any`、`all` 和 `filter` 读取数组。不存在的值读作 `null`。`false`、`null`、`0` 和 `''` 为假，其他值都为真。`==` 是严格比较，并比较整个值：`'1' == 1` 和 `'Build' == 'build'` 都为假。
 
@@ -100,7 +100,7 @@ CI 里用一步拦住这个分支：
 
 工作流可以用和 `output` 相同的简写声明 `inputs`，例如 `inputs: { issue: number, title: string }`。每个输入都必填。用 JSON 对象传入：`teamai workflow start fix --driver local --inputs '{"issue":42,"title":"Crash"}'`。缺少、多出或类型不对的输入会返回 `invalid_inputs` 并指出字段，且不会创建运行。`if` 可以读取 `inputs.<name>`。
 
-`{{ inputs.<name> }}` 和 `{{ steps.<id>.outputs.<field> }}`（或 `.outcome`）会在步骤开始时填入 `prompt`、`prompt_file` 的文本和 `env` 的值。模板也可以像 `if` 一样对表达式求值，例如 `{{ length(steps.review.outputs.files) }}`。其他 `{{ ... }}` 文本，例如 `${{ secrets.TOKEN }}`，保持原样。紧跟在 `$` 后面的 `{{` 也保持原样，例如讲解 GitHub Actions 的提示词中的 `${{ inputs.version }}`。要在 `$` 后面填入值，请加一个空格：`$ {{ inputs.price }}`。要让任意 `{{` 保持原样，在它前面加一个反斜杠：`\{{ inputs.customer }}` 会填入为 `{{ inputs.customer }}`。字符串原样填入，数字和布尔值填入其文本，对象和数组填入 JSON，`null` 或不存在的值填入空文本。模板只能读取该步骤的 `if` 能读取的内容。
+`{{ inputs.<name> }}` 和 `{{ steps.<id>.outputs.<field> }}`（或 `.outcome`）会在步骤开始时填入 `prompt`、`prompt_file` 的文本和 `env` 的值。模板也可以像 `if` 一样对表达式求值，例如 `{{ length(steps.review.outputs.files) }}`。`{{ run.id }}` 是这次运行的 id，在它运行的每个工作流中都相同；`if` 也可以读取 `run.id`。其他 `{{ ... }}` 文本，例如 `${{ secrets.TOKEN }}`，保持原样。紧跟在 `$` 后面的 `{{` 也保持原样，例如讲解 GitHub Actions 的提示词中的 `${{ inputs.version }}`。要在 `$` 后面填入值，请加一个空格：`$ {{ inputs.price }}`。要让任意 `{{` 保持原样，在它前面加一个反斜杠：`\{{ inputs.customer }}` 会填入为 `{{ inputs.customer }}`。字符串原样填入，数字和布尔值填入其文本，对象和数组填入 JSON，`null` 或不存在的值填入空文本。模板只能读取该步骤的 `if` 能读取的内容。
 
 `command` 永远不会被填充。通过 `env` 把值传给命令，只有命令步骤可以有 `env`：
 
@@ -114,6 +114,20 @@ CI 里用一步拦住这个分支：
 ```
 
 命令在原有环境之上获得这些变量，因此 `$(touch pwned)` 这样的值只是普通文本。变量名必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$`。YAML 数字或布尔值按其文本传入。`command` 中出现模板、提示词步骤带 `env`，或 `if`、模板读取了工作流未声明的输入，都会让该文件无效。模板无法解析或读取了不能读取的内容时，即使之前有有效版本，该工作流也没有可运行版本。步骤 id 或字段名中含有 `.` 时也是如此。
+
+这次运行的步骤启动的每个进程（包括它运行的工作流中的步骤）都会拿到 `TEAMAI_RUN_DIR`：整次运行共用的一个目录，位于 TeamAI 数据目录下、检出目录之外。它在运行期间存在，运行结束时无论如何结束都会被删除，因此步骤之间可以通过它传递文件。重新打开运行的 retry 会再次创建它，内容为空。
+
+```yaml
+schemaVersion: v1alpha1
+name: release-notes
+description: Collect the commits since the last tag, then draft release notes from them.
+steps:
+  - id: collect
+    command: git log --oneline "$(git describe --tags --abbrev=0)..HEAD" > "$TEAMAI_RUN_DIR/commits.txt"
+  - id: draft
+    needs: [collect]
+    prompt: Draft release notes from the commits listed in the file commits.txt in the directory $TEAMAI_RUN_DIR names.
+```
 
 步骤可以用 `workflow: <name>` 运行 `workflows/` 中的另一个工作流，并用 `with` 传入该工作流的输入：
 
@@ -667,6 +681,8 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 在无人值守的运行中，describe 不提问。它给出推荐选项的启动命令，并带上 `--auto-approve`，由 agent 根据自己的任务填写 `{inputs}`。需要人参与的工作流会被拒绝（`denied`），并说明原因：`invoke: ask`、`interactive` 步骤、必需审批、没有默认值的选择，或只有本地驱动能运行的路径。
 
 无论用哪种驱动，TeamAI 为步骤启动的每个进程（包括 setup）都会拿到这次运行的 `TEAMAI_MODE`。skill 驱动沿用启动时或 `resume --driver skill` 时解析出的模式；本地驱动在每次开始驱动时（`start` 或 `resume`）重新解析。
+
+运行在 `startedBy` 中记录是谁启动了它：从 agent 会话中或通过 `--driver skill` 启动时为 `agent`，否则为 `person`。发布的运行会保留它。
 
 ### 只有本人能给的回答
 

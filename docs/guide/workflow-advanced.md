@@ -212,6 +212,38 @@ step "publish" has items that run after each other in a cycle: core -> cli -> co
 
 Pull rejects `for_each` together with `loop`, `end`, or `break`. To run the work of an item again, put the loop in the workflow the item runs.
 
+## Let a step fail without failing its workflow
+
+`continue_on_failure: true` lets a step fail, time out, or be cancelled without failing the workflow it is in. The step still reads `failed` or `cancelled`, and its dependents follow the usual rules: a step that needs it runs only when its `if` reads it. On a `for_each` step, a failed item fails the step and not the run, and a step that times out or is cancelled keeps the `results` of the items that settled. A step that runs a workflow can have it too. A `finally` step cannot.
+
+```yaml
+schemaVersion: v1alpha1
+name: review-packages
+description: Review each package on the model it names; a review that fails does not fail the run.
+inputs:
+  packages: [{ dir: string, model: string }]
+outputs:
+  reviews: steps.review.results
+steps:
+  - id: review
+    for_each: inputs.packages
+    continue_on_failure: true
+    prompt: "List the problems in the changes under {{ item.dir }}."
+    model: "{{ item.model }}"
+    output:
+      problems: [string]
+  - id: summarize
+    needs: [review]
+    if: length(filter(steps.review.results, .outcome == 'success')) > 0
+    prompt: "Summarize these reviews for the pull request: {{ steps.review.results }}"
+```
+
+```text
+teamai workflow start review-packages --inputs '{"packages":[{"dir":"packages/core","model":"strong"},{"dir":"packages/cli","model":""}]}'
+```
+
+`review[0]` runs on the model alias `strong`, and `review[1]` on the tool's default, since its model renders empty. When one review fails, `summarize` still runs on the other, and the run succeeds with every entry in `reviews`.
+
 ## The end reached first wins
 
 Reports can reach two ends before the driver calls `next` again. `next` then applies the end that was reached first, whatever order the steps have in the file.
@@ -594,6 +626,47 @@ The run records it: each step in the clone has `agent.team.selection.stepRole: r
 
 A run is isolated when one of its steps opens a clone or runs `workflow: { from }`. It runs only on the machine that started it: `workflow publish` and `--claim` refuse it with `isolated_run`, and `workflow retry` refuses it and names the command that starts a new run. Its record carries `isolated: true`, still reaches `teamai-reports` with usage reporting on, and counts in no workflow total.
 
+### Private workflows
+
+`private: true` keeps what a workflow's steps do on the machine that runs them, also when the workflow runs as another's step. It applies to the workflow's own steps and to the steps of the workflows they run, never to the step that runs it or to anything around that step.
+
+```yaml
+schemaVersion: v1alpha1
+name: triage-notes
+description: Read the incident notes here, and return only a severity.
+private: true
+inputs:
+  notes: string
+outputs:
+  severity: steps.read.outputs.severity
+steps:
+  - id: read
+    prompt: "Read the incident notes in {{ inputs.notes }} and rate the incident's severity."
+    output:
+      severity: low | high
+      reasoning: string
+```
+
+```yaml
+schemaVersion: v1alpha1
+name: incident
+description: Rate an incident from its private notes, then open an issue.
+inputs:
+  notes: string
+steps:
+  - id: rate
+    workflow: triage-notes
+    with:
+      notes: "{{ inputs.notes }}"
+  - id: open
+    needs: [rate]
+    command: gh issue create --title "Incident" --label "severity:$SEVERITY" --body "See the incident channel."
+    env:
+      SEVERITY: "{{ steps.rate.outputs.severity }}"
+```
+
+The session of a private step is never archived to `teamai-reports`, and a published run carries none of its outputs: `rate` publishes the `severity` that `triage-notes` declares, and `reasoning` stays here. While a private step is open, `workflow publish` and `--claim` refuse the run with `private_open`; once it settled, both work. A run started from a private workflow publishes no run record, so it counts in no workflow total and stays off the Workflow Runs page. It runs only on the machine that started it: `workflow publish` and `--claim` refuse it with `isolated_run`.
+
 ## Expression reference
 
 An `if` is an expression. The rules for which steps it can read, and for what counts as true, are in [Workflows](workflow.md).
@@ -626,6 +699,7 @@ steps:
 | Every pass of a step | `steps.review.passes`, `steps.review.passes[0].outputs.verdict`. See [Read every pass](#read-every-pass). |
 | The results of a `for_each` step | `steps.build.results`, `steps.build.results[0].outcome`, `steps.build.branches` |
 | The item of a `for_each` instance | `item`, `item.dir` |
+| The id of the run, the same in every workflow it runs | `run.id` |
 | A string | `'failed'`. Use single quotes. Write a quote inside a string twice: `'it''s'`. |
 | A number | `3`, `-1`, `1.5`. Write a digit before the decimal point: `0.5`, not `.5`. |
 | A boolean or null | `true`, `false`, `null` |

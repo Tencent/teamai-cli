@@ -26,14 +26,14 @@ steps:
 
 Local command steps read stdout and stderr as UTF-8. Non-ASCII JSON string values are preserved in stored outputs and when later steps read them. A command that runs `teamai` runs the teamai that drives the step.
 
-A prompt step can set `model`: an alias from `models/aliases.yaml` or a model name, without spaces or templates. `defaults: { model: fast }` at the top of a file sets one for its prompt steps. A prompt step runs on the first of these that is set:
+A prompt step can set `model`: an alias from `models/aliases.yaml` or a model name, without spaces, or a template that renders one when the step is leased, such as `"{{ item.model }}"` in a [`for_each`](workflow-advanced.md#run-a-step-once-per-item) step. A model template reads only inputs, `item`, and the outputs of steps the step needs. `defaults: { model: fast }` at the top of a file sets one for its prompt steps, and takes no template. A prompt step runs on the first of these that is set:
 
 1. the step's `model`;
 2. the model its agent's definition sets for the tool;
 3. `defaults.model`;
 4. the tool's default model.
 
-A step's `model` replaces the agent's model and effort, and keeps its other settings. A model name that is not an alias runs at the tool's default effort. A workflow file that another runs uses its own `defaults.model`, else the one in effect for the step that runs it. An inline workflow uses the enclosing one. When the alias has no model for the step's tool, or the member's `~/.teamai/models/aliases.yaml` turns it off, the step fails with `model_unavailable` before the tool starts. On OpenCode 1, so does a step whose `model` is its agent's own model with no effort while the agent file sets `variant` and a `mode` other than `subagent`, since OpenCode 1 would apply that variant. OpenCode 2 does not take the model or variant from the agent file, and OpenCode 1 does not start a subagent with `opencode run --agent`, so the driver passes the definition's own model and variant on the command line. For an agent file with `mode: subagent`, which pull writes by default, OpenCode 1 gets the agent's instructions in the prompt, and the driver warns about the file settings that then do not apply. A lease carries `model` and `defaultModel` as written, and the driver resolves them.
+A step's `model` replaces the agent's model and effort, and keeps its other settings. A model name that is not an alias runs at the tool's default effort. A workflow file that another runs uses its own `defaults.model`, else the one in effect for the step that runs it. An inline workflow uses the enclosing one. When the alias has no model for the step's tool, or the member's `~/.teamai/models/aliases.yaml` turns it off, the step fails with `model_unavailable` before the tool starts. On OpenCode 1, so does a step whose `model` is its agent's own model with no effort while the agent file sets `variant` and a `mode` other than `subagent`, since OpenCode 1 would apply that variant. OpenCode 2 does not take the model or variant from the agent file, and OpenCode 1 does not start a subagent with `opencode run --agent`, so the driver passes the definition's own model and variant on the command line. For an agent file with `mode: subagent`, which pull writes by default, OpenCode 1 gets the agent's instructions in the prompt, and the driver warns about the file settings that then do not apply. A lease carries `model`, its template rendered, and `defaultModel` as written, and the driver resolves them. A template that renders empty leaves both off the lease, so the step runs its agent's model or the tool's default.
 
 A prompt or workflow step can list [scorers](scorers.md) that judge its succeeded passes:
 
@@ -55,7 +55,7 @@ steps:
 
 `scorers: { names: [review-quality], sampling: all }` judges every succeeded pass, whatever each scorer's `samplingRate`, and the run waits for those judges before its [`finally` steps](workflow-advanced.md#finally-steps) and its end. See [A run and its judge](scorers.md#a-run-and-its-judge).
 
-Every step after the first lists the steps it waits for in `needs`. `needs: []` starts another branch with no dependency. Each `next` leases the first step in the file whose needs are done. `--driver local` runs one step at a time unless `workflows.max_parallel` is above 1. A step is skipped when a step it needs failed, or when every step it needs was skipped. A skipped step never runs. A failure does not stop other branches. When nothing is left to run, the run ends `failed` if any step failed, otherwise `succeeded`. A missing `needs`, a `needs` id that is not a step, or a cycle makes the file invalid. A missing `needs` also leaves the workflow with nothing to run, even when an older version was valid.
+Every step after the first lists the steps it waits for in `needs`. `needs: []` starts another branch with no dependency. Each `next` leases the first step in the file whose needs are done. `--driver local` runs one step at a time unless `workflows.max_parallel` is above 1. A step is skipped when a step it needs failed, or when every step it needs was skipped. A skipped step never runs. A failure does not stop other branches. When nothing is left to run, the run ends `failed` if any step failed, otherwise `succeeded`. A step with [`continue_on_failure: true`](workflow-advanced.md#let-a-step-fail-without-failing-its-workflow) fails without failing the run. A missing `needs`, a `needs` id that is not a step, or a cycle makes the file invalid. A missing `needs` also leaves the workflow with nothing to run, even when an older version was valid.
 
 A step can carry an `if` expression. When it is false, the step is skipped, and that does not fail the run. An expression reads `steps.<id>.outcome` (`success`, `failed`, or `skipped`) and `steps.<id>.outputs.<field>`, only for steps it needs, directly or through their needs. It has `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, parentheses, and the literals `'text'`, numbers, `true`, `false`, `null`, and `[]`. A path can index an array, as in `steps.review.outputs.files[0]`. The functions `length`, `any`, `all`, and `filter` read arrays. A missing value reads as `null`. `false`, `null`, `0`, and `''` are false; everything else is true. `==` is strict and compares whole values: `'1' == 1` and `'Build' == 'build'` are false.
 
@@ -100,7 +100,7 @@ A workflow can declare named `ends`, each `succeeded` or `failed`, such as `ends
 
 A workflow can declare `inputs` with the same shorthand as `output`, such as `inputs: { issue: number, title: string }`. Every input is required. Pass them as a JSON object: `teamai workflow start fix --driver local --inputs '{"issue":42,"title":"Crash"}'`. A missing, extra, or mistyped input returns `invalid_inputs` naming the field, and no run is created. An `if` can read `inputs.<name>`.
 
-`{{ inputs.<name> }}` and `{{ steps.<id>.outputs.<field> }}` (or `.outcome`) fill in a `prompt`, the text of a `prompt_file`, and `env` values when the step starts. A template can also evaluate an expression as an `if` does, such as `{{ length(steps.review.outputs.files) }}`. Other `{{ ... }}` text, such as `${{ secrets.TOKEN }}`, stays as written. So does any `{{` right after a `$`, such as `${{ inputs.version }}` in a prompt about GitHub Actions. To put a value right after a `$`, add a space: `$ {{ inputs.price }}`. To keep any `{{` as written, put a backslash before it: `\{{ inputs.customer }}` renders as `{{ inputs.customer }}`. Strings appear as they are, numbers and booleans as text, objects and arrays as JSON, and `null` or a missing value as empty text. A template reads only what an `if` on that step could read.
+`{{ inputs.<name> }}` and `{{ steps.<id>.outputs.<field> }}` (or `.outcome`) fill in a `prompt`, the text of a `prompt_file`, and `env` values when the step starts. A template can also evaluate an expression as an `if` does, such as `{{ length(steps.review.outputs.files) }}`. `{{ run.id }}` is the id of the run, the same in every workflow it runs, and an `if` can read `run.id` too. Other `{{ ... }}` text, such as `${{ secrets.TOKEN }}`, stays as written. So does any `{{` right after a `$`, such as `${{ inputs.version }}` in a prompt about GitHub Actions. To put a value right after a `$`, add a space: `$ {{ inputs.price }}`. To keep any `{{` as written, put a backslash before it: `\{{ inputs.customer }}` renders as `{{ inputs.customer }}`. Strings appear as they are, numbers and booleans as text, objects and arrays as JSON, and `null` or a missing value as empty text. A template reads only what an `if` on that step could read.
 
 A `command` is never filled in. Pass values to it through `env`, which only a command step can have:
 
@@ -114,6 +114,20 @@ A `command` is never filled in. Pass values to it through `env`, which only a co
 ```
 
 The command gets these variables on top of its usual environment, so a value such as `$(touch pwned)` stays plain text. Names must match `^[A-Za-z_][A-Za-z0-9_]*$`. A YAML number or boolean is passed as its text. A template inside `command`, `env` on a prompt step, or an `if` or template that reads an input the workflow does not declare makes the file invalid. A template that does not parse or reads something it may not read also leaves the workflow with nothing to run, even when an older version was valid. So does a `.` in a step id or a field name.
+
+Every process a step of the run starts, in a workflow it runs too, gets `TEAMAI_RUN_DIR`: one directory for the whole run, under the TeamAI data directory and outside the checkout. It exists while the run runs and is removed when the run ends, however it ends, so steps can hand each other files there. A retry that reopens the run makes it again, empty.
+
+```yaml
+schemaVersion: v1alpha1
+name: release-notes
+description: Collect the commits since the last tag, then draft release notes from them.
+steps:
+  - id: collect
+    command: git log --oneline "$(git describe --tags --abbrev=0)..HEAD" > "$TEAMAI_RUN_DIR/commits.txt"
+  - id: draft
+    needs: [collect]
+    prompt: Draft release notes from the commits listed in the file commits.txt in the directory $TEAMAI_RUN_DIR names.
+```
 
 A step can run another workflow from `workflows/` with `workflow: <name>` and pass that workflow's inputs with `with`:
 
@@ -667,6 +681,8 @@ A run is attended when a person is there to answer, and unattended in CI or a cl
 In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow that needs a person (`denied`), naming why: `invoke: ask`, an `interactive` step, a required approval, a choice without a default, or a route only the local driver can run.
 
 Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
+
+The run records who started it in `startedBy`: `agent` when the start came from an agent session or through `--driver skill`, else `person`. A published run keeps it.
 
 ### Answers only the person gives
 

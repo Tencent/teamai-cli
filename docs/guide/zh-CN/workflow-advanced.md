@@ -212,6 +212,38 @@ step "publish" has items that run after each other in a cycle: core -> cli -> co
 
 `for_each` 与 `loop`、`end` 或 `break` 一起使用时，pull 会拒绝。要再次运行某一项的工作，请把循环放进该项运行的工作流里。
 
+## 让步骤失败而不让工作流失败
+
+`continue_on_failure: true` 让步骤失败、超时或被取消时不会让它所在的工作流失败。该步骤仍读作 `failed` 或 `cancelled`，依赖它的步骤照常处理：需要它的步骤只有在 `if` 读取它时才会运行。在 `for_each` 步骤上，某一项失败会让该步骤失败，但不会让运行失败；该步骤超时或被取消时，会保留已结束各项的 `results`。运行工作流的步骤也可以使用它。`finally` 步骤不能使用。
+
+```yaml
+schemaVersion: v1alpha1
+name: review-packages
+description: Review each package on the model it names; a review that fails does not fail the run.
+inputs:
+  packages: [{ dir: string, model: string }]
+outputs:
+  reviews: steps.review.results
+steps:
+  - id: review
+    for_each: inputs.packages
+    continue_on_failure: true
+    prompt: "List the problems in the changes under {{ item.dir }}."
+    model: "{{ item.model }}"
+    output:
+      problems: [string]
+  - id: summarize
+    needs: [review]
+    if: length(filter(steps.review.results, .outcome == 'success')) > 0
+    prompt: "Summarize these reviews for the pull request: {{ steps.review.results }}"
+```
+
+```text
+teamai workflow start review-packages --inputs '{"packages":[{"dir":"packages/core","model":"strong"},{"dir":"packages/cli","model":""}]}'
+```
+
+`review[0]` 使用模型别名 `strong` 运行，`review[1]` 的模型渲染为空，因此使用工具的默认模型。某个评审失败时，`summarize` 仍会基于另一个评审运行，运行成功，`reviews` 中包含每一项。
+
 ## 先到达的结局生效
 
 驱动再次调用 `next` 之前，多个上报可能到达两个结局。此时 `next` 采用先到达的那个结局，与步骤在文件中的顺序无关。
@@ -594,6 +626,47 @@ teamai workflow start review-parts --driver local --inputs '{"parts":[{"path":"w
 
 某个步骤打开克隆或运行 `workflow: { from }` 时，运行就是隔离的。它只在启动它的机器上运行：`workflow publish` 和 `--claim` 以 `isolated_run` 拒绝它，`workflow retry` 拒绝它并给出启动新运行的命令。它的记录带 `isolated: true`，使用统计上报开启时仍会到达 `teamai-reports`，并且不计入任何工作流总量。
 
+### 私有工作流
+
+`private: true` 让工作流的步骤所做的事留在运行它们的机器上，该工作流作为另一个工作流的步骤运行时也是如此。它作用于该工作流自己的步骤，以及这些步骤运行的工作流中的步骤，从不作用于运行它的步骤，也不作用于该步骤周围的任何步骤。
+
+```yaml
+schemaVersion: v1alpha1
+name: triage-notes
+description: Read the incident notes here, and return only a severity.
+private: true
+inputs:
+  notes: string
+outputs:
+  severity: steps.read.outputs.severity
+steps:
+  - id: read
+    prompt: "Read the incident notes in {{ inputs.notes }} and rate the incident's severity."
+    output:
+      severity: low | high
+      reasoning: string
+```
+
+```yaml
+schemaVersion: v1alpha1
+name: incident
+description: Rate an incident from its private notes, then open an issue.
+inputs:
+  notes: string
+steps:
+  - id: rate
+    workflow: triage-notes
+    with:
+      notes: "{{ inputs.notes }}"
+  - id: open
+    needs: [rate]
+    command: gh issue create --title "Incident" --label "severity:$SEVERITY" --body "See the incident channel."
+    env:
+      SEVERITY: "{{ steps.rate.outputs.severity }}"
+```
+
+私有步骤的会话从不归档到 `teamai-reports`，发布的运行也不带它的任何输出：`rate` 发布 `triage-notes` 声明的 `severity`，`reasoning` 留在本机。私有步骤尚未结束时，`workflow publish` 和 `--claim` 以 `private_open` 拒绝该运行；它结束后两者都可以。从私有工作流启动的运行不发布运行记录，因此不计入任何工作流总量，也不出现在 Workflow Runs 页面上。它只在启动它的机器上运行：`workflow publish` 和 `--claim` 以 `isolated_run` 拒绝它。
+
 ## 表达式参考
 
 `if` 是一个表达式。它能读取哪些步骤、哪些值为真，见 [工作流](workflow.md)。
@@ -626,6 +699,7 @@ steps:
 | 步骤的每个 pass | `steps.review.passes`、`steps.review.passes[0].outputs.verdict`。见[读取每一个 pass](#读取每一个-pass)。 |
 | `for_each` 步骤的 results | `steps.build.results`、`steps.build.results[0].outcome`、`steps.build.branches` |
 | `for_each` 实例的项 | `item`、`item.dir` |
+| 这次运行的 id，在它运行的每个工作流中都相同 | `run.id` |
 | 字符串 | `'failed'`。使用单引号。字符串里的单引号写两次：`'it''s'`。 |
 | 数字 | `3`、`-1`、`1.5`。小数点前要有数字：写 `0.5`，不写 `.5`。 |
 | 布尔值或 null | `true`、`false`、`null` |
