@@ -31,6 +31,7 @@ import { recallDisable, recallEnable, recallStatus } from '../recall-toggle.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { isRecallEnabled, TeamaiConfigSchema, TEAMAI_RECALL_RULES_START } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { recordDelivery } from './helpers/delivered-checkout.js';
 
 describe('recall toggle native agent cleanup', () => {
   let tmpDir: string;
@@ -88,6 +89,28 @@ describe('recall toggle native agent cleanup', () => {
     await recallDisable({});
     expect(await fse.pathExists(tomlAgent)).toBe(false);
     expect(await fse.pathExists(legacyMarkdownAgent)).toBe(false);
+  });
+
+  it('enable and disable each make the next pull a full sync, as recall changes what pull delivers', async () => {
+    const { localConfig } = await mockAutoDetectInit();
+
+    for (const toggle of [recallEnable, recallDisable]) {
+      await saveStateForScope({ ...await loadStateForScope(localConfig), lastPullRev: 'abc123' }, localConfig);
+      await toggle({});
+      expect((await loadStateForScope(localConfig)).lastPullRev).toBeNull();
+    }
+  });
+
+  it('enable leaves a team-delivered recall copy on record, such as one the member edited', async () => {
+    const { localConfig } = await mockAutoDetectInit();
+    const copy = path.join(homeDir, '.codex', 'agents', 'teamai-recall.toml');
+    await fse.writeFile(copy, 'name = "teamai-recall"\n');
+    await recordDelivery(localConfig, { rev: 'abc123', targets: ['codex'], files: [copy] });
+    await fse.writeFile(copy, 'name = "teamai-recall"\n# the member\'s edit\n');
+
+    await recallEnable({});
+
+    expect(await fse.readFile(copy, 'utf8')).toBe('name = "teamai-recall"\n# the member\'s edit\n');
   });
 
   it('enable writes the teamai-share-learnings skill, and disable removes it, without a word about the legacy skill of that name', async () => {

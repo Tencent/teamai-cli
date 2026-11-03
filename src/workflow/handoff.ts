@@ -1235,7 +1235,8 @@ async function install(
   const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
 
-    return { value: ok(undefined), write: run };
+    // The flags this install drove the run with stay its own, so a run it takes back resumes as it did here.
+    return { value: ok(undefined), write: local !== 'missing' && local.driveOptions ? { ...run, driveOptions: local.driveOptions } : run };
   });
 
   if (installed.status === 'busy') return refused(runBusy(runId));

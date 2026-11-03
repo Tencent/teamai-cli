@@ -219,6 +219,15 @@ $ teamai workflow start build --driver local
 ℹ Retry it with teamai workflow retry re907e4818f6db47b test, then continue the run with teamai workflow resume re907e4818f6db47b
 ```
 
+A limit of the whole run, such as its `timeout` or `budget`, fails no step. stderr then says why the run failed, and how to retry each step the limit stopped while it ran:
+
+```text
+$ teamai workflow start nightly-small --driver local --tools default=claude
+ℹ Run rdcfd8a2eb4ffe5ca started. If it stops before it ends, continue it with: teamai workflow resume rdcfd8a2eb4ffe5ca
+{"data":{"done":{"run":"rdcfd8a2eb4ffe5ca","outcome":"failed","failure":{"code":"budget_exceeded","message":"workflow \"nightly-small\" spent 350 of its 300-token budget"}},"cancelled":[]}}
+✖ Run rdcfd8a2eb4ffe5ca failed with budget_exceeded: workflow "nightly-small" spent 350 of its 300-token budget
+```
+
 Use `workflow respond <run> <step> <choice>` for a waiting HITL request, `workflow retry <run> <step>` for a failed or stuck step, `workflow cancel <run> [step]` to stop work, `workflow resume <run>` to continue locally, and `workflow publish <run>` to let another machine continue it ([Continue a run on another machine](#continue-a-run-on-another-machine)). `next` answers `lease`, `hitl`, `wait`, or `done`. See [HITL](workflow-advanced.md#hitl-human-in-the-loop) and [Retry, cancel, and resume](workflow-advanced.md#retry-cancel-and-resume).
 
 ## Workspaces
@@ -456,6 +465,12 @@ teamai workflow resume <run>      # on the other machine, in a checkout of the s
 
 `publish` writes the run's state to the team's `teamai-reports` branch and makes this install the run's owner. Stop the driver first, so no step is in flight. A step still leased when you publish runs again on the other machine. A Ctrl-C leaves what the in-flight step wrote in that step's worktree on this machine, and another machine can still claim the run. If you take the run back here while it is still running, the claim makes this install the owner, but `resume` refuses with `branch_diverged` and names the worktree. Move those changes elsewhere or remove them, then run `resume` again. On a machine that does not have the run, `resume` takes it from `teamai-reports`, makes that install the owner, and drives it with the local driver.
 
+The other machine does not get the `--tools`, `--auto-approve` or `--sandbox` the run was started with: they describe the machine and the person who started it. Pass the ones that fit there:
+
+```text
+teamai workflow resume <run> --tools default=claude --sandbox     # a CI runner that has claude, in a container
+```
+
 Only the owner continues a published run. On another install that has the run, `resume` and `publish` answer `not_owner` with the owner's user name and install id. Two installs of one member show the same user name, and the install id tells them apart. To take the run over, run `teamai workflow resume <run> --claim`. The claim replaces this machine's copy of the run and releases the leases other machines held. The previous owner can then no longer publish or resume the run, unless it claims it back.
 
 To continue the run from a coding session, the agent runs `teamai workflow resume <run> --driver skill`, with `--claim` to take it from the owner. It claims the run the same way, then drives it with the skill driver in the session's run mode, with the options of a skill start: `--parallel`, `--hitl` or `--auto-approve`, and `--no-judge`. Without them, one step runs at a time and the agent asks you before it answers an optional gate. In an unattended run it answers optional gates as `--auto-approve` does, and refuses, before claiming it, a run whose steps left need a person (`unattended_denied`); an approval or interactive step that already ran no longer counts, unless a loop can run it again. A run that already ended needs nobody, so it is never refused for that. `--hitl person` is refused in an unattended run (`invalid_arguments`): nobody would answer. Its first turn asks the host question when the workflow has prompt steps or the session judges it, and dispatches again the steps the other machine had leased. A workflow that must run with the local driver comes back to you as `teamai workflow resume <run>`. Taking the run over is your decision, so the agent asks you before it runs either command.
@@ -562,6 +577,7 @@ What `--next` does with each offered run:
 | A step left has a required approval, is `interactive`, or is a choice with no default | skips it: listed as `needs a person` | takes it from a terminal; with no terminal, such as cron, skips it |
 | A step left requires env with no value here | skips it: listed as `cannot run here` | skips it |
 | A prompt step left has no tool here: `--tools`, `workflows.tools` and your AI tool name none, or the one they name is not on `PATH` | skips it: listed as `cannot run here` | skips it |
+| A step left needs a sandbox (`requires: { isolation: sandbox, strict: true }`), and neither `--sandbox` nor `workflows.sandbox` declares one here | skips it: listed as `cannot run here` | skips it |
 | You published it from this install | skips it | skips it |
 | It works in another business repository | skips it | skips it |
 | Another runner claimed it a moment earlier | takes the next one | takes the next one |
