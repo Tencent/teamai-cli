@@ -15,8 +15,9 @@ import { answerSchema, evidenceDirOf, type Rubrics } from '../scorers/evidence.j
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, type RequiredIsolation } from '../scorers/isolation.js';
 import { scopeScoring } from '../scorers/settings.js';
-import { installedJudgeTools, runLocalJudge, type LocalJudgeResult } from '../scorers/judge.js';
-import type { JudgeTool } from '../tool-launch/tools.js';
+import { runLocalJudge, type LocalJudgeResult } from '../scorers/judge.js';
+import { installedConfinedTools } from '../tool-launch/confined.js';
+import type { ConfinedTool } from '../tool-launch/tools.js';
 import { chooseJudgeModel, type JudgeModelChoice } from '../scorers/judge-model.js';
 import type { ScoreLabel, SessionLabel, SessionLabelContext, SessionSubject } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
@@ -252,7 +253,7 @@ type PrintedAnswer =
 /** Why a rubric that passes the control may not judge the work. Printed, never a failure: a rubric may judge the prompt by design. */
 const CONTROL_WARNING = 'This rubric passes a session where the agent did nothing, so it may not judge the work.';
 
-type JudgeChoice = Extract<JudgeModelChoice<JudgeTool>, { ok: true }>['choice'];
+type JudgeChoice = Extract<JudgeModelChoice<ConfinedTool>, { ok: true }>['choice'];
 
 /**
  * One judge call of `members` on `judged`, its evidence written for it and removed after it: each member's verdict and
@@ -438,7 +439,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     return 'error' in labelled ? labelled : answered(config, labelled, demand.push);
   }
 
-  const tools = installedJudgeTools([]);
+  const tools = installedConfinedTools([]);
 
   if (tools.length === 0) {
     return failure('judge_tool_unavailable', 'No installed tool can run a scorer judge with every tool turned off. Install a supported version of Claude Code, Codex or OpenCode.');

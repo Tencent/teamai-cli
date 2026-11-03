@@ -79,6 +79,8 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased', 'step_ambiguous', 'evidence_missing',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
       'session_required', 'source_required', 'session_not_found', 'session_ambiguous', 'scorer_invalid',
+      // Why a run confined to one directory gave no reply, answered to the caller that launched it.
+      'confined_tool_unavailable', 'confined_failed', 'confined_reply_invalid',
       // Why a judge attempt closed: kept with the attempt under scores/, never on a run.
       ...literalStrings('src/scorers/attempts.ts', 'JUDGE_FAILURES')];
 

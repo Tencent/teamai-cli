@@ -7,7 +7,7 @@
 import { loadLocalConfigForScope, loadTeamConfig } from './config.js';
 import type { SessionRun } from './launch-context.js';
 import { requiredIsolation, scorerIsolationSource, type IsolationSetting } from './scorers/isolation.js';
-import { installedJudgeTools } from './scorers/judge.js';
+import { installedConfinedTools } from './tool-launch/confined.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
@@ -140,7 +140,7 @@ interface OfferOptions {
 async function propose(
   config: LocalConfig,
   { tool, sessionId }: { tool: string; sessionId: string },
-  { now = new Date().toISOString(), judgeTools = () => installedJudgeTools([]) }: OfferOptions,
+  { now = new Date().toISOString(), judgeTools = () => installedConfinedTools([]) }: OfferOptions,
 ): Promise<Omit<SessionShareOffer, 'judge'> & { judge: () => Proposal<Judge> }> {
   let found: Proposal<Judge> | undefined;
 

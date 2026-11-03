@@ -46,16 +46,16 @@ export interface StepLaunch {
   readonly unattended: UnattendedLaunch;
 }
 
-/** A confined judge for scorers, in `scorers/judge.ts`. */
-export interface JudgeLaunch {
+/** A run confined to one directory, in `confined.ts`: what judges a scorer. */
+export interface ConfinedLaunch {
   readonly evidence: Evidence;
-  /** The member's variables the judge keeps, beyond the common ones. */
+  /** The member's variables the run keeps, beyond the common ones. */
   readonly env: readonly string[];
-  /** The variable the tool reads its home from. A judge started outside the member's shell, as background scoring is, gets the recorded one. */
+  /** The variable the tool reads its home from. A run started outside the member's shell, as background scoring is, gets the recorded one. */
   readonly homeEnv?: string;
-  /** The versions whose confinement has been checked; any other version judges at best-effort. */
+  /** The versions whose confinement has been checked; any other version runs at best-effort. */
   readonly verified?: RegExp;
-  /** What the judge can do beyond answering. */
+  /** What the run can do beyond answering. */
   readonly access: JudgeAccess;
 }
 
@@ -64,7 +64,7 @@ export interface LaunchAdapter {
   readonly executable?: string;
   readonly call: CallLaunch;
   readonly step?: StepLaunch;
-  readonly judge?: JudgeLaunch;
+  readonly confined?: ConfinedLaunch;
 }
 
 function jsonLines(stdout: string): JsonValue[] {
@@ -285,7 +285,7 @@ export const LAUNCH_ADAPTERS = {
     call: { evidence: 'verified', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
     // Claude Code 2.1.312 ran a strict-sandbox benchmark trial in this mode (2026-10-30, `teamai benchmark run --sandbox`).
     step: { evidence: 'verified', unattended: { args: ['--permission-mode', 'bypassPermissions'], evidence: 'verified' } },
-    judge: {
+    confined: {
       evidence: 'verified',
       env: ['CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'],
       homeEnv: 'CLAUDE_CONFIG_DIR',
@@ -297,20 +297,20 @@ export const LAUNCH_ADAPTERS = {
     call: { evidence: 'verified', prompt: 'stdin', args: ({ lastMessageFile }) => ['exec', '--json', '--skip-git-repo-check', '-o', lastMessageFile, '-'], read: readCodexExec },
     // `codex exec --help` of codex-cli 0.165.0: "Intended solely for running in environments that are externally sandboxed".
     step: { evidence: 'verified', unattended: { args: ['--dangerously-bypass-approvals-and-sandbox'], evidence: 'docs' } },
-    judge: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
+    confined: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
   },
   opencode: {
     call: { evidence: 'verified', prompt: 'stdin', args: () => ['run', '--format', 'json'], read: readOpenCodeRun },
     // `opencode run --help` of 2.1.2 and opencode.ai/docs/permissions: approves every request a rule does not deny.
     step: { evidence: 'verified', unattended: { args: ['--auto'], evidence: 'docs' } },
-    judge: { evidence: 'verified', env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'], verified: /^opencode v2\.1\.2$/, access: 'read' },
+    confined: { evidence: 'verified', env: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'OPENCODE_API_KEY'], verified: /^opencode v2\.1\.2$/, access: 'read' },
   },
   codebuddy: {
     call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
     // Claude's flags and stream, without --effort. Its unattended mode is codebuddy.ai/docs/cli/permission-modes.
     step: { evidence: 'docs', unattended: { args: ['--permission-mode', 'bypassPermissions'], evidence: 'docs' } },
     // CodeBuddy lists about 70 tools whatever `--tools` says.
-    judge: { evidence: 'docs', env: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'], homeEnv: 'CODEBUDDY_CONFIG_DIR', access: 'full' },
+    confined: { evidence: 'docs', env: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'], homeEnv: 'CODEBUDDY_CONFIG_DIR', access: 'full' },
   },
   // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308):
   // after calls on OpenClaw 2026.8.1 (the first with `agent exec`) and 2026.10.9, `openclaw sessions --all-agents --json` counts 0.
@@ -321,7 +321,7 @@ export const LAUNCH_ADAPTERS = {
     executable: 'cursor-agent',
     // Ask mode answers without editing.
     call: { evidence: 'docs', prompt: 'stdin', args: () => ['-p', '--output-format', 'json', '--mode', 'ask', '--trust'], read: readClaudeResult },
-    judge: { evidence: 'docs', env: ['CURSOR_API_KEY', 'CURSOR_CONFIG_DIR', 'CURSOR_DATA_DIR'], access: 'full' },
+    confined: { evidence: 'docs', env: ['CURSOR_API_KEY', 'CURSOR_CONFIG_DIR', 'CURSOR_DATA_DIR'], access: 'full' },
   },
   // `-s` prints only the reply. Copilot 0.0.x has no JSON output to read tokens from.
   copilot: {
@@ -329,7 +329,7 @@ export const LAUNCH_ADAPTERS = {
   },
   pi: {
     call: { evidence: 'source', prompt: 'stdin', args: () => ['-p', '--mode', 'json', '--no-session'], read: readPiJson },
-    judge: {
+    confined: {
       evidence: 'docs',
       env: ['PI_CODING_AGENT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY'],
       homeEnv: 'PI_CODING_AGENT_DIR',
@@ -361,7 +361,7 @@ export const LAUNCH_ADAPTERS = {
     // `agy --help` of 1.4.10.
     step: { evidence: 'verified', unattended: { args: ['--dangerously-skip-permissions'], evidence: 'docs' } },
     // Plan mode with the sandbox reads files but runs no shell and writes nothing in the workspace (agy 1.4.10).
-    judge: { evidence: 'verified', env: ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'], access: 'read' },
+    confined: { evidence: 'verified', env: ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'], access: 'read' },
     call: {
       evidence: 'verified',
       prompt: 'stdin',
