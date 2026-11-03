@@ -19,7 +19,9 @@ export interface HostProfile {
    * works in an interactive step with the agent. No host meters a child's tokens or turns to the CLI, and teamai scopes
    * team env only in the processes it starts, so prompt steps get none. A coding session never bypasses its person's
    * permissions, so no profile runs a prompt unattended. No host promises that the child it starts loads what teamai
-   * delivered for a step's role rather than the member's own assets, so no profile takes a step with a role.
+   * delivered for a step's role rather than the member's own assets, so no profile takes a step with a role. A profile
+   * that names the directory a step works in takes a step in the team workspace: its command runs in the runner, and
+   * its prompt in a child TeamAI places in the team clone.
    */
   can: Required<DriverCan>;
 }
@@ -27,15 +29,15 @@ export interface HostProfile {
 export const HOST_PROFILES: Record<HostChoice, HostProfile> = {
   h1: {
     label: 'Children that work in a directory TeamAI names, several at once', children: 'parallel', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
   },
   h2: {
     label: 'Children that work in a directory TeamAI names, one at a time', children: 'serial', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
   },
   h3: {
     label: 'Children that work in a worktree your host makes for them, several at once', children: 'parallel', places: 'host',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
   },
   // The session works each step itself, beside its own checkout, so it takes no step in a worktree: those wait for the
   // person's terminal, where the local driver runs them.

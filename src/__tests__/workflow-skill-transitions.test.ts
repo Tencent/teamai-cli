@@ -145,6 +145,20 @@ steps:
     prompt: Write the change.
 `;
 
+const TIDY = `schemaVersion: v1alpha1
+name: tidy
+description: Add the team's notes rule, then a tighter rule.
+invoke: allow
+steps:
+  - id: note
+    workspace: { team: { branch: teamai/notes/a } }
+    command: mkdir -p rules && printf '# Notes\\n' > rules/notes.md
+  - id: tighten
+    needs: [note]
+    workspace: { team: { branch: teamai/notes/b } }
+    prompt: Write rules/tight.md.
+`;
+
 const INLINE = `schemaVersion: v1alpha1
 name: inline
 description: Write the notes, then change the code
@@ -1907,6 +1921,30 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         code: 'unknown_attempt', message: `Attempt ${place.attempt} of run ${run} is offered and waits for no place, so nothing was adopted. Run the next literal to see the run.`,
         next: `teamai workflow next ${run} --driver skill`,
       } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a step in the team workspace runs in a fresh clone of the team repo, a command in the runner and a prompt in a child TeamAI places there, also on a host that makes places, and each pushes what it changed to its branch',
+    rows: ['D6', 'D7'],
+    run: async () => {
+      const member = await sharedTeam({ tidy: TIDY }).install('member');
+      const made = await harness({}, { install: member });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'tidy', answers: { confirmed: false }, inputs: undefined }));
+      await made.call({ kind: 'choose', run, choice: 'h3' });
+      const turn = await dispatchTurn(made, run);
+      const [tighten] = dispatches(turn);
+      if (!tighten) throw new Error(JSON.stringify(turn));
+      expect(tighten).toMatchObject({ step: 'tighten', needs: { place: 'workspace' } });
+      expect(fs.readFileSync(tighten.brief, 'utf8')).toContain('Leave git to TeamAI. It commits and pushes that directory after you report.');
+      fs.mkdirSync(path.join(tighten.dir, 'rules'));
+      fs.writeFileSync(path.join(tighten.dir, 'rules', 'tight.md'), '# Tight\n');
+      await made.call({ kind: 'ack', run, attempt: tighten.attempt });
+      childWrites(tighten.brief, { kind: 'output', output: 'Wrote the rule.' });
+      await made.call({ kind: 'report', run, attempt: tighten.attempt, role: 'agent', modelUnavailable: false });
+      expect(await polledToDone(made, run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] });
+      const origin = (ref: string): string => execFileSync('git', ['--git-dir', member.config.repo.remote, 'show', ref], { encoding: 'utf8' });
+      expect([origin('teamai/notes/a:rules/notes.md'), origin('teamai/notes/b:rules/tight.md')]).toEqual(['# Notes\n', '# Tight\n']);
       return made.rows;
     },
   },

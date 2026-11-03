@@ -28,8 +28,10 @@ export function readLease(raw: unknown): ReadLease | undefined {
 
     lease = {
       attempt, step: id, revision, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace',
-      writes: workspace?.mode === 'new' || workspace?.mode === 'continue',
+      writes: workspace?.mode === 'new' || workspace?.mode === 'continue' || workspace?.mode === 'team',
     };
+
+    if (workspace?.mode === 'team') lease.team = true;
 
     if (interactive) lease.interactive = interactive;
 

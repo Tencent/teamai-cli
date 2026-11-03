@@ -136,10 +136,11 @@ export type RowId = typeof TRANSITIONS[number]['id'];
 export type ReadLease = { attempt: AttemptId; step: string; revision: number; expiresAt?: string } & (
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
   /**
-   * `writes`: the step commits to a branch, in a workspace `new` or `continue`. `interactive`: the person works in the step.
-   * `readOnly`: the step set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
+   * `writes`: the step commits to a branch, in a workspace `new` or `continue` or the team workspace. `team`: in the team
+   * workspace, whose clone TeamAI makes, never a host. `interactive`: the person works in the step. `readOnly`: the step
+   * set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
    */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: unknown }
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; team?: true; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: unknown }
 );
 
 /** A gate as the engine asks it. */
@@ -744,7 +745,7 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
     case 'lease': {
       const { lease } = engine;
       const { attempt, step: id, revision, expiresAt } = lease;
-      const hosted = lease.executor === 'prompt' && lease.writes && state.host.kind === 'chosen' && state.host.places === 'host';
+      const hosted = lease.executor === 'prompt' && lease.writes && !lease.team && state.host.kind === 'chosen' && state.host.places === 'host';
 
       const attemptState: AttemptState = { attempt, step: id, revision, spawnedAt: at, phase: 'preparing' };
 
