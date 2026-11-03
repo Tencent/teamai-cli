@@ -48,7 +48,7 @@ describe('a step that publishes to a teamai data branch, run through the real CL
     const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
     if (!done.success) throw new Error(`no run: ${said(ran)}`);
     const state = RunSchema.parse(fixture.runFile(done.data.run));
-    return { outcome: done.data.outcome, step: state.steps.find((step) => step.id === 'note'), state, said: said(ran) };
+    return { run: done.data.run, outcome: done.data.outcome, step: state.steps.find((step) => step.id === 'note'), state, said: said(ran) };
   }
 
   beforeAll(async () => {
@@ -74,6 +74,15 @@ fs.writeFileSync('stray.txt', 'not staged\\n');`);
     expect(published()).toBe(1);
     expect(ran.state.deliveries ?? []).toEqual([]);
     expect(Object.keys(ran.state.copies ?? {})).not.toContain('teamai-reports');
+  }, 120_000);
+
+  it('lets the run be published, since a step that published to a data branch leaves nothing only this machine has', async () => {
+    const ran = await run(`fs.mkdirSync('notes', { recursive: true }); fs.writeFileSync(${JSON.stringify(`notes/${member}.yaml`)}, 'seen: 6\\n'); stage(${JSON.stringify(`notes/${member}.yaml`)});`);
+    expect(ran.outcome, ran.said).toBe('succeeded');
+
+    const handed = await fixture.teamai(['workflow', 'publish', ran.run]);
+
+    expect(handed.code, said(handed)).toBe(0);
   }, 120_000);
 
   it('refuses a step that staged a file of another member, and pushes nothing', async () => {
