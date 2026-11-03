@@ -159,6 +159,11 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         }
       }
       if (scenario.expectDoneBranch) expect(driven).toMatchObject({ data: { done: { branch: scenario.expectDoneBranch.replace('<run>', runId) } } });
+      for (const id of refused ? [] : scenario.expectGone ?? []) {
+        const { branch } = changesOf(run, id);
+        expect(git(origin, 'for-each-ref', `refs/heads/${branch}`), `${id}'s branch is gone from origin`).toBe('');
+        expect(git(checkout, 'for-each-ref', `refs/heads/${branch}`), `${id}'s branch is gone from the checkout`).toBe('');
+      }
       if (!refused && scenario.expectFailure) {
         const { step: id, names, codeIsNot } = scenario.expectFailure;
         const step = run.steps.find((item) => item.id === id);

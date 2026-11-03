@@ -9,6 +9,7 @@ import {
 import { evaluateExpression, isRecord, isTruthy } from './expression.js';
 import { isItem, itemsAfter, itemsOf } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
+import { cleanUpSucceededRun } from './leftovers.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
@@ -51,6 +52,8 @@ async function controlRun(
   if (queued) await publishRunRecords(config);
 
   if (notPublished && 'data' in envelope) envelope.data.notPublished = notPublished;
+
+  if (runSettled && !notPublished) await cleanUpSucceededRun(config, runId, checkout, secrets);
 
   return envelope;
 }

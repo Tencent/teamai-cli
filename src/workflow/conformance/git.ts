@@ -40,6 +40,11 @@ export interface GitConformanceScenario {
   expectCopies?: Record<string, Record<string, string>>;
   /** The branch, with `<run>` for the run id, the driver's `done` names as the one the run left its changes on. */
   expectDoneBranch?: string;
+  /**
+   * By step id: the branch the step reported is gone from origin and from the checkout the driver under test ran in,
+   * since the run succeeded and a branch that stays holds its tip.
+   */
+  expectGone?: string[];
   /** The step's `message` contains each named value as a whole word, and its `failure.code` is not `codeIsNot`. */
   expectFailure?: { step: string; names: GitConformanceName[]; codeIsNot?: string };
   /**
@@ -197,6 +202,7 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
     elsewhere: [{ step: 'right', files: { 'right.txt': 'R' }, push: true }, { step: 'left', files: { 'left.txt': 'L' }, push: true }],
     expectState: { steps: [{ id: 'right', status: 'succeeded' }, { id: 'left', status: 'succeeded' }, { id: 'join', status: 'succeeded' }] },
     expectPushed: { join: { 'left.txt': 'L', 'right.txt': 'R', 'joined.txt': 'J' } },
+    expectGone: ['left', 'right'],
   },
   {
     name: 'a step whose merge commit is on no branch of origin fails workspace_base naming the commit and its branch',
@@ -232,6 +238,7 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
     handoff: true,
     expectState: { status: 'succeeded', steps: [{ id: 'right', status: 'succeeded' }, { id: 'left', status: 'succeeded' }, { id: 'join', status: 'succeeded' }] },
     expectPushed: { join: { 'elsewhere.txt': 'only on the other machine', 'left.txt': 'L', 'right.txt': 'R', 'joined.txt': 'J' } },
+    expectGone: ['left', 'right'],
   },
   {
     name: 'a claimed run continues a copy from the commit the publishing machine recorded',
@@ -256,6 +263,7 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
       ],
     },
     expectPushed: { after: { 'a.txt': 'fixed', 'after.txt': 'A' } },
+    expectGone: ['change.write'],
   },
   {
     name: 'a workflow whose header says workspace: new works in one copy the run opens, and its second review sees the fix',

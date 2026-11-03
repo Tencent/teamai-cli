@@ -248,7 +248,7 @@ const RUN_RULES = {
   definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', verdicts: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', driveOptions: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
-  stoppedAttempts: 'drop', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish',
+  stoppedAttempts: 'drop', publication: 'drop', leftovers: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish',
 } satisfies FieldRules<RunState>;
 
 const STEP_RULES = {

@@ -46,6 +46,7 @@ import {
 } from './requirements.js';
 import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
 import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutcomes, readRun, updateRun } from './store.js';
+import { cleanUpSucceededRun } from './leftovers.js';
 import { withFileLock } from '../update.js';
 import { admitWorkflow, heldSecret, type Admitted } from './admission.js';
 import { workflowField } from './parse.js';
@@ -2061,6 +2062,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   if (done && record && notPublished?.code !== 'not_owner') done.record = record;
 
   if (done && notPublished) done.notPublished = notPublished;
+
+  // After the end is published: a publish checks the run's branches on origin, and this deletes some of them.
+  if (done && !notPublished) await cleanUpSucceededRun(config, runId, driver.workspace, env.secrets);
 
   return envelope;
 }

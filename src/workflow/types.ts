@@ -499,6 +499,8 @@ export interface RunState {
   sessionContinuations?: SessionContinuation[];
   /** How this machine last published the run, or took it from another machine. Local run state only. */
   publication?: RunPublication;
+  /** What teamai removed of the run's branches once it settled, and what it kept. Local run state only. */
+  leftovers?: RunLeftovers;
   createdAt: string;
   /**
    * Where the workflow's `timeout` and `budget` count from once a retry reopened the run, so the reopened run gets a whole
@@ -529,6 +531,23 @@ export interface DriveOptions {
   /** `false` after `resume --no-auto-approve`, which overrides `workflows.auto_approve` as the flag does. */
   autoApprove?: boolean;
   sandbox?: true;
+}
+
+/** Why a branch of a settled run stays: a pull request uses it, it holds the run's final copy, or no branch that stays holds its tip. */
+export type KeptBranchReason = 'pr' | 'final' | 'unmerged';
+
+/**
+ * What teamai did with the `teamai/<run>/…` branches of a settled run, at run revision `revision`. `success`: the run
+ * succeeded and the branches a kept branch holds went. `retention`: `teamai doctor --fix` removed what the run left past
+ * `workflows.retention`. `failed` lists the deletions that did not go through, which `doctor --fix` tries again.
+ */
+export interface RunLeftovers {
+  by: 'success' | 'retention';
+  at: string;
+  revision: number;
+  kept: Array<{ branch: string; why: KeptBranchReason }>;
+  deleted: string[];
+  failed: Array<{ branch: string; reason: string }>;
 }
 
 /** What this machine knows of the run's snapshot on `teamai-reports`. */
