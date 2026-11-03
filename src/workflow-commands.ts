@@ -2,7 +2,6 @@ import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
-import { isLeaseRef } from './scorers/entry.js';
 import { startedByPasses } from './scorers/engine-hooks.js';
 import { PassScoring } from './scorers/pass-scoring.js';
 import { Subject } from './scorers/subject.js';
@@ -656,12 +655,6 @@ export async function workflowReport(runId: string, options: { json?: string; dr
 
   if (!parsedOptions.success) {
     refuseOptions(parsedOptions.error);
-
-    return;
-  }
-
-  if (isLeaseRef(runId)) {
-    writeEnvelope({ error: { code: 'judge_lease', message: `${runId} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${runId} --submit --stdin` } }, collectEnvSecrets());
 
     return;
   }

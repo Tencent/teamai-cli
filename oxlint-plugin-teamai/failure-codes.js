@@ -42,7 +42,7 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       // Refusals of a run handover, answered to the command or driver that asked for it.
       'not_owner', 'unsupported_repo', 'reports_unreachable', 'reports_failed', 'run_not_found', 'run_not_published', 'run_mismatch',
       'state_conflict', 'state_moved', 'definition_mismatch', 'records_pending', 'snapshot_unsupported', 'secret_detected', 'local_path_detected', 'origin_unavailable', 'commit_missing',
-      'branch_diverged', 'sessions_not_archived', 'judge_lease',
+      'branch_diverged', 'sessions_not_archived',
       // Refusals of a driver's or member's request about a run that is already past it.
       'stale_revision', 'wrong_driver', 'run_settled', 'step_not_found', 'not_hitl', 'not_waiting', 'invalid_choice', 'not_cancellable', 'not_retryable',
       // Refusals of a judge submit, answered to the driver; the lease and the run stay as they were.

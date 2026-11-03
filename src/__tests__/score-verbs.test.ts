@@ -28,7 +28,6 @@ import { PassScoring } from '../scorers/pass-scoring.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
 import { evidenceHash } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
-import { nextJudgeLease } from '../workflow/scoring.js';
 import { checkConfinedDir } from '../workflow/confined-place.js';
 import { runScratchDir, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
@@ -468,7 +467,7 @@ async function plannedGroup(config: LocalConfig, subject: string, inputs: Record
 }
 
 describe('score evidence', () => {
-  it('writes the evidence of a pass into the attempt\'s own directory, hashed as the judge lease of main hashes it', async () => {
+  it('writes the evidence of a pass into the attempt\'s own directory, hashed', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer({ extra: 'isolation: verified\n' }) });
     const runId = await reviewedRun(config);
     const subject = `run:${runId}:review:1`;
@@ -478,8 +477,6 @@ describe('score evidence', () => {
     expect(await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx)).toEqual({ ok: true, output: {
       dir, rubric: expect.stringContaining('Judge the work.'), schema: path.join(dir, 'answer.schema.json'), delivers: false,
     } });
-    const lease = z.object({ evidence: z.string() }).parse(data(await nextJudgeLease(config, { driver: external, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).lease);
-    expect(await evidenceHash(dir)).toBe(await evidenceHash(lease.evidence));
     expect(await evidenceHash(dir)).toMatch(/^sha256:/);
     expect(await checkConfinedDir({ step: 'judge', runDir: runScratchDir(config, run.runId), dir })).toEqual({ ok: true, place: {
       dir: fs.realpathSync(dir), level: 'verified', prefer: 'claude', schema: fs.realpathSync(path.join(dir, 'reply.schema.json')),

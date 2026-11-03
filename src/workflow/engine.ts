@@ -50,7 +50,6 @@ import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutc
 import { withFileLock } from '../update.js';
 import { admitWorkflow, heldSecret, type Admitted } from './admission.js';
 import { workflowField } from './parse.js';
-import { isLeaseRef } from '../scorers/entry.js';
 import { JudgeUsageSchema, type JudgeUsage } from '../scorers/label.js';
 import type {
   DriverIdentity,
@@ -1556,7 +1555,6 @@ type WaitData = { reason: string; delivering?: string[] };
 export interface NextOptions {
   /**
    * The attempts of its open leases the driver is still running. An open lease it does not list is handed back to it.
-   * A judge lease ref answers `judge_lease`: those renew through `teamai score --next`.
    */
   running?: string[];
   /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, `hitl`, or `wait`. */
@@ -1706,12 +1704,6 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
-  const judgeRef = options.running?.find(isLeaseRef);
-
-  if (judgeRef !== undefined) {
-    return error('judge_lease', `running lists judge lease ${judgeRef}. Renew judge leases with teamai score --next and its running list, never with teamai workflow next.`);
-  }
-
   driver = { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
 
   if (options.claim) {
@@ -2651,10 +2643,6 @@ function admitInto(run: RunState, path: string, field: string, output: AdmittedW
 }
 
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput, secrets?: Record<string, string>): Promise<WorkflowEnvelope> {
-  if (isLeaseRef(report.attempt)) {
-    return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
-  }
-
   const install = await installOwner(config);
   const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
   const unmatched = reported?.url ? await reportedPrUnmatched(config, runId, report, reported.url) : undefined;

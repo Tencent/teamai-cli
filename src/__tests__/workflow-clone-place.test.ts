@@ -18,7 +18,7 @@ import { claimRun } from '../workflow/handoff.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { retryStep } from '../workflow/run-controls.js';
-import { nextJudgeLease, scoreOnDemand } from '../workflow/scoring.js';
+import { scoreEvidenceDir } from './helpers/score-run.js';
 import { readRun, RunIdSchema } from '../workflow/store.js';
 import type { DriverCan } from '../workflow/requirements.js';
 import type { DriverIdentity } from '../workflow/types.js';
@@ -478,12 +478,10 @@ describe('a clone place', () => {
 
     // A plain next, which sweeps no clone: the one that settles `trial` and leases `after`.
     const after = await client.next(runId, { driver: { ...driver, can }, running: [] });
-    await scoreOnDemand(config, { run: runId, step: 'trial', scorers: ['quality'], queue: true });
-    const judged = z.object({ data: z.object({ lease: z.object({ evidence: z.string() }) }) })
-      .parse(await nextJudgeLease(config, { driver: { kind: 't3', machine: 'm1', workspace: '/w' }, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).data.lease;
+    const evidence = await scoreEvidenceDir(config, `run:${runId}:trial:1`, ['quality']);
 
     expect(after).toMatchObject({ data: { lease: { step: 'after' } } });
-    expect(fs.readFileSync(path.join(judged.evidence, 'diff.patch'), 'utf8')).toContain('+made in the clone');
+    expect(fs.readFileSync(path.join(evidence, 'diff.patch'), 'utf8')).toContain('+made in the clone');
   });
 });
 
@@ -508,7 +506,7 @@ steps:
 
 /**
  * Runs `yaml` through next --prepare and report, as an external driver would, with its one prompt writing a file in the
- * clone; then the evidence the judge lease of step `scored`, asked for once the run ended and its clone is gone, gives.
+ * clone; then the evidence `teamai score evidence` writes for step `scored` once the run ended and its clone is gone.
  */
 async function judgedAfterClone(yaml: (commit: string) => string, scored: string): Promise<{ runId: string; first: string; evidence: unknown; patch: string }> {
   const { config, runId, first } = await fixture(yaml, { quality: SCORER });
@@ -519,14 +517,11 @@ async function judgedAfterClone(yaml: (commit: string) => string, scored: string
   expect(await client.report(runId, { attempt: leased.attempt, revision: leased.revision, outcome: 'success', driver })).toMatchObject({ data: { step: { outcome: 'success' } } });
   expect(await client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true })).toMatchObject({ data: { done: {} } });
   expect(fs.existsSync(leased.cwd)).toBe(false);
-  // A pass asked for with --queue is the judge work a lease still takes; its judge reads the staged work.
-  expect(await scoreOnDemand(config, { run: runId, step: scored, scorers: ['quality'], queue: true })).toMatchObject({ data: {} });
-  const judged = z.object({ data: z.object({ lease: z.object({ evidence: z.string() }) }) })
-    .parse(await nextJudgeLease(config, { driver: { kind: 't3', machine: 'm1', workspace: '/w' }, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).data.lease;
+  const evidence = await scoreEvidenceDir(config, `run:${runId}:${scored}:1`, ['quality']);
   return {
     runId, first,
-    evidence: JSON.parse(fs.readFileSync(path.join(judged.evidence, 'evidence.json'), 'utf8')) as unknown,
-    patch: fs.readFileSync(path.join(judged.evidence, 'diff.patch'), 'utf8'),
+    evidence: JSON.parse(fs.readFileSync(path.join(evidence, 'evidence.json'), 'utf8')) as unknown,
+    patch: fs.readFileSync(path.join(evidence, 'diff.patch'), 'utf8'),
   };
 }
 

@@ -79,7 +79,7 @@ const COMMAND_EXIT_MS = 10_000;
  * one that runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
  */
 function memoryRunners(command: Runners['command']): {
-  runners: Runners; track(runners: Runners): Runners; settingUp(client: WorkflowClient): WorkflowClient; judging(client: WorkflowClient): WorkflowClient; now: () => Date; advance(ms: number): void; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
+  runners: Runners; track(runners: Runners): Runners; settingUp(client: WorkflowClient): WorkflowClient; now: () => Date; advance(ms: number): void; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
 } {
   let clock = Date.now();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -172,16 +172,6 @@ function memoryRunners(command: Runners['command']): {
         const running = client.setup(run, attempt, mode, signal).finally(() => commands.delete(running));
         commands.set(running, `The setup of ${run}/${attempt}`);
         return running;
-      },
-    }),
-    /** Wraps the client a test ends with, so a settle waits for a judge it runs, as it waits for a real command. */
-    judging: (client) => ({
-      ...client,
-      judge: (ref, body, options) => {
-        const judged = client.judge(ref, body, options);
-        const running = judged.finally(() => commands.delete(running));
-        commands.set(running, `The judge of ${ref}`);
-        return judged;
       },
     }),
     crash: (run, attempt) => {
@@ -369,7 +359,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = scheduler.settingUp(inProcessClient({ config, env }));
   const rows: string[] = [];
   const context: SkillContext = {
-    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: options.tool === null ? undefined : options.tool ?? 'claude', aiTools: production.aiTools, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
+    config, toolPaths, env, client: options.client ? options.client(client) : client, session: options.session ?? 'session-a', tool: options.tool === null ? undefined : options.tool ?? 'claude', aiTools: production.aiTools, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => takeRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },

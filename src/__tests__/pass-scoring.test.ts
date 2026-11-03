@@ -18,7 +18,6 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { cancelRun } from '../workflow/run-controls.js';
-import { openJudgeEntries } from '../workflow/scoring.js';
 import { readRun, runFilePath, RunIdSchema, runsDir } from '../workflow/store.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
 
@@ -152,21 +151,6 @@ describe('PassScoring.start', () => {
       fs.chmodSync(started, 0o700);
     }
     expect(await scoreRuns(config)).toEqual([]);
-  });
-
-  it('leaves no judge lease open for a pass it started, nor for one its workflow scores itself', async () => {
-    const auto = await team(review('[quality]'));
-    const runId = await reviewedRun(auto);
-    const before = await openJudgeEntries(auto, new Date().toISOString());
-
-    await start(auto, runId);
-
-    expect([before, await openJudgeEntries(auto, new Date().toISOString())]).toEqual([1, 0]);
-    fs.rmSync(root, { recursive: true, force: true });
-    fs.mkdirSync(mocks.home, { recursive: true });
-    const own = await team(review('{ names: [quality], start: workflow }'));
-    await reviewedRun(own);
-    expect(await openJudgeEntries(own, new Date().toISOString())).toBe(0);
   });
 });
 

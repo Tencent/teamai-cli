@@ -6,8 +6,9 @@ import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import type { StartedRun, WorkflowClient } from '../workflow/protocol.js';
-import type { RunSubject } from './label.js';
 import { PassScoring } from './pass-scoring.js';
+
+export { verifiedScorers } from './judges-here.js';
 
 /**
  * Starts the scoring of every settled scored pass of run `runId` that none started yet, and answers each run that
@@ -20,9 +21,4 @@ export async function startedByPasses(config: LocalConfig, runId: string, option
   for (const { subject, failure } of starts.refused) log.warn(`The scoring of ${subject} did not start (${failure.code}): ${failure.message}`);
 
   return starts.runs.map(({ subject, scorers, run }) => ({ run, step: subject.step, pass: subject.pass, scorers }));
-}
-
-/** Whether a run scores pass `subject` that the scoring module started, so no judge lease takes it. */
-export function passScoringStarted(config: LocalConfig, subject: RunSubject): Promise<boolean> {
-  return PassScoring.started(config, subject);
 }

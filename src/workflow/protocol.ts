@@ -6,7 +6,7 @@ import type { ReportedAgent } from '../agent-observation.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
-import { startedByPasses } from '../scorers/engine-hooks.js';
+import { startedByPasses, verifiedScorers } from '../scorers/engine-hooks.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import { confinedToolLevel, isConfinedTool } from '../tool-launch/confined.js';
@@ -25,7 +25,6 @@ import {
   type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance, type Via } from './run-controls.js';
-import { nextJudgeLease, parseJudgeRequest, runJudgeLease, verifiedScorers } from './scoring.js';
 import { isUnder } from './loop.js';
 import { stepDefinitions } from './scope.js';
 import { StepModelSchema } from './step-model.js';
@@ -143,15 +142,6 @@ export interface WorkflowClient {
   carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; settled: string[]; status: RunStatus } | undefined>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
   resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
-  /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
-  // oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; parseJudgeRequest parses it
-  scoreNext(body: unknown): Promise<WorkflowEnvelope>;
-  /**
-   * Judges lease `ref` with the confined judge of the tool it was leased for, as `teamai score --lease <ref>` does with
-   * `body` as its payload, and records the judge tool's process group in the directory `group`.
-   */
-  // oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; runJudgeLease parses it
-  judge(ref: string, body: unknown, options: { group: string }): Promise<WorkflowEnvelope>;
 }
 
 /**
@@ -744,12 +734,6 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return { description: describeWorkflow({ definition, source, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), settled, status };
     },
     resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
-    scoreNext: async (body) => {
-      const request = parseJudgeRequest(body);
-
-      return isRefusal(request) ? { error: { code: 'invalid_json', message: request } } : nextJudgeLease(config, request);
-    },
-    judge: (ref, body, { group }) => runJudgeLease(config, ref, body, { group }),
   };
 }
 

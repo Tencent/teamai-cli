@@ -20,7 +20,7 @@ import { loadCachedSuite, readSuiteFiles } from './suite-cache.js';
 import { error } from '../workflow/engine.js';
 import { runDeadline } from '../workflow/limits.js';
 import { findAttemptRun } from '../workflow/run-location.js';
-import { judgeUnavailable } from '../workflow/scoring.js';
+import { judgeUnavailable } from '../scorers/judges-here.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';

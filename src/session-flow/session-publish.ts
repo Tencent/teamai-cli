@@ -12,10 +12,9 @@ import type { RunMode } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { readFileSafe } from '../utils/fs.js';
 import { runPasses, type RunPass } from '../workflow/loop.js';
-import { localRuns } from '../workflow/scoring.js';
 import { privateSteps } from '../workflow/scope.js';
 import { settledHere } from '../workflow/judge-work.js';
-import { installOwner } from '../workflow/store.js';
+import { installOwner, readRuns } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { isIsolated } from '../workflow/workspace.js';
 import { AgentSession, recordedToolRoots, sessionKey, type ToolRootsLookup } from './agent-session.js';
@@ -127,7 +126,7 @@ type UnrecordedPass = { pass: RunPass; key: PublishedKey };
  */
 async function unrecordedSteps(config: LocalConfig, mode: RunMode): Promise<Array<{ run: RunState; passes: UnrecordedPass[] }>> {
   // An isolated run stays on the machine that started it, and so do its steps' sessions.
-  const ended = (await localRuns(config)).filter((run) => run.status !== 'running' && !isIsolated(run) && (run.runMode ?? 'attended') === mode);
+  const ended = (await readRuns(config)).sort((left, right) => left.createdAt.localeCompare(right.createdAt)).filter((run) => run.status !== 'running' && !isIsolated(run) && (run.runMode ?? 'attended') === mode);
 
   if (ended.length === 0) return [];
   const install = (await installOwner(config)).id;
