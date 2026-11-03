@@ -61,7 +61,49 @@ The Workflow Runs page has three lists for the selected workspace. **Local runs*
 
 On the install that offered a run, the next step is `teamai workflow resume <run>` instead, which takes it back there. A local run that is offered, or that another install now holds, says so under its status. **A runner needs** (**Their machine needs** on a run that needs a person) lists the `requires.env` keys and prompt steps of the steps left: set those up on the runner, as [its job](workflow.md#take-offered-runs-from-ci) does. **Not on this machine** is what this machine lacks of them, as `teamai workflow resume` lists it as `cannot run here`. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.
 
-The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt. Each pass names its harness, such as `claude · claude-sonnet-5-5 · review step role · 3bb7751`. A pass whose harness differs from the previous pass of its step says what changed, such as `model changed: claude-sonnet-5-5 → claude-opus-5-5` under `review` pass 2. Each pass's scores show the label, and the stage that decided it when that was not the judge, such as `delivered: partial  Pull request CI`. The run's judge count leaves those labels out. The details of a [benchmark](benchmarks.md) run that ended show its results, usage and task × arm tables, as the CLI prints them.
+The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt. Each pass names its harness, such as `claude · claude-sonnet-5-5 · review step role · 3bb7751`. A pass whose harness differs from the previous pass of its step says what changed, such as `model changed: claude-sonnet-5-5 → claude-opus-5-5` under `review` pass 2. Each pass's scores show the label, its score, and what decided it: `Judge`, `Scorer check`, `Pull request CI`, `Protected paths` or `Hand label`, such as `delivered: partial · score 0.5  Pull request CI`. The run's judge count counts each judge label, a batch's tokens once, and each failed judge attempt, and leaves out the labels a stage decided. The details of a [benchmark](benchmarks.md) run that ended show its results, usage and task × arm tables, as the CLI prints them.
+
+On a local run, a pass this machine judges also lists each scorer that has no label, and why:
+
+```text
+review-quality: good · score 1  Judge
+test-coverage: bad · score 0  Hand label
+style: Failed · judge_answer_invalid
+  The judge's answer did not match the scorer's answer schema, so no label was written. Check the scorer's labels, then judge it again.
+  teamai score --run raa1e5b63a680fc90 --step review --pass 1 --scorer style
+docs: Judging in r8fd8dc67cfd476f5 since 11/3/2026, 1:04:43 PM
+naming: Not sampled at 0%
+Score runs: rd9b944dbf01dff5a Succeeded · r8fd8dc67cfd476f5 Running
+```
+
+| State | What it means | What to do |
+|---|---|---|
+| Not judged yet | The scorer samples the pass, and no `teamai-score` run has taken it yet. | Wait for the run to settle. A `start: workflow` step is judged when its workflow runs `teamai score subjects`. |
+| Not sampled at 20% | The scorer's `samplingRate` left the pass out. | Nothing, or judge it anyway with the command shown. |
+| Judging in `<run>` | That `teamai-score` run holds the scorer and has not ended. | Open the run to see which of its steps waits. |
+| Waiting for CI | The pull request's CI has not finished. Waiting is not a lapse. | Nothing: the next `teamai-finished-sessions` judges it once CI has. |
+| Lapsed 3/4 · expires `<time>` | Score runs ended that many times without labelling it. | Nothing: the next `teamai-finished-sessions` starts it again, until the fourth lapse or the expiry. Or judge it now with the command shown. |
+| Failed · `<code>` | The attempt ended with that code, and automatic judging does not start it again. The sentence under it says why. | Fix the cause it names, then run the command shown. |
+| Expired | It was not judged within 14 days of the run's last change. | Judge it with the command shown. |
+
+The command starts `teamai-score` with demand `named`, which opens a failed or expired scorer again. Run it from your own terminal. Each score run of the pass opens its own details, though Local runs leaves `private` runs such as `teamai-score` out.
+
+**Judging on this machine**, below Local runs, says whether judging keeps up:
+
+```text
+Labels this week 3 · 33% passed   Judge tokens this week 1,992   Judging now 1 · 1 Not judged yet
+Waiting for CI 1                  Lapsed 1 · 0 Expired           Failed 1 · judge_answer_invalid 1
+Decided by  Judge 1  Pull request CI 1  Hand label 1
+Session launches per day  daily_limit 10   0  3  0  6  0  10  2
+Missing labels
+RUN            PASS       SCORER     WHY
+ship           change #1  delivered  Waiting for CI
+review-change  review #1  style      Failed · judge_answer_invalid   teamai score --run raa1e5b63a680fc90 --step review --pass 1 --scorer style
+```
+
+- The labels and judge tokens cover every label this machine wrote in the last 7 days, benchmark labels included. A judge call that failed wrote no label, so its tokens are not counted.
+- The states count the scorers of the passes Local runs lists. **Missing labels** lists up to 25 of them, newest run first, and leaves out the ones sampling left out.
+- **Session launches per day** counts this machine's session judge launches on each local day against `daily_limit`. A day at the limit is amber. A session someone asked for by name counts, and is never refused.
 
 A waiting approve or choose request can be answered from the run's details. The answer goes through the same `respond` operation as the CLI, with channel `dashboard` and `agent: false`, so it can answer a required approval. A dashboard started inside an agent session records `agent: true`, as an answer from that shell would, and cannot answer a required approval. It carries the pass the page showed: if that request was answered or replaced in the meantime, the page shows the refusal and reloads. Another website cannot send an answer. A request without an `Origin` header, such as a plain `curl`, is refused too. This marks an answer as sent from a browser; it does not stop a local script that sets the header.
 
