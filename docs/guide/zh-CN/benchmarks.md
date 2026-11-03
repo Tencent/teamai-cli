@@ -770,7 +770,7 @@ $ jq -c .data.done.finally done.json
 | `no_comparable` | 没有这样的运行。文本会说明。 | 跳过。 |
 | `off` | `fail_on_regression` 为 `false`：没有比较任何东西。 | 跳过。 |
 
-这个关卡是运行的一个步骤，所以无论谁启动了运行，运行的驱动都会在这里结束它。用 `"fail_on_regression":true` 执行 `workflow start teamai-benchmark` 会运行同一个关卡。它的退出码跟随运行的结果，而 `finally` 步骤不会改变这个结果，所以要读取 `done.finally`。
+这个关卡是运行的一个步骤，所以无论谁启动了运行，运行的驱动都会在这里结束它。teamai 的 `teamai-benchmark` 是 `invoke: deny`，所以要用 `--driver local` 启动它：用 `--driver skill` 启动会得到 `invoke_denied`，除非团队的副本设了 `invoke: allow`。用 `"fail_on_regression":true` 执行 `workflow start teamai-benchmark` 会运行同一个关卡。它的退出码跟随运行的结果，而 `finally` 步骤不会改变这个结果，所以要读取 `done.finally`。
 
 这个关卡由团队修改。要在下降时只警告而不让任务失败，替换 `regression` 步骤，其余保持与 teamai 的相同：
 

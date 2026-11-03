@@ -770,7 +770,7 @@ $ jq -c .data.done.finally done.json
 | `no_comparable` | No such run. The text says so. | Skipped. |
 | `off` | `fail_on_regression` is `false`: nothing was compared. | Skipped. |
 
-The gate is a step of the run, so the run's driver ends it there whoever started it. `workflow start teamai-benchmark` with `"fail_on_regression":true` runs the same gate. Its exit code follows the run's outcome, which a `finally` step does not change, so read `done.finally`.
+The gate is a step of the run, so the run's driver ends it there whoever started it. teamai's `teamai-benchmark` is `invoke: deny`, so start it with `--driver local`: a `--driver skill` start answers `invoke_denied`, unless your team's copy sets `invoke: allow`. `workflow start teamai-benchmark` with `"fail_on_regression":true` runs the same gate. Its exit code follows the run's outcome, which a `finally` step does not change, so read `done.finally`.
 
 The gate is the team's to change. To warn of a drop instead of failing the job, replace the `regression` step and keep the rest as teamai's:
 
