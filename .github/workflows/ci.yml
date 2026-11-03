@@ -23,20 +23,12 @@ env:
 
 jobs:
   lint-and-test:
-    name: Lint & Test (Node ${{ matrix.node-version }} on ${{ matrix.os }})
+    name: Lint & Test (Node ${{ matrix.node-version }} on ubuntu-latest)
     strategy:
       fail-fast: false
-      # Every Node version on Linux, which runs the full suite. macOS differs
-      # by the machine (case-insensitive APFS, /tmp → /private/tmp, path_helper),
-      # not by Node version, and a full suite there is what the Build check waits
-      # on. It runs only those cases.
       matrix:
-        include:
-          - { os: ubuntu-latest, node-version: 20 }
-          - { os: ubuntu-latest, node-version: 22 }
-          - { os: ubuntu-latest, node-version: 24 }
-          - { os: macos-latest, node-version: 22 }
-    runs-on: ${{ matrix.os }}
+        node-version: [20, 22, 24]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,27 +42,42 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      # Lint and types do not depend on the platform; the Linux legs cover them.
       - name: Lint
-        if: matrix.os == 'ubuntu-latest'
         run: npm run lint
 
       - name: Type check
-        if: matrix.os == 'ubuntu-latest'
         run: npm run typecheck
 
       - name: Unit tests
-        if: matrix.os == 'ubuntu-latest'
         run: npx vitest run
 
-      # Whole files whose result depends on Darwin, plus the git-exclude cases
-      # that do: precomposed names, and the on-disk spelling on APFS. The rest
-      # of that file matches Linux. A renamed case passes nothing, which fails
-      # the count check. Vitest itself exits 0 when a filter matches nothing.
-      - name: macOS platform tests
-        if: matrix.os == 'macos-latest'
+  # The full suite runs on Linux. This job runs the cases whose result depends
+  # on Darwin. The git-exclude file is almost all the same on Linux, so only
+  # the precomposed-name and case-insensitive cases run here. Vitest exits 0
+  # when a name filter matches nothing, so the count check fails a rename.
+  macos:
+    name: Lint & Test (Node 22 on macos-latest)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Tests that depend on the machine
+        env:
+          TEAMAI_VITEST_SCOPE: macos
+        run: npx vitest run
+
+      - name: Precomposed names and case-insensitive spelling
         run: |
-          npx vitest run --config vitest.macos.config.ts
           npx vitest run src/__tests__/git-exclude.test.ts -t "precomposeunicode|case-insensitive filesystem" --reporter=json --outputFile="$RUNNER_TEMP/git-exclude-platform.json"
           node scripts/expect-vitest-passed.mjs "$RUNNER_TEMP/git-exclude-platform.json" 3
 
@@ -137,7 +144,7 @@ jobs:
   # consume the prepared artifact as soon as it is available.
   build:
     name: Build
-    needs: [lint-and-test, prepare-build]
+    needs: [lint-and-test, macos, prepare-build]
     runs-on: ubuntu-latest
     steps:
       - name: Confirm build and unit matrix passed

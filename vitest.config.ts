@@ -1,12 +1,19 @@
 import { defineConfig } from 'vitest/config';
+import { MACOS_TESTS } from './src/__tests__/helpers/macos-tests.js';
+
+// CI sets this on the macOS job. Unset, the full suite runs.
+const macos = process.env.TEAMAI_VITEST_SCOPE === 'macos';
 
 export default defineConfig({
   test: {
     clearMocks: true,
     globalSetup: ['src/__tests__/helpers/assert-safe-tmpdir.ts'],
-    include: ['src/__tests__/**/*.test.ts', 'oxlint-plugin-teamai/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: macos
+      ? [...MACOS_TESTS]
+      : ['src/__tests__/**/*.test.ts', 'oxlint-plugin-teamai/**/*.test.ts', 'scripts/**/*.test.ts'],
     // The vendored anti-slop tests run through oxlint-plugin-teamai/anti-slop.test.ts.
-    exclude: ['src/__tests__/e2e/**', 'src/__tests__/*-e2e.test.ts', 'oxlint-plugin-teamai/anti-slop/**'],
+    // The macOS list names its files, including one under e2e/, so the exclude would drop it.
+    exclude: macos ? [] : ['src/__tests__/e2e/**', 'src/__tests__/*-e2e.test.ts', 'oxlint-plugin-teamai/anti-slop/**'],
     env: {
       // Tests match git's English messages, which git translates on a machine set to another language.
       LC_ALL: 'C.UTF-8',

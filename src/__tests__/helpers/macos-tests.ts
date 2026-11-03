@@ -1,5 +1,5 @@
 /**
- * Unit test files the macOS CI job runs in full (vitest.macos.config.ts).
+ * Unit test files the macOS CI job runs in full (`TEAMAI_VITEST_SCOPE=macos`).
  * Alphabetical. A file is here when its result depends on the machine: the
  * `/tmp` → `/private/tmp` symlink, or `path_helper` rebuilding PATH.
  *
