@@ -729,6 +729,34 @@ describe('update', () => {
     },
   );
 
+  it.each([{ check: true }, { dryRun: true }])(
+    'reports the last check when the registry cannot be reached (%j)', async (options) => {
+      mockedLoadState.mockResolvedValue({
+        ...defaultState,
+        lastUpdateCheck: new Date().toISOString(),
+        availableUpdate: '99.0.0',
+      });
+      mockedExecSync.mockRejectedValue(new Error('E500'));
+
+      await update(options);
+
+      expect(mockedLog.info).not.toHaveBeenCalledWith(expect.stringContaining('Already up to date'));
+      expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining('the last check found v99.0.0'));
+      expectNoInstall();
+    },
+  );
+
+  it.each([{ check: true }, {}])(
+    'says the update status is unknown without a recent check (%j)', async (options) => {
+      mockedExecSync.mockRejectedValue(new Error('E500'));
+
+      await update(options);
+
+      expect(mockedLog.info).not.toHaveBeenCalledWith(expect.stringContaining('Already up to date'));
+      expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining('update status is unknown'));
+    },
+  );
+
   it('refreshes a cached available version on an explicit check', async () => {
     mockedLoadState.mockResolvedValue({
       ...defaultState,

@@ -754,26 +754,32 @@ export interface CheckResult {
   available: boolean;
   current: string;
   latest: string;
+  /**
+   * Where the answer came from: the registry, the cache within TTL, the cache
+   * because the registry could not be reached (`last-check`), or nowhere.
+   */
+  source: 'registry' | 'cache' | 'last-check' | 'unknown';
 }
 
 /**
  * Check if a newer version is available.
- * Uses cached result if within TTL unless force is true.
+ * Uses cached result if within TTL unless force is true. A forced check that
+ * cannot reach the registry falls back to a cached result within TTL.
  */
 export async function checkForUpdate(options?: { force?: boolean; dryRun?: boolean }): Promise<CheckResult> {
   const state = await loadState();
   const current = getCurrentVersion();
 
+  const cached = (source: 'cache' | 'last-check'): CheckResult => {
+    const latest = state.availableUpdate ?? current;
+
+    return { available: compareVersions(current, latest) < 0, current, latest, source };
+  };
+
+  const hasCache = isCacheValid(state.lastUpdateCheck);
+
   // Use cached result if valid
-  if (!options?.force && isCacheValid(state.lastUpdateCheck)) {
-    if (state.availableUpdate) {
-      const cmp = compareVersions(current, state.availableUpdate);
-
-      return { available: cmp < 0, current, latest: state.availableUpdate };
-    }
-
-    return { available: false, current, latest: current };
-  }
+  if (!options?.force && hasCache) return cached('cache');
 
   // Fetch latest version from registry
   const home = getTeamaiHomeDir();
@@ -781,12 +787,12 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
   const latest = await fetchLatestVersion();
 
   if (!latest) {
-    return { available: false, current, latest: current };
+    return hasCache ? cached('last-check') : { available: false, current, latest: current, source: 'unknown' };
   }
 
   // An uninstall during the query removed the home; saving the check now would recreate it.
   if (installed && !fs.existsSync(home)) {
-    return { available: false, current, latest: current };
+    return { available: false, current, latest: current, source: 'registry' };
   }
 
   // Compare and save state
@@ -800,7 +806,27 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
     });
   }
 
-  return { available, current, latest };
+  return { available, current, latest, source: 'registry' };
+}
+
+/** The line to print when the registry could not answer, or null when it did. */
+function registryUnreachableMessage(result: CheckResult): string | null {
+  switch (result.source) {
+    case 'registry':
+    case 'cache':
+      return null;
+    case 'last-check':
+      return result.available
+        ? `Could not reach the registry; the last check found v${result.latest}. Run "teamai update" to upgrade.`
+        : `Could not reach the registry; the last check found no newer version than v${result.current}.`;
+    case 'unknown':
+      return `Could not reach the registry and there is no recent check, so the update status is unknown (v${result.current}).`;
+    default: {
+      const unhandled: never = result.source;
+
+      return unhandled;
+    }
+  }
 }
 
 /**
@@ -810,9 +836,12 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
  */
 export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean }): Promise<void> {
   const result = await checkForUpdate(options);
+  const unreachable = registryUnreachableMessage(result);
+
+  if (unreachable) log.warn(unreachable);
 
   if (!result.available) {
-    log.info(`Already up to date (v${result.current})`);
+    if (!unreachable) log.info(`Already up to date (v${result.current})`);
 
     return;
   }
@@ -1007,8 +1036,11 @@ export interface UpdateOptions {
 export async function update(options: UpdateOptions): Promise<void> {
   if (options.check || options.dryRun) {
     const result = await checkForUpdate({ force: true, dryRun: options.dryRun });
+    const unreachable = registryUnreachableMessage(result);
 
-    if (result.available) {
+    if (unreachable) {
+      log.warn(unreachable);
+    } else if (result.available) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
     } else {
       log.info(`Already up to date (v${result.current})`);
