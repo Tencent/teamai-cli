@@ -354,6 +354,8 @@ async function drainsUnattendedRun(config: LocalConfig): Promise<boolean> {
   if (SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.unattended.policy !== 'off') return true;
   const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
 
+  if (scoring?.ok === false) log.warn(`[${config.scope}] Finished sessions are not judged here: ${scoring.reason}`);
+
   return scoring?.ok === true && scoring.sessions.policies.unattended.policy !== 'off';
 }
 

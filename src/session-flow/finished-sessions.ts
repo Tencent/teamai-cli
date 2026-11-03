@@ -12,11 +12,12 @@ import { Marks, type Demand, type MarkKey } from '../scorers/marks.js';
 import { pinnedDefinition } from '../scorers/pin.js';
 import { markFacts } from '../scorers/score-plan.js';
 import { ScoreSubjects } from '../scorers/score-subjects.js';
-import { scopeScoring } from '../scorers/settings.js';
+import { scopeScoring, type ScopeScoring } from '../scorers/settings.js';
 import { availableTeamSkills } from '../scorers/skill-evidence.js';
 import { routingScorers } from '../scorers/skill-routing.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
+import { log } from '../utils/logger.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { durationMs } from '../workflow/parse.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
@@ -164,7 +165,10 @@ interface Wants {
 type Finished = Awaited<ReturnType<typeof SessionWork.finished>>[number];
 
 async function wantsOf(config: LocalConfig, request: Request): Promise<Wants | Extract<Listed, { ok: false }>> {
-  const judging = await judgingOf(config);
+  const scoring = await scoringOf(config);
+
+  if (scoring?.ok === false) return { ok: false, code: 'scoring_settings_invalid', message: scoring.reason };
+  const judging = scoring && judgingOf(scoring);
   const publishing = SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies;
   const chosen = await candidatesOf(config, { names: request.scorers, judging });
 
@@ -177,22 +181,21 @@ async function wantsOf(config: LocalConfig, request: Request): Promise<Wants | E
   };
 }
 
-/**
- * The session judging policies of `config`, and whether `skill_routing` is on, or undefined while scoring is
- * unavailable here or its settings do not load.
- */
-async function judgingOf(config: LocalConfig) {
-  if (scoringUnavailable(config)) return undefined;
-  const scoring = await scopeScoring(config);
+/** The scoring settings of `config`, or why they do not load; none while scoring is unavailable here. */
+async function scoringOf(config: LocalConfig) {
+  return scoringUnavailable(config) ? undefined : scopeScoring(config);
+}
 
-  return scoring.ok ? { policies: scoring.sessions.policies, isRouting: scoring.skillRouting } : undefined;
+/** The session judging policies of loaded `scoring`, and whether `skill_routing` is on. */
+function judgingOf(scoring: Extract<ScopeScoring, { ok: true }>) {
+  return { policies: scoring.sessions.policies, isRouting: scoring.skillRouting };
 }
 
 /**
  * Which scorers judge a session: the scorers `names` names, whatever a policy says, or else, while `judging`, those
  * that sample it and, while `skill_routing` is on, a routing question per team skill its captures delivered.
  */
-async function candidatesOf(config: LocalConfig, { names, judging }: { names: readonly string[]; judging: Awaited<ReturnType<typeof judgingOf>> }): Promise<Pick<Wants, 'candidates' | 'demand'> | Extract<Listed, { ok: false }>> {
+async function candidatesOf(config: LocalConfig, { names, judging }: { names: readonly string[]; judging: ReturnType<typeof judgingOf> | undefined }): Promise<Pick<Wants, 'candidates' | 'demand'> | Extract<Listed, { ok: false }>> {
   if (names.length === 0 && judging === undefined) return { candidates: async () => [], demand: 'auto' };
 
   if (names.length === 0) {
@@ -262,7 +265,11 @@ async function reachedScopes(cwd: string): Promise<LocalConfig[]> {
  * says otherwise, and a drain at the end of each unattended job takes them.
  */
 async function worksOnAttended(config: LocalConfig): Promise<boolean> {
-  return (await judgingOf(config))?.policies.attended.policy === 'auto'
+  const scoring = await scoringOf(config);
+
+  if (scoring?.ok === false) log.warn(`[${config.scope}] Finished sessions are not judged here: ${scoring.reason}`);
+
+  return (scoring?.ok === true && scoring.sessions.policies.attended.policy === 'auto')
     || SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.attended.policy === 'auto';
 }
 

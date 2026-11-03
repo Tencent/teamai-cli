@@ -17,6 +17,7 @@ import { FinishedSessions, type ListOptions } from '../session-flow/finished-ses
 import { SessionPublish } from '../session-flow/session-publish.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
+import { log } from '../utils/logger.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { projectDataHome } from '../utils/partition.js';
 import { Marks } from '../scorers/marks.js';
@@ -190,6 +191,13 @@ describe('session list --finished', () => {
     await SessionPublish.recordArchived(config, { platform: 'claude-code', sessionId: IDLE }, new Date(capturedAt).toISOString());
 
     expect(await listed(config)).toEqual({ ok: true, list: [] });
+  });
+
+  it('refuses with why while the scoring settings do not load, rather than list the sessions as if nothing judged them', async () => {
+    const config = await team({ 'scorers/scoring.yaml': 'sessions: [unclosed\n' }, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
+
+    expect(await listed(config)).toEqual({ ok: false, code: 'scoring_settings_invalid', message: expect.stringContaining('scorers/scoring.yaml') });
   });
 
   it('refuses an --idle that is not a duration, and an attempt of a run that is not on this machine', async () => {
@@ -405,10 +413,12 @@ describe('the scopes a session start archives and judges sessions in', () => {
     expect(await FinishedSessions.backgroundScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
   });
 
-  it('is the user scope when it publishes attended sessions automatically, though its scoring settings do not load', async () => {
+  it('is the user scope when it publishes attended sessions automatically, though its scoring settings do not load, and warns why it judges none', async () => {
     userConfig('sessions:\n  publish:\n    attended: auto\n');
     fs.writeFileSync(path.join(root, 'knowledge', 'scorers', 'scoring.yaml'), 'sessions: [unclosed\n');
+    const warn = vi.spyOn(log, 'warn');
     expect(await FinishedSessions.backgroundScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[user\] Finished sessions are not judged here: .*scorers\/scoring\.yaml/));
   });
 
   it('is none while no scope turns session scoring on', async () => {

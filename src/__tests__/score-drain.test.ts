@@ -917,3 +917,13 @@ describe('teamai score of a subject the person names', () => {
     } }, code: 1 });
   });
 });
+
+describe('the drain at the end of an unattended run', () => {
+  it('warns why it judges no session while the scoring settings do not load', async () => {
+    const { config } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { unattended: off }\n', 'scorers/scoring.yaml': 'sessions: [unclosed\n' });
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await Drain.drainsUnattendedRun(config)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[user\] Finished sessions are not judged here: .*scorers\/scoring\.yaml/));
+  });
+});
