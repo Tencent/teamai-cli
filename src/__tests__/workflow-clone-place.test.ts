@@ -493,7 +493,7 @@ description: Judge work done in a clean clone, then go on.
 steps:
   - id: trial
     workspace: { clone: { commit: ${commit}, team: { treatment: none } } }
-    scorers: [quality]
+    scorers: { names: [quality], sampling: all }
     workflow:
       steps:
         - id: work
@@ -516,7 +516,8 @@ async function judgedAfterClone(yaml: (commit: string) => string): Promise<{ run
     .parse(await client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true })).data.lease;
   fs.writeFileSync(path.join(leased.cwd, 'made.txt'), 'made in the clone\n');
   expect(await client.report(runId, { attempt: leased.attempt, revision: leased.revision, outcome: 'success', driver })).toMatchObject({ data: { step: { outcome: 'success' } } });
-  expect(await client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  // `sampling: all` holds the run for its judge, whose lease reads the staged work.
+  expect(await client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true })).toMatchObject({ data: { wait: {} } });
   expect(fs.existsSync(leased.cwd)).toBe(false);
   const judged = z.object({ data: z.object({ lease: z.object({ evidence: z.string() }) }) })
     .parse(await nextJudgeLease(config, { driver: { kind: 't3', machine: 'm1', workspace: '/w' }, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).data.lease;
@@ -652,9 +653,9 @@ description: Judge work done in a clean clone of the first commit.
 steps:
   - id: trial
     workspace: { clone: { commit: ${commit}, team: { treatment: none } } }
-${scored === 'trial' ? '    scorers: [quality]\n' : ''}    workflow:
+${scored === 'trial' ? '    scorers: { names: [quality], sampling: all }\n' : ''}    workflow:
       steps:
         - id: work
           workspace: continue
           prompt: Make a file.
-${scored === 'work' ? '          scorers: [quality]\n' : ''}`;
+${scored === 'work' ? '          scorers: { names: [quality], sampling: all }\n' : ''}`;

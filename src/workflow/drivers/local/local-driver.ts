@@ -35,7 +35,7 @@ import {
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
-import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
+import { commandEnd, managedReport, StartedRunSchema, unreadablePlace, type StartedRun } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
@@ -156,8 +156,8 @@ export interface LocalDriverOptions {
   adapter?: LocalToolAdapter;
   /** Where the tools a step confined to a directory runs on are looked up: PATH unless given. */
   resolveTool?: (executable: string) => string | null;
-  /** Called after each report the engine took, so the caller acts on what settled, such as starting the scoring of a pass. */
-  settled?: (run: RunId) => Promise<void>;
+  /** Called with the runs each report the engine took answers its settled passes started, which the caller drives. */
+  started?: (runs: readonly StartedRun[]) => void;
 }
 
 /** A lease as this driver runs it: what the engine sent, and what staging it adds. A step staged after `expiresAt` does not start. */
@@ -922,7 +922,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
     reported.add(body.attempt);
-    await options.settled?.(runId);
+    options.started?.(StartedRunSchema.array().catch([]).parse(answer.data.started));
 
     return undefined;
   };

@@ -2,11 +2,11 @@ import type { JudgeConformanceScenario } from '../conformance-interpreter.js';
 
 const JUDGED_WORKFLOW = `schemaVersion: v1alpha1
 name: judged
-description: A pass with a quality scorer.
+description: A pass with a quality scorer that judges every pass before the run ends.
 steps:
   - id: work
     prompt: Review the change.
-    scorers: [quality]
+    scorers: { names: [quality], sampling: all }
 `;
 
 const QUALITY_SCORER = `---
@@ -51,7 +51,7 @@ export const judgeConformanceScenarios: JudgeConformanceScenario[] = [
   },
   {
     name: 'judge-renew-without-take: canTakeLease false renews the lease in running and takes no open work',
-    yaml: JUDGED_WORKFLOW.replace('scorers: [quality]', 'scorers: [quality, depth]'),
+    yaml: JUDGED_WORKFLOW.replace('names: [quality]', 'names: [quality, depth]'),
     scorers: { quality: QUALITY_SCORER, depth: QUALITY_SCORER.replace('Judge the work.', 'Judge how deep the work goes.') },
     operations: [
       { kind: 'take', at: '2026-10-22T12:00:00.000Z', expect: { data: { lease: { scorer: 'quality', expiresAt: '2026-10-22T12:30:00.000Z' } } } },

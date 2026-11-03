@@ -105,6 +105,37 @@ steps:
     command: echo classify
 `;
 
+const SCORED_PASS = `schemaVersion: v1alpha1
+name: review
+description: A step whose passes a scorer judges.
+steps:
+  - id: review
+    prompt: Review the change.
+    scorers: [quality]
+`;
+
+const SCORED_WORKFLOW_STEP = `schemaVersion: v1alpha1
+name: ship
+description: A workflow step whose passes a scorer judges.
+steps:
+  - id: build
+    scorers: [quality]
+    workflow:
+      steps:
+        - id: compile
+          command: echo compile
+`;
+
+const QUALITY_SCORER = `---
+labels:
+  - { value: good, score: 1, description: Did the work }
+  - { value: bad, score: 0, description: Missed the work }
+passingScore: 0.5
+samplingRate: 100
+---
+Judge the work.
+`;
+
 const PROMPT_MODEL = `schemaVersion: v1alpha1
 name: build
 description: A prompt step lease carries its model and the default model as written.
@@ -384,6 +415,28 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       { kind: 'next', saveAs: 'compile', absent: ['model', 'defaultModel'], expect: { data: { lease: { step: 'compile' } } } },
       { kind: 'report', lease: 'compile', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
       { kind: 'next', saveAs: 'plan', expect: { data: { lease: { step: 'plan', model: 'strong', defaultModel: 'fast' } } } },
+    ],
+  },
+  {
+    name: 'the report that settles a scored pass answers the run it started for the pass, which the driver drives, and the scored run ends without it',
+    workflowName: 'review',
+    yaml: SCORED_PASS,
+    teamFiles: { 'scorers/quality.md': QUALITY_SCORER },
+    operations: [
+      { kind: 'next', saveAs: 'review', expect: { data: { lease: { step: 'review' } } } },
+      { kind: 'report', lease: 'review', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' }, started: [{ step: 'review', pass: 1, scorers: ['quality'] }] } } },
+      { kind: 'next', saveAs: 'end', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+  },
+  {
+    name: 'the next that settles a scored workflow step answers the run it started for the pass, as the run ends',
+    workflowName: 'ship',
+    yaml: SCORED_WORKFLOW_STEP,
+    teamFiles: { 'scorers/quality.md': QUALITY_SCORER },
+    operations: [
+      { kind: 'next', saveAs: 'compile', expect: { data: { lease: { step: 'build.compile' } } } },
+      { kind: 'report', lease: 'compile', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'end', expect: { data: { done: { outcome: 'succeeded' }, started: [{ step: 'build', pass: 1, scorers: ['quality'] }] } } },
     ],
   },
   {

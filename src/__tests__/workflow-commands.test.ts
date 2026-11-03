@@ -807,20 +807,9 @@ describe('workflow start --driver local scores the passes it settles', () => {
     return runs.filter((item) => typeof item === 'object' && item.name === 'teamai-score');
   }
 
-  it('starts no teamai-score run for an unattended run, whose drain judges its passes', async () => {
+  it.each(['attended', 'unattended'])('starts one teamai-score run for a scored pass of an %s run, and drives it to its end before it answers', async (mode) => {
     const config = await shipTeam();
-    vi.stubEnv('TEAMAI_MODE', 'unattended');
-    vi.spyOn(log, 'info').mockImplementation(() => undefined);
-
-    const started = await capture(() => workflowStart('ship', { driver: 'local' }));
-
-    expect(started.data).toMatchObject({ done: { outcome: 'succeeded' } });
-    expect(await scoreRuns(config)).toEqual([]);
-  });
-
-  it('starts one teamai-score run for a scored pass of an attended run, and drives it to its end before it answers', async () => {
-    const config = await shipTeam();
-    vi.stubEnv('TEAMAI_MODE', 'attended');
+    vi.stubEnv('TEAMAI_MODE', mode);
     const said = vi.spyOn(log, 'info').mockImplementation(() => undefined);
     const warned = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
 

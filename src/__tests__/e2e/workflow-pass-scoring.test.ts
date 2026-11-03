@@ -1,8 +1,8 @@
 /**
  * Real CLI: a step's `scorers:` on a run the local driver drives. Each settled pass gets one root teamai-score run that
  * the scoring module starts; an attended `workflow start` drives it before it returns, so the label is written by then.
- * A `scorers.start: workflow` step, whose workflow scores its passes itself, gets none, and an unattended drive starts
- * none: the drain it ends with judges the pass.
+ * A `scorers.start: workflow` step, whose workflow scores its passes itself, gets none. An unattended drive labels its
+ * pass the same way, so the drain it ends with judges no workflow pass.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -112,14 +112,16 @@ describe('the scoring of a run\'s passes, through the real CLI', () => {
     expect(fixture.judgeLaunches()).toEqual([]);
   }, 180_000);
 
-  it('starts no teamai-score run from an unattended drive, whose drain judges the pass', async () => {
+  it('labels the pass of an unattended local run through one teamai-score run, leaving its drain no workflow pass to judge', async () => {
     const fixture = await reviewFixture('[quality]', 'unattended');
 
     const started = await fixture.teamai(['workflow', 'start', 'review', '--driver', 'local']);
 
     expect(started.code, said(started)).toBe(0);
-    expect(scoreRuns(fixture)).toEqual([]);
-    expect(started.stderr).toContain('Draining before exit (teamai score --drain)');
-    expect(labels(fixture)).toEqual([expect.objectContaining({ scorer: 'quality', label: 'good' })]);
+    const { done } = DoneSchema.parse(envelope(started).data);
+    expect(scoreRuns(fixture)).toEqual([expect.objectContaining({ startedBy: 'cli', status: 'succeeded', inputs: expect.objectContaining({ subject: `run:${done.run}:review:1` }) })]);
+    expect(labels(fixture)).toEqual([expect.objectContaining({ scorer: 'quality', label: 'good', subject: { runId: done.run, step: 'review', pass: 1 } })]);
+    expect(fixture.judgeLaunches()).toHaveLength(1);
+    expect(started.stderr).not.toContain('sampled pass');
   }, 180_000);
 });

@@ -34,7 +34,7 @@ import { installedConfinedTools, isConfinedTool } from '../tool-launch/confined.
 import { CONFINED_TOOLS } from '../tool-launch/tools.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { chooseJudgeModel } from '../scorers/judge-model.js';
-import { PassScoring } from '../scorers/pass-scoring.js';
+import { passScoringStarted } from '../scorers/engine-hooks.js';
 import { isSampled } from '../scorers/sampling.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, unknownIsolationText, type IsolationSetting } from '../scorers/isolation.js';
@@ -180,7 +180,7 @@ async function recentRuns(config: LocalConfig, now: string, kept: ReadonlySet<st
  */
 async function scoredElsewhere(config: LocalConfig, runs: readonly RunState[], install: string): Promise<Set<string>> {
   const passes = runs.flatMap((run) => scoredPasses(run, install).map((pass) => ({ ...pass, own: stepDefinitions(run)(pass.subject.step)?.scorers?.start === 'workflow' })));
-  const left = await Promise.all(passes.map(async ({ subject, scorers, own }) => (own || await PassScoring.started(config, subject) ? scorers.map((scorer) => entryIdOf(scorer, subject)) : [])));
+  const left = await Promise.all(passes.map(async ({ subject, scorers, own }) => (own || await passScoringStarted(config, subject) ? scorers.map((scorer) => entryIdOf(scorer, subject)) : [])));
 
   return new Set(left.flat());
 }

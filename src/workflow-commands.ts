@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
+import { startedByPasses } from './scorers/engine-hooks.js';
 import { PassScoring } from './scorers/pass-scoring.js';
+import { Subject } from './scorers/subject.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redact, redactJson } from './utils/redact.js';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, retryCommand, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
@@ -19,7 +21,7 @@ import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type Loc
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type RunId } from './workflow/store.js';
-import { inProcessClient, isRefusal, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
+import { inProcessClient, isRefusal, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare, type StartedRun } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow, namespaceConflictOf, resolveStart } from './workflow/cache.js';
 import { durationMs } from './workflow/parse.js';
@@ -80,10 +82,9 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
 const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed') });
 
 /**
- * Drives run `runId` with the local driver through `drive`. An attended drive starts the scoring of each pass as it
- * settles, one teamai-score run per pass, then drives those runs before it answers, so their labels are written when
- * `workflow start` or `resume` returns; the scored run's own steps and `finally` never wait for them. An unattended
- * drive starts none, since the drain it ends with judges its passes (`writeDriven`).
+ * Drives run `runId` with the local driver through `drive`, then drives each teamai-score run its reports answered its
+ * settled passes started, so their labels are written when `workflow start` or `resume` returns, attended or not; the
+ * scored run's own steps and `finally` never wait for them.
  */
 async function withPassScoring(
   { config, env }: { config: LocalConfig; env: WorkflowEnv },
@@ -91,26 +92,16 @@ async function withPassScoring(
   options: LocalDriverOptions,
   drive: (options: LocalDriverOptions) => Promise<WorkflowEnvelope>,
 ): Promise<WorkflowEnvelope> {
-  const mode = resolveRunMode(process.env);
+  const scoring = new Map<RunId, StartedRun>();
+  const keep = (runs: readonly StartedRun[]): void => { for (const started of runs) scoring.set(started.run, started); };
 
-  if (mode !== 'attended') return drive(options);
-  const client = inProcessClient({ config, env });
-  const scoring = new Map<RunId, string>();
-
-  const start = async (run: RunId): Promise<void> => {
-    const starts = await PassScoring.start(config, run, { client, mode });
-
-    for (const { subject, run: scored } of starts.runs) scoring.set(scored, subject);
-
-    for (const { subject, failure } of starts.refused) log.warn(`The scoring of ${subject} did not start (${failure.code}): ${failure.message}`);
-  };
-
-  const driven = await drive({ ...options, settled: start });
+  const driven = await drive({ ...options, started: keep });
   // A resume whose steps had all settled reports nothing, so the runs an earlier drive started are read here too.
-  await start(runId);
+  keep(await startedByPasses(config, runId, { client: inProcessClient({ config, env }), mode: resolveRunMode(process.env) }));
 
-  for (const [scored, subject] of scoring) {
-    const said = PassScoring.said(subject, scored, await runLocalDriver(config, scored, process.cwd(), { tools: options.tools, toolPaths: options.toolPaths, sandbox: options.sandbox }));
+  for (const { run, step, pass } of scoring.values()) {
+    const subject = Subject.format({ kind: 'run', subject: { runId, step, pass } });
+    const said = PassScoring.said(subject, run, await runLocalDriver(config, run, process.cwd(), { tools: options.tools, toolPaths: options.toolPaths, sandbox: options.sandbox }));
 
     if (said.kind === 'pending') log.warn(said.line);
     else log.info(said.line);

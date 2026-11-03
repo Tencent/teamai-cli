@@ -11,7 +11,7 @@ import { z } from 'zod';
 import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
-import { scoredPasses } from '../workflow/judge-work.js';
+import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { installOwner, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
@@ -22,7 +22,7 @@ import { Subject } from './subject.js';
 
 /** What a start did: the `teamai-score` runs of the run's passes still to drive, and the passes whose start was refused. */
 export interface PassStarts {
-  runs: Array<{ subject: string; run: RunId }>;
+  runs: Array<{ subject: RunSubject; scorers: string[]; run: RunId }>;
   refused: Array<{ subject: string; failure: WorkflowFailure }>;
 }
 
@@ -75,14 +75,14 @@ async function startedRun(file: string): Promise<RunId | undefined> {
 }
 
 /** The passes of `run` the scoring module starts: those its step does not leave to the workflow or to the engine's own wait. */
-async function startable(config: LocalConfig, run: RunState): Promise<RunSubject[]> {
+async function startable(config: LocalConfig, run: RunState): Promise<ScorablePass[]> {
   const definitionOf = stepDefinitions(run);
 
-  return scoredPasses(run, (await installOwner(config)).id).flatMap(({ subject }) => {
+  return scoredPasses(run, (await installOwner(config)).id).filter(({ subject }) => {
     const scorers = definitionOf(subject.step)?.scorers;
 
     // `sampling: all` passes are still judged before the run ends, through the engine's judge entries.
-    return scorers?.start === 'workflow' || scorers?.sampling === 'all' ? [] : [subject];
+    return scorers?.start !== 'workflow' && scorers?.sampling !== 'all';
   });
 }
 
@@ -95,34 +95,38 @@ async function isRunning(config: LocalConfig, runId: RunId): Promise<boolean> {
 export const PassScoring = {
   /**
    * Starts a root `teamai-score` run, as the CLI's own start with no agent evidence, for each settled scored pass of
-   * `runId` that no call started yet, recorded for the scored run's driver so that driver drives it as its own. Answers
+   * `runId` that no call started yet, recorded for the scored run's driver and from its checkout, so that driver drives
+   * it as its own, its commands in the same checkout. Answers
    * those runs and the ones an earlier call started that have not ended, which the caller drives.
    */
-  async start(config: LocalConfig, runId: string, { client, mode }: { client: WorkflowClient; mode: RunMode }): Promise<PassStarts> {
+  async start(config: LocalConfig, runId: string, { client, mode }: { client: Pick<WorkflowClient, 'start'>; mode: RunMode }): Promise<PassStarts> {
     const run = await readRun(config, runId);
     const starts: PassStarts = { runs: [], refused: [] };
 
     if (run === 'missing' || run === 'corrupt') return starts;
     const driver: DriverIdentity | undefined = run.driver;
 
-    for (const subject of await startable(config, run)) {
+    for (const { subject, scorers } of await startable(config, run)) {
       const file = startKey(config, subject);
       const text = Subject.format({ kind: 'run', subject });
 
       if (!await claimed(file)) {
         const earlier = await startedRun(file);
 
-        if (earlier && await isRunning(config, earlier)) starts.runs.push({ subject: text, run: earlier });
+        if (earlier && await isRunning(config, earlier)) starts.runs.push({ subject, scorers, run: earlier });
         continue;
       }
 
       const inputs = { subject: text, scorers: [], label: '', batch: false, demand: 'auto' };
-      const answer = await client.start('teamai-score', { inputs, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli', driver });
+      const options: Parameters<WorkflowClient['start']>[1] = { inputs, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli', driver };
+
+      if (run.checkout !== undefined) options.checkout = run.checkout;
+      const answer = await client.start('teamai-score', options);
       const started = 'data' in answer ? RunIdSchema.safeParse(answer.data.run) : undefined;
 
       if (started?.success) {
         await writeJsonAtomic(file, { subject: text, run: started.data });
-        starts.runs.push({ subject: text, run: started.data });
+        starts.runs.push({ subject, scorers, run: started.data });
         continue;
       }
 

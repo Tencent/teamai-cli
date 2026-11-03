@@ -6,6 +6,7 @@ import type { ReportedAgent } from '../agent-observation.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
+import { startedByPasses } from '../scorers/engine-hooks.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import { confinedToolLevel, isConfinedTool } from '../tool-launch/confined.js';
@@ -33,6 +34,15 @@ import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
 import { cloneBranchOf, confinedOf, deliveryProblem, stepRoleOf } from './workspace.js';
 import { headCommit } from './worktree.js';
+
+/**
+ * A run that a pass a report settled started, which the driver of the reported run drives as it drives that run: its
+ * recorded driver is that run's, so its `next` is no claim. Every report answers each such run that has not ended, so
+ * a driver that lost one finds it again on its next report.
+ */
+export const StartedRunSchema = z.object({ run: RunIdSchema, step: z.string(), pass: z.number().int().positive(), scorers: z.array(z.string()) });
+
+export type StartedRun = z.infer<typeof StartedRunSchema>;
 
 /**
  * Who sent an answer: a process, with the driver UI its `--json` payload declares the person answered in, or the run's
@@ -594,17 +604,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
     setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, env, signal }),
-    start: async (name, { inputs, checkout, caller, timeout, alone, startedBy, driver, instead }) => {
-      const cached = await loadCachedWorkflow(config, name);
-      const refused = invokeRefusal(cached?.definition, caller, { kind: 'start', instead });
-
-      if (refused) return { error: refused };
-      const base = checkout === undefined ? undefined : await headCommit(checkout);
-
-      return startRun(config, name, inputs ?? {}, {
-        secrets: env.secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy ?? 'person' : 'agent', driver, checkout, base, timeout, alone,
-      });
-    },
+    start: (name, options) => startNamed({ config, secrets: env.secrets }, name, options),
     runVersion: async (runId) => {
       const run = await readRun(config, runId);
 
@@ -619,7 +619,9 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const run = RunIdSchema.safeParse(runId);
       const prepare = options?.prepare;
 
-      if (prepare === undefined || !run.success) return withIgnored(withAttemptEnv(config, runId, next.runMode, await lease()), parsed.ignored);
+      const started = { config, runId, secrets: env.secrets };
+
+      if (prepare === undefined || !run.success) return withIgnored(await withStarted(started, withAttemptEnv(config, runId, next.runMode, await lease())), parsed.ignored);
 
       return withIgnored(await withRunLock(config, run.data, async (lock) => {
         const answer = prepare === true ? await prepareLeased({ config, lock, driver, env, answer: await leaseNext(config, runId, driver, { ...next, env, prepare: true }) })
@@ -628,7 +630,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         // A clone whose steps all settled is not needed any more.
         await sweepClones(config, lock.run);
 
-        return withAttemptEnv(config, runId, next.runMode, answer);
+        return withStarted(started, withAttemptEnv(config, runId, next.runMode, answer));
       }, { waitMs: 0 }), parsed.ignored);
     },
     report: async (runId, body, options) => {
@@ -857,13 +859,47 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
   return { data: { ...answer.data, lease } };
 }
 
+/** `WorkflowClient.start`: starts workflow `name` when its `invoke` lets `caller` start it. */
+async function startNamed({ config, secrets }: { config: LocalConfig; secrets: Record<string, string> }, name: string, options: Parameters<WorkflowClient['start']>[1]): Promise<WorkflowEnvelope> {
+  const { inputs, checkout, caller, timeout, alone, startedBy, driver, instead } = options;
+  const cached = await loadCachedWorkflow(config, name);
+  const refused = invokeRefusal(cached?.definition, caller, { kind: 'start', instead });
+
+  if (refused) return { error: refused };
+  const base = checkout === undefined ? undefined : await headCommit(checkout);
+
+  return startRun(config, name, inputs ?? {}, {
+    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy ?? 'person' : 'agent', driver, checkout, base, timeout, alone,
+  });
+}
+
+/** Reports an attempt as `placedReport` does, with the runs its settled passes started (`withStarted`). Every driver reports through it. */
+export async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
+  return withStarted(input, await placedReport(input));
+}
+
+/**
+ * `answer` with `started`: the runs the settled passes of run `runId` started and that have not ended, which the driver
+ * that asked drives. A report settles a prompt step's pass, and a `next` a `workflow` step's, so both answer it.
+ */
+async function withStarted({ config, runId, secrets }: { config: LocalConfig; runId: string; secrets: Record<string, string> }, answer: WorkflowEnvelope): Promise<WorkflowEnvelope> {
+  if (!('data' in answer)) return answer;
+  const run = await readRun(config, runId);
+
+  if (run === 'missing' || run === 'corrupt') return answer;
+  const mode = run.runMode ?? resolveRunMode(process.env);
+  const started = await startedByPasses(config, runId, { client: { start: (name, options) => startNamed({ config, secrets }, name, options) }, mode });
+
+  return started.length === 0 ? answer : { data: { ...answer.data, started } };
+}
+
 /**
  * Reports an attempt, after finishing the place `prepare` gave it, under the run's lock, and removes that place once the
- * engine answers `cleanup`. Every driver reports through it. An attempt without a place is reported as it is. A report
+ * engine answers `cleanup`. An attempt without a place is reported as it is. A report
  * the run would refuse is sent as it is, and a cancelled one leaves the place as prepare found it; so does a
  * `released` attempt.
  */
-export async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
+async function placedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
   const { config, runId, report, secrets, lock } = input;
   const attempt = AttemptIdSchema.safeParse(report.attempt);
   const run = RunIdSchema.safeParse(runId);

@@ -100,7 +100,7 @@ describe('PassScoring.start', () => {
     const started = await start(config, runId);
 
     const [scored] = await scoreRuns(config);
-    expect(started).toEqual({ runs: [{ subject: `run:${runId}:review:1`, run: scored?.id }], refused: [] });
+    expect(started).toEqual({ runs: [{ subject: { runId, step: 'review', pass: 1 }, scorers: ['quality'], run: scored?.id }], refused: [] });
     expect(scored).toMatchObject({
       inputs: { subject: `run:${runId}:review:1`, scorers: [], label: '', batch: false, demand: 'auto' },
       startedBy: 'cli', runMode: 'attended', driver: skill,

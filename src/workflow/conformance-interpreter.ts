@@ -619,7 +619,7 @@ export type JudgeConformanceOperation =
   | { kind: 'submit'; expect: ScenarioJson }
   | { kind: 'idle'; at: string; expect: ScenarioJson };
 
-/** A run of workflow `judged` whose scored pass a driver runs to its end, then the judge work of that pass. */
+/** A run of workflow `judged` whose scored pass a driver runs, then the judge work of that pass the run waits on. */
 export interface JudgeConformanceScenario {
   name: string;
   yaml: string;
@@ -685,7 +685,8 @@ export async function runJudgeConformanceScenario(scenario: JudgeConformanceScen
   const runId = String(dataOf(await client.start('judged')).run);
   const work = LeasedSchema.parse(dataOf(await client.next(runId, { driver: { ...driver, can: DRIVER_PROFILES[judging.as].can } })).lease);
   dataOf(await client.report(runId, { ...work, driver, outcome: 'success', outputs: { reviewed: true } }));
-  expect(await client.next(runId, { driver })).toMatchObject({ data: { done: {} } });
+  // `sampling: all` holds the run until its judges answer.
+  expect(await client.next(runId, { driver })).toMatchObject({ data: { wait: {} } });
 
   const request = (fields: { running: string[]; canTakeLease?: false }) => {
     const body: ScenarioJson = {};
