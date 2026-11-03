@@ -19,7 +19,7 @@ import { pullRequestBranches, RECORDS_DIR, RunRecordFieldsSchema } from './recor
 import { resolveRetention, retentionEnds, type ResolvedRetention } from './retention.js';
 import { AttemptIdSchema, attemptsDir, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
 import type { KeptBranchReason, RunLeftovers, RunState } from './types.js';
-import { basePinBranch, runBranchPrefix } from './workspace.js';
+import { basePinBranch, runBranchPrefix, runCopyToMerge } from './workspace.js';
 import { fetchMissingCommits, git, removeWorktree, worktreeCheckout } from './worktree.js';
 
 /** Where each branch of a run points: in the checkout, and on `origin`, which is absent when the checkout has none. */
@@ -72,8 +72,14 @@ async function checkedOut(checkout: string): Promise<Map<string, string> | { err
   return found;
 }
 
-/** The branch the run wrote last: that of the succeeded step that settled last with changes, in a copy of the checkout. */
+/**
+ * The run's output: the copy the run tells the person to merge (`runCopyToMerge`), else the branch it wrote last, that of
+ * the succeeded step that settled last with changes, in a copy of the checkout.
+ */
 function finalCopy(run: RunState): string | undefined {
+  const toMerge = runCopyToMerge(run);
+
+  if (toMerge !== undefined) return toMerge;
   let latest: { branch: string; settledAt: number } | undefined;
 
   for (const state of run.steps) {

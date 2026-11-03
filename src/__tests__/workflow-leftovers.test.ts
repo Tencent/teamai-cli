@@ -9,6 +9,7 @@ import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { readRun } from '../workflow/store.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
+import { runCopyToMerge } from '../workflow/workspace.js';
 import { getReportsDir } from '../types.js';
 import { log } from '../utils/logger.js';
 import { fakeGh } from './helpers/fake-gh.js';
@@ -120,6 +121,29 @@ describe('the branches of a run that succeeded', () => {
 
     expect(branches(origin, runId)).toEqual(['join/p1']);
     expect(git(origin, ['show', `teamai/${runId}/join/p1:left.txt`])).toBe('L');
+  });
+
+  it('keeps the run copy it tells the person to merge, though a later step forked it', async () => {
+    const { config, cwd, origin, runId } = await fixture(`schemaVersion: v1alpha1
+name: ship
+description: A run copy, and a step that forks it.
+workspace: new
+steps:
+  - id: write
+    workspace: continue
+    command: node -e "require('fs').writeFileSync('root.txt', 'R')"
+  - id: fork
+    needs: [write]
+    workspace: new
+    command: node -e "require('fs').writeFileSync('fork.txt', 'F')"
+`);
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+
+    expect(runCopyToMerge(await state(config, runId))).toBe(`teamai/${runId}/_run`);
+    expect(branches(origin, runId)).toContain('_run');
+    expect(branches(cwd, runId)).toContain('_run');
+    expect((await state(config, runId)).leftovers?.kept).toContainEqual({ branch: `teamai/${runId}/_run`, why: 'final' });
   });
 
   it('still succeeds when origin refuses a deletion, and warns naming the branch, which it keeps for doctor --fix', async () => {
