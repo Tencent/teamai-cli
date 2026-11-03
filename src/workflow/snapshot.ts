@@ -13,6 +13,7 @@ import { privateSteps } from './scope.js';
 import {
   ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
+import { TeamPinSchema } from './store.js';
 import { STARTED_BY, type Finalizing, type RunState, type StepLease, type WorkflowDefinition, type WorkflowFailure } from './types.js';
 
 /**
@@ -58,6 +59,8 @@ const BodySchema = z.object({
   sourceHash: z.string(),
   definitionHash: z.string(),
   teamRevision: CommitIdSchema.optional(),
+  /** The team pin as the run started it. Its patch stays on the machine that started the run, so a pin with one is read nowhere else. */
+  teamPin: TeamPinSchema.optional(),
   runMode: RunModeSchema.optional(),
   origin: RunOriginSchema.optional(),
   startedBy: z.enum(STARTED_BY).optional(),
@@ -246,7 +249,7 @@ type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : n
 
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
-  end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', runMode: 'publish', origin: 'publish',
+  end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', teamPin: 'publish', runMode: 'publish', origin: 'publish',
   startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',

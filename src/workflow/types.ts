@@ -3,6 +3,7 @@
 import type { RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
 import type { PinnedScorer } from '../scorers/pin.js';
+import type { TeamPin } from './team-pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
 import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
 import type { OnLimit, Requirements, Setup, TurnLimits, Unenforced } from './requirements.js';
@@ -460,6 +461,8 @@ export interface RunState {
   sourceHash: string;
   /** Remote-reachable team commit shared by every cached workflow in this run. */
   teamRevision?: string;
+  /** The team revision the run started from, with a patch of the checkout's changes past it. Absent on older runs, and where the team checkout is no git repository. */
+  teamPin?: TeamPin;
   /** The run mode `workflow start` resolved. A claim keeps it. Absent on runs started before it was recorded. */
   runMode?: RunMode;
   /** Whether `definition` is the team's or teamai's default. A claim keeps it. Absent on runs started before it was recorded, all team runs. */

@@ -215,6 +215,12 @@ export async function runnerAlive(config: LocalConfig, run: RunId, attempt: Atte
   return !await acquireLock(runnerLockPath(config, run, attempt), { dryRun: true });
 }
 
+/**
+ * The team revision a run started from (`team-pin.ts`). `patch`: the sha256 of the patch the run keeps beside its file,
+ * absent when the checkout held only `revision`.
+ */
+export const TeamPinSchema = z.object({ revision: z.string().regex(/^[0-9a-f]{40,64}$/), patch: z.string().regex(/^[0-9a-f]{64}$/).optional() }).strict();
+
 /** The fields a run file must hold to be read as a run; every other field passes through as written. */
 const RunFileSchema = z.looseObject({
   schemaVersion: z.literal('v1alpha1'),
@@ -249,6 +255,7 @@ const RunProgressSchema = z.object({
   releasedTokens: z.array(ReleasedTokensSchema).optional(),
   stoppedAttempts: z.array(StoppedAttemptSchema).optional(),
   scorers: z.record(z.string(), PinnedScorerSchema).optional(),
+  teamPin: TeamPinSchema.optional(),
   finalizing: z.object({
     outcome: z.enum(['succeeded', 'failed', 'cancelled']), end: z.string().optional(), failure: FailureSchema.optional(), since: z.string(), until: z.string(),
   }).optional(),

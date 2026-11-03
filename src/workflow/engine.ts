@@ -46,6 +46,7 @@ import {
   type Allow, type DriverCan, type EnvFacts, type Held, type InEffect, type Limit, type Negotiation, type ReportedUnenforced, type Terms, type TurnLimits,
 } from './requirements.js';
 import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
+import { TeamPin } from './team-pin.js';
 import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutcomes, readRun, runScratchDir, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
 import { admitWorkflow, heldSecret, type Admitted } from './admission.js';
@@ -1340,6 +1341,7 @@ export async function createRun(
   if (holdsSecret) return error('invalid_inputs', holdsSecret);
   const now = new Date().toISOString();
   const alias = await startingAlias(config, input.definition);
+  const team = await TeamPin.capture(config);
 
   // A field the run does not have stays undefined: the run file is JSON, which leaves it out, so the file keeps its key
   // order, and every reader of the run treats undefined as absent.
@@ -1353,6 +1355,7 @@ export async function createRun(
     inputs: input.inputs,
     sourceHash: input.sourceHash,
     teamRevision: input.teamRevision || undefined,
+    teamPin: team?.pin,
     runMode: input.runMode,
     origin: input.origin,
     startedBy: input.startedBy,
@@ -1369,6 +1372,7 @@ export async function createRun(
     updatedAt: now,
   };
 
+  if (team?.patch !== undefined) await TeamPin.keepPatch(config, run.id, team.patch);
   const written = await updateRun(config, run.id, secrets, async () => ({ value: undefined, write: run }));
 
   switch (written.status) {
