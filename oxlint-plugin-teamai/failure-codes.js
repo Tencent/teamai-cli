@@ -68,7 +68,7 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       // An error thrown inside a --driver skill call, answered to the agent as one envelope with its message.
       'skill_call_failed',
       // Why the skill driver stopped judging a run, told to the agent in a judging-off event.
-      'judge_runner_gone', 'no_child_agent',
+      'judge_runner_gone', 'no_child_agent', 'scoring_run_ended',
       // Refusals of teamai benchmark run and plan, before any run exists.
       'team_revision_unpullable', 'benchmark_not_found', 'commit_unreachable', 'check_files_unwritable',
       'arm_model_missing', 'arm_unpublishable', 'arm_team_unresolved', 'arm_team_unreadable', 'arm_team_unclean', 'arm_workflow_unrunnable',

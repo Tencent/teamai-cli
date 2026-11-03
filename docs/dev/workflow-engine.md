@@ -147,7 +147,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D19 | any | a foreground call | the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`) | none | unchanged | error `driver_running`, next: the same literal |
 | D20 | host, drive, done | a foreground call, after its tick | | `seen[s]` := seq | unchanged | the turn: the host question, or every `stop`, then every unacked dispatch, then every `place`, then the gate's `choose` or `person`; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open |
 | D21 | host, drive, done | a poll tick | the lock was busy, or nothing below applies, and the bound is not reached | release; sleep `WAIT_POLL_MS`; tick again | unchanged | |
-| D22 | host, drive, done | a poll tick | the host question is unanswered, a dispatch is unacked, a place is not adopted, a `stop` is not reported, or the gate was journalled after `seen[s]` | none | unchanged | `then: wake` with the next literal, no actions |
+| D22 | host, drive, done | a poll tick | the host question is unanswered, a dispatch is unacked, a place is not adopted, a `stop` is not reported, of this run or, for the dispatch and the `stop`, of a run `scoring` lists, or the gate was journalled after `seen[s]` | none | unchanged | `then: wake` with the next literal, no actions |
 | D23 | done | a poll tick | `seen[s]` is below seq, and no attempt is open | `seen[s]` := seq | done | `done` with its events; `then: poll` while a judge is open |
 | D24 | host, drive, done | a poll tick | the bound is reached, and D25 does not apply | none | unchanged | `then: poll`, no actions |
 | D25 | drive, done | a poll tick | a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies | `seen[s]` := seq | unchanged | the events after the old `seen[s]`, no actions; `then: poll` |
@@ -219,19 +219,23 @@ When describe's judging is by the session (`Judging` `session`: no verified judg
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| J1 | drive, done | tick | judging is on | `score --next {driver: identity + can.judge of the session tool, run, running: the open judge ref, canTakeLease: no judge open; false in a runner's check}` | unchanged | |
+| J1 | drive, done | tick | judging is on, and the run scores no other run's pass (`scores`) | `score --next {driver: identity + can.judge of the session tool, run, running: the open judge ref, canTakeLease: no judge open; false in a runner's check}` | unchanged | |
 | J2 | drive, done | score reply: a lease | judging is on, and no judge is open | the judge is open; spawn its runner, keyed by the attempt in its ref | unchanged | event `judging` |
 | J3 | drive, done | judge runner: labelled | its judge is open | drop the judge | unchanged | event `judged` per scorer |
 | J4 | drive, done | judge runner: failed | its judge is open | judging := off; its lease lapses back to the queue | unchanged | event `judging-off` with the failure |
 | J5 | drive, done | tick: the open judge's `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its judge left; judging := off; its lease lapses back to the queue | unchanged | event `judging-off` `judge_runner_gone` |
 | J6 | drive, done | score reply: an error | the error is not `busy` | judging := off | unchanged | event `judging-off` with the error |
+| J7 | drive, done | a `next` or report answer that lists `started` | judging is on, or the session judges | add to `scoring` each run it lists that `scoring` lacks | unchanged | event `judging` per run added |
+| J8 | drive, done | a call's tick | `scoring` lists a run | tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, host, session and judging, with `scores` naming this run, so its turns lead back here | unchanged | the dispatches and stops of those runs join this run's turn, and a poll wakes for them |
+| J9 | drive, done | J8: the tick of a run `scoring` lists | that run is done, and no attempt of it is open | drop it from `scoring` | unchanged | event `judged` per scorer its `done` outputs list, with the label or the code; event `judging-off` with its failure when it did not succeed |
+| J10 | drive, done | J8: the tick of a run `scoring` lists | that tick answered an error | drop it from `scoring` | unchanged | event `judging-off` with the error |
 
 ### Done
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| X1 | done | next | no attempt is open, and a judge is | none | done | `done` with `judging`; `then: poll` |
-| X2 | done | next | no attempt or judge is open | none | done | `done`, no `then` |
+| X1 | done | next | no attempt is open, and a judge is, or `scoring` lists a run | none | done | `done` with `judging`; `then: poll` |
+| X2 | done | next | no attempt or judge is open, and `scoring` lists no run | none | done | `done`, no `then` |
 | X4 | done | next | an attempt is still open: the engine cancelled it with the run | none | done | every `stop`, then `done`; `then: poll` |
 | X5 | done | tick | the run file shows a version other than the one kept with the end, or a create still unresolved, or none was kept | keep the run file's version with the end; engine `next` as D1, with `canTakeLease: false` | done | |
 | X6 | done | reply, before its row | the reply is not `done`, or is a `done` whose outcome, failure or PRs differ from the kept end (`canonicalJson`), or that is not out: the engine reopened the run, as `workflow retry` does, another driver ended it again, or the end still has to reach `teamai-reports` | drop `done` | drive | the reply's row; the tick goes on as in drive |

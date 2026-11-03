@@ -391,22 +391,34 @@ function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
   return action;
 }
 
+function stopsOf(state: SkillState): StopAction[] {
+  return state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
+    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
+    : []));
+}
+
+function offersOf(state: SkillState): DispatchAction[] {
+  return state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
+}
+
+/** Whether a run that scores a pass of this one waits for the agent: a child to stop, or a dispatch to ack. */
+export function scoringWaits(scoring: readonly SkillState[]): boolean {
+  return scoring.some((run) => stopsOf(run).length > 0 || offersOf(run).length > 0);
+}
+
 /**
- * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, then every
- * place to adopt, then the gate; and the end once the run is done.
+ * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, of this run
+ * and of each run in `scoring` (J8), then every place to adopt, then the gate; and the end once the run is done.
  */
-function actionsOf(state: SkillState): Action[] {
+function actionsOf(state: SkillState, scoring: readonly SkillState[]): Action[] {
   if (state.host.kind === 'pending') {
     const options = HOST_CHOICES.map((id) => ({ id, label: HOST_PROFILES[id].label, run: chooseHostLiteral(state.invocation, state.run, id) }));
 
     return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: reference('hosts.md') }];
   }
 
-  const stops = state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
-    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
-    : []));
-
-  const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
+  const stops = stopsOf(state);
+  const offers = offersOf(state);
 
   const places = state.attempts.flatMap((open): PlaceAction[] => {
     if (open.phase !== 'placing') return [];
@@ -417,7 +429,7 @@ function actionsOf(state: SkillState): Action[] {
     return [place];
   });
 
-  const judge = state.judging?.open;
+  const judge = state.judging?.open ?? state.scoring[0];
 
   const end: Action[] = [];
 
@@ -434,7 +446,7 @@ function actionsOf(state: SkillState): Action[] {
 
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
 
-  return [...stops, ...offers, ...places, ...gate, ...end];
+  return [...stops, ...scoring.flatMap(stopsOf), ...offers, ...scoring.flatMap(offersOf), ...places, ...gate, ...end];
 }
 
 /**
@@ -455,7 +467,7 @@ function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullab
  * The turn of `state` that shows `events`, with `after` as its `then` while the run drives, or an attempt or a judge of
  * it is open. A `quiet` turn carries no action; any other shows the handoff of a `waiting` that holds steps.
  */
-export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string }): Turn {
+export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string; scoring?: readonly SkillState[] }): Turn {
   const running = state.attempts.map((open): RunningEntry => {
     const entry: RunningEntry = { attempt: open.attempt, step: open.step, phase: open.phase };
 
@@ -470,7 +482,7 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
   const turn: Turn = {
     run: state.run,
     status: state.done ? 'done' : 'driving',
-    actions: input.quiet ? [] : [...actionsOf(state), ...handoff],
+    actions: input.quiet ? [] : [...actionsOf(state, input.scoring ?? []), ...handoff],
     running,
     events: input.events,
   };
@@ -479,7 +491,7 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
 
   // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
   // oxlint-disable-next-line unicorn/no-thenable
-  if (input.after && (!state.done || state.attempts.length > 0 || state.judging?.open)) turn.then = input.after;
+  if (input.after && (!state.done || state.attempts.length > 0 || state.judging?.open || state.scoring.length > 0)) turn.then = input.after;
 
   return turn;
 }

@@ -115,6 +115,11 @@ const JudgeSchema = z.object({ ref: z.string(), attempt: AttemptIdSchema, step: 
 
 export type Judge = z.infer<typeof JudgeSchema>;
 
+/** What a run that scores a pass gave one scorer, as its `done` outputs list it: its label, or, with `label` empty, the code of why it gave none. */
+export const ScoredLabelSchema = z.object({ scorer: z.string(), label: z.string(), code: z.string() });
+
+export type ScoredLabel = z.infer<typeof ScoredLabelSchema>;
+
 const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
@@ -122,9 +127,10 @@ const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('takeover'), from: z.string().optional() }),
   /** The engine cancelled the attempt's lease, or its deadline passed, so its report was not recorded. */
   z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema, why: z.enum(STOP_REASONS) }),
-  /** The judge of lease `ref` started on the pass of `step` that `scorers` judge. */
-  z.object({ kind: z.literal('judging'), step: z.string(), scorers: z.array(z.string()), ref: z.string() }),
-  z.object({ kind: z.literal('judged'), step: z.string(), scorer: z.string(), label: z.string() }),
+  /** The judging of the pass of `step` that `scorers` judge started: judge lease `ref`, or run `run`, which scores the pass. */
+  z.object({ kind: z.literal('judging'), step: z.string(), scorers: z.array(z.string()), ref: z.string().optional(), run: RunIdSchema.optional() }),
+  /** `scorer` labelled the pass of `step` with `label`, or gave it none for `code`, with `label` empty. */
+  z.object({ kind: z.literal('judged'), step: z.string(), scorer: z.string(), label: z.string(), code: z.string().optional() }),
   /** This driver judges no more of the run, for `failure`; the open judge lease lapses back to the queue. */
   z.object({ kind: z.literal('judging-off'), failure: FailureSchema }),
   /** The agent's answer to an optional gate, as the engine recorded it. */
@@ -196,6 +202,13 @@ const SkillStateSchema = z.object({
    * the session's tool at the start, is here. The session judges with the run's tool, `orchestrator.tool`, else `tool`.
    */
   sessionJudge: z.object({ tool: z.string() }).optional(),
+  /**
+   * The runs the passes of this run started, as its `next` and report answers listed them (`started`), which this driver
+   * drives as their own runs until each ends, while it judges here or the session does: the pass of `step` that `scorers` judge.
+   */
+  scoring: z.array(z.object({ run: RunIdSchema, step: z.string(), scorers: z.array(z.string()) })).default([]),
+  /** The run whose pass this run scores, which drives it: its turns lead back to that run. */
+  scores: RunIdSchema.optional(),
   /** The sequence number of the last event. */
   seq: z.number().int(),
   events: z.array(z.object({ seq: z.number().int(), event: TurnEventSchema })),
@@ -204,10 +217,10 @@ const SkillStateSchema = z.object({
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
   /**
-   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. `version`: what the run
+   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them, and `labels` what a run that scores a pass gave each scorer. `version`: what the run
    * file said when the end was kept, so a tick asks the engine again only once it moved.
    */
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), version: RunVersionSchema.optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), labels: z.array(ScoredLabelSchema).optional(), version: RunVersionSchema.optional() }).optional(),
 });
 
 export type SkillState = z.infer<typeof SkillStateSchema>;
@@ -232,8 +245,26 @@ export function newSkillState(input: {
 
   return {
     version: 1, run, driver, invocation, options, host, orchestrator,
-    attempts: [], ...judgingState(judge), seq: 0, events: [], seen: {}, settled: [],
+    attempts: [], ...judgingState(judge), scoring: [], seq: 0, events: [], seen: {}, settled: [],
   };
+}
+
+/**
+ * The skill state of `run`, which scores a pass of `scored`'s run, as the first tick that drives it makes it: that run's
+ * identity, invocation, options, host, session and judging, with nothing open yet.
+ */
+export function scoringSkillState(scored: SkillState, run: RunId, at: string): SkillState {
+  const { driver, invocation, options, host, orchestrator, judging, sessionJudge } = scored;
+
+  const state: SkillState = {
+    version: 1, run, driver, invocation, options, host, orchestrator: { ...orchestrator, lastCallAt: at }, attempts: [], scoring: [], scores: scored.run, seq: 0, events: [], seen: {}, settled: [],
+  };
+
+  if (judging) state.judging = { tool: judging.tool };
+
+  if (sessionJudge) state.sessionJudge = sessionJudge;
+
+  return state;
 }
 
 /** The skill state field of who judges the run on this machine: `judging` for the confined judge, `sessionJudge` for the session. */

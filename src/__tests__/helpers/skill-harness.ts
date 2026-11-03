@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { onTestFinished, vi } from 'vitest';
+import { z } from 'zod';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { RunMode } from '../../launch-context.js';
 import { memberTools } from '../../tool-launch/call.js';
@@ -12,7 +13,7 @@ import type { AgentEvidence } from '../../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
 import { runSkillCall, skillContext, type CommandRun, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
-import { takeRunLock } from '../../workflow/store.js';
+import { RunIdSchema, takeRunLock, type RunId } from '../../workflow/store.js';
 import { fakeGh } from './fake-gh.js';
 
 function git(cwd: string, ...args: string[]): string {
@@ -385,4 +386,58 @@ export async function skillHarness(workflows: Record<string, string>, options: H
     /** Makes `call` as the session, or with another session, agent evidence, run mode, lock, config, session tool or working directory in its context. */
     call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'evidence' | 'mode' | 'locks' | 'config' | 'tool' | 'cwd'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
   };
+}
+
+// Labels one pass as teamai-score does: a plan, then per group its evidence, a judge confined to it, and the label.
+export const LABEL_PASS = (level: 'verified' | 'best-effort') => `schemaVersion: v1alpha1
+name: label-pass
+description: Label one pass
+invoke: allow
+steps:
+  - id: plan
+    command: node -e "process.stdout.write(JSON.stringify({groups:['review-quality']}))"
+    output: { groups: [string] }
+  - id: score
+    needs: [plan]
+    for_each: steps.plan.outputs.groups
+    continue_on_failure: true
+    workflow:
+      outputs: { labels: steps.label.outputs.labels }
+      steps:
+        - id: evidence
+          command: node -e "const p=require('path'),fs=require('fs'),d=p.join(process.env.TEAMAI_RUN_DIR,'evidence');fs.mkdirSync(d);fs.writeFileSync(p.join(d,'confined.json'),JSON.stringify({level:'${level}'}))"
+        - id: judge
+          needs: [evidence]
+          workspace: { confined: evidence }
+          prompt: Judge the change.
+          output: { label: string }
+        - id: label
+          needs: [judge]
+          command: node -e "process.stdout.write(JSON.stringify({labels:[{scorer:process.env.SCORER,label:process.env.LABEL,code:''}]}))"
+          env: { SCORER: "{{ item }}", LABEL: "{{ steps.judge.outputs.label }}" }
+          output: { labels: [{ scorer: string, label: string, code: string }] }
+outputs: { labels: steps.score.results }
+`;
+
+const ReportedDriverSchema = z.object({ driver: z.object({ kind: z.string(), machine: z.string(), workspace: z.string() }) });
+
+/**
+ * A client whose answers to the reports of run `review` list, in `started`, a run of `label-pass` for its pass, as the
+ * engine lists the run a settled scored pass started: started on the first report, for the driver that reported.
+ */
+export function scoringStarted(made: { label?: RunId }) {
+  return (client: WorkflowClient): WorkflowClient => ({
+    ...client,
+    report: async (run, body, options) => {
+      const answer = await client.report(run, body, options);
+      if (!('data' in answer) || run === made.label) return answer;
+      if (made.label === undefined) {
+        const { driver } = ReportedDriverSchema.parse(body);
+        const created = await client.start('label-pass', { caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'cli', driver, checkout: driver.workspace });
+        if (!('data' in created)) throw new Error(JSON.stringify(created));
+        made.label = RunIdSchema.parse(created.data.run);
+      }
+      return { data: { ...answer.data, started: [{ run: made.label, step: 'review', pass: 1, scorers: ['review-quality'] }] } };
+    },
+  });
 }

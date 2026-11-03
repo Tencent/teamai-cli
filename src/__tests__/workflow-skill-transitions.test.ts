@@ -22,7 +22,7 @@ import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 // oxlint-disable-next-line teamai/workflow-boundaries -- checks runtime coverage of every transition
 import { TRANSITIONS } from '../workflow/drivers/skill/transitions.js';
-import { fakeConfinedClaude, fakeJudge, githubOrigin, sharedTeam, skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { fakeConfinedClaude, fakeJudge, githubOrigin, LABEL_PASS, scoringStarted, sharedTeam, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -288,6 +288,7 @@ steps:
     command: sleep 300
 `;
 
+// Its workflow scores its pass itself, so no run is started for it: only the judging describe and the session see.
 const REVIEW = `schemaVersion: v1alpha1
 name: review
 description: Review the change
@@ -295,8 +296,12 @@ invoke: allow
 steps:
   - id: review
     prompt: Review the change.
-    scorers: [review-quality]
+    scorers: { names: [review-quality], start: workflow }
 `;
+
+// Judged before the run ends, through a judge lease of the run (J1 to J6).
+
+const REVIEW_ALL = REVIEW.replace('start: workflow', 'sampling: all');
 
 const RELEASE = `schemaVersion: v1alpha1
 name: release
@@ -502,6 +507,19 @@ async function polledToDone(made: Awaited<ReturnType<typeof harness>>, run: RunI
     if (turn.status === 'done') return { ...turn, events };
   }
   throw new Error('the run did not reach done in ten polls');
+}
+
+/**
+ * From `turn` on, polls its run, then calls `next`, which shows every event a poll keeps for a later turn, until a turn
+ * shows an event of `kind`: every event those turns showed.
+ */
+async function polledFor(made: Awaited<ReturnType<typeof harness>>, turn: Awaited<ReturnType<typeof turnOf>>, kind: string) {
+  const events = [...turn.events];
+  for (let poll = 0; poll < 10 && !events.some((event) => event.kind === kind); poll += 1) {
+    events.push(...(await turnOf(await made.call({ kind: 'next', run: turn.run, wait: true }))).events);
+    events.push(...(await turnOf(await made.call({ kind: 'next', run: turn.run, wait: false }))).events);
+  }
+  return events;
 }
 
 /**
@@ -2129,7 +2147,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     name: 'describe asks a session whose host names no tool for it, with a describe whose {tool} slot it fills, when the run needs a tool',
     rows: ['R27', 'R3', 'R4'],
     run: async () => {
-      const plain = REVIEW.replace('    scorers: [review-quality]\n', '');
+      const plain = REVIEW.replace('    scorers: { names: [review-quality], start: workflow }\n', '');
       const defaulted = plain.replace('name: review', 'name: defaulted').replace('steps:', 'defaults:\n  model: claude-opus-4-1\nsteps:');
       const made = await harness({ review: REVIEW, check: CHECK, plain: plain.replace('name: review', 'name: plain'), defaulted }, { scorers: SCORERS, tool: null });
       for (const mode of ['attended', 'unattended'] as const) {
@@ -2176,32 +2194,27 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a scored pass is judged once the run is done, and next shows the judge until it answers',
-    rows: ['J1', 'J2', 'X1', 'J3'],
+    name: 'a pass of a scorer that samples all is judged through a judge lease of its run, which waits for it before it ends',
+    rows: ['J1', 'J2', 'J3'],
     run: async () => {
-      const made = await harness({ review: REVIEW }, { scorers: SCORERS });
+      const made = await harness({ review: REVIEW_ALL }, { scorers: SCORERS });
       fakeJudge(made.root, 'thorough');
-      const done = await reviewed(made);
-      expect(done.events).toContainEqual(expect.objectContaining({ kind: 'judging', step: 'review', scorers: ['review-quality'] }));
-      expect(await turnOf(await made.call({ kind: 'next', run: done.run, wait: false }))).toMatchObject({
-        status: 'done', actions: [{ kind: 'done', judging: { step: 'review', scorers: ['review-quality'] } }],
-        // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
-        then: { kind: 'poll' },
-      });
-      expect((await turnOf(await made.call({ kind: 'next', run: done.run, wait: true }))).events).toEqual([{ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' }]);
+      const driving = await reviewed(made);
+      expect(driving).toMatchObject({ status: 'driving' });
+      const done = await polledToDone(made, driving.run);
+      expect([...driving.events, ...done.events]).toContainEqual(expect.objectContaining({ kind: 'judging', step: 'review', scorers: ['review-quality'], ref: expect.any(String) }));
+      expect(await polledFor(made, done, 'judged')).toContainEqual({ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' });
       return made.rows;
     },
   },
   {
-    name: 'a judge that fails turns judging off, and the run asks for no more polls',
+    name: 'a judge that fails turns judging off',
     rows: ['J4'],
     run: async () => {
-      const made = await harness({ review: REVIEW }, { scorers: SCORERS });
+      const made = await harness({ review: REVIEW_ALL }, { scorers: SCORERS });
       fakeJudge(made.root, 'thorough', 1);
-      const done = await reviewed(made);
-      const polled = await turnOf(await made.call({ kind: 'next', run: done.run, wait: true }));
-      expect(polled).toEqual({ run: done.run, status: 'done', running: [], actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }],
-        events: [{ kind: 'judging-off', failure: { code: 'judge_failed', message: expect.stringContaining('claude exited with code 1') } }] });
+      const driving = await reviewed(made);
+      expect(await polledFor(made, driving, 'judging-off')).toContainEqual({ kind: 'judging-off', failure: { code: 'judge_failed', message: expect.stringContaining('claude exited with code 1') } });
       return made.rows;
     },
   },
@@ -2211,10 +2224,67 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       // The first runner is the review step's; the judge's never starts, as one killed at once.
       let spawns = 0;
-      const made = await harness({ review: REVIEW }, { scorers: SCORERS, runners: (runners) => ({ ...runners, spawn: async (job) => { spawns += 1; if (spawns === 1) await runners.spawn(job); } }) });
+      const made = await harness({ review: REVIEW_ALL }, { scorers: SCORERS, runners: (runners) => ({ ...runners, spawn: async (job) => { spawns += 1; if (spawns === 1) await runners.spawn(job); } }) });
       fakeJudge(made.root, 'thorough');
+      const driving = await reviewed(made);
+      expect(await polledFor(made, driving, 'judging-off')).toContainEqual({ kind: 'judging-off', failure: { code: 'judge_runner_gone', message: expect.stringContaining('step review') } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run that a pass started is driven as this run\'s own, its judge confined here, and next shows it until it labelled the pass',
+    rows: ['J7', 'J8', 'X1', 'J9'],
+    run: async () => {
+      const scoring: { label?: RunId } = {};
+      const made = await harness({ review: REVIEW, 'label-pass': LABEL_PASS('verified') }, { scorers: SCORERS, client: scoringStarted(scoring) });
+      fakeConfinedClaude(made.root, { label: 'thorough' });
       const done = await reviewed(made);
-      expect((await turnOf(await made.call({ kind: 'next', run: done.run, wait: true }))).events).toEqual([{ kind: 'judging-off', failure: { code: 'judge_runner_gone', message: expect.stringContaining('step review') } }]);
+      expect(done.events).toContainEqual({ kind: 'judging', step: 'review', scorers: ['review-quality'], run: scoring.label });
+      expect(done).toMatchObject({
+        status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', judging: { step: 'review', scorers: ['review-quality'] } }],
+        // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
+        then: { kind: 'poll', run: `teamai workflow next ${done.run} --driver skill --wait` },
+      });
+      expect(dispatches(done)).toEqual([]);
+      expect(await polledFor(made, done, 'judged')).toContainEqual({ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' });
+      expect(await turnOf(await made.call({ kind: 'next', run: done.run, wait: false }))).not.toHaveProperty('then');
+      const label = await readRun(made.config, String(scoring.label));
+      expect(typeof label === 'object' && label.steps.find((step) => step.id === 'score[0].judge')).toMatchObject({ status: 'succeeded', confined: { tool: 'claude', isolation: 'verified' } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'the confined judge of a run that a pass started comes to the session that judges, in a turn of the scored run, and its turns lead back there',
+    rows: ['J7', 'J8', 'J9'],
+    run: async () => {
+      const scoring: { label?: RunId } = {};
+      const made = await harness({ review: REVIEW, 'label-pass': LABEL_PASS('best-effort') }, { scorers: SCORERS, tool: 'copilot', client: scoringStarted(scoring) });
+      const done = await reviewed(made);
+      const [dispatch] = dispatches(dispatches(done).length > 0 ? done : await dispatchTurn(made, done.run));
+      if (!dispatch || scoring.label === undefined) throw new Error(JSON.stringify(done));
+      expect(dispatch).toMatchObject({ step: 'score[0].judge', needs: { confined: true }, ack: expect.stringContaining(scoring.label) });
+      const acked = await turnOf(await made.call({ kind: 'ack', run: scoring.label, attempt: dispatch.attempt }));
+      expect(acked.then?.run).toContain(done.run);
+      childWrites(dispatch.brief, { kind: 'output', output: { label: 'shallow' } });
+      await made.call({ kind: 'report', run: scoring.label, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
+      expect(await polledFor(made, done, 'judged')).toContainEqual({ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'shallow' });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run that a pass started, whose tick answers an error, is driven no more here and turns its judging off',
+    rows: ['J7', 'J8', 'J10'],
+    run: async () => {
+      const scoring: { label?: RunId } = {};
+      const refusal = { code: 'run_unreadable', message: 'Run label-pass cannot be read.' };
+      const made = await harness({ review: REVIEW, 'label-pass': LABEL_PASS('verified') }, { scorers: SCORERS, client: (client) => {
+        const listing = scoringStarted(scoring)(client);
+        return { ...listing, next: async (run, body, options) => (run === scoring.label ? { error: refusal } : listing.next(run, body, options)) };
+      } });
+      fakeConfinedClaude(made.root, { label: 'thorough' });
+      const done = await reviewed(made);
+      expect(await polledFor(made, done, 'judging-off')).toContainEqual({ kind: 'judging-off', failure: refusal });
+      expect(await turnOf(await made.call({ kind: 'next', run: done.run, wait: false }))).not.toHaveProperty('then');
       return made.rows;
     },
   },
