@@ -112,20 +112,13 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('reports malformed scorer labels once and explains an empty judge tool list', async () => {
+  it('reports malformed scorer labels once', async () => {
     fs.mkdirSync(path.join(app, 'scorers'), { recursive: true });
     fs.writeFileSync(path.join(app, 'scorers', 'invalid-labels.md'), '---\nlabels: x\npassingScore: 0.5\n---\nJudge the session.\n');
     const scorer = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'scorers/invalid-labels.md'], app, env);
     expect(scorer.code).toBe(1);
     expect(envelope(scorer.stdout).error).toEqual({
       code: 'scorer_invalid', message: 'scorers/invalid-labels.md: labels must list 2 to 20 labels: at least one that passes and one that fails',
-    });
-    const judge = await runCLI(['score', '--next', '--stdin'], app, env, JSON.stringify({
-      driver: { kind: 't3', machine: 'm1', workspace: app, can: { judge: { isolation: 'verified', tools: [] } } },
-    }));
-    expect(judge.code).toBe(1);
-    expect(envelope(judge.stdout).error).toEqual({
-      code: 'invalid_json', message: 'driver.can.judge.tools: Array must contain at least 1 element(s)',
     });
   });
 
@@ -267,39 +260,6 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     expect(git(team, 'rev-parse', 'teamai-reports')).toBe(reportsNow);
   });
 
-  it('leases a session to a driver that judges it with its own tool, and keeps the label that driver submits', async () => {
-    const driver = { kind: 'cursor', machine: 'm1', workspace: app };
-    const lease = (payload: unknown, ...scorers: string[]) =>
-      runCLI(['score', '--session', SESSION, '--source', 'claude-code', ...scorers.flatMap((scorer) => ['--scorer', scorer]), '--json', JSON.stringify(payload)], app, env);
-    const cursor = { driver: { ...driver, can: { judge: { isolation: 'best-effort', access: 'read', tools: ['cursor'] } } } };
-
-    const undeclared = await lease({ driver }, 'review-quality');
-    expect(undeclared.code).toBe(1);
-    expect(envelope(undeclared.stdout).error).toEqual({ code: 'invalid_json', message: expect.stringContaining('driver.can.judge is required') });
-    const unbatched = await lease(cursor, 'review-quality', 'style');
-    expect(envelope(unbatched.stdout).error?.code).toBe('invalid_arguments');
-    const ofRun = await lease({ ...cursor, run: 'r0123456789abc' }, 'review-quality');
-    expect(envelope(ofRun.stdout).error).toEqual({ code: 'invalid_json', message: 'A --session payload leases the session it names: leave out run and canTakeLease.' });
-
-    const leased = await lease(cursor, 'review-quality');
-    expect(leased.code, leased.stdout + leased.stderr).toBe(0);
-    const taken = z.object({ ref: z.string(), prompt: z.string(), cwd: z.string(), submit: z.string() }).passthrough().parse(envelope(leased.stdout).data?.lease);
-    expect(taken).toMatchObject({
-      source: 'session', scorer: 'review-quality', subject: { platform: 'claude-code', sessionId: SESSION },
-      judge: { tool: 'cursor', isolation: 'best-effort', access: 'read' }, submit: `teamai score --lease ${taken.ref} --submit --stdin`,
-    });
-    expect(fs.readFileSync(taken.prompt, 'utf8')).toContain('Added the retries.');
-    expect(envelope((await lease(cursor, 'review-quality')).stdout).error?.code).toBe('busy');
-
-    const answer = { driver, outcome: 'success', answer: { label: 'thorough', reasoning: 'Ran the tests.' }, judge: { tool: 'cursor', model: 'composer-1' } };
-    const submitted = await runCLI(['score', '--lease', taken.ref, '--submit', '--stdin'], taken.cwd, env, JSON.stringify(answer));
-    expect(envelope(submitted.stdout).data, submitted.stdout + submitted.stderr).toMatchObject({ label: { scorer: 'review-quality', label: 'thorough', passed: true }, published: true });
-    const stored = fs.readFileSync(path.join(taken.cwd, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').at(-1) ?? 'null';
-    expect(JSON.parse(stored)).toMatchObject({
-      source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, label: 'thorough',
-      judge: { kind: 'model', tool: 'cursor', isolation: 'best-effort', access: 'read', model: { reported: 'composer-1' } },
-    });
-  });
   it('passes delivered and used skills through a real session-start hook and score CLI (#1469)', async () => {
     const transcript = path.join(env.HOME ?? '', '.claude', 'projects', encodeCwdClaude(app), `${SESSION}.jsonl`);
     const hook = await runCLI(['hook-dispatch', 'session-start', '--tool', 'claude'], app, env,

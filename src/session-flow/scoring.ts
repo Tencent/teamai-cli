@@ -29,7 +29,6 @@ import { readWorkspaceChildren } from '../workspace-children.js';
 import { readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { redact } from '../utils/redact.js';
-import { sessionJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { agentSessionFromEnv } from '../utils/session-id.js';
 import { AgentSession } from './agent-session.js';
@@ -48,9 +47,6 @@ function failure(code: string, message: string): Failure {
   return { error: { code, message } };
 }
 
-/** The judge a driver offers for a session: the `score --next` payload's `driver`, its `can.judge`, and `running`. */
-export type OwnJudge = Pick<JudgeRequest, 'driver' | 'judge' | 'running'>;
-
 /** `teamai score --team-session <name> [--author <member>]`: a session as `teamai session list` names it. */
 export interface TeamSession {
   name: string;
@@ -58,8 +54,8 @@ export interface TeamSession {
 }
 
 /**
- * What `teamai score [--session <id> [--source <platform>] | --team-session <name>] --scorer <name>… [--batch] [--push]
- * [--json <driver>]` asks for: a session of a tool on this machine, or one a member pushed to the team archive.
+ * What `teamai score [--session <id> [--source <platform>] | --team-session <name>] --scorer <name>… [--batch] [--push]`
+ * asks for: a session of a tool on this machine, or one a member pushed to the team archive.
  */
 export type SessionDemand = {
   /** Cached scorers by name, or scorer files (`isScorerFile`) relative to the current directory, whose labels are only tried. */
@@ -69,8 +65,6 @@ export type SessionDemand = {
   push?: boolean;
   /** A value of the one scorer, given by hand: stored as the member's label, and no judge runs. */
   label?: string;
-  /** Lease the session to this driver's own judge instead of judging it here. */
-  ownJudge?: OwnJudge;
 } & (
   | { teamSession: TeamSession; session?: never; source?: never }
   | { teamSession?: never; session?: string; source?: string }
@@ -308,20 +302,6 @@ function storedOf(labels: readonly ScoreLabel[], scorer: string, subject: Sessio
  * label is tried and never kept: it is printed next to the stored labels of its scorer and the control's verdict.
  */
 export async function scoreSession(from: LocalConfig, demand: SessionDemand, now = new Date().toISOString()): Promise<WorkflowEnvelope> {
-  if (demand.ownJudge) {
-    const file = demand.scorers.find(isScorerFile);
-
-    if (file !== undefined) return failure('invalid_arguments', `A lease judges cached scorers, and ${file} is a scorer file. Leave out --json to try it here.`);
-
-    // Routing questions are the one exception to one scorer per lease: a session's routing always shares one judge
-    // call, whatever `--batch` says (#1469).
-    if (new Set(demand.scorers).size > 1 && !demand.batch && !demand.scorers.every(isRoutingScorer)) return failure('invalid_arguments', 'A lease judges one scorer, or several in one judge call. Pass one --scorer, or add --batch.');
-
-    if (demand.push) return failure('invalid_arguments', 'A lease\'s label is published when its answer is submitted. Leave out --push.');
-
-    if (demand.teamSession) return failure('invalid_arguments', 'A lease\'s judge reads the session from a tool on this machine, and --team-session names a pushed one. Leave out --json to judge it here.');
-  }
-
   if (demand.label !== undefined) {
     const [scorer, ...more] = new Set(demand.scorers);
 
@@ -331,7 +311,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
       return failure('invalid_arguments', `--label is stored, and the label of the scorer file ${scorer} is never stored. Pass the name of a scorer teamai pull cached.`);
     }
 
-    if (demand.batch || demand.ownJudge) return failure('invalid_arguments', '--label runs no judge. Leave out --batch and --json.');
+    if (demand.batch) return failure('invalid_arguments', '--label runs no judge. Leave out --batch.');
   }
 
   const files = new Map<string, Asked>();
@@ -410,14 +390,6 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
 
     if (question.scorer !== value) return failure('scorer_not_found', `Scorer ${value} is not a routing question of ${platform} session ${session.sessionId}. It names ${question.scorer}.`);
     asked.push({ scorer: value, pin: question.pin, definition: question.definition });
-  }
-
-  if (demand.ownJudge) {
-    const subject = { platform, sessionId: session.sessionId };
-    // A lease's one judge call takes the routing questions together, whatever `--batch` says.
-    const batch = demand.batch === true || asked.some(({ scorer }) => isRoutingScorer(scorer));
-
-    return sessionJudgeLease(config, { ...demand.ownJudge, entries: { source: 'session', subject, scorers: asked, batch } }, now);
   }
 
   const byHand = demand.label === undefined ? undefined : handValueOf(asked, demand.label);

@@ -694,8 +694,6 @@ steps:
   });
 
   it.each<[string, ScoreOptions]>([
-    ['--next', { next: true }],
-    ['a payload', { json: '{}' }],
     ['--push', { push: true }],
     ['--scorer', { scorer: ['quality'] }],
   ])('refuses --drain with %s', async (_, options) => {
@@ -712,7 +710,7 @@ steps:
     } finally {
       process.exitCode = 0;
     }
-    expect(JSON.parse(written.join(''))).toEqual({ error: { code: 'invalid_arguments', message: '--drain goes alone and takes no payload: teamai score --drain' } });
+    expect(JSON.parse(written.join(''))).toEqual({ error: { code: 'invalid_arguments', message: '--drain goes alone: teamai score --drain' } });
   });
 
   it('runs at the end of an unattended local run, which keeps the run\'s outcome as its exit code when a publish fails', async () => {
@@ -828,14 +826,11 @@ async function scored(options: ScoreOptions): Promise<{ envelope: unknown; code:
 
 describe('teamai score of a subject the person names', () => {
   it.each<[string, ScoreOptions, string, string]>([
-    ['a run with --next', { run: 'r1', scorer: ['quality'], next: true }, 'invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--batch] [--driver <driver>]'],
-    ['a run with a payload', { run: 'r1', scorer: ['quality'], json: '{}' }, 'invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--batch] [--driver <driver>]'],
     ['a run with no scorer', { run: 'r1' }, 'invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded'],
     ['a step with no run', { step: 'review', scorer: ['quality'] }, 'invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded'],
     ['pass 0', { run: 'r1', scorer: ['quality'], pass: '0' }, 'invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge'],
     ['pass 1.5', { run: 'r1', scorer: ['quality'], pass: '1.5' }, 'invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge'],
     ['a pass past the safe integers', { run: 'r1', scorer: ['quality'], pass: '9007199254740993' }, 'invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge'],
-    ['a session with --lease', { session: SESSION, scorer: ['quality'], lease: 'l1' }, 'invalid_arguments', '--session takes no --next or --lease: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch] [--json <driver>]'],
     ['a session with no scorer', { session: SESSION }, 'invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]'],
     ['a label with no scorer', { label: 'good' }, 'invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.'],
     ['a pushed session and a session here', { teamSession: 'retries', session: SESSION, scorer: ['quality'] }, 'invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.'],

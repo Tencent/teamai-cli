@@ -211,20 +211,13 @@ describe('two calls on one trial copy', () => {
     const lease = await driver.prompt();
     fs.writeFileSync(path.join(lease.cwd, 'answer.js'), 'module.exports = 42;\n');
     const held = holdGit(fixture, ' --no-ext-diff --no-textconv ');
-    const judge = { kind: 'external', machine: 'judge', workspace: fixture.work };
-    const scoreNext = async (): Promise<Envelope> => envelope(await fixture.teamai(['score', '--next', '--json', JSON.stringify({ driver: { ...judge, can: { judge: { isolation: 'verified', tools: ['claude'] } } } })]));
-
     const reporting = driver.send(driver.report(lease));
     await until(() => held.entered() === 1, 'the report collects the evidence');
-    const early = await scoreNext();
     held.release();
     const reported = await reporting;
-    const late = await scoreNext();
     const done = await driver.finish();
 
-    expect(early).toEqual({ data: { idle: { open: 0, leased: 0 } } });
     expect(reported).toMatchObject({ data: { accepted: true } });
-    expect(late).toEqual({ data: { idle: { open: 0, leased: 0 } } });
     expect(driver.judged).toEqual([expect.stringContaining('+module.exports = 42;')]);
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(RecordSchema.parse(fixture.benchmarkRecord(run)).trials).toEqual([expect.objectContaining({ result: 'passed' })]);
