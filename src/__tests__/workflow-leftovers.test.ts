@@ -170,6 +170,7 @@ describe('the branches of a run that succeeded', () => {
     expect(branches(origin, runId)).toEqual(['join/p1']);
     expect(branches(cwd, runId)).toEqual(['join/p1', 'left/p1']);
     expect(warn).not.toHaveBeenCalled();
+    expect((await state(config, runId)).leftovers).toMatchObject({ deleted: [], failed: [] });
   });
 });
 

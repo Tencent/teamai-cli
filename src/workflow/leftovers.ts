@@ -106,11 +106,15 @@ async function deleteBranches(checkout: string, runId: string, branches: string[
   }
 
   const worktrees = await checkedOut(checkout);
+  const hostKept = new Set<string>();
 
   for (const branch of branches.filter((name) => tips.local.has(name) && !failed.some((item) => item.branch === name))) {
     const dir = worktrees.get(branch);
 
-    if (dir !== undefined && worktreeCheckout(dir) === undefined) continue;
+    if (dir !== undefined && worktreeCheckout(dir) === undefined) {
+      hostKept.add(branch);
+      continue;
+    }
 
     if (dir !== undefined) await removeWorktree(checkout, dir);
     const removed = await git(checkout, ['branch', '-D', branch]);
@@ -118,7 +122,7 @@ async function deleteBranches(checkout: string, runId: string, branches: string[
     if (removed.code !== 0) failed.push({ branch, reason: `in ${checkout}: ${removed.stderr.trim() || 'git branch -D failed'}` });
   }
 
-  return { deleted: branches.filter((branch) => !failed.some((item) => item.branch === branch)), failed };
+  return { deleted: branches.filter((branch) => !hostKept.has(branch) && !failed.some((item) => item.branch === branch)), failed };
 }
 
 /** What a succeeded run keeps and deletes of its branches, deleted; undefined when `checkout` has none of them, or could not list them. */
