@@ -5,15 +5,11 @@ import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type Workf
 import { copyOf, isRunLevel, levelsInside, opensCopy, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
- * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, or the
- * run opened when it is absent, and a later step it is held from for `missing` works in that copy too, which only the
- * driver that took it may continue.
+ * Why a driver cannot run a workflow to its end: a step it takes works in a workspace copy, the one the run opened
+ * (`copy: 'run'`) or the one step `opener` opened (`copy: 'step'`), and a later step it is held from for `missing`
+ * works in that copy too, which only the driver that took it may continue.
  */
-export interface LocalRoute {
-  opener?: string;
-  held: string;
-  missing: 'env' | 'tokens';
-}
+export type LocalRoute = { held: string; missing: 'env' | 'tokens' } & ({ copy: 'run' } | { copy: 'step'; opener: string });
 
 /** What a gated step does once its question is answered. */
 export type GateGuards =
@@ -331,10 +327,20 @@ export function describeWorkflow(input: {
 
   if (route?.[1].held) {
     const [opener, { held }] = route;
-    const localRoute: LocalRoute = { held: held.step, missing: held.missing };
 
-    if (opener.kind === 'step') localRoute.opener = opener.path;
-    facts.localRoute = localRoute;
+    switch (opener.kind) {
+      case 'run':
+        facts.localRoute = { copy: 'run', held: held.step, missing: held.missing };
+        break;
+      case 'step':
+        facts.localRoute = { copy: 'step', opener: opener.path, held: held.step, missing: held.missing };
+        break;
+      default: {
+        const unhandled: never = opener;
+
+        return unhandled;
+      }
+    }
   }
 
   const { name, description, alias, invoke, inputs } = definition;

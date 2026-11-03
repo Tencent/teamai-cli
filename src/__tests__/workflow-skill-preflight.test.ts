@@ -260,7 +260,7 @@ describe('skill driver preflight', () => {
   it('routes a run whose continue step needs env to the local driver', async () => {
     const made = await harness({ 'release-docs': RELEASE_DOCS });
     expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: {
-      workflow: { facts: { localRoute: { opener: 'docs', held: 'docs.sign', missing: 'env' } } },
+      workflow: { facts: { localRoute: { copy: 'step', opener: 'docs', held: 'docs.sign', missing: 'env' } } },
       ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local --tools default=claude' },
     } } });
     expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined }))
@@ -284,7 +284,7 @@ steps:
 ` });
     const described = await made.call({ kind: 'describe', name: 'release-docs' });
     expect(described).toMatchObject({ data: { describe: { ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local --tools default=claude' } } } });
-    expect(described).toMatchObject({ data: { describe: { workflow: { facts: { localRoute: { held: 'sign', missing: 'env' } } } } } });
+    expect(described).toMatchObject({ data: { describe: { workflow: { facts: { localRoute: { copy: 'run', held: 'sign', missing: 'env' } } } } } });
     expect(JSON.stringify(described)).not.toContain('"opener"');
   });
 
