@@ -1145,7 +1145,7 @@ function writeStepOutput(answer: { failure: WorkflowFailure } | { output: unknow
 }
 
 /** `teamai benchmark plan <suite>`: the step that plans a benchmark run. */
-export async function benchmarkPlan(suite: string, options: { aliases?: string }): Promise<void> {
+export async function benchmarkPlan(suite: string, options: { aliases?: string; tasks?: string; arms?: string }): Promise<void> {
   setStderrOnly(true);
   const aliases = options.aliases ?? 'team';
 
@@ -1155,8 +1155,33 @@ export async function benchmarkPlan(suite: string, options: { aliases?: string }
     return;
   }
 
-  const planned = await planStep(suite, process.env, { memberAliases: aliases === 'member' });
+  const tasks = namesOf(options.tasks ?? '[]');
+
+  if (tasks === undefined) {
+    writeStepOutput({ failure: { code: 'invalid_arguments', message: `--tasks takes a JSON array of task ids, such as ["fix-login"], or [] for every task; got ${options.tasks}.` } });
+
+    return;
+  }
+
+  const arms = namesOf(options.arms ?? '[]');
+
+  if (arms === undefined) {
+    writeStepOutput({ failure: { code: 'invalid_arguments', message: `--arms takes a JSON array of arm names, such as ["claude"], or [] for every arm; got ${options.arms}.` } });
+
+    return;
+  }
+
+  const planned = await planStep(suite, process.env, { memberAliases: aliases === 'member', chosen: { tasks, arms } });
   writeStepOutput('failure' in planned ? planned : { output: planned.planned });
+}
+
+/** The task ids or arm names `benchmark plan --tasks` or `--arms` takes: a JSON array of strings; undefined when `text` is not one. */
+function namesOf(text: string): string[] | undefined {
+  try {
+    return z.array(z.string().min(1)).safeParse(JSON.parse(text)).data;
+  } catch {
+    return undefined;
+  }
 }
 
 /** `teamai benchmark report`: the `finally` step that reports a benchmark run. */
@@ -1179,7 +1204,7 @@ const BenchmarkDoneSchema = z.object({
  * and also 1 when a `finally` step, the report, failed or was cancelled, or with `failOnRegression` when an arm dropped
  * against the newest earlier comparable record on teamai-reports. A record still pending never changes it.
  */
-export async function benchmarkRun(suite: string, options: { driver?: string; sandbox?: boolean; memberAliases?: boolean; failOnRegression?: boolean }): Promise<void> {
+export async function benchmarkRun(suite: string, options: { driver?: string; sandbox?: boolean; memberAliases?: boolean; task?: string[]; arm?: string[]; failOnRegression?: boolean }): Promise<void> {
   setStderrOnly(true);
   const loaded = await readyStartConfig(BENCHMARK_WORKFLOW);
 
@@ -1198,8 +1223,9 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
   }
 
   const memberAliases = options.memberAliases === true;
+  const chosen = { tasks: options.task ?? [], arms: options.arm ?? [] };
   // The plan step decides unattended trials from the step that runs its plan; refusals do not depend on it.
-  const preflight = await planBenchmark(config, suite, { checkout: process.cwd(), memberAliases, unattended: false });
+  const preflight = await planBenchmark(config, suite, { checkout: process.cwd(), memberAliases, unattended: false, chosen });
 
   if ('refused' in preflight) {
     writeEnvelope(preflight.refused, secrets);
@@ -1216,6 +1242,22 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
     return;
   }
 
+  // The inputs teamai-benchmark may leave out, and the refusal when a flag needs one a team file leaves out.
+  const optionalInputs = [
+    {
+      input: 'aliases', value: memberAliases ? 'member' : 'team', isGiven: memberAliases,
+      refusal: (file: string) => `The team's ${file} replaces teamai's benchmark workflow and takes no input aliases, so teamai benchmark run cannot give it --member-aliases. Add aliases: string to its inputs and pass it to teamai benchmark plan --aliases, or run without --member-aliases.`,
+    },
+    {
+      input: 'tasks', value: chosen.tasks, isGiven: chosen.tasks.length > 0,
+      refusal: (file: string) => `The team's ${file} replaces teamai's benchmark workflow and takes no input tasks, so teamai benchmark run cannot give it --task. Add tasks: [string] to its inputs and pass it to teamai benchmark plan --tasks, or run without --task.`,
+    },
+    {
+      input: 'arms', value: chosen.arms, isGiven: chosen.arms.length > 0,
+      refusal: (file: string) => `The team's ${file} replaces teamai's benchmark workflow and takes no input arms, so teamai benchmark run cannot give it --arm. Add arms: [string] to its inputs and pass it to teamai benchmark plan --arms, or run without --arm.`,
+    },
+  ];
+
   if (workflow.source === 'team') {
     if (workflow.definition.inputs?.suite === undefined) {
       writeEnvelope({ error: { code: 'invalid_inputs', message: `The team's ${workflow.relativePath} replaces teamai's benchmark workflow and takes no input suite, so teamai benchmark run cannot give it the suite. Add inputs: { suite: string } to it, or remove it to run teamai's default.` } }, secrets);
@@ -1223,8 +1265,10 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
       return;
     }
 
-    if (memberAliases && workflow.definition.inputs?.aliases === undefined) {
-      writeEnvelope({ error: { code: 'invalid_inputs', message: `The team's ${workflow.relativePath} replaces teamai's benchmark workflow and takes no input aliases, so teamai benchmark run cannot give it --member-aliases. Add aliases: string to its inputs and pass it to teamai benchmark plan --aliases, or run without --member-aliases.` } }, secrets);
+    const refused = optionalInputs.find(({ input, isGiven }) => isGiven && workflow.definition.inputs?.[input] === undefined);
+
+    if (refused !== undefined) {
+      writeEnvelope({ error: { code: 'invalid_inputs', message: refused.refusal(workflow.relativePath) } }, secrets);
 
       return;
     }
@@ -1232,10 +1276,10 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
     log.info(`Running the team's ${workflow.relativePath}, which replaces teamai's benchmark workflow.`);
   }
 
-  // A team workflow without input aliases plans with the team's aliases, as teamai benchmark plan does without --aliases.
-  const aliases = workflow.definition.inputs?.aliases === undefined ? {} : { aliases: memberAliases ? 'member' : 'team' };
+  // A team workflow without one of these inputs plans as teamai benchmark plan does without its flag: the team's aliases, the whole suite.
+  const inputs = Object.fromEntries(optionalInputs.flatMap(({ input, value }) => (workflow.definition.inputs?.[input] === undefined ? [] : [[input, value]])));
 
-  const start: StartOptions = { driver: options.driver ?? 'local', inputs: JSON.stringify({ suite, ...aliases }), timeout: `${preflight.timeoutMs}ms` };
+  const start: StartOptions = { driver: options.driver ?? 'local', inputs: JSON.stringify({ suite, ...inputs }), timeout: `${preflight.timeoutMs}ms` };
 
   if (options.sandbox) start.sandbox = true;
   const done = await startWorkflow(BENCHMARK_WORKFLOW, start);

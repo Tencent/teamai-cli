@@ -196,7 +196,7 @@ async function drive(fixture: BenchmarkFixture, run: string, polls: number) {
 describe('benchmark judges of an external driver', () => {
   it("judges a trial from the evidence collected at the driver's report, with teamai score, and only then ends the run", async () => {
     const fixture = await judgedFixture();
-    const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', '10m']);
+    const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}', '--timeout', '10m']);
     const runId = z.object({ run: z.string() }).parse(envelope(started).data).run;
 
     const judging = await drive(fixture, runId, 5);

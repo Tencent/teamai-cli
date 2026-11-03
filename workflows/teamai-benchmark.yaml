@@ -2,11 +2,11 @@ schemaVersion: v1alpha1
 name: teamai-benchmark
 description: Run a benchmark suite. Every arm works the same tasks in fresh clones, judged by checks it never sees.
 invoke: deny
-inputs: { suite: string, aliases: string }
+inputs: { suite: string, aliases: string, tasks: [string], arms: [string] }
 steps:
   - id: plan
-    command: teamai benchmark plan "$SUITE" --aliases "$ALIASES"
-    env: { SUITE: "{{ inputs.suite }}", ALIASES: "{{ inputs.aliases }}" }
+    command: teamai benchmark plan "$SUITE" --aliases "$ALIASES" --tasks "$TASKS" --arms "$ARMS"
+    env: { SUITE: "{{ inputs.suite }}", ALIASES: "{{ inputs.aliases }}", TASKS: "{{ inputs.tasks }}", ARMS: "{{ inputs.arms }}" }
     output: { definition: workflow, plan: json }
   - id: trials
     needs: [plan]

@@ -970,12 +970,14 @@ const benchmarkCmd = program
 
 benchmarkCmd
   .command('run <suite>')
-  .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team"} ("member" with --member-aliases) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases only when it declares that input. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or its report failed or was cancelled; a record still pending publication never changes the exit code.')
+  .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team","tasks":[],"arms":[]} ("member" with --member-aliases; the ids --task and --arm name) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases, tasks and arms only when it declares them. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or its report failed or was cancelled; a record still pending publication never changes the exit code.')
   .option('--driver <kind>', 'The driver that runs it: local (default), or skill')
   .option('--sandbox', 'With --driver local, declare this machine a sandbox for this process, where the trials, which need strict sandbox isolation, may run. workflows.sandbox in config declares it for every process.')
   .option('--member-aliases', 'Resolve each arm\'s model alias with your own ~/.teamai/models/aliases.yaml over the team\'s models/aliases.yaml, which alone resolves them otherwise: starts the workflow with input aliases member instead of team. The results table and the record show member as the source of a model your file decided.')
+  .option('--task <id>', 'Run only this task of the suite: one baseline and its trials. Repeatable. Starts the workflow with input tasks, [] without it; a team file that takes no input tasks is refused.', (value: string, previous: string[]) => previous.concat(value), [])
+  .option('--arm <name>', 'Run only this arm of the suite. Repeatable. Starts the workflow with input arms, [] without it; a team file that takes no input arms is refused.', (value: string, previous: string[]) => previous.concat(value), [])
   .option('--fail-on-regression', 'Also exit 1 when an arm\'s pass rate dropped by more than chance against the newest earlier succeeded run of the suite published on teamai-reports with the same tasks and arms, trials paired by task and repetition as the dashboard\'s Compare pairs them. With no such run, print a notice and leave the exit code alone. Needs --driver local.')
-  .action(async (suite: string, cmdOpts: { driver?: string; sandbox?: boolean; memberAliases?: boolean; failOnRegression?: boolean }) => {
+  .action(async (suite: string, cmdOpts: { driver?: string; sandbox?: boolean; memberAliases?: boolean; task: string[]; arm: string[]; failOnRegression?: boolean }) => {
     const { benchmarkRun } = await import('./workflow-commands.js');
     await benchmarkRun(suite, cmdOpts);
   });
@@ -992,7 +994,9 @@ benchmarkCmd
   .command('plan <suite>')
   .description('The first step of a benchmark run: freeze the team revision this checkout last pulled, fetch every commit a trial reads into the commit cache, and print {"definition":{"definition","workflows","scorers","teamRevision"},"plan"}, the workflow the run\'s trials step runs and the plan its check and report steps read. Refuses a run with no timeout, or a longer one than the suite\'s: start it with workflow start --timeout.')
   .option('--aliases <whose>', 'Whose aliases resolve the arms\' model aliases: team (default), the team\'s models/aliases.yaml, or member, your ~/.teamai/models/aliases.yaml over the team\'s')
-  .action(async (suite: string, cmdOpts: { aliases?: string }) => {
+  .option('--tasks <json>', 'The task ids to plan, as a JSON array such as ["fix-login"]; [] or absent plans every task. A name the suite does not have is refused, listing the ones it has.')
+  .option('--arms <json>', 'The arm names to plan, as a JSON array such as ["claude"]; [] or absent plans every arm. A name the suite does not have is refused, listing the ones it has.')
+  .action(async (suite: string, cmdOpts: { aliases?: string; tasks?: string; arms?: string }) => {
     const { benchmarkPlan } = await import('./workflow-commands.js');
     await benchmarkPlan(suite, cmdOpts);
   });

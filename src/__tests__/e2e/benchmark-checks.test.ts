@@ -301,7 +301,7 @@ describe('teamai benchmark check', () => {
   it('refuses a run whose plan has a schemaVersion this teamai does not know', async () => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'] });
     fixtures.push(fixture);
-    const run = envelope(await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', '10m'])).data?.run;
+    const run = envelope(await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}', '--timeout', '10m'])).data?.run;
     if (typeof run !== 'string') throw new Error('the run did not start');
     const baseline = await leaseAfterPlan(fixture, run);
     const projects = path.join(fixture.home, '.teamai', 'projects');

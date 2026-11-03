@@ -90,6 +90,8 @@ export const BenchmarkPlanSchema = z.object({
   suite: z.object({ name: BenchmarkNameSchema, sourceHash: Sha256, repo: z.string().url() }).strict(),
   baselineTeamRevision: CommitSchema,
   selection: TeamSelectionSchema,
+  /** The run plans only the tasks and arms `--task` and `--arm` chose, not the whole suite; absent: the whole suite. */
+  subset: z.literal(true).optional(),
   repetitions: z.number().int().min(1).max(10),
   /** The lanes the trials run in, each one trial at a time; absent: one. A trial's step is under `lane<n>` with more than one. */
   parallel: z.number().int().positive().optional(),
@@ -162,6 +164,8 @@ export function freezePlan(input: {
   /** The team scorers the suite lists, as start pinned them. */
   scorers: Record<string, PinnedScorer>;
   skillChanges?: SkillChanges[];
+  /** The committed suite holds only some of the suite's tasks or arms. */
+  isSubset?: boolean;
 }): BenchmarkPlan {
   const { suite, files } = input.committed;
   const [first, ...rest] = suite.tasks;
@@ -172,6 +176,7 @@ export function freezePlan(input: {
     suite: { name: suite.name, sourceHash: suite.sourceHash, repo: suite.repo },
     baselineTeamRevision: input.baselineTeamRevision,
     selection: input.selection,
+    subset: input.isSubset === true ? true : undefined,
     repetitions: suite.repetitions,
     parallel: suite.parallel > 1 ? suite.parallel : undefined,
     limits: suite.trial,

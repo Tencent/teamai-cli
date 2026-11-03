@@ -44,6 +44,14 @@ interface BenchmarkStart {
   memberAliases: boolean;
   /** Every step that runs the plan is a strict sandbox, so each trial prompt runs `permissions: unattended`. */
   unattended: boolean;
+  /** The task ids and arm names to run, in any order; `[]` runs all of them. */
+  chosen: Chosen;
+}
+
+/** What `--task` and `--arm`, or the inputs `tasks` and `arms`, chose of a suite; `[]` chooses all. */
+export interface Chosen {
+  tasks: readonly string[];
+  arms: readonly string[];
 }
 
 /**
@@ -84,12 +92,12 @@ export async function planBenchmark(config: LocalConfig, name: string, options: 
  * timeout would bound nothing: start it with `workflow start --timeout`, as `teamai benchmark run` does. Its trial
  * prompts run unattended only when every step that runs the plan is a strict sandbox (`trialsUnattended`).
  */
-export async function planStep(name: string, env: NodeJS.ProcessEnv, { memberAliases }: Pick<BenchmarkStart, 'memberAliases'>): Promise<{ planned: BenchmarkPlanned } | { failure: WorkflowFailure }> {
+export async function planStep(name: string, env: NodeJS.ProcessEnv, { memberAliases, chosen }: Pick<BenchmarkStart, 'memberAliases' | 'chosen'>): Promise<{ planned: BenchmarkPlanned } | { failure: WorkflowFailure }> {
   const found = await findAttemptRun(env);
 
   if ('error' in found) return { failure: found.error };
   const { config, run, step } = found;
-  const planned = await planBenchmark(config, name, { checkout: run.checkout ?? process.cwd(), memberAliases, unattended: trialsUnattended(run, step.id) });
+  const planned = await planBenchmark(config, name, { checkout: run.checkout ?? process.cwd(), memberAliases, unattended: trialsUnattended(run, step.id), chosen });
 
   if ('refused' in planned) return { failure: planned.refused.error };
   const limit = runDeadline(run) === undefined ? undefined : Math.min(...[run.definition.timeout, run.timeout].filter((ms) => ms !== undefined));
@@ -123,11 +131,20 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
 
   if ('refused' in pulled) return refuse(error('team_revision_unpullable', pulled.refused));
   const { revision } = pulled;
-  const found = await loadCachedSuite(config, name);
+  const cached = await loadCachedSuite(config, name);
 
-  if (found === null) {
+  if (cached === null) {
     return refuse(error('benchmark_not_found', `Suite "${name}" has no runnable version for this member. Check benchmarks/${name}/suite.yaml and that your roles or projects receive its namespace, push it, run teamai pull, and start again.`));
   }
+
+  const tasks = chosenOf(cached.tasks, options.chosen.tasks, ({ id }) => id);
+
+  if (!tasks.ok) return refuse(error('invalid_arguments', `Suite "${name}" has no task "${tasks.missing}". Its tasks: ${cached.tasks.map(({ id }) => id).join(', ')}.`));
+  const chosenArms = chosenOf(cached.arms, options.chosen.arms, ({ name: arm }) => arm);
+
+  if (!chosenArms.ok) return refuse(error('invalid_arguments', `Suite "${name}" has no arm "${chosenArms.missing}". Its arms: ${cached.arms.map(({ name: arm }) => arm).join(', ')}.`));
+  const found: Suite = { ...cached, tasks: tasks.chosen, arms: chosenArms.chosen };
+  const isSubset = found.tasks.length < cached.tasks.length || found.arms.length < cached.arms.length;
 
   const unreachable = await unreachableTask(config, found, options.checkout);
 
@@ -194,7 +211,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const skillChanges = await skillChangesOf(config, arms, { baseline: revision, defaults: defaultsArmOf(found)?.name });
 
   if ('refused' in skillChanges) return refuse(skillChanges.refused);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, skillChanges: skillChanges.changes });
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, skillChanges: skillChanges.changes, isSubset });
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
@@ -205,6 +222,17 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   }
 
   return { ok: true, suite: found, plan, committed: committed.suite, pinned, armWorkflows };
+}
+
+/** The items of `all` that `names` names, in `all`'s order, or the first name none of them has; `[]` names all of them. */
+function chosenOf<TItem>(all: [TItem, ...TItem[]], names: readonly string[], nameOf: (item: TItem) => string): { ok: true; chosen: [TItem, ...TItem[]] } | { ok: false; missing: string } {
+  const missing = names.find((name) => !all.some((item) => nameOf(item) === name));
+
+  if (missing !== undefined) return { ok: false, missing };
+  const [first, ...rest] = all.filter((item) => names.length === 0 || names.includes(nameOf(item)));
+
+  // Every name matched an item, so the filter kept one at least.
+  return { ok: true, chosen: first === undefined ? all : [first, ...rest] };
 }
 
 type ArmResolution = { ok: true; arm: PlannedArm } | { ok: false; message: string };

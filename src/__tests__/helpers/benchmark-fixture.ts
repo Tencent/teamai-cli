@@ -175,7 +175,7 @@ export function envelope(result: CliResult): Envelope {
 
 /** Starts the benchmark workflow on suite `fix` for an external driver, bounded by `timeout`, and answers its run. */
 export async function startFixBenchmark(fixture: BenchmarkFixture, timeout = '10m'): Promise<string> {
-  const answer = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', timeout]);
+  const answer = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}', '--timeout', timeout]);
   const run = envelope(answer).data?.run;
   if (typeof run !== 'string') throw new Error(`no run: ${said(answer)}`);
   return run;

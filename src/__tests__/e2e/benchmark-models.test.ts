@@ -164,7 +164,7 @@ const DRIVERS: Array<{ name: string; run(fixture: BenchmarkFixture): Promise<{ r
   {
     name: 'an external driver',
     run: async (fixture) => {
-      const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', '10m']);
+      const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[]}', '--timeout', '10m']);
       const runId = z.object({ run: z.string() }).parse(envelope(started).data).run;
       const done = await driveExternally(fixture, runId);
       return { runId, text: done.outputs.text };

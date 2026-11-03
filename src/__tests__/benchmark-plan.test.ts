@@ -472,7 +472,7 @@ describe('benchmark plan on a machine that cannot pin the team a trial gets', ()
     dirs.push(root);
     const config: LocalConfig = { ...benchmarkRunConfig(root), repo: { localPath: path.join(root, 'team'), remote: 'https://teamai.example.com/acme', kind: 'http' } };
 
-    const planned = await planBenchmark(config, 'fix', { checkout: root, memberAliases: false, unattended: false });
+    const planned = await planBenchmark(config, 'fix', { checkout: root, memberAliases: false, unattended: false, chosen: { tasks: [], arms: [] } });
 
     expect(planned).toEqual({ refused: { error: { code: 'team_ref_blocked', message: 'A benchmark installs each trial\'s team assets from a commit of the team repo, and this team is served over HTTP, which has no commits to install from. Run the benchmark from a workspace whose team is a git repo.' } } });
   });
