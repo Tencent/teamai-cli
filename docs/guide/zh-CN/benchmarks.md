@@ -593,7 +593,7 @@ $ teamai benchmark run fix-auth --sandbox
 | 通道 | 一次一个 trial，除非套件设置了 [`parallel`](#并行通道)。 |
 | 超时 | 套件的 `timeout` 是整个运行的超时。setup、工具和 check 到时都会停止：它们所属的 trial 记为 `error`，仍未完成的 trial 结算为 `not_run`。让它低于 CI 任务的时限，否则任务会在打印表格之前被杀掉。 |
 | 卡住的 trial | 没有 [`trial.timeout`](#trial-限制) 时，一个永不返回的工具会一直运行到套件超时，它之后的每个 trial 结算为 `not_run`。 |
-| 评判 | 带 `successCriteria` 的任务和套件的评分器在运行结束前评判，评判在运行了 trial 的那个安装上进行。机器无法评判时，需要评判的套件在启动时被拒绝。 |
+| 评判 | 带 `successCriteria` 的任务和套件的评分器由运行自己的 `score` 步骤评判，它在 trial 之后、`report` 之前运行。机器上没有能以评分器要求的隔离级别运行其模型的评判工具时，需要评判的套件在启动时被拒绝。 |
 | 控制命令 | trial 的步骤要等运行的 `plan` 步骤报告后才存在。在此之前，对 trial 步骤执行 `teamai workflow cancel <run> <step>` 会返回 `step_not_found`。benchmark 运行是[隔离的](workflow-advanced.md#隔离运行)：`workflow retry`、`publish` 和 `--claim` 拒绝它，`publish` 和 `--claim` 返回 `isolated_run`，retry 会给出 `teamai benchmark run <suite>`。 |
 | 停下 | 用 `teamai workflow resume <run> --sandbox` 继续。 |
 
@@ -640,6 +640,21 @@ steps:
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
+  # Judges every trial with the scorers it pinned, a criteria task's teamai:correctness:<task> included. Reading
+  # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  - id: subjects
+    needs: [trials]
+    if: steps.trials.outcome != 'skipped'
+    command: teamai score subjects --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [string] }
+  - id: score
+    needs: [subjects]
+    for_each: steps.subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    timeout: 2h
+    continue_on_failure: true
 finally:
   - id: report
     command: teamai benchmark report
@@ -656,9 +671,11 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | `plan` 步骤 | 冻结你 pull 到的团队修订，获取 trial 读取的每个提交，并把 trial 打印成一个工作流，每个基线和 trial 一个克隆。 |
 | `teamai benchmark check --baseline\|--trial` | 每个克隆中的一个步骤 | 写入 `check.add`，对 trial 恢复 `protect`，运行任务的 check，并打印其结果。 |
+| `teamai score subjects --run <run> --step trials` | `subjects` 步骤 | 列出 trial 在本机结算的、需要评分的执行轮次。 |
+| [`teamai-score`](scorers.md#teamai-score-工作流) | `score` 步骤，每个 subject 一次 | 用 trial 固定的评分器评判它。 |
 | `teamai benchmark report` | `report` 这个 `finally` 步骤 | 给 trial 分类，写出记录，并打印结果。`COMPARE=true` 时还会比较记录，见[回归时失败](#回归时失败)。 |
 
-`trials` 运行 `plan` 打印的内容：见[运行步骤打印的工作流](workflow-advanced.md#运行步骤打印的工作流)。`report` 在 trial 之后运行，无论它们发生了什么，就像 [finally 步骤](workflow-advanced.md#finally-步骤)那样。`benchmark run --member-aliases` 把 `aliases` 传为 `member`，否则传为 `team`。`--task` 和 `--arm` 传入 `tasks` 和 `arms`，否则传 `[]`，即规划所有任务和 arm。`--fail-on-regression` 把 `fail_on_regression` 传为 `true`，否则传为 `false`。
+`trials` 运行 `plan` 打印的内容：见[运行步骤打印的工作流](workflow-advanced.md#运行步骤打印的工作流)。`report` 在 trial 之后运行，无论它们发生了什么，就像 [finally 步骤](workflow-advanced.md#finally-步骤)那样。`benchmark run --member-aliases` 把 `aliases` 传为 `member`，否则传为 `team`。`--task` 和 `--arm` 传入 `tasks` 和 `arms`，否则传 `[]`，即规划所有任务和 arm。`--fail-on-regression` 把 `fail_on_regression` 传为 `true`，否则传为 `false`。`report` 从运行文件中 `score` 步骤的结果读取每个 trial 的标签，因为 `finally` 步骤不能读取 `steps`。
 
 要修改它，推送你自己的 `workflows/teamai-benchmark.yaml`，或者为某个角色或项目的成员推送 `workflows/<namespace>/teamai-benchmark.yaml`。它会为接收它的人替换 teamai 的版本，就像任何[默认工作流](workflow.md#覆盖默认工作流)一样，`benchmark run` 会说明这一点：
 
@@ -668,9 +685,24 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 
 你的版本必须接受输入 `suite`，要用 `--member-aliases` 运行还必须接受输入 `aliases`，要用 `--task` 和 `--arm` 运行还必须接受输入 `tasks` 和 `arms`，要用 `--fail-on-regression` 运行还必须接受输入 `fail_on_regression`；否则 `benchmark run` 会拒绝它，并指出缺少的输入。保留 `plan` 的步骤 id，并把 `report` 保留为 `finally` 步骤。去掉 `strict: true` 会让 trial 在不扣留凭据的情况下运行，并且使用各工具自己的权限设置，而不是无人值守：不能编辑的工具会让它的 trial 失败，报告的第一行会说明这一点。你接收的两个命名空间都有 `teamai-benchmark.yaml` 时，`benchmark run` 以 `workflow_namespace_conflict` 拒绝，并指出两个文件，绝不退回 teamai 自带的版本。
 
+你可以修改 `score` 的 `timeout`，或者去掉 `subjects` 和 `score`，不经评判地运行。这样一来，每个本该由评判决定的 trial 都以 `unscored` 结束：
+
+```yaml
+# workflows/teamai-benchmark.yaml：只运行 trial，从不评判
+steps:
+  # plan，同 teamai 的
+  - id: trials
+    needs: [plan]
+    workflow: { from: plan }
+    requires: { isolation: sandbox, strict: true }
+  # 没有 subjects 和 score 步骤
+finally:
+  # report 和 regression，同 teamai 的
+```
+
 ## 结果
 
-运行结束时，`benchmark run` 把结果打印到 stderr。stdout 上的 JSON 返回在 `data.done.outputs.text` 中带同样的文本，在 `data.done.outputs.table` 中带数字。对这个套件，再加一个 check 本来就通过的第三个任务 `old-bug`：
+运行结束时，`benchmark run` 把结果打印到 stderr。stdout 上的 JSON 返回在 `data.done.outputs.text` 中带同样的文本，在 `data.done.outputs.table` 中带数字，其中 `verdicts` 给出每个被评判的 trial 在每个评分器下的结论：`labelled` 带它的标签，或 `unscored` 带 `because`，即评判的失败码，没有标签时为 `run_ended`。对这个套件，再加一个 check 本来就通过的第三个任务 `old-bug`：
 
 ```text
 | Arm | Tool | Model (source) | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
@@ -813,4 +845,4 @@ teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, 
 | `report` | 对 prompt：`tool`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`。 |
 | 限制 | 让工具遵守 `lease.limits`。某个限制停止了工具时，报告 `outcome: "success"` 并带 `limit`：`timeout`、`budget` 或 `max_turns`；无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。 |
 | 超时 | `benchmark run` 把套件的 `timeout` 作为 `--timeout` 传入；直接执行 `workflow start teamai-benchmark` 时也必须传入它，否则 `plan` 会失败。 |
-| 评判 | 套件的评分器仍在评判时，`next` 返回带 `judging` 的 `wait`：在运行了 trial 的那个安装上运行 `teamai score --next`。 |
+| 评判 | trial 的评判是某个 `teamai-score` 运行中的一个步骤，像其他步骤一样被租出，并[限制在一个目录中](workflow-advanced.md#在自己的驱动里运行受限步骤)：提供 `can.confined`，否则它会等待，`wait.held[].missing` 指出 `confined`。 |

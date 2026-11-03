@@ -104,7 +104,7 @@ $ teamai workflow next r7c2… --json '{"driver":{…}}'                        
 | `skill` | the same | the skill driver, as a child run: its commands in the background runner, its judge as the agent's judging reference says | the run starts and stays running for `teamai workflow resume <run>` |
 | `none`, or your own | the same | your driver, with `workflow next` and `report` on the run id in `started` | no such option |
 
-A `sampling: all` pass, below, is still judged through a judge lease, with `teamai score --next` on the install that ran it:
+A pass that `teamai score --run --queue` leaves to any driver is still judged through a judge lease, with `teamai score --next` on the install that ran it:
 
 ```console
 $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
@@ -115,7 +115,7 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
 ```
 
-`samplingRate` picks the succeeded passes to judge, the same way on every machine; a teamai-score run for a pass it does not pick ends with no label. `workflow next` never hands out judge work. `--lease <ref>` judges here with the tool the lease names, in a [confined profile](#isolation), and settles the lease like any driver's answer. A failed judge leaves the lease open. A step whose `scorers` sets `sampling: all` is the exception: its scorers judge every succeeded pass, and the run waits for them before its `finally` steps and its end, while `workflow next` answers `wait` with `judging`, the judge entries still open. The local driver judges them itself and settles a failed judge at once; another driver's are judged with `teamai score --next` on the install that ran them. A [benchmark](benchmarks.md) judges its trials this way.
+`samplingRate` picks the succeeded passes to judge, the same way on every machine; a teamai-score run for a pass it does not pick ends with no label. `workflow next` never hands out judge work. `--lease <ref>` judges here with the tool the lease names, in a [confined profile](#isolation), and settles the lease like any driver's answer. A failed judge leaves the lease open. A step whose `scorers` sets `sampling: all` has every succeeded pass judged, whatever its scorers sample, by a teamai-score run of its own as above, and its run ends without waiting for them. A [benchmark](benchmarks.md) sets it with `start: workflow`, and judges its trials with its own `score` step.
 
 The label records `used.skills`, the team skills the pass or its subagents loaded, found as for [a session](#score-a-session) from what the checkout held as teamai delivered it when the pass started. A `workflow:` step's label lists every skill its child passes recorded, and has no `used` when none of them recorded one.
 
@@ -123,7 +123,7 @@ The evidence directory holds `evidence.json`, `prompt.md`, `diff.patch` when a r
 
 ### Labels before the next step
 
-`scorers.start: workflow` leaves the scoring of a step's passes to the workflow's own steps. teamai starts no teamai-score run for them, no judge lease takes them, and the run does not wait for them under `sampling: all`. `teamai score subjects` lists them, and a `workflow: teamai-score` step labels each. Pull warns on such a step that no `workflow: teamai-score` step after it reads `teamai score subjects --step` for, since nothing would score its passes:
+`scorers.start: workflow` leaves the scoring of a step's passes to the workflow's own steps. teamai starts no teamai-score run for them, and no judge lease takes them. `teamai score subjects` lists them, and a `workflow: teamai-score` step labels each. Pull warns on such a step that no `workflow: teamai-score` step after it reads `teamai score subjects --step` for, since nothing would score its passes:
 
 ```yaml
 # workflows/fix-until-good.yaml
