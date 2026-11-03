@@ -43,69 +43,6 @@ ${extra}---
 Judge the work.
 `;
 
-/** teamai-score as the issue writes it, with a command judge in place of the confined prompt step. */
-const SCORE = `schemaVersion: v1alpha1
-name: teamai-score
-description: Label one subject with the scorers that apply to it.
-invoke: deny
-private: true
-inputs:
-  subject: string
-  scorers: [string]
-  label: string
-  batch: boolean
-  demand: string
-steps:
-  - id: plan
-    command: teamai score plan
-    output:
-      groups: [{ subject: string, hand: string, scorers: string, model: string, ci: boolean, protected: boolean }]
-  - id: score
-    needs: [plan]
-    if: length(steps.plan.outputs.groups) > 0
-    for_each: steps.plan.outputs.groups
-    continue_on_failure: true
-    workflow:
-      outputs: { labels: steps.label.outputs.labels }
-      steps:
-        - id: evidence
-          command: teamai score evidence
-          output: { dir: string, rubric: string, schema: string, delivers: boolean }
-        - id: check
-          needs: [evidence]
-          if: item.hand == '' && steps.evidence.outputs.delivers
-          command: teamai score stage check
-          output: { decided: boolean }
-        - id: ci
-          needs: [evidence, check]
-          if: item.hand == '' && item.ci && steps.evidence.outputs.delivers && steps.check.outputs.decided != true
-          command: teamai score stage ci
-          output: { decided: boolean, pending: boolean }
-        - id: protected
-          needs: [evidence, ci]
-          if: item.hand == '' && item.protected && steps.evidence.outputs.delivers && steps.check.outputs.decided != true && steps.ci.outputs.decided != true && steps.ci.outputs.pending != true
-          command: teamai score stage protected
-          output: { decided: boolean }
-        - id: judge
-          needs: [evidence, protected]
-          if: item.hand == '' && steps.check.outputs.decided != true && steps.ci.outputs.decided != true && steps.ci.outputs.pending != true && steps.protected.outputs.decided != true
-          command: judge
-          output: { answer: json }
-        - id: label
-          needs: [evidence, judge]
-          if: steps.evidence.outcome == 'success' && steps.judge.outcome != 'cancelled'
-          command: teamai score label
-          output: { labels: [{ scorer: string, label: string, code: string }] }
-        - id: write
-          needs: [label]
-          command: teamai score write
-        - id: settle
-          needs: [evidence, write]
-          if: "!(steps.evidence.outcome == 'success' || steps.evidence.outcome == 'skipped') || !(steps.label.outcome == 'success' || steps.label.outcome == 'skipped') || !(steps.write.outcome == 'success' || steps.write.outcome == 'skipped')"
-          command: teamai score settle
-outputs: { labels: steps.score.results }
-`;
-
 const REVIEW = `schemaVersion: v1alpha1
 name: review
 description: Review a change.
@@ -159,7 +96,7 @@ async function team(workflows: Record<string, string>, scorers: Record<string, s
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
-  for (const [name, text] of Object.entries({ 'teamai-score': SCORE, ...workflows })) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), text);
+  for (const [name, text] of Object.entries(workflows)) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), text);
   for (const [name, text] of Object.entries(scorers)) fs.writeFileSync(path.join(knowledge, 'scorers', `${name}.md`), text);
   const config: LocalConfig = {
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
@@ -213,6 +150,9 @@ async function deliveredRun(config: LocalConfig, failure?: { code: 'protected_pa
   return runId;
 }
 
+/** What the external driver offers: a confined step at either level, on Claude. */
+const JUDGING = { confined: [{ level: 'verified' as const, access: 'read' as const, tools: ['claude'] }] };
+
 interface Taken {
   ctx: ScoreVerbContext;
   attempt: string;
@@ -237,7 +177,7 @@ function runOf(config: LocalConfig, runId: string): ScoreRun {
   return {
     runId,
     async next(step) {
-      const lease = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+      const lease = LeaseSchema.parse(data(await leaseNext(config, runId, external, step.endsWith('.judge') ? { can: JUDGING } : undefined)).lease);
       expect(lease.step).toBe(step);
       return { ctx: { env: attemptEnv(config, runId, lease.attempt, 'unattended'), current: config, now: NOW }, attempt: lease.attempt, revision: lease.revision };
     },
@@ -648,7 +588,7 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
     return { item: groups[Number(index)], dir: z.object({ dir: z.string() }).safeParse(evidence?.ok ? evidence.output : {}).data?.dir };
   };
   for (;;) {
-    const next = data(await leaseNext(config, run.runId, external));
+    const next = data(await leaseNext(config, run.runId, external, { can: JUDGING }));
     if (next.done) return { runId: run.runId, answers };
     const lease = LeaseSchema.parse(next.lease);
     const taken = { ctx: { env: attemptEnv(config, run.runId, lease.attempt, 'unattended'), current: config, now: NOW, readJudgeRun }, attempt: lease.attempt, revision: lease.revision };
