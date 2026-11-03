@@ -176,6 +176,13 @@ export function privateSteps(run: Pick<RunState, 'definition' | 'workflows' | 'a
   };
 }
 
+/** The first step of a private workflow in `run` that has not settled, whose work exists only on this machine until it does. */
+export function openPrivateStep(run: RunState): string | undefined {
+  const isPrivate = privateSteps(run);
+
+  return run.steps.find((step) => isPrivate(step.id) && !settled(step))?.id;
+}
+
 /** For each `run.steps` array, its instances by the prefix of the scope they are directly inside. */
 const scopeIndex = new WeakMap<readonly StepState[], Map<string, StepState[]>>();
 

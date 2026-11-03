@@ -1961,6 +1961,43 @@ steps:
   });
 });
 
+describe('a run with private steps', () => {
+  const JUDGE = 'schemaVersion: v1alpha1\nname: judge\ndescription: Judge on this machine only.\nprivate: true\nsteps:\n  - id: label\n    command: echo label\n    output: { label: string, reasoning: string }\noutputs:\n  label: steps.label.outputs.label\n';
+  const REVIEWED = 'schemaVersion: v1alpha1\nname: reviewed\ndescription: Judge, then ship.\nsteps:\n  - id: check\n    workflow: judge\n  - id: ship\n    needs: [check]\n    command: echo ship\n';
+
+  it('refuses publish and claim with private_open while a private step is open, and publishes none of its outputs once it settled', async () => {
+    const acme = team({ judge: JUDGE, reviewed: REVIEWED });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await startIn(alice, 'reviewed');
+    const next = await leaseNext(alice.config, runId, alice.driver);
+    if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+    const lease = next.data.lease as { step: string; attempt: string; revision: number };
+    expect(lease.step).toBe('check.label');
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'private_open' } });
+    expect(await claimRun(alice.config, runId, { checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'private_open' } });
+
+    await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver, outputs: { label: 'good', reasoning: 'it reads well' } });
+    expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { lease: { step: 'ship' } } });
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+
+    const published = originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '';
+    expect(published).not.toContain('it reads well');
+    expect(JSON.parse(published)).toMatchObject({ steps: [{ id: 'check', outputs: { label: 'good' } }, { id: 'check.label', status: 'succeeded' }, { id: 'ship' }] });
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+  });
+
+  it('keeps a run of a private workflow on the machine that started it', async () => {
+    const acme = team({ judge: JUDGE });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'judge');
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'isolated_run' } });
+    expect(await claimRun(alice.config, runId, { checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'isolated_run' } });
+  });
+});
+
 describe('sessions a published run shares', () => {
   const REVIEW = `schemaVersion: v1alpha1
 name: review

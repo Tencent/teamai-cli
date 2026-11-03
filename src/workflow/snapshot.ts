@@ -9,6 +9,7 @@ import { redact } from '../utils/redact.js';
 import type { JsonValue } from '../types.js';
 import { isRecord } from './expression.js';
 import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-schema.js';
+import { privateSteps } from './scope.js';
 import {
   ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
@@ -270,6 +271,12 @@ const PASS_RULES = {
 
 const ARCHIVED_RULES = { ...PASS_RULES, step: 'publish', within: 'publish' } satisfies FieldRules<ArchivedPass>;
 
+// What a step of a private workflow produced stays on the machine that ran it; the step that runs that workflow
+// publishes only the outputs the workflow declares.
+const PRIVATE_STEP_RULES = { ...STEP_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<StepState>;
+const PRIVATE_PASS_RULES = { ...PASS_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<StepPass>;
+const PRIVATE_ARCHIVED_RULES = { ...ARCHIVED_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<ArchivedPass>;
+
 const ANSWER_RULES = {
   choice: 'publish', note: 'publish', at: 'publish', channel: 'publish', agent: 'publish', driver: 'drop',
 } satisfies FieldRules<HitlAnswer>;
@@ -310,6 +317,11 @@ const STEP_REWRITES = {
   failure: (step) => ('failure' in step && step.failure ? { failure: handed(step.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
 } satisfies Rewrites<StepState, typeof STEP_RULES>;
 
+const PRIVATE_STEP_REWRITES = {
+  ...STEP_REWRITES,
+  passes: (step) => (step.passes ? { passes: step.passes.map((pass) => handed(pass, PRIVATE_PASS_RULES, PASS_REWRITES)) } : {}),
+} satisfies Rewrites<StepState, typeof PRIVATE_STEP_RULES>;
+
 const RUN_REWRITES = {
   // The snapshot header names the run.
   id: () => ({}),
@@ -320,12 +332,20 @@ const RUN_REWRITES = {
     : {}),
   failure: (run) => (run.failure ? { failure: handed(run.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
   finalizing: (run) => (run.finalizing ? { finalizing: handed(run.finalizing, FINALIZING_RULES, FINALIZING_REWRITES) } : {}),
-  steps: (run) => ({ steps: run.steps.map((step) => handed(step, STEP_RULES, STEP_REWRITES)) }),
+  steps: (run) => {
+    const isPrivate = privateSteps(run);
+
+    return { steps: run.steps.map((step) => (isPrivate(step.id) ? handed(step, PRIVATE_STEP_RULES, PRIVATE_STEP_REWRITES) : handed(step, STEP_RULES, STEP_REWRITES))) };
+  },
   // settledAttempts only dedups reports on this machine; the engine counts from it when settledCount is absent.
   settledAttempts: () => ({}),
   settledCount: (run) => ({ settledCount: run.settledCount ?? run.settledAttempts.length }),
   cancelledAttempts: (run) => ({ cancelledAttempts: run.cancelledAttempts ?? [] }),
-  archive: (run) => ({ archive: (run.archive ?? []).map((pass) => handed(pass, ARCHIVED_RULES, PASS_REWRITES)) }),
+  archive: (run) => {
+    const isPrivate = privateSteps(run);
+
+    return { archive: (run.archive ?? []).map((pass) => (isPrivate(pass.step) ? handed(pass, PRIVATE_ARCHIVED_RULES, PASS_REWRITES) : handed(pass, ARCHIVED_RULES, PASS_REWRITES))) };
+  },
   copies: (run) => ({ copies: Object.fromEntries(Object.entries(run.copies ?? {}).map(([branch, copy]) => [branch, handed(copy, COPY_RULES, {})])) }),
 } satisfies Rewrites<RunState, typeof RUN_RULES>;
 
