@@ -13,7 +13,7 @@ import { setStderrOnly } from '../utils/logger.js';
 import { revisionHoldsSources, withoutStaleTeamRevision } from '../utils/team-revision.js';
 import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import { runsDir } from '../workflow/store.js';
-import { TeamPin } from '../workflow/team-pin.js';
+import { TeamPin, type PinRead } from '../workflow/team-pin.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
 import { cachedScorerNames, pinScorers, scorerSourceHash, syncScorerDefinitions } from './cache.js';
 import { PinnedScorerSchema, type PinnedScorer } from './pin.js';
@@ -50,10 +50,10 @@ function generatedPath(config: LocalConfig, runId: string, name: string): string
 }
 
 /** Each team scorer the sync at the pin of `run` finds valid, with the pinned commit when that commit holds its bytes. */
-async function teamScorersAt(config: LocalConfig, run: Run): Promise<Record<string, PinnedScorer> | { failed: string }> {
+async function teamScorersAt(config: LocalConfig, run: Run): Promise<PinRead<Record<string, PinnedScorer>>> {
   const { teamPin } = run;
 
-  if (teamPin === undefined) return pinScorers(config, await cachedScorerNames(config));
+  if (teamPin === undefined) return { ok: true, value: await pinScorers(config, await cachedScorerNames(config)) };
 
   return TeamPin.withTree(config, run, async (at) => {
     // The pin is read, not pulled: the sync's lines must not reach a verb's JSON on stdout.
@@ -79,7 +79,7 @@ async function teamScorersAt(config: LocalConfig, run: Run): Promise<Record<stri
 }
 
 /** One read per team pin in a process: the runs a drain lists mostly share one. */
-const readsAtPin = new Map<string, Promise<Record<string, PinnedScorer> | { failed: string }>>();
+const readsAtPin = new Map<string, Promise<PinRead<Record<string, PinnedScorer>>>>();
 
 /** The generated scorers among `names`, from the files run `runId` keeps; a name without one is left out. */
 async function generatedOf(config: LocalConfig, runId: string, names: readonly string[]): Promise<Record<string, PinnedScorer>> {
@@ -111,8 +111,8 @@ export const RunScorers = {
     if (run.teamPin !== undefined) readsAtPin.set(key, read);
     const team = await read;
 
-    if ('failed' in team) return { ok: false, reason: `Run ${run.id}'s scorers cannot be read at the team revision it started from: ${team.failed}` };
-    const pins = Object.fromEntries(names.flatMap((name) => (team[name] ? [[name, team[name]] as const] : [])));
+    if (!team.ok) return { ok: false, reason: `Run ${run.id}'s scorers cannot be read at the team revision it started from: ${team.failed}` };
+    const pins = Object.fromEntries(names.flatMap((name) => (team.value[name] ? [[name, team.value[name]] as const] : [])));
 
     return { ok: true, pins: { ...pins, ...await generatedOf(config, run.id, names) } };
   },

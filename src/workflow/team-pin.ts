@@ -10,12 +10,16 @@ import path from 'node:path';
 import type { z } from 'zod';
 import { getBusinessRoot, getKnowledgeDir, isSelfMode, type LocalConfig } from '../types.js';
 import { readFileSafe, writeFileAtomic } from '../utils/fs.js';
+import { log } from '../utils/logger.js';
 import { withTeamRevision } from './cache.js';
 import { runsDir, TeamPinSchema } from './store.js';
 import type { RunState } from './types.js';
 import { boundedGit, git } from './worktree.js';
 
 export type TeamPin = z.infer<typeof TeamPinSchema>;
+
+/** What `use` answered at a run's team pin, or why the pin cannot be read here. */
+export type PinRead<T> = { ok: true; value: T } | { ok: false; failed: string };
 
 /** `runs/<run>/team-pin.patch`: the changes of the checkout past the pinned revision, as `git apply` takes them. */
 function patchPath(config: LocalConfig, runId: string): string {
@@ -42,9 +46,10 @@ async function pushedRevision(root: string, head: string): Promise<string> {
 
 /**
  * What the checkout holds past `revision` under the team files, untracked files included, read through a copy of its
- * index, so the member's own index is left as it is and the copy's stat data spares hashing unchanged files.
+ * index, so the member's own index is left as it is and the copy's stat data spares hashing unchanged files: none when
+ * it holds nothing more, or the git command that failed.
  */
-async function changesPast(root: string, spec: string, revision: string): Promise<string | undefined> {
+async function changesPast(root: string, spec: string, revision: string): Promise<{ patch?: string } | { failed: string }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-team-pin-'));
 
   try {
@@ -56,12 +61,14 @@ async function changesPast(root: string, spec: string, revision: string): Promis
     for (const args of [...copied ? [] : [['read-tree', 'HEAD']], ['add', '-A', '--', spec]]) {
       const ran = await withIndex(root, args);
 
-      if (ran.code !== 0) return undefined;
+      if (ran.code !== 0) return { failed: `git ${args.slice(0, 2).join(' ')} failed: ${ran.stderr.trim()}` };
     }
 
     const diff = await withIndex(root, ['diff', '--cached', '--binary', '--no-color', '--no-ext-diff', revision, '--', spec]);
 
-    return diff.code === 0 && diff.stdout !== '' ? diff.stdout : undefined;
+    if (diff.code !== 0) return { failed: `git diff failed: ${diff.stderr.trim()}` };
+
+    return diff.stdout === '' ? {} : { patch: diff.stdout };
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -88,7 +95,10 @@ export const TeamPin = {
     // A clone at the revision reads the team files where the checkout does only when this is the repository's top.
     if (top.code !== 0 || head.code !== 0 || spec.startsWith('..') || !await isSamePath(top.stdout.trim(), root)) return undefined;
     const revision = await pushedRevision(root, head.stdout.trim());
-    const patch = await changesPast(root, spec, revision);
+    const changes = await changesPast(root, spec, revision);
+
+    if ('failed' in changes) log.warn(`The run reads team commit ${revision.slice(0, 7)} without the edits past it: ${changes.failed}`);
+    const patch = 'patch' in changes ? changes.patch : undefined;
 
     return patch === undefined ? { pin: { revision } } : { pin: { revision, patch: sha256(patch) }, patch };
   },
@@ -103,24 +113,26 @@ export const TeamPin = {
    * applied. Fails when the revision cannot be read here, or the patch is gone or changed, such as on a machine that took
    * the run over. A run with no pin is read as the member's checkout holds it now.
    */
-  async withTree<T>(config: LocalConfig, run: Pick<RunState, 'id' | 'teamPin'>, use: (atPin: LocalConfig) => Promise<T>): Promise<T | { failed: string }> {
+  async withTree<T>(config: LocalConfig, run: Pick<RunState, 'id' | 'teamPin'>, use: (atPin: LocalConfig) => Promise<T>): Promise<PinRead<T>> {
     const { teamPin } = run;
 
-    if (teamPin === undefined) return use(config);
+    if (teamPin === undefined) return { ok: true, value: await use(config) };
     const patch = teamPin.patch === undefined ? undefined : await readFileSafe(patchPath(config, run.id)) ?? '';
 
     if (patch !== undefined && sha256(patch) !== teamPin.patch) {
-      return { failed: `the changes run ${run.id} started from beyond team commit ${teamPin.revision.slice(0, 7)} are not on this machine` };
+      return { ok: false, failed: `the changes run ${run.id} started from beyond team commit ${teamPin.revision.slice(0, 7)} are not on this machine` };
     }
 
-    return withTeamRevision(config, teamPin.revision, async (at) => {
+    const read = await withTeamRevision(config, teamPin.revision, async (at): Promise<PinRead<T>> => {
       if (patch !== undefined) {
         const applied = await git(repositoryRoot(at), ['apply', '--binary', '--whitespace=nowarn'], { input: patch });
 
-        if (applied.code !== 0) throw new Error(`the changes run ${run.id} started from do not apply to team commit ${teamPin.revision.slice(0, 7)}: ${applied.stderr.trim()}`);
+        if (applied.code !== 0) return { ok: false, failed: `the changes run ${run.id} started from do not apply to team commit ${teamPin.revision.slice(0, 7)}: ${applied.stderr.trim()}` };
       }
 
-      return use(at);
+      return { ok: true, value: await use(at) };
     });
+
+    return 'ok' in read ? read : { ok: false, failed: read.failed };
   },
 };
