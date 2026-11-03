@@ -31,7 +31,7 @@ const NOT_PLANNED = 'it was not planned: another teamai-score run holds its judg
 const OPEN = new Set(['pending', 'waiting', 'leased', 'running']);
 
 /** What the label step of one item gave a scorer, with what its judge step said when that failed. */
-type Entry = z.infer<typeof LabelEntriesSchema>['labels'][number] & { why?: string };
+type Entry = z.infer<typeof LabelEntriesSchema>['labels'][number] & { why: string | undefined };
 
 /** How the item of one plan group stands: a step still open for a driver, a step that broke, or every step done. */
 type ItemEnd = { kind: 'open' } | { kind: 'broke'; why: string } | { kind: 'done' };
@@ -56,7 +56,7 @@ function entriesOf(steps: readonly StepState[], index: number): Map<string, Entr
   const why = reasonOf(steps.find((step) => step.id === `score[${index}].judge`));
   const listed = LabelEntriesSchema.safeParse(labelled?.status === 'succeeded' ? labelled.outputs : undefined).data?.labels ?? [];
 
-  return new Map(listed.map((entry): [string, Entry] => [entry.scorer, entry.code === 'judge_failed' && why !== undefined ? { ...entry, why } : entry]));
+  return new Map(listed.map((entry): [string, Entry] => [entry.scorer, { ...entry, why }]));
 }
 
 /** How `steps`, the steps of one item, stand. */
@@ -159,11 +159,9 @@ function answerOf(config: LocalConfig, label: ScoreLabel): LabelAnswer {
   return answer;
 }
 
-/** The answer while the judge of `pending` waits for a driver; `held`: why the local driver left a confined step open. */
-function pendingAnswer(runId: string, pending: readonly string[], held: string | undefined, kept: Kept): WorkflowEnvelope {
-  const which = pending.length > 0 ? pending.join(', ') : 'a scorer';
-
-  return { error: { code: 'judge_pending', message: `Run ${runId} left the judge of ${which} open for a driver that can run it: ${held ?? 'its judge step is still open'} The run waits for one until its timeout, and teamai score --drain lists it.${kept.text}`, labels: kept.labels } };
+/** The answer while the judge of `pending` waits for a driver: `held` says why the local driver left it open. */
+function pendingAnswer(runId: string, pending: readonly string[], held: string, kept: Kept): WorkflowEnvelope {
+  return { error: { code: 'judge_pending', message: `Run ${runId} left the judge of ${pending.join(', ')} open for a driver that can run it: ${held} The run waits for one until its timeout, and teamai score --drain lists it.${kept.text}`, labels: kept.labels } };
 }
 
 /** The answer of a run with no judge left open: the code of each scorer that got no label, else the labels. */
@@ -186,9 +184,9 @@ function envelopeOf(config: LocalConfig, runId: string, outcomes: readonly Outco
   const written = outcomes.flatMap((outcome) => (outcome.kind === 'labelled' ? [outcome.label] : []));
   const text = written.length > 0 ? ` Kept the label of ${written.map((label) => `${label.scorer}: ${label.label}`).join(', ')}.` : '';
   const kept: Kept = { labels: written.map((label) => answerOf(config, label)), text };
-  const pending = outcomes.flatMap((outcome) => (outcome.kind === 'pending' ? [outcome.scorer] : []));
 
-  if (held !== undefined || pending.length > 0) return pendingAnswer(runId, pending, held, kept);
+  // Only a run the local driver left holding a judge step has one open: a run that succeeded has none.
+  if (held !== undefined) return pendingAnswer(runId, outcomes.flatMap((outcome) => (outcome.kind === 'pending' ? [outcome.scorer] : [])), held, kept);
 
   return settledAnswer(runId, outcomes.flatMap((outcome) => (outcome.kind === 'unlabelled' ? [outcome] : [])), kept);
 }
