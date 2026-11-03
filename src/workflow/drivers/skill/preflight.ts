@@ -98,13 +98,24 @@ export function stepNeeds(description: WorkflowDescription, settled: ReadonlySet
   const left = (step: string): boolean => isLeft(step, settled);
   const interactive = facts.interactive.filter(left);
   const gates = facts.gates.filter((gate) => left(gate.step));
-  const required = gates.filter((gate) => gate.required);
-  const open = gates.filter((gate) => !gate.required && onlyPersonAnswers(gate, { autoApprove: true }));
+  const personOnly = gates.filter((gate) => onlyPersonAnswers(gate, { autoApprove: true }));
 
+  return personClauses({
+    interactive, gates: personOnly.filter((gate) => gate.required), open: personOnly.flatMap((gate) => (gate.required ? [] : [gate.step])),
+  });
+}
+
+/**
+ * What needs a person, a clause each: the `interactive` steps, the `gates` only a person can answer, and the `open`
+ * choices, which have no default for --auto-approve to answer.
+ */
+export function personClauses({ interactive, gates, open = [] }: {
+  interactive: readonly string[]; gates: ReadonlyArray<{ step: string; kind: 'approve' | 'choose' }>; open?: readonly string[];
+}): string[] {
   return [
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
-    ...(required.length > 0 ? [`only a person can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}`] : []),
-    ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open.map((gate) => gate.step))} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
+    ...(gates.length > 0 ? [`only a person can answer the ${gatesNoun(gates)} at ${listOf(gates.map((gate) => gate.step))}`] : []),
+    ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open)} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
   ];
 }
 

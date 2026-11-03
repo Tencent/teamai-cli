@@ -11,7 +11,7 @@ import type { WorkflowEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
 import { describeWorkflow, type WorkflowDescription } from './workflow/describe.js';
-import { canFor, ceilingOf, isLeft, listOf, localReason, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
+import { canFor, ceilingOf, isLeft, listOf, localReason, personClauses, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
 import { launchToolFor } from './workflow/drivers/local/local-driver.js';
 import { memberTools, type MemberTool } from './tool-launch/call.js';
 import { executableOf, type LaunchTool } from './tool-launch/tools.js';
@@ -185,16 +185,12 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
   return offer;
 }
 
-/** `steps`, ready now and only a person can take them, as clauses: one per kind, as the static check words them. */
+/** `steps`, ready now and only a person can take them, as the clauses the static check words them with. */
 function personNeeds(steps: readonly PersonStep[]): string[] {
-  const of = (kind: PersonStep['kind']): string[] => steps.flatMap((step) => (step.kind === kind ? [step.step] : []));
-  const [interactive, approvals, choices] = [of('interactive'), of('approve'), of('choose')];
-
-  return [
-    ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
-    ...(approvals.length > 0 ? [`only a person can answer the approval${approvals.length > 1 ? 's' : ''} at ${listOf(approvals)}`] : []),
-    ...(choices.length > 0 ? [`only a person can answer the choice${choices.length > 1 ? 's' : ''} at ${listOf(choices)}`] : []),
-  ];
+  return personClauses({
+    interactive: steps.flatMap((step) => (step.kind === 'interactive' ? [step.step] : [])),
+    gates: steps.flatMap(({ step, kind }) => (kind === 'interactive' ? [] : [{ step, kind }])),
+  });
 }
 
 /** A step that runs a command or a prompt, with what it needs of the machine that runs it, as describe gives it. */
