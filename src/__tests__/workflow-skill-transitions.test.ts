@@ -2095,30 +2095,6 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a session that resumes a run it judges itself gets the score --next on done, and none with --no-judge',
-    rows: ['R19'],
-    run: async () => {
-      const made = await harness({ review: REVIEW }, { scorers: SCORERS });
-      const resumedToDone = async (answers: { judge?: false }) => {
-        const created = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
-        if (!('data' in created)) throw new Error(JSON.stringify(created));
-        const run = RunIdSchema.parse(created.data.run);
-        await turnOf(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers }, { tool: 'copilot' }));
-        const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
-        if (!dispatch) throw new Error(`no dispatch for ${run}`);
-        await made.call({ kind: 'ack', run, attempt: dispatch.attempt });
-        childWrites(dispatch.brief, { kind: 'output', output: 'Reviewed the change.' });
-        await made.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
-        return { run, turn: await turnOf(await made.call({ kind: 'next', run, wait: false })) };
-      };
-      const judged = await resumedToDone({});
-      expect(judged.turn.actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [], score: expect.stringContaining(`teamai score --next --json '{"run":"${judged.run}",`) }]);
-      expect(judged.turn.actions[0]).toHaveProperty('score', expect.stringContaining('"can":{"judge":{"isolation":"best-effort","access":"read","tools":["copilot"]}}'));
-      expect((await resumedToDone({ judge: false })).turn.actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [] }]);
-      return made.rows;
-    },
-  },
-  {
     name: 'a resume decides session judging from the scorers its run pinned, not from a later pull',
     rows: ['R19'],
     run: async () => {
@@ -2130,12 +2106,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       fs.writeFileSync(path.join(made.config.repo.localPath, 'scorers', 'review-quality.md'), SCORERS['review-quality'].replace('samplingRate: 100', 'samplingRate: 100\nisolation: verified'));
       await syncScorerDefinitions(made.config);
       await turnOf(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} }, { tool: 'copilot' }));
-      const [dispatch] = dispatches(await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' })));
-      if (!dispatch) throw new Error(`no dispatch for ${run}`);
-      await made.call({ kind: 'ack', run, attempt: dispatch.attempt });
-      childWrites(dispatch.brief, { kind: 'output', output: 'Reviewed the change.' });
-      await made.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
-      expect((await turnOf(await made.call({ kind: 'next', run, wait: false }))).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [], score: expect.stringContaining(`"run":"${run}"`) }]);
+      expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8'))).toMatchObject({ sessionJudge: { tool: 'copilot' } });
       return made.rows;
     },
   },

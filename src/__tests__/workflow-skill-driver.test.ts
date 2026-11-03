@@ -952,19 +952,16 @@ steps:
     expect(JSON.stringify([done, end])).not.toMatch(/"kind":"(choose|person)"/);
   });
 
-  it('an unattended run its session judges reaches done without waiting, and done names the score --next the session takes judge leases of the run with', async () => {
+  it('an unattended run its session judges reaches done without waiting', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
     unverifiedClaude(harness);
     expect(await harness.call({ kind: 'describe', name: 'review' }, { mode: 'unattended' })).toMatchObject({ data: { describe: {
       judging: { kind: 'session', tool: 'claude' }, ask: { kind: 'start' },
     } } });
-    const { run, turn: done } = await reviewed(harness, 'unattended');
+    const { turn: done } = await reviewed(harness, 'unattended');
     expect(done).not.toHaveProperty(['data', 'turn', 'then']);
-    const [action] = z.object({ data: z.object({ turn: z.object({ actions: z.array(z.object({ kind: z.literal('done'), outcome: z.string(), score: z.string() })) }) }) }).parse(done).data.turn.actions;
-    expect(action).toMatchObject({ outcome: 'succeeded', score: expect.stringMatching(/^teamai score --next --json '\{.*\}'$/) });
-    const payload: unknown = JSON.parse(action?.score.slice(action.score.indexOf("'") + 1, -1) ?? '');
-    expect(payload).toEqual({ run, driver: { kind: 'skill', machine: expect.any(String), workspace: harness.work, can: { judge: { isolation: 'best-effort', access: 'read', tools: ['claude'] } } }, running: [] });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
   it('names a Pi session pi from PI_SESSION_ID, though teamai renders no agents for Pi, so describe judges its scored steps by the session', async () => {
@@ -1102,32 +1099,22 @@ steps:
       .toMatchObject({ error: { code: 'confirm_needed', next: 'teamai workflow start --describe review --driver skill --tools default=claude' } });
   });
 
-  it('a session whose host names no tool names it with --tools: its runner resolves the step\'s model for that tool, and done leases the judging to it', async () => {
+  it('a session whose host names no tool names it with --tools: its runner resolves the step\'s model for that tool', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('    prompt: Review the change.', '    prompt: Review the change.\n    model: claude-opus-4-1') }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
     roots.push(harness.root);
     unverifiedClaude(harness);
     const { chosen, turn: done } = await reviewed(harness, 'attended', { tool: 'claude' });
     expect(chosen).toMatchObject({ data: { turn: { actions: [{ kind: 'dispatch', model: { by: 'step', name: 'claude-opus-4-1' } }] } } });
-    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded', score: expect.stringContaining('"tools":["claude"]') }] } } });
+    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
-  it('a session that takes a run over judges it with its own tool', async () => {
-    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
-    roots.push(harness.root);
-    unverifiedClaude(harness);
-    const { run } = await reviewed(harness);
-    expect(await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b', tool: 'pi' }))
-      .toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', score: expect.stringContaining('"tools":["pi"]') }] } } });
-  });
-
-  it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off, and done names no score --next', async () => {
+  it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
     unverifiedClaude(harness);
     const { chosen, turn: done } = await reviewed(harness, 'attended', { host: 'h4' });
     expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
-    expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
   });
 
   it('a run of commands alone that its session judges asks the host question for its judging alone: h4 turns judging off, and its steps still run in a new worktree', async () => {
@@ -1141,15 +1128,6 @@ steps:
     const run = RunIdSchema.parse(started.data.turn.run);
     expect(await harness.call({ kind: 'choose', run, choice: 'h4' })).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
     await eventsToDone(harness, run);
-  });
-
-  it('a run started without judging reaches done without the score --next of the session\'s own judge', async () => {
-    const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
-    roots.push(harness.root);
-    unverifiedClaude(harness);
-    const { turn: done } = await reviewed(harness, 'attended', { judge: false });
-    expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
-    expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
   });
 
   it('a deliver: pr step shows waiting delivering, and the poll returns done with the PR', async () => {
