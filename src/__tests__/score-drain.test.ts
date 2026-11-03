@@ -755,6 +755,28 @@ steps:
     expect(onReports(origin, 'sessions')).toEqual([]);
   });
 
+  it('does not run at the end of an unattended local run of teamai-finished-sessions, which a drain drives itself', async () => {
+    const { config } = await team({ 'workflows/teamai-finished-sessions.yaml': `schemaVersion: v1alpha1
+name: teamai-finished-sessions
+description: Stands in for the shipped one.
+invoke: deny
+private: true
+inputs:
+  publish: policy | always | never
+  scorers: [string]
+steps:
+  - id: sessions
+    command: echo listed
+` });
+    await syncWorkflowDefinitions(config);
+    vi.stubEnv('CI', 'true');
+
+    const started = await driveLocally(() => workflowStart('teamai-finished-sessions', { driver: 'local', inputs: '{"publish":"policy","scorers":[]}' }));
+
+    expect(started.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(started.lines).not.toContain('ℹ Draining before exit (teamai score --drain)');
+  });
+
   it('does not run at the end of an attended local run', async () => {
     const { config } = await team({ 'workflows/mark.yaml': MARK });
     await syncWorkflowDefinitions(config);

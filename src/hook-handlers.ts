@@ -410,6 +410,14 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepar
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
 }
 
+/** Start `workflow resume <run> --driver local` in `cwd` with `env`, a process this one does not wait for. */
+async function spawnDetachedResume(run: string, { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
+  const { resolveCliEntry } = await import('./builtin-hooks.js');
+  const { spawn } = await import('node:child_process');
+  spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', run, '--driver', 'local'], { cwd, detached: true, stdio: 'ignore', windowsHide: true, env })
+    .on('error', (e) => log.debug(`hook-dispatch: detached workflow resume ${run} failed to start: ${e.message}`)).unref();
+}
+
 /**
  * Starts teamai-finished-sessions in `config` as the CLI's own run, then drives it with `workflow resume` in a process
  * this one does not wait for, with no agent evidence, though the hook runs inside an agent session. A run already working
@@ -432,19 +440,15 @@ async function startFinishedSessions(config: LocalConfig): Promise<void> {
       case 'idle':
         return;
       case 'started':
-        break;
+        await spawnDetachedResume(started.run, { cwd: started.cwd, env: withoutAgentEvidence(process.env) });
+
+        return;
       default: {
         const unhandled: never = started;
 
         return unhandled;
       }
     }
-
-    const { resolveCliEntry } = await import('./builtin-hooks.js');
-    const { spawn } = await import('node:child_process');
-    spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', started.run, '--driver', 'local'], {
-      cwd: started.cwd, detached: true, stdio: 'ignore', windowsHide: true, env: withoutAgentEvidence(process.env),
-    }).on('error', (e) => log.debug(`hook-dispatch: detached workflow resume ${started.run} failed to start: ${e.message}`)).unref();
   } catch (cause) {
     log.debug(`hook-dispatch: teamai-finished-sessions did not start: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
