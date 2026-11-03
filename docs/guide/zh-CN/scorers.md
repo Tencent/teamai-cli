@@ -721,6 +721,12 @@ steps:
 
 在编程会话中，运行里没有别的步骤可做、且 `continue_on_failure` 允许时，skill 驱动会立即放弃这样的评审步骤。
 
+评审运行本身从不被评审。步骤运行 `teamai-score` 或 `teamai-finished-sessions` 并列出 `scorers:` 时，pull 以 `judging_scored` 拒绝它，该文件不会运行：
+
+```text
+⚠ [workflows] workflows/wrap-up.yaml:1: field "steps.score.scorers": step "score" runs teamai-score and lists scorers, so its judging would be judged in turn. Remove scorers from the step
+```
+
 ## 批量评审
 
 ```yaml

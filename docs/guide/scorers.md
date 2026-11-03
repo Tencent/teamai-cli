@@ -721,6 +721,12 @@ A judge no driver here can take keeps `teamai-score` open, and its own `timeout`
 
 In a coding session, the skill driver gives up such a judge step at once, when nothing else of the run is left and `continue_on_failure` lets it.
 
+A judging run is never judged. Pull refuses `scorers:` on a step that runs `teamai-score` or `teamai-finished-sessions`, with `judging_scored`, and the file does not run:
+
+```text
+⚠ [workflows] workflows/wrap-up.yaml:1: field "steps.score.scorers": step "score" runs teamai-score and lists scorers, so its judging would be judged in turn. Remove scorers from the step
+```
+
 ## Batching
 
 ```yaml
