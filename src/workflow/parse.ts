@@ -1259,6 +1259,29 @@ interface Reference {
   with?: { node: Node; keys: Array<{ name: string; node: Node }> };
 }
 
+/** `schema` as an `inputs:` entry writes it, so a missing input's diagnostic shows the values to pass. */
+function declaredType(schema: OutputSchema): string {
+  switch (schema.type) {
+    case 'enum':
+      return schema.values.join(' | ');
+    case 'array':
+      return `[${declaredType(schema.items)}]`;
+    case 'object':
+      return `{ ${Object.entries(schema.fields).map(([field, type]) => `${field}: ${declaredType(type)}`).join(', ')} }`;
+    case 'string':
+    case 'number':
+    case 'boolean':
+    case 'json':
+    case 'workflow':
+      return schema.type;
+    default: {
+      const unhandled: never = schema;
+
+      return unhandled;
+    }
+  }
+}
+
 /** Diagnostics for a step that runs a workflow file, checked against the version that step would run. */
 function referenceDiagnostics({ file, lineCounter }: ParseContext, files: WorkflowFiles, reference: Reference): WorkflowDiagnostic[] {
   const { label, field, workflow, node } = reference;
@@ -1282,8 +1305,8 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
   const passed = new Set(reference.with.keys.map((key) => key.name));
 
   return [
-    ...Object.keys(inputs).filter((name) => !passed.has(name)).map((name) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
-      `${label} with does not pass input "${name}", which workflow "${workflow}" declares`)),
+    ...Object.entries(inputs).filter(([name]) => !passed.has(name)).map(([name, type]) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
+      `${label} with does not pass input "${name}", which workflow "${workflow}" declares as ${declaredType(type)}`)),
     ...reference.with.keys.filter((key) => !Object.hasOwn(inputs, key.name)).map((key) => locate(file, lineCounter, key.node, `${field}.with.${key.name}`,
       `${label} with.${key.name} is not an input workflow "${workflow}" declares`)),
   ];

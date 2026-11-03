@@ -1958,10 +1958,10 @@ steps:
     const result = await syncAndStart(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/ship.yaml:7: field "steps[0].with": step "check" with does not pass input "title", which workflow "check" declares',
+      'workflows/ship.yaml:7: field "steps[0].with": step "check" with does not pass input "title", which workflow "check" declares as string',
       'workflows/ship.yaml:9: field "steps[0].with.titel": step "check" with.titel is not an input workflow "check" declares',
-      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "issue", which workflow "check" declares',
-      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "title", which workflow "check" declares',
+      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "issue", which workflow "check" declares as number',
+      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "title", which workflow "check" declares as string',
       'workflows/ship.yaml:17: field "steps[2].with.issue": step "compile" with.issue is not an input workflow "build" declares',
     ]);
     expect(result.cached).toEqual(['build', 'check']);
