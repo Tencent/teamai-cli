@@ -8,11 +8,10 @@
  *   writes it, and so does the pull git runs when it creates a worktree.
  * - The next pull drops teamai's servers from the key of a worktree that is
  *   gone, and leaves the member's own there.
- * - The team's tracked `.mcp.json` shows no change.
- * - Turning the option on moves teamai's servers out of `.mcp.json` (recorded,
- *   or proven teamai's by the team's history), keeps the member's own, and
- *   deletes a file only teamai's servers made. Turning it off moves them back.
  * - Uninstall removes exactly teamai's servers from the local scope.
+ *
+ * Turning the option on and off, a tracked `.mcp.json` and CODEBUDDY_CONFIG_DIR
+ * are in mcp-locate-targets.test.ts.
  *
  * Each case gets its own HOME, team remote (a local bare repo reached through
  * a synthetic HTTPS URL) and business repo. Fixture git calls that fire
@@ -54,15 +53,13 @@ const SECRET_API = [
   '    headers:', '      Authorization: "Bearer ${LAB_TOKEN}"',
 ];
 const PLAIN_API = ['  - name: plain-api', '    transport: http', '    url: https://plain.example.com/mcp'];
-const OLD_API = ['  - name: old-api', '    transport: http', '    url: https://old.example.com/mcp'];
 const servers = (...defs: string[][]): string => ['servers:', ...defs.flat(), ''].join('\n');
 const TEAM = {
   'rules/team-rule.md': '# Team\n\nTeam rule.\n',
   'mcp/mcp.yaml': servers(SECRET_API, PLAIN_API),
   'env/env.yaml': `variables:\n  - key: LAB_TOKEN\n    value: "${TOKEN}"\n`,
 };
-const sharing = (gitExclude: boolean): string =>
-  `sharing:\n  gitExclude:\n    enabled: ${gitExclude}\n  mcp:\n    autoApply: true\n`;
+const SHARING = 'sharing:\n  gitExclude:\n    enabled: true\n  mcp:\n    autoApply: true\n';
 /** What the member already has in `.codebuddy.json`: none of it is teamai's. */
 const CODEBUDDY_JSON = {
   mcpServers: { 'my-user-server': { type: 'stdio', command: 'my-user-tool', args: [] } },
@@ -83,8 +80,6 @@ interface Member {
   /** The built CLI, whatever its exit code. */
   cli(args: string[], cwd: string): Run;
   teamCommit(files: Record<string, string | null>): void;
-  /** Turn the team's `sharing.gitExclude` on or off. */
-  gitExclude(on: boolean): void;
   /** A committed business repo at `dir`, set up with teamai in project scope for `agents`. */
   project(dir: string, opts?: { agents?: string; committed?: Record<string, string> }): string;
   /** `git worktree add`, whose post-checkout hook prepares it with a pull; `pull` also pulls there, as a member opening it would. */
@@ -94,11 +89,10 @@ interface Member {
   local(key: string): Record<string, unknown> | undefined;
 }
 
-function member(name: string, opts: { files?: Record<string, string>; gitExclude?: boolean; configDir?: string } = {}): Member {
+function member(name: string): Member {
   const base = fs.mkdtempSync(path.join(sandbox, `${name}-`));
   const home = path.join(base, 'home');
-  const configDir = opts.configDir ? path.join(base, opts.configDir) : home;
-  const configFile = path.join(configDir, '.codebuddy.json');
+  const configFile = path.join(home, '.codebuddy.json');
   fs.mkdirSync(home, { recursive: true });
   write(configFile, json(CODEBUDDY_JSON));
   const env = (): NodeJS.ProcessEnv => {
@@ -112,7 +106,6 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
       FORCE_COLOR: '0',
     };
     delete e.CODEBUDDY_CONFIG_DIR;
-    if (opts.configDir) e.CODEBUDDY_CONFIG_DIR = configDir;
     delete e.LAB_TOKEN;
     return e;
   };
@@ -133,10 +126,8 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
   const url = `https://git.example.com/team/${path.basename(base)}.git`;
   const seed = path.join(base, 'seed');
   const remote = path.join(base, 'team.git');
-  const teamYaml = (on: boolean): string =>
-    [`team: ${path.basename(base)}`, `repo: ${url}`, 'provider: git', 'reviewers: []', sharing(on)].join('\n');
-  write(path.join(seed, 'teamai.yaml'), teamYaml(opts.gitExclude ?? true));
-  for (const [rel, content] of Object.entries(opts.files ?? TEAM)) write(path.join(seed, rel), content);
+  write(path.join(seed, 'teamai.yaml'), [`team: ${path.basename(base)}`, `repo: ${url}`, 'provider: git', 'reviewers: []', SHARING].join('\n'));
+  for (const [rel, content] of Object.entries(TEAM)) write(path.join(seed, rel), content);
   git(['init', '-q', '-b', 'main'], seed);
   git(['add', '-A'], seed);
   git(['commit', '-q', '-m', 'seed'], seed);
@@ -161,7 +152,6 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
     teamai,
     cli: (args, cwd) => run(process.execPath, [CLI, ...args], cwd),
     teamCommit,
-    gitExclude: (on) => teamCommit({ 'teamai.yaml': teamYaml(on) }),
     project: (dir, popts = {}) => {
       write(path.join(dir, 'README.md'), '# app\n');
       for (const [rel, content] of Object.entries(popts.committed ?? {})) write(path.join(dir, rel), content);
@@ -289,80 +279,6 @@ describe.skipIf(process.platform === 'win32')('CodeBuddy gets the team\'s projec
     expect(withoutLocal(m.codebuddyJson(), main, wt)).toEqual(CODEBUDDY_JSON);
   }, 120_000);
 
-  it('leaves the team\'s tracked .mcp.json as it is', () => {
-    const m = member('tracked');
-    const teamFile = json({ mcpServers: { 'repo-server': { type: 'stdio', command: 'repo-tool', args: [] } } });
-    const main = m.project(path.join(caseDir('tracked'), 'main'), { committed: { '.mcp.json': teamFile } });
-
-    expect(read(path.join(main, '.mcp.json'))).toBe(teamFile);
-    expect(status(m, main)).toEqual([]);
-    expect(names(m.local(main))).toEqual(TEAM_SERVERS);
-  }, 120_000);
-
-  it('turning the option on moves teamai\'s servers out of .mcp.json and releases its MCP line; turning it off moves them back', () => {
-    const m = member('move-out', { gitExclude: false });
-    const main = m.project(path.join(caseDir('move-out'), 'main'));
-    expect(names(projectServers(main))).toEqual(TEAM_SERVERS);
-    expect(mcpLines(excludeFileOf(m, main))).toEqual(['/.mcp.json']);
-    expect(m.local(main)).toBeUndefined();
-
-    m.gitExclude(true);
-    m.teamai(['pull'], main);
-
-    expect(fs.existsSync(path.join(main, '.mcp.json'))).toBe(false);
-    expect(names(m.local(main))).toEqual(TEAM_SERVERS);
-    expect(mcpLines(excludeFileOf(m, main))).toEqual([]);
-    expect(status(m, main)).toEqual([]);
-
-    m.gitExclude(false);
-    m.teamai(['pull'], main);
-
-    expect(names(projectServers(main))).toEqual(TEAM_SERVERS);
-    expect(m.local(main)).toBeUndefined();
-    expect(m.codebuddyJson()).toEqual(CODEBUDDY_JSON);
-    expect(mcpLines(excludeFileOf(m, main))).toEqual(['/.mcp.json']);
-  }, 120_000);
-
-  it('turning the option on also moves the servers teamai has no record of, removes a removed server\'s copy, and keeps the member\'s', () => {
-    const m = member('unrecorded', { gitExclude: false, files: { ...TEAM, 'mcp/mcp.yaml': servers(SECRET_API, PLAIN_API, OLD_API) } });
-    const main = m.project(path.join(caseDir('unrecorded'), 'main'));
-    const file = path.join(main, '.mcp.json');
-    const written = JSON.parse(read(file)) as { mcpServers: Record<string, unknown> };
-    expect(names(written.mcpServers)).toEqual(['old-api', ...TEAM_SERVERS]);
-
-    // teamai's record of what it wrote is lost; the member adds a server of their own.
-    const projects = path.join(m.home, '.teamai', 'projects');
-    for (const partition of fs.readdirSync(projects)) {
-      fs.rmSync(path.join(projects, partition, 'workspaces'), { recursive: true, force: true });
-    }
-    const mine = { type: 'stdio', command: 'my-tool', args: [] };
-    write(file, json({ mcpServers: { ...written.mcpServers, mine } }));
-    m.teamCommit({ 'mcp/mcp.yaml': servers(SECRET_API, PLAIN_API) });
-    m.gitExclude(true);
-    m.teamai(['pull'], main);
-
-    expect(projectServers(main)).toEqual({ mine });
-    expect(names(m.local(main))).toEqual(TEAM_SERVERS);
-    expect(read(file)).not.toContain(TOKEN);
-  }, 120_000);
-
-  it('turning the option on keeps in .mcp.json, and names, a teamai server the member changed', () => {
-    const m = member('edited', { gitExclude: false });
-    const main = m.project(path.join(caseDir('edited'), 'main'));
-    const file = path.join(main, '.mcp.json');
-    const written = JSON.parse(read(file)) as { mcpServers: Record<string, unknown> };
-    const edited = { ...written.mcpServers['plain-api'] as object, headers: { 'X-Mine': 'yes' } };
-    write(file, json({ mcpServers: { ...written.mcpServers, 'plain-api': edited } }));
-
-    m.gitExclude(true);
-    const out = m.teamai(['pull'], main);
-
-    expect(projectServers(main)).toEqual({ 'plain-api': edited });
-    expect(out).toContain(`Kept MCP server plain-api in ${file}: you changed it since teamai wrote it.`);
-    expect(names(m.local(main))).toEqual(TEAM_SERVERS);
-    expect(read(file)).not.toContain(TOKEN);
-  }, 120_000);
-
   it('uninstall removes exactly teamai\'s servers from the local scope of every worktree', async () => {
     const m = member('uninstall');
     const root = caseDir('uninstall');
@@ -382,10 +298,8 @@ describe.skipIf(process.platform === 'win32')('CodeBuddy gets the team\'s projec
   }, 120_000);
 
   // From a checkout that holds none of teamai's servers itself: the removed worktree's records are the only ones.
-  it.each([
-    { state: 'parses', broken: false },
-    { state: 'does not parse until it is repaired', broken: true },
-  ])('uninstall from another checkout removes a removed worktree\'s servers, keeping the data home while the .codebuddy.json they are in $state', async ({ broken }) => {
+  // The uninstall after the repair is the one a .codebuddy.json that parses gets.
+  it('uninstall from another checkout removes a removed worktree\'s servers, keeping the data home while the .codebuddy.json they are in does not parse until it is repaired', async () => {
     const m = member('uninstall-gone');
     const root = caseDir('uninstall-gone');
     const main = m.project(path.join(root, 'main'));
@@ -400,17 +314,15 @@ describe.skipIf(process.platform === 'win32')('CodeBuddy gets the team\'s projec
       .map((dir) => path.join(m.home, '.teamai', 'projects', dir, 'managed-local-mcp.json')).filter((file) => fs.existsSync(file));
     expect(Object.keys(JSON.parse(read(records()[0])) as Record<string, unknown>)).toEqual([`codebuddy:local:${wt}`]);
 
-    if (broken) {
-      const repaired = read(m.configFile);
-      write(m.configFile, '{ "projects": {');
-      const first = m.cli(['uninstall', '--force'], main);
+    const repaired = read(m.configFile);
+    write(m.configFile, '{ "projects": {');
+    const first = m.cli(['uninstall', '--force'], main);
 
-      expect(first.code, first.output).toBe(1);
-      expect(first.output).toContain('Uninstall incomplete');
-      expect(first.output).toContain(m.configFile);
-      expect(Object.keys(JSON.parse(read(records()[0])) as Record<string, unknown>)).toEqual([`codebuddy:local:${wt}`]);
-      write(m.configFile, repaired);
-    }
+    expect(first.code, first.output).toBe(1);
+    expect(first.output).toContain('Uninstall incomplete');
+    expect(first.output).toContain(m.configFile);
+    expect(Object.keys(JSON.parse(read(records()[0])) as Record<string, unknown>)).toEqual([`codebuddy:local:${wt}`]);
+    write(m.configFile, repaired);
     const uninstall = m.cli(['uninstall', '--force'], main);
 
     expect(uninstall.code, uninstall.output).toBe(0);
@@ -419,13 +331,4 @@ describe.skipIf(process.platform === 'win32')('CodeBuddy gets the team\'s projec
     expect(records()).toEqual([]);
   }, 120_000);
 
-  it('writes to the .codebuddy.json in CODEBUDDY_CONFIG_DIR when it is set', () => {
-    const m = member('config-dir', { configDir: 'codebuddy-config' });
-    const main = m.project(path.join(caseDir('config-dir'), 'main'));
-
-    expect(m.configFile).not.toBe(path.join(m.home, '.codebuddy.json'));
-    expect(names(m.local(main))).toEqual(TEAM_SERVERS);
-    expect(fs.existsSync(path.join(m.home, '.codebuddy.json'))).toBe(false);
-    expect(projectServers(main)).toBeNull();
-  }, 120_000);
 });

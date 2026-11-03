@@ -1655,6 +1655,35 @@ describe('reconcileHooks — a hook a workspace holds back (#913)', () => {
   });
 });
 
+// #993 bug 12: an unrecorded team hook entry equal to a render of a team hook at any revision is teamai's.
+describe('reconcileHooks — an unrecorded team hook entry, judged by the team\'s hook history', () => {
+  it.each(['cursor', 'copilot', 'zcode'])('leaves one entry for a changed team hook in %s hooks, without the hook manifest', async (tool) => {
+    const root = await fse.realpath(project);
+    const file = path.join(home, `${tool}-hooks.json`);
+    const manifestPath = path.join(home, `${tool}-managed-hooks.json`);
+    const stop = (version: string): HookDef => ({ source: 'team', key: `${tool}-stop`, event: 'Stop', command: `echo ${tool}-stop-${version}`, description: `[teamai:hook:${tool}-stop] Stop` });
+    // Every string of the file that runs the hook: Copilot keeps it as bash, powershell and command.
+    const commands = async (): Promise<string[]> => {
+      const strings = (value: unknown): string[] => typeof value === 'string' ? [value]
+        : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
+      return strings(await fse.readJson(file)).filter((value) => value.includes(`echo ${tool}-stop-`));
+    };
+    await reconcileHooks(file, tool, [stop('v1')], { manifestPath, teamHookProjectRoot: root });
+    const installed = await commands();
+    expect(installed.length).toBeGreaterThan(0);
+    await fse.writeJson(manifestPath, {});
+    const { log } = await import('../utils/logger.js');
+    vi.mocked(log.warn).mockClear();
+
+    await reconcileHooks(file, tool, [stop('v2')], { manifestPath, teamHookProjectRoot: root, teamHookHistory: async () => [stop('v1'), stop('v2')] });
+
+    const updated = await commands();
+    expect(updated).toHaveLength(installed.length);
+    for (const command of updated) expect(command).toContain(`echo ${tool}-stop-v2`);
+    expect(vi.mocked(log.warn).mock.calls.flat().filter((line) => String(line).startsWith('Kept the'))).toEqual([]);
+  });
+});
+
 describe('reconcileTeamHooksForConfig — the old Git-directory hooks', () => {
   it('still delivers the other tools when an old Git-directory hook file holds a broken hooks key', async () => {
     await writeYaml('hooks:\n  - id: lint\n    description: lint\n    event: Stop\n    command: npm run lint\n');
