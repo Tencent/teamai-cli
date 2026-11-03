@@ -1273,44 +1273,7 @@ describe('teamai score --session', () => {
 describe('teamai score --label', () => {
   const labelsFile = () => path.join(root, 'data', 'scores', 'labels.jsonl');
 
-  it('labels the current session by hand with the scorer\'s score and verdict, launches no judge, and writes no reasoning', async () => {
-    const config = await fixture();
-    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
-    fakeClaude('good');
-    vi.stubEnv('CLAUDE_CODE_SESSION_ID', SESSION);
-
-    expect(data(await scoreSession(config, { scorers: ['quality'], label: 'bad' }))).toMatchObject({
-      label: { scorer: 'quality', subject: { platform: 'claude-code', sessionId: SESSION }, label: 'bad', score: 0, passed: false, judge: { kind: 'human' } },
-    });
-    expect(parseScoreLabels(fs.readFileSync(labelsFile(), 'utf8'))).toEqual([expect.objectContaining({
-      source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, label: 'bad', score: 0, passed: false, judge: { kind: 'human' },
-    })]);
-    expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
-    expect(fs.existsSync(path.join(root, 'data', 'scores', 'reasoning'))).toBe(false);
-  });
-
-  it('passes a hand label whose value scores exactly the passing score, as a judge\'s label of it passes', async () => {
-    const config = await fixture({ quality: SCORER.replace('passingScore: 0.5', 'passingScore: 1') });
-    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
-
-    expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], label: 'good' }))).toMatchObject({
-      label: { label: 'good', score: 1, passed: true, judge: { kind: 'human' } },
-    });
-  });
-
-  it('refuses a value the scorer does not list, names the ones it does, and writes nothing', async () => {
-    const config = await fixture();
-    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
-    fakeClaude('good');
-
-    expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['quality'], label: 'missed-bug' })).toEqual({ error: {
-      code: 'label_invalid', message: '"missed-bug" is not a label of scorer quality. Use one of: good, bad.',
-    } });
-    expect(fs.existsSync(labelsFile())).toBe(false);
-    expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
-  });
-
-  it('takes one cached scorer, and no scorer file or batch', async () => {
+  it('refuses --label for more than one scorer or for a scorer file, which a teamai-score run cannot label', async () => {
     const config = await fixture({ quality: SCORER, tests: SCORER });
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fs.writeFileSync(path.join(root, 'draft.md'), SCORER);
@@ -1321,9 +1284,6 @@ describe('teamai score --label', () => {
     } });
     expect(await scoreSession(config, { ...asked, scorers: [path.join(root, 'draft.md')] })).toEqual({ error: {
       code: 'invalid_arguments', message: `--label is stored, and the label of the scorer file ${path.join(root, 'draft.md')} is never stored. Pass the name of a scorer teamai pull cached.`,
-    } });
-    expect(await scoreSession(config, { ...asked, scorers: ['quality'], batch: true })).toEqual({ error: {
-      code: 'invalid_arguments', message: '--label runs no judge. Leave out --batch.',
     } });
     expect(fs.existsSync(labelsFile())).toBe(false);
   });
@@ -1344,22 +1304,17 @@ describe('teamai score --team-session', () => {
     return path.basename(saved.value, '.jsonl');
   }
 
-  it('labels a session a teammate pushed by its origin, by hand and with the model, with no agent', async () => {
+  it('judges a session a teammate pushed by its origin, with no agent', async () => {
     const config = await fixture(undefined, 'git');
     const name = await pushed(getReportsDir(config), { author: 'alice' });
     fakeClaude('good');
 
-    expect(data(await scoreSession(config, { teamSession: { name }, scorers: ['quality'], label: 'bad' }))).toMatchObject({
-      label: { subject: { platform: 'claude-code', sessionId: ALICE_SESSION }, label: 'bad', judge: { kind: 'human' } },
-    });
-    expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
     expect(data(await scoreSession(config, { teamSession: { name }, scorers: ['quality'] }))).toMatchObject({
       label: { subject: { platform: 'claude-code', sessionId: ALICE_SESSION }, label: 'good' },
     });
     expect(fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8')).toContain('Added the retries.');
     const labels = parseScoreLabels(fs.readFileSync(path.join(root, 'data', 'scores', 'labels.jsonl'), 'utf8'));
     expect(labels.map((label) => ({ subject: label.subject, judge: label.judge.kind, agent: label.source === 'session' ? label.agent : 'not a session' }))).toEqual([
-      { subject: { platform: 'claude-code', sessionId: ALICE_SESSION }, judge: 'human', agent: undefined },
       { subject: { platform: 'claude-code', sessionId: ALICE_SESSION }, judge: 'model', agent: undefined },
     ]);
   });
@@ -1407,7 +1362,8 @@ describe('teamai score --team-session', () => {
   it('finds a name on teamai-reports first, else in the archive kept on the default branch before', async () => {
     const config = await fixture(undefined, 'git');
     const legacyOnly = await pushed(config.repo.localPath, { author: 'carol', sessionId: 'c0000000-0000-4000-8000-00000000000c' });
-    const label = async (name: string, author?: string) => scoreSession(config, { teamSession: { name, ...(author ? { author } : {}) }, scorers: ['quality'], label: 'good' });
+    fakeClaude('good');
+    const label = async (name: string, author?: string) => scoreSession(config, { teamSession: { name, ...(author ? { author } : {}) }, scorers: ['quality'] });
 
     expect(data(await label(legacyOnly))).toMatchObject({ label: { subject: { sessionId: 'c0000000-0000-4000-8000-00000000000c' } } });
 
@@ -1429,7 +1385,7 @@ describe('teamai score --team-session', () => {
     const config = await fixture(undefined, 'git');
     await pushed(getReportsDir(config), { author: 'alice' });
 
-    expect(await scoreSession(config, { teamSession: { name: 'claude-code_no-such-session_20261020' }, scorers: ['quality'], label: 'good' })).toEqual({ error: {
+    expect(await scoreSession(config, { teamSession: { name: 'claude-code_no-such-session_20261020' }, scorers: ['quality'] })).toEqual({ error: {
       code: 'session_not_found',
       message: `No session claude-code_no-such-session_20261020 is pushed for ${getRepoIdentity(process.cwd()) ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`,
     } });
@@ -1440,7 +1396,7 @@ describe('teamai score --team-session', () => {
     const config = await fixture(undefined, 'git');
     const name = await pushed(getReportsDir(config), { author: 'alice', sessionId: '' });
 
-    expect(await scoreSession(config, { teamSession: { name }, scorers: ['quality'], label: 'good' })).toEqual({ error: {
+    expect(await scoreSession(config, { teamSession: { name }, scorers: ['quality'] })).toEqual({ error: {
       code: 'session_not_found', message: `The pushed session ${name} records no platform or session id it ran as, so it cannot be scored.`,
     } });
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'labels.jsonl'))).toBe(false);
@@ -1449,7 +1405,7 @@ describe('teamai score --team-session', () => {
   it('refuses a team that keeps no session archive, such as an http team', async () => {
     const config = await fixture(undefined, 'http');
 
-    expect(await scoreSession(config, { teamSession: { name: 'claude-code_fix-the-retry-loop_20261020' }, scorers: ['quality'], label: 'good' })).toEqual({ error: {
+    expect(await scoreSession(config, { teamSession: { name: 'claude-code_fix-the-retry-loop_20261020' }, scorers: ['quality'] })).toEqual({ error: {
       code: 'unsupported_repo', message: 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.',
     } });
   });

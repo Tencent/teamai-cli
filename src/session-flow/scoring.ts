@@ -11,7 +11,7 @@ import { loadModelAliases } from '../models/aliases.js';
 import { scoresDir } from '../scorers/home.js';
 import { batchesScorers, verdictsOf, type Verdict } from '../scorers/batch.js';
 import { cachedScorerNames, NOT_A_SCORER, pinScorers, scorerSourceHash } from '../scorers/cache.js';
-import { formatScorerDiagnostic, isScorerFile, parseScorer, type ScorerDefinition, type ScorerLabel } from '../scorers/definition.js';
+import { formatScorerDiagnostic, isScorerFile, parseScorer, type ScorerDefinition } from '../scorers/definition.js';
 import { answerSchema, evidenceDirOf, type Rubrics } from '../scorers/evidence.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, type RequiredIsolation } from '../scorers/isolation.js';
@@ -303,16 +303,13 @@ function storedOf(labels: readonly ScoreLabel[], scorer: string, subject: Sessio
  * label is tried and never kept: it is printed next to the stored labels of its scorer and the control's verdict.
  */
 export async function scoreSession(from: LocalConfig, demand: SessionDemand, now = new Date().toISOString()): Promise<WorkflowEnvelope> {
+  // A hand label starts a teamai-score run; only one beside a scorer file reaches here.
   if (demand.label !== undefined) {
     const [scorer, ...more] = new Set(demand.scorers);
 
-    if (more.length > 0) return failure('invalid_arguments', '--label is a value of one scorer. Pass one --scorer.');
-
-    if (scorer !== undefined && isScorerFile(scorer)) {
-      return failure('invalid_arguments', `--label is stored, and the label of the scorer file ${scorer} is never stored. Pass the name of a scorer teamai pull cached.`);
-    }
-
-    if (demand.batch) return failure('invalid_arguments', '--label runs no judge. Leave out --batch.');
+    return failure('invalid_arguments', more.length > 0
+      ? '--label is a value of one scorer. Pass one --scorer.'
+      : `--label is stored, and the label of the scorer file ${scorer} is never stored. Pass the name of a scorer teamai pull cached.`);
   }
 
   const files = new Map<string, Asked>();
@@ -393,10 +390,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     asked.push({ scorer: value, pin: question.pin, definition: question.definition });
   }
 
-  const byHand = demand.label === undefined ? undefined : handValueOf(asked, demand.label);
-
-  if (byHand && 'error' in byHand) return byHand;
-  log.info(safeText(`${byHand ? 'Labelling' : 'Scoring'} ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`));
+  log.info(safeText(`Scoring ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`));
 
   if (pushedBy !== undefined) log.info(`Pushed by ${safeText(pushedBy)}`);
   const envSecrets = await knownSecrets(config);
@@ -405,12 +399,6 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   const judged = judgeSession({ platform, found, captures, mask, agent });
   const { subject, context: { prompt, used } } = judged;
   log.info(`First prompt: ${safeText(prompt) || '(none)'}`);
-
-  if (byHand) {
-    const labelled = await labelByHand(config, { ...byHand, judged, now });
-
-    return 'error' in labelled ? labelled : answered(config, labelled, demand.push);
-  }
 
   const tools = installedConfinedTools([]);
 
@@ -537,41 +525,4 @@ async function answered<TScored extends Record<string, unknown>>(config: LocalCo
   const pushed = await LabelStore.push(config);
 
   return 'data' in pushed ? { data: { ...scored, ...pushed.data } } : pushed;
-}
-
-/** The label `value` of the one scorer `asked` names, as `--label` gives it, or why it is not one of its labels. */
-function handValueOf([member]: readonly Asked[], value: string): { member: Asked; given: ScorerLabel } | Failure {
-  if (!member) return failure('invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.');
-  const given = member.definition.labels.find((candidate) => candidate.value === value);
-
-  if (given) return { member, given };
-
-  return failure('label_invalid', `"${value}" is not a label of scorer ${member.scorer}. Use one of: ${member.definition.labels.map((candidate) => candidate.value).join(', ')}.`);
-}
-
-/**
- * Keeps the member's own label of `judged` with `value`, its score and verdict as the scorer gives them, as a model
- * label is kept but with no judge and no reasoning file. It shares no key with a model label, so neither replaces the other.
- */
-async function labelByHand(config: LocalConfig, { member, given, judged, now }: { member: Asked; given: ScorerLabel; judged: JudgedSession; now: string }) {
-  const { scorer, pin, definition } = member;
-  const passed = given.score >= definition.passingScore;
-
-  const label = sessionLabel({
-    scorer,
-    rubric: pin.teamRevision ? { sourceHash: pin.sourceHash, teamRevision: pin.teamRevision } : { sourceHash: pin.sourceHash },
-    label: given.value,
-    score: given.score,
-    passed,
-    judge: { kind: 'human' },
-    scoredAt: now,
-  }, judged.subject, judged.context);
-
-  const written = await LabelStore.append(config, [{ label }]);
-  const [kept] = written.status === 'done' ? written.kept : [];
-
-  if (!kept) return failure('busy', 'Another teamai process holds the label store, so no label was written. Label the session again.');
-  log.info(`${scorer}: ${given.value} (score ${given.score}, ${passed ? 'passed' : 'did not pass'}), by hand. No judge ran.`);
-
-  return { label: { scorer, subject: judged.subject, label: given.value, score: given.score, passed, judge: { kind: 'human' }, labelId: kept.id } };
 }
