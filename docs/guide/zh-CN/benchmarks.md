@@ -772,6 +772,19 @@ $ jq -c .data.done.finally done.json
 
 这个关卡是运行的一个步骤，所以无论谁启动了运行，运行的驱动都会在这里结束它。用 `"fail_on_regression":true` 执行 `workflow start teamai-benchmark` 会运行同一个关卡。它的退出码跟随运行的结果，而 `finally` 步骤不会改变这个结果，所以要读取 `done.finally`。
 
+这个关卡由团队修改。要在下降时只警告而不让任务失败，替换 `regression` 步骤，其余保持与 teamai 的相同：
+
+```yaml
+# workflows/teamai-benchmark.yaml：下降只在 CI 日志中警告，任务仍然通过
+finally:
+  # report，与 teamai 的相同
+  - id: regression
+    needs: [report]
+    if: steps.report.outputs.regression == 'dropped'
+    command: echo "::warning title=Benchmark regression::$TEXT"
+    env: { TEXT: "{{ steps.report.outputs.text }}" }
+```
+
 要把评分器反复判定的失败变成一个修改团队资产、每个失败加一个回归任务的 PR，并在每个工具上对比改动前后，见[自我改进](self-improvement.md)。
 
 ## 在 CI 中运行

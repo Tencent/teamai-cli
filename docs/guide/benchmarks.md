@@ -772,6 +772,19 @@ $ jq -c .data.done.finally done.json
 
 The gate is a step of the run, so the run's driver ends it there whoever started it. `workflow start teamai-benchmark` with `"fail_on_regression":true` runs the same gate. Its exit code follows the run's outcome, which a `finally` step does not change, so read `done.finally`.
 
+The gate is the team's to change. To warn of a drop instead of failing the job, replace the `regression` step and keep the rest as teamai's:
+
+```yaml
+# workflows/teamai-benchmark.yaml: a drop warns in the CI log, and the job still passes
+finally:
+  # report, as teamai's
+  - id: regression
+    needs: [report]
+    if: steps.report.outputs.regression == 'dropped'
+    command: echo "::warning title=Benchmark regression::$TEXT"
+    env: { TEXT: "{{ steps.report.outputs.text }}" }
+```
+
 To turn a scorer's repeated failures into a PR that changes the team's assets and adds one regression task each, proven on every tool before and after, see [Self-improvement](self-improvement.md).
 
 ## Run in CI
