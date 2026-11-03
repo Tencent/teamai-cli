@@ -21,6 +21,7 @@ import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/ty
 import { ScoreAnswer } from '../scorers/score-answer.js';
 import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
 import { LabelStore } from '../scorers/label-store.js';
+import { log } from '../utils/logger.js';
 import { Marks } from '../scorers/marks.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
 import { evidenceHash } from '../scorers/scoring-evidence.js';
@@ -1049,8 +1050,36 @@ describe('what teamai score answers for a run its local driver drove', () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const reviewed = await reviewedRun(config);
     const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { batch: true, demand: 'named' }, judge: { answer: { quality: { label: 'good', reasoning: 'Covers it.' }, coverage: { label: 'bad', reasoning: 'No tests.' } } } });
+    const info = vi.spyOn(log, 'info').mockImplementation(() => undefined);
 
-    expect(await ScoreAnswer.of(config, runId, ended, ['quality', 'coverage'])).toEqual({ data: { run: runId, labels: [expect.objectContaining({ scorer: 'quality', label: 'good' }), expect.objectContaining({ scorer: 'coverage', label: 'bad' })] } });
+    const answered = await ScoreAnswer.of(config, runId, ended, ['quality', 'coverage']);
+
+    expect(answered).toEqual({ data: { run: runId, labels: [expect.objectContaining({ scorer: 'quality', label: 'good' }), expect.objectContaining({ scorer: 'coverage', label: 'bad' })] } });
+    const reasoning = z.object({ data: z.object({ labels: z.array(z.object({ reasoning: z.string() })) }) }).parse(answered).data.labels.map((label) => label.reasoning);
+    expect(info.mock.calls.map(([line]) => line)).toEqual([
+      `quality: good (score 1, passed). Reasoning: ${reasoning[0]}`,
+      `coverage: bad (score 0, did not pass). Reasoning: ${reasoning[1]}`,
+      `To share what went wrong, ask your agent to read ${reasoning[1]} and share it with the team (teamai contribute).`,
+    ]);
+  });
+
+  it('names the session a label that did not pass is of, so the agent can share what went wrong with it', async () => {
+    const config = await team({}, { quality: scorer() });
+    plantSession(path.join(root, 'app'), 'one', 'Fix the login bug.');
+    const { runId, ended } = await walk(config, 'session:claude-code:one', { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'bad', reasoning: 'It missed the bug.' } } });
+    const info = vi.spyOn(log, 'info').mockImplementation(() => undefined);
+
+    await ScoreAnswer.of(config, runId, ended, ['quality']);
+
+    expect(info.mock.calls.map(([line]) => line)).toContainEqual(expect.stringMatching(/^To share what went wrong, ask your agent to read .+ and share it with the team \(teamai contribute --session-id one\)\.$/u));
+  });
+
+  it('gives no label to a scorer whose evidence could not be gathered, and says why', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const reviewed = await reviewedRun(config);
+    const { runId, ended } = await walk(config, `run:${reviewed}:review:1`, { inputs: { scorers: ['quality'], demand: 'named' }, fake: { evidence: { ok: false, code: 'evidence_missing', message: 'The session is gone.' } } });
+
+    expect(await ScoreAnswer.of(config, runId, ended, ['quality'])).toEqual({ error: { code: 'score_step_failed', message: `Run ${runId}: quality got no label (score_step_failed): step score[0].evidence failed: The session is gone..`, labels: [] } });
   });
 
   it('answers the code of a scorer its judge left unlabelled', async () => {
@@ -1100,6 +1129,7 @@ describe('what teamai score answers for a run its local driver drove', () => {
 
     expect(await ScoreAnswer.of(config, runId, { data: { run: runId, done: { outcome: 'failed' } } }, ['quality'])).toBeUndefined();
     expect(await ScoreAnswer.of(config, runId, { error: { code: 'step_failed', message: 'The run failed.' } }, ['quality'])).toBeUndefined();
+    expect(await ScoreAnswer.of(config, runId, { data: { run: runId } }, ['quality'])).toBeUndefined();
     expect(await ScoreAnswer.of(config, 'r0000000000000000', { data: { run: 'r0000000000000000', done: { outcome: 'succeeded' } } }, ['quality'])).toBeUndefined();
   });
 });
