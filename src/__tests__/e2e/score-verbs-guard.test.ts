@@ -52,3 +52,16 @@ describe('teamai score label and write outside a teamai-score attempt', () => {
     expect(fs.readdirSync(home)).toEqual([]);
   });
 });
+
+describe('teamai score subjects --lapsed where the config does not load', () => {
+  it('refuses with why the config could not be read, not as if teamai were not set up', () => {
+    const broken = path.join(root, 'broken-home');
+    fs.mkdirSync(path.join(broken, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(broken, '.teamai', 'config.yaml'), 'repo: [unclosed\n');
+
+    const { status, stdout } = cli(['score', 'subjects', '--lapsed'], { HOME: broken, USERPROFILE: broken });
+
+    expect(status).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({ error: { code: 'not_initialized', message: expect.stringContaining('could not be read') } });
+  });
+});

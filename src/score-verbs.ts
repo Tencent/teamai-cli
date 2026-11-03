@@ -5,7 +5,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit } from './config.js';
+import { autoDetectInit, NotInitializedError } from './config.js';
 import { STAGES } from './scorers/definition.js';
 import { EvidenceDir, type GroupRecord } from './scorers/evidence-dir.js';
 import { DEMANDS } from './scorers/marks.js';
@@ -247,19 +247,21 @@ async function subjects(options: SubjectsOptions, ctx: ScoreVerbContext): Promis
 
 export const ScoreVerbs = { plan, evidence, stage, label, write, publish, settle, subjects } as const;
 
-async function currentConfig(): Promise<LocalConfig | undefined> {
+/** The scope of this directory: none where teamai is not set up, and a refusal with why when its config does not load. */
+async function currentConfig(): Promise<{ ok: true; config: LocalConfig | undefined } | Refused> {
   try {
     // oxlint-disable-next-line teamai/config-load-options -- a verb runs in a step's process, which has no preview mode
-    return (await autoDetectInit()).localConfig;
-  } catch {
-    return undefined;
+    return { ok: true, config: (await autoDetectInit()).localConfig };
+  } catch (e) {
+    return e instanceof NotInitializedError ? { ok: true, config: undefined } : refused('not_initialized', e instanceof Error ? e.message : String(e));
   }
 }
 
 /** Runs one verb in this process and prints its answer. */
 export async function scoreVerbCommand(verb: (ctx: ScoreVerbContext) => Promise<ScoreVerbAnswer>): Promise<void> {
   setStderrOnly(true);
-  const answer = await verb({ env: process.env, current: await currentConfig(), now: new Date().toISOString(), cwd: process.cwd() });
+  const current = await currentConfig();
+  const answer = current.ok ? await verb({ env: process.env, current: current.config, now: new Date().toISOString(), cwd: process.cwd() }) : current;
 
   if (answer.ok) {
     process.stdout.write(`${JSON.stringify(answer.output)}\n`);
