@@ -110,11 +110,6 @@ const AttemptStateSchema = z.discriminatedUnion('phase', [
 
 export type AttemptState = z.infer<typeof AttemptStateSchema>;
 
-/** What a run that scores a pass gave one scorer, as its `done` outputs list it: its label, or, with `label` empty, the code of why it gave none. */
-export const ScoredLabelSchema = z.object({ scorer: z.string(), label: z.string(), code: z.string() });
-
-export type ScoredLabel = z.infer<typeof ScoredLabelSchema>;
-
 const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
@@ -212,10 +207,10 @@ const SkillStateSchema = z.object({
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
   /**
-   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them, and `labels` what a run that scores a pass gave each scorer. `version`: what the run
+   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them, and `outputs` the run's declared outputs, as its `done` gave them. `version`: what the run
    * file said when the end was kept, so a tick asks the engine again only once it moved.
    */
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), labels: z.array(ScoredLabelSchema).optional(), version: RunVersionSchema.optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), outputs: z.record(z.string(), z.json()).optional(), version: RunVersionSchema.optional() }).optional(),
 });
 
 export type SkillState = z.infer<typeof SkillStateSchema>;

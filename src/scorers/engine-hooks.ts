@@ -4,17 +4,19 @@
  * never learns how a pass is scored.
  */
 import type { RunMode } from '../launch-context.js';
-import type { LocalConfig } from '../types.js';
+import type { JsonValue, LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import type { StartedRun, WorkflowClient } from '../workflow/protocol.js';
 import type { RunState } from '../workflow/types.js';
 import { removeSubjectEvidence } from './evidence.js';
 import { scoresDir } from './home.js';
 import { verifiedScorers as verifiedAmong } from './judges-here.js';
-import { PassScoring } from './pass-scoring.js';
+import { PassScoring, type ScoredLabels } from './pass-scoring.js';
 import { RunScorers } from './run-scorers.js';
 
 export { scoringUnavailable } from './home.js';
+
+export type { ScoredLabels } from './pass-scoring.js';
 
 export { stageEvidence } from './scoring-evidence.js';
 
@@ -29,6 +31,11 @@ export async function startedByPasses(config: LocalConfig, runId: string, option
   for (const { subject, failure } of starts.refused) log.warn(`The scoring of ${subject} did not start (${failure.code}): ${failure.message}`);
 
   return starts.runs.map(({ subject, scorers, run }) => ({ run, step: subject.step, pass: subject.pass, scorers }));
+}
+
+/** What a teamai-score run's `done` `outputs` gave each scorer, or why this teamai cannot read them. */
+export function scoredLabels(outputs: Record<string, JsonValue> | undefined): ScoredLabels {
+  return PassScoring.labelsOf(outputs);
 }
 
 /**

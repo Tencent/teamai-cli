@@ -221,6 +221,14 @@ describe('PassScoring.said', () => {
     expect(PassScoring.said('run:r1:review:1', run, done([{ item: {}, outcome: 'failed' }])).line).toContain('no scorer sampled it');
   });
 
+  it('says it cannot read a done whose labels are not the shape teamai-score gives, rather than that no scorer sampled it', () => {
+    const renamed = [{ item: {}, outcome: 'success', outputs: { labels: [{ scorer: 'quality', verdict: 'good' }] } }];
+
+    expect(PassScoring.said('run:r1:review:1', run, done(renamed))).toEqual({
+      kind: 'pending', line: expect.stringMatching(new RegExp(`^run:r1:review:1 is not labelled: teamai-score run ${run} answered outputs this teamai cannot read \\(.+\\)\\. Update teamai\\.$`)),
+    });
+  });
+
   it('says a run that failed or was cancelled labelled nothing', () => {
     const failed: WorkflowEnvelope = { data: { done: { run, outcome: 'failed' } } };
 

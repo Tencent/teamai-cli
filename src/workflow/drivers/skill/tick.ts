@@ -3,6 +3,7 @@
  * effect, and feeds each answer back as the next input. It holds the lock only while it ticks, never across a sleep.
  */
 import { driverIdentity } from '../../../driver-identity.js';
+import { scoredLabels } from '../../../scorers/engine-hooks.js';
 import type { ToolId } from '../../../tools.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { ResumeClaim, RunReadied } from '../../protocol.js';
@@ -153,7 +154,8 @@ async function scoringTick(context: SkillContext, start: SkillState): Promise<Sk
 
     if (taken.kind === 'busy') continue;
     const { state: ticked, error } = taken.value;
-    const row = traced(context, scoredRow(state, error ? { run, ticked, error } : { run, ticked }));
+    const labels = scoredLabels(ticked.done?.outputs);
+    const row = traced(context, scoredRow(state, error ? { run, ticked, labels, error } : { run, ticked, labels }));
 
     if (row) state = row.state;
   }

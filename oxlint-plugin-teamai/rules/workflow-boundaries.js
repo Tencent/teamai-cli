@@ -51,6 +51,8 @@ const SKILL_IMPORTS = {
   'src/session-share.ts': { names: ['SessionShare'] },
   // What describe proposes for the inputs of teamai's default teamai-session-to-task, for the calling session.
   'src/session-to-task.ts': { names: ['SessionToTask'] },
+  // What a teamai-score run the session drives gave each scorer, read from its outputs by the module that owns their shape.
+  'src/scorers/engine-hooks.ts': { names: ['scoredLabels', 'ScoredLabels'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.

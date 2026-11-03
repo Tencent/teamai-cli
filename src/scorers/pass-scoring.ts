@@ -9,7 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { RunMode } from '../launch-context.js';
-import type { LocalConfig } from '../types.js';
+import type { JsonValue, LocalConfig } from '../types.js';
 import { getFileMtime, listDirs, readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import type { ScorablePass } from '../workflow/judge-work.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
@@ -36,12 +36,35 @@ export interface ScoredLine {
 
 const StartKeySchema = z.object({ subject: z.string(), run: RunIdSchema });
 
-const EntrySchema = z.object({ scorer: z.string(), label: z.string(), code: z.string() });
+/** What a teamai-score run gave one scorer: its label, or, with `label` empty, the code of why it gave none. */
+const ScoredLabelSchema = z.object({ scorer: z.string(), label: z.string(), code: z.string() });
 
-/** The label entries of every group a teamai-score run's `done` gives, or none. */
-const ScoredSchema = z.object({
-  done: z.object({ outcome: z.string(), outputs: z.object({ labels: z.array(z.object({ outputs: z.object({ labels: z.array(EntrySchema) }).catch({ labels: [] }) })) }).catch({ labels: [] }) }),
-});
+export type ScoredLabel = z.infer<typeof ScoredLabelSchema>;
+
+/**
+ * A teamai-score run's `done` outputs as `workflows/teamai-score.yaml` declares them: the labels of each group, by its
+ * `score` results. A run that planned no group, and a group that broke before `label`, give none.
+ */
+const ScoreRunOutputsSchema = z.object({
+  labels: z.array(z.object({ outputs: z.object({ labels: z.array(ScoredLabelSchema).optional() }).optional() })).optional(),
+}).optional();
+
+/** What teamai-score's `done` `outputs` gave each scorer, or why this teamai cannot read them. */
+export type ScoredLabels = { ok: true; labels: ScoredLabel[] } | { ok: false; reason: string };
+
+function labelsOf(outputs: Record<string, JsonValue> | undefined): ScoredLabels {
+  const parsed = ScoreRunOutputsSchema.safeParse(outputs);
+
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+
+    return { ok: false, reason: issue === undefined ? 'invalid' : `outputs.${issue.path.join('.')}: ${issue.message}` };
+  }
+
+  return { ok: true, labels: (parsed.data?.labels ?? []).flatMap((group) => group.outputs?.labels ?? []) };
+}
+
+const DoneSchema = z.object({ done: z.object({ outcome: z.string(), outputs: z.record(z.string(), z.json()).optional() }) });
 
 function startKey(config: LocalConfig, subject: RunSubject): string {
   const hash = createHash('sha256').update(Subject.format({ kind: 'run', subject })).digest('hex').slice(0, 32);
@@ -114,6 +137,8 @@ async function isRunning(config: LocalConfig, runId: RunId): Promise<boolean> {
 }
 
 export const PassScoring = {
+  labelsOf,
+
   /**
    * Starts a root `teamai-score` run, as the CLI's own start with no agent evidence, for each settled scored pass of
    * `runId` that no call started yet, recorded for the scored run's driver and from its checkout, so that driver drives
@@ -177,10 +202,15 @@ export const PassScoring = {
   /** The line that says what teamai-score run `run` gave `subject`: each scorer's label or code, or why the run has not ended. */
   said(subject: string, run: RunId, envelope: WorkflowEnvelope): ScoredLine {
     if ('error' in envelope) return { kind: 'pending', line: `${subject} is not labelled yet (${envelope.error.code}): ${envelope.error.message}` };
-    const scored = ScoredSchema.safeParse(envelope.data);
+    const done = DoneSchema.safeParse(envelope.data);
 
-    if (scored.success && scored.data.done.outcome !== 'succeeded') return { kind: 'pending', line: `${subject} is not labelled: teamai-score run ${run} ended ${scored.data.done.outcome}.` };
-    const entries = scored.success ? scored.data.done.outputs.labels.flatMap((group) => group.outputs.labels) : [];
+    if (!done.success) return { kind: 'pending', line: `${subject} is not labelled: teamai-score run ${run} answered no done this teamai can read. Update teamai.` };
+
+    if (done.data.done.outcome !== 'succeeded') return { kind: 'pending', line: `${subject} is not labelled: teamai-score run ${run} ended ${done.data.done.outcome}.` };
+    const read = labelsOf(done.data.done.outputs);
+
+    if (!read.ok) return { kind: 'pending', line: `${subject} is not labelled: teamai-score run ${run} answered outputs this teamai cannot read (${read.reason}). Update teamai.` };
+    const entries = read.labels;
     const given = entries.length === 0 ? 'no scorer sampled it' : entries.map(({ scorer, label, code }) => `${scorer} ${label || code}`).join(', ');
 
     return { kind: 'scored', line: `${subject}: ${given} (teamai-score run ${run}).` };

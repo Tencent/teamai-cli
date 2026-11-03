@@ -8,7 +8,6 @@ import { StartedRunSchema, type StartedRun } from '../../protocol.js';
 import { FailureSchema } from '../../step-state.js';
 import { AttemptIdSchema, type AttemptId, type RunId } from '../../store.js';
 import type { WorkflowEnvelope } from '../../types.js';
-import { ScoredLabelSchema } from './skill-state.js';
 import type { AskedGate, EngineReply, ReadLease, ReportReply, RespondReply } from './transitions.js';
 
 /** The lease `raw` the engine sent, as this driver runs it. Undefined when this teamai cannot run it. */
@@ -57,14 +56,6 @@ export function readLease(raw: unknown): ReadLease | undefined {
   return lease;
 }
 
-/**
- * What a run that scores a pass gave each scorer, from its `done` outputs: one entry per scorer of each group, whose
- * outputs list its labels; none for a run whose outputs list nothing of the kind.
- */
-const ScoredOutputsSchema = z.object({
-  labels: z.array(z.object({ outputs: z.object({ labels: z.array(ScoredLabelSchema) }).catch({ labels: [] }) })).catch([]),
-}).catch({ labels: [] }).transform(({ labels }) => labels.flatMap((group) => group.outputs.labels));
-
 const NextDataSchema = z.object({
   /** The attempts this driver listed as running that the engine no longer leases to it. */
   cancelled: z.array(AttemptIdSchema).optional(),
@@ -75,7 +66,7 @@ const NextDataSchema = z.object({
   wait: z.object({
     reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.object({ step: z.string(), missing: z.array(z.string()) })).optional(),
   }).optional(),
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), outputs: ScoredOutputsSchema.optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), outputs: z.record(z.string(), z.json()).optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
 });
 
 /** What `engineReply` reads from an answer to `next`. */
@@ -100,7 +91,7 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): NextAnswer {
 
     if (done.failure) reply.failure = done.failure;
 
-    if (done.outputs !== undefined && done.outputs.length > 0) reply.labels = done.outputs;
+    if (done.outputs !== undefined) reply.outputs = done.outputs;
 
     return { reply, cancelled };
   }

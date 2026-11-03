@@ -4,6 +4,8 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
+import type { JsonValue } from '../../../types.js';
+import type { ScoredLabels } from '../../../scorers/engine-hooks.js';
 import type { ToolId } from '../../../tools.js';
 import type { Judging, RunReadied, RunVersion, StartedRun } from '../../protocol.js';
 import type { ConfinedStepEnd } from '../../confined-step.js';
@@ -15,7 +17,7 @@ import type { WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, ScoredLabel, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
+import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
 
 export interface TransitionRow {
@@ -126,7 +128,7 @@ export const TRANSITIONS = [
   { id: 'J7', state: 'drive, done', input: 'a `next` or report answer that lists `started`', guard: 'judging is on, or the session judges', effects: 'add to `scoring` each run it lists that `scoring` lacks', next: 'unchanged', action: 'event `judging` per run added' },
   { id: 'J8', state: 'drive, done', input: 'a call\'s tick', guard: '`scoring` lists a run', effects: 'tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, host, session and judging, with `scores` naming this run, so its turns lead back here', next: 'unchanged', action: 'the dispatches and stops of those runs join this run\'s turn, and a poll wakes for them' },
   { id: 'J9', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that run is done, and no attempt of it is open', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judged` per scorer its `done` outputs list, with the label or the code; event `judging-off` with its failure when it did not succeed' },
-  { id: 'J10', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that tick answered an error', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judging-off` with the error' },
+  { id: 'J10', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that tick answered an error, or a done whose outputs the scoring module cannot read (`scoredLabels`)', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judging-off` with the error' },
   { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and `scoring` lists a run', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open, and `scoring` lists no run', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
@@ -161,7 +163,7 @@ export type EngineReply =
   | { kind: 'wait'; reason: string; delivering: string[]; held: NonNullable<Waiting['held']> }
   | { kind: 'hitl'; gate: AskedGate }
   /** `out`: the end reached `teamai-reports`, or another install owns the run and publishes it. */
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; labels?: ScoredLabel[]; out: boolean }
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; outputs?: Record<string, JsonValue>; out: boolean }
   | { kind: 'error'; error: WorkflowFailure };
 
 /** What the engine answered the agent's answer to a gate: the answer it recorded, or an error. */
@@ -629,8 +631,11 @@ export function scoringTickRow(state: SkillState): { row: 'J8'; runs: RunId[] } 
   return state.scoring.length > 0 ? { row: 'J8', runs: state.scoring.map(({ run }) => run) } : undefined;
 }
 
-/** J9 and J10: run `run`, which `scoring` lists, as J8's tick of it left it: done, with the labels it gave, or answering `error`. */
-export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillState; error?: WorkflowFailure }): Moved<'J9' | 'J10'> | undefined {
+/**
+ * J9 and J10: run `run`, which `scoring` lists, as J8's tick of it left it: done, with `labels`, what the scoring module
+ * read its outputs to give each scorer, or answering `error`.
+ */
+export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillState; labels: ScoredLabels; error?: WorkflowFailure }): Moved<'J9' | 'J10'> | undefined {
   const scoring = state.scoring.find(({ run }) => run === input.run);
 
   if (!scoring) return undefined;
@@ -640,7 +645,14 @@ export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillS
   const { done, attempts } = input.ticked;
 
   if (!done || attempts.length > 0) return undefined;
-  const judged = (done.labels ?? []).reduce((shown, { scorer, label, code }) => withEvent(shown, label ? { kind: 'judged', step: scoring.step, scorer, label } : { kind: 'judged', step: scoring.step, scorer, label: '', code }), left);
+
+  if (!input.labels.ok) {
+    const message = `Run ${input.run}, which scores step ${scoring.step}, answered outputs this teamai cannot read (${input.labels.reason}). Update teamai.`;
+
+    return { row: 'J10', state: withEvent(left, { kind: 'judging-off', failure: { code: 'run_unreadable', message } }) };
+  }
+
+  const judged = input.labels.labels.reduce((shown, { scorer, label, code }) => withEvent(shown, label ? { kind: 'judged', step: scoring.step, scorer, label } : { kind: 'judged', step: scoring.step, scorer, label: '', code }), left);
 
   if (done.outcome === 'succeeded') return { row: 'J9', state: judged };
   const failure = done.failure ?? { code: 'scoring_run_ended', message: `Run ${input.run}, which scores step ${scoring.step}, ended ${done.outcome} before it labelled the pass.` };
@@ -763,7 +775,7 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
 
       if (engine.failure) done.failure = engine.failure;
 
-      if (engine.labels) done.labels = engine.labels;
+      if (engine.outputs) done.outputs = engine.outputs;
 
       if (input.version && agrees(input.version, engine)) done.version = input.version;
 
