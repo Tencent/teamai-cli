@@ -1261,25 +1261,15 @@ interface Reference {
 
 /** `schema` as an `inputs:` entry writes it, so a missing input's diagnostic shows the values to pass. */
 function declaredType(schema: OutputSchema): string {
-  switch (schema.type) {
-    case 'enum':
-      return schema.values.join(' | ');
-    case 'array':
-      return `[${declaredType(schema.items)}]`;
-    case 'object':
-      return `{ ${Object.entries(schema.fields).map(([field, type]) => `${field}: ${declaredType(type)}`).join(', ')} }`;
-    case 'string':
-    case 'number':
-    case 'boolean':
-    case 'json':
-    case 'workflow':
-      return schema.type;
-    default: {
-      const unhandled: never = schema;
+  if (schema.type === 'enum') return schema.values.join(' | ');
 
-      return unhandled;
-    }
-  }
+  if (schema.type === 'array') return `[${declaredType(schema.items)}]`;
+
+  if (schema.type === 'object') return `{ ${Object.entries(schema.fields).map(([field, type]) => `${field}: ${declaredType(type)}`).join(', ')} }`;
+  // A new type that is not one of these fails to compile here until it is written out above.
+  const scalar: 'string' | 'number' | 'boolean' | 'json' | 'workflow' = schema.type;
+
+  return scalar;
 }
 
 /** Diagnostics for a step that runs a workflow file, checked against the version that step would run. */

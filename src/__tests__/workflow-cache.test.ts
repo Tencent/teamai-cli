@@ -1967,6 +1967,34 @@ steps:
     expect(result.cached).toEqual(['build', 'check']);
   });
 
+  it('names an input a step does not pass by the type its workflow declares, however it nests', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'check', `schemaVersion: v1alpha1
+name: check
+description: Classify the issues.
+inputs:
+  labels: [string]
+  owner: { name: string, level: low | high }
+steps:
+  - id: classify
+    command: node classify.js
+`);
+    writeWorkflow(config, 'ship', `schemaVersion: v1alpha1
+name: ship
+description: Ship the issues.
+steps:
+  - id: check
+    workflow: check
+`);
+
+    const result = await syncAndStart(config);
+
+    expect(result.invalid.map(formatDiagnostic)).toEqual([
+      'workflows/ship.yaml:6: field "steps[0].with": step "check" with does not pass input "labels", which workflow "check" declares as [string]',
+      'workflows/ship.yaml:6: field "steps[0].with": step "check" with does not pass input "owner", which workflow "check" declares as { name: string, level: low | high }',
+    ]);
+  });
+
   it('reports a read of an output the workflow a step runs does not declare, and drops the parent that read it', async () => {
     const config = testConfig();
     fs.mkdirSync(path.join(config.repo.localPath, 'prompts'));
