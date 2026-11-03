@@ -149,7 +149,7 @@ steps:
     { refused: 'takes no input task', fixer: FIX_ONCE.replace('name: fix-once', 'name: fixer'), says: 'which takes no input task' },
     { refused: 'requires another input', fixer: PLAN_THEN_FIX.replace('inputs: { task: string }', 'inputs: { task: string, context: string }'), says: 'which also requires inputs context, and a trial passes only task' },
     { refused: 'has finally steps', fixer: `${PLAN_THEN_FIX}finally:\n  - id: tidy\n    command: node -e "0"\n`, says: 'which has finally steps' },
-    { refused: 'runs an agent with no arm model', fixer: PLAN_THEN_FIX.replace('    tool: codex\n', '    tool: codex\n    agent: planner\n'), says: 'whose step "plan" runs agent "planner", and the arm sets no model' },
+    { refused: 'runs an agent with no arm model', fixer: PLAN_THEN_FIX.replace('    tool: codex\n', '    tool: codex\n    agent: planner\n'), says: 'whose step "plan" runs agent "planner", and the arm sets no model, so the agent\'s own model could replace the tool\'s default it compares. Set model in the suite\'s defaults, which the arm inherits' },
   ])('refuses an arm workflow that $refused', async ({ fixer, says }) => {
     const { config, revision } = teamAt(['ops'], { 'workflows/fixer.yaml': fixer, 'workflows/fix-once.yaml': FIX_ONCE });
 

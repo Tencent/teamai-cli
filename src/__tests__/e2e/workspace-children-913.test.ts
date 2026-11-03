@@ -541,6 +541,21 @@ describe('a workspace delivers what the repos inside it select (#913)', () => {
     expect(list.output).toContain('team:child-model');
   });
 
+  it('takes a held skill out once the workspace excludes it, when its copy equals the version of a child other than the first', async () => {
+    // As the first pull delivered it, which only svc-a, the second child, still ships.
+    const installed = path.join(ws, '.claude', 'skills', 'drift-tool', 'SKILL.md');
+    fs.copyFileSync(path.join(sandbox, 'seed-team', 'skills', 'svc-a', 'drift-tool', 'SKILL.md'), installed);
+    expect((await run(['skill', 'exclude', 'add', 'drift-tool'], ws)).code).toBe(0);
+
+    const result = await run(['pull'], ws);
+
+    expect(result.code, result.output).toBe(0);
+    expect(fs.existsSync(installed), result.output).toBe(false);
+    expect(result.output).not.toContain('Kept skill "drift-tool"');
+    expect(result.output).not.toContain('Skill "drift-tool" differs');
+    expect((await run(['skill', 'exclude', 'remove', 'drift-tool'], ws)).code).toBe(0);
+  });
+
   it('takes a held skill out once the workspace excludes it, when its copy holds no change of the member\'s', async () => {
     const installed = path.join(ws, '.claude', 'skills', 'drift-tool', 'SKILL.md');
     fs.mkdirSync(path.dirname(installed), { recursive: true });
