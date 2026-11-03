@@ -78,7 +78,7 @@ describe('benchmark run --fail-on-regression', () => {
     expect(gateOf(fixture, doneOf(second).run)).toEqual({ regression: 'skipped', report: 'off' });
   }, 240_000);
 
-  it('starts with --driver skill from a team file that allows it, and the run a local driver resumes fails the gate on a drop', async () => {
+  it('starts with --driver skill from a team file that allows it, once the start answers its describe, and the run a local driver resumes fails the gate on a drop', async () => {
     const fixture = await fixtureOfThree();
     const shipped = fs.readFileSync(path.join(ROOT, 'workflows', 'teamai-benchmark.yaml'), 'utf8');
     fixture.pushTeam({ 'workflows/teamai-benchmark.yaml': shipped.replace('invoke: deny', 'invoke: allow') });
@@ -88,9 +88,15 @@ describe('benchmark run --fail-on-regression', () => {
     expect(first.code, said(first)).toBe(0);
     stopFixing(fixture);
 
-    const started = await fixture.teamai(['benchmark', 'run', 'fix', '--driver', 'skill', '--fail-on-regression']);
+    const asked = await fixture.teamai(['benchmark', 'run', 'fix', '--driver', 'skill', '--fail-on-regression']);
+    expect(envelope(asked).error).toMatchObject({ code: 'confirm_needed', next: 'teamai workflow start --describe teamai-benchmark --driver skill' });
+    const inputs = JSON.stringify({ suite: 'fix', aliases: 'team', tasks: [], arms: [], fail_on_regression: true });
+    const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--driver', 'skill', '--confirmed', '--parallel', '1', '--tools', 'default=claude', '--no-judge', '--timeout', '10m', '--inputs', inputs]);
     expect(started.code, said(started)).toBe(0);
     const run = z.object({ run: z.string() }).parse(envelope(started).data?.turn, { error: () => said(started) }).run;
+    // teamai-score's judge step is a prompt step, so the run asks the host question before it drives anything.
+    const chose = await fixture.teamai(['workflow', 'next', run, '--driver', 'skill', '--choice', 'h1']);
+    expect(chose.code, said(chose)).toBe(0);
     const waited = await fixture.teamai(['workflow', 'next', run, '--driver', 'skill', '--wait']);
     const resumed = await fixture.teamai(['workflow', 'resume', run, '--driver', 'local', '--sandbox']);
 

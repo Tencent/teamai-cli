@@ -42,7 +42,9 @@ prompt: Make answer.js export 42.
 startingCommit: '{{startingCommit}}'
 successCriteria: answer.js exports 42.
 `;
-const CAN = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], unattended: true };
+const CAN = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], unattended: true,
+  confined: [{ level: 'verified', access: 'read', tools: ['claude'] }],
+};
 /** A lease `next --prepare` answers, with the place it prepared for the step. */
 const LeaseSchema = z.intersection(LeaseWireSchema, z.object({ cwd: z.string().min(1) }));
 type Lease = z.infer<typeof LeaseSchema>;
@@ -82,7 +84,13 @@ function fromOutside(fixture: BenchmarkFixture, run: string, identity = { kind: 
     const ran = await setUp(lease) ? await launch('/bin/sh', ['-c', lease.command], lease, envOf(lease, lease.envScope)) : undefined;
     return send(lease, ran?.code === 0 ? { outcome: 'success', ...(lease.output !== undefined ? { outputs: JSON.parse(ran.stdout) } : {}) } : { outcome: 'failed' });
   };
-  /** Takes and runs every command lease until `next` answers a prompt lease, or else what it answered. */
+  const judged: string[] = [];
+  /** Answers a lease confined to `dir` with a correct label, as a confined run of claude would, after reading the diff there. */
+  const judge = async (lease: Lease, dir: string): Promise<void> => {
+    judged.push(fs.readFileSync(path.join(dir, 'diff.patch'), 'utf8'));
+    await send(lease, { outcome: 'success', outputs: { answer: { label: 'correct', reasoning: 'It exports 42.' } }, confined: { tool: 'claude', isolation: 'verified', access: 'read' } });
+  };
+  /** Takes and runs every command lease, and judges every confined one, until `next` answers a prompt lease, or else what it answered. */
   const commandsUntil = async (wanted: 'prompt' | 'done'): Promise<Envelope> => {
     for (let polls = 0; polls < 60; polls += 1) {
       const answer = await next();
@@ -94,13 +102,16 @@ function fromOutside(fixture: BenchmarkFixture, run: string, identity = { kind: 
         continue;
       }
       const { lease } = parsed.data.data;
-      if (lease.command === undefined) return answer;
-      await command(lease);
+      if (lease.confined) await judge(lease, lease.confined.dir);
+      else if (lease.command === undefined) return answer;
+      else await command(lease);
     }
     throw new Error(`run ${run} did not reach a ${wanted}`);
   };
   return {
     identity, next,
+    /** The diff each confined judge read, in the order they were leased. */
+    judged,
     /** Reports the prompt lease a success of claude. */
     report: (lease: Lease): Promise<Envelope> => send(lease, { tool: 'claude', outcome: 'success' }),
     /** Runs the prompt lease's setup and its tool, as the lease says, and reports it. */
@@ -254,14 +265,12 @@ describe('git in the clone once the tool ran there', () => {
     agentGit(['add', 'answer.js']);
     agentGit(['commit', '-q', '-m', 'the fix']);
     agentGit(['replace', fixture.startingCommit, 'HEAD']);
-    const judge = { kind: 'external', machine: 'judge', workspace: fixture.work };
 
     const reported = await driver.report(lease);
-    const leased = z.object({ data: z.object({ lease: z.object({ ref: z.string() }) }) })
-      .parse(envelope(await fixture.teamai(['score', '--next', '--json', JSON.stringify({ driver: { ...judge, can: { judge: { isolation: 'verified', tools: ['claude'] } } } })])));
-    await fixture.teamai(['score', '--lease', leased.data.lease.ref, '--json', JSON.stringify({ driver: judge })]);
+    const done = await driver.finish();
 
     expect(reported).toMatchObject({ data: { accepted: true } });
-    expect(fixture.judgeLaunches()).toEqual([expect.objectContaining({ diff: expect.stringContaining('+module.exports = 42;') })]);
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(driver.judged).toEqual([expect.stringContaining('+module.exports = 42;')]);
   }, 120_000);
 });

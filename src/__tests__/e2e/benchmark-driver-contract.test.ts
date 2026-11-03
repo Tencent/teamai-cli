@@ -145,7 +145,7 @@ async function drive(fixture: BenchmarkFixture, input: { run: string; can: Recor
   return { leased, held };
 }
 
-const EVERY_STEP = ['plan', 'trials.baselines.fix', 'trials.r1.fix.claude.prompt', 'trials.r1.fix.claude.check', 'report'];
+const EVERY_STEP = ['plan', 'trials.baselines.fix', 'trials.r1.fix.claude.prompt', 'trials.r1.fix.claude.check', 'subjects', 'report'];
 
 describe('the benchmark workflow, driven from outside', () => {
   it('runs only the trial whose tool the driver lists, and the suite timeout settles the other not_run', async () => {
@@ -160,7 +160,8 @@ describe('the benchmark workflow, driven from outside', () => {
 
       const result = await drive(fixture, { run: runId, can: SANDBOX_CLAUDE, prepare: true, maxPolls: 40 });
 
-      expect(result.leased).toEqual(EVERY_STEP);
+      // The suite timeout ends the run's steps before subjects, so only its finally step, report, runs after the check.
+      expect(result.leased).toEqual([...EVERY_STEP.slice(0, 4), 'report']);
       expect(result.done).toMatchObject({ outcome: 'failed', failure: { code: 'timeout' } });
       expect(result.done?.outputs.text).toContain('| claude | claude | tool default (team) | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 100% (1/1) |');
       expect(result.done?.outputs.text).toContain('| codex | codex | tool default (team) | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0% (0/1) |');
