@@ -181,14 +181,17 @@ function handGroup(request: PlanRequest, judged: Judged): { ok: true; groups: Pl
   return { ok: true, groups: [{ subject: Subject.format(request.subject), hand: request.label, scorers: only.name, model: '', ci: false, protected: false }] };
 }
 
-/** The sampled scorers, grouped: a scorer with a check alone, else those that resolve to one judge and take the same stages. */
+/**
+ * The sampled scorers, every one on a named demand, grouped: a scorer with a check alone, else those that resolve to one
+ * judge and take the same stages.
+ */
 async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[][]> {
   const aliases = await loadModelAliases(request.attempt.config);
   const tools = installedConfinedTools(judged.prefer);
   const groups = new Map<string, Candidate[]>();
   const batch = request.batch || judged.batch === true;
 
-  for (const candidate of judged.candidates.filter(judged.sampled)) {
+  for (const candidate of judged.candidates.filter((one) => request.demand === 'named' || judged.sampled(one))) {
     const chosen = chooseJudgeModel(aliases, candidate.definition, tools);
 
     if (!chosen.ok) {

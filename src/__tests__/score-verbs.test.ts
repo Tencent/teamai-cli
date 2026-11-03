@@ -276,6 +276,15 @@ describe('score plan', () => {
     expect(await plan('session:claude-code:two', 'named')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
   });
 
+  it('takes every named scorer on a named demand, whatever it samples, of a session and of a pass', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer({ rate: 0 }), coverage: scorer({ rate: 0 }) });
+    const planned = async (subject: string) => ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'named' },
+      (await (await scoreRun(config, { subject, scorers: ['quality'], demand: 'named' })).next('plan')).ctx);
+
+    expect(await planned('session:claude-code:one')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+    expect(await planned(`run:${await reviewedRun(config)}:review:1`)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+  });
+
   it('judges a session automatically with each scorer that judges sessions and samples it, and only those', async () => {
     const config = await team({}, { quality: scorer({ extra: 'sessions: true\n' }), coverage: scorer({ rate: 0, extra: 'sessions: true\n' }), tests: scorer() });
     const subject = 'session:claude-code:one';
