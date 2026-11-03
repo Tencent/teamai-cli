@@ -3,8 +3,9 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { deliveredUnion } from '../git-exclude-delivered.js';
+import { applyDeliveredGitExclude, deliveredUnion, describeForeign } from '../git-exclude-delivered.js';
 import { liveDeliveredLists } from '../pull.js';
+import type { LocalConfig } from '../types.js';
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
@@ -143,6 +144,19 @@ describe('deliveredUnion', () => {
       foreign: [{ path: path.join(main, rel), rel, checkout: wt, file: path.join(wt, rel) }],
     });
   });
+
+  it('holds a path back while a checkout teamai has no list for holds other bytes there, and names that checkout', async () => {
+    const result = await deliveredUnion([{ root: main, paths: [path.join(main, rel)] }, { root: wt, paths: null }]);
+
+    expect(result).toEqual({
+      paths: [],
+      foreign: [{ path: path.join(main, rel), rel, checkout: wt, file: path.join(wt, rel), unlisted: true }],
+    });
+    expect(describeForeign(result.foreign)).toEqual([
+      `Left ${rel} visible to git in every checkout until \`teamai pull\` runs in ${wt}: teamai has no record yet of what it delivered there, so ${path.join(wt, rel)} may be the member's, and a git exclude line would hide it too.`,
+    ]);
+    expect(await fse.readFile(path.join(wt, rel), 'utf8')).toBe('mine\n');
+  });
 });
 
 describe('liveDeliveredLists', () => {
@@ -173,5 +187,63 @@ describe('liveDeliveredLists', () => {
     const lists = await liveDeliveredLists(main, records, { key: 'current', paths: { skills: [skill] } });
 
     expect(lists).toEqual([{ root: main, paths: [skill] }, { root: wt, paths: null }]);
+  });
+});
+
+describe('applyDeliveredGitExclude', () => {
+  let tmp: string;
+  let repo: string;
+  let config: LocalConfig;
+  const skill = (): string => path.join(repo, '.claude', 'skills', 'fe-skill', 'SKILL.md');
+  const deliveredLines = async (): Promise<string[]> => {
+    const lines = (await fse.readFile(path.join(repo, '.git', 'info', 'exclude'), 'utf8')).split('\n');
+    return lines.slice(lines.indexOf('# [teamai:delivered:start]') + 1, lines.indexOf('# [teamai:delivered:end]'));
+  };
+  const status = (): string => git(repo, 'status', '--porcelain', '-uall');
+
+  beforeEach(async () => {
+    tmp = await fse.realpath(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-apply-delivered-')));
+    repo = path.join(tmp, 'repo');
+    await fse.outputFile(path.join(repo, 'README.md'), 'app\n');
+    git(repo, 'init', '-q', '-b', 'main');
+    git(repo, 'add', '-A');
+    git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'app');
+    await fse.outputFile(skill(), 'team skill\n');
+    config = {
+      repo: { localPath: path.join(tmp, 'team'), remote: 'local', kind: 'git' },
+      username: 'tester',
+      scope: 'project',
+      additionalRoles: [],
+      projectRoot: repo,
+      dataHome: path.join(tmp, 'data'),
+    };
+  });
+
+  afterEach(async () => {
+    await fse.remove(tmp);
+  });
+
+  it('keeps every delivered line while git cannot locate a tool folder\'s repository, and says so once', async () => {
+    expect(await applyDeliveredGitExclude(config, true, [skill()])).toEqual({ failures: [], notices: [] });
+    const lines = await deliveredLines();
+    expect(lines).toContain('/.claude/skills/fe-skill/SKILL.md');
+    // A tool folder that was a linked checkout or a submodule, its git directory since deleted: git still shows its files here.
+    await fse.outputFile(path.join(repo, '.claude', '.git'), `gitdir: ${path.join(repo, 'gone')}\n`);
+
+    const outcome = await applyDeliveredGitExclude(config, true, [skill()]);
+
+    expect(await deliveredLines()).toEqual(lines);
+    expect(status()).not.toContain('fe-skill');
+    expect(outcome.failures.filter((failure) => failure.startsWith(`Could not keep ${skill()} out of git`))).toHaveLength(1);
+  });
+
+  it('fails the sync, naming the rule, when a member\'s negation re-includes a file of a delivered skill', async () => {
+    await fse.outputFile(path.join(repo, '.gitignore'), '!*.md\n');
+
+    const outcome = await applyDeliveredGitExclude(config, true, [skill()]);
+
+    expect(await deliveredLines()).toContain('/.claude/skills/fe-skill/SKILL.md');
+    expect(outcome.failures).toContain(`git still sees .claude/skills/fe-skill/SKILL.md: \`!*.md\` (${path.join(repo, '.gitignore')}:1) re-includes it. Remove that rule.`);
+    expect(status()).toContain('?? .claude/skills/fe-skill/SKILL.md');
   });
 });

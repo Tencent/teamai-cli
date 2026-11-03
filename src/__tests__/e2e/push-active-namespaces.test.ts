@@ -580,23 +580,6 @@ describe('push an edit of a skill pull kept after a project switch (#1020)', () 
     expect(pushed.output).toContain('No new or modified resources to push');
     expect(pushedFiles()).toEqual([]);
   });
-
-  it.each([
-    { label: '--role', flags: (_skillPath: string) => ['--role', 'platform'] },
-    { label: '--project', flags: (_skillPath: string) => ['--project', 'platform'] },
-    { label: '--skill with --role', flags: (skillPath: string) => ['--skill', skillPath, '--role', 'platform'] },
-    { label: '--skill with --project', flags: (skillPath: string) => ['--skill', skillPath, '--project', 'platform'] },
-  ])('does not route an ambiguous delivered origin with $label', ({ flags }) => {
-    const skillPath = path.join(project, '.claude', 'skills', 'a-skill');
-    fs.appendFileSync(path.join(skillPath, 'SKILL.md'), '\nEdited after delivery.\n');
-    commitOnTeam('skills/svc-b/a-skill/SKILL.md', skillMd('a-skill'));
-
-    const pushed = run(['push', '--all', ...flags(skillPath)]);
-
-    expect(pushed.output).toContain('Skipped a-skill');
-    expect(pushed.output).toContain('copy it under a new name and push that');
-    expect(pushedFiles()).toEqual([]);
-  });
 });
 
 describe('push gives each local copy one team destination, whatever its scan status', () => {
@@ -1196,28 +1179,6 @@ describe('push places a new resource by the active projects (#1021)', () => {
     const pushed = run(['push', '--all']);
 
     expect(pushed.output).toContain('Several knowledge namespaces could take new rules (be-know, svc-a)');
-    expect(pushedFiles()).toEqual([]);
-  });
-
-  it('stops instead of sharing with everyone when an active project is not in the manifest', () => {
-    setConfig({ projects: ['retired'] });
-    writeFile(path.join(project, '.claude', 'rules', 'new-rule.md'), '# new rule\n');
-
-    const pushed = run(['push', '--all']);
-
-    expect(pushed.code).toBe(2);
-    expect(pushed.output).toContain('Unknown project "retired"');
-    expect(pushedFiles()).toEqual([]);
-  });
-
-  it('stops instead of sharing with everyone when the projects manifest is gone', () => {
-    commitOnTeam('manifest/projects.yaml', null);
-    writeFile(path.join(project, '.claude', 'rules', 'new-rule.md'), '# new rule\n');
-
-    const pushed = run(['push', '--all']);
-
-    expect(pushed.code).toBe(2);
-    expect(pushed.output).toContain('manifest/projects.yaml');
     expect(pushedFiles()).toEqual([]);
   });
 

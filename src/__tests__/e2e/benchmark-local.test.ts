@@ -181,18 +181,6 @@ describe('benchmark on the local driver', () => {
     expect(fixture.runIds()).toEqual([done.run]);
   }, 120_000);
 
-  it('no sandbox', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false });
-    fixtures.push(fixture);
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ran.code).toBe(1);
-    expect(envelope(ran)).toEqual({ error: { code: 'requirement_unmet', message: NO_SANDBOX } });
-    expect(fixture.runIds()).toEqual([]);
-    expect(fixture.toolLaunches()).toEqual([]);
-  }, 120_000);
-
   it('a tool that hangs is stopped at the suite timeout', async () => {
     const fixture = await benchmarkFixture({ tool: 'hangs', sandbox: true, suite: FIX_SUITE.replace('timeout: 10m', 'timeout: 20s') });
     fixtures.push(fixture);

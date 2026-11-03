@@ -62,6 +62,12 @@ import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
+import { readWorkspaceChildren } from '../workspace-children.js';
+import { projectDataHome } from '../utils/partition.js';
+import { commitTeamRepo } from './helpers/team-repo-history.js';
+import { installFakeOpencode } from './helpers/fake-opencode.js';
+import { buildPluginSource, OPENCODE_HOOK_FILE, resolveOpencodePluginDir } from '../opencode-hooks.js';
+import YAML from 'yaml';
 
 // The held-lock cases here wait out the whole retry budget; none races a writer.
 _setExcludeLockRetryMs(1);
@@ -4266,6 +4272,135 @@ servers:
       expect(await fse.readFile(codexToml(), 'utf-8')).not.toContain('[mcp_servers.github]');
     });
   });
+  // #993 bug 12: an unrecorded server equal to a team render, today's or one in the team's MCP history, is teamai's.
+  describe('unrecorded servers in a project\'s .mcp.json, judged by the team\'s MCP history', () => {
+    const plainApi = (url: string): string => `servers:\n  - name: plain-api\n    transport: http\n    url: ${url}\n`;
+    const twoServers = (url: string): string => `${plainApi(url)}  - name: other-api\n    transport: http\n    url: https://team.example.com/other\n`;
+    const v = (n: number) => ({ type: 'http', url: `https://team.example.com/v${n}` });
+    const mine = { type: 'http', url: 'https://mine.example.com/mcp' };
+    let projectRoot: string;
+    let dataHome: string;
+    let projectConfig: LocalConfig;
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'r', provider: 'git' });
+    const mcpJson = (): string => path.join(projectRoot, '.mcp.json');
+    const servers = async (): Promise<Record<string, unknown> | undefined> =>
+      (await fse.pathExists(mcpJson()) ? (await fse.readJson(mcpJson())).mcpServers : undefined);
+    const pull = (options: { dryRun?: boolean } = {}) => reconcileMcpForConfig(defaults, projectConfig, options);
+    /** The team commits its MCP servers: the history an unrecorded entry is judged by. */
+    const publish = async (body: string): Promise<void> => {
+      await writeMcpYaml(body);
+      commitTeamRepo(repoPath, 'mcp');
+    };
+    /** Lose every MCP record, as an older release or a restore would. */
+    const removeMcpManifests = async (): Promise<void> => {
+      const found = (await fs.promises.readdir(dataHome, { recursive: true })).filter((rel) => path.basename(rel) === 'managed-mcp.json');
+      expect(found.length).toBeGreaterThan(0);
+      for (const rel of found) await fse.remove(path.join(dataHome, rel));
+    };
+    const keptLines = (): string[] => vi.mocked(log.warn).mock.calls.map(([line]) => String(line)).filter((line) => line.startsWith('Kept MCP server'));
+
+    beforeEach(async () => {
+      projectRoot = path.join(tmpDir, 'app');
+      dataHome = path.join(tmpDir, 'data');
+      await fse.ensureDir(path.join(projectRoot, '.claude'));
+      execFileSync('git', ['init', '-q', projectRoot]);
+      projectConfig = { ...localConfig, scope: 'project', projectRoot, dataHome, enabledAgents: ['claude'] };
+      vi.mocked(log.warn).mockClear();
+      vi.mocked(log.info).mockClear();
+    });
+
+    it('adopts an unrecorded server equal to an older team render, and updates it', async () => {
+      await publish(plainApi(v(1).url));
+      await publish(plainApi(v(2).url));
+      await fse.outputJson(mcpJson(), { mcpServers: { 'plain-api': v(1) } });
+
+      const { changes } = await pull();
+
+      expect(await servers()).toEqual({ 'plain-api': v(2) });
+      expect(changes.filter((c) => c.member)).toEqual([]);
+      expect(keptLines()).toEqual([]);
+    });
+
+    it('adopts an unrecorded server equal to the current team render, so later team changes reach it', async () => {
+      await publish(plainApi(v(1).url));
+      await fse.outputJson(mcpJson(), { mcpServers: { 'plain-api': v(1) } });
+      await pull();
+      expect(await servers()).toEqual({ 'plain-api': v(1) });
+
+      await publish(plainApi(v(3).url));
+      const { changes } = await pull();
+
+      expect(await servers()).toEqual({ 'plain-api': v(3) });
+      expect(changes.filter((c) => c.member)).toEqual([]);
+      expect(keptLines()).toEqual([]);
+    });
+
+    it('records an adopted server that already equals the current team render, so a team removal reaches it', async () => {
+      // Nothing to write on adoption: the record alone must still be saved.
+      await fse.outputJson(mcpJson(), { mcpServers: { 'plain-api': v(1) } });
+      await publish(plainApi(v(1).url));
+
+      // A dry run says it would record the server.
+      await pull({ dryRun: true });
+      expect(vi.mocked(log.info)).toHaveBeenCalledWith(`Would record MCP server plain-api in ${mcpJson()} as teamai's: it already holds the team's plain-api.`);
+      await pull();
+      expect(await servers()).toEqual({ 'plain-api': v(1) });
+
+      await publish('servers: []\n');
+      await pull();
+      // It was the file's only server: the emptied file goes too.
+      expect(await fse.pathExists(mcpJson())).toBe(false);
+    });
+
+    it('removes an unrecorded copy of a server the team deleted, beside servers it still defines', async () => {
+      await publish(twoServers(v(1).url));
+      await pull();
+      await removeMcpManifests();
+
+      await publish('servers:\n  - name: other-api\n    transport: http\n    url: https://team.example.com/other\n');
+      await pull();
+
+      expect(await servers()).toEqual({ 'other-api': { type: 'http', url: 'https://team.example.com/other' } });
+    });
+
+    it('keeps a member\'s server under the name of a server the team deleted', async () => {
+      await publish(plainApi(v(1).url));
+      await fse.outputJson(mcpJson(), { mcpServers: { 'plain-api': mine } });
+      await pull();
+
+      await publish('servers: []\n');
+      await pull();
+
+      expect(await servers()).toEqual({ 'plain-api': mine });
+    });
+
+    it('keeps a member\'s server whose name the team history never had', async () => {
+      await publish(plainApi(v(1).url));
+      await fse.outputJson(mcpJson(), { mcpServers: { 'my-own': mine } });
+      await pull();
+      await removeMcpManifests();
+
+      await publish('servers: []\n');
+      await pull();
+
+      expect(await servers()).toEqual({ 'my-own': mine });
+    });
+
+    it('removes an unrecorded copy of a deleted server from a Codex project config too', async () => {
+      const config = path.join(projectRoot, '.codex', 'config.toml');
+      await fse.ensureDir(path.join(projectRoot, '.codex'));
+      projectConfig = { ...projectConfig, enabledAgents: ['codex'] };
+      await publish(plainApi(v(1).url));
+      await pull();
+      expect(codexServerNames(await fse.readFile(config, 'utf-8'))).toEqual(['plain-api']);
+      await removeMcpManifests();
+
+      await publish('servers: []\n');
+      await pull();
+
+      expect(await fse.pathExists(config) ? await fse.readFile(config, 'utf-8') : '').not.toContain('[mcp_servers.plain-api]');
+    });
+  });
 });
 
 describe('MCP reconcile — OpenCode', () => {
@@ -4589,5 +4724,317 @@ describe('spliceCodexBlock', () => {
     const out = spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n');
     expect(out).not.toContain('command = "old"');
     expect(out.match(/mcp_servers/g)).toHaveLength(1);
+  });
+});
+
+// A workspace with children (#913): a server two members define differently is held back, and each tool keeps what
+// it has installed for it, wherever the current rules place it.
+describe('MCP reconcile — a server a workspace holds back (#913)', () => {
+  const TEAM = 'https://git.example.com/team/team.git';
+  let root: string;
+  let home: string;
+  let ws: string;
+  let repo: string;
+  let workspace: LocalConfig;
+
+  /** A child repo set up with teamai for `project`: its config in the machine partition its path names. */
+  const addChild = async (name: string, project: string): Promise<void> => {
+    const dir = path.join(ws, name);
+    await fse.ensureDir(dir);
+    execFileSync('git', ['init', '-q', dir]);
+    const config = { repo: { localPath: repo, remote: TEAM }, username: 'u', scope: 'project', projects: [project] };
+    await fse.outputFile(path.join(projectDataHome(await fse.realpath(dir)), 'config.yaml'), YAML.stringify(config));
+  };
+  /** The team commits `servers` for `namespace`; null is the root mcp.yaml. */
+  const define = async (namespace: string | null, servers: object[]): Promise<void> => {
+    await fse.outputFile(path.join(repo, 'mcp', ...namespace === null ? [] : [namespace], 'mcp.yaml'), YAML.stringify({ servers }));
+    commitTeamRepo(repo);
+  };
+  const defineEnv = async (namespace: string, variables: object[]): Promise<void> => {
+    await fse.outputFile(path.join(repo, 'env', namespace, 'env.yaml'), YAML.stringify({ variables }));
+    commitTeamRepo(repo);
+  };
+  const http = (name: string, url: string, headers?: Record<string, string>): object => ({ name, transport: 'http', url, ...headers ? { headers } : {} });
+  /** A pull of the workspace: with the children set up under it now. */
+  const pull = async (team: TeamaiConfig = TeamaiConfigSchema.parse({ team: 't', repo: TEAM, provider: 'git' }), config: Partial<LocalConfig> = {}) =>
+    reconcileMcpForConfig(team, await readWorkspaceChildren({ ...workspace, ...config }));
+  const claudeJson = (): string => path.join(home, '.claude.json');
+  const claudeLocal = async (name: string): Promise<{ url?: string; headers?: Record<string, string> } | undefined> =>
+    (await fse.pathExists(claudeJson()) ? (await fse.readJson(claudeJson())).projects?.[ws]?.mcpServers?.[name] : undefined);
+  const projectFile = async (name: string): Promise<{ url?: string; headers?: Record<string, string> } | undefined> => {
+    const file = path.join(ws, '.mcp.json');
+    return await fse.pathExists(file) ? (await fse.readJson(file)).mcpServers?.[name] : undefined;
+  };
+  const warned = (): string => vi.mocked(log.warn).mock.calls.flat().join('\n');
+  /** Every MCP record under the workspace's data home, by file. */
+  const manifests = async (name: 'managed-mcp.json' | 'managed-local-mcp.json'): Promise<string[]> =>
+    (await fs.promises.readdir(path.join(ws, '.teamai'), { recursive: true })).filter((rel) => path.basename(rel) === name).map((rel) => path.join(ws, '.teamai', rel));
+  const recordsIn = async (name: 'managed-mcp.json' | 'managed-local-mcp.json'): Promise<Array<{ name: string; resolved?: boolean }>> =>
+    (await Promise.all((await manifests(name)).map(async (file) => Object.values(await fse.readJson(file) as Record<string, Array<{ name: string; resolved?: boolean }>>).flat()))).flat();
+  /** The children go away for a pull, and come back. */
+  const parkChildren = async (): Promise<() => Promise<void>> => {
+    const parked = path.join(root, 'parked');
+    await fse.move(path.join(ws, 'svc-a'), path.join(parked, 'svc-a'));
+    return () => fse.move(path.join(parked, 'svc-a'), path.join(ws, 'svc-a'));
+  };
+
+  beforeEach(async () => {
+    root = await fse.realpath(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-mcp-held-')));
+    home = path.join(root, 'home');
+    ws = path.join(root, 'ws');
+    repo = path.join(root, 'team');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('XDG_CONFIG_HOME', '');
+    await fse.ensureDir(path.join(home, '.claude'));
+    await fse.ensureDir(path.join(ws, '.claude'));
+    await fse.outputFile(path.join(repo, 'teamai.yaml'), YAML.stringify({ team: 't', repo: TEAM, provider: 'git', reviewers: [] }));
+    await fse.outputFile(path.join(repo, 'manifest', 'projects.yaml'), YAML.stringify({
+      version: 1, projects: ['platform', 'svc-a', 'svc-b'].map((id) => ({ id, resources: { mcp: [id], env: [id] } })),
+    }));
+    await define(null, [http('team-db', 'https://db.example.com/mcp')]);
+    workspace = {
+      repo: { localPath: repo, remote: TEAM }, username: 'u', scope: 'project', additionalRoles: [],
+      projectRoot: ws, dataHome: path.join(ws, '.teamai'), projects: ['platform'], enabledAgents: ['claude'],
+    };
+    await fse.outputFile(path.join(ws, '.teamai', 'config.yaml'), YAML.stringify(workspace));
+    await addChild('svc-a', 'svc-a');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(root);
+  });
+
+  it('does not deliver a held server that no pull delivered, even one it excluded before', async () => {
+    await define('svc-a', [http('never-shipped', 'https://a.example.com')]);
+    await pull(undefined, { excludedSkills: ['never-shipped'] });
+    expect(await claudeLocal('never-shipped')).toBeUndefined();
+    await define('platform', [http('never-shipped', 'https://b.example.com')]);
+
+    await pull();
+
+    expect(warned()).toContain('server "never-shipped" differs between');
+    expect(await claudeLocal('never-shipped')).toBeUndefined();
+  });
+
+  it('does not deliver a held server that allowedHosts kept out of every earlier pull', async () => {
+    const allowing = (hosts: string[]) => TeamaiConfigSchema.parse({ team: 't', repo: TEAM, provider: 'git', sharing: { mcp: { allowedHosts: hosts } } });
+    await define('svc-a', [http('gated-host', 'https://a.example.net')]);
+    await pull(allowing(['*.example.com']));
+    expect(await claudeLocal('team-db')).toBeDefined();
+    expect(await claudeLocal('gated-host')).toBeUndefined();
+    await define('platform', [http('gated-host', 'https://b.example.net')]);
+
+    await pull(allowing(['*.example.com', '*.example.net']));
+
+    expect(warned()).toContain('server "gated-host" differs between');
+    expect(await claudeLocal('gated-host')).toBeUndefined();
+  });
+
+  it('keeps each tool\'s installed version of a held server, one a tool skipped while disabled included', async () => {
+    const codexConfig = (): Promise<string> => fse.readFile(path.join(ws, '.codex', 'config.toml'), 'utf-8');
+    await fse.ensureDir(path.join(ws, '.codex'));
+    const both = { enabledAgents: ['claude', 'codex'] };
+    await define('svc-a', [http('partial-tool', 'https://first.example.com')]);
+    await pull(undefined, both);
+    expect((await claudeLocal('partial-tool'))?.url).toBe('https://first.example.com');
+    expect(await codexConfig()).toContain('https://first.example.com');
+    await define('svc-a', [http('partial-tool', 'https://second.example.com')]);
+    await pull(undefined, { ...both, disabledAgents: ['claude'] });
+    expect(await codexConfig()).toContain('https://second.example.com');
+    await define('platform', [http('partial-tool', 'https://third.example.com')]);
+
+    await pull(undefined, both);
+
+    expect(warned()).toContain('server "partial-tool" differs between');
+    expect((await claudeLocal('partial-tool'))?.url).toBe('https://first.example.com');
+    expect(await codexConfig()).toContain('https://second.example.com');
+    expect(await codexConfig()).not.toContain('https://third.example.com');
+  });
+
+  it('moves a held server with the credential it resolved, and keeps Claude\'s file to the member', async () => {
+    const unpark = await parkChildren();
+    await define('platform', [http('held-credential', 'https://held.example.com/mcp', { 'X-Test': '${MOVE_TOKEN}' })]);
+    await defineEnv('platform', [{ key: 'MOVE_TOKEN', value: 'short' }]);
+    await pull();
+    const tree = path.join(ws, '.mcp.json');
+    expect(await fse.readFile(tree, 'utf-8')).toContain('short');
+    expect((await fs.promises.stat(tree)).mode & 0o777).toBe(0o600);
+    if (!await fse.pathExists(claudeJson())) await fse.writeJson(claudeJson(), {});
+    await fs.promises.chmod(claudeJson(), 0o644);
+    await unpark();
+    await define('svc-a', [http('held-credential', 'https://other.example.com/mcp')]);
+
+    await pull();
+
+    expect(warned()).toContain('server "held-credential" differs between');
+    expect((await claudeLocal('held-credential'))?.headers?.['X-Test']).toBe('short');
+    expect(await projectFile('held-credential')).toBeUndefined();
+    expect((await fs.promises.stat(claudeJson())).mode & 0o777).toBe(0o600);
+  });
+
+  it('keeps a held server in .mcp.json, with its record, when the member has their own of that name in Claude\'s local scope', async () => {
+    const unpark = await parkChildren();
+    await define('platform', [http('held-blocked', 'https://blocked.example.com/mcp')]);
+    await pull();
+    expect((await projectFile('held-blocked'))?.url).toBe('https://blocked.example.com/mcp');
+    await fse.outputJson(claudeJson(), { projects: { [ws]: { mcpServers: { 'held-blocked': { type: 'http', url: 'https://member.example.com/mcp' } } } } });
+    await unpark();
+    await define('svc-a', [http('held-blocked', 'https://other.example.com/mcp')]);
+
+    await pull();
+
+    expect(warned()).toContain('server "held-blocked" differs between');
+    expect((await claudeLocal('held-blocked'))?.url).toBe('https://member.example.com/mcp');
+    expect((await projectFile('held-blocked'))?.url).toBe('https://blocked.example.com/mcp');
+    expect((await recordsIn('managed-mcp.json')).map((record) => record.name)).toContain('held-blocked');
+  });
+
+  it('adopts an equal copy of a held server already in Claude\'s local scope, with the credential it resolved', async () => {
+    const unpark = await parkChildren();
+    await define('platform', [http('held-equal', 'https://equal.example.com/mcp', { 'X-Test': '${EQUAL_TOKEN}' })]);
+    await defineEnv('platform', [{ key: 'EQUAL_TOKEN', value: 'short' }]);
+    await pull();
+    const installed = await projectFile('held-equal');
+    expect(installed?.headers?.['X-Test']).toBe('short');
+    await fse.outputJson(claudeJson(), { projects: { [ws]: { mcpServers: { 'held-equal': installed } } } });
+    await fs.promises.chmod(claudeJson(), 0o644);
+    await unpark();
+    await define('svc-a', [http('held-equal', 'https://other.example.com/mcp')]);
+
+    await pull();
+
+    expect(warned()).toContain('server "held-equal" differs between');
+    expect((await claudeLocal('held-equal'))?.headers?.['X-Test']).toBe('short');
+    expect(await projectFile('held-equal')).toBeUndefined();
+    expect((await fs.promises.stat(claudeJson())).mode & 0o777).toBe(0o600);
+    expect((await recordsIn('managed-local-mcp.json')).find((record) => record.name === 'held-equal')?.resolved).toBe(true);
+  });
+
+  it('keeps a held server whose record was lost in .mcp.json, which Claude leaves for its local scope', async () => {
+    const unpark = await parkChildren();
+    await define('platform', [http('held-lost', 'https://lost.example.com/mcp')]);
+    await pull();
+    expect((await projectFile('held-lost'))?.url).toBe('https://lost.example.com/mcp');
+    let lost = 0;
+    for (const file of await manifests('managed-mcp.json')) {
+      const manifest: Record<string, Array<{ name: string }>> = await fse.readJson(file);
+      for (const [key, records] of Object.entries(manifest)) {
+        const kept = records.filter((record) => record.name !== 'held-lost');
+        lost += records.length - kept.length;
+        manifest[key] = kept;
+      }
+      await fse.writeJson(file, manifest);
+    }
+    expect(lost).toBeGreaterThan(0);
+    await unpark();
+    await define('svc-a', [http('held-lost', 'https://other.example.com/mcp')]);
+
+    await pull();
+
+    expect(warned()).toContain('server "held-lost" differs between');
+    expect((await projectFile('held-lost'))?.url).toBe('https://lost.example.com/mcp');
+  });
+
+  it('keeps a held server whose record was lost in the file OpenCode leaves', async () => {
+    // OpenCode V2: once sharing.gitExclude is on, a project's servers go to .opencode/teamai-mcp.json.
+    vi.stubEnv('PATH', `${installFakeOpencode()}${path.delimiter}${process.env.PATH ?? ''}`);
+    vi.stubEnv('OPENCODE_CONFIG_DIR', '');
+    // The context plugin a pull installs in HOME, from a live CLI entry.
+    const entry = path.join(home, 'teamai-entry.mjs');
+    await fse.outputFile(entry, '// CLI entry');
+    await fse.outputFile(path.join(resolveOpencodePluginDir(home, 'user'), OPENCODE_HOOK_FILE), buildPluginSource(undefined, entry));
+    await fse.ensureDir(path.join(ws, '.opencode'));
+    execFileSync('git', ['init', '-q', ws]);
+    const withOpencode = { enabledAgents: ['claude', 'opencode'] };
+    const excluding = TeamaiConfigSchema.parse({ team: 't', repo: TEAM, provider: 'git', sharing: { gitExclude: { enabled: true } } });
+    const opencodeServer = async (rel: string): Promise<{ url?: string } | undefined> => {
+      const file = path.join(ws, rel);
+      return await fse.pathExists(file) ? (await fse.readJson(file)).mcp?.['moving-api'] : undefined;
+    };
+    await define('svc-a', [http('moving-api', 'https://moving-first.example.com/mcp')]);
+    await pull(undefined, withOpencode);
+    expect((await opencodeServer('opencode.json'))?.url).toBe('https://moving-first.example.com/mcp');
+    await define('platform', [http('moving-api', 'https://moving-second.example.com/mcp')]);
+    await pull(excluding, withOpencode);
+    expect((await opencodeServer('.opencode/teamai-mcp.json'))?.url).toBe('https://moving-first.example.com/mcp');
+    // Its record is lost: no managed-mcp.json names it any more.
+    let lost = 0;
+    for (const file of await manifests('managed-mcp.json')) {
+      const manifest: Record<string, Array<{ name: string }>> = await fse.readJson(file);
+      for (const [key, records] of Object.entries(manifest)) {
+        const kept = records.filter((record) => record.name !== 'moving-api');
+        lost += records.length - kept.length;
+        manifest[key] = kept;
+      }
+      await fse.writeJson(file, manifest);
+    }
+    expect(lost).toBeGreaterThan(0);
+    resetWarnOnce();
+    vi.mocked(log.warn).mockClear();
+
+    // The team lets git see delivered files again.
+    await pull(undefined, withOpencode);
+
+    expect(warned()).toContain('server "moving-api" differs between');
+    expect((await opencodeServer('.opencode/teamai-mcp.json'))?.url).toBe('https://moving-first.example.com/mcp');
+  });
+
+  // Muse Code reads only <root>/.mcp.json, so a workspace's servers go back there once it is on.
+  const withMuse = { enabledAgents: ['claude', 'muse'] };
+
+  it('moves a held server back to .mcp.json with the credential it resolved, once Muse Code reads the servers there', async () => {
+    await define('platform', [http('held-return', 'https://return.example.com/mcp', { 'X-Test': '${RETURN_TOKEN}' })]);
+    await defineEnv('platform', [{ key: 'RETURN_TOKEN', value: 'short' }]);
+    await pull();
+    expect((await claudeLocal('held-return'))?.url).toBe('https://return.example.com/mcp');
+    await define('svc-a', [http('held-return', 'https://other.example.com/mcp')]);
+    await pull();
+    expect(warned()).toContain('server "held-return" differs between');
+    await fse.ensureDir(path.join(home, '.config', 'muse'));
+    // A file readable by others: the move must tighten it, as a delivery of a resolved value does.
+    const tree = path.join(ws, '.mcp.json');
+    if (!await fse.pathExists(tree)) await fse.writeJson(tree, { mcpServers: {} });
+    await fs.promises.chmod(tree, 0o644);
+    // Each pull is its own process, which names a held server again.
+    resetWarnOnce();
+    vi.mocked(log.warn).mockClear();
+    vi.mocked(log.info).mockClear();
+
+    await pull(undefined, withMuse);
+
+    expect(warned()).toContain('server "held-return" differs between');
+    // Muse Code moved them, not git exclude.
+    expect(vi.mocked(log.info).mock.calls.flat().join('\n')).not.toContain('sharing.gitExclude off');
+    expect(await projectFile('team-db')).toBeDefined();
+    expect((await projectFile('held-return'))?.headers?.['X-Test']).toBe('short');
+    expect(await claudeLocal('held-return')).toBeUndefined();
+    expect((await fs.promises.stat(tree)).mode & 0o777).toBe(0o600);
+    expect((await recordsIn('managed-mcp.json')).find((record) => record.name === 'held-return')?.resolved).toBe(true);
+    expect((await recordsIn('managed-local-mcp.json')).map((record) => record.name)).not.toContain('held-return');
+  });
+
+  it('keeps a held server in Claude\'s local scope, with its record, when the member has their own of that name in .mcp.json', async () => {
+    await define('platform', [http('held-stuck', 'https://stuck.example.com/mcp')]);
+    await pull();
+    expect((await claudeLocal('held-stuck'))?.url).toBe('https://stuck.example.com/mcp');
+    await define('svc-a', [http('held-stuck', 'https://other.example.com/mcp')]);
+    await pull();
+    expect(warned()).toContain('server "held-stuck" differs between');
+    const tree = path.join(ws, '.mcp.json');
+    const project = await fse.pathExists(tree) ? await fse.readJson(tree) : {};
+    await fse.writeJson(tree, { ...project, mcpServers: { ...project.mcpServers, 'held-stuck': { type: 'http', url: 'https://member.example.com/mcp' } } });
+    await fse.ensureDir(path.join(home, '.config', 'muse'));
+    resetWarnOnce();
+    vi.mocked(log.warn).mockClear();
+
+    await pull(undefined, withMuse);
+
+    expect(warned()).toContain('server "held-stuck" differs between');
+    expect(await projectFile('team-db')).toBeDefined();
+    expect((await projectFile('held-stuck'))?.url).toBe('https://member.example.com/mcp');
+    expect((await claudeLocal('held-stuck'))?.url).toBe('https://stuck.example.com/mcp');
+    expect((await recordsIn('managed-local-mcp.json')).map((record) => record.name)).toContain('held-stuck');
   });
 });

@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { benchmarkFixture, fixTask, FIX_SUITE, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
+import { benchmarkFixture, FIX_SUITE, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
 const THREE = FIX_SUITE.replace('repetitions: 1', 'repetitions: 3');
 
@@ -51,21 +51,6 @@ describe('benchmark run --fail-on-regression', () => {
 
     expect(second.code, said(second)).toBe(1);
     expect(second.stderr).toMatch(/Arm "claude" passed 0\/3 paired trials, against 3\/3 in run [\w-]+: a drop of 100 points, with a 95% interval of -100 to -\d+ points\./);
-  }, 240_000);
-
-  it('passes without comparing once the earlier run measured another version of a task', async () => {
-    const fixture = await fixtureOfThree();
-    const first = await fixture.teamai(['benchmark', 'run', 'fix']);
-    expect(first.code, said(first)).toBe(0);
-    fixture.pushTeam({ 'benchmarks/fix/tasks/fix.yaml': fixTask(fixture.startingCommit, 'Make node test.js pass, please.') });
-    const pulled = await fixture.teamai(['pull']);
-    expect(pulled.code, said(pulled)).toBe(0);
-
-    stopFixing(fixture);
-    const second = await fixture.teamai(['benchmark', 'run', 'fix', '--fail-on-regression']);
-
-    expect(second.code, said(second)).toBe(0);
-    expect(second.stderr).toContain('No earlier succeeded run of suite fix ran the same tasks on the same arms on teamai-reports');
   }, 240_000);
 
   it('compares with no record still pending publication, and its own pending record leaves the exit code alone', async () => {

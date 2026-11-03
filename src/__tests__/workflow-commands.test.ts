@@ -23,8 +23,8 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { startRun } from '../workflow/engine.js';
 import { publishRun } from '../workflow/handoff.js';
-import { driverLockPath, readRun, runFilePath } from '../workflow/store.js';
-import { workflowNext, workflowPublish, workflowReport, workflowResume, workflowRetry, workflowStart } from '../workflow-commands.js';
+import { driverLockPath, readRun, runFilePath, runsDir } from '../workflow/store.js';
+import { benchmarkRun, workflowNext, workflowPublish, workflowReport, workflowResume, workflowRetry, workflowStart } from '../workflow-commands.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { knownSecrets } from '../env-resolution.js';
 import { skillHarness } from './helpers/skill-harness.js';
@@ -954,5 +954,86 @@ steps:
     await capture(() => workflowRetry(runId, 'build'));
 
     expect(await capture(() => workflowResume(runId, {}))).toEqual({ error: { code: 'busy', message: expect.stringContaining('--sandbox') } });
+  });
+});
+
+describe('benchmark run with a team benchmark workflow', () => {
+  const RELAXED = `schemaVersion: v1alpha1
+name: teamai-benchmark
+description: Run a benchmark suite on any machine.
+invoke: deny
+inputs: { suite: string }
+steps:
+  - id: plan
+    command: teamai benchmark plan "$SUITE"
+    env: { SUITE: "{{ inputs.suite }}" }
+    output: { definition: workflow, plan: json }
+  - id: trials
+    needs: [plan]
+    workflow: { from: plan }
+finally:
+  - id: report
+    command: teamai benchmark report
+    output: { text: string, table: json }
+outputs: { text: steps.report.outputs.text }
+`;
+
+  /**
+   * A member who pulled a git team at its main, which the team remote has, with suite `fix`, whose task starts from the
+   * project checkout's commit, and the team's workflows/teamai-benchmark.yaml `workflow`; benchmark run runs in the checkout.
+   */
+  async function pulledTeam(workflow: string): Promise<void> {
+    const { git, recordDelivery } = await import('./helpers/delivered-checkout.js');
+    const { syncTeamDefinitions } = await import('../benchmark/suite-cache.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-run-'));
+    dirs.push(root);
+    const commit = (repo: string, files: Record<string, string>): string => {
+      for (const [file, text] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+        fs.writeFileSync(path.join(repo, file), text);
+      }
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-qm', 'commit');
+      return git(repo, 'rev-parse', 'HEAD');
+    };
+    const [repo, project] = [path.join(root, 'team'), path.join(root, 'project')];
+    for (const dir of [repo, project]) git(root, 'init', '-q', '-b', 'main', dir);
+    const startingCommit = commit(project, { 'test.js': 'process.exit(1);\n' });
+    const pulled = commit(repo, {
+      'teamai.yaml': 'team: acme\nrepo: https://github.com/acme/team.git\nprovider: git\n',
+      'benchmarks/fix/suite.yaml': 'schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults:\n  tool: claude\narms:\n  - name: claude\nrepetitions: 1\ntimeout: 10m\n',
+      'benchmarks/fix/tasks/fix.yaml': `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Fix.\nstartingCommit: ${startingCommit}\ncheck: { run: node test.js, protect: [test.js] }\n`,
+      'workflows/teamai-benchmark.yaml': workflow,
+    });
+    git(repo, 'update-ref', 'refs/remotes/origin/main', pulled);
+    const config: LocalConfig = {
+      repo: { localPath: repo, remote: 'https://github.com/acme/team.git', kind: 'git' },
+      username: 'tester', scope: 'project', additionalRoles: [], projectRoot: project, dataHome: path.join(root, 'data'), usageReportEnabled: false,
+    };
+    await recordDelivery(config, { rev: pulled.slice(0, 7), targets: ['claude'] });
+    await syncTeamDefinitions(config);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    vi.spyOn(process, 'cwd').mockReturnValue(project);
+  }
+
+  it.each([
+    {
+      takes: 'no input suite', workflow: RELAXED.replace('inputs: { suite: string }', 'inputs: { name: string }').replaceAll('inputs.suite', 'inputs.name'), memberAliases: false,
+      message: 'The team\'s workflows/teamai-benchmark.yaml replaces teamai\'s benchmark workflow and takes no input suite, so teamai benchmark run cannot give it the suite. Add inputs: { suite: string } to it, or remove it to run teamai\'s default.',
+    },
+    {
+      takes: 'no input aliases, under --member-aliases', workflow: RELAXED, memberAliases: true,
+      message: 'The team\'s workflows/teamai-benchmark.yaml replaces teamai\'s benchmark workflow and takes no input aliases, so teamai benchmark run cannot give it --member-aliases. Add aliases: string to its inputs and pass it to teamai benchmark plan --aliases, or run without --member-aliases.',
+    },
+  ])('is refused, leaving no run, when the team workflow takes $takes', async ({ workflow, memberAliases, message }) => {
+    await pulledTeam(workflow);
+    const config = state.config;
+    if (config === undefined) throw new Error('no member');
+
+    const answer = await capture(() => benchmarkRun('fix', { memberAliases }));
+
+    expect(answer).toEqual({ error: { code: 'invalid_inputs', message } });
+    expect(fs.existsSync(runsDir(config)) ? fs.readdirSync(runsDir(config)) : []).toEqual([]);
   });
 });

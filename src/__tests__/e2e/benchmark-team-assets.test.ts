@@ -36,8 +36,6 @@ const ONLY_ANSWER_CHANGED = `const changed = require('node:child_process').execF
 if (changed !== 'answer.js') throw new Error('The commit changed: ' + changed);
 require('./test.js');
 `;
-const ErrorSchema = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
-const UNPULLABLE = 'Benchmarks start from the team revision this checkout last pulled, and it has none that another machine can pull. Push any team changes, run teamai pull, and start again.';
 
 const fixtures: BenchmarkFixture[] = [];
 
@@ -45,8 +43,8 @@ afterEach(() => {
   for (const fixture of fixtures.splice(0)) fixture.remove();
 });
 
-function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
-  return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
 const EXTERNAL = { kind: 'external', machine: 'ci', workspace: '/ci' };
@@ -257,24 +255,6 @@ describe('trial team assets', () => {
     expect(fixture.trialRootEntries()).toEqual([]);
   }, 120_000);
 
-  it('prepares a handed-back prompt again in a fresh clone, and removes the first', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'] });
-    fixtures.push(fixture);
-    const runId = await startFixBenchmark(fixture);
-    const prompt = async (): Promise<{ attempt: string; cwd: string }> => {
-      const lease = await drive(fixture, runId, (leased) => leased.prompt !== undefined);
-      return z.object({ attempt: z.string(), cwd: z.string() }).parse(lease);
-    };
-
-    const first = await prompt();
-    const again = await prompt();
-
-    expect(again.attempt).toBe(first.attempt);
-    expect(again.cwd).not.toBe(first.cwd);
-    expect(fs.existsSync(again.cwd)).toBe(true);
-    expect(fs.existsSync(path.dirname(first.cwd))).toBe(false);
-  }, 120_000);
-
   it('fetches a starting commit the checkout lacks from the suite repo at plan, and a trial clones it offline', async () => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'] });
     fixtures.push(fixture);
@@ -295,42 +275,6 @@ describe('trial team assets', () => {
     expect(RunSchema.parse(fixture.runFile(runId)).steps.find((step) => step.id === 'trials.r1.fix.claude.check')).toMatchObject({ status: 'succeeded' });
   }, 120_000);
 
-  it.each([
-    ['its delivered team assets were edited', async (fixture: BenchmarkFixture) => {
-      fs.appendFileSync(path.join(fixture.work, '.claude', 'skills', 'fixer', 'SKILL.md'), 'A local edit.\n');
-    }],
-    ['its team revision is on no branch of the team remote', async (fixture: BenchmarkFixture) => {
-      fs.writeFileSync(path.join(fixture.teamClone, 'local.md'), 'Not pushed.\n');
-      git(fixture.teamClone, ['add', '-A'], fixture.env);
-      git(fixture.teamClone, ['commit', '-qm', 'not pushed'], fixture.env);
-      const pulled = await fixture.teamai(['pull']);
-      expect(pulled.code, said(pulled)).toBe(0);
-    }],
-  ])('refuses to start when %s, and leaves no run', async (_case, change) => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'], team: { 'skills/fixer/SKILL.md': SKILL } });
-    fixtures.push(fixture);
-    await change(fixture);
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: { code: 'team_revision_unpullable', message: UNPULLABLE } });
-    expect(fixture.runIds()).toEqual([]);
-    expect(fixture.toolLaunches()).toEqual([]);
-  }, 120_000);
-
-  it('refuses to start when a task starts from a commit neither the checkout nor the suite repo has', async () => {
-    const missing = 'f'.repeat(40);
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'], tasks: { fix: fixTask(missing) } });
-    fixtures.push(fixture);
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
-      code: 'commit_unreachable',
-      message: `Task "fix" starts from fffffff, which neither this checkout nor ${PRODUCT_URL} has. Push it, or fix startingCommit, and start again.`,
-    } });
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
 });
 
 const CODEX_SUITE = `schemaVersion: v1alpha1

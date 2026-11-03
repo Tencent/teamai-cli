@@ -2251,3 +2251,49 @@ describe('mr-hint agent language (#1014)', () => {
     }
   });
 });
+
+describe('post-checkout from the git hook in a project', () => {
+  let root: string;
+  let main: string;
+  const head = 'a'.repeat(40);
+  const config = (dataHome: string): LocalConfig => ({
+    scope: 'project', projectRoot: main, username: 'test', additionalRoles: [],
+    repo: { kind: 'git', localPath: path.join(root, 'team'), remote: '' }, dataHome,
+  });
+  const postCheckout = async (cwd: string, gitArgs: string[], localConfig: LocalConfig) => {
+    const result = await createDispatcher({ handlers: buildHandlerRegistry(), localConfig })
+      .dispatch('post-checkout', '*', { cwd, hook_event_name: 'post-checkout', git_args: gitArgs }, 'git');
+    expect(result.errors).toEqual([]);
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { execFileSync } = await import('node:child_process');
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'git-hook-post-checkout-')));
+    main = path.join(root, 'main');
+    fs.mkdirSync(main);
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: main, stdio: 'ignore' });
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: main, stdio: 'ignore' });
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('a branch switch in an existing checkout syncs nothing', async () => {
+    await postCheckout(main, [head, head, '1'], config(path.join(root, 'data')));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('a worktree teamai creates under its own data home is left alone', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const dataHome = path.join(root, 'data');
+    const wt = path.join(dataHome, 'own-worktree');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', wt], { cwd: main, stdio: 'ignore' });
+
+    await postCheckout(wt, ['0'.repeat(40), head, '1'], config(dataHome));
+
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+});

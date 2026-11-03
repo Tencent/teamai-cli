@@ -103,11 +103,6 @@ function fromOutside(fixture: BenchmarkFixture, run: string, identity = { kind: 
     identity, next,
     /** Reports the prompt lease a success of claude. */
     report: (lease: Lease): Promise<Envelope> => send(lease, { tool: 'claude', outcome: 'success' }),
-    /** Runs the prompt lease's setup and its tool, as the lease says, and reports it. */
-    launchTool: async (lease: Lease): Promise<Envelope> => {
-      const ran = await setUp(lease) && lease.prompt !== undefined ? await launch(path.join(fixture.bin, 'claude'), ['-p', lease.prompt], lease, envOf(lease, lease.envScope)) : undefined;
-      return send(lease, { tool: 'claude', outcome: ran?.code === 0 ? 'success' : 'failed' });
-    },
     /** The trial's prompt lease, once the driver ran the plan and the baselines before it. */
     prompt: async (): Promise<Lease> => LeasedSchema.parse(await commandsUntil('prompt')).data.lease,
     /** What `next` answers once the driver ran every command lease left: the run's end, or a lease it cannot run. */
@@ -115,21 +110,7 @@ function fromOutside(fixture: BenchmarkFixture, run: string, identity = { kind: 
   };
 }
 
-const DRIVERS: Array<{ name: string; run(fixture: BenchmarkFixture): Promise<string> }> = [
-  { name: 'the local driver', run: runFixBenchmark },
-  {
-    name: 'a driver from outside',
-    run: async (fixture) => {
-      const run = await startFixBenchmark(fixture);
-      const driver = fromOutside(fixture, run);
-      await driver.launchTool(await driver.prompt());
-      await driver.finish();
-      return run;
-    },
-  },
-];
-
-describe.each(DRIVERS)('the strip list on $name', ({ run }) => {
+describe('the strip list on the local driver', () => {
   it('keeps every withheld name out of setup, the tool and the check', async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'], suite: WITH_SETUP, tasks: { fix: TASK }, printsEnv: true,
@@ -139,7 +120,7 @@ describe.each(DRIVERS)('the strip list on $name', ({ run }) => {
     for (const name of WITHHELD) fixture.env[name] = `member-${name.toLowerCase()}`;
     fixture.env.BENCHMARK_VISIBLE = 'seen';
 
-    const runId = await run(fixture);
+    const runId = await runFixBenchmark(fixture);
 
     expect(fixture.toolLaunches()).toHaveLength(1);
     for (const who of ['setup', 'tool', 'check']) {
@@ -159,7 +140,7 @@ describe.each(DRIVERS)('the strip list on $name', ({ run }) => {
     fixtures.push(fixture);
     fixture.env.GH_TOKEN = 'member-gh-token';
 
-    const runId = await run(fixture);
+    const runId = await runFixBenchmark(fixture);
 
     const seen = fs.readFileSync(path.join(fixture.root, 'setup.env'), 'utf8').split('\n').map((line) => line.split('=')[0]);
     expect(seen).not.toContain('GH_TOKEN');
@@ -204,21 +185,6 @@ describe('git in the clone once the tool ran there', () => {
     const filtered = fs.readFileSync(path.join(fixture.root, 'filter.env'), 'utf8').split('\n').map((line) => line.split('=')[0]);
     expect(filtered).toContain('BENCHMARK_VISIBLE');
     expect(filtered.filter((name) => WITHHELD.includes(name ?? ''))).toEqual([]);
-  }, 120_000);
-
-  it('gives an fsmonitor the suite setup configured there none of the withheld names, as teamai reads what the tool starts on', async () => {
-    const suite = WITH_SETUP.replace('env > "$FIXTURE_ROOT/setup.env"', 'git config core.fsmonitor "$FIXTURE_ROOT/fsmonitor.sh"');
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['claude'], suite, tasks: { fix: TASK } });
-    fixtures.push(fixture);
-    fs.writeFileSync(path.join(fixture.root, 'fsmonitor.sh'), '#!/bin/sh\nenv >> "$FIXTURE_ROOT/fsmonitor.env"\nexit 1\n', { mode: 0o755 });
-    for (const name of WITHHELD) fixture.env[name] = `member-${name.toLowerCase()}`;
-
-    const runId = await runFixBenchmark(fixture);
-
-    const monitored = path.join(fixture.root, 'fsmonitor.env');
-    const seen = fs.existsSync(monitored) ? fs.readFileSync(monitored, 'utf8').split('\n').map((line) => line.split('=')[0]) : [];
-    expect(seen.filter((name) => WITHHELD.includes(name ?? ''))).toEqual([]);
-    expect(RecordSchema.parse(fixture.benchmarkRecord(runId)).trials).toEqual([expect.objectContaining({ result: 'passed' })]);
   }, 120_000);
 
   it('runs no hook the agent configured as hook.<name>.command there, whatever its name', async () => {

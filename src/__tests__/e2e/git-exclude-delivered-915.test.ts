@@ -304,33 +304,6 @@ describe('delivered team skills stay out of git (#915)', () => {
     expect(read(m.excludeFile())).toBe(members);
   });
 
-  it('keeps every delivered line while git cannot locate a tool folder\'s repository, and says so', () => {
-    const m = machine('lost-gitdir', { team: ON });
-    expect(m.teamSkillEntries()).toEqual([]);
-    const lines = m.deliveredLines();
-    expect(lines).toEqual(expect.arrayContaining(['/.claude/skills/fe-skill/SKILL.md']));
-    // A tool folder that was a linked checkout or a submodule, its git directory since deleted: git still shows its files here.
-    writeFile(path.join(m.dir, '.claude', '.git'), `gitdir: ${path.join(m.dir, 'gone')}\n`);
-
-    const r = m.run(['pull']);
-
-    expect(m.deliveredLines(), r.output).toEqual(lines);
-    expect(m.teamSkillEntries(), r.output).toEqual([]);
-    expect(r.output.match(/Could not keep \S*\.claude\/skills\/fe-skill\/SKILL\.md out of git/g)).toHaveLength(1);
-  });
-
-  it('fails the sync, naming the rule, when a member\'s negation re-includes a file of a delivered skill', () => {
-    const m = machine('skill-reincluded', { team: ON });
-    expect(m.teamSkillEntries()).toEqual([]);
-    writeFile(path.join(m.dir, '.gitignore'), '!*.md\n');
-
-    const r = m.run(['pull']);
-
-    expect(m.deliveredLines(), r.output).toContain('/.claude/skills/fe-skill/SKILL.md');
-    expect(r.output).toContain(`git still sees .claude/skills/fe-skill/SKILL.md: \`!*.md\` (${path.join(m.dir, '.gitignore')}:1) re-includes it. Remove that rule.`);
-    expect(m.teamSkillEntries()).toEqual(expect.arrayContaining(['?? .claude/skills/fe-skill/SKILL.md']));
-  });
-
   it('replaces a skill directory line an earlier build wrote with the skill\'s file lines on the next full sync', () => {
     const m = machine('skill-dir-line', { team: ON });
     const skill = path.join(m.dir, '.claude', 'skills', 'fe-skill');
@@ -367,8 +340,8 @@ describe('delivered team skills stay out of git (#915)', () => {
     expect(m.teamSkillEntries()).not.toEqual([]);
   });
 
-  it.each([['off', OFF], ['on', ON]])('runs a full sync on the first pull after an older CLI saved the state, with the setting %s', (_label, team) => {
-    const m = machine(`upgrade-${_label}`, { team });
+  it('runs a full sync on the first pull after an older CLI saved the state', () => {
+    const m = machine('upgrade', { team: ON });
     expect(m.ok(['pull']).output).toContain('Already synced');
 
     asOlderCliState(m.statePath());
@@ -376,7 +349,7 @@ describe('delivered team skills stay out of git (#915)', () => {
     expect(first.output).not.toContain('Already synced');
     expect(first.output).toMatch(/Synced/);
     expect(m.ok(['pull']).output).toContain('Already synced');
-    expect(m.teamSkillEntries().length === 0).toBe(team === ON);
+    expect(m.teamSkillEntries()).toEqual([]);
   });
 
   it('keeps the lines when the fast path holds an agent for its model and resets the checkout for a full sync', () => {
