@@ -47,7 +47,11 @@ export const BenchmarkRecordSchema = z.object({
   limits: TrialLimitsSchema.optional(),
   baselineTeamRevision: z.string(),
   scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) })),
-  tasks: z.array(z.object({ id: z.string(), startingCommit: z.string(), sourceHash: z.string(), baseline: z.enum(BASELINES) })),
+  tasks: z.array(z.object({
+    id: z.string(), startingCommit: z.string(), sourceHash: z.string(), baseline: z.enum(BASELINES),
+    /** The team repo paths the task covers, each listed once, sorted; absent when it covers none. */
+    covers: z.array(z.string().min(1)).nonempty().optional(),
+  })),
   arms: z.array(z.object({
     name: z.string(), tool: z.string(), model: z.string().optional(), alias: z.string().optional(), effort: z.string().optional(),
     source: z.enum(['team', 'member']), team: ArmTeamSchema,
@@ -78,6 +82,12 @@ export const BenchmarkRecordSchema = z.object({
     agent: AgentObservationSchema.optional(),
     /** The team skills the trial loaded, each `loaded`, or `unknown` when a pass that did not load it went unobserved. */
     used: z.record(z.string().min(1), z.enum(['loaded', 'unknown'])).optional(),
+    /**
+     * Each covered skill's routing value on this trial, in #1469's terms from the task instead of a judge: `fit` loaded
+     * and the task covers it, `idle` not loaded and it does not, `extra` loaded and it does not, `missed` not loaded and
+     * it does, `unknown` when no pass reported its loads. Absent when no task covers a skill.
+     */
+    routing: z.record(z.string().min(1), z.enum(['fit', 'idle', 'extra', 'missed', 'unknown'])).optional(),
     /** What this install's judge attempts on the trial stated they cost, failed ones included; `complete: false` when one stated none. */
     scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).optional(),
   })),
@@ -120,7 +130,13 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     return (run.verdicts ?? []).filter((verdict) => verdict.step === `${prefix}${trial.step}` && verdict.pass === pass);
   };
 
-  const watched = [...new Set((plan.skillChanges ?? []).flatMap(({ skills }) => skills.map(({ name }) => name)))];
+  const coveredSkills = [...new Set(plan.tasks.flatMap(({ covers }) => (covers ?? []).flatMap((listed) => {
+        const name = skillNameOfCovered(listed);
+
+        return name !== undefined ? [name] : [];
+      })))];
+
+  const watched = [...new Set([...(plan.skillChanges ?? []).flatMap(({ skills }) => skills.map(({ name }) => name)), ...coveredSkills])];
 
   return definedFields<BenchmarkRecord>({
     suite: { name: plan.suite.name, sourceHash: plan.suite.sourceHash },
@@ -128,7 +144,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     limits: plan.limits,
     baselineTeamRevision: plan.baselineTeamRevision,
     scorers: plan.scorers,
-    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task) })),
+    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined })),
     arms: plan.arms,
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
@@ -138,9 +154,15 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
       const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check: stateOf(checkStepOf(trial)), verdicts }, plan, trial);
       const arm = plan.arms.find(({ name }) => name === trial.arm);
 
+      const covers = (plan.tasks.find(({ id }) => id === trial.task)?.covers ?? []).flatMap((listed) => {
+        const name = skillNameOfCovered(listed);
+
+        return name !== undefined ? [name] : [];
+      });
+
       const entry = arm?.workflow
-        ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
-        : projectionOf(settledPass(work), { arm, watched, unenforced: [] });
+        ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, routingSkills: coveredSkills, covers, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
+        : projectionOf(settledPass(work), { arm, watched, routingSkills: coveredSkills, covers, unenforced: [] });
 
       const recorded: BenchmarkRecord['trials'][number] = { ...trial, step: `${prefix}${trial.step}`, result, ...entry };
 
@@ -168,7 +190,18 @@ function scoringCostOf(verdicts: readonly EntryVerdict[]): BenchmarkRecord['tria
 /** What one prompt pass reported, as a step keeps it. */
 type PromptPass = Pick<StepPass, 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used'>;
 
-type TrialEntry = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used'>;
+type TrialEntry = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used' | 'routing'>;
+
+/**
+ * The bare name a trial's load record shows for a team repo path: `skills/<name>` is `name`, a namespaced
+ * `skills/<namespace>/<name>` is `name`. Undefined for a path under no other root: only skill loads are observed.
+ */
+function skillNameOfCovered(listed: string): string | undefined {
+  if (!listed.startsWith('skills/')) return undefined;
+  const [, second, third] = listed.split('/');
+
+  return third ?? second;
+}
 
 /** What `state` reported of its current pass, or nothing when that pass settled no report. */
 function settledPass(state: StepState | undefined): PromptPass[] {
@@ -212,7 +245,7 @@ function promptPassesUnder(run: RunState, step: string): PromptPass[] {
  * `unenforced`, those no step of the trial could. Each `watched` skill no observed pass loaded is `unknown` when a pass went
  * unobserved; `used` is absent when none was observed. Empty for a trial whose work never ran.
  */
-function projectionOf(passes: readonly PromptPass[], { arm, watched, unenforced }: { arm: PlannedArm | undefined; watched: readonly string[]; unenforced: readonly UnenforcedLimit[] }): TrialEntry {
+function projectionOf(passes: readonly PromptPass[], { arm, watched, routingSkills, covers, unenforced }: { arm: PlannedArm | undefined; watched: readonly string[]; routingSkills: readonly string[]; covers: readonly string[]; unenforced: readonly UnenforcedLimit[] }): TrialEntry {
   const sum = (values: ReadonlyArray<number | undefined>): number | undefined => (values.some((value) => value !== undefined) ? values.reduce<number>((total, value) => total + (value ?? 0), 0) : undefined);
   const stated = passes.flatMap(({ tokens }) => (tokens ? [tokens] : []));
   const [costed] = passes.flatMap(({ cost }) => (cost ? [cost] : []));
@@ -245,7 +278,23 @@ function projectionOf(passes: readonly PromptPass[], { arm, watched, unenforced 
 
   if (observed.length > 0) entry.used = usedOf(observed.flatMap(({ skills }) => skills), observed.length < passes.length ? watched : []);
 
+  if (routingSkills.length > 0) entry.routing = routingOf(routingSkills, covers, entry.used);
+
   return entry;
+}
+
+/**
+ * Each covered skill's routing value on this trial, over every skill the suite's tasks cover: `fit` or `extra` when it
+ * loaded, by whether this trial's task covers it, `missed` or `idle` when an observed pass did not load it, by the same,
+ * `unknown` when no pass reported its loads. A trial with no `used` at all reported nothing: every covered skill is
+ * `unknown`, never `idle` or `missed`.
+ */
+function routingOf(skills: readonly string[], covers: readonly string[], used: TrialEntry['used']): NonNullable<TrialEntry['routing']> {
+  return Object.fromEntries(skills.map((skill): [string, NonNullable<TrialEntry['routing']>[string]] => {
+    const load = used === undefined ? 'unknown' : used[skill] === 'loaded' ? 'loaded' : used[skill] === 'unknown' ? 'unknown' : 'not_loaded';
+
+    return [skill, load === 'loaded' ? (covers.includes(skill) ? 'fit' : 'extra') : load === 'not_loaded' ? (covers.includes(skill) ? 'missed' : 'idle') : 'unknown'];
+  }));
 }
 
 /** Each skill in `loaded`, and each of `unsure` not in it as `unknown`. */

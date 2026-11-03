@@ -25,7 +25,8 @@ import type { WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
 import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PlannedArm } from './plan.js';
-import { defaultsArmOf, parseSuite, type Arm, type Suite, type TaskJudge } from './suite.js';
+import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskJudge } from './suite.js';
+import { coveredRefusal } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import type { ArmTeam, SkillChanges } from './terms.js';
@@ -194,6 +195,9 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const skillChanges = await skillChangesOf(config, arms, { baseline: revision, defaults: defaultsArmOf(found)?.name });
 
   if ('refused' in skillChanges) return refuse(skillChanges.refused);
+  const coveredRefused = await coveredTaskRefusal(config, found.tasks, revision, selectionOf(config));
+
+  if (coveredRefused !== undefined) return refuse(coveredRefused);
   const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, skillChanges: skillChanges.changes });
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
@@ -208,6 +212,48 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
 }
 
 type ArmResolution = { ok: true; arm: PlannedArm } | { ok: false; message: string };
+
+/**
+ * The bare name a trial's load record would show for a covered path: `skills/<name>` is `name`, a namespaced
+ * `skills/<namespace>/<name>` is `name`. Undefined for a path under no other root: only skill loads are observed.
+ */
+function skillNameOfCovered(listed: string): string | undefined {
+  if (!listed.startsWith('skills/')) return undefined;
+  const [, second, third] = listed.split('/');
+
+  return third ?? second;
+}
+
+/**
+ * Why start refuses the paths the suite's tasks cover, or undefined when every one can be compared: a path the pulled
+ * team revision does not have or that delivers nothing (`coveredRefusal`, the same resolvers as an arm's `without`), and
+ * two covered skill paths of the same bare name, which a trial's load record could not tell apart.
+ */
+async function coveredTaskRefusal(config: LocalConfig, tasks: readonly Task[], pulled: string, selection: TeamSelection): Promise<Refusal | undefined> {
+  const covers = tasks.flatMap((task) => task.covers ?? []);
+
+  if (covers.length === 0) return undefined;
+  const byName = new Map<string, string>();
+
+  for (const listed of covers) {
+    const bare = skillNameOfCovered(listed);
+
+    if (bare !== undefined) {
+      const other = byName.get(bare);
+
+      if (other !== undefined) {
+        return error('task_covers_ambiguous', `Tasks cover ${other} and ${listed}, two skills of the same name ${bare}, which a trial's load record cannot tell apart. Cover one of them, fix the team's tasks, push them, run teamai pull, and start again.`);
+      }
+
+      byName.set(bare, listed);
+    }
+  }
+
+  const refusal = await coveredRefusal(config, { paths: covers, revision: pulled, selection });
+
+  return refusal && error('arm_team_unresolved', refusal.message);
+}
+
 
 /** A refusal before any run exists. */
 type Refusal = ReturnType<typeof error>;

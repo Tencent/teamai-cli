@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { withoutRefusal } from '../benchmark/team-without.js';
+import { coveredRefusal, withoutRefusal } from '../benchmark/team-without.js';
 import type { LocalConfig } from '../types.js';
 import type { TeamSelection } from '../workflow/clone.js';
 
@@ -220,5 +220,30 @@ describe('withoutRefusal', () => {
       code: 'arm_team_unreadable',
       message: expect.stringMatching(/^Arm "ablated" runs without CLAUDE\.md, and git could not list team revision fffffff at .+: .+\. Repair the team repo, or run teamai pull, and start again\.$/),
     });
+  });
+});
+
+describe('coveredRefusal', () => {
+  it('accepts the paths a task covers that an arm could run without', async () => {
+    const { config, revision, selection } = team();
+
+    expect(await coveredRefusal(config, { paths: ['rules/commits.md', 'skills/lint'], revision, selection })).toBeUndefined();
+  });
+
+  it.each([
+    ['a path the revision does not have', ['skills/db/migrations'], 'arm_team_unresolved',
+      'A task covers skills/db/migrations, which team revision {r} does not have. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
+    ['teamai.yaml', ['teamai.yaml'], 'arm_team_unresolved',
+      'A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
+    ['a shared skill a namespace the member receives delivers in its place', ['skills/release'], 'arm_team_unresolved',
+      'A task covers skills/release, but its namespace dev delivers skills/dev/release in its place; list skills/dev/release too.'],
+    ['a skill in a namespace the member does not receive', ['skills/ops/runbook'], 'arm_team_unresolved',
+      'A task covers skills/ops/runbook, which is in namespace ops, and the arm\'s roles or projects don\'t receive ops, so leaving it out changes nothing. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
+  ])('refuses %s', async (_case, paths, code, message) => {
+    const { config, revision, selection } = team();
+    const refusal = await coveredRefusal(config, { paths, revision, selection });
+
+    expect(refusal?.code).toBe(code);
+    expect(refusal?.message).toBe(message.replaceAll('{r}', revision.slice(0, 7)));
   });
 });

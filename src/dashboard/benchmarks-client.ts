@@ -246,7 +246,7 @@ function comparePanel(sel){
  const list=sel.comparisons.filter(c=>c.dimension===dim);
  const chosen=list.find(c=>comparisonId(c)===benchComparison)||list[0];
  const chips=dims.length===1?'<span class="compare-by-only">'+label(dims[0][1])+'</span>':'<div class="chips" role="group" aria-label="'+e(t('Compare by'))+'">'+dims.map(([key,name])=>'<button class="chip'+(dim===key?' active':'')+'" data-bench-dimension="'+key+'" aria-pressed="'+(dim===key)+'">'+label(name)+'</button>').join('')+'</div>';
- return '<div class="bench-compare-head"><span class="label">'+label('Compare by')+'</span>'+chips+'</div>'+compareKpis(sel,chosen)+'<div class="bench-grid">'+forestPanel(sel,list,chosen)+arrowPanel(sel,list,chosen)+'</div>'+taskDeltaPanel(sel,chosen);
+ return '<div class="bench-compare-head"><span class="label">'+label('Compare by')+'</span>'+chips+'</div>'+compareKpis(sel,chosen)+'<div class="bench-grid">'+forestPanel(sel,list,chosen)+arrowPanel(sel,list,chosen)+'</div>'+taskDeltaPanel(sel,chosen)+assetPanel(sel,chosen);
 }
 function compareKpis(sel,c){
  const d=c.difference, sides=['from','to'];
@@ -299,6 +299,26 @@ function taskDeltaPanel(sel,c){
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Each task')+' · <span data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+(facetOf(sel,c)?' · '+e(facetOf(sel,c)):'')+'</span></h2><span class="label">'+label('Hollow: the arm the difference is measured from. Green where the task passed more often, red where less.')+'</span></div><div class="dumbbells">'
   +rows.map(r=>{const lo=Math.min(r.f,r.to), hi=Math.max(r.f,r.to), cls=r.to>r.f?'up':r.to<r.f?'down':'same'; return '<div class="dumbbell"><span class="dumbbell-task" data-verbatim>'+e(r.x.task)+'</span><span class="dumbbell-track"><i class="dumbbell-line '+cls+'" style="left:'+(lo*100).toFixed(1)+'%;width:'+((hi-lo)*100).toFixed(1)+'%"></i><i class="dumbbell-from" style="left:'+(r.f*100).toFixed(1)+'%"></i><i class="dumbbell-to '+cls+'" style="left:'+(r.to*100).toFixed(1)+'%"></i></span><span class="dumbbell-value '+cls+'"><b>'+pp(r.to-r.f)+'</b><small>'+number(r.x.from.passed)+'/'+number(r.x.from.planned)+' → '+number(r.x.to.passed)+'/'+number(r.x.to.planned)+'</small></span></div>';}).join('')
   +'<div class="dumbbell dumbbell-axis" aria-hidden="true"><span></span><span class="forest-scale"><small>0%</small><small>50%</small><small>100%</small></span><span></span></div></div></section>';
+}
+// One panel per covered team asset the newest run's table holds, under the pair it compares. A skill links to its routing question's counts on the Scorers page.
+function assetPanel(sel,chosen){
+ const assets=(sel.latest&&sel.latest.table&&sel.latest.table.assets)||[];
+ const pair=chosen?[seriesBy(sel,chosen.from),seriesBy(sel,chosen.to)]:null;
+ const names=pair&&pair[0]&&pair[1]?pair.map(a=>a.arm):null;
+ const shown=assets.filter(a=>a.path&&(!names||a.without==null||a.has==null||names.includes(a.without)&&names.includes(a.has)));
+ if(!shown.length)return '';
+ const name=a=>a.skill?'teamai:routing:'+(a.path.split('/').length>2?a.path.split('/')[1]+':'+a.skill:a.skill):'';
+ const rate=r=>r==null?'-':number(r.passed)+'/'+number(r.planned);
+ const loads=r=>r==null?'not observed':number(r.loaded)+'/'+number(r.planned)+' '+(r.loaded>0?(r.byValue.fit?'fit':'extra'):(r.byValue.missed?'missed':r.byValue.idle?'idle':'unknown'));
+ const split=(t,l)=>l==null?'':t+'   '+(l.difference.value>=0?'+':'')+Math.round(l.difference.value*100)+' pp   '+rate(l.from)+' → '+rate(l.to)+'   '+(l.separated?'95% '+(l.difference.low>=0?'+':'')+Math.round(l.difference.low*100)+' to '+(l.difference.high>=0?'+':'')+Math.round(l.difference.high*100)+' pp':label('not separated'));
+ return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Asset effect')+'</h2><span class="label">'+label('Per covered team asset: the arm that runs without it against the arm that leaves nothing out, split by the tasks that cover it. A skill that did not load is missed, one that loaded where it was not needed is extra.')+'</span></div>'
+  +shown.map(a=>'<div class="asset-effect"><h3 data-verbatim>'+e(a.path)+' · '+e(a.without!=null?a.without+' → '+a.has:a.has)+' · '+e(a.tool)+'</h3>'
+   +'<pre class="asset-table" data-verbatim>'+e(['task   covers   passed without   passed with   loaded with',...a.rows.map(r=>[r.task,r.covers?'yes':'no',rate(r.without),rate(r.with),r.loaded===undefined?label('not observed'):loads(r.loaded)].join('   '))].join('\\n'))
+   +(a.coversDifference||a.othersDifference?'\\n'+e([split('tasks that cover it',a.coversDifference),split('other tasks',a.othersDifference)].filter(Boolean).join('\\n')):'')
+   +(a.passedWhenLoaded||a.passedWhenNotLoaded?'\\n'+e(label('passed when loaded')+' '+rate(a.passedWhenLoaded)+' · '+label('passed when not loaded')+' '+rate(a.passedWhenNotLoaded)):'')
+   +'</pre>'
+   +(a.skill?'<p class="scorer-hint">'+e(a.path)+' <a href="#scorers">'+e(name(a))+'</a> · '+label('its routing question\\'s counts on real sessions, over the same window')+'</p>':'')
+   +'</div>').join('')+'</section>';
 }
 const configName=c=>c.tool+(c.model?' · '+c.model:'')+(c.effort?' · '+c.effort:'')+(c.workflow?' · '+c.workflow:'')+(c.role?' · '+roleText(c):'');
 function teamPanel(sel){

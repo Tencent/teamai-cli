@@ -58,6 +58,8 @@ const PlannedTaskSchema = z.object({
     z.object({ kind: z.literal('check'), run: z.string().min(1), protect: z.array(z.string().min(1)).nonempty(), add: z.array(AddedSchema).nonempty().optional() }).strict(),
     z.object({ kind: z.literal('criteria') }).strict(),
   ]),
+  /** The team repo paths the task covers, each listed once, sorted, as plan checked them deliverable at the pulled revision. Absent: the task covers none. */
+  covers: z.array(z.string().min(1)).nonempty().optional(),
 }).strict();
 
 export type PlannedTask = z.infer<typeof PlannedTaskSchema>;
@@ -165,7 +167,7 @@ export function freezePlan(input: {
 }): BenchmarkPlan {
   const { suite, files } = input.committed;
   const [first, ...rest] = suite.tasks;
-  const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)) });
+  const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)), covers: task.covers ? [...task.covers] : undefined });
 
   return definedFields<BenchmarkPlan>({
     schemaVersion: BENCHMARK_PLAN_SCHEMA_VERSION,

@@ -20,6 +20,9 @@ import { git } from '../workflow/worktree.js';
 /** Why plan refuses the arm: git could not read its team revision, or a path changes nothing its trials get. */
 type Refusal = { code: 'arm_team_unreadable' | 'arm_team_unresolved'; message: string };
 
+/** What plan says a path's refusal ends with, by who lists it: an arm's team fix, or the team's task files. */
+const TASK_FIX = 'Fix the team\'s tasks, push them, run teamai pull, and start again.';
+
 /** What teamai pull delivers from one tree of the team repo, as its resolvers say, and `key`, the whole of it as text. */
 type Delivery = Awaited<ReturnType<typeof deliveryAt>>;
 
@@ -65,10 +68,48 @@ export async function withoutRefusal(
 
   // The member as the clone's own pull reads it: the run's selection, on a scope with no state of its own.
   const member: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
-  const read = await withTeamRevision(member, revision, async (at) => ({ unchanged: await firstUnchanged(at, { arm, paths, files, short, excluded: selection.excludedSkills }) }));
+  const read = await withTeamRevision(member, revision, async (at) => ({ unchanged: await firstUnchanged(at, { subject: `Arm "${arm}" runs without`, advice: REMOVE, paths, files, short, excluded: selection.excludedSkills }) }));
 
   if ('failed' in read) {
     return { code: 'arm_team_unreadable', message: `Arm "${arm}" runs without ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${read.failed}. Repair the team repo, or run teamai pull, and start again.` };
+  }
+
+  return read.unchanged === undefined ? undefined : { code: 'arm_team_unresolved', message: read.unchanged };
+}
+
+/**
+ * Why plan refuses the paths a task covers, before any run exists: each is a file or directory of the pulled team
+ * revision, and leaving it out changes what teamai pull delivers, so an arm can run without it and the asset-effect
+ * tables can compare. Undefined when every covered path can be left out. The same resolvers as `withoutRefusal`.
+ */
+export async function coveredRefusal(
+  config: LocalConfig,
+  { paths, revision, selection }: { paths: readonly string[]; revision: string; selection: TeamSelection },
+): Promise<Refusal | undefined> {
+  const short = revision.slice(0, 7);
+  const listed = await git(config.repo.localPath, ['ls-tree', '-r', '-z', '--name-only', revision]);
+
+  if (listed.code !== 0) {
+    return { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and git could not list team revision ${short} at ${config.repo.localPath}: ${listed.stderr.trim()}. Repair the team repo, or run teamai pull, and start again.` };
+  }
+
+  const files = listed.stdout.split('\0').filter((file) => file !== '');
+  const missing = paths.find((one) => !files.some((file) => leavesOut([one], file)));
+
+  if (missing !== undefined) {
+    return { code: 'arm_team_unresolved', message: `A task covers ${missing}, which team revision ${short} does not have. ${TASK_FIX}` };
+  }
+
+  if (paths.includes('teamai.yaml')) {
+    return { code: 'arm_team_unresolved', message: `A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. ${TASK_FIX}` };
+  }
+
+  // The member as the clone's own pull reads it: the run's selection, on a scope with no state of its own.
+  const member: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
+  const read = await withTeamRevision(member, revision, async (at) => ({ unchanged: await firstUnchanged(at, { subject: 'A task covers', advice: TASK_FIX, paths, files, short, excluded: selection.excludedSkills }) }));
+
+  if ('failed' in read) {
+    return { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${read.failed}. Repair the team repo, or run teamai pull, and start again.` };
   }
 
   return read.unchanged === undefined ? undefined : { code: 'arm_team_unresolved', message: read.unchanged };
@@ -81,7 +122,7 @@ export async function withoutRefusal(
  */
 async function firstUnchanged(
   at: LocalConfig,
-  { arm, paths, files, short, excluded }: { arm: string; paths: readonly string[]; files: readonly string[]; short: string; excluded: readonly string[] },
+  { subject, advice, paths, files, short, excluded }: { subject: string; advice: string; paths: readonly string[]; files: readonly string[]; short: string; excluded: readonly string[] },
 ): Promise<string | undefined> {
   const repo = at.repo.localPath;
   const held = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-without-'));
@@ -105,10 +146,10 @@ async function firstUnchanged(
       const withIt = await deliveryAt(at, present(paths.filter((other) => other !== one)));
 
       if (withIt.key === without.key) {
-        const why = reason({ listed: one, short, files, excluded, withIt, without })
-          ?? `, and teamai pull delivers the same team assets at team revision ${short} with or without it, so leaving it out changes nothing. ${REMOVE}`;
+        const why = reason({ listed: one, short, files, excluded, advice, withIt, without })
+          ?? `, and teamai pull delivers the same team assets at team revision ${short} with or without it, so leaving it out changes nothing. ${advice}`;
 
-        return `Arm "${arm}" runs without ${one}${why}`;
+        return `${subject} ${one}${why}`;
       }
 
       await move(repo, held, one);
@@ -152,59 +193,59 @@ async function deliveryAt(at: LocalConfig, present: readonly string[]) {
 }
 
 /** A path an arm leaves out, and what pull's resolvers deliver with it (`withIt`) and without it. */
-type Unchanged = { listed: string; short: string; files: readonly string[]; excluded: readonly string[]; withIt: Delivery; without: Delivery };
+type Unchanged = { listed: string; short: string; files: readonly string[]; excluded: readonly string[]; advice: string; withIt: Delivery; without: Delivery };
 
-function skillsReason({ listed, short, excluded, withIt }: Unchanged): string | undefined {
+function skillsReason({ listed, short, excluded, advice, withIt }: Unchanged): string | undefined {
   const { skills, context } = withIt;
 
   if (skills.kind === 'conflict') return noneOf(skills, short);
   const item = skills.teamItems.find((one) => covers(listed, one.relativePath) && !skills.items.some((other) => other.relativePath === one.relativePath));
 
-  return item && skillReason(item, { delivered: skills.items, excluded, active: context?.activeNamespaces.skills });
+  return item && skillReason(item, { delivered: skills.items, excluded, active: context?.activeNamespaces.skills, advice });
 }
 
 /**
  * Why pull leaves out skill `item`, with the skills it delivers and the skill namespaces the member receives (`active`,
  * undefined when every namespace reaches the member), or undefined.
  */
-function skillReason(item: ResourceItem, { delivered, excluded, active }: { delivered: readonly ResourceItem[]; excluded: readonly string[]; active: readonly string[] | undefined }): string | undefined {
-  if (excluded.includes(item.name)) return `, skill ${item.name}, which the member excludes, so pull leaves it out already and leaving it out changes nothing. ${REMOVE}`;
+function skillReason(item: ResourceItem, { delivered, excluded, active, advice }: { delivered: readonly ResourceItem[]; excluded: readonly string[]; active: readonly string[] | undefined; advice: string }): string | undefined {
+  if (excluded.includes(item.name)) return `, skill ${item.name}, which the member excludes, so pull leaves it out already and leaving it out changes nothing. ${advice}`;
 
-  if (item.namespace !== undefined && active && !active.includes(item.namespace)) return inactive(item.namespace);
+  if (item.namespace !== undefined && active && !active.includes(item.namespace)) return inactive(item.namespace, advice);
   const standIn = delivered.find((one) => one.name === item.name);
 
   if (standIn) return inPlace(standIn.relativePath, standIn.namespace);
 
-  return item.namespace === undefined && active ? `, a shared skill, which the arm's roles or projects receive only through a subscribed tag, and none brings it, so leaving it out changes nothing. ${REMOVE}` : undefined;
+  return item.namespace === undefined && active ? `, a shared skill, which the arm's roles or projects receive only through a subscribed tag, and none brings it, so leaving it out changes nothing. ${advice}` : undefined;
 }
 
-function rulesReason({ listed, files, withIt, without }: Unchanged): string | undefined {
+function rulesReason({ listed, files, advice, withIt, without }: Unchanged): string | undefined {
   const namespace = notReceived(listed, files, withIt.context?.activeNamespaces.knowledge);
 
-  if (namespace !== undefined) return inactive(namespace);
+  if (namespace !== undefined) return inactive(namespace, advice);
 
-  if (withIt.rules.skippedByTags > without.rules.skippedByTags) return `, a rule tagged only with tags the member does not subscribe, so pull leaves it out already and leaving it out changes nothing. ${REMOVE}`;
+  if (withIt.rules.skippedByTags > without.rules.skippedByTags) return `, a rule tagged only with tags the member does not subscribe, so pull leaves it out already and leaving it out changes nothing. ${advice}`;
 
   return replacing(listed, withIt.rules.overrides);
 }
 
-function agentsReason({ listed, short, files, withIt }: Unchanged): string | undefined {
+function agentsReason({ listed, short, files, advice, withIt }: Unchanged): string | undefined {
   if (withIt.agents.kind === 'conflict') return noneOf(withIt.agents, short);
   const namespace = notReceived(listed, files, withIt.context?.activeNamespaces.agents);
 
-  return namespace !== undefined ? inactive(namespace) : replacing(listed, withIt.agents.overrides);
+  return namespace !== undefined ? inactive(namespace, advice) : replacing(listed, withIt.agents.overrides);
 }
 
-function claudemdReason({ listed, files, withIt }: Unchanged): string | undefined {
+function claudemdReason({ listed, files, advice, withIt }: Unchanged): string | undefined {
   const namespace = notReceived(listed, files, withIt.context?.activeNamespaces.knowledge);
 
-  return namespace !== undefined ? inactive(namespace) : replacing(listed, withIt.claudemd.overrides);
+  return namespace !== undefined ? inactive(namespace, advice) : replacing(listed, withIt.claudemd.overrides);
 }
 
-function docsReason({ listed, withIt }: Unchanged): string | undefined {
+function docsReason({ listed, advice, withIt }: Unchanged): string | undefined {
   const withheld = withIt.docs.withheld.find(({ dir }) => covers(listed, `docs/${dir}`));
 
-  return withheld && inactive(withheld.dir);
+  return withheld && inactive(withheld.dir, advice);
 }
 
 /** Whether leaving out `listed` leaves out `source`, or a part of it. */
@@ -231,8 +272,8 @@ function inPlace(source: string, namespace: string | undefined): string {
   return `, but ${namespace === undefined ? 'the team root' : `its namespace ${namespace}`} delivers ${source} in its place; list ${source} too.`;
 }
 
-function inactive(namespace: string): string {
-  return `, which is in namespace ${namespace}, and the arm's roles or projects don't receive ${namespace}, so leaving it out changes nothing. ${REMOVE}`;
+function inactive(namespace: string, advice: string): string {
+  return `, which is in namespace ${namespace}, and the arm's roles or projects don't receive ${namespace}, so leaving it out changes nothing. ${advice}`;
 }
 
 function noneOf(conflict: DeliveryConflict, short: string): string {

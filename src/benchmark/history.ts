@@ -14,7 +14,7 @@ import type { Baseline, BenchmarkRecord, BenchmarkRunRecord } from './result.js'
 import type { TeamChoice } from './suite.js';
 import type { ArmTeam } from './terms.js';
 import {
-  benchmarkTable, deviationsOf, observedTrials, usageOf, type ArmResults, type ArmUsage, type BenchmarkTable, type ObservedTrial, type PassRate,
+  benchmarkTable, deviationsOf, observedTrials, pairedDifference, usageOf, wilson, type ArmResults, type ArmUsage, type BenchmarkTable, type ObservedTrial, type PassRate,
 } from './table.js';
 
 /** One ended benchmark run, as its end record holds it. `source`: this machine's run file, or the team's record. */
@@ -205,9 +205,6 @@ type Arm = BenchmarkRecord['arms'][number];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** The normal quantile of a two-sided 95% interval. */
-const Z = 1.96;
-
 function passRate(trials: readonly Trial[]): PassRate {
   return { passed: trials.filter(({ result }) => result === 'passed').length, planned: trials.length };
 }
@@ -223,17 +220,6 @@ function isMeasured(baseline: Baseline): boolean {
 /** `left` beats `right` on pass rate, compared without division so 2/3 and 4/6 tie. */
 function beats(left: PassRate, right: PassRate): boolean {
   return left.passed * right.planned > right.passed * left.planned;
-}
-
-/** The 95% Wilson score interval of `passed` out of `planned`, planned above 0: a benchmark arm's, and a Scorers group's. */
-export function wilson({ passed, planned }: PassRate) {
-  const p = passed / planned;
-  const z2 = Z * Z;
-  const denominator = 1 + z2 / planned;
-  const center = (p + z2 / (2 * planned)) / denominator;
-  const margin = (Z * Math.sqrt((p * (1 - p)) / planned + z2 / (4 * planned * planned))) / denominator;
-
-  return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
 }
 
 /** An arm's identity across runs. The role joins it only when set, so an arm without one keeps the key it had before roles. */
@@ -417,27 +403,6 @@ function dimensionOf(left: Arm, right: Arm): ArmDimension | undefined {
 
 /** For the team: none, then without some paths, then a named ref, then the pulled revision. */
 const TEAM_ORDER = { none: 0, without: 1, ref: 2, pulled: 3 } as const satisfies Record<ArmTeam['kind'], number>;
-
-/**
- * The 95% interval of `to - from` over paired trials (Newcombe 1998, method 10): `both` passed on both arms, `toOnly`
- * only on to, `fromOnly` only on from, `neither` on neither.
- */
-export function pairedDifference({ both, toOnly, fromOnly, neither }: { both: number; toOnly: number; fromOnly: number; neither: number }): ArmComparison['difference'] {
-  const n = both + toOnly + fromOnly + neither;
-  const to = { passed: both + toOnly, planned: n };
-  const from = { passed: both + fromOnly, planned: n };
-  const [pTo, pFrom] = [to.passed / n, from.passed / n];
-  const [toCi, fromCi] = [wilson(to), wilson(from)];
-  const product = (both + toOnly) * (fromOnly + neither) * (both + fromOnly) * (toOnly + neither);
-  const cross = both * neither - toOnly * fromOnly;
-  // Newcombe's continuity correction of the correlation, applied when it is positive.
-  const phi = product === 0 ? 0 : (cross > 0 ? Math.max(cross - n / 2, 0) : cross) / Math.sqrt(product);
-  const value = pTo - pFrom;
-  const below = Math.sqrt(Math.max(0, (pTo - toCi.low) ** 2 - 2 * phi * (pTo - toCi.low) * (fromCi.high - pFrom) + (fromCi.high - pFrom) ** 2));
-  const above = Math.sqrt(Math.max(0, (toCi.high - pTo) ** 2 - 2 * phi * (toCi.high - pTo) * (pFrom - fromCi.low) + (pFrom - fromCi.low) ** 2));
-
-  return { value, low: Math.max(-1, value - below), high: Math.min(1, value + above) };
-}
 
 function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
   const arms = newest.benchmark.arms;
