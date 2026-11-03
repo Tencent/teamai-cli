@@ -25,8 +25,6 @@ import { loadTeamConfig, refreshRoleAssignment, saveLocalConfigForScope } from '
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
 import { createProjectToolRoots } from '../../project-agent-root.js';
-import { scoresDir } from '../../scorers/home.js';
-import { removeSubjectEvidence } from '../../scorers/evidence.js';
 import { homeVariables, isToolId, TOOLS } from '../../tools.js';
 import { roleDeclaration } from '../../roles.js';
 import { getDataHome, LocalConfigSchema, type LocalConfig } from '../../types.js';
@@ -40,7 +38,7 @@ import { CommitSchema, type ClonePlace, type InstalledTeam, type TeamSelection }
 import { runDeadline } from '../limits.js';
 import { runPasses } from '../loop.js';
 import { stepDefinitions } from '../scope.js';
-import { stageEvidence } from '../../scorers/scoring-evidence.js';
+import { removeStagedEvidence, stageEvidence } from '../../scorers/engine-hooks.js';
 import { settled } from '../step-state.js';
 import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';
@@ -433,7 +431,7 @@ async function removeUnjudgedEvidence(config: LocalConfig, run: RunState, inClon
     ...run.steps.filter((state) => inClone(state.id)).map((state) => ({ step: state.id, pass: state.pass ?? 1 })),
   ];
 
-  await removeSubjectEvidence(scoresDir(config), staged.flatMap((subject) => (succeeded.has(`${subject.step}#${subject.pass}`) ? [] : [{ runId: run.id, ...subject }])));
+  await removeStagedEvidence(config, staged.flatMap((subject) => (succeeded.has(`${subject.step}#${subject.pass}`) ? [] : [{ runId: run.id, ...subject }])));
 }
 
 /**

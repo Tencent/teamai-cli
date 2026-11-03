@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, UsedSchema } from '../agent-observation.js';
 import { RunModeSchema } from '../launch-context.js';
-import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS, ConfinedUsageSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import type { JsonValue } from '../types.js';
 
@@ -18,24 +18,15 @@ export const SessionSubjectSchema = z.object({ platform: z.string().min(1), sess
 
 export type SessionSubject = z.infer<typeof SessionSubjectSchema>;
 
-/** What the judge's tool reports it used, as far as it reports it. `cost` is in the tool's own unit. */
-export const JudgeUsageSchema = z.object({
-  inputTokens: z.number().finite().nonnegative().optional(),
-  outputTokens: z.number().finite().nonnegative().optional(),
-  cost: z.object({ amount: z.number().finite().nonnegative(), unit: z.string().min(1) }).optional(),
-});
-
-export type JudgeUsage = z.infer<typeof JudgeUsageSchema>;
-
 /** The spend of two judge calls together; a cost in another unit than the first is kept as the second reports it. */
-export function sumUsage(first: JudgeUsage | undefined, second: JudgeUsage | undefined): JudgeUsage | undefined {
+export function sumUsage(first: ConfinedUsage | undefined, second: ConfinedUsage | undefined): ConfinedUsage | undefined {
   if (!first || !second) return first ?? second;
   const tokens = (left?: number, right?: number) => (left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0));
   const inputTokens = tokens(first.inputTokens, second.inputTokens);
   const outputTokens = tokens(first.outputTokens, second.outputTokens);
   const cost = first.cost && second.cost?.unit === first.cost.unit ? { amount: first.cost.amount + second.cost.amount, unit: first.cost.unit } : second.cost ?? first.cost;
 
-  const sum: JudgeUsage = {};
+  const sum: ConfinedUsage = {};
 
   if (inputTokens !== undefined) sum.inputTokens = inputTokens;
 
@@ -56,7 +47,7 @@ export const ModelJudgeSchema = z.object({
   tool: z.string().min(1),
   model: ObservedModelSchema.optional(),
   effort: ObservedEffortSchema.optional(),
-  usage: JudgeUsageSchema.optional(),
+  usage: ConfinedUsageSchema.optional(),
   isolation: z.enum(CONFINED_LEVELS),
   access: z.enum(ACCESS_LEVELS),
   batched: z.literal(true).optional(),

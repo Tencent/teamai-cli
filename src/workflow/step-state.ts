@@ -3,8 +3,7 @@ import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, Used
 import { DriverSchema } from '../driver-identity.js';
 import { RunModeSchema } from '../launch-context.js';
 import { WorkOutcomeSchema } from '../outcomes.js';
-import { JudgeUsageSchema } from '../scorers/label.js';
-import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS, ConfinedUsageSchema, CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
@@ -83,7 +82,7 @@ export const ConfinedRunReportSchema = z.object({
   effort: ObservedEffortSchema.optional(),
   isolation: z.enum(CONFINED_LEVELS),
   access: z.enum(ACCESS_LEVELS),
-  usage: JudgeUsageSchema.optional(),
+  usage: ConfinedUsageSchema.optional(),
 });
 
 export type ConfinedRunReport = z.infer<typeof ConfinedRunReportSchema>;
@@ -99,7 +98,7 @@ const report = {
   /** Milliseconds around the tool launch only, as the driver measured it. */
   durationMs: z.number().int().nonnegative().optional(),
   /** What the tool stated the attempt cost, in its own unit. */
-  cost: JudgeUsageSchema.shape.cost,
+  cost: CostSchema.optional(),
   changes: ChangesSchema.optional(),
   read: ReadSchema.optional(),
   /**

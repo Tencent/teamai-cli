@@ -51,7 +51,6 @@ import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutc
 import { withFileLock } from '../update.js';
 import { admitWorkflow, heldSecret, type Admitted } from './admission.js';
 import { workflowField } from './parse.js';
-import { JudgeUsageSchema, type JudgeUsage } from '../scorers/label.js';
 import type {
   DriverIdentity,
   OutputSchema,
@@ -69,6 +68,7 @@ import type {
 } from './types.js';
 import { hasAction, stepWorkflow } from './types.js';
 import { describeWorkflow } from './describe.js';
+import { CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 
 /**
@@ -94,7 +94,7 @@ export interface ReportInput {
   /** Milliseconds around the tool launch only, as the driver measured it. */
   durationMs?: number;
   /** What the tool stated the attempt cost, in its own unit. Never estimated. */
-  cost?: NonNullable<JudgeUsage['cost']>;
+  cost?: z.infer<typeof CostSchema>;
   failure?: WorkflowFailure;
   /** The branch this attempt committed, when it ran in a workspace. */
   changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
@@ -2175,9 +2175,9 @@ export function parseReport(value: unknown): ParsedReport | string {
   }
 
   if (record.cost !== undefined) {
-    const cost = JudgeUsageSchema.shape.cost.safeParse(record.cost);
+    const cost = CostSchema.safeParse(record.cost);
 
-    if (!cost.success || !cost.data) return 'cost must be an amount and a unit, as the tool stated it';
+    if (!cost.success) return 'cost must be an amount and a unit, as the tool stated it';
     report.cost = cost.data;
   }
 

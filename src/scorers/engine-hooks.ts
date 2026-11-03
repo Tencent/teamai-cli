@@ -1,15 +1,22 @@
 /**
- * The scoring the engine and its protocol reach. `src/workflow/` imports `src/scorers/` through this module, so the
- * engine knows only that settled passes may start runs, never how a pass is scored.
+ * The scoring the engine and its protocol reach: starting the scoring of settled passes, staging a clone pass's tree as
+ * evidence, and describe's judging line. `src/workflow/` imports `src/scorers/` only through this module, so the engine
+ * never learns how a pass is scored.
  */
 import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import type { StartedRun, WorkflowClient } from '../workflow/protocol.js';
 import type { RunState } from '../workflow/types.js';
+import { removeSubjectEvidence } from './evidence.js';
+import { scoresDir } from './home.js';
 import { verifiedScorers as verifiedAmong } from './judges-here.js';
 import { PassScoring } from './pass-scoring.js';
 import { RunScorers } from './run-scorers.js';
+
+export { scoringUnavailable } from './home.js';
+
+export { stageEvidence } from './scoring-evidence.js';
 
 /**
  * Starts the scoring of every settled scored pass of run `runId` that none started yet, and answers each run that
@@ -33,4 +40,9 @@ export async function verifiedScorers(config: LocalConfig, names: readonly strin
   const read = await RunScorers.of(config, run);
 
   return verifiedAmong(config, names, read.ok ? read.pins : {});
+}
+
+/** Removes the evidence staged for each of `subjects`, passes that will never be judged. */
+export async function removeStagedEvidence(config: LocalConfig, subjects: ReadonlyArray<{ runId: string; step: string; pass: number }>): Promise<void> {
+  await removeSubjectEvidence(scoresDir(config), subjects);
 }

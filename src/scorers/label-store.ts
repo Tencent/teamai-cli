@@ -11,7 +11,8 @@ import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConf
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { scoresDir, scoresLocked } from './home.js';
-import { isStageDecider, labelId, type Decider, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
+import { isStageDecider, labelId, type Decider, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type ScoreLabel } from './label.js';
+import type { ConfinedUsage } from '../tool-launch/confined-level.js';
 
 function labelsFile(config: LocalConfig): string {
   return path.join(scoresDir(config), 'labels.jsonl');
@@ -172,7 +173,7 @@ function holds(labels: readonly ScoreLabel[], label: ScoreLabel): boolean {
   return labels.some((other) => labelId(other) === labelId(label) && other.scoredAt >= label.scoredAt);
 }
 
-function addUsage(total: { inputTokens: number; outputTokens: number }, usage: JudgeUsage | undefined): void {
+function addUsage(total: { inputTokens: number; outputTokens: number }, usage: ConfinedUsage | undefined): void {
   total.inputTokens += usage?.inputTokens ?? 0;
   total.outputTokens += usage?.outputTokens ?? 0;
 }

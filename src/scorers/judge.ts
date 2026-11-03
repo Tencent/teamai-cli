@@ -5,7 +5,8 @@ import type { ConfinedTool } from '../tool-launch/tools.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ConfinedLevel } from '../tool-launch/confined-level.js';
-import type { ScoreLabel, JudgeUsage } from './label.js';
+import type { ConfinedUsage } from '../tool-launch/confined-level.js';
+import type { ScoreLabel } from './label.js';
 import type { JsonValue } from '../types.js';
 
 const JUDGE_TIMEOUT_MS = 10 * 60_000;
@@ -27,15 +28,15 @@ type JudgeFailureCode = 'judge_failed' | 'judge_answer_invalid' | 'judge_tool_un
 
 export type LocalJudgeResult =
   | { ok: true; answer: JudgeAnswer; judge: Omit<Extract<ScoreLabel['judge'], { kind: 'model' }>, 'kind'> }
-  | { ok: false; code: JudgeFailureCode; message: string; raw?: string; usage?: JudgeUsage };
+  | { ok: false; code: JudgeFailureCode; message: string; raw?: string; usage?: ConfinedUsage };
 
 /** What a failed judge call leaves for its caller to keep: the tool's output, and what it spent. */
 interface Saved {
   raw?: string;
-  usage?: JudgeUsage;
+  usage?: ConfinedUsage;
 }
 
-function saved(raw: string | undefined, usage: JudgeUsage | undefined): Saved {
+function saved(raw: string | undefined, usage: ConfinedUsage | undefined): Saved {
   const kept: Saved = {};
 
   if (raw !== undefined) kept.raw = raw;

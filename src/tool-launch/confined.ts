@@ -17,8 +17,7 @@ import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 import { JsonValueSchema, type JsonValue } from '../types.js';
-import type { JudgeUsage } from '../scorers/label.js';
-import type { ConfinedLevel, ConfinedAccess } from './confined-level.js';
+import type { ConfinedLevel, ConfinedAccess, ConfinedUsage } from './confined-level.js';
 import { LAUNCH_ADAPTERS, type CallLaunch, type ConfinedLaunch } from './adapters.js';
 import { runTool, type ToolRun } from './run.js';
 import { toolStdout, type TokenUsage } from './stdout.js';
@@ -139,7 +138,7 @@ export interface ConfinedRun {
   effort?: ObservedEffort;
   isolation: ConfinedLevel;
   access: ConfinedAccess;
-  usage?: JudgeUsage;
+  usage?: ConfinedUsage;
 }
 
 export type ConfinedFailureCode = 'confined_tool_unavailable' | 'confined_failed' | 'confined_reply_invalid';
@@ -147,7 +146,7 @@ export type ConfinedFailureCode = 'confined_tool_unavailable' | 'confined_failed
 export type ConfinedResult =
   | { ok: true; reply: JsonValue; run: ConfinedRun }
   /** `raw`: the tool's saved output. `reported`: the error the tool itself reported, when it reported one. */
-  | { ok: false; code: ConfinedFailureCode; message: string; raw?: string; reported?: string; usage?: JudgeUsage };
+  | { ok: false; code: ConfinedFailureCode; message: string; raw?: string; reported?: string; usage?: ConfinedUsage };
 
 function memberEnv(): NodeJS.ProcessEnv {
   const restored = { ...process.env };
@@ -330,7 +329,7 @@ async function noInstructionsAbove(cwd: string): Promise<void> {
 
 /** What a run spent, carried on its result when the tool reported any. */
 interface Spend {
-  usage?: JudgeUsage;
+  usage?: ConfinedUsage;
 }
 
 function tokensOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, stdout: string): TokenUsage | undefined {
@@ -344,7 +343,7 @@ function spendOf(family: ReturnType<typeof launchAdapterIdOf<ConfinedTool>>, std
   const cost = records(stdout).findLast((record) => record.total_cost_usd !== undefined)?.total_cost_usd;
 
   if (!tokens && cost === undefined) return {};
-  const usage: JudgeUsage = {};
+  const usage: ConfinedUsage = {};
 
   if (tokens?.input !== undefined) usage.inputTokens = tokens.input;
 

@@ -3,7 +3,6 @@
  * scorers their steps list. A feature reads a run's judge work here, from the run file alone, rather than through the
  * engine or the judge entries the engine waits on.
  */
-import type { RunSubject } from '../scorers/label.js';
 import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
 import { stepDefinitions } from './scope.js';
 import { agentPassOf, agentSucceeded } from './step-state.js';
@@ -12,7 +11,7 @@ import type { RunState, WorkflowStep } from './types.js';
 
 /** A succeeded pass of a step that lists scorers, by name: whether each has a valid version is the scoring module's to read. */
 export interface ScorablePass {
-  subject: RunSubject;
+  subject: { runId: string; step: string; pass: number };
   scorers: string[];
 }
 
