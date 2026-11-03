@@ -73,7 +73,7 @@ import {
 } from './builtin-skills.js';
 import { cleanupOf, hookAdapterDirIn, hookSettingsFile, installOf, isInstalledFor, locate, openclawWorkspaceDir, ownOf, SHARED_AGENT_SKILLS_PATH, workspaceHooksOf, writesOf, type Location } from './locate.js';
 import { toolHome, toolHomesAcrossProfiles } from './tool-home.js';
-import { channelsOf, hookFormatOf, isToolId, TOOLS } from './tools.js';
+import { channelsOf, hookFormatOf, hookSyntaxOf, isToolId, TOOLS } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
@@ -711,7 +711,7 @@ async function discoverToolResources(
         if (await pathExists(settingsPath)
           // One that does not parse may hold teamai's hooks: it is tried, fails and is named, and its
           // records stay (#993).
-          && ((await readJsonObject(settingsPath)).kind === 'invalid'
+          && ((await readJsonObject(settingsPath, hookSyntaxOf(tool))).kind === 'invalid'
             || await hasTeamaiHooks(settingsPath, tool, manifestPath)
             || (legacyManifestPath && await hasTeamaiHooks(settingsPath, tool, legacyManifestPath))
             || (mainCheckout?.checkoutManifestPath && await hasTeamaiHooks(settingsPath, tool, mainCheckout.checkoutManifestPath))
