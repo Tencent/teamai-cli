@@ -4,6 +4,7 @@ import {
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 import { ATTEMPT_ENV } from '../../launch-context.js';
 import { limitsConformanceScenarios } from '../limits-conformance.js';
+import { confinedConformanceScenarios } from './confined.js';
 import { primitiveConformanceScenarios } from './primitives.js';
 
 const TWO_STEPS = `schemaVersion: v1alpha1
@@ -802,3 +803,5 @@ workflowConformanceScenarios.push({
 workflowConformanceScenarios.push(...limitsConformanceScenarios);
 
 workflowConformanceScenarios.push(...primitiveConformanceScenarios);
+
+workflowConformanceScenarios.push(...confinedConformanceScenarios);

@@ -1,12 +1,20 @@
 /** The lease `next` answers with, as `leaseData` in `engine.ts` writes it, parsed by every driver with one schema. */
 import { z } from 'zod';
-import { EnvScopeSchema, LeaseSetupSchema, RequirementsSchema, TurnLimitsSchema } from './requirements.js';
+import { ConfinedLevelSchema, EnvScopeSchema, LeaseSetupSchema, RequirementsSchema, TurnLimitsSchema } from './requirements.js';
 import { StepModelSchema } from './step-model.js';
 import { AttemptIdSchema } from './store.js';
 import { WorkspaceContractSchema, type LeaseSession } from './workspace.js';
 
 const SessionRefSchema = z.object({ tool: z.string(), id: z.string() });
 const LeaseSessionSchema = SessionRefSchema.extend({ earlier: z.array(SessionRefSchema).optional() }) satisfies z.ZodType<LeaseSession>;
+
+/**
+ * A prompt step confined to `dir`, its only readable root, at `level`: the real paths of the directory and of the JSON
+ * Schema its reply follows, and the tools to run it on, in order, the first that resolves its model.
+ */
+export const ConfinedLeaseSchema = z.object({ dir: z.string().min(1), level: ConfinedLevelSchema, schema: z.string().min(1).optional(), tools: z.array(z.string().min(1)).min(1) });
+
+export type ConfinedLease = z.infer<typeof ConfinedLeaseSchema>;
 
 /** What names a lease, which a driver reports a lease it cannot otherwise read with. */
 export const LeaseIdSchema = z.object({ attempt: AttemptIdSchema, revision: z.number().int() });
@@ -29,6 +37,7 @@ export const LeaseWireSchema = LeaseIdSchema.extend({
   defaultModel: z.string().optional(),
   output: z.unknown().optional(),
   workspace: WorkspaceContractSchema.optional(),
+  confined: ConfinedLeaseSchema.optional(),
   /** The team role the step's copy runs with, its clone's or its own: teamai delivers that role's knowledge there, for `can.role`. */
   role: z.string().optional(),
   session: LeaseSessionSchema.optional(),

@@ -10,7 +10,7 @@ import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessConformanceClient, type ConformanceClient, type ConformanceRunner, type ConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { inProcessClient } from '../../workflow/protocol.js';
 import { pendingRecords } from '../../workflow/records.js';
-import { readRun } from '../../workflow/store.js';
+import { readRun, runScratchDir } from '../../workflow/store.js';
 import type { WorkflowEnvelope } from '../../workflow/types.js';
 import { benchmarkRunConfig, startBenchmarkRun } from './benchmark-fixture.js';
 
@@ -58,6 +58,10 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
     for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) {
       fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
     }
+    for (const [file, text] of Object.entries(scenario.teamFiles ?? {})) {
+      fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
+      fs.writeFileSync(path.join(knowledge, file), text);
+    }
     await syncWorkflowDefinitions(config);
   }
   const env = await resolveWorkflowEnv(config);
@@ -73,6 +77,7 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
         return stored;
       },
       readEndRecord: async (runId) => (await pendingRecords(config)).find((record) => record.run === runId && record.phase === 'end'),
+      runDir: async (runId) => runScratchDir(config, runId),
       // Only Date is faked, so the run lock's retry timers still run.
       advance: async (ms) => {
         vi.useFakeTimers({ toFake: ['Date'] });

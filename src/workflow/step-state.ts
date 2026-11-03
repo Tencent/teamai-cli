@@ -1,9 +1,10 @@
 import { z } from 'zod';
-import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
+import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import { RunModeSchema } from '../launch-context.js';
 import { WorkOutcomeSchema } from '../outcomes.js';
 import { JudgeUsageSchema } from '../scorers/label.js';
+import { ACCESS_LEVELS, ISOLATIONS } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
@@ -71,6 +72,21 @@ export const ReadSchema = z.object({
 
 export type StepRead = z.infer<typeof ReadSchema>;
 
+/**
+ * What a driver reports of a step it ran confined to a directory, as it measured it: the tool, the model and effort it
+ * observed, the level the run reached, what the tool could do there, and what it spent.
+ */
+export const ConfinedRunReportSchema = z.object({
+  tool: z.string().min(1),
+  model: ObservedModelSchema.optional(),
+  effort: ObservedEffortSchema.optional(),
+  isolation: z.enum(ISOLATIONS),
+  access: z.enum(ACCESS_LEVELS),
+  usage: JudgeUsageSchema.optional(),
+});
+
+export type ConfinedRunReport = z.infer<typeof ConfinedRunReportSchema>;
+
 /** What a driver reports about the attempt that settled a step. */
 const report = {
   exitCode: z.number().optional(),
@@ -102,6 +118,8 @@ const report = {
   outcomes: z.array(WorkOutcomeSchema).optional().catch(undefined),
   /** The limit that ended the prompt's turn under `on_limit: end_turn`. */
   limit: LimitSchema.optional(),
+  /** What the run of a step confined to a directory measured. */
+  confined: ConfinedRunReportSchema.optional(),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 'cancelled']);

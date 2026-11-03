@@ -113,7 +113,10 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
     case 'continue':
       return step.workspace;
     default:
-      return 'clone' in step.workspace ? 'clone' : 'team';
+      if ('clone' in step.workspace) return 'clone';
+
+      // A step confined to a directory opens no copy and changes nothing.
+      return 'team' in step.workspace ? 'team' : 'read-only';
   }
 
   if (step.command !== undefined && step.prompt === undefined && step.promptFile === undefined) return 'read-only';
@@ -152,6 +155,13 @@ export function cloneOf(step: WorkflowStep): ClonePlace | undefined {
 /** The clone a lease's contract runs in, or undefined when it runs in none. */
 export function contractClone(contract: WorkspaceContract | undefined): ClonePlace | undefined {
   return contract?.mode === 'new' || contract?.mode === 'continue' ? contract.clone : undefined;
+}
+
+/** The directory `step` is confined to, as written, or undefined when it is not confined to one. */
+export function confinedOf(step: WorkflowStep): string | undefined {
+  const place = placeOf(step);
+
+  return place && 'confined' in place ? place.confined : undefined;
 }
 
 /** The team repo branch `step` commits to, or undefined when it runs in no team workspace. */
@@ -665,6 +675,9 @@ export function planWorkspace(
 ): WorkspacePlan {
   const ancestors = ancestorsOf(run, state.id);
   const mode = resolveMode(definition, ancestors.map((ancestor) => ancestor.step));
+
+  // It reads only its directory, so it runs in no copy, whatever the steps around it open, and resumes no session.
+  if (confinedOf(definition) !== undefined) return { mode };
   // A role template that gives no role id fails the step before any role it would run with is compared.
   const levels = roleLevelsOf(run, state.id);
 

@@ -2,7 +2,7 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  findTemplate, modelTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
+  confinedTemplateErrors, findTemplate, modelTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
@@ -47,6 +47,12 @@ const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
 
 /** Keys a step without an action may carry. */
 const ACTIONLESS_KEYS = new Set(['id', 'needs', 'if', 'end', 'approve', 'choose', 'loop', 'break']);
+
+/**
+ * What a step confined to a directory may carry: one prompt, which a confined launch runs headless with that directory as
+ * its only readable root, so no key that names a tool, an agent, a session, a role, a person or what it may change.
+ */
+const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file', 'with', 'model', 'output', 'end', 'loop', 'break', 'timeout', 'requires', 'workspace', 'continue_on_failure']);
 
 /** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
 const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
@@ -727,12 +733,46 @@ function parseBody(
         }));
       }
 
-      // A model on another step is already reported, so its template is not checked.
-      const promptModel = commandPair || workflowPair ? undefined : model;
+      const workspacePair = item.items.find((pair) => scalarString(pair.key) === 'workspace');
+      const workspace = parseStepWorkspace(workspacePair?.value);
 
-      const templates = templatedTexts({ prompt, env, with: withValues, hitl, model: promptModel }).map(({ what, text }) => {
+      if (workspacePair && !workspace) {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, { team: { branch? } }, { confined: <dir> }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
+          code: 'bad_workspace',
+        });
+      }
+
+      const confined = workspace instanceof Object && 'confined' in workspace;
+
+      if (workspacePair && confined) {
+        const refuse = (node: Node | null | undefined, where: string, message: string): void => {
+          diagnostics.push({ ...locate(file, lineCounter, node ?? item, where, `${stepLabel} workspace confined ${message}`), code: 'bad_workspace' });
+        };
+
+        if (!promptPair && !promptFilePair) refuse(workspacePair.value ?? workspacePair.key, `${field}.workspace`, 'is only allowed on a prompt or prompt_file step');
+        else {
+          for (const pair of item.items) {
+            const key = scalarString(pair.key);
+
+            if (key !== undefined && STEP_KEYS.has(key) && !CONFINED_STEP_KEYS.has(key)) refuse(pair.key, `${field}.${key}`, `runs one prompt that reads only its directory, so it takes no ${key}`);
+          }
+
+          if (requires?.env !== undefined && requires.env.length > 0) {
+            refuse(valueNode(requiresPair?.value, 'env') ?? requiresPair?.key, `${field}.requires.env`, 'takes no requires.env: a confined prompt gets no team env or secrets');
+          }
+        }
+      }
+
+      // A model or a confined directory on another step is already reported, so its template is not checked.
+      const promptModel = commandPair || workflowPair ? undefined : model;
+      const promptWorkspace = confined && (promptPair || promptFilePair) ? workspace : undefined;
+
+      const templates = templatedTexts({ prompt, env, with: withValues, hitl, model: promptModel, workspace: promptWorkspace }).map(({ what, text }) => {
         const name = what.slice(what.indexOf('.') + 1);
-        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : what === 'model' ? modelPair?.value : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
+
+        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : what === 'model' ? modelPair?.value
+          : what === 'workspace.confined' ? valueNode(workspacePair?.value, 'confined') : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
 
         return { what, field: `${field}.${what}`, node, text };
       });
@@ -752,6 +792,12 @@ function parseBody(
         if (parsed.ok && template.what === 'model') {
           for (const problem of modelTemplateErrors(template.text, parsed.template)) {
             diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} model template ${problem.source}: ${problem.message}`), code: 'bad_template' });
+          }
+        }
+
+        if (parsed.ok && template.what === 'workspace.confined') {
+          for (const problem of confinedTemplateErrors(parsed.template)) {
+            diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} workspace.confined template ${problem.source}: ${problem.message}`), code: 'bad_template' });
           }
         }
 
@@ -834,16 +880,6 @@ function parseBody(
         diagnostics.push(locate(file, lineCounter, outputPair.key ?? item, `${field}.output`, 'output must be a shorthand type'));
       }
 
-      const workspacePair = item.items.find((pair) => scalarString(pair.key) === 'workspace');
-      const workspace = parseStepWorkspace(workspacePair?.value);
-
-      if (workspacePair && !workspace) {
-        diagnostics.push({
-          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
-          code: 'bad_workspace',
-        });
-      }
-
       const rolePair = item.items.find((pair) => scalarString(pair.key) === 'role');
       const role = scalarString(rolePair?.value)?.trim();
       // A role is the knowledge of the copy a step works in, which the step that opens the copy resolves, and a
@@ -858,7 +894,7 @@ function parseBody(
           ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}`
           : `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
           : workspace instanceof Object ? 'team' in workspace ? `${stepLabel} has role ${role} but runs in the team workspace, which takes no role's knowledge; remove role`
-            : !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
+            : 'clone' in workspace && !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 
@@ -1668,14 +1704,16 @@ function withheldKeys(requires: InEffect, env: readonly string[] = []): string[]
 
 const TeamWorkspaceSchema = z.object({ team: z.object({ branch: z.string().min(1).optional() }).strict() }).strict();
 
-/** A step's `workspace`: `read-only`, `new`, `continue`, `{ team: … }` or `{ clone: … }`; undefined when it is none of them. */
+const ConfinedWorkspaceSchema = z.object({ confined: z.string().trim().min(1) }).strict();
+
+/** A step's `workspace`: `read-only`, `new`, `continue`, `{ team: … }`, `{ confined: … }` or `{ clone: … }`; undefined when it is none of them. */
 function parseStepWorkspace(node: Node | null | undefined): StepWorkspace | undefined {
   const text = scalarString(node)?.trim();
 
   if (text === 'read-only' || text === 'new' || text === 'continue') return text;
 
   if (!isMap(node)) return undefined;
-  const parsed = z.union([z.object({ clone: ClonePlaceSchema }).strict(), TeamWorkspaceSchema]).safeParse(node.toJSON());
+  const parsed = z.union([z.object({ clone: ClonePlaceSchema }).strict(), TeamWorkspaceSchema, ConfinedWorkspaceSchema]).safeParse(node.toJSON());
 
   if (!parsed.success) return undefined;
 

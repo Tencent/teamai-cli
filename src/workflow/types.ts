@@ -190,8 +190,16 @@ export interface TeamPlace {
   branch?: string;
 }
 
-/** A step's `workspace` as written: a mode, the clone it opens, or the team repo branch it commits to. */
-export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone' | 'team'> | { clone: ClonePlace } | { team: TeamPlace };
+/**
+ * The directory a prompt step runs confined to, `{ confined: <dir> }`: a template of the inputs, the item and the outputs
+ * of steps it needs, rendered when the step is leased. A relative directory is under the run's `$TEAMAI_RUN_DIR`.
+ */
+export interface ConfinedPlace {
+  confined: string;
+}
+
+/** A step's `workspace` as written: a mode, the clone it opens, the team repo branch it commits to, or the directory it is confined to. */
+export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone' | 'team'> | { clone: ClonePlace } | { team: TeamPlace } | ConfinedPlace;
 
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
 export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;

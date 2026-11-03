@@ -83,6 +83,8 @@ export interface WorkflowScenario extends ScenarioBase {
   workflows?: Record<string, string>;
   /** Variables in the environment of every teamai process the scenario runs. */
   env?: Record<string, string>;
+  /** Other files of the team repo, by path in it, such as `models/aliases.yaml`. */
+  teamFiles?: Record<string, string>;
 }
 
 export interface BenchmarkScenario extends ScenarioBase {
@@ -106,7 +108,7 @@ export const DRIVER_PROFILES = {
   /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next`. */
   skill: {
     kind: 'skill',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
   'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
@@ -144,6 +146,8 @@ export type ConformanceOperation =
   }
   | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
+  /** Writes files under the run's `$TEAMAI_RUN_DIR`, as a step that hands another its files there would. Needs a runner with `runDir`. */
+  | { kind: 'runFiles'; files: Record<string, string> }
   | { kind: 'files'; lease?: string; expect: Record<string, string | null> }
   /**
    * Starts another run of `workflow`, the scenario's own when omitted, as `workflow start` with `driver` and `--confirmed`
@@ -256,6 +260,8 @@ export interface ConformanceRunner {
   expect: ConformanceExpect;
   /** The git checkout the run starts in and the bare origin it pushes to, for scenarios that check places. */
   place?: { checkout: string; origin: string };
+  /** The run's `$TEAMAI_RUN_DIR`, for scenarios that write files there. */
+  runDir?: (runId: string) => Promise<string>;
 }
 
 async function readOrNull(file: string): Promise<string | null> {
@@ -285,6 +291,7 @@ export function speaksAsDriverUnderTest(scenario: ConformanceScenario): boolean 
         return operation.as !== undefined && standsForDriverUnderTest(operation.as) && !('json' in operation);
       case 'host':
       case 'edit':
+      case 'runFiles':
       case 'files':
       case 'start':
       case 'retry':
@@ -426,6 +433,18 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
       case 'edit':
         for (const [file, text] of Object.entries(operation.files)) await fs.writeFile(path.join(placeOf(operation.lease), file), text);
         break;
+      case 'runFiles': {
+        if (!runner.runDir) throw new Error('A scenario that writes run files needs a runner with a runDir');
+        const dir = await runner.runDir(runId);
+
+        for (const [file, text] of Object.entries(operation.files)) {
+          await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+          await fs.writeFile(path.join(dir, file), text);
+        }
+
+        break;
+      }
+
       case 'files':
         for (const [file, text] of Object.entries(operation.expect)) {
           expect(await readOrNull(path.join(placeOf(operation.lease), file)), file).toEqual(text);

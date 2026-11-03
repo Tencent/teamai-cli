@@ -25,10 +25,11 @@ import {
 } from './template.js';
 import { stageSettledEvidence } from './place/place.js';
 import { parseStepPath } from './step-path.js';
-import type { LeaseWire } from './lease-wire.js';
+import type { ConfinedLease, LeaseWire } from './lease-wire.js';
+import { decideConfined, type ConfinedDecision } from './confined-place.js';
 import {
-  ReadSchema, answerHitl, fail, inProgress, lease, release, settled, skip, start, startDelivery, stopAttempt, stopWhere, stopped,
-  succeed, waitForAnswer, type ItemResult, type LeasedStep, type StepRead, type StepState,
+  ConfinedRunReportSchema, ReadSchema, answerHitl, fail, inProgress, lease, release, settled, skip, start, startDelivery, stopAttempt, stopWhere, stopped,
+  succeed, waitForAnswer, type ConfinedRunReport, type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, leaseDeadline, ownDeadline, spendAllowances, spentAllowances, startLimits, turnLimits } from './limits.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
@@ -111,6 +112,8 @@ export interface ReportInput {
   unenforced?: ReportedUnenforced;
   /** The lease limit that ended the prompt's turn, which then succeeded. */
   limit?: Limit;
+  /** What the run of a step leased with `confined` measured. */
+  confined?: ConfinedRunReport;
 }
 
 /** A protocol rejection that retains its actionable code and message. */
@@ -199,6 +202,8 @@ interface RenderedLease {
   model?: string;
   /** The `defaults.model` in effect for a prompt step, as written. */
   defaultModel?: string;
+  /** The directory of a step with `workspace: { confined }`, as its template rendered. */
+  confined?: string;
 }
 
 /** Whether a result that is a plain object or a message is the message. Not for arrays, which are not plain objects. */
@@ -285,8 +290,11 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   const texts: RenderedLease = {};
   const prompt = rendered.get('prompt');
   const model = rendered.get('model');
+  const confined = rendered.get('workspace.confined');
 
   if (prompt !== undefined) texts.prompt = prompt;
+
+  if (confined !== undefined) texts.confined = confined;
 
   if (definition.env) texts.env = Object.fromEntries(env);
 
@@ -401,7 +409,7 @@ type LeaseAnswer = { lease: LeaseData };
 
 function leaseData(
   run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
-  { requires, envScope, maxTurns, setup, role }: Omit<GrantedTerms, 'unenforced' | 'limits'>, plan?: WorkspacePlan,
+  { requires, envScope, maxTurns, setup, role }: Omit<GrantedTerms, 'unenforced' | 'limits'>, plan?: WorkspacePlan, confined?: ConfinedLease,
 ): LeaseAnswer {
   const expiresAt = leaseDeadline(run, state);
 
@@ -434,6 +442,8 @@ function leaseData(
   if (definition.output) wire.output = definition.output;
 
   if (plan?.contract) wire.workspace = plan.contract;
+
+  if (confined) wire.confined = confined;
 
   if (role !== undefined) wire.role = role;
 
@@ -1522,6 +1532,19 @@ function strictlyUnmet(definition: WorkflowDefinition, workflows: Record<string,
   return undefined;
 }
 
+/** What `can` gets of step `state` confined to the directory `rendered` names; undefined for a step not confined. */
+async function confinedFor(
+  config: LocalConfig, run: RunState, state: StepState, definition: WorkflowStep, rendered: RenderedLease, can: DriverCan,
+): Promise<ConfinedDecision | undefined> {
+  if (rendered.confined === undefined) return undefined;
+  // An empty model asks for the tool's default, as `leaseData` leaves it out.
+  const model = definition.model instanceof Object ? definition.model : rendered.model || undefined;
+
+  return decideConfined({
+    step: state.id, dir: rendered.confined, runDir: runScratchDir(config, run.id), offers: can.confined ?? [], model, defaultModel: rendered.defaultModel, config,
+  });
+}
+
 /** Why a step that names `tool` fails in a run whose only driver cannot launch it. */
 function toolUnavailable(step: string, tool: string): WorkflowFailure {
   return { code: 'tool_unavailable', message: `Step "${step}" runs on ${tool}, which the driver of this run cannot launch here. Install ${tool} where the run is driven, or remove tool from the step.` };
@@ -1873,6 +1896,19 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             break;
           }
 
+          const confined = await confinedFor(config, run, state, definition, rendered, can);
+
+          if (confined?.kind === 'fail') {
+            failStep(state, confined.failure, run.revision);
+            settledOne = true;
+            break;
+          }
+
+          if (confined?.kind === 'hold') {
+            held.push(confined.held);
+            continue;
+          }
+
           const terms = offerTerms(run, state.id, located, plan, context);
 
           if (terms.kind === 'hold' && options.alone && definition.tool !== undefined && terms.missing.includes('tools')) {
@@ -1909,7 +1945,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           const step = lease(state, offering({ ...granted, ...turnTerms(run, state, definition, terms.terms, now, now) }, plan.session));
           rememberCopy(run, plan, driver);
 
-          return answer(leaseData(run, step, definition, rendered, terms.terms, plan));
+          return answer(leaseData(run, step, definition, rendered, terms.terms, plan, confined?.lease));
         }
 
         if (settledOne) continue;
@@ -1928,12 +1964,20 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }, true);
 
         const offered = plan.fail ? undefined : plan;
+        const confined = await confinedFor(config, run, leased, located.step, rendered, can);
+
+        if (confined?.kind === 'fail') {
+          stopAttempt(run, leased, now);
+          failStep(leased, confined.failure, leased.lease.revision);
+          continue;
+        }
+
         const terms = offerTerms(run, leased.id, located, offered, context);
 
         // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
         // No step has run in an unused copy, so the driver gives up the copy too, and another driver may take the step,
         // unless the driver still holds another lease in it.
-        if (terms.kind === 'hold') {
+        if (terms.kind === 'hold' || confined?.kind === 'hold') {
           stopAttempt(run, leased, now);
           release(leased);
           const branch = offered?.contract?.branch;
@@ -1967,7 +2011,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
         if (offered) rememberCopy(run, offered, driver);
 
-        return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered));
+        return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered, confined?.lease));
       }
 
       failStep(leased, rendered, leased.lease.revision);
@@ -2026,7 +2070,7 @@ const REPORT_FIELD_SOURCES = {
   attempt: 'payload', revision: 'payload', outcome: 'payload', driver: 'payload', outputs: 'payload', exitCode: 'payload', message: 'payload',
   tool: 'payload', model: 'payload', session: 'payload', resumed: 'payload', tokens: 'payload', durationMs: 'payload', cost: 'payload',
   failure: 'payload', changes: 'payload', read: 'payload', agent: 'payload', used: 'payload', unenforced: 'payload', limit: 'payload',
-  prUrl: 'changes.pr_url',
+  confined: 'payload', prUrl: 'changes.pr_url',
 } as const satisfies Record<keyof ReportInput, 'payload' | 'changes.pr_url' | 'process'>;
 
 /** The top-level payload fields `parseReport` reads. */
@@ -2219,6 +2263,13 @@ export function parseReport(value: unknown): ParsedReport | string {
 
     if (!limit.success) return 'limit must be the lease limit that ended the turn: timeout, budget or max_turns';
     report.limit = limit.data;
+  }
+
+  if (record.confined !== undefined) {
+    const confined = ConfinedRunReportSchema.safeParse(record.confined);
+
+    if (!confined.success) return 'confined must be what the confined run measured: its tool, isolation and access, and its model, effort and usage when known';
+    report.confined = confined.data;
   }
 
   const ignored = unreadFields(record, REPORT_FIELDS);
@@ -2720,6 +2771,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       runMode: step.lease.runMode,
       outcomes: outcomes.length > 0 ? outcomes : undefined,
       limit: report.limit,
+      confined: report.confined,
       installId: install.id,
     };
 

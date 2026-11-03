@@ -50,6 +50,7 @@ const RECORDED_FAILURES = [
   ...LIMIT_FAILURES,
   'delivery_failed', 'protected_path',
   'trial_prepare_failed', 'clone_prepare_failed', 'role_unavailable',
+  'confined_invalid',
 ] as const;
 
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];

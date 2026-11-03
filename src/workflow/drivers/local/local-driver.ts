@@ -39,6 +39,7 @@ import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
+import type { ConfinedOffer } from '../../../tool-launch/confined.js';
 import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
 import type { DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
 import { isWorkflowError, stepWorkflow, WORKSPACE_MODES } from '../../types.js';
@@ -675,8 +676,8 @@ function rememberSecrets(seen: Record<string, string>, secrets: Record<string, s
  * prompt's turn at the limits its lease carries. It runs an unattended prompt in its tool's unattended mode, and fails
  * one whose tool has none.
  */
-function localCan({ strict, hitl, tools }: { strict: StrictCan; hitl: boolean; tools: string[] }): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES], ...strict, tokens: true, max_turns: true, setup: true, tools, end_turn: true, unattended: true, role: true };
+function localCan({ strict, hitl, tools, confined }: { strict: StrictCan; hitl: boolean; tools: string[]; confined: ConfinedOffer[] }): Required<DriverCan> {
+  return { hitl, workspace: [...WORKSPACE_MODES], ...strict, tokens: true, max_turns: true, setup: true, tools, end_turn: true, unattended: true, role: true, confined };
 }
 
 type StrictCan = Required<Pick<DriverCan, 'network' | 'isolation' | 'env'>>;
@@ -791,7 +792,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   // rather than waits.
   const named = isStarted ? namedTools(started) : undefined;
   const tools = LAUNCH_TOOLS.filter((tool) => (named === undefined || named.has(tool)) && onPath(tool));
-  const can = localCan({ strict: localStrictCan(config, options), hitl: canHitl, tools });
+  const can = localCan({ strict: localStrictCan(config, options), hitl: canHitl, tools, confined: [] });
   const driver = driverIdentity('local', cwd);
   // A driver killed before cleanup, of this run or any other, left clones behind.
   await sweepClones(config);

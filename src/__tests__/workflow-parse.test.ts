@@ -1790,8 +1790,8 @@ steps:
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual([
-      'workflows/build.yaml:6: field "steps[0].workspace": step "short" workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
-      'workflows/build.yaml:10: field "steps[1].workspace": step "revised" workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+      'workflows/build.yaml:6: field "steps[0].workspace": step "short" workspace must be read-only, new, continue, { team: { branch? } }, { confined: <dir> }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+      'workflows/build.yaml:10: field "steps[1].workspace": step "revised" workspace must be read-only, new, continue, { team: { branch? } }, { confined: <dir> }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
     ]);
   });
 });
@@ -1864,6 +1864,99 @@ steps:
       'workflows/build.yaml:20: field "steps[3].workspace": step "scored" workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed',
       `workflows/build.yaml:25: field "steps[4].workspace": step "fromRun" ${READS}`,
       'workflows/build.yaml:29: field "steps[5].workspace": step "unneeded" workspace team branch reads steps.plan, which is not a step it needs, directly or through its needs',
+    ]);
+  });
+
+  it('reads a confined directory a prompt step names from its inputs, its item, or a step it needs', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Judge each change from its evidence.
+inputs: { changes: [string] }
+steps:
+  - id: evidence
+    command: ./evidence.sh
+    output: { dir: string }
+  - id: judge
+    needs: [evidence]
+    workspace: { confined: "{{ steps.evidence.outputs.dir }}" }
+    model: "{{ inputs.changes }}"
+    prompt: Judge the change from the files here.
+    output: { verdict: pass | fail }
+  - id: each
+    needs: []
+    for_each: inputs.changes
+    workflow:
+      steps:
+        - id: judge
+          workspace: { confined: "changes/{{ item }}" }
+          prompt: Judge this change.
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const each = stepWorkflow(result.definition.steps[2] ?? { id: 'each' });
+    expect([result.definition.steps[1]?.workspace, each?.kind === 'inline' ? each.workflow.steps[0]?.workspace : undefined]).toEqual([
+      { confined: '{{ steps.evidence.outputs.dir }}' },
+      { confined: 'changes/{{ item }}' },
+    ]);
+  });
+
+  it('rejects a confined directory on a step that is not one prompt, with requires.env or scorers, or read from what is not an output', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Judge the change.
+inputs: { changes: [string] }
+steps:
+  - id: plan
+    command: ./plan.sh
+    output: { dir: string }
+  - id: cmd
+    needs: []
+    workspace: { confined: evidence }
+    command: ./judge.sh
+  - id: perItem
+    needs: []
+    for_each: inputs.changes
+    workspace: { confined: evidence }
+    prompt: Judge it.
+  - id: runs
+    needs: []
+    workspace: { confined: evidence }
+    workflow: other
+  - id: secret
+    needs: []
+    workspace: { confined: evidence }
+    requires: { env: [API_KEY] }
+    prompt: Judge it.
+  - id: scored
+    needs: []
+    workspace: { confined: evidence }
+    scorers: [review-quality]
+    prompt: Judge it.
+  - id: named
+    needs: []
+    workspace: { confined: evidence }
+    tool: claude
+    prompt: Judge it.
+  - id: outcome
+    needs: [plan]
+    workspace: { confined: "{{ steps.plan.outcome }}" }
+    prompt: Judge it.
+  - id: unneeded
+    needs: []
+    workspace: { confined: "{{ steps.plan.outputs.dir }}" }
+    prompt: Judge it.
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:11: field "steps[1].workspace": step "cmd" workspace confined is only allowed on a prompt or prompt_file step',
+      'workflows/build.yaml:15: field "steps[2].for_each": step "perItem" workspace confined runs one prompt that reads only its directory, so it takes no for_each',
+      'workflows/build.yaml:20: field "steps[3].workspace": step "runs" workspace confined is only allowed on a prompt or prompt_file step',
+      'workflows/build.yaml:25: field "steps[4].requires.env": step "secret" workspace confined takes no requires.env: a confined prompt gets no team env or secrets',
+      'workflows/build.yaml:30: field "steps[5].scorers": step "scored" workspace confined runs one prompt that reads only its directory, so it takes no scorers',
+      'workflows/build.yaml:35: field "steps[6].tool": step "named" workspace confined runs one prompt that reads only its directory, so it takes no tool',
+      'workflows/build.yaml:39: field "steps[7].workspace.confined": step "outcome" workspace.confined template {{ steps.plan.outcome }}: a confined directory template reads only inputs, item and the outputs of steps the step needs',
+      'workflows/build.yaml:43: field "steps[8].workspace.confined": step "unneeded" workspace.confined reads steps.plan, which is not a step it needs, directly or through its needs',
     ]);
   });
 

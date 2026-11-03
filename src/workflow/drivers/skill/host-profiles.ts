@@ -29,21 +29,21 @@ export interface HostProfile {
 export const HOST_PROFILES: Record<HostChoice, HostProfile> = {
   h1: {
     label: 'Children that work in a directory TeamAI names, several at once', children: 'parallel', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   h2: {
     label: 'Children that work in a directory TeamAI names, one at a time', children: 'serial', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   h3: {
     label: 'Children that work in a worktree your host makes for them, several at once', children: 'parallel', places: 'host',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   // The session works each step itself, beside its own checkout, so it takes no step in a worktree: those wait for the
   // person's terminal, where the local driver runs them.
   h4: {
     label: 'No child agent: you work each step yourself, one at a time', children: 'serial', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
 };
 
