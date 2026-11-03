@@ -145,4 +145,18 @@ function callerWarnings(file: string, definition: WorkflowDefinition): string[] 
   });
 }
 
-export const ScoreOverride = { problems, callerWarnings } as const;
+/** The workflows that judge. A step that runs one is never judged itself. */
+const JUDGING = new Set(['teamai-score', 'teamai-finished-sessions']);
+
+/** Why pull refuses `definition`, at `file`: a step runs a workflow that judges and lists scorers, which would judge it. */
+function callerProblems(file: string, definition: WorkflowDefinition): WorkflowDiagnostic[] {
+  return walk(definition.steps).flatMap(({ path, step }) => {
+    const child = stepWorkflow(step);
+
+    if (child?.kind !== 'named' || !JUDGING.has(child.name) || step.scorers === undefined) return [];
+
+    return [{ file, line: 1, column: 1, field: `steps.${path}.scorers`, code: 'judging_scored', message: `step "${path}" runs ${child.name} and lists scorers, so its judging would be judged in turn. Remove scorers from the step` }];
+  });
+}
+
+export const ScoreOverride = { problems, callerWarnings, callerProblems } as const;

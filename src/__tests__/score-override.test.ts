@@ -126,3 +126,30 @@ ${step}`;
     for (const step of [timed, other]) expect((await pulled({ 'score-this': wrapper(step) })).warned.filter((line) => line.includes('no timeout'))).toEqual([]);
   });
 });
+
+describe('a team step that runs a judging workflow', () => {
+  const wrapper = (step: string) => `schemaVersion: v1alpha1
+name: judge-again
+description: Judge a session, and judge that judging.
+inputs: { subject: string }
+steps:
+${step}`;
+  const score = '    workflow: teamai-score\n    with: { subject: "{{ inputs.subject }}", scorers: [], label: "", batch: false, demand: named }\n    timeout: 30m\n';
+  const finished = '    workflow: teamai-finished-sessions\n    with: { publish: never, scorers: [] }\n';
+
+  it.each([
+    ['runs teamai-score', `  - id: score\n${score}    scorers: [quality]\n`, 'score'],
+    ['runs teamai-finished-sessions', `  - id: score\n${finished}    scorers: [quality]\n`, 'score'],
+    ['runs teamai-score inside an inline workflow', `  - id: outer\n    workflow:\n      steps:\n        - id: score\n${score.replaceAll('    ', '          ')}          scorers: [quality]\n`, 'outer.score'],
+  ])('is refused at pull when it lists scorers and %s, so a judging run is never judged', async (_, step, at) => {
+    const { codes, refused } = await pulled({ 'judge-again': wrapper(step) });
+    const name = step.includes('teamai-finished-sessions') ? 'teamai-finished-sessions' : 'teamai-score';
+
+    expect(codes).toEqual(['judging_scored']);
+    expect(refused).toEqual([`workflows/judge-again.yaml:1: field "steps.${at}.scorers": step "${at}" runs ${name} and lists scorers, so its judging would be judged in turn. Remove scorers from the step`]);
+  });
+
+  it('is pulled when it runs teamai-score without scorers', async () => {
+    expect((await pulled({ 'judge-again': wrapper(`  - id: score\n${score}`) })).codes).toEqual([]);
+  });
+});

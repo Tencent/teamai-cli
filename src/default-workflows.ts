@@ -106,7 +106,8 @@ const CONTRACTS = new Map([['teamai-score', ScoreOverride]]);
 
 /**
  * Why pull refuses `definition`, the team file at `file`: it takes the name of a default with a contract and breaks it,
- * or takes that name as its alias, which would replace the default with no check. Coded, so no older version runs.
+ * takes that name as its alias, which would replace the default with no check, or has a step that runs a default as its
+ * contract refuses. Coded, so no older version runs.
  */
 function overrideProblems(file: string, definition: WorkflowDefinition, context: { scorerHasCheck: boolean }): WorkflowDiagnostic[] {
   const { alias } = definition;
@@ -119,7 +120,11 @@ function overrideProblems(file: string, definition: WorkflowDefinition, context:
   const contract = CONTRACTS.get(definition.name);
   const shipped = named(definition.name);
 
-  return [...aliased, ...(contract && shipped ? contract.problems({ team: definition, shipped: shipped.definition, file, ...context }) : [])];
+  return [
+    ...aliased,
+    ...(contract && shipped ? contract.problems({ team: definition, shipped: shipped.definition, file, ...context }) : []),
+    ...[...CONTRACTS.values()].flatMap((guarded) => guarded.callerProblems(file, definition)),
+  ];
 }
 
 /** Whether teamai's default `name` has a contract a team file that replaces it must keep. */

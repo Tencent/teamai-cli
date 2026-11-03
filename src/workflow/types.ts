@@ -384,9 +384,11 @@ export interface WorkflowDiagnostic {
    *   name; only the alias starts nothing.
    * `default_override_alias`, `score_override_*`: a team file that would replace a default its contract guards breaks
    *   that contract (`DefaultWorkflows.overrideProblems`); teamai's default runs, never an older team copy.
+   * `judging_scored`: a step runs teamai-score or teamai-finished-sessions and lists scorers, so the judging would be
+   *   judged; the kept copy would judge it too.
    */
   code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_role' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict'
-    | 'default_override_alias' | ScoreOverrideCode;
+    | 'default_override_alias' | 'judging_scored' | ScoreOverrideCode;
 }
 
 /** Why pull refuses a team teamai-score.yaml, one code per part of its contract (`src/scorers/score-override.ts`). */
