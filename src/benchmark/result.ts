@@ -22,7 +22,7 @@ import { compareAgent } from './agent-match.js';
 import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
-import { leavesOut } from './team-without.js';
+import { leavesOut, skillDefinitionOf } from './team-without.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -161,14 +161,16 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
 
       const task = plan.tasks.find(({ id }) => id === trial.task);
       const covers = task === undefined ? [] : namesOf(task);
-      // An arm that runs without a covered skill by design, alone, with the directory holding it, or with no team
-      // assets at all, reports no routing for it: the asset is absent, not misrouted.
+      // An arm that runs without a covered skill by design, alone, with the directory holding it, with its definition
+      // file, or with no team assets at all, or whose selection pull does not deliver it to, reports no routing for it:
+      // the asset is absent, not misrouted.
       const left = arm?.team.kind === 'without' ? arm.team.paths : arm?.team.kind === 'none' ? ['skills'] : [];
 
       const absent = new Set(plan.tasks.flatMap((one) => (one.covers ?? []).flatMap((covered, index) => {
         const name = one.coversSkills?.[index];
+        const withheld = arm !== undefined && (one.coversWithheldFrom?.[index] ?? []).includes(arm.name);
 
-        return name !== undefined && name !== null && leavesOut(left, covered) ? [name] : [];
+        return name !== undefined && name !== null && (withheld || leavesOut(left, skillDefinitionOf(covered))) ? [name] : [];
       })));
 
       const entry = arm?.workflow

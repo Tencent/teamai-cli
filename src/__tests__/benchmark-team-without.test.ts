@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { coveredRefusal, coveredSkillName, withoutRefusal } from '../benchmark/team-without.js';
+import { coveredDelivery, coveredSkillName, withoutRefusal } from '../benchmark/team-without.js';
 import type { LocalConfig } from '../types.js';
 import type { TeamSelection } from '../workflow/clone.js';
 
@@ -236,7 +236,24 @@ describe('coveredSkillName (#1605)', () => {
   });
 });
 
-describe('coveredRefusal', () => {
+/** Why plan refuses the covered paths, or undefined when it accepts them. */
+async function coveredRefusal(...args: Parameters<typeof coveredDelivery>) {
+  const delivered = await coveredDelivery(...args);
+
+  return 'refusal' in delivered ? delivered.refusal : undefined;
+}
+
+describe('coveredDelivery', () => {
+  it('names, by each covered path, the arms whose role pull does not deliver it to', async () => {
+    const { config, revision, selection, files } = team();
+    const arms = [{ name: 'pulled' }, { name: 'dev', role: 'dev' }, { name: 'ops', role: 'ops' }];
+
+    expect(await coveredDelivery(config, { paths: ['skills/dev/deploy', 'skills/ops/runbook', 'skills/lint'], revision, arms, member: selection, files })).toEqual({
+      // ops gets its own lint in place of the shared one.
+      withheldFrom: { 'skills/dev/deploy': ['ops'], 'skills/ops/runbook': ['pulled', 'dev'], 'skills/lint': ['ops'] },
+    });
+  });
+
   it('accepts the paths a task covers that an arm could run without', async () => {
     const { config, revision, selection, files } = team();
 

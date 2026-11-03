@@ -107,7 +107,12 @@ export async function teamFilesAt(
 export function coveredSkillName(listed: string, files: readonly string[]): string | undefined {
   if (!listed.startsWith('skills/')) return undefined;
 
-  return files.includes(`${listed}/SKILL.md`) ? listed.split('/').at(-1) : undefined;
+  return files.includes(skillDefinitionOf(listed)) ? listed.split('/').at(-1) : undefined;
+}
+
+/** The file that makes the skill directory `skill` a skill: without it, nothing loads the skill. */
+export function skillDefinitionOf(skill: string): string {
+  return `${skill}/SKILL.md`;
 }
 
 /**
@@ -119,24 +124,30 @@ export function armSelections(arms: ReadonlyArray<Pick<Arm, 'name' | 'role'>>, m
   const own = arms.some(({ role }) => role === undefined) ? [member] : [];
 
   return [...own, ...roles.map((role) => ({ ...member, primaryRole: role }))]
-    .filter((one, index, all) => all.findIndex((other) => other.primaryRole === one.primaryRole) === index)
-    .map((selection) => ({ selection, arms: arms.filter(({ role }) => (role ?? member.primaryRole) === selection.primaryRole).map(({ name }) => name) }));
+    .flatMap((selection, index, all) => (all.findIndex((other) => other.primaryRole === selection.primaryRole) === index
+      ? [{ selection, arms: arms.flatMap(({ name, role }) => ((role ?? member.primaryRole) === selection.primaryRole ? [name] : [])) }]
+      : []));
 }
 
-export async function coveredRefusal(
+/**
+ * Why plan refuses the paths the tasks cover, or, by each covered path, the arms whose selection pull does not deliver
+ * it to, so their trials record no routing for it. Refused: a path the revision does not have, teamai.yaml, and a path
+ * no arm's selection receives.
+ */
+export async function coveredDelivery(
   config: LocalConfig,
   { paths, revision, arms, member, files }: { paths: readonly string[]; revision: string; arms: ReadonlyArray<Pick<Arm, 'name' | 'role'>>; member: TeamSelection; files: readonly string[] },
-): Promise<Refusal | undefined> {
+): Promise<{ refusal: Refusal } | { withheldFrom: Record<string, string[]> }> {
   const short = revision.slice(0, 7);
-  const selections = armSelections(arms, member).map(({ selection }) => selection);
+  const selections = armSelections(arms, member);
   const missing = paths.find((one) => !files.some((file) => leavesOut([one], file)));
 
   if (missing !== undefined) {
-    return { code: 'arm_team_unresolved', message: `A task covers ${missing}, which team revision ${short} does not have. ${TASK_FIX}` };
+    return { refusal: { code: 'arm_team_unresolved', message: `A task covers ${missing}, which team revision ${short} does not have. ${TASK_FIX}` } };
   }
 
   if (paths.includes('teamai.yaml')) {
-    return { code: 'arm_team_unresolved', message: `A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. ${TASK_FIX}` };
+    return { refusal: { code: 'arm_team_unresolved', message: `A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. ${TASK_FIX}` } };
   }
 
   // Every selection the run's arms pull under, so a path only a role arm receives is not refused. A path refuses
@@ -147,36 +158,36 @@ export async function coveredRefusal(
 
   // One path at a time within a clone — each check renames its path out and back — while the selections run apart,
   // each in its own clone, so no check reads a clone another path is moved out of.
-  const reads = await Promise.all(selections.map(async (selection) => {
-    const member: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
+  const reads = await Promise.all(selections.map(async ({ selection, arms: pulling }) => {
+    const reader: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
 
-    return withTeamRevision(member, revision, async (at) => {
+    return withTeamRevision(reader, revision, async (at) => {
       const unchangedByPath: Array<[string, string | undefined]> = [];
 
       for (const covered of unique) {
         unchangedByPath.push([covered, await firstUnchanged(at, { subject: 'A task covers', advice: TASK_FIX, paths: [covered], files, short, excluded: selection.excludedSkills })]);
       }
 
-      return { selection, unchangedByPath };
+      return { arms: pulling, unchangedByPath };
     });
   }));
 
   const failed = reads.find((read) => 'failed' in read);
 
   if (failed && 'failed' in failed) {
-    return { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${failed.failed}. Repair the team repo, or run teamai pull, and start again.` };
+    return { refusal: { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${failed.failed}. Repair the team repo, or run teamai pull, and start again.` } };
   }
 
+  const read = reads.flatMap((one) => ('failed' in one ? [] : [one]));
+
   // A path refuses only when every selection's delivery leaves it unchanged; one role arm that receives it is enough.
-  const refused = unique
-    .flatMap((covered) => {
-      const ones = reads.flatMap((read) => 'failed' in read ? [] : read.unchangedByPath.filter(([one]) => one === covered).map(([, unchanged]) => unchanged).filter((unchanged): unchanged is string => unchanged !== undefined));
+  const unchangedFor = (covered: string) => read.flatMap(({ arms: pulling, unchangedByPath }) => unchangedByPath.flatMap(([one, unchanged]) => (one === covered && unchanged !== undefined ? [{ arms: pulling, unchanged }] : [])));
 
-      return ones.length === reads.length ? [ones.find((one) => one !== undefined) ?? ''] : [];
-    })
-    .find((ones) => ones.length > 0);
+  const refused = unique.map(unchangedFor).find((ones) => ones.length === read.length)?.[0];
 
-  return refused === undefined ? undefined : { code: 'arm_team_unresolved', message: refused };
+  if (refused !== undefined) return { refusal: { code: 'arm_team_unresolved', message: refused.unchanged } };
+
+  return { withheldFrom: Object.fromEntries(unique.map((covered) => [covered, unchangedFor(covered).flatMap(({ arms: pulling }) => pulling)])) };
 }
 
 /**

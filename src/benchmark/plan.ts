@@ -62,6 +62,8 @@ const PlannedTaskSchema = z.object({
   covers: z.array(z.string().min(1)).nonempty().optional(),
   /** Aligned with `covers`: the bare skill name a trial's load record shows for that path, or null when the revision delivers it as no skill, such as a namespace directory. */
   coversSkills: z.array(z.string().min(1).nullable()).nonempty().optional(),
+  /** Aligned with `covers`: the arms whose selection pull does not deliver that path to, so their trials record no routing for it. Absent: every arm's selection receives each path. */
+  coversWithheldFrom: z.array(z.array(BenchmarkNameSchema)).nonempty().optional(),
 }).strict();
 
 export type PlannedTask = z.infer<typeof PlannedTaskSchema>;
@@ -167,12 +169,15 @@ export function freezePlan(input: {
   scorers: Record<string, PinnedScorer>;
   /** Each covered path's bare skill name as plan checked it at the pulled revision, or null when it delivers no skill. */
   coveredSkills: Record<string, string | null>;
+  /** By covered path, the arms whose selection pull does not deliver it to, as plan checked it; absent or empty: none. */
+  coveredWithheldFrom?: Record<string, readonly string[]>;
   skillChanges?: SkillChanges[];
 }): BenchmarkPlan {
   const { suite, files } = input.committed;
-  const { coveredSkills } = input;
+  const { coveredSkills, coveredWithheldFrom = {} } = input;
   const [first, ...rest] = suite.tasks;
-  const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.covers ? task.covers.map((path) => coveredSkills[path] ?? null) : undefined });
+  const withheldFrom = (covers: readonly string[]) => (covers.some((path) => (coveredWithheldFrom[path] ?? []).length > 0) ? covers.map((path) => [...(coveredWithheldFrom[path] ?? [])]) : undefined);
+  const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.covers ? task.covers.map((path) => coveredSkills[path] ?? null) : undefined, coversWithheldFrom: task.covers ? withheldFrom(task.covers) : undefined });
 
   return definedFields<BenchmarkPlan>({
     schemaVersion: BENCHMARK_PLAN_SCHEMA_VERSION,

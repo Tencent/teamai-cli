@@ -27,7 +27,7 @@ import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
 import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PlannedArm } from './plan.js';
 import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskJudge } from './suite.js';
-import { coveredRefusal, coveredSkillName, teamFilesAt } from './team-without.js';
+import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import type { ArmTeam, SkillChanges } from './terms.js';
@@ -199,7 +199,7 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const covered = await coveredTaskRefusal(config, { tasks: found.tasks, pulled: revision, arms: found.arms, member: selectionOf(config) });
 
   if ('refusal' in covered) return refuse(covered.refusal);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, coveredSkills: covered.skills, skillChanges: skillChanges.changes });
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, coveredSkills: covered.skills, coveredWithheldFrom: covered.withheldFrom, skillChanges: skillChanges.changes });
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
@@ -219,10 +219,10 @@ type ArmResolution = { ok: true; arm: PlannedArm } | { ok: false; message: strin
  * team revision does not have or that delivers nothing (`coveredRefusal`, the same resolvers as an arm's `without`), and
  * two covered skill paths of the same bare name, which a trial's load record could not tell apart.
  */
-async function coveredTaskRefusal(config: LocalConfig, { tasks, pulled, arms, member }: { tasks: readonly Task[]; pulled: string; arms: readonly Arm[]; member: TeamSelection }): Promise<{ refusal: Refusal } | { skills: Record<string, string | null> }> {
+async function coveredTaskRefusal(config: LocalConfig, { tasks, pulled, arms, member }: { tasks: readonly Task[]; pulled: string; arms: readonly Arm[]; member: TeamSelection }): Promise<{ refusal: Refusal } | { skills: Record<string, string | null>; withheldFrom: Record<string, string[]> }> {
   const covers = tasks.flatMap((task) => task.covers ?? []);
 
-  if (covers.length === 0) return { skills: {} };
+  if (covers.length === 0) return { skills: {}, withheldFrom: {} };
 
   const listed = await teamFilesAt(config, { paths: covers, revision: pulled });
 
@@ -246,15 +246,15 @@ async function coveredTaskRefusal(config: LocalConfig, { tasks, pulled, arms, me
     byName.set(bare, covered);
   }
 
-  const refusal = await coveredRefusal(config, { paths: [...new Set(covers)], revision: pulled, arms, member, files: listed.files });
+  const delivered = await coveredDelivery(config, { paths: [...new Set(covers)], revision: pulled, arms, member, files: listed.files });
 
-  if (refusal !== undefined) return { refusal: error('arm_team_unresolved', refusal.message) };
+  if ('refusal' in delivered) return { refusal: error('arm_team_unresolved', delivered.refusal.message) };
 
   const skills = new Map<string, string | null>();
 
   for (const covered of new Set(covers)) skills.set(covered, coveredSkillName(covered, listed.files) ?? null);
 
-  return { skills: Object.fromEntries(skills) };
+  return { skills: Object.fromEntries(skills), withheldFrom: delivered.withheldFrom };
 }
 
 
