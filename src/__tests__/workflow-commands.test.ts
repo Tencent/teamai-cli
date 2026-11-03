@@ -18,7 +18,7 @@ vi.mock('../config.js', async (importOriginal) => {
   };
 });
 
-import { setStderrOnly } from '../utils/logger.js';
+import { log, setStderrOnly } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { startRun } from '../workflow/engine.js';
@@ -520,6 +520,17 @@ steps:
     const runId = String(started.data?.run);
     expect(typeof await readRun(user, runId)).toBe('object');
     expect(await readRun(project, runId)).toBe('missing');
+  });
+
+  it('ignores the user scope\'s teamai-score from a project, with a warning, and runs teamai\'s default there', async () => {
+    const { user } = await installs();
+    const shipped = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-score.yaml'), 'utf8');
+    fs.writeFileSync(path.join(user.repo.localPath, 'workflows', 'teamai-score.yaml'), shipped.replace('Label one subject with the scorers that apply to it.', 'Label it the user team way.'));
+    await syncWorkflowDefinitions(user);
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await capture(() => workflowStart('teamai-score', { describe: true }))).toMatchObject({ data: { name: 'teamai-score', source: 'default' } });
+    expect(warn).toHaveBeenCalledWith('[workflows] Ignored the user scope\'s teamai-score from this project: teamai\'s default runs here. Replace it for this project in the project\'s team repo.');
   });
 
   it('publishes a user-scope run from the project it was started in as a run of the user scope', async () => {

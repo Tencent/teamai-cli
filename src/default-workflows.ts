@@ -4,8 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { getCurrentVersion } from './package-info.js';
+import { ScoreOverride } from './scorers/score-override.js';
 import { formatDiagnostic, parseWorkflow } from './workflow/parse.js';
-import type { CachedWorkflow, ResolvedWorkflow, WorkflowSource } from './workflow/types.js';
+import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowSource } from './workflow/types.js';
 
 // ─── Default workflows (#1388) ───────────────────────────
 //
@@ -100,4 +101,35 @@ function sourceOfRun(run: { origin?: RunOrigin }): WorkflowSource {
   return run.origin?.source ?? 'team';
 }
 
-export const DefaultWorkflows = { PREFIX, named, all, originOf, sourceOfRun } as const;
+/** The defaults a team file replaces only by keeping what their module says it must, by name. */
+const CONTRACTS = new Map([['teamai-score', ScoreOverride]]);
+
+/**
+ * Why pull refuses `definition`, the team file at `file`: it takes the name of a default with a contract and breaks it,
+ * or takes that name as its alias, which would replace the default with no check. Coded, so no older version runs.
+ */
+function overrideProblems(file: string, definition: WorkflowDefinition, context: { scorerHasCheck: boolean }): WorkflowDiagnostic[] {
+  const { alias } = definition;
+
+  const aliased: WorkflowDiagnostic[] = alias !== undefined && CONTRACTS.has(alias) ? [{
+    file, line: 1, column: 1, field: 'alias', code: 'default_override_alias',
+    message: `alias "${alias}" would replace teamai's default ${alias}, which only a team file named ${alias} replaces, once pull checked it. Remove the alias, or name the file ${alias}`,
+  }] : [];
+
+  const contract = CONTRACTS.get(definition.name);
+  const shipped = named(definition.name);
+
+  return [...aliased, ...(contract && shipped ? contract.problems({ team: definition, shipped: shipped.definition, file, ...context }) : [])];
+}
+
+/** Whether teamai's default `name` has a contract a team file that replaces it must keep. */
+function isGuarded(name: string): boolean {
+  return CONTRACTS.has(name);
+}
+
+/** What pull warns about in a step of `definition`, at `file`, that runs a default with a contract. */
+function callerWarnings(file: string, definition: WorkflowDefinition): string[] {
+  return [...CONTRACTS.values()].flatMap((contract) => contract.callerWarnings(file, definition));
+}
+
+export const DefaultWorkflows = { PREFIX, named, all, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;

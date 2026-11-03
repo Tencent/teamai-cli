@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { loadLocalConfigForScope } from '../config.js';
-import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
+import { anyScorerChecks, syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
@@ -210,6 +210,13 @@ export async function resolveStart(config: LocalConfig, name: string): Promise<{
   const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
   const there = user ? await loadCachedWorkflow(user, name) : null;
 
+  // A project's subjects are labelled as its own team decides, never by a file of another team it did not pull.
+  if (user && there?.source === 'team' && DefaultWorkflows.isGuarded(there.definition.name)) {
+    log.warn(`[workflows] Ignored the user scope's ${there.definition.name} from this project: teamai's default runs here. Replace it for this project in the project's team repo.`);
+
+    return { config, workflow: here };
+  }
+
   return user && there?.source === 'team' ? { config: user, workflow: there } : { config, workflow: here };
 }
 
@@ -286,6 +293,7 @@ export async function syncWorkflowDefinitions(
   const knowledgeRoot = getKnowledgeDir(config);
   // Asked on the first valid file: a team without workflows starts no git here.
   let reachable: Promise<ReachableRevision | undefined> | undefined;
+  let scorerHasCheck: Promise<boolean> | undefined;
   const checked: Checked[] = [];
   const rawCandidates: Array<{ stem: string; relativePath: string; full: string; namespace: string | null }> = [];
 
@@ -461,6 +469,14 @@ export async function syncWorkflowDefinitions(
       continue;
     }
 
+    const refused = DefaultWorkflows.overrideProblems(relativePath, resolved.definition, { scorerHasCheck: await (scorerHasCheck ??= anyScorerChecks(config, scorers.cached)) });
+
+    if (refused.length > 0) {
+      checked.push({ stem, relativePath, diagnostics: refused });
+      continue;
+    }
+
+    for (const warning of DefaultWorkflows.callerWarnings(relativePath, resolved.definition)) log.warn(`[workflows] ${warning}`);
     const hash = createHash('sha256').update(content);
 
     for (const source of resolved.sources) {
