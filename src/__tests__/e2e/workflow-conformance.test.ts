@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
-import { DRIVERS_UNDER_TEST, runConformanceScenario, speaksAsDriverUnderTest } from '../../workflow/conformance-interpreter.js';
+import { DRIVERS_UNDER_TEST, runConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { benchmarkConformanceScenarios } from '../../benchmark/conformance.js';
 import { workflowConformanceScenarios } from '../../workflow/conformance/run.js';
 import type { WorkflowRunRecord } from '../../workflow/records.js';
@@ -49,7 +49,9 @@ async function runBenchmarkScenario(scenario: BenchmarkScenario, profile: Driver
   }
 }
 
-describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI as %s', (profile) => {
+// The driver profile travels in the JSON body the CLI passes through, so one profile proves the CLI wiring;
+// src/__tests__/workflow-conformance.test.ts runs every scenario under every profile in process.
+describe.each([DRIVERS_UNDER_TEST[0]])('workflow protocol conformance through the CLI as %s', (profile) => {
   let repo: string;
 
   beforeAll(async () => {
@@ -75,8 +77,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
     for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  // A scenario that never speaks as the driver under test makes the same calls under every profile, so it runs under the first.
-  for (const scenario of SCENARIOS.filter((item) => profile === DRIVERS_UNDER_TEST[0] || speaksAsDriverUnderTest(item))) {
+  for (const scenario of SCENARIOS) {
     it(scenario.name, async () => {
       if ('benchmark' in scenario) {
         await runBenchmarkScenario(scenario, profile);

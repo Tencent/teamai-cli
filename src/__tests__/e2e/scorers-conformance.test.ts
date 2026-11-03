@@ -19,7 +19,9 @@ class FrozenDate extends Date {
 globalThis.Date = FrozenDate;
 `;
 
-describe.each(JUDGES_UNDER_TEST)('judge lease conformance through the CLI as %s', (profile) => {
+// The judge profile travels in the JSON body the CLI passes through, so one profile proves the CLI wiring;
+// src/__tests__/scorers-conformance.test.ts runs every scenario under every profile in process.
+describe.each([JUDGES_UNDER_TEST[0]])('judge lease conformance through the CLI as %s', (profile) => {
   const dirs: string[] = [];
 
   afterAll(() => {

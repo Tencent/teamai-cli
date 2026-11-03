@@ -7,9 +7,13 @@ export default defineConfig({
       'src/__tests__/*-e2e.test.ts',
       'validation/*.test.ts',
     ],
-    // Applied before setupFiles: clear-agent-session-env.ts must remove each,
-    // which workflow-test-env.test.ts checks.
-    env: { CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_LAUNCHED_BY: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config', BASH_ENV: 'seeded-by-vitest-config' },
+    env: {
+      // Tests match git's English messages, which git translates on a machine set to another language.
+      LC_ALL: 'C.UTF-8',
+      // Applied before setupFiles: clear-agent-session-env.ts must remove each,
+      // which workflow-test-env.test.ts checks.
+      CLAUDE_CODE_SESSION_ID: 'seeded-by-vitest-config', TEAMAI_WORKFLOW_ATTEMPT: 'seeded-by-vitest-config', TEAMAI_LAUNCHED_BY: 'seeded-by-vitest-config', TEAMAI_MODE: 'unattended', CI: 'seeded-by-vitest-config', BASH_ENV: 'seeded-by-vitest-config',
+    },
     // teardown-writers first, so its afterAll runs after the others' and
     // the removals in theirs can still join detached writers.
     // isolate-e2e-env next: the setup file after it imports modules that build

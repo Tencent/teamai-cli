@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -162,6 +163,132 @@ it('previews the current clone without switching or mutating its config', async 
   expect(local).toEqual(before);
   expect((await createGit(clone).revparse(['HEAD'])).trim()).toBe(commit);
   expect((await createGit(clone).raw(['symbolic-ref', '-q', 'HEAD'])).trim()).toBe('refs/heads/main');
+});
+
+describe('team clone switches that would lose local work', () => {
+  let base: string;
+  let team: string;
+  const sh = (cwd: string, args: string[]): string => execFileSync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'protocol.file.allow=always', ...args,
+  ], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const commitAll = (cwd: string, message: string) => { sh(cwd, ['add', '-A']); sh(cwd, ['commit', '-qm', message]); };
+  const skillText = (body: string) => `---\nname: sub\ndescription: sub\n---\n${body}\n`;
+  const refusal = (ref: string, file: string) => `The team repo has uncommitted changes, so it was not switched to "${ref}": ${file}. Share them with teamai push, or discard them, then pull again.`;
+
+  // main holds env/env.yaml and no submodule; trial adds a commit; files tracks skills/sub as files;
+  // submodule tracks skills/sub as a gitlink, and two-submodules adds skills/other beside it.
+  beforeAll(async () => {
+    base = path.join(root, 'switches');
+    team = path.join(base, 'team');
+    const sub = path.join(base, 'sub');
+    await fs.mkdir(path.join(team, 'env'), { recursive: true });
+    await fs.mkdir(sub, { recursive: true });
+    sh(sub, ['init', '-q', '-b', 'main']);
+    await fs.writeFile(path.join(sub, 'SKILL.md'), skillText('sub'));
+    commitAll(sub, 'first');
+    sh(team, ['init', '-q', '-b', 'main']);
+    await fs.writeFile(path.join(team, 'teamai.yaml'), 'team: switches\nsubmodules: true\n');
+    await fs.writeFile(path.join(team, 'env/env.yaml'), 'variables: []\n');
+    commitAll(team, 'team');
+    sh(team, ['tag', 'v1']);
+    sh(team, ['checkout', '-q', '-b', 'trial']);
+    await fs.mkdir(path.join(team, 'skills/trial'), { recursive: true });
+    await fs.writeFile(path.join(team, 'skills/trial/SKILL.md'), 'trial\n');
+    commitAll(team, 'trial');
+    sh(team, ['checkout', '-q', '-b', 'files', 'main']);
+    await fs.mkdir(path.join(team, 'skills/sub'), { recursive: true });
+    await fs.writeFile(path.join(team, 'skills/sub/SKILL.md'), skillText('FILES BRANCH'));
+    commitAll(team, 'files');
+    sh(team, ['checkout', '-q', '-b', 'submodule', 'main']);
+    sh(team, ['submodule', 'add', '-q', sub, 'skills/sub']);
+    commitAll(team, 'submodule');
+    sh(team, ['checkout', '-q', '-b', 'two-submodules']);
+    sh(team, ['submodule', 'add', '-q', sub, 'skills/other']);
+    commitAll(team, 'other submodule');
+    sh(team, ['checkout', '-q', '-f', 'main']);
+  });
+
+  /** A clone of the team at `ref`, pinned the way a pull pins it, with its submodules checked out. */
+  async function cloneAt(name: string, ref?: string) {
+    const dir = path.join(base, name);
+    sh(base, ['clone', '-q', team, dir]);
+    const local = config({ repo: { localPath: dir, remote: 'https://example.com/team.git' } });
+    if (ref) await teamRef.transitionTeamRepo(local, { teamRef: ref });
+    sh(dir, ['submodule', 'update', '--init', '-q']);
+    return { dir, local, head: sh(dir, ['rev-parse', 'HEAD']) };
+  }
+
+  it('keeps an uncommitted edit when the clone already follows the default branch', async () => {
+    const { dir, local } = await cloneAt('dirty-main');
+    await fs.writeFile(path.join(dir, 'env/env.yaml'), 'PENDING\n');
+    await expect(teamRef.transitionTeamRepo(local, { teamRef: 'main' })).resolves.toMatchObject({ transition: 'unpinned' });
+    expect(await fs.readFile(path.join(dir, 'env/env.yaml'), 'utf8')).toBe('PENDING\n');
+  });
+
+  it.each([
+    ['pin', undefined, 'trial'], ['repin', 'trial', 'v1'], ['unpin', 'trial', 'main'], ['recover', 'trial', undefined],
+  ] as const)('refuses to %s a clone with an uncommitted edit, keeping the edit and HEAD', async (mode, from, to) => {
+    const { dir, local, head } = await cloneAt(`dirty-${mode}`, from);
+    await fs.writeFile(path.join(dir, 'env/env.yaml'), 'PENDING\n');
+    await expect(teamRef.transitionTeamRepo(local, to === undefined ? {} : { teamRef: to }))
+      .rejects.toMatchObject({ message: refusal(to ?? 'main', 'env/env.yaml') });
+    expect(await fs.readFile(path.join(dir, 'env/env.yaml'), 'utf8')).toBe('PENDING\n');
+    expect(sh(dir, ['rev-parse', 'HEAD'])).toBe(head);
+  });
+
+  it('refuses to pin a branch that tracks a submodule skill as files over an edit in that submodule', async () => {
+    const { dir, local, head } = await cloneAt('edited-files', 'submodule');
+    const file = path.join(dir, 'skills/sub/SKILL.md');
+    await fs.writeFile(file, skillText('MY EDIT'));
+    await expect(teamRef.transitionTeamRepo(local, { teamRef: 'files' })).rejects.toMatchObject({ message: refusal('files', 'skills/sub') });
+    expect(await fs.readFile(file, 'utf8')).toBe(skillText('MY EDIT'));
+    expect(sh(dir, ['rev-parse', 'HEAD'])).toBe(head);
+  });
+
+  it.each([
+    'local files at a deinitialized path',
+    'an embedded git directory',
+    'an unpushed submodule commit',
+    'an edited copy of another submodule worktree',
+    'a nested repository with an unpushed commit',
+  ])('refuses to unpin over %s where the default branch lacks the submodule', async (kind) => {
+    const { dir, local, head } = await cloneAt(`leaving-${kind.replaceAll(' ', '-')}`, kind === 'an edited copy of another submodule worktree' ? 'two-submodules' : 'submodule');
+    const sub = path.join(dir, 'skills/sub');
+    const commitIn = async (repo: string, body: string) => {
+      await fs.writeFile(path.join(repo, 'SKILL.md'), skillText(body));
+      commitAll(repo, 'local only');
+    };
+    let kept = path.join(sub, 'SKILL.md');
+    if (kind === 'local files at a deinitialized path') {
+      sh(dir, ['submodule', 'deinit', '-q', '-f', '--', 'skills/sub']);
+      kept = path.join(sub, 'notes.txt');
+      await fs.writeFile(kept, 'local notes\n');
+    } else if (kind === 'an embedded git directory') {
+      sh(dir, ['submodule', 'deinit', '-q', '-f', '--', 'skills/sub']);
+      await fs.rm(sub, { recursive: true, force: true });
+      sh(dir, ['clone', '-q', path.join(base, 'sub'), sub]);
+      await commitIn(sub, 'LOCAL COMMIT');
+      kept = path.join(sub, '.git/HEAD');
+    } else if (kind === 'an unpushed submodule commit') {
+      await commitIn(sub, 'LOCAL COMMIT');
+    } else if (kind === 'an edited copy of another submodule worktree') {
+      sh(dir, ['submodule', 'deinit', '-q', '-f', '--', 'skills/sub']);
+      await fs.rm(sub, { recursive: true, force: true });
+      await fs.cp(path.join(dir, 'skills/other'), sub, { recursive: true });
+      await fs.writeFile(kept, skillText('LOCAL EDIT'));
+    } else {
+      const nested = path.join(sub, 'nested');
+      sh(dir, ['clone', '-q', path.join(base, 'sub'), nested]);
+      await commitIn(nested, 'NESTED COMMIT');
+      sh(sub, ['add', 'nested']);
+      sh(sub, ['commit', '-qm', 'nested']);
+      kept = path.join(nested, '.git/HEAD');
+    }
+    const before = await fs.readFile(kept, 'utf8');
+    await expect(teamRef.transitionTeamRepo(local, { teamRef: 'main' })).rejects.toMatchObject({ message: refusal('main', 'skills/sub') });
+    expect(await fs.readFile(kept, 'utf8')).toBe(before);
+    expect(sh(dir, ['rev-parse', 'HEAD'])).toBe(head);
+  });
 });
 
 it('propagates a git transport failure while resolving a commit', async () => {

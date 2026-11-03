@@ -329,7 +329,9 @@ describe('workflow engine', () => {
     expect(expectedOutput(undefined)).toBe('a short summary of what you did, as a JSON string');
     expect(expectedOutput({ type: 'object', fields: { verdict: { type: 'enum', values: ['pass', 'fail'] }, notes: { type: 'json' }, plan: { type: 'workflow' } } }))
       .toBe('a value that matches this JSON Schema: `{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},"notes":{},'
-        + '"plan":{"type":"object","description":"A workflow bundle: { definition, workflows?, scorers?, teamRevision? }, where definition is a workflow file as JSON.","required":["definition"]}},'
+        + '"plan":{"type":"object","description":"A workflow bundle, where definition is a workflow file as JSON.",'
+        + '"properties":{"definition":{"type":"object"},"workflows":{"type":"object"},"scorers":{"type":"object"},"teamRevision":{"type":"string"}},'
+        + '"required":["definition"],"additionalProperties":false}},'
         + '"required":["verdict","notes","plan"]}`');
     // The example in docs/guide/workflow.md, as the guide quotes it.
     expect(expectedOutput({ type: 'object', fields: { summary: { type: 'string' }, risk: { type: 'enum', values: ['low', 'high'] }, files: { type: 'array', items: { type: 'string' } } } }))

@@ -329,9 +329,55 @@ describe('instruction channel problems (#945)', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('names no OMP problem for a member without OMP in a project that has .omp/', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-no-omp-')));
+    vi.stubEnv('HOME', path.join(root, 'home'));
+    try {
+      const projectRoot = path.join(root, 'project');
+      fs.mkdirSync(path.join(root, 'home'), { recursive: true });
+      fs.mkdirSync(path.join(projectRoot, '.claude', 'skills'), { recursive: true });
+      fs.mkdirSync(path.join(projectRoot, '.omp', 'skills'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'repo', 'claudemd'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'repo', 'claudemd', 'shared.md'), 'Shared.\n');
+      const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+      const localConfig = LocalConfigSchema.parse({
+        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+        username: 'u', scope: 'project', projectRoot,
+      });
+
+      expect(await instructionChannelProblems(teamConfig, localConfig)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('instruction targets shared by several tools (#945)', () => {
+  it('strips the blocks from a ~/AGENTS.md no installed tool reads, keeping only its hand-written text', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-home-agents-')));
+    vi.stubEnv('HOME', root);
+    try {
+      fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+      const agentsMd = path.join(root, 'AGENTS.md');
+      fs.writeFileSync(agentsMd, `# My notes\n\n${culture('old culture')}\n\n${claudemd('old shared instructions')}\n`);
+      const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+      const localConfig = LocalConfigSchema.parse({
+        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+        username: 'u', scope: 'user',
+      });
+
+      const retired = await retiredFilesOfReached(teamConfig, localConfig, ['claude']);
+      await applyInstructionPlan(await planInstructionFiles([], {}, retired), { dryRun: false });
+
+      expect(fs.readFileSync(agentsMd, 'utf8')).toBe('# My notes\n');
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('retires a shared file only when all its installed former writers reached their replacements', async () => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-writers-')));
     vi.stubEnv('HOME', path.join(root, 'home'));

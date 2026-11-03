@@ -31,12 +31,6 @@ timeout: ${timeout}
 ${trial ? `trial: ${trial}\n` : ''}`;
 }
 
-/**
- * One claude arm under trial limits `trial`. The run ends once its trial does, so the case never races the run's
- * deadline: with a second arm this driver cannot run, the trial would have to report before that deadline.
- */
-const ONE_ARM = (trial: string): string => twoArms('60s', trial).replace('  - name: codex\n    tool: codex\n', '');
-
 const SANDBOX_CLAUDE = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], end_turn: true, unattended: true };
 const HeldSchema = z.array(z.object({ step: z.string(), missing: z.array(z.string()) }));
 const DoneSchema = z.object({ outcome: z.string(), failure: z.object({ code: z.string() }).optional(), outputs: z.object({ text: z.string().optional() }) });
@@ -201,57 +195,6 @@ describe('the benchmark workflow, driven from outside', () => {
       expect(prompt).toMatchObject({ status: 'succeeded', agent: { team: { revision: before } } });
       const skills = fixture.toolLaunches().map((launch) => launch.paths.flatMap((file) => /^\.claude\/skills\/(fixer|newer)\/SKILL\.md$/.exec(file)?.[1] ?? []).sort());
       expect(skills).toEqual([['fixer', 'newer'], ['fixer']]);
-    } finally {
-      fixture.remove();
-    }
-  }, 120_000);
-
-  it('stops the tool at the trial timeout the lease sets, and the check decides the trial its report says a limit ended', async () => {
-    const fixture = await benchmarkFixture({ tool: 'hangs', sandbox: false, suite: ONE_ARM('{ timeout: 3s }') });
-    try {
-      const runId = await startFixBenchmark(fixture, '60s');
-
-      const result = await drive(fixture, { run: runId, can: SANDBOX_CLAUDE, prepare: true, maxPolls: 40 });
-
-      expect(result.leased).toEqual(EVERY_STEP);
-      expect(result.done?.outputs.text).toContain('| claude | claude | tool default (team) | 1 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0% (0/1) |');
-      expect(RecordSchema.parse(fixture.benchmarkRecord(runId)).trials).toEqual([
-        expect.objectContaining({ order: 1, arm: 'claude', result: 'failed', limit: 'timeout' }),
-      ]);
-    } finally {
-      fixture.remove();
-    }
-  }, 120_000);
-
-  it('leases a driver that cannot end the turn the trial under on_limit: fail, and records on_limit as not enforced', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false, suite: ONE_ARM('{ timeout: 10s }') });
-    try {
-      const runId = await startFixBenchmark(fixture, '60s');
-
-      const result = await drive(fixture, { run: runId, can: { ...SANDBOX_CLAUDE, end_turn: false }, prepare: true, maxPolls: 40 });
-
-      expect(result.leased).toEqual(EVERY_STEP);
-      expect(RecordSchema.parse(fixture.benchmarkRecord(runId)).trials).toEqual([
-        expect.objectContaining({ order: 1, arm: 'claude', result: 'passed', unenforced: ['on_limit'] }),
-      ]);
-    } finally {
-      fixture.remove();
-    }
-  }, 120_000);
-
-  it.each([
-    ['declares nothing', {}, true, ['workspace.clone']],
-    ['provides clones but does not ask --prepare', SANDBOX_CLAUDE, false, ['prepare']],
-  ])('runs the plan, then holds the task baseline, and so every trial, from a driver that %s', async (_, can, prepare, missing) => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false, suite: twoArms('10m') });
-    try {
-      const runId = await startFixBenchmark(fixture, '10m');
-
-      const result = await drive(fixture, { run: runId, can, prepare, maxPolls: 2 });
-
-      expect(result.leased).toEqual(['plan']);
-      expect(result.held).toEqual([expect.objectContaining({ step: 'trials.baselines.fix', missing: expect.arrayContaining(missing) })]);
-      expect(fixture.toolLaunches()).toEqual([]);
     } finally {
       fixture.remove();
     }

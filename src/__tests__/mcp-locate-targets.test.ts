@@ -14,9 +14,10 @@ import { buildMcpReadFileChecks, mcpTransportNotes } from '../doctor-delivery.js
 import type { DoctorContext } from '../doctor.js';
 import { mcpFormatOf } from '../tools.js';
 import { log } from '../utils/logger.js';
-import { judgeTeamaiOnlyMcpConfigs, reconcileMcpForConfig } from '../mcp-reconcile.js';
+import { judgeTeamaiOnlyMcpConfigs, reconcileMcpForConfig, resolveMcpTargets, shadowedMcpRecords } from '../mcp-reconcile.js';
 import { entryHash, renderCodexBlock, renderJsonEntry } from '../resources/mcp-format.js';
 import { managedMcpManifestKey, TeamaiConfigSchema, type LocalConfig, type McpServerDef, type TeamaiConfig } from '../types.js';
+import { commitTeamRepo } from './helpers/team-repo-history.js';
 
 const API: McpServerDef = { name: 'api', transport: 'http', url: 'https://api.example.com/mcp' };
 const MINE = { type: 'stdio', command: 'my-own-server' };
@@ -70,6 +71,381 @@ describe('pull writes MCP servers where each tool reads them (#1221)', () => {
 
       expect((await fse.readJson(path.join(home, '.workbuddy', '.mcp.json'))).mcpServers).toEqual({ mine: MINE, api });
       expect(await fse.readJson(path.join(home, '.workbuddy', 'mcp.json'))).toEqual({ mcpServers: { other: MINE } });
+    });
+  });
+
+  // #993 bug 10: CodeBuddy reads only the first of these that exists, and does not merge them.
+  describe('CodeBuddy, which reads only the first of ~/.codebuddy/.mcp.json, ~/.codebuddy/mcp.json, ~/.codebuddy.json that exists', () => {
+    const TEAM = renderJsonEntry('buddy', API);
+    const LEGACY = { projects: { '/work/app': { mcpServers: { local: MINE } } }, mcpServers: { 'usr-srv': MINE } };
+    let file: { dotMcp: string; mcp: string; legacy: string };
+    const servers = async (at: string): Promise<unknown> => (await fse.pathExists(at) ? (await fse.readJson(at)).mcpServers : undefined);
+    const pull = (config = userConfig('codebuddy')) => reconcileMcpForConfig(team(), config);
+    const uninstall = () => reconcileMcpForConfig(team(), userConfig('codebuddy'), { removeAll: true });
+    const infoLines = (): string[] => vi.mocked(log.info).mock.calls.map(([line]) => String(line));
+    const doctorFixes = async (): Promise<string[]> =>
+      (await buildMcpReadFileChecks(context(team(), userConfig('codebuddy')))).map((check) => check.fix ?? '');
+    const codebuddyTarget = async () => {
+      const target = (await resolveMcpTargets(team(), userConfig('codebuddy'))).find((candidate) => candidate.tool === 'codebuddy');
+      if (target === undefined) throw new Error('CodeBuddy is not a target');
+      return target;
+    };
+    /** What an earlier teamai recorded: no file in its CodeBuddy records. */
+    const forgetRecordedFile = async (): Promise<void> => {
+      const manifest = path.join(home, '.teamai', 'managed-mcp.json');
+      const records: Array<Record<string, unknown>> = (await fse.readJson(manifest)).codebuddy;
+      await fse.outputJson(manifest, { codebuddy: records.map(({ file: _file, ...rest }) => rest) });
+    };
+    /** The team commits a new set of MCP servers: its history is how teamai knows a server it no longer has a record of. */
+    const publishTeamMcp = async (defs: ReadonlyArray<{ name: string; url: string }>): Promise<void> => {
+      await fse.outputFile(path.join(repo, 'mcp', 'mcp.yaml'),
+        defs.length === 0 ? 'servers: []\n' : `servers:\n${defs.map((d) => `  - name: ${d.name}\n    transport: http\n    url: ${d.url}\n`).join('')}`);
+      commitTeamRepo(repo, 'mcp');
+    };
+
+    beforeEach(async () => {
+      file = { dotMcp: path.join(home, '.codebuddy', '.mcp.json'), mcp: path.join(home, '.codebuddy', 'mcp.json'), legacy: path.join(home, '.codebuddy.json') };
+      await fse.ensureDir(path.join(home, '.codebuddy'));
+      vi.mocked(log.info).mockClear();
+    });
+
+    it.each(['still detected', 'no longer detected'] as const)('leaves another tool\'s server in a CodeBuddy lookup file that links to that tool\'s file (Claude %s)', async (claude) => {
+      const both: LocalConfig = { ...userConfig('codebuddy'), enabledAgents: ['claude', 'codebuddy'] };
+      const claudeFile = path.join(home, '.claude.json');
+      await fse.outputJson(claudeFile, { mcpServers: {} });
+      await fs.promises.symlink(claudeFile, file.mcp);
+      await fse.outputJson(file.dotMcp, { mcpServers: { mine: MINE } });
+      await fse.ensureDir(path.join(home, '.claude'));
+      await pull(both);
+      const claudeServer = (await fse.readJson(claudeFile)).mcpServers;
+      expect(await servers(file.dotMcp)).toEqual({ mine: MINE, api: TEAM });
+      expect(Object.keys(claudeServer)).toEqual(['api']);
+
+      if (claude === 'no longer detected') await fse.remove(path.join(home, '.claude'));
+      await pull(both);
+
+      expect(await servers(claudeFile)).toEqual(claudeServer);
+      expect((await fs.promises.lstat(file.mcp)).isSymbolicLink()).toBe(true);
+    });
+
+    it('creates ~/.codebuddy/.mcp.json when no CodeBuddy user MCP file exists, and keeps a server the member adds there', async () => {
+      await pull();
+      expect(await servers(file.dotMcp)).toEqual({ api: TEAM });
+      expect(await fse.pathExists(file.mcp)).toBe(false);
+      expect(await fse.pathExists(file.legacy)).toBe(false);
+
+      // What `codebuddy mcp add -s user mine ...` does: it writes the file CodeBuddy reads.
+      await fse.outputJson(file.dotMcp, { mcpServers: { api: TEAM, mine: MINE } });
+      await pull();
+
+      expect(await servers(file.dotMcp)).toEqual({ api: TEAM, mine: MINE });
+      expect(await fse.pathExists(file.mcp)).toBe(false);
+    });
+
+    it('writes to an existing ~/.codebuddy/mcp.json without creating ~/.codebuddy/.mcp.json', async () => {
+      await fse.outputJson(file.mcp, { mcpServers: { mine: MINE } });
+
+      await pull();
+
+      expect(await servers(file.mcp)).toEqual({ mine: MINE, api: TEAM });
+      expect(await fse.pathExists(file.dotMcp)).toBe(false);
+    });
+
+    it('writes to the legacy ~/.codebuddy.json rather than hide its servers behind a new file, and mcp remove takes teamai\'s back out', async () => {
+      await fse.outputJson(file.legacy, LEGACY);
+
+      await pull();
+
+      expect(await fse.pathExists(file.dotMcp)).toBe(false);
+      expect(await fse.pathExists(file.mcp)).toBe(false);
+      expect(await fse.readJson(file.legacy)).toEqual({ ...LEGACY, mcpServers: { 'usr-srv': MINE, api: TEAM } });
+      // What `teamai mcp list` names: the file CodeBuddy reads, and the server recorded as installed there.
+      expect((await codebuddyTarget()).file).toBe(file.legacy);
+      expect((await fse.readJson(path.join(home, '.teamai', 'managed-mcp.json'))).codebuddy).toEqual([{ name: 'api', hash: entryHash(TEAM), file: file.legacy }]);
+
+      await uninstall();
+
+      expect(await fse.readJson(file.legacy)).toEqual(LEGACY);
+    });
+
+    // The CLI case for a record that names the file is in e2e/codebuddy-user-mcp-993.test.ts.
+    it('moves only teamai\'s entries out of a file CodeBuddy no longer reads, and doctor warns until then, when an earlier teamai recorded no file', async () => {
+      await fse.outputJson(file.mcp, { mcpServers: { 'mine-old': MINE } });
+      await pull();
+      expect(await servers(file.mcp)).toEqual({ 'mine-old': MINE, api: TEAM });
+      await forgetRecordedFile();
+      // The member then runs `codebuddy mcp add -s user`, which creates the file CodeBuddy reads first.
+      await fse.outputJson(file.dotMcp, { mcpServers: { mine: MINE } });
+
+      const warned = (await doctorFixes()).find((fix) => fix.includes(`teamai's MCP servers for codebuddy (api) are in ${file.mcp}, which codebuddy does not read`));
+      expect(warned).toContain(file.dotMcp);
+      expect(await shadowedMcpRecords(userConfig('codebuddy'), await codebuddyTarget())).toEqual(new Map([[file.mcp, ['api']]]));
+
+      await pull();
+      expect(await servers(file.dotMcp)).toEqual({ mine: MINE, api: TEAM });
+      expect(await servers(file.mcp)).toEqual({ 'mine-old': MINE });
+      expect((await doctorFixes()).filter((fix) => fix.includes('which codebuddy does not read'))).toEqual([]);
+
+      await uninstall();
+      expect(await servers(file.dotMcp)).toEqual({ mine: MINE });
+      expect(await servers(file.mcp)).toEqual({ 'mine-old': MINE });
+    });
+
+    it('uninstall removes teamai\'s servers from the file it recorded, before a pull moved them', async () => {
+      await fse.outputJson(file.mcp, { mcpServers: { 'mine-old': MINE } });
+      await pull();
+      await forgetRecordedFile();
+      await fse.outputJson(file.dotMcp, { mcpServers: { mine: MINE } });
+
+      await uninstall();
+
+      expect(await servers(file.mcp)).toEqual({ 'mine-old': MINE });
+      expect(await servers(file.dotMcp)).toEqual({ mine: MINE });
+    });
+
+    // An earlier teamai always created ~/.codebuddy/mcp.json, which hides the member's ~/.codebuddy.json.
+    it.each(['recorded by an earlier teamai', 'unrecorded, equal to the team\'s render'] as const)('moves teamai\'s servers out of a ~/.codebuddy/mcp.json holding nothing else into ~/.codebuddy.json, and deletes it (%s)', async (owned) => {
+      if (owned === 'recorded by an earlier teamai') {
+        await fse.outputFile(file.mcp, '{}');
+        await pull();
+        expect(await servers(file.mcp)).toEqual({ api: TEAM });
+        await forgetRecordedFile();
+        vi.mocked(log.info).mockClear();
+      } else {
+        await fse.outputJson(file.mcp, { mcpServers: { api: TEAM } });
+      }
+      await fse.outputJson(file.legacy, LEGACY);
+
+      await pull();
+
+      expect(await fse.pathExists(file.mcp)).toBe(false);
+      expect(await fse.pathExists(file.dotMcp)).toBe(false);
+      expect(await fse.readJson(file.legacy)).toEqual({ ...LEGACY, mcpServers: { 'usr-srv': MINE, api: TEAM } });
+      expect(infoLines().filter((line) => line.startsWith(`Moved teamai's MCP servers for codebuddy (api) from ${file.mcp}`))).toHaveLength(1);
+
+      vi.mocked(log.info).mockClear();
+      await pull();
+      expect(infoLines().filter((line) => line.includes('Moved teamai\'s MCP servers'))).toEqual([]);
+      expect(await fse.readJson(file.legacy)).toEqual({ ...LEGACY, mcpServers: { 'usr-srv': MINE, api: TEAM } });
+    });
+
+    it.each([
+      { what: 'a member\'s server', content: { mcpServers: { 'mine-old': MINE } } },
+      { what: 'another key', content: { mcpServers: {}, theme: 'dark' } },
+    ])('leaves a ~/.codebuddy/mcp.json that also holds $what where it is', async ({ content }) => {
+      await fse.outputJson(file.mcp, content);
+      await pull();
+      await fse.outputJson(file.legacy, LEGACY);
+      vi.mocked(log.info).mockClear();
+
+      await pull();
+
+      expect(infoLines().filter((line) => line.includes('Moved teamai\'s MCP servers'))).toEqual([]);
+      expect(await fse.readJson(file.mcp)).toEqual({ ...content, mcpServers: { ...content.mcpServers, api: TEAM } });
+      expect(await fse.readJson(file.legacy)).toEqual(LEGACY);
+    });
+
+    it('keeps a ~/.codebuddy/mcp.json that is a symlink holding only teamai\'s servers, and writes through it', async () => {
+      const target = path.join(root, 'dotfiles', 'codebuddy-mcp.json');
+      await fse.outputJson(target, { mcpServers: { api: TEAM } });
+      await fs.promises.symlink(target, file.mcp);
+      await fse.outputJson(file.legacy, LEGACY);
+
+      await pull();
+
+      expect(infoLines().filter((line) => line.includes('Moved teamai\'s MCP servers'))).toEqual([]);
+      expect((await fs.promises.lstat(file.mcp)).isSymbolicLink()).toBe(true);
+      expect(await fs.promises.readlink(file.mcp)).toBe(target);
+      expect(await servers(target)).toEqual({ api: TEAM });
+      expect(await fse.readJson(file.legacy)).toEqual(LEGACY);
+    });
+
+    // With its record lost, a server an earlier teamai left in a file CodeBuddy no longer reads would come back
+    // once the member deletes the file CodeBuddy reads now.
+    const KEEP = { name: 'keep', url: 'https://keep.example.com/mcp' };
+    it.each([
+      { how: 'pull', change: 'deleted its only server', after: [] },
+      { how: 'pull', change: 'kept another server', after: [KEEP] },
+      { how: 'uninstall', change: 'deleted its only server', after: [] },
+    ] as const)('$how takes teamai\'s servers out of a file CodeBuddy no longer reads after the record is lost and the team $change', async ({ how, after }) => {
+      await publishTeamMcp([{ name: 'api', url: API.url ?? '' }, ...after]);
+      await fse.outputJson(file.mcp, { mcpServers: { 'mine-old': MINE } });
+      await pull();
+      expect(Object.keys(await servers(file.mcp) ?? {}).sort()).toEqual(['api', 'mine-old', ...after.map((s) => s.name)].sort());
+      await fse.remove(path.join(home, '.teamai', 'managed-mcp.json'));
+      await fse.outputJson(file.dotMcp, { mcpServers: {} });
+      await publishTeamMcp(after);
+
+      if (how === 'pull') await pull();
+      else await uninstall();
+
+      expect(await servers(file.mcp)).toEqual({ 'mine-old': MINE });
+      const kept = how === 'pull' ? Object.fromEntries(after.map((s) => [s.name, renderJsonEntry('buddy', { name: s.name, transport: 'http', url: s.url })])) : {};
+      expect(await servers(file.dotMcp)).toEqual(kept);
+    });
+
+    it.each(['records the file', 'an earlier teamai recorded no file'] as const)('keeps teamai\'s server when ~/.codebuddy/.mcp.json is a symlink to ~/.codebuddy/mcp.json (%s)', async (recorded) => {
+      await fse.outputJson(file.mcp, { mcpServers: { 'mine-old': MINE } });
+      await pull();
+      if (recorded === 'an earlier teamai recorded no file') await forgetRecordedFile();
+      await fs.promises.symlink('mcp.json', file.dotMcp);
+      vi.mocked(log.info).mockClear();
+
+      await pull();
+
+      expect((await fs.promises.lstat(file.dotMcp)).isSymbolicLink()).toBe(true);
+      expect(await fs.promises.readlink(file.dotMcp)).toBe('mcp.json');
+      expect(await servers(file.mcp)).toEqual({ 'mine-old': MINE, api: TEAM });
+      expect(infoLines().filter((line) => line.includes('Took teamai\'s MCP servers'))).toEqual([]);
+      expect((await doctorFixes()).filter((fix) => fix.includes('which codebuddy does not read'))).toEqual([]);
+
+      await pull();
+      expect(await servers(file.mcp)).toEqual({ 'mine-old': MINE, api: TEAM });
+    });
+
+    it('neither moves nor deletes a ~/.codebuddy/mcp.json holding only teamai\'s servers when ~/.codebuddy.json is a symlink to it', async () => {
+      await fse.outputFile(file.mcp, '{}');
+      await pull();
+      await fs.promises.symlink(path.join('.codebuddy', 'mcp.json'), file.legacy);
+      vi.mocked(log.info).mockClear();
+
+      await pull();
+
+      expect(infoLines().filter((line) => line.includes('Moved teamai\'s MCP servers'))).toEqual([]);
+      expect((await fs.promises.lstat(file.mcp)).isFile()).toBe(true);
+      expect((await fs.promises.lstat(file.legacy)).isSymbolicLink()).toBe(true);
+      expect(await servers(file.mcp)).toEqual({ api: TEAM });
+    });
+  });
+
+  // #915: with sharing.gitExclude on, CodeBuddy takes a project's servers from its local scope, projects[<root>] of .codebuddy.json.
+  describe('CodeBuddy\'s local scope while sharing.gitExclude is on', () => {
+    const TOKEN = 'lab-token-value-7c3a';
+    const MEMBERS = { mcpServers: { 'my-user-server': { type: 'stdio', command: 'my-user-tool', args: [] } }, projects: { '/elsewhere/project': { mcpServers: { 'my-other': MINE } } } };
+    const TEAM_SERVERS = ['plain-api', 'secret-api'];
+    let project: string;
+    let local: LocalConfig;
+    const git = (...args: string[]): string => execFileSync('git', ['-C', project, ...args], { encoding: 'utf8' });
+    const codebuddyJson = (): string => path.join(home, '.codebuddy.json');
+    const localScope = async (): Promise<Record<string, unknown> | undefined> => (await fse.readJson(codebuddyJson())).projects?.[project]?.mcpServers;
+    const projectServers = async (): Promise<Record<string, unknown> | null> =>
+      (await fse.pathExists(path.join(project, '.mcp.json')) ? (await fse.readJson(path.join(project, '.mcp.json'))).mcpServers ?? {} : null);
+    const names = (servers: Record<string, unknown> | null | undefined): string[] => Object.keys(servers ?? {}).sort();
+    /** The lines of teamai's MCP block in the project's .git/info/exclude. */
+    const mcpLines = async (): Promise<string[]> => {
+      const lines = (await fse.readFile(path.join(project, '.git', 'info', 'exclude'), 'utf8').catch(() => '')).split('\n');
+      const start = lines.findIndex((line) => line.startsWith('# [teamai:mcp-exclude:start]'));
+      const end = lines.indexOf('# [teamai:mcp-exclude:end]');
+      return start < 0 || end < start ? [] : lines.slice(start + 1, end);
+    };
+    const status = (): string[] => git('status', '--porcelain', '-uall').split('\n').filter(Boolean);
+    const pull = (gitExclude: boolean) => reconcileMcpForConfig(team({ gitExclude: { enabled: gitExclude } }), local);
+    const commitTeam = async (servers: string): Promise<void> => {
+      await fse.outputFile(path.join(repo, 'mcp', 'mcp.yaml'), servers);
+      commitTeamRepo(repo);
+    };
+    const PLAIN = '  - name: plain-api\n    transport: http\n    url: https://plain.example.com/mcp\n';
+    const SECRET = '  - name: secret-api\n    transport: http\n    url: https://api.example.com/mcp\n    headers:\n      Authorization: "Bearer ${LAB_TOKEN}"\n';
+    const OLD = '  - name: old-api\n    transport: http\n    url: https://old.example.com/mcp\n';
+
+    /** A committed business repo set up for CodeBuddy, holding `committed`. */
+    const setUp = async (committed: Record<string, string> = {}): Promise<void> => {
+      await fse.outputFile(path.join(project, 'README.md'), '# app\n');
+      for (const [rel, content] of Object.entries(committed)) await fse.outputFile(path.join(project, rel), content);
+      execFileSync('git', ['init', '-q', project]);
+      git('add', '-A');
+      git('-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'app');
+      await fse.ensureDir(path.join(project, '.codebuddy'));
+    };
+
+    beforeEach(async () => {
+      project = path.join(root, 'project');
+      local = { ...userConfig('codebuddy'), scope: 'project', projectRoot: project, dataHome: path.join(root, 'data') };
+      await fse.outputJson(codebuddyJson(), MEMBERS);
+      await fse.outputFile(path.join(repo, 'env', 'env.yaml'), `variables:\n  - key: LAB_TOKEN\n    value: "${TOKEN}"\n`);
+      await commitTeam(`servers:\n${SECRET}${PLAIN}`);
+    });
+
+    it('leaves the team\'s tracked .mcp.json as it is', async () => {
+      const teamFile = `${JSON.stringify({ mcpServers: { 'repo-server': { type: 'stdio', command: 'repo-tool', args: [] } } }, null, 2)}\n`;
+      await setUp({ '.mcp.json': teamFile });
+
+      await pull(true);
+
+      expect(await fse.readFile(path.join(project, '.mcp.json'), 'utf8')).toBe(teamFile);
+      expect(status()).toEqual([]);
+      expect(names(await localScope())).toEqual(TEAM_SERVERS);
+    });
+
+    it('turning the option on moves teamai\'s servers out of .mcp.json and releases its MCP line; turning it off moves them back', async () => {
+      await setUp();
+      await pull(false);
+      expect(names(await projectServers())).toEqual(TEAM_SERVERS);
+      expect(await mcpLines()).toEqual(['/.mcp.json']);
+      expect(await localScope()).toBeUndefined();
+
+      await pull(true);
+
+      expect(await projectServers()).toBeNull();
+      expect(names(await localScope())).toEqual(TEAM_SERVERS);
+      expect(await mcpLines()).toEqual([]);
+      expect(status()).toEqual([]);
+
+      await pull(false);
+
+      expect(names(await projectServers())).toEqual(TEAM_SERVERS);
+      expect(await localScope()).toBeUndefined();
+      expect(await fse.readJson(codebuddyJson())).toEqual(MEMBERS);
+      expect(await mcpLines()).toEqual(['/.mcp.json']);
+    });
+
+    it('turning the option on also moves the servers teamai has no record of, removes a removed server\'s copy, and keeps the member\'s', async () => {
+      await commitTeam(`servers:\n${SECRET}${PLAIN}${OLD}`);
+      await setUp();
+      await pull(false);
+      const file = path.join(project, '.mcp.json');
+      const written: Record<string, unknown> = (await fse.readJson(file)).mcpServers;
+      expect(names(written)).toEqual(['old-api', ...TEAM_SERVERS]);
+      // teamai's record of what it wrote is lost; the member adds a server of their own.
+      await fse.remove(path.join(root, 'data', 'workspaces'));
+      await fse.outputJson(file, { mcpServers: { ...written, mine: MINE } });
+      await commitTeam(`servers:\n${SECRET}${PLAIN}`);
+
+      await pull(true);
+
+      expect(await projectServers()).toEqual({ mine: MINE });
+      expect(names(await localScope())).toEqual(TEAM_SERVERS);
+      expect(await fse.readFile(file, 'utf8')).not.toContain(TOKEN);
+    });
+
+    it('turning the option on keeps in .mcp.json, and names, a teamai server the member changed', async () => {
+      await setUp();
+      await pull(false);
+      const file = path.join(project, '.mcp.json');
+      const written: Record<string, object> = (await fse.readJson(file)).mcpServers;
+      const edited = { ...written['plain-api'], headers: { 'X-Mine': 'yes' } };
+      await fse.outputJson(file, { mcpServers: { ...written, 'plain-api': edited } });
+
+      await pull(true);
+
+      expect(await projectServers()).toEqual({ 'plain-api': edited });
+      expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).toContain(`Kept MCP server plain-api in ${file}: you changed it since teamai wrote it.`);
+      expect(names(await localScope())).toEqual(TEAM_SERVERS);
+      expect(await fse.readFile(file, 'utf8')).not.toContain(TOKEN);
+    });
+
+    it('writes to the .codebuddy.json in CODEBUDDY_CONFIG_DIR when it is set', async () => {
+      const configDir = path.join(root, 'codebuddy-config');
+      await fse.outputJson(path.join(configDir, '.codebuddy.json'), MEMBERS);
+      await fse.remove(codebuddyJson());
+      vi.stubEnv('CODEBUDDY_CONFIG_DIR', configDir);
+      await setUp();
+
+      await pull(true);
+
+      expect(names((await fse.readJson(path.join(configDir, '.codebuddy.json'))).projects?.[project]?.mcpServers)).toEqual(TEAM_SERVERS);
+      expect(await fse.pathExists(codebuddyJson())).toBe(false);
+      expect(await projectServers()).toBeNull();
     });
   });
 

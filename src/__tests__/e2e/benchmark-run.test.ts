@@ -188,33 +188,6 @@ describe('a team benchmark workflow', () => {
     expect(fixture.runIds()).toEqual([]);
   }, 180_000);
 
-  it('is refused by benchmark run, leaving no run, when it takes no input suite', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
-    fixtures.push(fixture);
-    fixture.pushTeam({ 'workflows/teamai-benchmark.yaml': RELAXED.replace('inputs: { suite: string }', 'inputs: { name: string }').replaceAll('inputs.suite', 'inputs.name') });
-    const pulled = await fixture.teamai(['pull']);
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(pulled.code, said(pulled)).toBe(0);
-    expect(ran.code).toBe(1);
-    expect(envelope(ran).error).toEqual({ code: 'invalid_inputs', message: 'The team\'s workflows/teamai-benchmark.yaml replaces teamai\'s benchmark workflow and takes no input suite, so teamai benchmark run cannot give it the suite. Add inputs: { suite: string } to it, or remove it to run teamai\'s default.' });
-    expect(fixture.runIds()).toEqual([]);
-  }, 180_000);
-
-  it('is refused by benchmark run --member-aliases, leaving no run, when it takes no input aliases', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
-    fixtures.push(fixture);
-    fixture.pushTeam({ 'workflows/teamai-benchmark.yaml': RELAXED });
-    const pulled = await fixture.teamai(['pull']);
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix', '--member-aliases']);
-
-    expect(pulled.code, said(pulled)).toBe(0);
-    expect(ran.code).toBe(1);
-    expect(envelope(ran).error).toEqual({ code: 'invalid_inputs', message: 'The team\'s workflows/teamai-benchmark.yaml replaces teamai\'s benchmark workflow and takes no input aliases, so teamai benchmark run cannot give it --member-aliases. Add aliases: string to its inputs and pass it to teamai benchmark plan --aliases, or run without --member-aliases.' });
-    expect(fixture.runIds()).toEqual([]);
-  }, 180_000);
 });
 
 /** A team benchmark workflow whose plan step prints a plan of a schemaVersion no teamai reads, and a bundle of `steps`. */
@@ -243,20 +216,6 @@ describe('a plan of an unknown schemaVersion', () => {
     expect(report).toMatchObject({ status: 'failed', message: expect.stringContaining(FUTURE) });
   }, 180_000);
 
-  it('fails a benchmark check', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false });
-    fixtures.push(fixture);
-    fixture.pushTeam({ 'workflows/teamai-benchmark.yaml': futurePlan([{ id: 'check', command: 'teamai benchmark check --trial' }]) });
-    const pulled = await fixture.teamai(['pull']);
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-    const done = z.object({ run: z.string() }).passthrough().parse(envelope(ran).data?.done);
-    const check = StepsSchema.parse(fixture.runFile(done.run)).steps.find((step) => step.id === 'trials.check');
-
-    expect(pulled.code, said(pulled)).toBe(0);
-    expect(ran.code).toBe(1);
-    expect(check).toMatchObject({ status: 'failed', message: expect.stringContaining(FUTURE) });
-  }, 180_000);
 });
 
 describe('the benchmark workflow', () => {

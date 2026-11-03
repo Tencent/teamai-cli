@@ -155,9 +155,6 @@ function removeMcpManifests(): void {
   for (const file of found) fs.rmSync(file);
 }
 
-const twoServersYaml = (url: string): string =>
-  `servers:\n  - name: plain-api\n    transport: http\n    url: ${url}\n  - name: other-api\n    transport: http\n    url: https://team.example.com/other\n`;
-
 describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', () => {
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
@@ -191,52 +188,6 @@ describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', (
     expect(doctor.output).toMatch(/not teamai's[^\n]*plain-api|plain-api[^\n]*not teamai's/);
   });
 
-  it('adopts an unrecorded MCP server equal to an older team render, and updates it', () => {
-    const t = team('older-server', { 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') });
-    t.publish({ 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v2') }, 'v2');
-    const v1 = { type: 'http', url: 'https://team.example.com/v1' };
-    const dir = business('older-server-biz', { '.mcp.json': JSON.stringify({ mcpServers: { 'plain-api': v1 } }) });
-
-    const initRun = init(t, dir, 'claude');
-    expect(mcpServer(dir, 'plain-api')).toEqual({ type: 'http', url: 'https://team.example.com/v2' });
-    expect(initRun.output).not.toContain('Kept MCP server');
-  });
-
-  it('adopts an unrecorded MCP server equal to the current team render, so later team changes reach it', () => {
-    const t = team('current-server', { 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') });
-    const v1 = { type: 'http', url: 'https://team.example.com/v1' };
-    const dir = business('current-server-biz', { '.mcp.json': JSON.stringify({ mcpServers: { 'plain-api': v1 } }) });
-
-    init(t, dir, 'claude');
-    expect(mcpServer(dir, 'plain-api')).toEqual(v1);
-
-    t.publish({ 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v3') }, 'v3');
-    const pulled = pull(dir);
-    expect(mcpServer(dir, 'plain-api')).toEqual({ type: 'http', url: 'https://team.example.com/v3' });
-    expect(pulled.output).not.toContain('Kept MCP server');
-  });
-
-  it('records an adopted MCP server that already equals the current team render, so a team removal reaches it', () => {
-    // Nothing to write on adoption: the record alone must still be saved.
-    const t = team('noop-adopt', { 'README.md': '# team\n' });
-    const dir = business('noop-adopt-biz', { '.claude/.keep': '' });
-    init(t, dir, 'claude');
-    const v1 = { type: 'http', url: 'https://team.example.com/v1' };
-    fs.writeFileSync(path.join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { 'plain-api': v1 } }));
-    t.publish({ 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') }, 'add');
-
-    // A dry run says it would record the server, and records nothing.
-    const preview = pull(dir, '--dry-run');
-    expect(preview.output).toContain(`Would record MCP server plain-api in ${path.join(dir, '.mcp.json')} as teamai's`);
-    pull(dir);
-    expect(mcpServer(dir, 'plain-api')).toEqual(v1);
-
-    t.publish({ 'mcp/mcp.yaml': 'servers: []\n' }, 'drop');
-    pull(dir);
-    // It was the file's only server: the emptied file goes too.
-    expect(fs.existsSync(path.join(dir, '.mcp.json'))).toBe(false);
-  });
-
   it('records an adopted MCP server that already equals the current team render, so uninstall removes it', () => {
     const t = team('noop-adopt-uninstall', { 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') });
     const v1 = { type: 'http', url: 'https://team.example.com/v1' };
@@ -247,18 +198,6 @@ describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', (
     const r = teamai(['uninstall', '--force'], dir);
     expect(r.code).toBe(0);
     expect(fs.existsSync(path.join(dir, '.mcp.json')) ? mcpServer(dir, 'plain-api') : undefined).toBeUndefined();
-  });
-
-  it('removes an unrecorded copy of a server the team deleted, beside servers it still defines', () => {
-    const t = team('removed-beside', { 'mcp/mcp.yaml': twoServersYaml('https://team.example.com/v1') });
-    const dir = business('removed-beside-biz', { '.claude/.keep': '' });
-    init(t, dir, 'claude');
-    removeMcpManifests();
-
-    t.publish({ 'mcp/mcp.yaml': `servers:\n  - name: other-api\n    transport: http\n    url: https://team.example.com/other\n` }, 'drop plain-api');
-    pull(dir);
-    expect(mcpServer(dir, 'plain-api')).toBeUndefined();
-    expect(mcpServer(dir, 'other-api')).toEqual({ type: 'http', url: 'https://team.example.com/other' });
   });
 
   it('removes an unrecorded copy of a server when the team deletes every server, on pull and on uninstall', () => {
@@ -281,40 +220,6 @@ describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', (
     removeMcpManifests();
     expect(teamai(['uninstall', '--force'], uninstalled).code).toBe(0);
     expect(fs.existsSync(path.join(uninstalled, '.mcp.json')) ? mcpServer(uninstalled, 'plain-api') : undefined).toBeUndefined();
-  });
-
-  it('keeps a member\'s server under the name of a server the team deleted', () => {
-    const t = team('removed-member', { 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') });
-    const mine = { type: 'http', url: 'https://mine.example.com/mcp' };
-    const dir = business('removed-member-biz', { '.mcp.json': JSON.stringify({ mcpServers: { 'plain-api': mine } }) });
-    init(t, dir, 'claude');
-    t.publish({ 'mcp/mcp.yaml': 'servers: []\n' }, 'drop');
-    pull(dir);
-    expect(mcpServer(dir, 'plain-api')).toEqual(mine);
-  });
-
-  it('keeps a member\'s server whose name the team history never had', () => {
-    const t = team('never-team', { 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') });
-    const mine = { type: 'http', url: 'https://mine.example.com/mcp' };
-    const dir = business('never-team-biz', { '.mcp.json': JSON.stringify({ mcpServers: { 'my-own': mine } }) });
-    init(t, dir, 'claude');
-    removeMcpManifests();
-    t.publish({ 'mcp/mcp.yaml': 'servers: []\n' }, 'drop');
-    pull(dir);
-    expect(mcpServer(dir, 'plain-api')).toBeUndefined();
-    expect(mcpServer(dir, 'my-own')).toEqual(mine);
-  });
-
-  it('removes an unrecorded copy of a deleted server from Codex config too', () => {
-    const t = team('removed-codex', { 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') });
-    const dir = business('removed-codex-biz', { '.codex/.keep': '' });
-    init(t, dir, 'codex');
-    const config = path.join(dir, '.codex', 'config.toml');
-    expect(fs.readFileSync(config, 'utf8')).toContain('[mcp_servers.plain-api]');
-    removeMcpManifests();
-    t.publish({ 'mcp/mcp.yaml': 'servers: []\n' }, 'drop');
-    pull(dir);
-    expect(fs.existsSync(config) ? fs.readFileSync(config, 'utf8') : '').not.toContain('[mcp_servers.plain-api]');
   });
 
   it('leaves a Claude settings file that does not parse as it is, and writes its hooks once it parses', () => {
@@ -490,24 +395,6 @@ describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', (
     const doctor = teamai(['doctor'], dir);
     expect(doctor.output).toContain(`Kept the Stop hook entry team-stop in ${settings}`);
     expect(doctor.output).toContain(`Kept the SessionStart hook entry in ${codexFile}`);
-  });
-
-  it.each(['cursor', 'copilot', 'zcode'])('leaves one entry for a changed team hook in %s hooks, without the hook manifest', (tool) => {
-    fs.mkdirSync(path.join(home, `.${tool}`), { recursive: true });
-    const stop = (version: string): string => `hooks:\n  - id: ${tool}-stop\n    description: Stop\n    event: Stop\n    command: echo ${tool}-stop-${version}\n`;
-    const t = team(`hook-history-${tool}`, { 'hooks/hooks.yaml': stop('v1') });
-    const dir = business(`hook-history-${tool}-biz`);
-    init(t, dir, tool);
-    const file = hookFiles(dir)[tool];
-    expect(entriesMentioning(file, `echo ${tool}-stop-`)).toHaveLength(1);
-
-    removeHookManifests();
-    t.publish({ 'hooks/hooks.yaml': stop('v2') }, 'v2');
-    const pulled = pull(dir);
-    const entries = entriesMentioning(file, `echo ${tool}-stop-`);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toContain(`echo ${tool}-stop-v2`);
-    expect(pulled.output).not.toContain('Kept the');
   });
 
   it('removes unrecorded team hook entries on uninstall, and keeps the member\'s own entries beside them', () => {

@@ -5,15 +5,12 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { benchmarkFixture, envelope, PRODUCT_URL, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
 const TEAM_SKILLS = new Set(['fixer', 'helper', 'newer']);
 const SKILL = (name: string): string => `---\nname: ${name}\ndescription: Helps with ${name}.\n---\nUse ${name}.\n`;
-const ErrorSchema = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
 const RunSchema = z.object({
   steps: z.array(z.object({ id: z.string(), agent: z.object({ team: z.object({ revision: z.string() }).passthrough().optional() }).passthrough().optional() }).passthrough()),
 });
@@ -141,26 +138,6 @@ describe('benchmark arm team', () => {
     ]);
   }, 240_000);
 
-  it("fails an arm on a team revision whose manifest/members.yaml assigns the member other roles than the ones they run with", async () => {
-    const roles = 'version: 1\nroles:\n  - id: frontend\n    resources: { knowledge: [], skills: [fixer] }\n  - id: review\n    resources: { knowledge: [], skills: [helper] }\n';
-    const members = (role: string): string => `version: 1\nmembers:\n  member: [${role}]\ndefault: []\n`;
-    const { fixture, first } = await twoRevisions((before) => `arms:\n  - name: now\n  - name: before\n    team: ${before}\n`, { 'manifest/members.yaml': members('frontend') }, {
-      firstMore: { 'manifest/roles.yaml': roles, 'manifest/members.yaml': members('review') },
-    });
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    const runId = z.object({ run: z.string() }).parse(envelope(ran).data?.done).run;
-    const { trials } = RecordSchema.parse(fixture.benchmarkRecord(runId));
-    expect(trials.map(({ arm, result }) => ({ arm, result }))).toEqual([{ arm: 'now', result: 'passed' }, { arm: 'before', result: 'error' }]);
-    const failed = z.object({ steps: z.array(z.object({ id: z.string(), failure: z.object({ code: z.string(), message: z.string() }).optional() }).passthrough()) })
-      .parse(fixture.runFile(runId)).steps.flatMap(({ id, failure }) => (failure ? [{ id, failure }] : []));
-    expect(failed).toEqual([{
-      id: 'trials.r1.fix.before.prompt',
-      failure: { code: 'clone_prepare_failed', message: `The clone's team selection names primaryRole frontend and additionalRoles [], but manifest/members.yaml at team revision ${first} assigns member primaryRole review and additionalRoles [], and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with frontend's knowledge, also give it role: frontend. A benchmark writes the selection from your roles as the run starts, so run its arm on a team revision whose manifest/members.yaml assigns you the same ones.` },
-    }]);
-  }, 240_000);
-
   it('runs an arm without a whole namespace directory the member receives, and its clone gets none of its skills', async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'],
@@ -213,75 +190,6 @@ describe('benchmark arm team', () => {
     expect(steps.find((step) => step.id === 'trials.r1.fix.ablated.prompt')?.agent?.team?.revision).toBe(pulled);
   }, 240_000);
 
-  it.each([
-    ['a ref the team repo does not have', () => 'arms:\n  - name: now\n  - name: gone\n    team: no-such-branch\n', 'arm_team_unresolved',
-      'Arm "gone" runs on team ref "no-such-branch", which is no branch, tag or commit of this checkout\'s team repo that holds teamai.yaml. Its branches: main. Fetch it, or fix the arm\'s team, push it, run teamai pull, and start again.'],
-    ['a path the pulled revision does not have', () => 'arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/nope] }\n', 'arm_team_unresolved',
-      'Arm "ablated" runs without skills/nope, which team revision {pulled} does not have. Fix the arm\'s team, push it, run teamai pull, and start again.'],
-  ])('refuses to start an arm whose team names %s, with the team remote out of reach, and leaves no run', async (_case, armsOf, code, message) => {
-    const { fixture, pulled } = await twoRevisions(armsOf);
-    // With no team remote to reach, the refusal cannot come from a fetch.
-    fs.renameSync(fixture.teamOrigin, `${fixture.teamOrigin}.away`);
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-    fs.renameSync(`${fixture.teamOrigin}.away`, fixture.teamOrigin);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: { code, message: message.replace('{pulled}', pulled.slice(0, 7)) } });
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses to start an arm without a delivered skill the member then excludes, which its clones would not get anyway, and leaves no run', async () => {
-    // Pull has delivered skill helper before the member excludes it.
-    const { fixture } = await twoRevisions(() => 'arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/helper] }\n');
-    expect(fs.existsSync(path.join(fixture.work, '.claude', 'skills', 'helper', 'SKILL.md'))).toBe(true);
-    for (const args of [['skill', 'exclude', 'add', 'helper'], ['pull']]) {
-      const ran = await fixture.teamai(args);
-      expect(ran.code, said(ran)).toBe(0);
-    }
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
-      code: 'arm_team_unresolved',
-      message: 'Arm "ablated" runs without skills/helper, skill helper, which the member excludes, so pull leaves it out already and leaving it out changes nothing. Remove it from the arm\'s team, push it, run teamai pull, and start again.',
-    } });
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses to start a benchmark in single-repo mode, where the project commit decides the team assets, and leaves no run', async () => {
-    const fixture = await benchmarkFixture({
-      tool: 'fixes', sandbox: true, tools: ['claude'], selfMode: true,
-      suite: suite('arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/fixer] }\n'),
-      team: { 'skills/fixer/SKILL.md': SKILL('fixer') },
-    });
-    fixtures.push(fixture);
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({
-      error: { code: 'team_ref_blocked', message: "Benchmarks do not run in single-repo mode: the project's own commit decides which team assets a checkout has, so no arm can run on a team revision of its own. Start the benchmark from a checkout whose team has a team repo of its own." },
-    });
-    expect(fixture.runIds()).toEqual([]);
-    expect(fixture.toolLaunches()).toEqual([]);
-  }, 120_000);
-
-  it('refuses to start an arm without team assets on a machine whose user-scope install delivers to its tool', async () => {
-    const { fixture } = await twoRevisions(() => 'arms:\n  - name: now\n  - name: bare\n    team: none\n');
-    const projects = path.join(fixture.home, '.teamai', 'projects');
-    const workspace = fs.readdirSync(projects).map((name) => path.join(projects, name, 'config.yaml')).find((file) => fs.existsSync(file));
-    if (workspace === undefined) throw new Error('no workspace config');
-    // Another team's user-scope install: one of this team would refuse every arm first, as the team could not be pinned.
-    fs.writeFileSync(path.join(fixture.home, '.teamai', 'config.yaml'), fs.readFileSync(workspace, 'utf8').replace(/^scope: .*$/m, 'scope: user').replace(/^(projectRoot|dataHome): .*\n/gm, '')
-      .replace(/^(\s+remote: ).*$/m, '$1https://example.com/acme/other-team.git'));
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
-      code: 'arm_team_unclean',
-      message: 'Arm "bare" runs without team assets, and this machine\'s user-scope teamai install delivers team assets to claude in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.',
-    } });
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
 });
 
 describe('benchmark arm role', () => {
@@ -317,45 +225,4 @@ describe('benchmark arm role', () => {
       .flatMap((file) => /^\.claude\/skills\/([^/]+)\/SKILL\.md$/.exec(file)?.[1] ?? []).filter((skill) => !skill.startsWith('teamai')).sort();
     expect({ frontend: skills('frontend'), review: skills('review') }).toEqual({ frontend: ['fe-only'], review: ['rv-only'] });
   }, 240_000);
-
-  it('refuses to start an arm whose role the team revision it runs on does not declare, and leaves no run', async () => {
-    const fixture = await benchmarkFixture({
-      tool: 'fixes', sandbox: true, tools: ['claude'], role: 'frontend', team: ROLE_TEAM,
-      suite: suite('arms:\n  - name: now\n  - name: audit\n    role: audit\n'),
-    });
-    fixtures.push(fixture);
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
-      code: 'role_unavailable',
-      message: `Arm "audit" runs with role audit, which manifest/roles.yaml at team revision ${git(fixture.teamClone, ['rev-parse', '--short=7', 'HEAD'])} does not declare; it declares frontend, review. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.`,
-    } });
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses to start an arm whose team revision has a manifest/roles.yaml that cannot be read, and leaves no run', async () => {
-    const fixture = await benchmarkFixture({
-      tool: 'fixes', sandbox: true, tools: ['claude'], role: 'frontend', team: ROLE_TEAM,
-      suite: suite('  role: review\narms:\n  - name: now\n  - name: broken\n    team: broken-roles\n'),
-    });
-    fixtures.push(fixture);
-    // A team branch whose roles manifest lost its knowledge lists: pull refuses such a manifest.
-    const branch = path.join(fixture.tmp, 'broken-roles');
-    git(fixture.tmp, ['clone', '-q', fixture.teamOrigin, branch]);
-    fs.writeFileSync(path.join(branch, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { skills: [review] }\n');
-    git(branch, ['-c', 'user.name=Lead', '-c', 'user.email=lead@example.com', 'commit', '-qam', 'roles without knowledge']);
-    git(branch, ['push', '-q', 'origin', 'HEAD:refs/heads/broken-roles']);
-    const broken = git(branch, ['rev-parse', '--short=7', 'HEAD']);
-    const pulled = await fixture.teamai(['pull']);
-    expect(pulled.code, said(pulled)).toBe(0);
-
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ErrorSchema.parse(envelope(started))).toEqual({ error: {
-      code: 'role_unavailable',
-      message: `Arm "broken" runs with role review, and manifest/roles.yaml at team revision ${broken} cannot be read: Invalid roles manifest: roles.0.resources.knowledge: Invalid input: expected array, received undefined. Fix manifest/roles.yaml on that revision, or run the arm on another team revision, push it, run teamai pull, and start again.`,
-    } });
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
 });
