@@ -127,7 +127,15 @@ async function unarchivableReason(key: PublishedKey, toolRootsFor: ToolRootsLook
 
       if (found.status === 'done') return undefined;
 
-      return `the ${key.platform} session ${key.sessionId} cannot be read here: ${found.failure.message.replace(/\.$/, '')}`;
+      // One reason per kind of failure, never per session, so the drain says the skipped sessions of a run in one line.
+      switch (found.failure.code) {
+        case 'not_found':
+          return `${key.platform} keeps no such session on this machine`;
+        case 'unreadable':
+          return `${key.platform} could not read the session here`;
+        default:
+          return `the ${key.platform} sessions cannot be read here: ${found.failure.message.replace(/\.$/, '')}`;
+      }
     }
 
     default: {

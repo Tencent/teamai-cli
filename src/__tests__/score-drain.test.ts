@@ -607,6 +607,19 @@ describe('teamai score --drain', () => {
     expect(again).toEqual({ code: 0, lines: ['✔ Nothing left to do here'] });
   });
 
+  it('says the step sessions of one run it cannot find here in one line, whichever sessions they are', async () => {
+    const { config } = await team({ 'workflows/review.yaml': `${WORKFLOW.replace('    scorers: [quality]\n', '')}  - id: check\n    needs: [review]\n    prompt: Check the change.\n` });
+    const runId = await settledRun(config, 'unattended', { tool: 'claude', session: '7c1e0000-0000-4000-8000-000000000031' }, { tool: 'claude', session: '7c1e0000-0000-4000-8000-000000000032' });
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines.filter((said) => said.includes('Skipped'))).toEqual([
+      `ℹ Skipped 2 step sessions of ${runId}: claude-code keeps no such session on this machine (review, pass 1; check, pass 1)`,
+    ]);
+  });
+
   it('lists once, with why, a step session it cannot read here, and still archives the readable step sessions of its run', async () => {
     const { origin, config } = await team({ 'workflows/review.yaml': `${WORKFLOW.replace('    scorers: [quality]\n', '')}  - id: check\n    needs: [review]\n    prompt: Check the change.\n` });
     const unreadable = '7c1e0000-0000-4000-8000-000000000023';
@@ -619,7 +632,7 @@ describe('teamai score --drain', () => {
     expect(drained.code, drained.lines.join('\n')).toBe(0);
     expect(drained.lines).toEqual(expect.arrayContaining([
       `✔ Archived 1 step session of ${runId} to teamai-reports (scrubbed)`,
-      expect.stringMatching(new RegExp(`^ℹ Skipped 1 step session of ${runId}: the claude-code session ${unreadable} cannot be read here: .+ \\(check, pass 1\\)$`)),
+      `ℹ Skipped 1 step session of ${runId}: claude-code keeps no such session on this machine (check, pass 1)`,
     ]));
     expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
 
