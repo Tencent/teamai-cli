@@ -407,6 +407,18 @@ $ teamai score --session 7c1e… --scorer review-quality --label good       # in
 
 `--label` takes one `--scorer`, a name `teamai pull` cached, and is checked before any run starts. `teamai-score` then skips the stages and the judge. The label's `score` and pass come from the scorer, as for a judge's label, and it has no reasoning file. It is stored and published as a judge's label is, with `judge: { kind: "human" }`. A hand label and a judge's label of the same session are kept side by side: rescoring with the judge never replaces a hand label. When several members label one session by hand, the newest hand label is the one counted.
 
+`--label` labels a session. To label a workflow pass by hand, start `teamai-score` from your own terminal with the label in its inputs. The subject is `run:<run id>:<step path>:<pass>`:
+
+```console
+$ teamai score --run r24df… --step review --scorer review-quality --label missed-bug
+{"error":{"code":"invalid_arguments","message":"Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both"}}
+$ teamai workflow start teamai-score --driver local --inputs '{"subject":"run:r24df…:review:1","scorers":["review-quality"],"label":"missed-bug","batch":false,"demand":"named"}'
+ℹ Run re440… started. If it stops before it ends, continue it with: teamai workflow resume re440…
+{"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}]}}]}},"cancelled":[]}}
+```
+
+The label is stored with `judge: { kind: "human" }`, and the run's `publish` step sends it to `teamai-reports`, as for a session.
+
 ### A session a teammate pushed
 
 Alice pushed her session with `teamai session push`. In your checkout of the same project:
@@ -556,7 +568,7 @@ A namespace scorer judges a session only when the roles and projects each of its
 
 A session is judged once per scorer and rubric. A label or a failed judgment closes it. A lapse, such as a judge its timeout cancelled, is started again by the next `teamai-finished-sessions`, until the fourth; before this release a lapse closed it. `scoring.daily_limit` in `config.yaml` sets how many session judgings one data home starts per local day, 10 by default, each start of a lapse included and a batch of scorers on one session counted once. On a fresh CI runner each job starts a new data home, so the limit caps one job, not one day. `0` turns session scoring off. Scorers a person names count toward the limit and are never refused by it. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
 
-With `attended: auto`, you do not have to run a driver. After the pull at a session's start, teamai starts one `teamai-finished-sessions` run in each scope the session's directory reaches, its project and your user scope, that judges or archives attended sessions automatically, and drives it in a detached process. The run archives and judges each finished session with a judge tool installed here, and starts `teamai-score` again for each pass and session whose judging lapsed. So a member's session start also rescores the lapsed workflow passes of that data home. The run ends after 30 minutes and leaves the labels pending for the next `teamai pull` to publish. A start that would find nothing starts no run, and a run already working on the data home is left to finish. Each judging is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: { attended: off }` in `config.yaml`, or in `~/.teamai/config.yaml` for every workspace on this machine.
+With `attended: auto`, you do not have to run a driver. After the pull at a session's start, teamai starts one `teamai-finished-sessions` run in each scope the session's directory reaches, its project and your user scope, that judges or archives attended sessions automatically, and drives it in a detached process. The run archives and judges each finished session with a judge tool installed here, and starts `teamai-score` again for each pass and session whose judging lapsed. So a member's session start also rescores the lapsed workflow passes of that data home. The run ends after 30 minutes. Each `teamai-score` it runs publishes its labels to `teamai-reports`; offline, they stay pending for the next `teamai pull`. A start that would find nothing starts no run, and a run already working on the data home is left to finish. Each judging is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: { attended: off }` in `config.yaml`, or in `~/.teamai/config.yaml` for every workspace on this machine.
 
 The detached run uses the tool's home that `teamai init` recorded, such as a moved `CLAUDE_CONFIG_DIR`. It does not see a credential or base URL that only your shell sets, notably on Windows. Keep those in the tool's sign-in, your user environment, or the tool's `settings.json` `env`.
 
@@ -676,7 +688,7 @@ Pull refuses a file that changes what a label means, and teamai's default runs i
 | `score_override_step_missing` | drops `evidence`, `label`, `write`, `publish` or `settle`, or `check` while a scorer here has a check |
 | `default_override_alias` | is another workflow with `alias: teamai-score` |
 
-A project runs teamai's default, or the project team's file, never a user scope's `teamai-score`, and pull says so:
+A project runs teamai's default, or the project team's file, never a user scope's `teamai-score`, and each start from the project says so:
 
 ```text
 ⚠ [workflows] Ignored the user scope's teamai-score from this project: teamai's default runs here. Replace it for this project in the project's team repo.

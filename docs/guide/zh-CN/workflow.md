@@ -752,7 +752,7 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 无论用哪种驱动，TeamAI 为步骤启动的每个进程（包括 setup）都会拿到这次运行的 `TEAMAI_MODE`。skill 驱动沿用启动时或 `resume --driver skill` 时解析出的模式；本地驱动在每次开始驱动时（`start` 或 `resume`）重新解析。
 
-运行在 `startedBy` 中记录是谁启动了它：从 agent 会话中或通过 `--driver skill` 启动时为 `agent`，否则为 `person`。发布的运行会保留它。
+运行在 `startedBy` 中记录是谁启动了它：从 agent 会话中或通过 `--driver skill` 启动时为 `agent`；teamai 自己的自动启动（评分模块在每个 pass 之后启动的 `teamai-score` 运行，以及会话开始或 `teamai score --drain` 启动的 `teamai-finished-sessions` 运行）为 `cli`；否则为 `person`。发布的运行会保留它。
 
 ### 只有本人能给的回答
 
@@ -808,7 +808,7 @@ $ teamai list workflows
   wrap-up (teamai-share-session)  (team)
 ```
 
-同一个名字取第一个可运行的版本：项目的团队文件，其次用户级安装的团队文件，最后是 teamai 的默认工作流。别名是某个默认工作流名称的团队工作流也会取代它。默认工作流来自已安装的 teamai，从不写入团队仓库或工作流缓存；它和 `invoke` 相同的团队工作流一样会生成[工作流 skill](#工作流-skill)。团队文件没有可运行版本时，默认工作流继续生效，pull 会说明：
+同一个名字取第一个可运行的版本：项目的团队文件，其次用户级安装的团队文件，最后是 teamai 的默认工作流。项目从不运行用户作用域的 `teamai-score`（[原因](scorers.md#为团队替换它)）。别名是某个默认工作流名称的团队工作流也会取代它。默认工作流来自已安装的 teamai，从不写入团队仓库或工作流缓存；它和 `invoke` 相同的团队工作流一样会生成[工作流 skill](#工作流-skill)。团队文件没有可运行版本时，默认工作流继续生效，pull 会说明：
 
 ```text
 ⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect

@@ -873,7 +873,7 @@ workflows:
 | `driver.can` 键 | 驱动 |
 |---|---|
 | `hitl` | 让人回答 HITL 请求并在交互步骤中工作。 |
-| `workspace` | 接受这些工作区模式的租约：`read-only`、`new`、`continue`、`clone`。克隆步骤只通过 [`next --prepare`](#在自己的驱动里使用克隆工作区) 租出。 |
+| `workspace` | 接受这些工作区模式的租约：`read-only`、`new`、`continue`、`clone`、`team`（在[团队工作区](workflow.md#团队工作区)中运行的步骤，例如 `teamai-score` 的 `publish`）。克隆步骤只通过 [`next --prepare`](#在自己的驱动里使用克隆工作区) 租出。 |
 | `env` | `true`：自己解析 `lease.envScope.provide`，移除 `lease.envScope.withhold`，并且不把值交给运行步骤的程序。`"commands"`：只对命令步骤和 setup 这样做，所以带 `requires.env` 的提示词步骤会等待。由智能体运行步骤的驱动不要声明它；如果命令由驱动自己启动，可以发送 `"commands"`。0.28.0 之前的 teamai 对 `"commands"` 返回 `invalid_json`。 |
 | `setup` | 在它创建的每个工作区以及 setup 未完成的工作区中，用 `lease.setup.envScope` 运行 `lease.setup.command`，并以上述失败码让步骤失败。工作流声明了 `setup` 时，每个带工作区的租约都携带 `setup`。 |
 | `tokens` | 报告每个成功的非交互 prompt 步骤的 token。 |

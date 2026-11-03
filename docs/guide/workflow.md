@@ -752,7 +752,7 @@ In an unattended run, describe asks no question. It answers the start of the rec
 
 Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
 
-The run records who started it in `startedBy`: `agent` when the start came from an agent session or through `--driver skill`, else `person`. A published run keeps it.
+The run records who started it in `startedBy`: `agent` when the start came from an agent session or through `--driver skill`, `cli` for teamai's own automatic starts (the `teamai-score` run the scoring module starts after a pass, and the `teamai-finished-sessions` run a session start or `teamai score --drain` starts), else `person`. A published run keeps it.
 
 ### Answers only the person gives
 
@@ -808,7 +808,7 @@ $ teamai list workflows
   wrap-up (teamai-share-session)  (team)
 ```
 
-For one name, the first runnable version wins: the project's team file, then the user scope's, then teamai's default. A team workflow whose alias is a default's name replaces that default too. A default comes from the installed teamai. It is never written to the team repo or the workflow cache, and it gets a [workflow skill](#workflow-skills) like a team workflow with the same `invoke`. A team file with no runnable version leaves the default in effect, and pull says so:
+For one name, the first runnable version wins: the project's team file, then the user scope's, then teamai's default. A project never runs the user scope's `teamai-score` ([why](scorers.md#replace-it-for-your-team)). A team workflow whose alias is a default's name replaces that default too. A default comes from the installed teamai. It is never written to the team repo or the workflow cache, and it gets a [workflow skill](#workflow-skills) like a team workflow with the same `invoke`. A team file with no runnable version leaves the default in effect, and pull says so:
 
 ```text
 ⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect

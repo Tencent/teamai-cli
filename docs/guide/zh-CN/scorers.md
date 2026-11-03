@@ -407,6 +407,18 @@ $ teamai score --session 7c1e… --scorer review-quality --label good       # �
 
 `--label` 只接受一个 `--scorer`，且必须是 `teamai pull` 缓存的评分器名，在任何运行开始前检查。之后 `teamai-score` 跳过各阶段和评审者。标签的 `score` 和是否通过来自评分器，与评审者的标签相同，没有推理文件。它与评审者的标签一样存储和发布，`judge` 为 `{ kind: "human" }`。同一会话的手动标签和评审者标签并存：用评审者重新评分不会替换手动标签。多个成员手动标注同一会话时，只计入最新的那个手动标签。
 
+`--label` 只标注会话。要手动标注某个工作流 pass，请在你自己的终端中启动 `teamai-score`，把标签写进它的 inputs。主体为 `run:<run id>:<step path>:<pass>`：
+
+```console
+$ teamai score --run r24df… --step review --scorer review-quality --label missed-bug
+{"error":{"code":"invalid_arguments","message":"Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both"}}
+$ teamai workflow start teamai-score --driver local --inputs '{"subject":"run:r24df…:review:1","scorers":["review-quality"],"label":"missed-bug","batch":false,"demand":"named"}'
+ℹ Run re440… started. If it stops before it ends, continue it with: teamai workflow resume re440…
+{"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}]}}]}},"cancelled":[]}}
+```
+
+该标签以 `judge: { kind: "human" }` 存储，并由该运行的 `publish` 步骤发送到 `teamai-reports`，与会话相同。
+
 ### 队友推送的会话
 
 Alice 用 `teamai session push` 推送了她的会话。在你检出的同一项目中：
@@ -556,7 +568,7 @@ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended
 
 每个会话对同一评分器和评分标准只评判一次。标签或失败的评审会关闭它。过期（例如评审被自身的超时取消）会由下一次 `teamai-finished-sessions` 重新开始，直到第四次过期为止；在此版本之前，过期会关闭它。`config.yaml` 中的 `scoring.daily_limit` 设置每个数据目录每个本地日最多开始多少次会话评审，默认 10，每次重新开始的过期都计入，同一会话上一批评分器只算一次。在全新的 CI runner 上，每次任务都从新的数据目录开始，所以这个上限限制的是一次任务，而不是一天。`0` 关闭会话评分。由人指定的评分器计入上限，但从不因上限被拒绝。修改评分器的评分标准后，已捕获的会话会重新成为它的评审工作，每日上限会把这些工作分摊到之后几天。
 
-设置 `attended: auto` 后，你不需要自己运行 driver。会话启动时的 pull 之后，teamai 会在会话目录能到达的每个作用域（它的项目和你的用户作用域）中，只要该作用域自动评判或归档有人值守的会话，就启动一次 `teamai-finished-sessions` 运行，并在一个分离的进程中驱动它。该运行用本机安装的评审工具归档并评判每个已结束的会话，并为评审过期的每个 pass 和会话重新启动 `teamai-score`。因此成员的会话启动也会重新评分该数据目录中过期的工作流 pass。运行在 30 分钟后结束，标签保持待发布，由下一次 `teamai pull` 发布。找不到任何工作的启动不会创建运行，已在处理该数据目录的运行会被留给它自己完成。每次评审是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: { attended: off }`；写在 `~/.teamai/config.yaml` 中则对本机所有 workspace 生效。
+设置 `attended: auto` 后，你不需要自己运行 driver。会话启动时的 pull 之后，teamai 会在会话目录能到达的每个作用域（它的项目和你的用户作用域）中，只要该作用域自动评判或归档有人值守的会话，就启动一次 `teamai-finished-sessions` 运行，并在一个分离的进程中驱动它。该运行用本机安装的评审工具归档并评判每个已结束的会话，并为评审过期的每个 pass 和会话重新启动 `teamai-score`。因此成员的会话启动也会重新评分该数据目录中过期的工作流 pass。运行在 30 分钟后结束。它运行的每个 `teamai-score` 都会把标签发布到 `teamai-reports`；离线时，标签保持待发布，由下一次 `teamai pull` 发布。找不到任何工作的启动不会创建运行，已在处理该数据目录的运行会被留给它自己完成。每次评审是一次在你账号上的评审调用，每天最多 `daily_limit` 次。会话评分器指定便宜的[模型别名](#选择评审者的模型)（例如 `model: fast`）可以控制成本。要停止，在 `config.yaml` 中设置 `scoring.sessions: { attended: off }`；写在 `~/.teamai/config.yaml` 中则对本机所有 workspace 生效。
 
 分离的运行使用 `teamai init` 记录的工具主目录，例如移动过的 `CLAUDE_CONFIG_DIR`。它看不到只在你的 shell 中设置的凭据或 base URL，在 Windows 上尤其如此。请把它们放在工具的登录状态、用户环境变量或工具 `settings.json` 的 `env` 中。
 
@@ -676,7 +688,7 @@ pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
 | `score_override_step_missing` | 去掉了 `evidence`、`label`、`write`、`publish` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
 | `default_override_alias` | 是另一个带 `alias: teamai-score` 的工作流 |
 
-项目运行 teamai 的默认版本或项目团队的文件，从不运行用户作用域的 `teamai-score`，pull 会提示：
+项目运行 teamai 的默认版本或项目团队的文件，从不运行用户作用域的 `teamai-score`，每次从该项目启动时都会提示：
 
 ```text
 ⚠ [workflows] Ignored the user scope's teamai-score from this project: teamai's default runs here. Replace it for this project in the project's team repo.

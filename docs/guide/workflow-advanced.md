@@ -873,7 +873,7 @@ A driver other than `local` declares what it can do in `driver.can` on each `nex
 | `driver.can` key | The driver |
 |---|---|
 | `hitl` | Lets a person answer HITL requests and work in interactive steps. |
-| `workspace` | Takes leases in these workspace modes: `read-only`, `new`, `continue`, `clone`. A clone step is leased only through [`next --prepare`](#clone-workspaces-in-your-own-driver). |
+| `workspace` | Takes leases in these workspace modes: `read-only`, `new`, `continue`, `clone`, `team` (a step in [the team workspace](workflow.md#the-team-workspace), such as `teamai-score`'s `publish`). A clone step is leased only through [`next --prepare`](#clone-workspaces-in-your-own-driver). |
 | `env` | `true`: resolves `lease.envScope.provide` itself, removes `lease.envScope.withhold`, and keeps the values from what runs the step. `"commands"`: does that for command steps and setup only, so a prompt step with `requires.env` waits. A driver whose agent runs the step leaves it out, or sends `"commands"` when it starts the commands itself. teamai before 0.28.0 answers `"commands"` with `invalid_json`. |
 | `setup` | Runs `lease.setup.command`, with `lease.setup.envScope`, in each workspace it creates and in one whose setup never finished, and fails the step with the codes above. Every lease with a workspace carries `setup` when the workflow declares it. |
 | `tokens` | Reports the tokens of every successful headless prompt step. |
