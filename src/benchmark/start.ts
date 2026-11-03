@@ -242,7 +242,7 @@ async function coveredTaskRefusal(config: LocalConfig, tasks: readonly Task[], p
   // Two different paths may share one bare skill name, which a trial's load record cannot tell apart; the same path twice is one.
   const byName = new Map<string, string>();
 
-  for (const covered of [...new Set(covers)]) {
+  for (const covered of new Set(covers)) {
     const bare = coveredSkillName(covered, listed.files);
 
     if (bare === undefined) continue;
@@ -260,7 +260,11 @@ async function coveredTaskRefusal(config: LocalConfig, tasks: readonly Task[], p
 
   if (refusal !== undefined) return { refusal: error('arm_team_unresolved', refusal.message) };
 
-  return { skills: Object.fromEntries([...new Set(covers)].map((path) => [path, coveredSkillName(path, listed.files) ?? null])) };
+  const skills = new Map<string, string | null>();
+
+  for (const covered of new Set(covers)) skills.set(covered, coveredSkillName(covered, listed.files) ?? null);
+
+  return { skills: Object.fromEntries(skills) };
 }
 
 

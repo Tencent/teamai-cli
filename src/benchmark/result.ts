@@ -132,7 +132,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     return (run.verdicts ?? []).filter((verdict) => verdict.step === `${prefix}${trial.step}` && verdict.pass === pass);
   };
 
-  const namesOf = ({ covers, coversSkills }: PlannedTask): string[] => (covers ?? []).flatMap((path, index) => {
+  const namesOf = ({ covers, coversSkills }: PlannedTask): string[] => (covers ?? []).flatMap((covered, index) => {
     const name = coversSkills?.[index];
 
     return name !== undefined && name !== null ? [name] : [];
@@ -164,9 +164,9 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
 
       const absent = arm?.team.kind === 'without'
 
-        ? arm.team.paths.flatMap((path) => {
+        ? arm.team.paths.flatMap((without) => {
           const name = plan.tasks.flatMap((one) => one.covers?.map((covered, index) => [covered, one.coversSkills?.[index] ?? null] as const) ?? [])
-            .find(([covered]) => covered === path)?.[1];
+            .find(([covered]) => covered === without)?.[1];
 
           return name !== undefined && name !== null ? [name] : [];
         })
