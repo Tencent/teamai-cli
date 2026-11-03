@@ -17,7 +17,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { deliveryConformanceWorkflow, workflowDeliveryConformanceScenarios, type DeliveryConformanceScenario } from '../../workflow/conformance/delivery.js';
+import {
+  deliveryConformanceWorkflow, fixCiConformanceScenarios, fixCiConformanceWorkflow, workflowDeliveryConformanceScenarios, type DeliveryConformanceScenario,
+} from '../../workflow/conformance/delivery.js';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { fakeGhHost, type FakeGh } from '../helpers/fake-gh.js';
 
@@ -46,8 +48,9 @@ type Lease = z.infer<typeof LeaseSchema>;
 const ReceiptSchema = z.object({ url: z.string(), branch: z.string(), base: z.string(), step: z.string(), pass: z.number() });
 const RunFileSchema = z.object({
   status: z.string(),
+  end: z.string().optional(),
   steps: z.array(z.object({
-    id: z.string(), status: z.string(),
+    id: z.string(), status: z.string(), pr: z.object({ url: z.string() }).optional(),
     changes: z.object({ branch: z.string(), to: z.string() }).optional(),
     failure: z.object({ code: z.string(), message: z.string() }).optional(),
   })),
@@ -70,6 +73,8 @@ let productOrigin = '';
 let gh: FakeGh;
 let ghDir = '';
 let clones = 0;
+/** Set while a fix-ci case whose patch changes the copy runs. */
+let fixCiPatch = false;
 
 const homeOf = (member: Member): string => path.join(sandbox, member);
 const workOf = (member: Member): string => path.join(homeOf(member), 'work');
@@ -82,6 +87,7 @@ function envOf(member: Member): NodeJS.ProcessEnv {
     GH_CONFIG_DIR: path.join(homeOf(member), '.gh'), PATH: `${ghDir}${path.delimiter}${process.env.PATH ?? ''}`,
     GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', FORCE_COLOR: '0',
     SHIP_OPEN: path.join(ghDir, 'open.json'), SHIP_SAW: path.join(ghDir, 'ship-saw.json'),
+    ...(fixCiPatch ? { FIX_CI_PATCH: '1' } : {}),
   };
   for (const name of ['XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GITHUB_TOKEN', 'GH_TOKEN']) delete env[name];
   return env;
@@ -236,11 +242,14 @@ async function work(profile: Exclude<Profile, 'local'>, member: Member, lease: L
   }
   execSync(lease.command ?? 'true', { cwd: dir, env, stdio: 'ignore' });
   git(dir, ['add', '-A'], env);
-  git(dir, ['commit', '-qm', lease.step], env);
-  git(dir, ['push', '-q', 'origin', branch], env);
+  const changed = git(dir, ['status', '--porcelain'], env) !== '';
+  if (changed) {
+    git(dir, ['commit', '-qm', lease.step], env);
+    git(dir, ['push', '-q', 'origin', branch], env);
+  }
   const to = git(dir, ['rev-parse', 'HEAD'], env);
-  const changes: Record<string, unknown> = { branch, base: base.commit, from: start.commit, to, commits: [to] };
-  if (profile !== 'remote') return { changes };
+  const changes: Record<string, unknown> = { branch, base: base.commit, from: start.commit, to, commits: changed ? [to] : [] };
+  if (profile !== 'remote' || !changed) return { changes };
   const url = (reportedUrl ?? ((head) => ({ open: openOwn(head), report: '' })))(branch);
   return { changes: { ...changes, pr_url: url.report || `${url.open}?tab=files#top` } };
 }
@@ -368,7 +377,9 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
     ghDir = path.join(sandbox, 'gh');
     git(sandbox, ['init', '-q', '--bare', '-b', 'main', teamOrigin]);
     git(sandbox, ['init', '-q', '--bare', '-b', 'main', productOrigin]);
-    seed(path.join(sandbox, 'seed-team'), { 'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`, 'workflows/deliver.yaml': deliveryConformanceWorkflow }, teamOrigin);
+    seed(path.join(sandbox, 'seed-team'), {
+      'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`, 'workflows/deliver.yaml': deliveryConformanceWorkflow, 'workflows/fix-ci.yaml': fixCiConformanceWorkflow,
+    }, teamOrigin);
     seed(path.join(sandbox, 'seed-app'), { 'README.md': '# app\n' }, productOrigin);
     gh = fakeGhHost(ghDir);
     await join('alice');
@@ -422,6 +433,35 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
           expect(log.waits, 'it sleeps on each wait').toBeLessThanOrEqual(HOLD_MS / POLL_MS + 2);
           expect(log.nexts, 'its next calls stay bounded').toBeLessThanOrEqual(log.leases.length + log.waits + 2);
         }
+      }, 120_000);
+    }
+  }
+
+  for (const scenario of fixCiConformanceScenarios) {
+    for (const profile of PROFILES) {
+      it(`${profile}: ${scenario.name}`, async () => {
+        gh.configure({});
+        fixCiPatch = scenario.patch;
+        let run: string;
+        try {
+          const started = await teamai('alice', ['workflow', 'start', 'fix-ci', ...(profile === 'local' ? ['--driver', 'local'] : [])]);
+          const data = envelope(started).data;
+          run = profile === 'local' ? z.object({ run: z.string() }).parse(data?.done, { error: () => said(started) }).run : String(data?.run);
+          if (profile !== 'local') await stubDriver(profile, 'alice', run);
+        } finally {
+          fixCiPatch = false;
+        }
+        const state = readRun('alice', run);
+        const fix = state.steps.find((step) => step.id === 'fix');
+        const steps = state.steps.map((step) => `${step.id} ${step.status}${step.failure ? `: ${step.failure.message}` : ''}`).join('\n');
+        const branch = `teamai/${run}/fix/p1`;
+
+        expect([state.status, state.end], steps).toEqual(['succeeded', scenario.end]);
+        expect(fix?.status).toBe('succeeded');
+        expect(fix?.pr ?? null).toEqual(scenario.patch ? { url: state.deliveries?.[0]?.url } : null);
+        expect(state.deliveries ?? []).toHaveLength(scenario.patch ? 1 : 0);
+        const creates = gh.calls().filter((call) => call.args[0] === 'pr' && call.args[1] === 'create' && call.args.includes(branch));
+        expect(creates).toHaveLength(scenario.patch && profile !== 'remote' ? 1 : 0);
       }, 120_000);
     }
   }
