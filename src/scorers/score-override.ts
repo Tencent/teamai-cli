@@ -18,24 +18,40 @@ const PUBLISH = 'teamai score publish';
 /** One refusal, before pull locates it in the file. */
 type Problem = Pick<WorkflowDiagnostic, 'field' | 'message'> & { code: ScoreOverrideCode };
 
-/** A step of the file, by its path, such as `score.judge` inside the inline workflow of `score`. */
+/** The keys of a workflow file that hold a list of steps. */
+type StepList = { [K in keyof WorkflowDefinition]-?: NonNullable<WorkflowDefinition[K]> extends WorkflowStep[] ? K : never }[keyof WorkflowDefinition];
+
+/** Every step list a workflow file has, so a list added to the schema fails the type check until it is walked. */
+const STEP_LISTS = { steps: 'steps', finally: 'finally' } as const satisfies { [K in StepList]: K };
+
+/**
+ * A step of the file: its list, and its path there, such as `score.judge` inside the inline workflow of `score`.
+ * `field` is where pull locates it, such as `steps.score.judge`.
+ */
 interface Walked {
+  list: StepList;
   path: string;
+  field: string;
   step: WorkflowStep;
 }
 
-function walk(steps: readonly WorkflowStep[], prefix = ''): Walked[] {
+function walkSteps(list: StepList, steps: readonly WorkflowStep[], prefix = ''): Walked[] {
   return steps.flatMap((step) => {
     const path = `${prefix}${step.id}`;
     const child = stepWorkflow(step);
 
-    return [{ path, step }, ...(child?.kind === 'inline' ? walk(child.workflow.steps, `${path}.`) : [])];
+    return [{ list, path, field: `${list}.${path}`, step }, ...(child?.kind === 'inline' ? walkSteps(list, child.workflow.steps, `${path}.`) : [])];
   });
+}
+
+/** Every step of `definition`, in each of its step lists and the inline workflows they run. */
+function walk(definition: WorkflowDefinition): Walked[] {
+  return Object.values(STEP_LISTS).flatMap((list) => walkSteps(list, definition[list] ?? []));
 }
 
 /** The `outputs` of each inline workflow, by the path of the step that runs it. */
 function inlineOutputs(definition: WorkflowDefinition): Map<string, string> {
-  return new Map(walk(definition.steps).flatMap(({ path, step }) => {
+  return new Map(walk(definition).flatMap(({ path, step }) => {
     const child = stepWorkflow(step);
 
     return child?.kind === 'inline' ? [[path, canonicalJson(child.workflow.outputs ?? {})]] : [];
@@ -45,25 +61,25 @@ function inlineOutputs(definition: WorkflowDefinition): Map<string, string> {
 const CONFINED_TO_OUTPUT = /^\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*\}\}$/;
 
 /** Why the prompt step at `path` of the override reads more than the evidence of a step before it, one reason each. */
-function promptProblems({ path, step }: Walked): Problem[] {
+function promptProblems({ path, field, step }: Walked): Problem[] {
   const dir = confinedOf(step);
   const refusals: Problem[] = [];
 
   if (dir === undefined) {
-    refusals.push({ code: 'score_override_prompt', field: `steps.${path}.workspace`, message: `step "${path}" runs a prompt that is not confined to a directory, so its tool could read the checkout and the session it judges. Give it workspace: { confined: "{{ steps.evidence.outputs.dir }}" }` });
+    refusals.push({ code: 'score_override_prompt', field: `${field}.workspace`, message: `step "${path}" runs a prompt that is not confined to a directory, so its tool could read the checkout and the session it judges. Give it workspace: { confined: "{{ steps.evidence.outputs.dir }}" }` });
   } else {
     const from = CONFINED_TO_OUTPUT.exec(dir)?.[1];
 
     if (from === undefined || !(step.needs ?? []).includes(from)) {
-      refusals.push({ code: 'score_override_confined_dir', field: `steps.${path}.workspace`, message: `step "${path}" is confined to ${dir}, which is not an output of a step it needs. Confine it to the directory the evidence step wrote: "{{ steps.evidence.outputs.dir }}"` });
+      refusals.push({ code: 'score_override_confined_dir', field: `${field}.workspace`, message: `step "${path}" is confined to ${dir}, which is not an output of a step it needs. Confine it to the directory the evidence step wrote: "{{ steps.evidence.outputs.dir }}"` });
     }
   }
 
-  if (step.scorers) refusals.push({ code: 'score_override_prompt', field: `steps.${path}.scorers`, message: `step "${path}" lists scorers, so judging it would start another teamai-score run from inside one. Remove scorers from it` });
+  if (step.scorers) refusals.push({ code: 'score_override_prompt', field: `${field}.scorers`, message: `step "${path}" lists scorers, so judging it would start another teamai-score run from inside one. Remove scorers from it` });
   const prompt = step.prompt ?? '';
 
   for (const read of ['steps.evidence.outputs.rubric', 'steps.evidence.outputs.schema']) {
-    if (!prompt.includes(read)) refusals.push({ code: 'score_override_judge_prompt', field: `steps.${path}.prompt`, message: `step "${path}" has a prompt that does not read {{ ${read} }}, so its judge would answer without the scorer's rubric or its answer schema. Keep {{ ${read} }} in it` });
+    if (!prompt.includes(read)) refusals.push({ code: 'score_override_judge_prompt', field: `${field}.prompt`, message: `step "${path}" has a prompt that does not read {{ ${read} }}, so its judge would answer without the scorer's rubric or its answer schema. Keep {{ ${read} }} in it` });
   }
 
   return refusals;
@@ -97,32 +113,43 @@ function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefin
   if (team.private !== true) contract('private', 'is not private, so its steps\' sessions and outputs could leave this machine. Set private: true');
 
   if ((team.invoke ?? 'deny') !== 'deny') contract('invoke', `sets invoke: ${team.invoke ?? 'deny'}, so an agent session could start it and label its own work. Set invoke: deny`);
-  const shippedSteps = walk(shipped.steps);
-  const verbs = new Map(shippedSteps.flatMap(({ step }) => (step.command === undefined ? [] : [[step.command, canonicalJson(step.env ?? {})]])));
-  const steps = walk(team.steps);
+
+  if (canonicalJson(team.setup ?? {}) !== canonicalJson(shipped.setup ?? {})) {
+    found.push({ code: 'score_override_command', field: 'setup', message: `runs setup ${team.setup?.command ?? 'none'} in the workspace of each step, where teamai's default teamai-score runs ${shipped.setup?.command ?? 'none'}. Give it the setup it ships` });
+  }
+
+  const shippedSteps = walk(shipped);
+  const verbsIn = (list: StepList) => new Map(shippedSteps.flatMap(({ list: at, step }) => (at !== list || step.command === undefined ? [] : [[step.command, canonicalJson(step.env ?? {})]])));
+  const verbs = { steps: verbsIn('steps'), finally: verbsIn('finally') } satisfies Record<StepList, Map<string, string>>;
+  const steps = walk(team);
 
   for (const walked of steps) {
-    const { path, step } = walked;
+    const { list, path, field, step } = walked;
     const child = stepWorkflow(step);
+    const listVerbs = verbs[list];
 
-    if (step.command !== undefined && !verbs.has(step.command)) {
-      found.push({ code: 'score_override_command', field: `steps.${path}.command`, message: `step "${path}" runs ${step.command}, which is not a score verb as teamai's default teamai-score runs it. Run the verbs with the arguments it ships` });
-    } else if (step.command !== undefined && verbs.get(step.command) !== canonicalJson(step.env ?? {})) {
-      found.push({ code: 'score_override_command', field: `steps.${path}.env`, message: `step "${path}" gives ${step.command} other env than teamai's default teamai-score does. Give it the env it ships` });
+    if (step.command !== undefined && !listVerbs.has(step.command)) {
+      const message = listVerbs.size === 0
+        ? `step "${path}" runs ${step.command} under ${list}, where teamai's default teamai-score runs no command. Remove the step`
+        : `step "${path}" runs ${step.command}, which is not a score verb as teamai's default teamai-score runs it. Run the verbs with the arguments it ships`;
+
+      found.push({ code: 'score_override_command', field: `${field}.command`, message });
+    } else if (step.command !== undefined && listVerbs.get(step.command) !== canonicalJson(step.env ?? {})) {
+      found.push({ code: 'score_override_command', field: `${field}.env`, message: `step "${path}" gives ${step.command} other env than teamai's default teamai-score does. Give it the env it ships` });
     }
 
     if (child !== undefined && !(path === 'score' && child.kind === 'inline')) {
-      found.push({ code: 'score_override_workflow_step', field: `steps.${path}.workflow`, message: `step "${path}" runs a workflow, and only the inline workflow of step "score" labels the groups. Remove it` });
+      found.push({ code: 'score_override_workflow_step', field: `${field}.workflow`, message: `step "${path}" runs a workflow, and only the inline workflow of step "score" labels the groups. Remove it` });
     }
 
     if (step.prompt !== undefined || step.promptFile !== undefined) found.push(...promptProblems(walked));
 
     if ((step.command === PUBLISH || step.deliver === 'publish') && !publishesLabels(step)) {
-      found.push({ code: 'score_override_publish', field: `steps.${path}`, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` });
+      found.push({ code: 'score_override_publish', field, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` });
     }
   }
 
-  const kept = new Set(steps.map(({ path }) => path));
+  const kept = new Set(steps.flatMap(({ list, path }) => (list === 'steps' ? [path] : [])));
 
   for (const id of [...KEPT, ...(scorerHasCheck ? ['check'] : [])]) {
     if (!kept.has(`score.${id}`)) found.push({ code: 'score_override_step_missing', field: 'steps', message: `drops step score.${id}, which every label of teamai's default teamai-score goes through${id === 'check' ? ' while a scorer here has a check' : ''}. Keep it` });
@@ -136,7 +163,7 @@ function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefin
  * step no driver here can take keeps teamai-score open until a timeout ends it, whatever its own says as a step.
  */
 function callerWarnings(file: string, definition: WorkflowDefinition): string[] {
-  return walk(definition.steps).flatMap(({ path, step }) => {
+  return walk(definition).flatMap(({ path, step }) => {
     const child = stepWorkflow(step);
 
     if (child?.kind !== 'named' || child.name !== 'teamai-score' || step.timeout !== undefined) return [];
@@ -150,12 +177,12 @@ const JUDGING = new Set(['teamai-score', 'teamai-finished-sessions']);
 
 /** Why pull refuses `definition`, at `file`: a step runs a workflow that judges and lists scorers, which would judge it. */
 function callerProblems(file: string, definition: WorkflowDefinition): WorkflowDiagnostic[] {
-  return walk(definition.steps).flatMap(({ path, step }) => {
+  return walk(definition).flatMap(({ path, field, step }) => {
     const child = stepWorkflow(step);
 
     if (child?.kind !== 'named' || !JUDGING.has(child.name) || step.scorers === undefined) return [];
 
-    return [{ file, line: 1, column: 1, field: `steps.${path}.scorers`, code: 'judging_scored', message: `step "${path}" runs ${child.name} and lists scorers, so its judging would be judged in turn. Remove scorers from the step` }];
+    return [{ file, line: 1, column: 1, field: `${field}.scorers`, code: 'judging_scored', message: `step "${path}" runs ${child.name} and lists scorers, so its judging would be judged in turn. Remove scorers from the step` }];
   });
 }
 
