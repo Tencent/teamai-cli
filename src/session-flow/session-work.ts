@@ -119,7 +119,8 @@ function capturedTeamSkillsAt(captures: readonly SessionCapture[]): (timestamp: 
   };
 }
 
-function firstPrompt(session: Session): string {
+/** The first text the member typed in `session`, on one line, cut to 200 characters. */
+export function firstPrompt(session: Session): string {
   const text = session.messages.flatMap((message) => message.content.map((block) => typedIn(message, block))).find((typed) => typed !== '') ?? '';
   const flat = text.replace(/\s+/g, ' ').trim();
 

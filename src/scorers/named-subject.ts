@@ -4,9 +4,8 @@
  */
 import { knownSecrets } from '../env-resolution.js';
 import { pushedSession, nativeSession, type SessionDemand } from '../session-flow/scoring.js';
-import { SessionCaptures } from '../session-flow/captures.js';
 import { safeText } from '../session-flow/session-cmd-shared.js';
-import { judgeSession } from '../session-flow/session-work.js';
+import { firstPrompt } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { redact } from '../utils/redact.js';
@@ -157,7 +156,7 @@ async function ofSession(from: LocalConfig, demand: SessionDemand): Promise<({ o
   const named = demand.teamSession ? await pushedSession(from, demand.teamSession) : await nativeSession(from, demand);
 
   if ('error' in named) return refused(named.error.code, named.error.message);
-  const { platform, found, config, pushedBy, agent } = named;
+  const { platform, found, config, pushedBy } = named;
   const { session } = found;
   const unready = await scoringRefusal(config);
 
@@ -189,9 +188,7 @@ async function ofSession(from: LocalConfig, demand: SessionDemand): Promise<({ o
 
   if (pushedBy !== undefined) log.info(`Pushed by ${safeText(pushedBy)}`);
   const envSecrets = await knownSecrets(config);
-  const captures = pushedBy === undefined ? await SessionCaptures.read(config, platform, session.sessionId) : [];
-  const { context: { prompt } } = judgeSession({ platform, found, captures, mask: (text) => redact(text, { envSecrets }), agent });
-  log.info(`First prompt: ${safeText(prompt) || '(none)'}`);
+  log.info(`First prompt: ${safeText(redact(firstPrompt(session), { envSecrets })) || '(none)'}`);
 
   const subject: Subject = demand.teamSession && pushedBy !== undefined
     ? { kind: 'team-session', subject: { author: pushedBy, name: demand.teamSession.name } }
