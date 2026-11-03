@@ -712,11 +712,11 @@ Asset effect · skills/auth-tokens · no-auth-tokens -> pulled · claude
 task   covers   passed without   passed with   loaded with
 expired-token   yes   1/3   3/3   3/3 fit
 refresh-race   yes   0/3   2/3   2/3 fit, 1 missed
-login-copy   no   3/3   3/3   1/3 extra
+login-copy   no   3/3   3/3   1/3 extra, 2 idle
 
 tasks that cover it   +67 pp   1/6 -> 5/6   95% +11 to +86 pp
 other tasks   0 pp   3/3 -> 3/3   not separated
-passed when loaded 6/6 · passed when not loaded 0/1
+passed when loaded 6/6 · passed when not loaded 2/3
 ```
 
 Read it as:

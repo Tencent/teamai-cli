@@ -127,16 +127,25 @@ export async function coveredRefusal(
   // Every selection the run's arms pull under, so a path only a role arm receives is not refused. A path refuses
   // only when every selection's delivery leaves it unchanged: each read is the member as the clone's own pull reads
   // it, on a scope with no state of its own.
-  // Each path once, however many tasks cover it: one delivery read per path and selection.
-  const unique = [...new Set(paths)];
+  // Each path once, however many tasks cover it. A path an ancestor of another covered path covers subsumes:
+  // checking the ancestor answers both, and moving each out in turn would take the other with it.
+  const once = [...new Set(paths)];
+  const unique = once.filter((covered) => !once.some((other) => other !== covered && covered.startsWith(`${other}/`)));
 
+  // One path at a time within a clone — each check renames its path out and back — while the selections run apart,
+  // each in its own clone, so no check reads a clone another path is moved out of.
   const reads = await Promise.all(selections.map(async (selection) => {
     const member: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
 
-    return withTeamRevision(member, revision, async (at) => ({ selection, unchangedByPath: await Promise.all(unique.map(async (covered) => [
-      covered,
-      await firstUnchanged(at, { subject: 'A task covers', advice: TASK_FIX, paths: [covered], files, short, excluded: selection.excludedSkills }),
-    ] as const)) }));
+    return withTeamRevision(member, revision, async (at) => {
+      const unchangedByPath: Array<[string, string | undefined]> = [];
+
+      for (const covered of unique) {
+        unchangedByPath.push([covered, await firstUnchanged(at, { subject: 'A task covers', advice: TASK_FIX, paths: [covered], files, short, excluded: selection.excludedSkills })]);
+      }
+
+      return { selection, unchangedByPath };
+    });
   }));
 
   const failed = reads.find((read) => 'failed' in read);

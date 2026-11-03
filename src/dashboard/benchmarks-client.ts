@@ -309,7 +309,7 @@ function assetPanel(sel,chosen){
  if(!shown.length)return '';
  const name=a=>a.skill?'teamai:routing:'+(a.path.split('/').length>2?a.path.split('/')[1]+':'+a.skill:a.skill):'';
  const rate=r=>r==null?'-':number(r.passed)+'/'+number(r.planned);
- const loads=r=>r==null?'not observed':number(r.loaded)+'/'+number(r.planned)+' '+(r.loaded>0?(r.byValue.fit?'fit':'extra'):(r.byValue.missed?'missed':r.byValue.idle?'idle':'unknown'));
+ const loads=r=>r==null?'not observed':number(r.loaded)+'/'+number(r.planned)+' '+(['fit','extra','missed','idle'].filter(v=>r.byValue[v]&&((r.loaded>0)===(v==='fit'||v==='extra'))).map(v=>v==='fit'||v==='extra'?v:number(r.byValue[v])+' '+v).join(', ')||'unknown');
  const split=(t,l)=>l==null?'':t+'   '+(l.difference.value>=0?'+':'')+Math.round(l.difference.value*100)+' pp   '+rate(l.from)+' → '+rate(l.to)+'   '+(l.separated?'95% '+(l.difference.low>=0?'+':'')+Math.round(l.difference.low*100)+' to '+(l.difference.high>=0?'+':'')+Math.round(l.difference.high*100)+' pp':label('not separated'));
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Asset effect')+'</h2><span class="label">'+label('Per covered team asset: the arm that runs without it against the arm that leaves nothing out, split by the tasks that cover it. A skill that did not load is missed, one that loaded where it was not needed is extra.')+'</span></div>'
   +shown.map(a=>'<div class="asset-effect"><h3 data-verbatim>'+e(a.path)+' · '+e(a.without!=null?a.without+' → '+a.has:a.has)+' · '+e(a.tool)+'</h3>'

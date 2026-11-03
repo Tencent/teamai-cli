@@ -243,6 +243,22 @@ describe('coveredRefusal', () => {
     expect(await coveredRefusal(config, { paths: ['rules/commits.md', 'skills/lint'], revision, selections: [selection], files })).toBeUndefined();
   });
 
+  it('still refuses a path no arm receives when another covered path is delivered — one path at a time per clone (#1684 review)', async () => {
+    const { config, revision, selection, files } = team();
+
+    // skills/lint is delivered to dev, skills/ops/runbook is not: the delivered path must not mask the refusal.
+    const refusal = await coveredRefusal(config, { paths: ['skills/lint', 'skills/ops/runbook'], revision, selections: [selection], files });
+
+    expect(refusal?.code).toBe('arm_team_unresolved');
+    expect(refusal?.message).toContain('skills/ops/runbook');
+  });
+
+  it('accepts a namespace directory and a skill inside it as covers without an ENOENT (#1684 review)', async () => {
+    const { config, revision, selection, files } = team();
+
+    expect(await coveredRefusal(config, { paths: ['skills/dev', 'skills/dev/deploy'], revision, selections: [selection], files })).toBeUndefined();
+  });
+
   it.each([
     ['a path the revision does not have', ['skills/db/migrations'], 'arm_team_unresolved',
       'A task covers skills/db/migrations, which team revision {r} does not have. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
