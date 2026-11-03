@@ -7,7 +7,7 @@ import path from 'node:path';
 import { observedModel, type AgentObservation } from '../agent-observation.js';
 import { knownSecrets } from '../env-resolution.js';
 import { loadModelAliases } from '../models/aliases.js';
-import { AttemptStore, newAttemptId, scoresDir } from '../scorers/attempts.js';
+import { newAttemptId, scoresDir } from '../scorers/attempts.js';
 import { batchesScorers, verdictsOf, type Verdict } from '../scorers/batch.js';
 import { cachedScorerNames, NOT_A_SCORER, pinScorers, scorerSourceHash } from '../scorers/cache.js';
 import { formatScorerDiagnostic, isScorerFile, parseScorer, type ScorerDefinition, type ScorerLabel } from '../scorers/definition.js';
@@ -510,7 +510,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     };
 
     // Only a cached scorer's label is written, so a group of scorer files never waits on the label store's lock.
-    const written = labels.some(({ member }) => member.file === undefined) ? await AttemptStore.locked(config, write) : { status: 'done' as const, value: await write() };
+    const written = labels.some(({ member }) => member.file === undefined) ? await LabelStore.locked(config, write) : { status: 'done' as const, value: await write() };
 
     if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Score the session again.');
     const [fileHead, ...fileTail] = members.filter((member) => member.file !== undefined);
@@ -602,7 +602,7 @@ async function labelByHand(config: LocalConfig, { member, given, judged, now }: 
     scoredAt: now,
   }, judged.subject, judged.context);
 
-  const written = await AttemptStore.locked(config, () => LabelStore.append(config, label, undefined));
+  const written = await LabelStore.locked(config, () => LabelStore.append(config, label, undefined));
 
   if (written.status === 'busy') return failure('busy', 'Another teamai process holds the label store, so no label was written. Label the session again.');
   log.info(`${scorer}: ${given.value} (score ${given.score}, ${passed ? 'passed' : 'did not pass'}), by hand. No judge ran.`);

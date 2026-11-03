@@ -10,7 +10,8 @@ import { loadTeamConfig } from '../config.js';
 import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { AttemptStore, isDecidedBeforeJudge, isRunAttempt, scoresDir } from './attempts.js';
+import { AttemptStore, isDecidedBeforeJudge, isRunAttempt } from './attempts.js';
+import { scoresDir, scoresLocked } from './home.js';
 import { isStageDecider, labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
 
 function labelsFile(config: LocalConfig): string {
@@ -108,6 +109,14 @@ function addUsage(total: { inputTokens: number; outputTokens: number }, usage: J
 
 export const LabelStore = {
   /**
+   * Runs `change` under `scores/labels.lock`, which `publish` takes to clear the outbox, so a label `change` appends is
+   * never cleared unpublished.
+   */
+  async locked<T>(config: LocalConfig, change: () => Promise<T>): Promise<{ status: 'done'; value: T } | { status: 'busy' }> {
+    return scoresLocked(config, 'labels', change);
+  },
+
+  /**
    * The outbox entry commits the label: a failure before it records no label, and one after it leaves a label that
    * `local` reads and `publish` still sends. Returns the label's `id` and the `version` that names its reasoning file.
    * `prompt`, the redacted first prompt of a judged session, heads the reasoning file so a member finds it with grep.
@@ -174,7 +183,7 @@ export const LabelStore = {
     switch (outcome.status) {
       case 'published':
       case 'already-present': {
-        await AttemptStore.locked(config, async () => {
+        const cleared = await LabelStore.locked(config, async () => {
           const appended = new Set(parseScoreLabels(await readFileSafe(labelsFile(config)) ?? '').map(labelVersion));
 
           for (const { id, label } of pending) {
@@ -187,6 +196,8 @@ export const LabelStore = {
             await fs.rm(file, { force: true });
           }
         });
+
+        if (cleared.status === 'busy') return { state: 'pending', reason: 'another teamai process is writing a score label' };
 
         return (await readPending(config)).length === 0
           ? { state: 'published' }

@@ -186,6 +186,19 @@ describe('LabelStore', () => {
     expect(parseScoreLabels(git(remote, 'show', 'teamai-reports:scores/alice/2026-10.jsonl'))).toEqual([rescore]);
   });
 
+  it('clears the outbox only under the label store lock, and leaves it for the next push while a label is being written', async () => {
+    const config = clone(origin(), 'locked');
+    const pending = path.join(config.dataHome ?? '', 'scores', 'pending');
+    await LabelStore.append(config, modelLabel('2026-10-22T11:00:00.000Z'), 'first');
+
+    expect(await LabelStore.locked(config, () => LabelStore.publish(config))).toEqual({
+      status: 'done', value: { state: 'pending', reason: 'another teamai process is writing a score label' },
+    });
+    expect(fs.readdirSync(pending)).toHaveLength(1);
+    expect(await LabelStore.publish(config)).toEqual({ state: 'published' });
+    expect(fs.readdirSync(pending)).toEqual([]);
+  });
+
   it('keeps a label only once its outbox entry is written, so a failed write never strands it unpublished', async () => {
     const config = clone(origin(), 'crash');
     const scores = path.join(config.dataHome ?? '', 'scores');
