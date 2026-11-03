@@ -749,6 +749,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 |---|---|---|
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
+| `teamai-score` | 用团队的[评分器](scorers.md#teamai-score-工作流)给一个工作流 pass 或会话打标签。由 [`teamai score`](scorers.md#按需评分) 和 `teamai-share-session` 启动 | 从不：`invoke: deny`，任何 agent 会话都不能启动它 |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
 | `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
 | `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
@@ -825,8 +826,8 @@ learning         interactive：会话的 agent 和本人一起运行 `teamai ski
 share-session    用相同输入运行 teamai-share-session：
   publish        只在 publish: true 时运行
                  → teamai session push --scrub --session <session> --source <source>
-  score          只在 judge: here 时运行，每个评分器一次 → teamai score --session <session> --scorer <scorer>
-  score-driver   只在 judge: driver 时运行，每个评分器一次 → 会话的 agent 领取评审租约，best-effort 评审
+  score          scorers 不为空时运行 → 对该会话运行 teamai-score，最多 30 分钟
+                 （timeout: 30m，continue_on_failure: true）；judge 照收但不起作用
 ```
 
 `learning` 和 `share-session` 互不等待。`scorers: []` 时不运行任何评审。每次 `teamai contribute` 都把它的经验记为该会话的产出，所以分享了三条经验的会话在仪表盘上三条都会显示。定义文件是已安装包中的 `workflows/teamai-share-learnings.yaml` 和 `workflows/teamai-share-session.yaml`。
@@ -879,7 +880,7 @@ agent   starts teamai-share-session {…,"publish":true,"scorers":[]}  → publi
 person  score this session with style
 agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[],"judge":"driver"}
 person  add style
-agent   starts with "scorers":["style"] → score-driver: the agent takes the judge lease for style, best-effort
+agent   starts with "scorers":["style"] → score: a fresh subagent judges style, best-effort
 
 # 团队关闭了 recall
 pull    writes /teamai-share-session only: teamai-share-learnings would send the agent to a share skill that says no

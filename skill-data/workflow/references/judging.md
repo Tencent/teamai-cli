@@ -30,6 +30,6 @@ A prompt step confined to a directory is answered from that directory alone, whi
 - With teamai's confined judge of your tool here, TeamAI runs the step in the background on that tool, as it runs a judge. The turn shows the step `started` and `settled`; there is nothing else for you to do.
 - When this session judges the run, the step comes as a `dispatch` whose `needs.confined` is true. Start a fresh child for it, never one that worked another step, and give it only the prompt the Dispatch section names: it reads nothing from this session or the checkout. A step that asks for `verified` isolation never comes to you.
 - With `--no-judge` or on `h4`, no confined step runs here. The run waits on them in `held`, for another driver.
-- A held confined step inside a step that sets `continue_on_failure`, such as the `score` step of `teamai-share-session`, is given up at once instead: teamai cancels that step and the run goes on without its labels. Tell the person the session was not scored here.
+- A held confined step inside a step that sets `continue_on_failure`, such as a group of `teamai-score`'s `score` step, is given up at once instead: teamai cancels that step and the run goes on without its labels. Tell the person the session was not scored here.
 
 `teamai-share-session` scores a session by running `teamai-score`, whose `judge` step is such a confined step: its turns show `score.plan`, `score.score[0].evidence` and the other steps of that run like any other.

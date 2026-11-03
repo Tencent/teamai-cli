@@ -30,6 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | A label passes when its score is at or above this. |
 | `samplingRate`, `model`, `isolation` | Optional. Percent of passes judged, 0 to 100, default 25. The judge's model: a team [model alias](sharing.md#model-aliases), resolved per judge tool, or a model name, which goes unchanged to the first judge tool; default the tool's. `verified` or `best-effort`. |
 | `sessions` | Optional. `true`: the scorer also judges [finished sessions](#finished-sessions). |
+| `stages` | Optional. Which [stages](#score-what-a-run-delivered) may decide the scorer before its judge: some of `check`, `ci` and `protected`. Default all three. |
 
 The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
 
@@ -196,11 +197,24 @@ Names only: a value that is not a skill name, such as a path, is dropped. A repo
 ## On demand
 
 ```console
-$ teamai score --run r3f9… --scorer review-quality                                   # the one step that lists it, latest succeeded pass
-$ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --queue     # any driver's --next takes it
+$ teamai score --run r5863… --scorer review-quality                                        # the one step that lists it, latest succeeded pass
+ℹ Run rd4894… started. If it stops before it ends, continue it with: teamai workflow resume rd4894…
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/d3ce….md
+$ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --driver none   # any driver's workflow next takes it
 ```
 
-`--step` is optional when one step of the run with a succeeded pass lists the scorer. Otherwise the error names the steps to pick from. Sampling does not apply, and judge work that failed or expired opens again. A scorer the run pinned judges with that rubric; any other scorer `teamai pull` cached, with its current one. Without `--queue`, the first judge tool on PATH runs, preferring the tool that ran the pass. An unknown run, step, pass or scorer fails and lists the ones that exist. A scorer whose model no judge tool here runs fails `judge_model_unavailable` and stays open. The error's `labels` lists what the other scorers labelled.
+`--run`, `--session` or `--team-session` with `--scorer` starts [`teamai-score`](#the-teamai-score-workflow) for that pass or session on the local driver, and prints the labels it wrote. `--driver none` only starts the run, for any driver's `workflow next`; it replaces `--queue`. `--step` is optional when one step of the run with a succeeded pass lists the scorer. Otherwise the error names the steps to pick from. Sampling does not apply, and judge work that failed or expired opens again. `--run` takes the scorers the run pinned, with their rubric; a session takes any scorer `teamai pull` cached, with its current one. An unknown run, step, pass or scorer fails, lists the ones that exist, and starts no run.
+
+A scorer left without a label makes the command exit 1 with its code, and `labels` lists what the others got:
+
+```console
+$ teamai score --session 5e55… --source claude-code --scorer review-quality --scorer style
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/c9f3….md
+⚠ style: no label, it was not planned: another run holds its judge work, or no judge tool here runs its model
+{"error":{"code":"not_planned","message":"Run r39f…: style got no label (not_planned): … Kept the label of review-quality: good.","labels":[…]}}
+```
+
+When only a judge step no tool here can take is left, such as a `verified` scorer with no verified judge here, the code is `judge_pending`, and the run stays open for a driver that can take it.
 
 A pass whose commits or recorded session are gone from this machine fails before any judge, and no label is written:
 
@@ -252,6 +266,21 @@ The stages run in this order, and the first that fails decides:
 | Pull request CI | The CI of the delivered commit finished and failed. GitHub: any check run that failed, timed out or needs action, or a failed commit status. GitLab: the newest pipeline failed. | `ci` |
 | Protected paths | The pass changed a path the run protects, so the step failed with `protected_path` and delivered nothing. | `protected` |
 
+A scorer's `stages` picks which of them may decide it, when `teamai-score` labels the pass. `clarity` neither waits for CI nor is decided by it:
+
+```markdown
+---
+stages: [protected]
+labels:
+  - { value: clear, score: 1, description: The change reads clearly. }
+  - { value: unclear, score: 0, description: It does not. }
+passingScore: 1
+---
+Judge whether the change is easy to read.
+```
+
+On a step with `scorers: [clarity, delivered]` and CI still running, `clarity` is judged at once and `delivered` waits for CI. A failed CI decides `delivered`, not `clarity`.
+
 The failing label is the highest one below `passingScore`, here `partial`. No judge is launched and no tokens are spent. When every stage passes, or any CI check is still running, there are no checks, or the origin is not GitHub or GitLab, the judge decides and the label says `"decidedBy":"judge"`. A scorer without `check` skips that stage. A pass that changed nothing delivered no commit, so its check and CI are skipped too.
 
 The judge of a delivering step also reads the run's inputs (`inputs.json`) and the outputs of every step, so it can compare the pull request with the issue `read-issue` returned.
@@ -281,15 +310,18 @@ $ teamai score --run r3f9… --scorer delivered
 ## Score a session
 
 ```console
-$ teamai score --scorer review-quality          # inside an agent session: scores that session
+$ teamai score --session 7c1e… --scorer review-quality          # in your own terminal
 ℹ Scoring claude-code session 7c1e… in /work/app
 ℹ First prompt: Add retries to the client
+ℹ Run r2b7… started. If it stops before it ends, continue it with: teamai workflow resume r2b7…
 ℹ review-quality: bad (score 0, did not pass). Reasoning: ~/.teamai/scores/reasoning/9f2c….md
 ℹ To share what went wrong, ask your agent to read ~/.teamai/scores/reasoning/9f2c….md and share it with the team (teamai contribute --session-id 7c1e…).
 $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 ```
 
-Outside a session, pass `--session <id>`. Scoring never guesses the session. `--source` takes the platform names of `teamai session migrate --source`. Leave it out when an agent session variable such as `CLAUDE_CODE_SESSION_ID`, or the session's captures, name one platform. The judge reads the redacted session with its subagents' transcripts, and sampling does not apply. Its `evidence.json` lists `skills`: `available`, the team skills the captures show teamai delivered, each with its skills `namespace` (`namespaceUnknown` when two identical copies cannot be told apart) and its `description` (left out when the frontmatter does not parse), and `used`. A session captured by an older release has the `skills_unknown` gap instead.
+To score the session you are in, ask its agent ("score this session with review-quality"). It runs [`/teamai-share-session`](workflow.md#teamai-share-learnings-and-teamai-share-session), whose `teamai-score` step judges the session in a background judge or a fresh subagent, never in the agent's own context. `teamai score` run by the agent answers `invoke_denied`.
+
+Pass `--session <id>`: scoring never guesses the session. `--source` takes the platform names of `teamai session migrate --source`. Leave it out when the session's captures name one platform. The judge reads the redacted session with its subagents' transcripts, and sampling does not apply. Its `evidence.json` lists `skills`: `available`, the team skills the captures show teamai delivered, each with its skills `namespace` (`namespaceUnknown` when two identical copies cannot be told apart) and its `description` (left out when the frontmatter does not parse), and `used`. A session captured by an older release has the `skills_unknown` gap instead.
 
 The judge reads at most 200,000 characters of a session. A session scorer that names a cheaper [model alias](#choose-the-judges-model) keeps a long session cheap to judge.
 
@@ -299,12 +331,13 @@ The label is kept in the scope the session ran in, from whichever directory you 
 
 A judge is a model, and a model can be wrong. Label a few sessions yourself, and the [Scorers page](dashboard.md#scorers) shows how often the judge agrees with you.
 
-The agent just said the retry loop is fixed, and it is not. Still inside the session:
+The agent just said the retry loop is fixed, and it is not. In your own terminal:
 
 ```console
-$ teamai score --scorer review-quality --label missed-bug --push
+$ teamai score --session 7c1e… --scorer review-quality --label missed-bug --push
 ℹ Labelling claude-code session 7c1e… in /work/app
 ℹ First prompt: Fix the retry loop in sync.ts
+ℹ Run rfc5… started. If it stops before it ends, continue it with: teamai workflow resume rfc5…
 ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
 ```
 
@@ -317,11 +350,18 @@ $ teamai score --session 7c1e… --source claude-code --scorer review-quality --
 A value the scorer does not list fails, and nothing is written:
 
 ```console
-$ teamai score --scorer review-quality --label flaky
+$ teamai score --session 7c1e… --scorer review-quality --label flaky
 {"error":{"code":"label_invalid","message":"\"flaky\" is not a label of scorer review-quality. Use one of: good, partial, missed-bug."}}
 ```
 
-`--label` takes one `--scorer`, a name `teamai pull` cached. The label's `score` and pass come from the scorer, as for a judge's label, and it has no reasoning file. It is stored and published as a judge's label is, with `judge: { kind: "human" }`. A hand label and a judge's label of the same session are kept side by side: rescoring with the judge never replaces a hand label. When several members label one session by hand, the newest hand label is the one counted.
+A hand label is the person's. Run by an agent, the command answers `invoke_denied` and writes nothing:
+
+```console
+$ teamai score --session 7c1e… --scorer review-quality --label good       # in the agent's shell
+{"error":{"code":"invoke_denied","message":"Workflow \"teamai-score\" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). …"}}
+```
+
+`--label` takes one `--scorer`, a name `teamai pull` cached, and is checked before any run starts. `teamai-score` then skips the stages and the judge. The label's `score` and pass come from the scorer, as for a judge's label, and it has no reasoning file. It is stored and published as a judge's label is, with `judge: { kind: "human" }`. A hand label and a judge's label of the same session are kept side by side: rescoring with the judge never replaces a hand label. When several members label one session by hand, the newest hand label is the one counted.
 
 ### A session a teammate pushed
 
@@ -517,6 +557,82 @@ skill:   … last turn of an unattended session → teamai score --drain  # the 
 As the job's last step, after the tool exits, the drain sees the session complete. From inside a session, it judges and publishes that session as it stands, and its later turns are neither judged nor published again.
 
 Runs, judge attempts and leases live in the runner's data home. A lapsed session lease or a failed judge attempt is final, and a runner killed before its drain loses that judging. A long-lived VM runs `teamai score --drain` at the end of each job.
+
+## The teamai-score workflow
+
+`teamai score` and `teamai-share-session` label a subject by starting the [default workflow](workflow.md#default-workflows) `teamai-score`, `workflows/teamai-score.yaml` in the installed package:
+
+```text
+teamai-score   private, invoke: deny, timeout 336h
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named }
+
+plan           teamai score plan → the groups: scorers that share one judge launch and the same stages
+score          once per group:
+  evidence     teamai score evidence → the redacted evidence, in a directory of its own
+  check, ci, protected   the stages a delivered pass goes through; the first that fails decides
+  judge        a prompt confined to the evidence directory, unless a stage decided or label is set
+  label        teamai score label → each scorer's label
+  write        teamai score write → scores/labels.jsonl and the pending outbox
+  settle       teamai score settle, after a step of the group broke
+```
+
+`subject` is `run:<run>:<step>:<pass>`, `session:<source>:<id>` or `team-session:<author>:<archive>`. The run is `private`: it and the judge's reasoning stay on this machine. `invoke: deny` keeps every agent session from starting it, so an agent never labels its own work. A score verb run outside a `teamai-score` attempt answers `score_attempt_required`.
+
+### Replace it for your team
+
+A team `workflows/teamai-score.yaml` replaces teamai's for whoever receives it. It may reword the judge prompt around the rubric and the schema, reorder the stages, or drop `ci` or `protected`:
+
+```yaml
+# workflows/teamai-score.yaml (team file): teamai's, with the ci step left out and the judge prompt reworded
+        - id: judge
+          prompt: |
+            Judge this change for our team, strictly. The rubric is in {{ steps.evidence.outputs.rubric }}.
+            Answer with the schema in {{ steps.evidence.outputs.schema }}.
+```
+
+Pull refuses a file that changes what a label means, and teamai's default runs instead:
+
+```text
+⚠ [workflows] workflows/teamai-score.yaml:1: field "invoke": sets invoke: allow, so an agent session could start it and label its own work. Set invoke: deny
+⚠ [workflows] workflows/teamai-score.yaml has no runnable version, so teamai's default teamai-score stays in effect
+```
+
+| Code | The file |
+|---|---|
+| `score_override_contract` | changes `inputs` or any `outputs`, drops `private: true`, or sets `invoke` to anything but `deny` |
+| `score_override_command` | runs a command other than a score verb with the arguments teamai's gives it, or gives a verb other `env` |
+| `score_override_workflow_step` | has a `workflow:` step other than the inline `score` |
+| `score_override_prompt` | has a prompt step not confined to a directory, or one that lists `scorers` |
+| `score_override_confined_dir` | confines the judge to a directory that is not an output of a step it needs |
+| `score_override_judge_prompt` | has a judge prompt that does not read `steps.evidence.outputs.rubric` and `steps.evidence.outputs.schema` |
+| `score_override_step_missing` | drops `evidence`, `label`, `write` or `settle`, or `check` while a scorer here has a check |
+| `default_override_alias` | is another workflow with `alias: teamai-score` |
+
+A project runs teamai's default, or the project team's file, never a user scope's `teamai-score`, and pull says so:
+
+```text
+⚠ [workflows] Ignored the user scope's teamai-score from this project: teamai's default runs here. Replace it for this project in the project's team repo.
+```
+
+### Run it from your workflow
+
+```yaml
+# workflows/wrap-up.yaml (team file)
+steps:
+  - id: score
+    workflow: teamai-score
+    with: { subject: "session:{{ inputs.source }}:{{ inputs.session }}", scorers: "{{ inputs.scorers }}", label: "", batch: false, demand: named }
+    timeout: 30m
+    continue_on_failure: true
+```
+
+A judge no driver here can take keeps `teamai-score` open, and its own `timeout` binds only a root run. Give the step a `timeout` and `continue_on_failure: true`, as `teamai-share-session` does. Pull warns on a step without a timeout:
+
+```text
+⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
+```
+
+In a coding session, the skill driver gives up such a judge step at once, when nothing else of the run is left and `continue_on_failure` lets it.
 
 ## Batching
 

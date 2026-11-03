@@ -30,6 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | 标签分数不低于它即为通过。 |
 | `samplingRate`、`model`、`isolation` | 可选。被评判的步骤执行比例，0 到 100，默认 25。评审者的模型：团队[模型别名](sharing.md#模型别名)，按评审工具分别解析；或模型名，原样交给第一个评审工具。默认用工具自己的模型。`verified` 或 `best-effort`。 |
 | `sessions` | 可选。`true`：评分器也评判[已结束的会话](#已结束的会话)。 |
+| `stages` | 可选。哪些[阶段](#为交付的工作评分)可以在评审者之前为该评分器做出判定：`check`、`ci`、`protected` 中的若干个。默认三个都用。 |
 
 frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
 
@@ -196,11 +197,24 @@ $ teamai workflow report r3f9… --json '{"attempt":"…","revision":3,"outcome"
 ## 按需评分
 
 ```console
-$ teamai score --run r3f9… --scorer review-quality                                   # 唯一列出它的步骤，最近一次成功的执行
-$ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --queue     # 交给任意 driver 的 --next
+$ teamai score --run r5863… --scorer review-quality                                        # 唯一列出它的步骤，最近一次成功的执行
+ℹ Run rd4894… started. If it stops before it ends, continue it with: teamai workflow resume rd4894…
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/d3ce….md
+$ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --driver none   # 交给任意 driver 的 workflow next
 ```
 
-运行中只有一个有成功执行的步骤列出该评分器时，`--step` 可以省略；否则错误会列出可选的步骤。不应用抽样，失败或过期的评审任务会重新打开。运行固定过的评分器使用固定的评分标准；`teamai pull` 缓存的其他评分器使用当前版本。不加 `--queue` 时，运行 PATH 上首个可用的评审工具，优先使用执行该轮的工具。未知的运行、步骤、执行轮次或评分器会失败，并列出存在的值。若本机没有评审工具能运行某个评分器的模型，该评分器以 `judge_model_unavailable` 失败并保持打开。错误的 `labels` 列出其他评分器已生成的标签。
+`--run`、`--session` 或 `--team-session` 加上 `--scorer`，会在本地 driver 上为该执行轮次或会话启动 [`teamai-score`](#teamai-score-工作流)，并输出它写入的标签。`--driver none` 只启动运行，交给任意 driver 的 `workflow next`；它取代了 `--queue`。运行中只有一个有成功执行的步骤列出该评分器时，`--step` 可以省略；否则错误会列出可选的步骤。不应用抽样，失败或过期的评审任务会重新打开。`--run` 只接受运行固定过的评分器，使用固定的评分标准；会话接受 `teamai pull` 缓存的任意评分器，使用当前版本。未知的运行、步骤、执行轮次或评分器会失败，列出存在的值，且不启动运行。
+
+有评分器没有得到标签时，命令以退出码 1 结束并给出它的代码，`labels` 列出其他评分器得到的标签：
+
+```console
+$ teamai score --session 5e55… --source claude-code --scorer review-quality --scorer style
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/c9f3….md
+⚠ style: no label, it was not planned: another run holds its judge work, or no judge tool here runs its model
+{"error":{"code":"not_planned","message":"Run r39f…: style got no label (not_planned): … Kept the label of review-quality: good.","labels":[…]}}
+```
+
+只剩本机没有工具能接手的评审步骤时，例如要求 `verified` 而本机没有已验证评审者的评分器，代码为 `judge_pending`，运行保持打开，等待能接手它的 driver。
 
 某轮执行的提交或记录的会话已不在本机时，评审前就会失败，不写入任何标签：
 
@@ -252,6 +266,21 @@ Judge whether the pull request delivers what the issue asked, and only that.
 | 合并请求 CI | 交付提交的 CI 已结束且失败。GitHub：任一检查运行失败、超时或需要操作，或提交状态为失败。GitLab：最新的流水线失败。 | `ci` |
 | 受保护路径 | 该轮修改了运行保护的路径，步骤以 `protected_path` 失败，没有交付任何内容。 | `protected` |
 
+`teamai-score` 为该轮打标签时，评分器的 `stages` 决定哪些阶段可以为它做出判定。`clarity` 既不等待 CI，也不由 CI 判定：
+
+```markdown
+---
+stages: [protected]
+labels:
+  - { value: clear, score: 1, description: The change reads clearly. }
+  - { value: unclear, score: 0, description: It does not. }
+passingScore: 1
+---
+Judge whether the change is easy to read.
+```
+
+在 `scorers: [clarity, delivered]` 的步骤上，CI 仍在运行时，`clarity` 立即评审，`delivered` 等待 CI。CI 失败判定 `delivered`，不判定 `clarity`。
+
 未通过时的标签是低于 `passingScore` 的最高标签，此例中为 `partial`。不启动评审者，不消耗 token。所有阶段都通过时，或者仍有 CI 检查在运行、没有任何检查、源仓库不在 GitHub 或 GitLab 上时，由评审者判定，标签记为 `"decidedBy":"judge"`。没有 `check` 的评分器跳过该阶段。未做任何修改的执行没有交付提交，因此同样跳过检查和 CI。
 
 交付步骤的评审者还会读取运行的输入（`inputs.json`）和每个步骤的输出，从而把合并请求与 `read-issue` 返回的 issue 进行对比。
@@ -281,15 +310,18 @@ $ teamai score --run r3f9… --scorer delivered
 ## 为会话评分
 
 ```console
-$ teamai score --scorer review-quality          # 在 agent 会话内：为该会话评分
+$ teamai score --session 7c1e… --scorer review-quality          # 在你自己的终端里
 ℹ Scoring claude-code session 7c1e… in /work/app
 ℹ First prompt: Add retries to the client
+ℹ Run r2b7… started. If it stops before it ends, continue it with: teamai workflow resume r2b7…
 ℹ review-quality: bad (score 0, did not pass). Reasoning: ~/.teamai/scores/reasoning/9f2c….md
 ℹ To share what went wrong, ask your agent to read ~/.teamai/scores/reasoning/9f2c….md and share it with the team (teamai contribute --session-id 7c1e…).
 $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 ```
 
-在会话外运行时，传入 `--session <id>`。评分从不猜测会话。`--source` 使用 `teamai session migrate --source` 的平台名。`CLAUDE_CODE_SESSION_ID` 等 agent 会话环境变量或会话的捕获记录只指向一个平台时，可以省略。评审者读取脱敏后的会话及其子 agent 的记录，不应用抽样。它的 `evidence.json` 列出 `skills`：`available` 是捕获记录显示 teamai 交付的团队 skill，每项带 skills `namespace`（两个相同副本无法区分时为 `namespaceUnknown`）和 `description`（frontmatter 无法解析时省略）；以及 `used`。旧版本捕获的会话改为带 `skills_unknown` gap。
+要为当前所在的会话评分，请让它的 agent 来做（“用 review-quality 给这个会话评分”）。agent 会运行 [`/teamai-share-session`](workflow.md#teamai-share-learnings-和-teamai-share-session)，由它的 `teamai-score` 步骤在后台评审者或新的子 agent 中评审该会话，从不在 agent 自己的上下文中评审。agent 运行 `teamai score` 会得到 `invoke_denied`。
+
+传入 `--session <id>`：评分从不猜测会话。`--source` 使用 `teamai session migrate --source` 的平台名。会话的捕获记录只指向一个平台时，可以省略。评审者读取脱敏后的会话及其子 agent 的记录，不应用抽样。它的 `evidence.json` 列出 `skills`：`available` 是捕获记录显示 teamai 交付的团队 skill，每项带 skills `namespace`（两个相同副本无法区分时为 `namespaceUnknown`）和 `description`（frontmatter 无法解析时省略）；以及 `used`。旧版本捕获的会话改为带 `skills_unknown` gap。
 
 评审者最多读取会话的 200,000 个字符。会话评分器指定更便宜的[模型别名](#选择评审者的模型)，长会话的评审成本也会更低。
 
@@ -299,12 +331,13 @@ $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 
 评审者是模型，模型也会出错。自己标注几个会话，[评分器页面](dashboard.md#评分器scorers)就会显示评审者与你一致的频率。
 
-agent 刚说重试循环已经修好，其实没有。仍在该会话内：
+agent 刚说重试循环已经修好，其实没有。在你自己的终端里：
 
 ```console
-$ teamai score --scorer review-quality --label missed-bug --push
+$ teamai score --session 7c1e… --scorer review-quality --label missed-bug --push
 ℹ Labelling claude-code session 7c1e… in /work/app
 ℹ First prompt: Fix the retry loop in sync.ts
+ℹ Run rfc5… started. If it stops before it ends, continue it with: teamai workflow resume rfc5…
 ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
 ```
 
@@ -317,11 +350,18 @@ $ teamai score --session 7c1e… --source claude-code --scorer review-quality --
 评分器没有列出的值会失败，且不写入任何内容：
 
 ```console
-$ teamai score --scorer review-quality --label flaky
+$ teamai score --session 7c1e… --scorer review-quality --label flaky
 {"error":{"code":"label_invalid","message":"\"flaky\" is not a label of scorer review-quality. Use one of: good, partial, missed-bug."}}
 ```
 
-`--label` 只接受一个 `--scorer`，且必须是 `teamai pull` 缓存的评分器名。标签的 `score` 和是否通过来自评分器，与评审者的标签相同，没有推理文件。它与评审者的标签一样存储和发布，`judge` 为 `{ kind: "human" }`。同一会话的手动标签和评审者标签并存：用评审者重新评分不会替换手动标签。多个成员手动标注同一会话时，只计入最新的那个手动标签。
+手动标签属于本人。由 agent 运行时，命令返回 `invoke_denied`，不写入任何内容：
+
+```console
+$ teamai score --session 7c1e… --scorer review-quality --label good       # 在 agent 的 shell 里
+{"error":{"code":"invoke_denied","message":"Workflow \"teamai-score\" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). …"}}
+```
+
+`--label` 只接受一个 `--scorer`，且必须是 `teamai pull` 缓存的评分器名，在任何运行开始前检查。之后 `teamai-score` 跳过各阶段和评审者。标签的 `score` 和是否通过来自评分器，与评审者的标签相同，没有推理文件。它与评审者的标签一样存储和发布，`judge` 为 `{ kind: "human" }`。同一会话的手动标签和评审者标签并存：用评审者重新评分不会替换手动标签。多个成员手动标注同一会话时，只计入最新的那个手动标签。
 
 ### 队友推送的会话
 
@@ -517,6 +557,82 @@ skill:   … last turn of an unattended session → teamai score --drain  # 会�
 作为任务的最后一步、在工具退出后运行时，drain 看到的是完整的会话。在会话内部运行时，它按会话此刻的样子评判并发布该会话，之后的对话轮次不会再被评判或发布。
 
 运行、评审尝试和租约都保存在 runner 的数据目录中。过期的会话租约或失败的评审尝试是最终结果，在 drain 之前被终止的 runner 会丢失那次评审。长期运行的虚拟机在每次任务结束时运行 `teamai score --drain`。
+
+## teamai-score 工作流
+
+`teamai score` 和 `teamai-share-session` 通过启动[默认工作流](workflow.md#默认工作流) `teamai-score` 为一个对象打标签，即已安装包中的 `workflows/teamai-score.yaml`：
+
+```text
+teamai-score   private, invoke: deny, timeout 336h
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named }
+
+plan           teamai score plan → 各组：共用一次评审调用、走相同阶段的评分器
+score          每组一次：
+  evidence     teamai score evidence → 脱敏后的证据，放在单独的目录里
+  check, ci, protected   交付的执行轮次要经过的阶段；第一个未通过的阶段做出判定
+  judge        限定在证据目录里的提示步骤，除非某个阶段已经判定或设置了 label
+  label        teamai score label → 每个评分器的标签
+  write        teamai score write → scores/labels.jsonl 和待发布队列
+  settle       teamai score settle，在该组的某个步骤出错之后
+```
+
+`subject` 为 `run:<run>:<step>:<pass>`、`session:<source>:<id>` 或 `team-session:<author>:<archive>`。运行是 `private` 的：它和评审者的推理都留在本机。`invoke: deny` 让任何 agent 会话都不能启动它，所以 agent 从不为自己的工作打标签。在 `teamai-score` 尝试之外运行的 score 动词返回 `score_attempt_required`。
+
+### 为团队替换它
+
+团队的 `workflows/teamai-score.yaml` 会为收到它的人替换 teamai 的版本。它可以改写评分标准和 schema 周围的评审提示，调整各阶段的顺序，或去掉 `ci` 或 `protected`：
+
+```yaml
+# workflows/teamai-score.yaml（团队文件）：teamai 的版本，去掉 ci 步骤并改写评审提示
+        - id: judge
+          prompt: |
+            Judge this change for our team, strictly. The rubric is in {{ steps.evidence.outputs.rubric }}.
+            Answer with the schema in {{ steps.evidence.outputs.schema }}.
+```
+
+pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
+
+```text
+⚠ [workflows] workflows/teamai-score.yaml:1: field "invoke": sets invoke: allow, so an agent session could start it and label its own work. Set invoke: deny
+⚠ [workflows] workflows/teamai-score.yaml has no runnable version, so teamai's default teamai-score stays in effect
+```
+
+| 代码 | 该文件 |
+|---|---|
+| `score_override_contract` | 改变了 `inputs` 或任何 `outputs`，去掉了 `private: true`，或把 `invoke` 设为 `deny` 以外的值 |
+| `score_override_command` | 运行的命令不是带有 teamai 版本所给参数的 score 动词，或给动词的 `env` 不同 |
+| `score_override_workflow_step` | 含有内联 `score` 以外的 `workflow:` 步骤 |
+| `score_override_prompt` | 含有不限定在目录里的提示步骤，或列出 `scorers` 的提示步骤 |
+| `score_override_confined_dir` | 把评审者限定在的目录不是它所依赖步骤的输出 |
+| `score_override_judge_prompt` | 评审提示没有读取 `steps.evidence.outputs.rubric` 和 `steps.evidence.outputs.schema` |
+| `score_override_step_missing` | 去掉了 `evidence`、`label`、`write` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
+| `default_override_alias` | 是另一个带 `alias: teamai-score` 的工作流 |
+
+项目运行 teamai 的默认版本或项目团队的文件，从不运行用户作用域的 `teamai-score`，pull 会提示：
+
+```text
+⚠ [workflows] Ignored the user scope's teamai-score from this project: teamai's default runs here. Replace it for this project in the project's team repo.
+```
+
+### 在你的工作流中运行它
+
+```yaml
+# workflows/wrap-up.yaml（团队文件）
+steps:
+  - id: score
+    workflow: teamai-score
+    with: { subject: "session:{{ inputs.source }}:{{ inputs.session }}", scorers: "{{ inputs.scorers }}", label: "", batch: false, demand: named }
+    timeout: 30m
+    continue_on_failure: true
+```
+
+本机没有 driver 能接手的评审者会让 `teamai-score` 保持打开，而它自己的 `timeout` 只约束根运行。像 `teamai-share-session` 一样，给该步骤设置 `timeout` 和 `continue_on_failure: true`。步骤没有 timeout 时 pull 会警告：
+
+```text
+⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
+```
+
+在编程会话中，运行里没有别的步骤可做、且 `continue_on_failure` 允许时，skill 驱动会立即放弃这样的评审步骤。
 
 ## 批量评审
 

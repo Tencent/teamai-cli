@@ -749,6 +749,7 @@ teamai ships workflows a team gets without writing them:
 |---|---|---|
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
+| `teamai-score` | labels one workflow pass or session with the team's [scorers](scorers.md#the-teamai-score-workflow). [`teamai score`](scorers.md#on-demand) and `teamai-share-session` start it | never: `invoke: deny`, so no agent session starts it |
 | `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
 | `teamai-self-improvement` | changes the team's assets from a scorer's repeated failures and adds one regression task per failure, as one pull request the next run updates, through [`teamai self-improvement run`](self-improvement.md). Inputs: `scorer`, `suite` | always |
 | `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team as a pull request from the [team workspace](#the-team-workspace). Inputs: `session`, `source`, `suite`, `start`, `solution` | always |
@@ -825,8 +826,8 @@ learning         interactive: the session's agent runs `teamai skill get share` 
 share-session    runs teamai-share-session with the same inputs:
   publish        on publish: true only
                  → teamai session push --scrub --session <session> --source <source>
-  score          on judge: here only, once per scorer → teamai score --session <session> --scorer <scorer>
-  score-driver   on judge: driver only, once per scorer → the session's agent judges the lease, best-effort
+  score          when scorers is not empty → runs teamai-score on the session, for at most 30 minutes
+                 (timeout: 30m, continue_on_failure: true); judge is accepted and ignored
 ```
 
 `learning` and `share-session` do not wait for each other. `scorers: []` runs no judge. Each `teamai contribute` records its learning as an outcome of the session, so a session that shared three learnings shows all three in the dashboard. The files are `workflows/teamai-share-learnings.yaml` and `workflows/teamai-share-session.yaml` in the installed package.
@@ -879,7 +880,7 @@ agent   starts teamai-share-session {…,"publish":true,"scorers":[]}  → publi
 person  score this session with style
 agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[],"judge":"driver"}
 person  add style
-agent   starts with "scorers":["style"] → score-driver: the agent takes the judge lease for style, best-effort
+agent   starts with "scorers":["style"] → score: a fresh subagent judges style, best-effort
 
 # Recall is off on this team
 pull    writes /teamai-share-session only: teamai-share-learnings would send the agent to a share skill that says no
