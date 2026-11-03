@@ -281,6 +281,9 @@ const ANSWER_RULES = {
   choice: 'publish', note: 'publish', at: 'publish', channel: 'publish', agent: 'publish', driver: 'drop',
 } satisfies FieldRules<HitlAnswer>;
 
+// A person's note on a private step may say what the step keeps on this machine.
+const PRIVATE_ANSWER_RULES = { ...ANSWER_RULES, note: 'drop' } satisfies FieldRules<HitlAnswer>;
+
 // Quoted so the records test that collects every failure code literal in src/workflow does not read this rule as one.
 const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldRules<WorkflowFailure>;
 
@@ -310,6 +313,11 @@ const PASS_REWRITES = {
   answer: (pass) => (pass.answer ? { answer: handed(pass.answer, ANSWER_RULES, {}) } : {}),
 } satisfies Rewrites<StepPass, typeof PASS_RULES>;
 
+const PRIVATE_PASS_REWRITES = {
+  ...PASS_REWRITES,
+  answer: (pass) => (pass.answer ? { answer: handed(pass.answer, PRIVATE_ANSWER_RULES, {}) } : {}),
+} satisfies Rewrites<StepPass, typeof PRIVATE_PASS_RULES>;
+
 const STEP_REWRITES = {
   passes: (step) => (step.passes ? { passes: step.passes.map((pass) => handed(pass, PASS_RULES, PASS_REWRITES)) } : {}),
   answer: (step) => (step.answer ? { answer: handed(step.answer, ANSWER_RULES, {}) } : {}),
@@ -319,7 +327,8 @@ const STEP_REWRITES = {
 
 const PRIVATE_STEP_REWRITES = {
   ...STEP_REWRITES,
-  passes: (step) => (step.passes ? { passes: step.passes.map((pass) => handed(pass, PRIVATE_PASS_RULES, PASS_REWRITES)) } : {}),
+  passes: (step) => (step.passes ? { passes: step.passes.map((pass) => handed(pass, PRIVATE_PASS_RULES, PRIVATE_PASS_REWRITES)) } : {}),
+  answer: (step) => (step.answer ? { answer: handed(step.answer, PRIVATE_ANSWER_RULES, {}) } : {}),
 } satisfies Rewrites<StepState, typeof PRIVATE_STEP_RULES>;
 
 const RUN_REWRITES = {
@@ -344,7 +353,7 @@ const RUN_REWRITES = {
   archive: (run) => {
     const isPrivate = privateSteps(run);
 
-    return { archive: (run.archive ?? []).map((pass) => (isPrivate(pass.step) ? handed(pass, PRIVATE_ARCHIVED_RULES, PASS_REWRITES) : handed(pass, ARCHIVED_RULES, PASS_REWRITES))) };
+    return { archive: (run.archive ?? []).map((pass) => (isPrivate(pass.step) ? handed(pass, PRIVATE_ARCHIVED_RULES, PRIVATE_PASS_REWRITES) : handed(pass, ARCHIVED_RULES, PASS_REWRITES))) };
   },
   copies: (run) => ({ copies: Object.fromEntries(Object.entries(run.copies ?? {}).map(([branch, copy]) => [branch, handed(copy, COPY_RULES, {})])) }),
 } satisfies Rewrites<RunState, typeof RUN_RULES>;

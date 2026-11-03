@@ -1988,6 +1988,31 @@ describe('a run with private steps', () => {
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
   });
 
+  it('publishes the answer of a private step without its note, in the step, its passes and the archive', async () => {
+    const acme = team({ judge: JUDGE, reviewed: REVIEWED });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'reviewed');
+    const next = await leaseNext(alice.config, runId, alice.driver);
+    if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+    const lease = next.data.lease as { attempt: string; revision: number };
+    await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver, outputs: { label: 'good', reasoning: 'it reads well' } });
+    const answer = { choice: 'yes', note: 'the customer is Initech', at: '2026-10-21T10:00:00.000Z', channel: 'cli' as const, agent: false };
+    await editRun(alice.config, runId, (run) => ({
+      ...run,
+      steps: run.steps.map((step) => (step.id === 'check.label' ? { ...step, answer, passes: [{ pass: 1, attempt: 'a00000001', outcome: 'success', answer }] }
+        : step.id === 'ship' ? { ...step, answer: { ...answer, note: 'ship it' } } : step)),
+      archive: [{ pass: 1, attempt: 'a00000002', outcome: 'success', answer, step: 'check.label' }],
+    }));
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    const published = originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '';
+    expect(published).not.toContain('Initech');
+    expect(JSON.parse(published)).toMatchObject({
+      steps: [{ id: 'check' }, { id: 'check.label', answer: { choice: 'yes' }, passes: [{ answer: { choice: 'yes' } }] }, { id: 'ship', answer: { note: 'ship it' } }],
+      archive: [{ step: 'check.label', answer: { choice: 'yes' } }],
+    });
+  });
+
   it('keeps a run of a private workflow on the machine that started it', async () => {
     const acme = team({ judge: JUDGE });
     const alice = await acme.member('alice');
