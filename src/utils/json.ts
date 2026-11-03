@@ -26,6 +26,19 @@ export function parseJson5(text: string): JsonValue {
   }
 }
 
+/** Whether `text` is blank or plain JSON, which teamai writes back as JSON.stringify writes it: no comment to keep. */
+export function isPlainJson(text: string): boolean {
+  if (text.trim() === '') return true;
+
+  try {
+    parseJson(text);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * How a tool parses one of its JSON config files: `json` strictly, `jsonc`
  * with comments and trailing commas (jsonc-parser with `allowTrailingComma`),
@@ -95,9 +108,10 @@ function valueOfNode(node: Node): JsonValue {
 /**
  * `original`, a JSON-with-comments document, edited so it holds `next`: an
  * object is edited key by key, an array or a scalar that changed is replaced
- * whole, and a key `next` drops is removed. Every comment stays, and so does
- * the text outside the lines an edit touches; jsonc-parser formats those lines
- * with the original's indentation and line endings.
+ * whole, and a key `next` drops is removed with the comment between it and the
+ * key before it, which documents it. Every other comment stays, and so does the
+ * text outside the lines an edit touches; jsonc-parser formats those lines with
+ * the original's indentation and line endings.
  */
 export function editJsonText(original: string, next: JsonValue): string {
   const formattingOptions = formattingOf(original);

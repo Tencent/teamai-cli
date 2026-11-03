@@ -7,7 +7,8 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
-import { reconcileOpencodeInstructions, reconcileOpencodeInstructionSet, opencodeProjectRuleGlobs, opencodeRuleGlobs, opencodeRulesGlob } from '../resources/opencode-config.js';
+import { readOpencodeInstructionList, reconcileOpencodeInstructions, reconcileOpencodeInstructionSet, opencodeProjectRuleGlobs, opencodeRuleGlobs, opencodeRulesGlob } from '../resources/opencode-config.js';
+import { parseJsonAs } from '../utils/json.js';
 
 describe('opencodeRulesGlob', () => {
   it('project scope: config at root, rules under .opencode/rules', () => {
@@ -179,5 +180,43 @@ describe('reconcileOpencodeInstructions', () => {
     const wrote = await reconcileOpencodeInstructions(configFile, GLOB, false);
     expect(wrote).toBe(true);
     expect((await fse.readJson(configFile)).instructions).toEqual([objEntry]);
+  });
+});
+
+// OpenCode 2.1.2 parses opencode.json with jsonc-parser, comments and trailing commas allowed.
+describe('a commented opencode.json', () => {
+  let tmpDir: string;
+  let configFile: string;
+  const GLOB = '.opencode/rules/*.md';
+  const commented = '{\n  "$schema": "https://opencode.ai/config.json",\n  // the member\'s note\n  "instructions": ["CONTRIBUTING.md",],\n}\n';
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-oc-jsonc-'));
+    configFile = path.join(tmpDir, 'opencode.json');
+  });
+
+  afterEach(async () => {
+    await fse.remove(tmpDir);
+  });
+
+  it('takes the glob and keeps the comment', async () => {
+    await fse.writeFile(configFile, commented);
+
+    expect(await reconcileOpencodeInstructions(configFile, GLOB, true)).toBe(true);
+
+    const written = await fse.readFile(configFile, 'utf8');
+    expect(written).toContain('// the member\'s note');
+    expect(parseJsonAs(written, 'jsonc')).toEqual({ $schema: 'https://opencode.ai/config.json', instructions: ['CONTRIBUTING.md', GLOB] });
+    expect(await readOpencodeInstructionList(configFile)).toEqual(['CONTRIBUTING.md', GLOB]);
+  });
+
+  it('is kept, not deleted, when only its comment and $schema are left', async () => {
+    await fse.writeFile(configFile, '// the member\'s note\n{\n  "$schema": "https://opencode.ai/config.json",\n  "instructions": ["/abs/*.md"],\n}\n');
+
+    await reconcileOpencodeInstructionSet(configFile, [], (entry) => entry === '/abs/*.md', 'rules activation', { deleteIfEmpty: true });
+
+    const written = await fse.readFile(configFile, 'utf8');
+    expect(written).toContain('// the member\'s note');
+    expect(parseJsonAs(written, 'jsonc')).toEqual({ $schema: 'https://opencode.ai/config.json' });
   });
 });

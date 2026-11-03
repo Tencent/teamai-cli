@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { isJsonObject } from '../types.js';
 import { log } from './logger.js';
 import { expandHome } from './home.js';
-import { editJsonText, parseJson, parseJson5, parseJsonAs, type JsonSyntax } from './json.js';
+import { editJsonText, isPlainJson, parseJson, parseJson5, parseJsonAs, type JsonSyntax } from './json.js';
 
 const IGNORED_NAMES = new Set([
   '__pycache__',
@@ -221,23 +221,13 @@ export async function writeJsonKeepingComments<T>(
 ): Promise<void> {
   const current = await readFileSafe(filePath);
 
-  if (current === null || current.trim() === '' || isPlainJson(current)) {
+  if (current === null || isPlainJson(current)) {
     await writePlain();
 
     return;
   }
 
   await writeFileAtomic(filePath, editJsonText(current, parseJson(JSON.stringify(data))), options);
-}
-
-function isPlainJson(text: string): boolean {
-  try {
-    parseJson(text);
-
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**

@@ -66,6 +66,14 @@ describe('editJsonText', () => {
     expect(edited).not.toContain('stale');
   });
 
+  it('removes the comment just before a removed key with it, and keeps the others', () => {
+    const edited = editJsonText('{\n  // keep\n  "a": 1,\n  // about b\n  "b": 2\n}\n', { a: 1 });
+
+    expect(edited).toContain('// keep');
+    expect(edited).not.toContain('about b');
+    expect(parseJsonAs(edited, 'jsonc')).toEqual({ a: 1 });
+  });
+
   it('creates nested objects the original does not hold', () => {
     const next = { theme: 'dark', hooks: { Stop: [{ command: 'mine' }] }, stale: true, mcp: { servers: { team: { url: 'https://x' } } } };
 
