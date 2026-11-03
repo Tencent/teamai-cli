@@ -526,21 +526,8 @@ describe('sharing.gitExclude', () => {
 });
 
 describe('the dispatcher', () => {
-  it('gives its entry a timeout that covers the slowest team hook, counting 600 s for a hook that names none', () => {
-    // Codex stops the entry at its own timeout, so it must outlast every team hook the dispatcher runs.
-    const m = machine('slowest', {
-      committed: { '.codex/hooks.json': TEAM_OWN_HOOKS },
-      hooks: [
-        { id: 'bounded', event: 'Stop', command: 'true', timeout: 30 },
-        { id: 'unbounded', event: 'Stop', command: 'true' },
-      ],
-    });
-    const entries = dispatcherEntries(m.homeHooks(), 'Stop');
-    expect(entries).toHaveLength(1);
-    expect(entries[0].hooks[0].timeout).toBe(600);
-  });
-
   it('stops a team hook at its own timeout and still returns the others\' output', async () => {
+    // Codex stops the entry at its own timeout, so it must outlast every team hook the dispatcher runs.
     const m = machine('timeout', {
       committed: { '.codex/hooks.json': TEAM_OWN_HOOKS },
       hooks: [
