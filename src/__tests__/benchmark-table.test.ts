@@ -43,7 +43,7 @@ async function endRecord(config: LocalConfig, runId: string): Promise<{ benchmar
   if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
   const planned = planOfRun(run);
   if ('failure' in planned) throw new Error(planned.failure.message);
-  return { benchmark: benchmarkRecord(run, planned.found) };
+  return { benchmark: benchmarkRecord(run, planned.found, []) };
 }
 
 /** The end record of a run of ten repetitions whose first trial passed its check before the run was cancelled. */
@@ -373,7 +373,7 @@ describe('a trial of more than one prompt pass', () => {
     Object.assign(trial, { step: trial.step.replace(/\.prompt$/, '') });
     Object.assign(step, { passes: [{ pass: 1, attempt: 'earlier', outcome: 'success', tokens: { output: 10 } }] });
 
-    const [recorded] = benchmarkRecord(run, planned.found).trials;
+    const [recorded] = benchmarkRecord(run, planned.found, []).trials;
 
     expect(recorded?.tokens).toEqual({ input: 80, output: 30, complete: false });
     expect(recorded).not.toHaveProperty('durationMs');
@@ -399,7 +399,7 @@ describe('a trial cancelled before its next lease', () => {
     delete step.attempt;
     earlier(run, step);
 
-    expect(benchmarkRecord(run, planned.found).trials[0]?.result).toBe('error');
+    expect(benchmarkRecord(run, planned.found, []).trials[0]?.result).toBe('error');
   });
 });
 

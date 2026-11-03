@@ -89,7 +89,7 @@ describe('the workflow a benchmark plan prints', () => {
     expect(run.steps.find((step) => step.id === 'plan')).toMatchObject({ status: 'succeeded' });
     expect(stepDefinitions(run)('trials.baselines')).toBeUndefined();
     expect(stepDefinitions(run)('trials.r2.t01.a01.check')).toBeUndefined();
-    expect(stepDefinitions(run)('trials.r2.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all' });
+    expect(stepDefinitions(run)('trials.r2.t01.a01.prompt')?.scorers).toEqual({ names: ['teamai:correctness:t01'], sampling: 'all', start: 'workflow' });
   });
 
   it("is admitted for arms that compare two roles, each trial's clone opened with its arm's role and the plan keeping it", async () => {

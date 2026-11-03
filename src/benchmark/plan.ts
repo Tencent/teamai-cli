@@ -300,7 +300,8 @@ export function compileBundle(
 
     if (timeoutMs !== undefined || maxTurns !== undefined || tokens !== undefined) step.on_limit = 'end_turn';
 
-    if (names.length > 0) step.scorers = { names, sampling: 'all' };
+    // The workflow's own teamai-score steps judge every trial, with the pins the trial ran under.
+    if (names.length > 0) step.scorers = { names, sampling: 'all', start: 'workflow' };
 
     return step;
   };

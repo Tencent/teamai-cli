@@ -20,15 +20,17 @@ import { benchmarkRecord, benchmarkRecordFile, unlaunchedTrial, type BenchmarkRu
 import { planOfRun, trialsUnattended, type RunPlan } from './run-plan.js';
 import { benchmarkTable, formatBenchmarkTable, type BenchmarkTable } from './table.js';
 import { toolUnavailableNotice } from './trial.js';
+import { TrialVerdicts, type EntryVerdict } from './verdicts.js';
 
 /**
  * What `report` prints: the results as text, after a line when the trials ran with their tools' own permission settings
  * and a line for each arm whose tool the run's driver could not launch, followed by `record: pending` while the
- * record waits and by what the comparison found; as a table; and the comparison's finding.
+ * record waits and by what the comparison found; as a table, with how each scorer of each trial ended; and the
+ * comparison's finding.
  */
 export interface BenchmarkReport {
   text: string;
-  table: BenchmarkTable & { pairs: ArmComparison[] };
+  table: BenchmarkTable & { pairs: ArmComparison[]; verdicts: EntryVerdict[] };
   /** Against the newest earlier comparable record on teamai-reports; `off` when `COMPARE` did not ask for the comparison. */
   regression: Regression['kind'] | 'off';
 }
@@ -60,6 +62,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
   const planned = planOfRun(run);
 
   if ('failure' in planned) return planned;
+  const verdicts = await TrialVerdicts.of(config, run, planned.found);
 
   const record = definedFields<BenchmarkRunRecord>({
     schemaVersion: 1,
@@ -70,7 +73,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
     finishedAt: finalizing.since,
     username: config.username || undefined,
     workflow: { name: run.name, origin: run.origin ?? { source: 'team' }, sourceHash: run.sourceHash },
-    ...benchmarkRecord(run, planned.found),
+    ...benchmarkRecord(run, planned.found, verdicts),
   });
 
   const file = benchmarkRecordFile(runsDir(config), run.id);
@@ -89,7 +92,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
     ...(regression === undefined ? [] : [regressionLines(regression, record.suite.name).join('\n')]),
   ].join('\n\n');
 
-  return { report: { text, table: { ...table, pairs: runComparisons(current) }, regression: regression?.kind ?? 'off' } };
+  return { report: { text, table: { ...table, pairs: runComparisons(current), verdicts }, regression: regression?.kind ?? 'off' } };
 }
 
 /**

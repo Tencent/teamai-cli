@@ -1,9 +1,11 @@
 /**
- * Real CLI: every trial is judged before its run ends. A task judged by success criteria gets a correctness label on
- * each trial, and the suite's scorers judge every trial, from the evidence teamai collected from the trial's clone when
- * its prompt was reported, so the judge runs after the clone is gone. A trial whose judge fails is unscored, at once.
+ * Real CLI: every trial is judged by the run's own `score` step before its report. A task judged by success criteria
+ * gets a correctness label on each trial, and the suite's scorers judge every trial, from the evidence teamai collected
+ * from the trial's clone when its prompt was reported, so the judge runs after the clone is gone. A trial whose judge
+ * fails is unscored, at once, and the report says why.
  */
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -41,8 +43,15 @@ const RecordSchema = z.object({
   scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) })),
   trials: z.array(z.object({ arm: z.string(), result: z.string() }).passthrough()),
 });
-const RunSchema = z.object({ status: z.string(), verdicts: z.array(z.object({ scorer: z.string(), step: z.string(), outcome: z.record(z.string(), z.unknown()) }).passthrough()) });
-const DoneSchema = z.object({ done: z.object({ run: z.string(), outcome: z.string(), outputs: z.object({ text: z.string() }) }) });
+const RunSchema = z.object({ steps: z.array(z.object({ id: z.string(), status: z.string() }).passthrough()) }).passthrough();
+const VerdictsSchema = z.array(z.object({ scorer: z.string(), step: z.string(), pass: z.number(), outcome: z.record(z.string(), z.unknown()) }));
+const DoneSchema = z.object({ done: z.object({ run: z.string(), outcome: z.string(), outputs: z.object({ text: z.string(), table: z.object({ verdicts: VerdictsSchema }).passthrough() }) }) });
+
+/** The labels waiting in the member's outbox for teamai-reports. */
+function outbox(fixture: BenchmarkFixture): string[] {
+  const pending = path.join(fixture.dataHome(), 'scores', 'pending');
+  return fs.existsSync(pending) ? fs.readdirSync(pending) : [];
+}
 
 const fixtures: BenchmarkFixture[] = [];
 
@@ -85,7 +94,18 @@ describe('benchmark judges on the local driver', () => {
       expect.objectContaining({ arm: 'first', result: 'passed', scoringCost: { amount: 0.2, unit: 'USD', complete: true } }),
       expect.objectContaining({ arm: 'second', result: 'passed', scoringCost: { amount: 0.2, unit: 'USD', complete: true } }),
     ]);
-    expect(RunSchema.parse(fixture.runFile(done.run)).verdicts).toHaveLength(4);
+    expect(done.outputs.table.verdicts.map(({ scorer, outcome }) => ({ scorer, outcome })).sort((left, right) => left.scorer.localeCompare(right.scorer))).toEqual([
+      { scorer: 'quality', outcome: { kind: 'labelled', label: 'tidy', passed: true } },
+      { scorer: 'quality', outcome: { kind: 'labelled', label: 'tidy', passed: true } },
+      { scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', passed: true } },
+      { scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', passed: true } },
+    ]);
+    const runFile = RunSchema.parse(fixture.runFile(done.run));
+    expect(runFile).not.toHaveProperty('verdicts');
+    expect(runFile.steps.filter(({ id }) => id === 'subjects' || id === 'score').map(({ id, status }) => ({ id, status }))).toEqual([{ id: 'subjects', status: 'succeeded' }, { id: 'score', status: 'succeeded' }]);
+    // Each trial is judged by a step of the benchmark run, never by a teamai-score run of its own, and its labels stay here.
+    expect(fixture.runIds()).toEqual([done.run]);
+    expect(outbox(fixture)).toEqual([]);
   }, 120_000);
 
   it.each([
@@ -104,7 +124,7 @@ describe('benchmark judges on the local driver', () => {
     // The record keeps the pins it judged with, whatever the judge answered.
     expect(record.scorers).toEqual([{ name: CORRECTNESS, rubric: { sourceHash: expect.stringMatching(/^[0-9a-f]{64}$/) } }]);
     expect(record.baselineTeamRevision).toMatch(/^[0-9a-f]{40}$/);
-    expect(RunSchema.parse(fixture.runFile(done.run)).verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome })]);
+    expect(done.outputs.table.verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome })]);
   }, 120_000);
 
   it('stops a judge still running at the suite timeout, and ends the run timed out with the trial unscored', async () => {
@@ -148,68 +168,85 @@ describe('benchmark judges on the local driver', () => {
   }, 120_000);
 });
 
-/** A driver of another machine that provides the clones and sandbox a benchmark's steps require, and launches claude. */
+/** A driver of another machine that provides the clones and sandbox a benchmark's steps require, launches claude, and runs it confined to a directory. */
 const EXTERNAL = { kind: 'external', machine: 'ci', workspace: '/work' };
-const CAN = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], unattended: true };
+const CAN = {
+  workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], unattended: true,
+  confined: [{ level: 'verified', access: 'read', tools: ['claude'] }],
+};
 const NextSchema = z.object({
   data: z.union([
-    z.object({ lease: z.object({ attempt: z.string(), revision: z.number(), step: z.string(), command: z.string().optional(), prompt: z.string().optional(), env: z.record(z.string(), z.string()).optional(), cwd: z.string() }).passthrough() }),
+    z.object({
+      lease: z.object({
+        attempt: z.string(), revision: z.number(), step: z.string(), command: z.string().optional(), prompt: z.string().optional(), env: z.record(z.string(), z.string()).optional(), cwd: z.string().optional(),
+        confined: z.object({ dir: z.string() }).optional(),
+      }).passthrough(),
+    }),
     z.object({ wait: z.record(z.string(), z.unknown()) }),
     z.object({ done: z.object({ outcome: z.string(), outputs: z.object({ text: z.string() }).partial().optional() }).passthrough() }),
   ]),
 });
 
 /**
- * Drives benchmark run `run` for at most `polls` calls of `next --prepare`: it runs a command lease in its place under
- * its attempt and reports what it printed, launches claude for a prompt lease there and reports how it went, and waits
- * on a `wait`. Answers the steps it was leased, and the run's done once it ended.
+ * Drives benchmark run `run` to its end, in at most 40 calls of `next --prepare`: it runs a command lease in its place
+ * under its attempt and reports what it printed, launches claude for a prompt lease there and reports how it went,
+ * answers a lease confined to a directory with a correct label as a confined run of claude would, after reading the
+ * diff in that directory, and waits on a `wait`. Answers the steps it was leased, each confined diff, and the run's done.
  */
-async function drive(fixture: BenchmarkFixture, run: string, polls: number) {
+async function drive(fixture: BenchmarkFixture, run: string) {
   const leased: string[] = [];
-  for (let poll = 0; poll < polls; poll += 1) {
+  const judged: string[] = [];
+  for (let poll = 0; poll < 40; poll += 1) {
     const asked = await fixture.teamai(['workflow', 'next', run, '--prepare', '--json', JSON.stringify({ driver: { ...EXTERNAL, can: CAN }, running: [] })]);
     const parsed = NextSchema.safeParse(envelope(asked));
     if (!parsed.success) throw new Error(`next answered no lease, wait or done: ${said(asked)}`);
     const answer = parsed.data.data;
-    if ('done' in answer) return { leased, done: answer.done };
+    if ('done' in answer) return { leased, judged, done: answer.done };
     if ('wait' in answer) {
       await new Promise((resolve) => { setTimeout(resolve, 100); });
       continue;
     }
     const { lease } = answer;
     leased.push(lease.step);
+    const report = { attempt: lease.attempt, revision: lease.revision, driver: EXTERNAL };
+    if (lease.confined) {
+      judged.push(fs.readFileSync(path.join(lease.confined.dir, 'diff.patch'), 'utf8'));
+      const confined = { tool: 'claude', isolation: 'verified', access: 'read' };
+      const reported = await fixture.teamai(['workflow', 'report', run, '--json', JSON.stringify({ ...report, outcome: 'success', outputs: { answer: { label: 'correct', reasoning: 'It exports 42.' } }, confined })]);
+      if (reported.code !== 0) throw new Error(`report of ${lease.step}: ${said(reported)}`);
+      continue;
+    }
     const env = { ...fixture.env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT: `${run}/${lease.attempt}` };
     const started = Date.now();
     const ran = lease.command !== undefined
       ? spawnSync('/bin/sh', ['-c', lease.command], { cwd: lease.cwd, env, encoding: 'utf8' })
       : spawnSync(path.join(fixture.bin, 'claude'), ['-p', lease.prompt ?? ''], { cwd: lease.cwd, env, encoding: 'utf8' });
-    const outputs: unknown = lease.command !== undefined && ran.status === 0 ? JSON.parse(ran.stdout) : undefined;
+    const printed = ran.stdout.trim().split('\n').at(-1) ?? '';
+    const outputs: unknown = lease.command !== undefined && ran.status === 0 && printed.startsWith('{') ? JSON.parse(printed) : undefined;
     const reported = await fixture.teamai(['workflow', 'report', run, '--json', JSON.stringify({
-      attempt: lease.attempt, revision: lease.revision, driver: EXTERNAL, outcome: ran.status === 0 ? 'success' : 'failed',
-      ...(outputs !== undefined ? { outputs } : { tool: 'claude', durationMs: Date.now() - started }),
+      ...report, outcome: ran.status === 0 ? 'success' : 'failed',
+      ...(lease.command !== undefined ? (outputs !== undefined ? { outputs } : {}) : { tool: 'claude', durationMs: Date.now() - started }),
     })]);
-    if (reported.code !== 0) throw new Error(`report of ${lease.step}: ${said(reported)}`);
+    if (reported.code !== 0) throw new Error(`report of ${lease.step}: ${said(reported)}\n${ran.stderr}`);
   }
-  return { leased };
+  throw new Error(`run ${run} did not end in 40 calls: ${leased.join(', ')}`);
 }
 
 describe('benchmark judges of an external driver', () => {
-  it("judges a trial from the evidence collected at the driver's report, with teamai score, and only then ends the run", async () => {
+  it("judges a trial with the run's own score step, from the evidence collected at the driver's report, and only then reports", async () => {
     const fixture = await judgedFixture();
     const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}', '--timeout', '10m']);
     const runId = z.object({ run: z.string() }).parse(envelope(started).data).run;
 
-    const judging = await drive(fixture, runId, 5);
-    const judge = { kind: 't3', machine: 'judge', workspace: fixture.work };
-    const next = await fixture.teamai(['score', '--next', '--json', JSON.stringify({ driver: { ...judge, can: { judge: { isolation: 'verified', tools: ['claude'] } } } })]);
-    const lease = z.object({ data: z.object({ lease: z.object({ ref: z.string() }) }) }).parse(envelope(next));
-    const labelled = envelope(await fixture.teamai(['score', '--lease', lease.data.lease.ref, '--json', JSON.stringify({ driver: judge })]));
-    const ended = await drive(fixture, runId, 4);
+    const { leased, judged, done } = await drive(fixture, runId);
 
-    expect(judging).toEqual({ leased: ['plan', 'trials.r1.fix.claude.prompt'] });
-    expect(labelled).toMatchObject({ data: { label: { scorer: CORRECTNESS, label: 'correct', passed: true } } });
-    expect(fixture.judgeLaunches()).toEqual([{ labels: ['correct', 'incorrect'], diff: expect.stringContaining('+module.exports = 42;'), trialRoots: [] }]);
-    expect(ended.leased).toEqual(['report']);
-    expect(ended.done?.outputs?.text).toContain('| claude | claude | tool default (team) | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 100% (1/1) |');
+    const judge = leased.findIndex((step) => step.endsWith('.judge'));
+    expect(leased.slice(0, 3)).toEqual(['plan', 'trials.r1.fix.claude.prompt', 'subjects']);
+    expect(judge).toBeGreaterThan(2);
+    expect(leased.indexOf('report')).toBeGreaterThan(judge);
+    expect(judged).toEqual([expect.stringContaining('+module.exports = 42;')]);
+    expect(fixture.trialRootEntries()).toEqual([]);
+    expect(done.outputs?.text).toContain('| claude | claude | tool default (team) | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 100% (1/1) |');
+    expect(fixture.runIds()).toEqual([runId]);
   }, 120_000);
 });

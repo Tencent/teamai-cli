@@ -36,12 +36,13 @@ export type ReadJudgeRun = (run: RunState, step: string) => ConfinedRunReport | 
 
 export const readJudgeRun: ReadJudgeRun = (run, step) => z.object({ confined: ConfinedRunReportSchema }).safeParse(run.steps.find((state) => state.id === step)).data?.confined;
 
-const CODES = [...JUDGE_FAILURES, 'ci_pending'] as const;
+/** Why `score label` gave a planned scorer no label: the code in its entry. */
+export const LABEL_CODES = [...JUDGE_FAILURES, 'ci_pending'] as const;
 
 /** A scorer's entry: its label, with the reasoning kept locally, or the code of why it has none. */
 const EntrySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('labelled'), scorer: z.string().min(1), label: ScoreLabelSchema, reasoning: z.string().optional(), prompt: z.string().optional() }),
-  z.object({ kind: z.literal('failed'), scorer: z.string().min(1), code: z.enum(CODES), message: z.string() }),
+  z.object({ kind: z.literal('failed'), scorer: z.string().min(1), code: z.enum(LABEL_CODES), message: z.string() }),
 ]);
 
 type Entry = z.infer<typeof EntrySchema>;
@@ -79,7 +80,7 @@ function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
 
-function failedAll(members: readonly Member[], code: (typeof CODES)[number], message: string): Entry[] {
+function failedAll(members: readonly Member[], code: (typeof LABEL_CODES)[number], message: string): Entry[] {
   return members.map(({ name }) => ({ kind: 'failed', scorer: name, code, message }));
 }
 
