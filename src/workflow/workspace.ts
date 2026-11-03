@@ -405,18 +405,18 @@ function workflowChildren(run: RunState, step: StepState): StepState[] {
 type BranchHead = Extract<WorkspaceContract, { mode: 'new' | 'continue' }>['merge'][number];
 
 /**
- * Where the current pass of step `state` left each branch it wrote: its own passes and those of every step under it,
- * current or archived by a loop, so a fix loop that ends on a skipped pass still leaves its fix. A step instance holds
- * only the branch of its latest pass that wrote; an earlier pass on another branch, such as a failed attempt a retry
- * replaced, is not part of it. Passes record no settle time, and a write starts from the commit the last one left, so
- * the newest write on a branch is the one no other write there goes on from.
+ * The writes of the current pass of step `state`: its own passes and those of every step under it, current or archived
+ * by a loop, so a fix loop that ends on a skipped pass still counts its fix. A step instance holds only the branch of its
+ * latest pass that wrote; an earlier pass on another branch, such as a failed attempt a retry replaced, is not part of it.
  */
-function headsWritten(run: RunState, state: StepState): BranchHead[] {
+function writesOf(run: RunState, state: StepState): StepChanges[] {
   const current = passOf(state);
+
   const passes: RunPass[] = [
     ...[...state.passes ?? [], ...(current ? [current] : [])].map((pass) => ({ ...pass, step: state.id })),
     ...passesWithin(run, runPasses(run), state.id, state.pass ?? 1),
   ];
+
   const latest = new Map<string, RunPass>();
 
   for (const pass of passes) {
@@ -425,36 +425,54 @@ function headsWritten(run: RunState, state: StepState): BranchHead[] {
     if (pass.changes && (!known || pass.pass > known.pass)) latest.set(pass.step, pass);
   }
 
-  const writes = passes.flatMap((pass) => (pass.changes && pass.changes.branch === latest.get(pass.step)?.changes?.branch ? [pass.changes] : []));
-  const heads = new Map<string, string>();
-
-  for (const write of writes) {
-    const hasLaterWrite = writes.some((other) => other.branch === write.branch && other.from === write.to && other.to !== write.to);
-
-    if (!hasLaterWrite || !heads.has(write.branch)) heads.set(write.branch, write.to);
-  }
-
-  return [...heads].map(([branch, commit]) => ({ branch, commit }));
+  return passes.flatMap((pass) => (pass.changes && pass.changes.branch === latest.get(pass.step)?.changes?.branch ? [pass.changes] : []));
 }
 
 /**
- * Branches a step merges, `after` items first, then its other needs, each where that need left it. An omitted `needs`
- * uses the parent step's needs. Only steps under a need write a branch it or a step under it opened, and they have all
- * settled, so the run's recorded tip of that branch is where they left it; when it is not, the run's records disagree
- * and the step fails rather than start without commits the branch may hold.
+ * Where `writes` left each branch, in the order the branches first appear. Passes record no settle time, and a write
+ * starts from the commit the last one left, so the newest write on a branch is one no other write there goes on from.
+ * An attempt released with commits keeps none of them on its step, which can leave two such ends; the one the run
+ * recorded as the branch's tip is then the newest.
+ */
+function branchHeads(run: RunState, writes: readonly StepChanges[]): BranchHead[] {
+  const ends = new Map<string, { commits: string[]; last: string }>();
+
+  for (const write of writes) {
+    const found = ends.get(write.branch) ?? { commits: [], last: write.to };
+    const hasLaterWrite = writes.some((other) => other.branch === write.branch && other.from === write.to && other.to !== write.to);
+
+    if (!hasLaterWrite && !found.commits.includes(write.to)) found.commits.push(write.to);
+    ends.set(write.branch, { ...found, last: write.to });
+  }
+
+  // A step that reset its branch to an earlier commit leaves no end; the recorded tip, else the last write, is then where it is.
+  return [...ends].map(([branch, { commits, last }]) => {
+    const tip = run.copies?.[branch]?.commit;
+    const commit = tip !== undefined && (commits.includes(tip) || commits.length === 0) ? tip : commits.at(-1) ?? last;
+
+    return { branch, commit };
+  });
+}
+
+/**
+ * Branches a step merges, `after` items first, then its other needs, each where those needs left it together: two
+ * needs that wrote one copy leave it at the newest of their writes, whichever settled last. An omitted `needs` uses the
+ * parent step's needs. Only steps under a need write a branch it or a step under it opened, and they have all settled,
+ * so the run's recorded tip of that branch is where they left it; when it is not, the run's records disagree and the
+ * step fails rather than start without commits the branch may hold.
  */
 function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): BranchHead[] | WorkflowFailure {
-  const ordered: Array<BranchHead & { settledAt: number }> = [];
+  const writes: StepChanges[] = [];
+  const opened = new Map<string, string>();
   const visited = new Set<string>();
-  let disagreement: WorkflowFailure | undefined;
 
   const push = (step: StepState | undefined): void => {
     if (!step || visited.has(step.id)) return;
     visited.add(step.id);
-    const heads = headsWritten(run, step);
+    const written = writesOf(run, step);
 
     // A skipped or read-only need wrote no branch, but its earlier dependencies still supply the copy's origin.
-    if (heads.length === 0) {
+    if (written.length === 0) {
       for (const item of itemsOf(run, step)) push(item);
 
       for (const child of workflowChildren(run, step)) push(child);
@@ -475,24 +493,11 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
       return;
     }
 
-    const settledAt = 'settledAt' in step ? step.settledAt : 0;
+    writes.push(...written);
     const under = isUnder(step.id);
-    const opened = new Set(run.steps.filter((inside) => inside.id === step.id || under(inside.id)).map((inside) => branchName(run.id, inside.id, inside.pass ?? 1)));
 
-    for (const head of heads) {
-      const tip = run.copies?.[head.branch]?.commit;
-
-      if (opened.has(head.branch) && tip !== undefined && tip !== head.commit) {
-        disagreement ??= {
-          code: 'workspace_base',
-          message: `step "${state.id}" would start from branch ${head.branch} at ${head.commit}, where the steps of "${step.id}" left it, but the run recorded ${tip} as the tip of ${head.branch}. The run's records of that branch disagree, for a reason teamai does not know, so the step stops instead of leaving out commits the branch may hold. Run git log ${head.branch} to see which of the two it holds, and report this run to the teamai maintainers with its run file ${run.id}.json.`,
-        };
-      }
-
-      const earlier = ordered.find((known) => known.branch === head.branch);
-
-      if (!earlier) ordered.push({ ...head, settledAt });
-      else if (settledAt > earlier.settledAt) Object.assign(earlier, { commit: head.commit, settledAt });
+    for (const inside of run.steps) {
+      if (inside.id === step.id || under(inside.id)) opened.set(branchName(run.id, inside.id, inside.pass ?? 1), step.id);
     }
   };
 
@@ -507,7 +512,21 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     for (const id of definition.needs ?? []) push(states.find((item) => localId(scope, item) === id));
   }
 
-  return disagreement ?? ordered.map(({ branch, commit }) => ({ branch, commit }));
+  const heads = branchHeads(run, writes);
+
+  for (const head of heads) {
+    const need = opened.get(head.branch);
+    const tip = run.copies?.[head.branch]?.commit;
+
+    if (need !== undefined && tip !== undefined && tip !== head.commit) {
+      return {
+        code: 'workspace_base',
+        message: `step "${state.id}" would start from branch ${head.branch} at ${head.commit}, where the steps of "${need}" left it, but the run recorded ${tip} as the tip of ${head.branch}. The run's records of that branch disagree, for a reason teamai does not know, so the step stops instead of leaving out commits the branch may hold. Run git log ${head.branch} to see which of the two it holds, and report this run to the teamai maintainers with its run file ${run.id}.json.`,
+      };
+    }
+  }
+
+  return heads;
 }
 
 /**
