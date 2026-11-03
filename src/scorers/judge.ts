@@ -1,15 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { confinedAccess, confinedToolLevel, installedConfinedTools, isConfinedTool, runConfined, type ConfinedResult } from '../tool-launch/confined.js';
+import { runConfined, type ConfinedResult } from '../tool-launch/confined.js';
 import type { ConfinedTool } from '../tool-launch/tools.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { Isolation } from '../tool-launch/confined-level.js';
 import type { ScoreLabel, JudgeUsage } from './label.js';
 import type { JsonValue } from '../types.js';
-
-// The engine still reads these names until it moves onto the confined launcher.
-export { isConfinedTool as isJudgeTool, confinedAccess as judgeAccess, confinedToolLevel as judgeToolLevel, installedConfinedTools as installedJudgeTools };
 
 const JUDGE_TIMEOUT_MS = 10 * 60_000;
 

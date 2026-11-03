@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { parse as parseToml } from 'smol-toml';
-import { installedJudgeTools, runLocalJudge } from '../scorers/judge.js';
+import { runLocalJudge } from '../scorers/judge.js';
+import { installedConfinedTools } from '../tool-launch/confined.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 
 let root = '';
@@ -438,7 +439,7 @@ else { fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(JSON.parse(fs.
 it('offers every launch tool on PATH as a judge, the preferred one first', () => {
   const onPath = new Set(['tclaude', 'codex-internal', 'codebuddy']);
 
-  expect(installedJudgeTools(['codebuddy'], { resolveTool: (tool) => onPath.has(tool) ? `/bin/${tool}` : null })).toEqual(['codebuddy', 'tclaude', 'codex-internal']);
+  expect(installedConfinedTools(['codebuddy'], { resolveTool: (tool) => onPath.has(tool) ? `/bin/${tool}` : null })).toEqual(['codebuddy', 'tclaude', 'codex-internal']);
 });
 
 it('judges with WorkBuddy through the CodeBuddy profile, at best-effort and with full access', async () => {
@@ -449,7 +450,7 @@ it('judges with WorkBuddy through the CodeBuddy profile, at best-effort and with
   const record = path.join(root, 'invocation.json');
   const executable = await recordingFake(root, record, "console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));");
 
-  expect(installedJudgeTools([], { resolveTool: (tool) => tool === 'workbuddy' ? executable : null })).toEqual(['workbuddy']);
+  expect(installedConfinedTools([], { resolveTool: (tool) => tool === 'workbuddy' ? executable : null })).toEqual(['workbuddy']);
   const result = await runLocalJudge({ tool: 'workbuddy', evidence, schema: {} }, { resolveTool: () => executable });
 
   expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'workbuddy', access: 'full', isolation: 'best-effort' } });

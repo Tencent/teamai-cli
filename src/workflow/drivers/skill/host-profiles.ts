@@ -1,6 +1,6 @@
 /** The host question the agent answers once per run with prompt steps, and what the skill driver declares on every `next`. */
 import type { JudgeAccess } from '../../../tool-launch/confined-level.js';
-import { isJudgeTool, judgeAccess } from '../../../scorers/judge.js';
+import { confinedAccess, isConfinedTool } from '../../../tool-launch/confined.js';
 import type { DriverCan } from '../../requirements.js';
 
 export const HOST_CHOICES = ['h1', 'h2', 'h3', 'h4'] as const;
@@ -66,5 +66,5 @@ export interface JudgeOffer {
  * verified, and what that judge can do. A tool with no judge profile declares `full`, as a judge that does not say counts.
  */
 export function judgeCan(tool: string): JudgeOffer {
-  return { isolation: 'verified', access: isJudgeTool(tool) ? judgeAccess(tool) : 'full', tools: [tool] };
+  return { isolation: 'verified', access: isConfinedTool(tool) ? confinedAccess(tool) : 'full', tools: [tool] };
 }

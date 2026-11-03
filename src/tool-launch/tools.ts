@@ -55,9 +55,6 @@ export const CONFINED_TOOLS = toolsWith('confined');
 
 export type ConfinedTool = ToolWith<'confined'>;
 
-// The engine still reads the old name until it moves onto the confined launcher.
-export const JUDGE_TOOLS = CONFINED_TOOLS;
-
 /** OpenCode's model arguments: OpenCode 2 has no `--variant` and reads the effort from `--model provider/model#variant`. */
 export function opencodeModelArgs(model: { name: string; effort?: string } | undefined, major: number): string[] {
   if (!model) return [];

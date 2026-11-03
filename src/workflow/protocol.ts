@@ -8,7 +8,7 @@ import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import type { PinnedScorer } from '../scorers/pin.js';
-import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
+import { confinedToolLevel, isConfinedTool } from '../tool-launch/confined.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 import type { JsonValue, LocalConfig } from '../types.js';
@@ -338,11 +338,11 @@ async function judgingOf(config: LocalConfig, description: WorkflowDescription, 
   if (unavailable) return { kind: 'elsewhere', reason: unavailable };
 
   if (tool === undefined) return { kind: 'elsewhere', reason: 'This coding session names no tool.' };
-  const level = isJudgeTool(tool) ? await judgeToolLevel(tool) : undefined;
+  const level = isConfinedTool(tool) ? await confinedToolLevel(tool) : undefined;
 
   if (level?.isolation === 'verified') return { kind: 'here', tool };
 
-  const reason = !isJudgeTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`
+  const reason = !isConfinedTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`
     : level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile` : `The ${tool} executable is not on PATH`;
 
   const scorers = [...new Set(description.facts.scored.flatMap((step) => step.scorers))];

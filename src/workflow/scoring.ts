@@ -29,8 +29,9 @@ import {
 } from '../scorers/label.js';
 import { ACCESS_LEVELS, ISOLATIONS, type Isolation, type JudgeAccess } from '../tool-launch/confined-level.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
-import { installedJudgeTools, isJudgeTool, runLocalJudge } from '../scorers/judge.js';
-import { JUDGE_TOOLS } from '../tool-launch/tools.js';
+import { runLocalJudge } from '../scorers/judge.js';
+import { installedConfinedTools, isConfinedTool } from '../tool-launch/confined.js';
+import { CONFINED_TOOLS } from '../tool-launch/tools.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { chooseJudgeModel } from '../scorers/judge-model.js';
 import { isSampled } from '../scorers/sampling.js';
@@ -1568,7 +1569,7 @@ export async function judgeLease(
 
   if (attempt.status !== 'leased') return error('lease_settled', `Judge lease ${ref} was already settled. Run score --next for more work.`);
 
-  if (!isJudgeTool(attempt.judge.tool)) return error('judge_tool_unavailable', `The local judge cannot launch ${attempt.judge.tool}. Run that tool through its driver and submit the answer.`);
+  if (!isConfinedTool(attempt.judge.tool)) return error('judge_tool_unavailable', `The local judge cannot launch ${attempt.judge.tool}. Run that tool through its driver and submit the answer.`);
   const lease = await leaseMembers(config, attempt, ref);
 
   if (!('members' in lease)) return lease;
@@ -1672,7 +1673,7 @@ export async function judgeUnavailable(config: LocalConfig, scorers: Record<stri
   const off = await scoringOff(config);
 
   if (off) return off;
-  const tools = installedJudgeTools([]);
+  const tools = installedConfinedTools([]);
 
   if (tools.length === 0) return 'No judge tool is on PATH: install Claude Code, Codex, OpenCode or CodeBuddy.';
   const aliases = await loadModelAliases(config);
@@ -1721,7 +1722,7 @@ export async function judgeRunEntries(config: LocalConfig, runId: string, cwd: s
   const off = await scoringOff(config);
 
   if (off) return skipped(off);
-  const [tool, ...tools] = installedJudgeTools(open.flatMap(({ subject }) => evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? [])));
+  const [tool, ...tools] = installedConfinedTools(open.flatMap(({ subject }) => evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? [])));
 
   if (!tool) return skipped('no judge tool is on PATH');
   const driver = driverIdentity('local', cwd);
@@ -1870,9 +1871,9 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
 
   if (demand.queue) return ok({ queued: asked.map(({ scorer }) => ({ scorer, subject })) });
 
-  const [tool, ...tools] = installedJudgeTools(evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? []));
+  const [tool, ...tools] = installedConfinedTools(evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? []));
 
-  if (!tool) return error('judge_tool_unavailable', `No judge tool is on PATH. Install one of: ${JUDGE_TOOLS.join(', ')}, or add --queue so another driver judges this pass.`);
+  if (!tool) return error('judge_tool_unavailable', `No judge tool is on PATH. Install one of: ${CONFINED_TOOLS.join(', ')}, or add --queue so another driver judges this pass.`);
   const driver = driverIdentity('local', process.cwd());
   const ids = asked.map(({ scorer }) => entryIdOf(scorer, subject));
   const labelled: SucceededAttempt[] = [];

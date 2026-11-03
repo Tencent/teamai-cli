@@ -40,8 +40,8 @@ const SKILL_IMPORTS = {
   // skill-data root the host question's reference is under.
   'src/tools.ts': { names: ['isToolId', 'TOOLS', 'isAgentToolId', 'ToolId'] },
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
-  // What the confined judge of the session tool can do, which the driver declares on `score --next`.
-  'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },
+  // The confined tools of this machine, what each can do there, and the confined run the background runner starts.
+  'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess'] },
   'src/scorers/label.ts': { typeOnly: true },
   // The level a confined run reaches and what its tool can do there.
   'src/tool-launch/confined-level.ts': { typeOnly: true },
