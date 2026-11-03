@@ -447,7 +447,7 @@ steps:
   it('rejects a delivery other than pr, and deliver: pr on a step that can only read', () => {
     expect(rejected(`${FIX}    prompt: Fix it.
     deliver: merge
-`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" deliver must be pr; TeamAI opens a pull request and never merges`, code: 'bad_delivery' }]);
+`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" deliver must be pr or publish; TeamAI opens a pull request, or publishes to a teamai data branch, and never merges`, code: 'bad_delivery' }]);
     expect(rejected(`${FIX}    prompt: Fix it.
     workspace: read-only
     deliver: pr
@@ -455,6 +455,30 @@ steps:
     expect(rejected(`${FIX}    command: node fix.js
     deliver: pr
 `)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" has deliver: pr but runs read-only, as a command without workspace does; set workspace: new so it has a branch to deliver`, code: 'bad_delivery' }]);
+  });
+
+  it.each(['teamai-reports', 'teamai-learnings'])('parses deliver: publish on a step in the team workspace of the data branch %s', (branch) => {
+    const result = parse(`${FIX}    command: teamai score publish
+    workspace: { team: { branch: ${branch} } }
+    deliver: publish
+`);
+    expect(result.ok && result.definition.steps[0]).toMatchObject({ deliver: 'publish', workspace: { team: { branch } } });
+  });
+
+  it('rejects deliver: publish outside the team workspace of a teamai data branch', () => {
+    const NOT_DATA = 'is not a teamai data branch; publish to teamai-reports or teamai-learnings';
+    expect(rejected(`${FIX}    command: teamai score publish
+    workspace: new
+    deliver: publish
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: publish but runs in no team workspace; give it workspace: { team: { branch: teamai-reports } }`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    command: teamai score publish
+    workspace: { team: {} }
+    deliver: publish
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: publish to the run's own team branch, which ${NOT_DATA}`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    command: teamai score publish
+    workspace: { team: { branch: main } }
+    deliver: publish
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: publish to team branch main, which ${NOT_DATA}`, code: 'bad_delivery' }]);
   });
 });
 

@@ -6,7 +6,7 @@ import type { WorkflowEnv } from '../../env-resolution.js';
 import { observeCheckout, type PreparedAgent } from '../../agent-observation.js';
 import { detectProjectConfig } from '../../config.js';
 import type { RunMode } from '../../launch-context.js';
-import type { LocalConfig } from '../../types.js';
+import { isDataBranch, type LocalConfig } from '../../types.js';
 import { gitCommonDir } from '../../utils/git.js';
 import { redactJson } from '../../utils/redact.js';
 import { attemptEnv } from '../attempt-marker.js';
@@ -27,6 +27,7 @@ import { finishReader, leaveReadCopy, readCopyFailure, stageReader } from './rea
 import { PlaceFinishedSchema, readPlaceRecord, writePlaceRecord, type PlaceRecord } from './record.js';
 import { runSetup } from './setup.js';
 import { finishTeamClone, openTeamClone, removeTeamClone, teamKeyOf } from './team.js';
+import { finishDataCheckout, openDataCheckout, removeDataCheckout } from './data.js';
 import { finishWriter, mergeBranches, rememberConflicts, withUnpushed } from './writer.js';
 
 /**
@@ -93,7 +94,7 @@ export async function adoptedPlaceOf(input: { config: LocalConfig; run: RunId; b
     const read = attempt.success ? await readPlaceRecord(config, run, attempt.data) : undefined;
     const recorded = read?.kind === 'found' ? read.record : undefined;
 
-    if (!recorded || recorded.phase !== 'finished' || !recorded.adopted || recorded.place.role === 'checkout') continue;
+    if (!recorded || recorded.phase !== 'finished' || !recorded.adopted || recorded.place.role === 'checkout' || recorded.place.role === 'data') continue;
 
     if (recorded.place.workspace.branch === branch && (last === undefined || recorded.at > last.at)) last = { dir: recorded.dir, at: recorded.at };
   }
@@ -361,14 +362,26 @@ async function prepareTeam(input: {
 }): Promise<PlacePrepared> {
   const { config, run, root, lease, workspace, recorded } = input;
 
-  if (recorded?.phase === 'ready' && recorded.place.role === 'team') return preparedOf(recorded, lease.prompt);
-  const opened = await openTeamClone({ config, run, step: lease.step, branch: workspace.branch });
+  if (recorded?.phase === 'ready' && (recorded.place.role === 'team' || recorded.place.role === 'data')) return preparedOf(recorded, lease.prompt);
 
   const base: OpeningBase = {
     version: 1, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
   };
 
   if (lease.interactive) base.interactive = true;
+
+  if (workspace.publish) {
+    const { branch } = workspace;
+
+    if (!isDataBranch(branch)) return { kind: 'failed', failure: { code: 'workspace_base', message: `Step "${lease.step}" publishes to ${branch}, which is not a teamai data branch. Publish to teamai-reports or teamai-learnings.` } };
+    const { dir, at } = await openDataCheckout({ config, run, attempt: lease.attempt, branch });
+    const ready: Placed = { ...base, dir, place: { role: 'data', branch, at }, phase: 'ready' };
+    await writePlaceRecord(config, ready);
+
+    return preparedOf(ready, lease.prompt);
+  }
+
+  const opened = await openTeamClone({ config, run, step: lease.step, branch: workspace.branch });
 
   if ('code' in opened) {
     await removeTeamClone(config, run, workspace.branch);
@@ -534,6 +547,7 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
     case 'checkout':
     case 'clone':
     case 'team':
+    case 'data':
       break;
     case 'reader': {
       const before = await stageReader(record.dir, files.snapshot);
@@ -617,6 +631,7 @@ async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { p
 
   if (place.role === 'clone') await removeClone(config, record.run, place.workspace.branch);
   else if (place.role === 'team') await removeTeamClone(config, record.run, place.workspace.branch);
+  else if (place.role === 'data') await removeDataCheckout(config, dir);
   else if (record.adopted && place.role !== 'checkout') {
     unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: overlay });
     await clearWorktreeHooks(dir);
@@ -667,7 +682,7 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
     return { outcome: 'failed', message: failure.message, failure };
   }
 
-  const finished = await finishRole(placeFiles(config, run, attempt), recorded, end);
+  const finished = await finishRole(config, placeFiles(config, run, attempt), recorded, end);
   await writePlaceRecord(config, { ...baseOf(recorded), phase: 'finished', at: new Date().toISOString(), finished: PlaceFinishedSchema.parse(redactJson(finished, secrets)) });
 
   // Once the step's work is committed, the host's own hooks run again in a place it made.
@@ -743,7 +758,7 @@ function unfinishedPlace(phase: 'opening' | 'preparing' | 'staged' | 'setting-up
   }
 }
 
-async function finishRole(files: PlaceFiles, record: Placed, end: StepEnd): Promise<PlaceFinished> {
+async function finishRole(config: LocalConfig, files: PlaceFiles, record: Placed, end: StepEnd): Promise<PlaceFinished> {
   const { place, dir, step, executor } = record;
 
   switch (place.role) {
@@ -781,6 +796,21 @@ async function finishRole(files: PlaceFiles, record: Placed, end: StepEnd): Prom
       const finished = await finishTeamClone({ root: place.clone, dir, step, branch: place.workspace.branch, base: place.base, start: place.start, found: place.found });
 
       return 'code' in finished ? { outcome: 'failed', message: finished.message, failure: finished } : { ...end, changes: finished.changes };
+    }
+
+    case 'data': {
+      // A step that failed published nothing, and its checkout goes.
+      if (end.outcome === 'failed') {
+        await removeDataCheckout(config, dir);
+
+        return end;
+      }
+
+      const finished = await finishDataCheckout({ config, dir, step, branch: place.branch, at: place.at });
+
+      if ('code' in finished) return { outcome: 'failed', message: finished.message, failure: finished };
+
+      return finished.message === undefined ? end : { ...end, message: finished.message };
     }
 
     case 'clone': {
@@ -864,6 +894,9 @@ export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; 
       // The next attempt clones the team repo again, so nothing here is kept.
       await removeTeamClone(config, run, place.workspace.branch);
       break;
+    case 'data':
+      await removeDataCheckout(config, dir);
+      break;
     case 'reader':
       unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: files.overlay });
 
@@ -894,6 +927,7 @@ function isWorktreeCopy(place: Extract<PlaceRecord, { place: unknown }>['place']
     case 'checkout':
     case 'clone':
     case 'team':
+    case 'data':
       return false;
     default: {
       const unhandled: never = place;
@@ -934,6 +968,12 @@ export async function releasePlace(input: { config: LocalConfig; lock: RunLock; 
 
   if (recorded?.phase !== 'opening' && recorded?.place.role === 'team') {
     await removeTeamClone(input.config, input.lock.run, recorded.place.workspace.branch);
+
+    return 'removed';
+  }
+
+  if (recorded?.phase !== 'opening' && recorded?.place.role === 'data') {
+    await removeDataCheckout(input.config, recorded.dir);
 
     return 'removed';
   }

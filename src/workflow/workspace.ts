@@ -60,7 +60,8 @@ const CopyContractOptions = [
 
 export const CopyContractSchema = z.discriminatedUnion('mode', CopyContractOptions) satisfies z.ZodType<CopyContract>;
 
-export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.string().min(1) });
+/** `publish`: the step publishes what it stages to `branch`, a teamai data branch, as `deliver: publish` does. */
+export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.string().min(1), publish: z.literal(true).optional() });
 
 export const WorkspaceContractSchema = z.discriminatedUnion('mode', [...CopyContractOptions, TeamContractSchema]) satisfies z.ZodType<WorkspaceContract>;
 
@@ -180,9 +181,12 @@ export function isIsolated(run: Pick<RunState, 'definition' | 'workflows'>): boo
   return someStep(run, (step) => cloneOf(step) !== undefined || stepWorkflow(step)?.kind === 'from');
 }
 
-/** Whether a step of `run`, or of a workflow it runs, works in the team workspace, whose clone only the machine that ran it has. */
+/**
+ * Whether a step of `run`, or of a workflow it runs, works in the team workspace, whose clone only the machine that ran it
+ * has. A step that publishes to a data branch leaves nothing behind that another machine would need.
+ */
 export function worksInTeam(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
-  return someStep(run, (step) => teamOf(step) !== undefined);
+  return someStep(run, (step) => teamOf(step) !== undefined && step.deliver !== 'publish');
 }
 
 /** Whether `matches` holds for a step of `run`, of a workflow it runs inline, or of one it admitted. */
@@ -701,7 +705,7 @@ export function planWorkspace(
 
   const team = teamOf(definition);
 
-  if (team) return planTeam(run, state, request, { scope, team, session, handback });
+  if (team) return planTeam(run, state, request, { scope, team, session, handback, publish: definition.deliver === 'publish' });
 
   if (mode === 'clone') return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" opens a clone this teamai cannot read` } };
 
@@ -862,8 +866,8 @@ const GIT_BRANCH = /^(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)))(?![-./])[\w./-]*[\w
  * workflow's inputs and the outputs of the steps it needs, else the run's own branch of the step. Only a driver that
  * provides `team` takes it, and a step the copy's owner did not lease waits for it.
  */
-function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { scope: Scope; team: TeamPlace; session: { session?: LeaseSession }; handback: boolean }): WorkspacePlan {
-  const { scope, team, session, handback } = input;
+function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { scope: Scope; team: TeamPlace; session: { session?: LeaseSession }; handback: boolean; publish: boolean }): WorkspacePlan {
+  const { scope, team, session, handback, publish } = input;
   const mode = 'team';
 
   const branch = team.branch === undefined ? branchName(run.id, state.id, state.pass ?? 1)
@@ -885,7 +889,7 @@ function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, in
     return { mode, defer: { reason: `step "${state.id}" commits to team branch ${branch}, which another driver of this run holds` } };
   }
 
-  return { mode, ...session, contract: { mode, branch } };
+  return { mode, ...session, contract: publish ? { mode, branch, publish } : { mode, branch } };
 }
 
 /**

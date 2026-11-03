@@ -110,8 +110,11 @@ export interface WorkflowStep {
    * as written, as run files and the cache store it; read it through `roleLevelOf`, which tells an id from a template.
    */
   role?: string;
-  /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */
-  deliver?: 'pr';
+  /**
+   * `pr`: opens a review request after the branch's work succeeds; TeamAI never merges it. `publish`: pushes what the
+   * step staged to the teamai data branch of its team workspace, only the member's own files.
+   */
+  deliver?: 'pr' | 'publish';
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
   session?: { continue: true } | { from: string };
   /** What the driver that runs this step, or every step of the workflow it runs, must provide. */

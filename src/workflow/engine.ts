@@ -477,7 +477,8 @@ function leaseData(
 function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity): void {
   const { contract } = plan;
 
-  if (!contract) return;
+  // A step that publishes to a data branch makes no copy: what it staged is on origin, or pending, once it finished.
+  if (!contract || (contract.mode === 'team' && contract.publish)) return;
   const { branch } = contract;
   const copy = (run.copies ??= {})[branch];
 
@@ -2789,7 +2790,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     }
 
     // The step itself ran in the copy, not only its staging or setup.
-    if (contract && (report.outcome === 'success' || report.exitCode !== undefined || report.changes || report.read)) {
+    if (contract && !(contract.mode === 'team' && contract.publish) && (report.outcome === 'success' || report.exitCode !== undefined || report.changes || report.read)) {
       ((run.copies ??= {})[contract.branch] ??= { owner: report.driver }).used = true;
     }
 

@@ -5,7 +5,7 @@ import {
   confinedTemplateErrors, findTemplate, modelTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
-  Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
+  Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, TeamPlace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
 } from './types.js';
 import { INVOKE_VALUES, SCORING_STARTS, STEP_ACTIONS, stepWorkflow } from './types.js';
 import {
@@ -16,6 +16,7 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
+import { isDataBranch } from '../types.js';
 import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
@@ -927,7 +928,8 @@ function parseBody(
 
       // Only what no enclosing step can change is checked per file. A prompt without workspace may continue the copy of
       // the step that runs its workflow, so workflow start checks it on the whole tree.
-      const undeliverable = deliver !== 'pr' ? `${stepLabel} deliver must be pr; TeamAI opens a pull request and never merges`
+      const undeliverable = deliver === 'publish' ? publishProblem(stepLabel, team)
+        : deliver !== 'pr' ? `${stepLabel} deliver must be pr or publish; TeamAI opens a pull request, or publishes to a teamai data branch, and never merges`
         : workspace === 'read-only' ? `${stepLabel} has deliver: pr but runs read-only; set workspace: new so it has a branch to deliver`
           : commandPair && workspace === undefined ? `${stepLabel} has deliver: pr but runs read-only, as a command without workspace does; set workspace: new so it has a branch to deliver`
             : undefined;
@@ -1031,7 +1033,7 @@ function parseBody(
 
         if (role) step.role = role;
 
-        if (deliver === 'pr') step.deliver = deliver;
+        if (deliver === 'pr' || deliver === 'publish') step.deliver = deliver;
 
         if (session) step.session = session;
         steps.push(step);
@@ -1725,6 +1727,20 @@ function withheldEnvRequired(node: Node | undefined, workflow: { defaults?: Work
 /** The keys of a level's own `requires.env` that the strict sandbox in effect there withholds. */
 function withheldKeys(requires: InEffect, env: readonly string[] = []): string[] {
   return requires.floor?.isolation === 'sandbox' ? env.filter((key) => sameEnvName(SANDBOX_WITHHELD_ENV, key) !== undefined) : [];
+}
+
+/**
+ * Why `deliver: publish` cannot publish from a step in `team`, its team workspace, or undefined when it can: it publishes
+ * only to a teamai data branch, named as written, so pull knows where every run of it publishes.
+ */
+function publishProblem(stepLabel: string, team: TeamPlace | undefined): string | undefined {
+  const notData = 'is not a teamai data branch; publish to teamai-reports or teamai-learnings';
+
+  if (team === undefined) return `${stepLabel} has deliver: publish but runs in no team workspace; give it workspace: { team: { branch: teamai-reports } }`;
+
+  if (team.branch === undefined) return `${stepLabel} has deliver: publish to the run's own team branch, which ${notData}`;
+
+  return isDataBranch(team.branch) ? undefined : `${stepLabel} has deliver: publish to team branch ${team.branch}, which ${notData}`;
 }
 
 const TeamWorkspaceSchema = z.object({ team: z.object({ branch: z.string().min(1).optional() }).strict() }).strict();
