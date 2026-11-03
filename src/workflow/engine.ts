@@ -1885,7 +1885,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         if (options.canTakeLease === false || 'inProgress' in result) {
           const hitl = can.hitl ? waitingHitl(run) : undefined;
 
-          return hitl ? answer({ hitl }) : wait(undefined, can.hitl ? [] : waitingForPerson(run));
+          return hitl ? answer({ hitl }) : wait(undefined, can.hitl || person.kind !== 'waits' ? [] : waitingForPerson(run));
         }
 
         const open = run.steps.filter((step) => step.status === 'leased').length;
@@ -1981,7 +1981,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }
 
         if (settledOne) continue;
-        const holds = [...held, ...can.hitl ? [] : waitingForPerson(run)];
+        const holds = [...held, ...can.hitl || person.kind !== 'waits' ? [] : waitingForPerson(run)];
 
         return answer({ wait: { reason: holds.map((item) => item.reason).join('; '), held: holds } });
       }
