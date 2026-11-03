@@ -2,7 +2,6 @@
  * The verbs of `teamai score` that the steps of a `teamai-score` run call: plan, evidence, stage, label, write, publish,
  * settle and subjects. Each prints one JSON object, the step's outputs, on stdout; a refusal prints `{"error":…}` and exits 1.
  */
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, NotInitializedError } from './config.js';
@@ -17,6 +16,7 @@ import { ScoreSubjects } from './scorers/score-subjects.js';
 import { ScoreStage } from './scorers/score-stage.js';
 import { Subject } from './scorers/subject.js';
 import type { JsonObject, LocalConfig } from './types.js';
+import { isSameRealPath } from './utils/fs.js';
 import { createGit } from './utils/git.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { durationMs } from './workflow/parse.js';
@@ -192,7 +192,7 @@ async function publish(ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
   const dir = path.resolve(ctx.cwd ?? process.cwd());
   const top = await createGit(dir).revparse(['--show-toplevel']).then((out) => out.trim(), () => '');
 
-  if (top === '' || !await sameDir(top, dir)) {
+  if (top === '' || !await isSameRealPath(top, dir)) {
     log.info(`${dir} is no checkout of teamai-reports, so no label was staged; they stay pending.`);
 
     return { ok: true, output: { staged: 0 } };
@@ -205,12 +205,6 @@ async function publish(ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
   if (staged.files.length > 0) await createGit(dir).raw(['--literal-pathspecs', 'add', '--', ...staged.files]);
 
   return { ok: true, output: { staged: staged.labels } };
-}
-
-async function sameDir(left: string, right: string): Promise<boolean> {
-  const [one, two] = await Promise.all([left, right].map((each) => fs.realpath(each).catch(() => each)));
-
-  return one === two;
 }
 
 async function settle(options: EvidenceOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {

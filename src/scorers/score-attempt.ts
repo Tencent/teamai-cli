@@ -3,11 +3,11 @@
  * directory the engine gives a step's process. A root run of `teamai-score` is an instance, and so is a step of another
  * workflow that runs it. A verb an agent calls from its own shell finds no attempt, so it writes nothing.
  */
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { ATTEMPT_ENV, RUN_DIR_ENV } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
+import { isSameRealPath } from '../utils/fs.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { parseStepPath } from '../workflow/step-path.js';
 import { AttemptIdSchema, RunIdSchema, runScratchDir } from '../workflow/store.js';
@@ -73,12 +73,6 @@ function inputsAt(run: RunState, prefix: string): ScoreInstance['inputs'] {
   return run.steps.find((state) => state.id === prefix.slice(0, -1))?.inputs ?? {};
 }
 
-async function samePath(left: string, right: string): Promise<boolean> {
-  const [one, two] = await Promise.all([left, right].map((each) => fs.realpath(each).catch(() => path.resolve(each))));
-
-  return one === two;
-}
-
 export const ScoreAttempt = {
   /**
    * The attempt `env` names, when the run its `$TEAMAI_RUN_DIR` belongs to holds that attempt as the lease of a step
@@ -96,7 +90,7 @@ export const ScoreAttempt = {
     if ('error' in found) return refused(verb, `run ${runId.data} is not on this machine (${found.error.code}: ${found.error.message})`);
     const { config, run } = found;
 
-    if (!await samePath(runScratchDir(config, run.id), runDir)) return refused(verb, `${RUN_DIR_ENV} is not the directory of run ${run.id}`);
+    if (!await isSameRealPath(runScratchDir(config, run.id), runDir)) return refused(verb, `${RUN_DIR_ENV} is not the directory of run ${run.id}`);
     const leased = run.steps.find((state) => state.status === 'leased' && state.attempt === attemptId.data);
 
     if (!leased) return refused(verb, `attempt ${attemptId.data} holds no lease of run ${run.id}`);

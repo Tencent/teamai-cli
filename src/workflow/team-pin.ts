@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { z } from 'zod';
 import { getBusinessRoot, getKnowledgeDir, isSelfMode, type LocalConfig } from '../types.js';
-import { readFileSafe, writeFileAtomic } from '../utils/fs.js';
+import { isSameRealPath, readFileSafe, writeFileAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { withTeamRevision } from './cache.js';
 import { runsDir, TeamPinSchema } from './store.js';
@@ -74,12 +74,6 @@ async function changesPast(root: string, spec: string, revision: string): Promis
   }
 }
 
-async function isSamePath(left: string, right: string): Promise<boolean> {
-  const [one, other] = await Promise.all([fs.realpath(left).catch(() => left), fs.realpath(right).catch(() => right)]);
-
-  return one === other;
-}
-
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 export const TeamPin = {
@@ -93,7 +87,7 @@ export const TeamPin = {
     const spec = teamPathspec(config);
 
     // A clone at the revision reads the team files where the checkout does only when this is the repository's top.
-    if (top.code !== 0 || head.code !== 0 || spec.startsWith('..') || !await isSamePath(top.stdout.trim(), root)) return undefined;
+    if (top.code !== 0 || head.code !== 0 || spec.startsWith('..') || !await isSameRealPath(top.stdout.trim(), root)) return undefined;
     const revision = await pushedRevision(root, head.stdout.trim());
     const changes = await changesPast(root, spec, revision);
 
