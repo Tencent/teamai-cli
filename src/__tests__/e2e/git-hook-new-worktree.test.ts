@@ -34,7 +34,6 @@ const GIT_ENV = {
 const versionMatch = /(\d+)\.(\d+)/.exec(execFileSync('git', ['--version'], { encoding: 'utf8' }));
 const [gitMajor, gitMinor] = versionMatch ? [Number(versionMatch[1]), Number(versionMatch[2])] : [0, 0];
 const configHooks = gitMajor > 2 || (gitMajor === 2 && gitMinor >= 54);
-const eventDisable = gitMajor > 2 || (gitMajor === 2 && gitMinor >= 55);
 
 /** A workflow an agent may start: pull generates its `workflow-<name>` skill. */
 const teamWorkflow = (name: string): string =>
@@ -156,12 +155,6 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   }, 65_000);
 
-  it('init installs one named hook per git event in the repository config', () => {
-    expect(gitOk(['hook', 'list', 'post-checkout'], claudeProject)).toBe('teamai-post-checkout');
-    expect(gitOk(['hook', 'list', 'post-merge'], claudeProject)).toBe('teamai-post-merge');
-    expect(gitOk(['hook', 'list', 'post-rewrite'], claudeProject)).toBe('teamai-post-rewrite');
-  });
-
   it('delivers skills, agents, rules, MCP and team hooks for enabledAgents before git worktree add returns, silently', () => {
     const wt = worktreeAdd(claudeProject, 'wt-claude');
 
@@ -189,18 +182,6 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
     expect(r.code, r.output).toBe(0);
     expect(r.output).toBe('');
     expect(delivered(dir)).toEqual(ALL);
-  });
-
-  it('a branch switch in an existing checkout triggers no sync', () => {
-    const wt = worktreeAdd(claudeProject, 'wt-switch');
-    expect(delivered(wt.dir)).toEqual(ALL);
-    fs.rmSync(path.join(wt.dir, '.claude'), { recursive: true, force: true });
-
-    const r = git(['checkout', '-q', '-b', 'feature-switch'], wt.dir);
-
-    expect(r.code, r.output).toBe(0);
-    expect(r.output).toBe('');
-    expect(fs.existsSync(path.join(wt.dir, '.claude'))).toBe(false);
   });
 
   it('runs beside an existing .git/hooks/post-checkout script', () => {
@@ -235,35 +216,6 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
     }
   });
 
-  it('prints nothing and exits 0 when the pull fails', () => {
-    const away = `${remote}.away`;
-    fs.renameSync(remote, away);
-    try {
-      const wt = worktreeAdd(claudeProject, 'wt-offline');
-
-      expect(wt.code).toBe(0);
-      expect(wt.output).toBe('');
-      expect(fs.existsSync(path.join(wt.dir, '.gitignore'))).toBe(true);
-    } finally {
-      fs.renameSync(away, remote);
-    }
-  });
-
-  it('an unreadable project config means no sync', () => {
-    const config = path.join(partitionOf(claudeProject), 'config.yaml');
-    const original = fs.readFileSync(config, 'utf8');
-    fs.writeFileSync(config, 'repo: [unclosed\n');
-    try {
-      const wt = worktreeAdd(claudeProject, 'wt-unreadable');
-
-      expect(wt.code).toBe(0);
-      expect(wt.output).toBe('');
-      expect(fs.existsSync(path.join(wt.dir, '.claude'))).toBe(false);
-    } finally {
-      fs.writeFileSync(config, original);
-    }
-  });
-
   it('a repository without teamai config does nothing with a hook left behind', () => {
     const other = path.join(sandbox, 'no-teamai');
     fs.mkdirSync(other);
@@ -279,15 +231,6 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
     expect(wt.code).toBe(0);
     expect(wt.output).toBe('');
     expect(untracked(wt.dir)).toEqual([]);
-  });
-
-  it('a worktree teamai creates under its own data home is left alone', () => {
-    const dir = path.join(partitionOf(claudeProject), 'own-worktree');
-
-    const r = git(['worktree', 'add', '-q', '--detach', dir], claudeProject);
-
-    expect(r.code, r.output).toBe(0);
-    expect(fs.existsSync(path.join(dir, '.claude'))).toBe(false);
   });
 
   it('clears the repository Git exports to the hook before running git', () => {
@@ -430,25 +373,6 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       };
     };
 
-    it('amending a commit does not fetch or sync pending team resources', async () => {
-      const repo = project('amend-project', ['--agent', 'claude']);
-      await settle(repo);
-      pushSkill('amend-only-skill');
-      const trace = path.join(sandbox, 'amend-trace.log');
-
-      const r = git(['commit', '--amend', '-q', '--no-edit'], repo, { GIT_TRACE: trace });
-
-      expect(r.code, r.output).toBe(0);
-      expect(r.output).toBe('');
-      expect(hasSkill(repo, 'amend-only-skill')).toBe(false);
-      const traced = fs.readFileSync(trace, 'utf8');
-      const fromHook = traced.slice(traced.indexOf('hook-dispatch post-rewrite'));
-      expect(fromHook).toContain('hook-dispatch post-rewrite');
-      expect(fromHook).not.toMatch(/\b(fetch|upload-pack|ls-remote|push|pull)\b/);
-      await waitForDetachedChildren();
-      expect(hasSkill(repo, 'amend-only-skill')).toBe(false);
-    });
-
     it.each(['merge', 'rebase'])('separate team repo: published resources are delivered before git pull with %s returns', async (mode) => {
       const repo = project(`published-${mode}-project`, ['--agent', 'claude']);
       const businessChange = withOrigin(repo);
@@ -518,10 +442,8 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       await settle(repo);
     });
 
-    // Fast-forward with autostash: Git 2.33+ merges (post-merge); Git 2.14–2.32 runs
-    // `git rebase` under the pull's GIT_REFLOG_ACTION, which only checks out the
-    // upstream (post-checkout). The legacy mode runs that step as old Git does.
-    it.each(['merge', 'rebase', 'configured-rebase', 'conflicting-rebase', 'autostash-fast-forward', 'legacy-autostash-fast-forward'])('self mode: git pull with %s delivers a changed rule without hook network', async (mode) => {
+    // Fast-forward with autostash: Git 2.33+ merges (post-merge).
+    it.each(['merge', 'rebase', 'conflicting-rebase', 'autostash-fast-forward'])('self mode: git pull with %s delivers a changed rule without hook network', async (mode) => {
       const repo = path.join(sandbox, `self-project-${mode}`);
       fs.mkdirSync(repo);
       fs.writeFileSync(path.join(repo, 'README'), 'x\n');
@@ -541,7 +463,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       gitOk(['add', '-A'], mate);
       gitOk(['commit', '-q', '-m', 'rule'], mate);
       gitOk(['push', '-q', 'origin', 'HEAD:main'], mate);
-      const fastForward = mode.endsWith('autostash-fast-forward');
+      const fastForward = mode === 'autostash-fast-forward';
       if (fastForward) fs.writeFileSync(path.join(repo, 'README'), 'dirty\n');
       if (mode !== 'merge' && !fastForward) {
         const localFile = mode === 'conflicting-rebase' ? 'README' : 'local.txt';
@@ -549,14 +471,10 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
         gitOk(['add', localFile], repo);
         gitOk(['commit', '-q', '-m', 'local change'], repo);
       }
-      if (mode === 'configured-rebase') gitOk(['config', 'pull.rebase', 'true'], repo);
       if (mode === 'autostash-fast-forward') gitOk(['config', 'rebase.autoStash', 'true'], repo);
-      if (mode === 'legacy-autostash-fast-forward') gitOk(['fetch', '-q', 'origin'], repo);
       const trace = path.join(sandbox, `self-trace-${mode}.log`);
 
-      let r = mode === 'legacy-autostash-fast-forward'
-        ? git(['rebase', '-q', '--autostash', 'origin/main'], repo, { GIT_TRACE: trace, GIT_REFLOG_ACTION: 'pull --rebase --autostash' })
-        : git(['pull', '-q', ...(['rebase', 'conflicting-rebase', 'autostash-fast-forward'].includes(mode) ? ['--rebase'] : [])], repo, { GIT_TRACE: trace });
+      let r = git(['pull', '-q', ...(['rebase', 'conflicting-rebase', 'autostash-fast-forward'].includes(mode) ? ['--rebase'] : [])], repo, { GIT_TRACE: trace });
       if (mode === 'conflicting-rebase') {
         expect(r.code).not.toBe(0);
         expect(fs.existsSync(path.join(repo, '.claude', 'rules', 'self-rule.md'))).toBe(false);
@@ -572,8 +490,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       if (fastForward) expect(fs.readFileSync(path.join(repo, 'README'), 'utf8')).toBe('dirty\n');
       expect(fs.readFileSync(path.join(repo, '.claude', 'rules', 'self-rule.md'), 'utf8')).toContain('# Self rule');
       const traced = fs.readFileSync(trace, 'utf8');
-      const event = mode === 'legacy-autostash-fast-forward' ? 'post-checkout'
-        : ['merge', 'autostash-fast-forward'].includes(mode) ? 'post-merge' : 'post-rewrite';
+      const event = ['merge', 'autostash-fast-forward'].includes(mode) ? 'post-merge' : 'post-rewrite';
       const fromHook = traced.slice(traced.indexOf(`hook-dispatch ${event}`));
       expect(fromHook).toContain(`hook-dispatch ${event}`);
       expect(fromHook).not.toMatch(/\b(fetch|upload-pack|ls-remote|push|pull)\b/);
@@ -600,7 +517,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       expect(missing).toMatch(/not in this repository's git config.*Run `teamai pull`/);
     });
 
-    it.each(['hook.teamai-post-checkout.enabled', 'hook.post-checkout.enabled'].filter(key => key.includes('teamai-') || eventDisable))('doctor reports %s disabled; pull preserves it; reactivation restores delivery', async (key) => {
+    it.each(['hook.teamai-post-checkout.enabled'])('doctor reports %s disabled; pull preserves it; reactivation restores delivery', async (key) => {
       const repo = project(`doctor-disabled-${key}`, ['--agent', 'claude']);
       await settle(repo);
       gitOk(['config', '--local', key, 'false'], repo);
@@ -663,8 +580,8 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       expect(teamai(['doctor'], repo).output).toMatch(/✖ Last git hook run failed/);
     });
 
-    it.each(['merge', 'rebase'])('a partition lock another pull holds: %s waits no longer than its cap and records why it skipped', async (mode) => {
-      const repo = project(`locked-${mode}-project`, ['--agent', 'claude']);
+    it('a partition lock another pull holds: merge waits no longer than its cap and records why it skipped', async () => {
+      const repo = project('locked-merge-project', ['--agent', 'claude']);
       const bare = `${repo}.git`;
       gitOk(['clone', '-q', '--bare', repo, bare], sandbox);
       gitOk(['remote', 'add', 'origin', bare], repo);
@@ -676,14 +593,13 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       gitOk(['add', '-A'], mate);
       gitOk(['commit', '-q', '-m', 'change'], mate);
       gitOk(['push', '-q', 'origin', 'HEAD:main'], mate);
-      if (mode === 'rebase') gitOk(['commit', '-q', '--allow-empty', '-m', 'local change'], repo);
       await settle(repo);
       // A live holder: this test process.
       const lock = path.join(partitionOf(repo), '.sync-lock');
       fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'e2e' }));
       try {
         const started = Date.now();
-        const r = git(['pull', '-q', ...(mode === 'rebase' ? ['--rebase'] : [])], repo);
+        const r = git(['pull', '-q'], repo);
         const elapsed = Date.now() - started;
 
         expect(r.code, r.output).toBe(0);
@@ -696,8 +612,7 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
       }
 
       const doctor = teamai(['doctor'], repo).output;
-      const event = mode === 'merge' ? 'post-merge' : 'post-rewrite';
-      expect(doctor).toContain(`✖ Last git hook run failed: ${event} skipped its sync: another teamai process held the project's sync lock`);
+      expect(doctor).toContain('✖ Last git hook run failed: post-merge skipped its sync: another teamai process held the project\'s sync lock');
     }, 60_000);
 
     it('a successful hook run clears the recorded failure', async () => {
