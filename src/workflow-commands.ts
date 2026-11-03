@@ -313,7 +313,7 @@ async function skillAnswer(raw: Parameters<typeof parseSkillCall>[0]): Promise<{
   return { envelope: await runSkillCall(call, context), secrets: loaded.secrets };
 }
 
-const TIMEOUT_MESSAGE = '--timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h';
+const TIMEOUT_MESSAGE = '--timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d';
 
 /** The flags of `workflow start` and `resume` without `--driver skill`. The skill driver's flags are refused, the first given in this order. */
 const NonSkillRunOptionsSchema = z.object({
