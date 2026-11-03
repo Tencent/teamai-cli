@@ -297,6 +297,48 @@ describe('doctor --fix past workflows.retention', () => {
     expect(await sweepLeftovers(config, null, { now: settled + 15 * DAY, checkout: cwd })).toMatchObject({ swept: [] });
   });
 
+  it('removes on the next doctor --fix a kept ref it could not remove', async () => {
+    const { config, cwd, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    const attempt = run.steps.flatMap((step) => ('attempt' in step && step.attempt ? [step.attempt] : []))[0] ?? '';
+    const ref = `refs/teamai/kept/${attempt}`;
+    git(cwd, ['update-ref', ref, 'HEAD']);
+    const lock = path.join(cwd, '.git', `${ref}.lock`);
+    fs.writeFileSync(lock, '');
+    const warn = vi.spyOn(log, 'warn');
+    const settled = Date.parse(run.updatedAt);
+
+    await sweepLeftovers(config, null, { now: settled + 14 * DAY, checkout: cwd });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Ref ${ref} of run ${runId} was not removed`));
+    fs.rmSync(lock);
+
+    expect((await sweepLeftovers(config, null, { now: settled + 15 * DAY, checkout: cwd })).swept).toEqual([expect.objectContaining({ run: runId, refs: [ref] })]);
+    expect(git(cwd, ['for-each-ref', 'refs/teamai/'])).toBe('');
+  });
+
+  it('removes on the next doctor --fix a worktree on a pull request branch it could not remove', async () => {
+    const { config, cwd, root, runId } = await fixture(FAILS_AFTER_DELIVERY);
+    fakeGh(path.join(root, 'gh'));
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const dir = path.join(cwd, '.teamai', 'workflow-worktrees', 'inspect-change');
+    git(cwd, ['worktree', 'add', '-q', dir, `teamai/${runId}/change/p1`]);
+    git(cwd, ['worktree', 'lock', dir]);
+    const warn = vi.spyOn(log, 'warn');
+    const settled = Date.parse((await state(config, runId)).updatedAt);
+
+    await sweepLeftovers(config, null, { now: settled + 14 * DAY, checkout: cwd });
+
+    expect(fs.existsSync(dir)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Worktree ${dir} of run ${runId} was not removed`));
+    git(cwd, ['worktree', 'unlock', dir]);
+
+    expect((await sweepLeftovers(config, null, { now: settled + 15 * DAY, checkout: cwd })).swept).toEqual([expect.objectContaining({ run: runId, worktrees: [dir] })]);
+    expect(fs.existsSync(dir)).toBe(false);
+    expect(branches(cwd, runId)).toEqual(['change/p1']);
+  });
+
   it('keeps every run with workflows.retention never', async () => {
     const { config, cwd, origin, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });

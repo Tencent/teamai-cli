@@ -378,12 +378,13 @@ async function keptRefs(checkout: string, attempts: string[]): Promise<{ refs: s
 
 /**
  * Removes what run `runId` left in `checkout` and on its origin: the worktrees teamai made on its branches, the refs of
- * `attempts`, and every branch but `keep`. A worktree that stays is named on the deletion of its branch, and a kept ref
- * that stays is a warning. Undefined, with a warning, when its branches, worktrees or kept refs could not be listed.
+ * `attempts`, and every branch but `keep`. A worktree that stays is named on the deletion of its branch, or, on a branch
+ * of `keep`, is a warning, as a kept ref that stays is; `complete` is false then. Undefined, with a warning, when its
+ * branches, worktrees or kept refs could not be listed.
  */
 async function removeRun(
   { checkout, runId, keep, attempts }: { checkout: string; runId: string; keep: ReadonlySet<string>; attempts: string[] },
-): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: string[] } | undefined> {
+): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: string[]; complete: boolean } | undefined> {
   const tips = await runBranches({ checkout, runId });
 
   if ('error' in tips) return warnNotRemoved(runId, tips.error);
@@ -394,11 +395,17 @@ async function removeRun(
 
   if ('error' in kept) return warnNotRemoved(runId, kept.error);
   const worktrees: string[] = [];
+  let complete = true;
 
   for (const [branch, dir] of listed) {
     if (!branch.startsWith(runBranchPrefix(runId)) || worktreeCheckout(dir) === undefined) continue;
+    const removed = await removeWorktree(checkout, dir);
 
-    if ((await removeWorktree(checkout, dir)).ok) worktrees.push(dir);
+    if (removed.ok) worktrees.push(dir);
+    else if (keep.has(branch)) {
+      complete = false;
+      log.warn(`Worktree ${dir} of run ${runId} was not removed (${removed.reason}). teamai doctor --fix tries again.`);
+    }
   }
 
   const refs: string[] = [];
@@ -407,13 +414,16 @@ async function removeRun(
     const deleted = await git(checkout, ['update-ref', '-d', ref]);
 
     if (deleted.code === 0) refs.push(ref);
-    else log.warn(`Ref ${ref} of run ${runId} was not removed (${deleted.stderr.trim() || 'git update-ref -d failed'}). Remove it with git update-ref -d ${ref}.`);
+    else {
+      complete = false;
+      log.warn(`Ref ${ref} of run ${runId} was not removed (${deleted.stderr.trim() || 'git update-ref -d failed'}). teamai doctor --fix tries again.`);
+    }
   }
 
   const all = namesOf(tips);
   const { deleted, failed } = await deleteBranches({ checkout, runId, branches: all.filter((branch) => !keep.has(branch)), tips });
 
-  return { branches: deleted, worktrees, refs, failed, kept: all.filter((branch) => keep.has(branch)) };
+  return { branches: deleted, worktrees, refs, failed, kept: all.filter((branch) => keep.has(branch)), complete };
 }
 
 /** The attempts of a run of this machine, whose kept refs go with it, or why they could not be listed. */
@@ -472,12 +482,15 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(pullRequestBranches(run)), attempts: attempts.names });
 
     if (!removed) continue;
-    const { kept, ...gone } = removed;
+    const { kept, complete, ...gone } = removed;
     const leftovers: RunLeftovers = { by: 'retention', at: new Date(now).toISOString(), revision: run.revision, kept: kept.map((branch) => ({ branch, why: 'pr' })), deleted: gone.branches, failed: gone.failed };
 
-    await updateRun(config, run.id, secrets, async (stored) => (
-      stored === 'missing' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
-    ));
+    // A ref or worktree that stayed leaves the run uncleaned, so the next sweep tries it again.
+    if (complete) {
+      await updateRun(config, run.id, secrets, async (stored) => (
+        stored === 'missing' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
+      ));
+    }
 
     if (gone.branches.length + gone.worktrees.length + gone.refs.length + gone.failed.length > 0) swept.push({ run: run.id, from: 'local', settledAt: run.updatedAt, ...gone });
   }
