@@ -95,12 +95,11 @@ async function realDir(target: string, runDir: string): Promise<{ ok: true; real
   return isInside(root, real) ? { ok: true, real } : { ok: false, why: `is not under the run's $TEAMAI_RUN_DIR, ${root}. ${HOW}.` };
 }
 
-/** Why `file`, a `confined.json` that holds JSON, is not one teamai reads: the first of `issues`. */
+/** Why `file`, a `confined.json` that holds JSON, is not one teamai reads: each of `issues`, at its key. */
 function unreadConfinedFile(input: { step: string; file: string; issues: z.core.$ZodIssue[] }): ConfinedDirCheck {
-  const [issue] = input.issues;
-  const where = issue?.path.length ? `${issue.path.join('.')}: ` : '';
+  const issues = input.issues.map((issue) => (issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message)).join('; ');
 
-  return invalid(`Step "${input.step}" reads ${input.file}, which is not a ${CONFINED_FILE} teamai reads (${where}${issue?.message ?? 'invalid'}). Write {"level": "verified" or "best-effort", "prefer": <tool>, "schema": <a JSON Schema file in the directory>}, prefer and schema optional.`);
+  return invalid(`Step "${input.step}" reads ${input.file}, which is not a ${CONFINED_FILE} teamai reads (${issues}). Write {"level": "verified" or "best-effort", "prefer": <tool>, "schema": <a JSON Schema file in the directory>}, prefer and schema optional.`);
 }
 
 /**

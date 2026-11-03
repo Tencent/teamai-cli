@@ -26,6 +26,7 @@ describe('checkConfinedDir', () => {
     await fs.writeFile(path.join(runDir(), 'plain'), 'x');
     await dirWith(runDir(), 'broken', { 'confined.json': '{level' });
     await dirWith(runDir(), 'loose', { 'confined.json': '{"level":"best-effort","isolation":"none"}' });
+    await dirWith(runDir(), 'unlevelled', { 'confined.json': '{"level":"none","isolation":"none"}' });
     await dirWith(runDir(), 'outside', { 'confined.json': '{"level":"verified","schema":"../schema.json"}' });
     await dirWith(runDir(), 'listed', { 'confined.json': '{"level":"verified","schema":"schema.json"}', 'schema.json': '[]' });
     const check = (dir: string) => checkConfinedDir({ step: 'judge', runDir: runDir(), dir });
@@ -33,7 +34,8 @@ describe('checkConfinedDir', () => {
     expect(await check('link')).toMatchObject({ ok: false, failure: { code: 'confined_invalid', message: expect.stringContaining('which is a symlink.') } });
     expect(await check('plain')).toMatchObject({ ok: false, failure: { message: expect.stringContaining('which is not a directory.') } });
     expect(await check('broken')).toMatchObject({ ok: false, failure: { message: expect.stringContaining('whose confined.json is not JSON: ') } });
-    expect(await check('loose')).toMatchObject({ ok: false, failure: { message: expect.stringContaining('which is not a confined.json teamai reads (') } });
+    expect(await check('loose')).toMatchObject({ ok: false, failure: { message: expect.stringMatching(/which is not a confined\.json teamai reads \(Unrecognized key: "isolation"\)\. /) } });
+    expect(await check('unlevelled')).toMatchObject({ ok: false, failure: { message: expect.stringMatching(/which is not a confined\.json teamai reads \(level: [^;]+; Unrecognized key: "isolation"\)\. /) } });
     expect(await check('outside')).toMatchObject({ ok: false, failure: { message: expect.stringContaining('names reply schema ../schema.json in ') } });
     expect(await check('outside')).toMatchObject({ ok: false, failure: { message: expect.stringContaining('which is not inside the directory.') } });
     expect(await check('listed')).toMatchObject({ ok: false, failure: { message: expect.stringContaining('which is not a JSON Schema object.') } });
