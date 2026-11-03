@@ -305,8 +305,9 @@ export function levelsInside<TLevel extends Level>(outer: readonly TLevel[], lev
 }
 
 /**
- * A level on the way to a step instance: the run itself (`instance` ''), or a step instance on the path, with its pass,
- * the `defaults.role` in effect where it sits, and the `for_each` item it runs for, at any depth.
+ * A level on the way to a step instance: the run itself (`isRunLevel`, whose `instance` '' no step path equals), or a
+ * step instance on the path, with its pass, the `defaults.role` in effect where it sits, and the `for_each` item it
+ * runs for, at any depth.
  */
 interface PathLevel extends Level {
   instance: string;
@@ -369,8 +370,8 @@ function copyOwner(run: StepTree, path: string): PathLevel | undefined {
 }
 
 /** The branch of the copy `owner` opens: the run's own copy, or the branch of the step instance and its pass. */
-function ownerBranch(runId: string, owner: Pick<PathLevel, 'instance' | 'pass'>): string {
-  return owner.instance === '' ? runCopyBranch(runId) : branchName(runId, owner.instance, owner.pass);
+function ownerBranch(runId: string, owner: PathLevel): string {
+  return isRunLevel(owner.step) ? runCopyBranch(runId) : branchName(runId, owner.instance, owner.pass);
 }
 
 /** The branch of the copy a run opens when its workflow's header says `workspace: new`. No step's branch takes this name. */
@@ -955,10 +956,11 @@ export function planWorkspace(
  * run, opened: what each runs with, and where to set the role instead.
  */
 function copyRoleFailure(path: string, levels: readonly PathRoleLevel[], { copy, resolved }: NonNullable<ReturnType<typeof copyRoleConflict<RoleIdSpec>>>): WorkflowFailure {
-  const instance = levels[copy.opener]?.instance;
+  const opening = levels[copy.opener];
+  const instance = opening?.instance;
 
   // The run's own copy gets its role from defaults.role, as a step's gets it from the step.
-  const opener = instance === '' ? { label: 'the run', on: 'as defaults.role', from: 'from defaults.role' }
+  const opener = opening && isRunLevel(opening.step) ? { label: 'the run', on: 'as defaults.role', from: 'from defaults.role' }
     : { label: `step "${instance}"`, on: `on step "${instance}"`, from: `from step "${instance}"` };
 
   const copyRole = copy.runsWith.kind === 'role' ? copy.runsWith.role.id : undefined;
@@ -1177,7 +1179,7 @@ export function copyRoleConflict<TRole extends StepRoleSpec>(levels: readonly Ro
   return (resolved && writtenRole(resolved.role)) === copyRole ? undefined : { copy, resolved };
 }
 
-/** A level to a step instance as its role resolves, with the instance it is: '' for the run's own copy. */
+/** A level to a step instance as its role resolves, with the instance it is, as `PathLevel` has it. */
 type PathRoleLevel = RoleLevel<RoleIdSpec> & { instance: string };
 
 /**

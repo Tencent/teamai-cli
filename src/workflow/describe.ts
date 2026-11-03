@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
-import { copyOf, levelsInside, opensCopy, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
+import { copyOf, isRunLevel, levelsInside, opensCopy, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
  * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, or the
@@ -115,8 +115,8 @@ interface Scope {
   requires: InEffect;
   budgeted: boolean;
   setup?: Setup;
-  /** The step that opened the copy its steps work in, by path, or '' for the copy the run opens. */
-  copy?: string;
+  /** Who opened the copy its steps work in. */
+  copy?: CopyOpener;
   /** The `defaults.model` in effect, as the engine's scope keeps it. */
   defaultModel?: string;
   /**
@@ -126,6 +126,9 @@ interface Scope {
   around: RoleLevel[];
   defaultRole?: string;
 }
+
+/** The step that opened a copy, by path, or the run, as its workflow's header says `workspace: new`. */
+type CopyOpener = { kind: 'run' } | { kind: 'step'; path: string };
 
 /**
  * Describes `definition`, which runs the workflows in `workflows` by name, for a driver that declares `can`, under the
@@ -157,8 +160,11 @@ export function describeWorkflow(input: {
     held: [],
   };
 
-  /** By the step that opened each copy: whether the driver takes a step in it, and the first step in it the driver is held from. */
-  const copies = new Map<string, { taken: boolean; held?: { step: string; missing: LocalRoute['missing'] } }>();
+  /**
+   * By the opener of each copy, the one object every scope in that copy shares: whether the driver takes a step in it,
+   * and the first step in it the driver is held from.
+   */
+  const copies = new Map<CopyOpener, { taken: boolean; held?: { step: string; missing: LocalRoute['missing'] } }>();
   // Before a run, a `from` step's workflow does not exist yet.
   const childOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
 
@@ -280,7 +286,7 @@ export function describeWorkflow(input: {
           requires: mergeRequirements(scope.requires, step.requires, named?.defaults?.requires),
           budgeted: scope.budgeted || step.budget !== undefined || named?.budget !== undefined,
           setup,
-          copy: placed && opensCopy(placed) ? path : scope.copy,
+          copy: placed && opensCopy(placed) ? { kind: 'step', path } : scope.copy,
           defaultModel,
           around,
           defaultRole,
@@ -317,16 +323,17 @@ export function describeWorkflow(input: {
     defaultRole: definition.defaults?.role,
   };
 
-  if (definition.workspace === 'new') top.copy = '';
+  if (top.around.some((level) => isRunLevel(level.step))) top.copy = { kind: 'run' };
 
   // The finally steps run under the same scope once the steps settled, never beside them.
   facts.width = Math.min(ceiling, Math.max(visit(definition.steps, top), visit(definition.finally ?? [], top)));
   const route = [...copies].find(([, copy]) => copy.taken && copy.held);
 
   if (route?.[1].held) {
-    const localRoute: LocalRoute = { held: route[1].held.step, missing: route[1].held.missing };
+    const [opener, { held }] = route;
+    const localRoute: LocalRoute = { held: held.step, missing: held.missing };
 
-    if (route[0] !== '') localRoute.opener = route[0];
+    if (opener.kind === 'step') localRoute.opener = opener.path;
     facts.localRoute = localRoute;
   }
 
