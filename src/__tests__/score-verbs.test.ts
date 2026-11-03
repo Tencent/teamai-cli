@@ -25,11 +25,12 @@ import { LabelStore } from '../scorers/label-store.js';
 import { log } from '../utils/logger.js';
 import { Marks } from '../scorers/marks.js';
 import { PassScoring } from '../scorers/pass-scoring.js';
+import { RunScorers } from '../scorers/run-scorers.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
 import { evidenceHash } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { checkConfinedDir } from '../workflow/confined-place.js';
-import { runScratchDir, updateRun } from '../workflow/store.js';
+import { readRun, runScratchDir, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import { PrUrlSchema } from '../workflow/pr-url.js';
 
@@ -515,6 +516,14 @@ async function pushedTeam(config: LocalConfig): Promise<{ config: LocalConfig; e
   return { config: member, edit: (text) => fs.writeFileSync(path.join(knowledge, 'scorers', 'quality.md'), text), push };
 }
 
+/** The team commit run `runId` started from, and the commit a label of its scorer `name` records, when it records one. */
+async function revisionsOf(config: LocalConfig, runId: string, name: string): Promise<{ pinned?: string; labelled?: string }> {
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+  const read = await RunScorers.of(config, run);
+  return { pinned: run.teamPin?.revision, labelled: read.ok ? read.pins[name]?.teamRevision : read.reason };
+}
+
 /** The rubric `score evidence` gives the judge of pass 1 of `review` in run `runId`. */
 async function rubricOf(config: LocalConfig, runId: string): Promise<string> {
   const subject = `run:${runId}:review:1`;
@@ -539,15 +548,26 @@ describe('the rubric a pass is judged by is the one its run started with', () =>
     expect(opened).toContain('Judge the work.');
     expect(opened).not.toContain('Judge the tests first.');
     expect(await rubricOf(config, next)).toContain('Judge the tests first.');
+    for (const runId of [open, next]) {
+      const { pinned, labelled } = await revisionsOf(config, runId, 'quality');
+      expect(labelled).toBe(pinned);
+    }
   });
 
   it('judges with an edit the checkout had not committed when the run started, and not with one made after', async () => {
     const { config, edit } = await pushedTeam(await team({ review: REVIEW_ONE }, { quality: scorer() }));
     edit(scorer().replace('Judge the work.', 'Judge the uncommitted rubric.'));
+    const stdout = vi.spyOn(console, 'log');
     const runId = await reviewedRun(config);
     edit(scorer().replace('Judge the work.', 'Judge a later rubric.'));
+    const rubric = await rubricOf(config, runId);
+    const printed = stdout.mock.calls.flat().join('\n');
+    stdout.mockRestore();
 
-    expect(await rubricOf(config, runId)).toContain('Judge the uncommitted rubric.');
+    expect(rubric).toContain('Judge the uncommitted rubric.');
+    // The commit does not hold these bytes, so the label names none; and reading at the pin prints nothing on stdout.
+    expect(await revisionsOf(config, runId, 'quality')).toEqual({ pinned: expect.stringMatching(/^[0-9a-f]{40}$/), labelled: undefined });
+    expect(printed).not.toContain('team commit');
   });
 });
 
