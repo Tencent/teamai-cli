@@ -81,6 +81,28 @@ async function schemaFile(step: string, dir: string, schema: string): Promise<{ 
   return { ok: false, check: invalid(`Step "${step}" names reply schema ${schema} in ${path.join(dir, CONFINED_FILE)}, which ${why}. Write the schema as a JSON object in a file of the directory, and name its path relative to it.`) };
 }
 
+/** The real path of `target`, a directory that is no link, under the real `runDir`; or why it is not one, after "which". */
+async function realDir(target: string, runDir: string): Promise<{ ok: true; real: string } | { ok: false; why: string }> {
+  const stat = await lstatOf(target);
+
+  if (!stat) return { ok: false, why: `does not exist. ${HOW}.` };
+
+  if (stat.isSymbolicLink()) return { ok: false, why: `is a symlink. ${HOW}, not a link to it.` };
+
+  if (!stat.isDirectory()) return { ok: false, why: `is not a directory. ${HOW}.` };
+  const [real, root] = await Promise.all([fs.realpath(target), fs.realpath(runDir)]);
+
+  return isInside(root, real) ? { ok: true, real } : { ok: false, why: `is not under the run's $TEAMAI_RUN_DIR, ${root}. ${HOW}.` };
+}
+
+/** Why `file`, a `confined.json` that holds JSON, is not one teamai reads: the first of `issues`. */
+function unreadConfinedFile(input: { step: string; file: string; issues: z.core.$ZodIssue[] }): ConfinedDirCheck {
+  const [issue] = input.issues;
+  const where = issue?.path.length ? `${issue.path.join('.')}: ` : '';
+
+  return invalid(`Step "${input.step}" reads ${input.file}, which is not a ${CONFINED_FILE} teamai reads (${where}${issue?.message ?? 'invalid'}). Write {"level": "verified" or "best-effort", "prefer": <tool>, "schema": <a JSON Schema file in the directory>}, prefer and schema optional.`);
+}
+
 /**
  * Checks `dir`, the directory step `step` was rendered to, a relative one under `runDir`, the run's `$TEAMAI_RUN_DIR`:
  * it is a directory, not a link, whose real path is under the real `runDir`, and it holds a `confined.json` teamai reads.
@@ -88,36 +110,24 @@ async function schemaFile(step: string, dir: string, schema: string): Promise<{ 
  */
 export async function checkConfinedDir({ step, runDir, dir }: { step: string; runDir: string; dir: string }): Promise<ConfinedDirCheck> {
   const target = path.resolve(runDir, dir);
-  const stat = await lstatOf(target);
+  const found = await realDir(target, runDir);
   const at = `Step "${step}" runs confined to ${target}`;
 
-  if (!stat) return invalid(`${at}, which does not exist. ${HOW}.`);
-
-  if (stat.isSymbolicLink()) return invalid(`${at}, which is a symlink. ${HOW}, not a link to it.`);
-
-  if (!stat.isDirectory()) return invalid(`${at}, which is not a directory. ${HOW}.`);
-  const [real, root] = await Promise.all([fs.realpath(target), fs.realpath(runDir)]);
-
-  if (!isInside(root, real)) return invalid(`${at}, which is not under the run's $TEAMAI_RUN_DIR, ${root}. ${HOW}.`);
+  if (!found.ok) return invalid(`${at}, which ${found.why}`);
+  const { real } = found;
   const file = path.join(real, CONFINED_FILE);
   const read = await jsonFile(file);
 
   if (!read.ok) return invalid(`${at}, whose ${CONFINED_FILE} ${read.reason}. Write ${CONFINED_FILE} there with the level the step runs at, such as {"level":"verified"}.`);
   const parsed = ConfinedFileSchema.safeParse(read.value);
 
-  if (!parsed.success) {
-    const [issue] = parsed.error.issues;
-    const where = issue?.path.length ? `${issue.path.join('.')}: ` : '';
-
-    return invalid(`Step "${step}" reads ${file}, which is not a ${CONFINED_FILE} teamai reads (${where}${issue?.message ?? 'invalid'}). Write {"level": "verified" or "best-effort", "prefer": <tool>, "schema": <a JSON Schema file in the directory>}, prefer and schema optional.`);
-  }
-
+  if (!parsed.success) return unreadConfinedFile({ step, file, issues: parsed.error.issues });
   const { schema, ...rest } = parsed.data;
 
   if (schema === undefined) return { ok: true, place: { ...rest, dir: real } };
-  const found = await schemaFile(step, real, schema);
+  const named = await schemaFile(step, real, schema);
 
-  return found.ok ? { ok: true, place: { ...rest, schema: found.file, dir: real } } : found.check;
+  return named.ok ? { ok: true, place: { ...rest, schema: named.file, dir: real } } : named.check;
 }
 
 /**
@@ -151,6 +161,17 @@ export interface ConfinedRequest {
   config: LocalConfig;
 }
 
+/** The hold of `step` when none of `tools` resolves its model on this machine, with the first tool's reason. */
+async function modelHold(input: Pick<ConfinedRequest, 'step' | 'model' | 'defaultModel' | 'config'> & { tools: string[] }): Promise<Held | undefined> {
+  const { step, tools, model, defaultModel, config } = input;
+  const choices = await Promise.all(tools.map((tool) => (isAgentToolId(tool) ? chooseStepModel({ step, tool, model, defaultModel, config }) : undefined)));
+
+  if (choices.some((choice) => choice?.ok)) return undefined;
+  const why = choices.find((choice) => choice?.ok === false)?.failure.message;
+
+  return { step, reason: `step "${step}" needs a model one of its confined tools resolves, and none of ${tools.join(', ')} does${why === undefined ? '' : `: ${why}`}`, missing: ['model'] };
+}
+
 /**
  * Decides a confined step for one driver: fails it when its directory breaks a rule, holds it when no offer reaches the
  * level its `confined.json` sets or no tool of those offers resolves its model, and otherwise leases it with every such
@@ -169,16 +190,9 @@ export async function decideConfined(request: ConfinedRequest): Promise<Confined
     return { kind: 'hold', held: { step, reason: `step "${step}" runs confined at ${place.level}, which no offer in this driver's can.confined reaches`, missing: ['confined'] } };
   }
 
-  if (model !== undefined || defaultModel !== undefined) {
-    const choices = await Promise.all(tools.map((tool) => (isAgentToolId(tool) ? chooseStepModel({ step, tool, model, defaultModel, config }) : undefined)));
+  const unresolved = model === undefined && defaultModel === undefined ? undefined : await modelHold({ step, tools, model, defaultModel, config });
 
-    if (!choices.some((choice) => choice?.ok)) {
-      const why = choices.find((choice) => choice?.ok === false)?.failure.message;
-
-      return { kind: 'hold', held: { step, reason: `step "${step}" needs a model one of its confined tools resolves, and none of ${tools.join(', ')} does${why === undefined ? '' : `: ${why}`}`, missing: ['model'] } };
-    }
-  }
-
+  if (unresolved) return { kind: 'hold', held: unresolved };
   const lease: ConfinedLease = { dir: place.dir, level: place.level, tools: [first, ...rest] };
 
   if (place.schema !== undefined) lease.schema = place.schema;

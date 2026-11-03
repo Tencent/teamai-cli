@@ -3,7 +3,7 @@
  * resolves its model, with that directory as the tool's only readable root, no team env, and no session saved.
  */
 import fs from 'node:fs/promises';
-import { isConfinedTool, runConfined, type ConfinedRun } from '../tool-launch/confined.js';
+import { isConfinedTool, runConfined, type ConfinedResult, type ConfinedRun } from '../tool-launch/confined.js';
 import type { ConfinedTool } from '../tool-launch/tools.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { isAgentToolId } from '../tools.js';
@@ -133,21 +133,28 @@ export async function runConfinedStep(input: ConfinedStepInput): Promise<Confine
 
   const durationMs = Date.now() - startedAt;
 
-  if (!result.ok) {
-    const file = attemptResultPath(config, run, lease.attempt);
-    const saved = result.raw === undefined ? '' : ` The tool's output is in ${file}.`;
+  if (!result.ok) return { kind: 'ran', report: await failedReport({ file: attemptResultPath(config, run, lease.attempt), tool: found.tool, durationMs, result }) };
 
-    if (result.raw !== undefined) await writeJsonAtomic(file, { raw: result.raw });
-    const failure = { code: result.code, message: `${result.message}${saved}` };
+  return { kind: 'ran', report: ranReport({ run: result.run, reply: result.reply, durationMs }) };
+}
 
-    return { kind: 'ran', report: { outcome: 'failed', tool: found.tool, durationMs, message: failure.message, failure, ...spentOf(result.usage) } };
-  }
+/** The report of a run that failed. The tool's output, when it gave any, is kept in `file`, which the message names. */
+async function failedReport(input: { file: string; tool: ConfinedTool; durationMs: number; result: Extract<ConfinedResult, { ok: false }> }): Promise<ConfinedStepReport> {
+  const { file, tool, durationMs, result } = input;
 
-  const ran = result.run;
-  const report: ConfinedStepReport = { outcome: 'success', tool: ran.tool, outputs: result.reply, durationMs, confined: ran, ...spentOf(ran.usage) };
-  const model = ran.model?.reported ?? ran.model?.requested;
+  if (result.raw !== undefined) await writeJsonAtomic(file, { raw: result.raw });
+  const saved = result.raw === undefined ? '' : ` The tool's output is in ${file}.`;
+  const failure = { code: result.code, message: `${result.message}${saved}` };
+
+  return { outcome: 'failed', tool, durationMs, message: failure.message, failure, ...spentOf(result.usage) };
+}
+
+/** The report of a run that replied: the reply as outputs, with what the run measured. */
+function ranReport({ run, reply, durationMs }: { run: ConfinedRun; reply: JsonValue; durationMs: number }): ConfinedStepReport {
+  const report: ConfinedStepReport = { outcome: 'success', tool: run.tool, outputs: reply, durationMs, confined: run, ...spentOf(run.usage) };
+  const model = run.model?.reported ?? run.model?.requested;
 
   if (model !== undefined) report.model = model;
 
-  return { kind: 'ran', report };
+  return report;
 }
