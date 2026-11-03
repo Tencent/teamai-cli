@@ -9,7 +9,7 @@ import type { ScoreLabel } from '../scorers/label.js';
 import { LABEL_CODES } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
 import { stepDefinitions } from '../workflow/scope.js';
-import { stepWorkflow, type RunState } from '../workflow/types.js';
+import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
 import type { RunPlan } from './run-plan.js';
 
 /** No label and no code: the trial's `teamai-score` step never labelled the scorer before the run's steps ended. */
@@ -34,34 +34,37 @@ const LabelEntrySchema = z.object({ scorer: z.string(), label: z.string(), code:
 
 type ScoredEntry = Omit<z.infer<typeof LabelEntrySchema>, 'scorer'>;
 
-/** One item of a `teamai-score` step: the subject it labelled and, when it succeeded, each group's entries. */
+/** One item of a `teamai-score` step: the subject it labelled and, when it succeeded, the entries of every group. */
 const ScoredItemSchema = z.object({
   item: z.string(),
   outputs: z.object({ labels: z.array(z.object({ outputs: z.object({ labels: z.array(LabelEntrySchema) }).optional() })) }).optional(),
-});
+}).transform(({ item, outputs }) => ({ item, entries: (outputs?.labels ?? []).flatMap((group) => group.outputs?.labels ?? []) }));
+
+function runsTeamaiScore(step: WorkflowStep | undefined): boolean {
+  const child = step ? stepWorkflow(step) : undefined;
+
+  return child?.kind === 'named' && child.name === 'teamai-score';
+}
+
+/** The item results of every `teamai-score` step of `run`. */
+function scoreResults(run: RunState): unknown[] {
+  const definitionOf = stepDefinitions(run);
+
+  return run.steps.flatMap((state) => ('results' in state && runsTeamaiScore(definitionOf(state.id)) ? state.results ?? [] : []));
+}
 
 /** The entries of every scorer that a `teamai-score` step of `run` labelled, by subject and then scorer. */
 function scoredEntries(run: RunState): Map<string, Map<string, ScoredEntry>> {
-  const definitionOf = stepDefinitions(run);
   const bySubject = new Map<string, Map<string, ScoredEntry>>();
 
-  for (const state of run.steps) {
-    const child = stepWorkflow(definitionOf(state.id) ?? {});
+  for (const result of scoreResults(run)) {
+    const scored = ScoredItemSchema.safeParse(result);
 
-    if (child?.kind !== 'named' || child.name !== 'teamai-score' || !('results' in state)) continue;
+    if (!scored.success) continue;
+    const entries = bySubject.get(scored.data.item) ?? new Map<string, ScoredEntry>();
 
-    for (const result of state.results ?? []) {
-      const scored = ScoredItemSchema.safeParse(result);
-
-      if (!scored.success) continue;
-      const entries = bySubject.get(scored.data.item) ?? new Map<string, ScoredEntry>();
-
-      for (const group of scored.data.outputs?.labels ?? []) {
-        for (const { scorer, label, code } of group.outputs?.labels ?? []) entries.set(scorer, { label, code });
-      }
-
-      bySubject.set(scored.data.item, entries);
-    }
+    for (const { scorer, label, code } of scored.data.entries) entries.set(scorer, { label, code });
+    bySubject.set(scored.data.item, entries);
   }
 
   return bySubject;
