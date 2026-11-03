@@ -88,6 +88,11 @@ export interface WorkspacePlan {
   fail?: WorkflowFailure;
 }
 
+/** What every branch of run `runId` starts with: `teamai/<run>/`. */
+export function runBranchPrefix(runId: string): string {
+  return `teamai/${runId}/`;
+}
+
 /** A branch name that includes the run, the step path, and the pass, and is safe in a ref. */
 export function branchName(runId: string, stepPath: string, pass: number): string {
   const safe = parseStepPath(stepPath).map((segment) => {
@@ -98,7 +103,7 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
     return segment.index === undefined ? id : `${id}-${segment.index}`;
   }).join('-') || 'step';
 
-  return `teamai/${runId}/${safe}/p${pass}`;
+  return `${runBranchPrefix(runId)}${safe}/p${pass}`;
 }
 
 /**
@@ -374,9 +379,14 @@ function ownerBranch(runId: string, owner: PathLevel): string {
   return isRunLevel(owner.step) ? runCopyBranch(runId) : branchName(runId, owner.instance, owner.pass);
 }
 
+/** The branch that pins the commit run `runId` started from on origin, so a driver's fetch of the run's branches brings it in. */
+export function basePinBranch(runId: string): string {
+  return `${runBranchPrefix(runId)}base`;
+}
+
 /** The branch of the copy a run opens when its workflow's header says `workspace: new`. No step's branch takes this name. */
 export function runCopyBranch(runId: string): string {
-  return `teamai/${runId}/_run`;
+  return `${runBranchPrefix(runId)}_run`;
 }
 
 /**

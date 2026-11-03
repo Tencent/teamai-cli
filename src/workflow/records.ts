@@ -28,7 +28,7 @@ import type { RunMode } from '../launch-context.js';
 import type { RunOrigin } from '../default-workflows.js';
 import { uniqueOutcomes, type WorkOutcome } from '../outcomes.js';
 import { stepDefinitions } from './scope.js';
-import { isIsolated } from './workspace.js';
+import { isIsolated, runBranchPrefix } from './workspace.js';
 import { snapshotPath } from './snapshot.js';
 import { installOwner, runLockPath } from './store.js';
 import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
@@ -303,7 +303,7 @@ export function buildEndRecord(
 
 /** The run branches its pull requests use: the branch each came from, and the one it went into when that is the run's. */
 export function pullRequestBranches(run: Pick<RunState, 'id' | 'deliveries'>): string[] {
-  const own = (branch: string): boolean => branch.startsWith(`teamai/${run.id}/`);
+  const own = (branch: string): boolean => branch.startsWith(runBranchPrefix(run.id));
 
   return [...new Set((run.deliveries ?? []).flatMap((receipt) => [receipt.branch, receipt.base].filter(own)))];
 }

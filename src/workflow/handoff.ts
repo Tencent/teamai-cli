@@ -23,7 +23,7 @@ import {
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
 import { workflowRunBy, type RunPublication, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
-import { branchName, isIsolated, stepMode, worksInTeam, type LeaseSession, type SessionRef } from './workspace.js';
+import { basePinBranch, branchName, isIsolated, runBranchPrefix, stepMode, worksInTeam, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
 /**
@@ -437,10 +437,10 @@ async function checkOrigin(
   by: { side: 'publish' } | { side: 'claim'; publisher: HandoffOwner },
 ): Promise<Result<void>> {
   const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
-  const pin = `teamai/${run.id}/base`;
+  const pin = basePinBranch(run.id);
 
   if (!run.base && recorded.length === 0) return ok(undefined);
-  const listed = await git(checkout, ['ls-remote', '--heads', 'origin', `refs/heads/teamai/${run.id}/*`]);
+  const listed = await git(checkout, ['ls-remote', '--heads', 'origin', `refs/heads/${runBranchPrefix(run.id)}*`]);
 
   if (listed.code !== 0) return refused(originUnavailable(checkout, 'read', listed.stderr));
 

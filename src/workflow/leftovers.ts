@@ -18,6 +18,7 @@ import { pullRequestBranches, RECORDS_DIR } from './records.js';
 import { resolveRetention, type ResolvedRetention } from './retention.js';
 import { AttemptIdSchema, attemptsDir, isRunId, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
 import type { KeptBranchReason, RunLeftovers, RunState } from './types.js';
+import { basePinBranch, runBranchPrefix } from './workspace.js';
 import { fetchMissingCommits, git, removeWorktree, worktreeCheckout } from './worktree.js';
 
 /** Where each branch of a run points: in the checkout, and on `origin`, which is absent when the checkout has none. */
@@ -36,7 +37,7 @@ function refsUnder(listed: string, prefix: string): Map<string, string> {
 
 /** The `teamai/<run>/…` branches of `checkout` and of its `origin`, or why they could not be listed. */
 async function runBranches(checkout: string, runId: string): Promise<Tips | { error: string }> {
-  const prefix = `refs/heads/teamai/${runId}/`;
+  const prefix = `refs/heads/${runBranchPrefix(runId)}`;
   const local = await git(checkout, ['for-each-ref', '--format=%(objectname) %(refname)', prefix]);
 
   if (local.code !== 0) return { error: local.stderr.trim() || 'git for-each-ref failed' };
@@ -163,7 +164,7 @@ async function settleSucceeded(run: RunState, checkout: string, now: string): Pr
     }
 
     // The base pin holds the commit the run started from, which the branch it started from has.
-    const pinned = branch === `teamai/${run.id}/base` && tipsOf(branch).every((tip) => tip === run.base?.commit);
+    const pinned = branch === basePinBranch(run.id) && tipsOf(branch).every((tip) => tip === run.base?.commit);
     let held = true;
 
     for (const tip of tipsOf(branch)) held &&= await contains(checkout, tip, holders);
@@ -294,7 +295,7 @@ async function removeRun(checkout: string, runId: string, keep: ReadonlySet<stri
   const worktrees: string[] = [];
 
   for (const [branch, dir] of await checkedOut(checkout)) {
-    if (!branch.startsWith(`teamai/${runId}/`) || worktreeCheckout(dir) === undefined) continue;
+    if (!branch.startsWith(runBranchPrefix(runId)) || worktreeCheckout(dir) === undefined) continue;
     await removeWorktree(checkout, dir);
     worktrees.push(dir);
   }
