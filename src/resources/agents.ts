@@ -6,10 +6,10 @@ import { z } from 'zod';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
-import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, fileContentEqualToBuffer, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
+import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
-import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
+import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam } from '../builtin-agents.js';
 import { isAgentToolId, isToolId, TOOLS } from '../tools.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
@@ -373,6 +373,10 @@ export class AgentsHandler extends ResourceHandler {
 
     const install = installOf(teamConfig, localConfig);
     const replacedBuiltins = await builtinAgentsReplacedByTeam(teamConfig, localConfig);
+    const { recordedAgentModels, deliveredHashes } = await import('../pull.js');
+    // A copy still holding the bytes teamai last wrote there is not an edit,
+    // even when this CLI would render it differently (#830).
+    const delivered = await deliveredHashes(localConfig, state);
 
     for (const tool of Object.keys(install.toolPaths)) {
       // An excluded tool is neither written nor cleaned by teamai, so what it
@@ -393,14 +397,10 @@ export class AgentsHandler extends ResourceHandler {
 
         if (tombstones.has(stem)) continue;
 
-        // A built-in's copy is teamai's, unless the team replaces it here
-        // and the copy is not teamai's own render of it.
-        if (BUILTIN_AGENT_NAMES.has(stem)) {
-          if (!replacedBuiltins.get(stem)?.(tool)) continue;
-          const shipped = isAgentToolId(tool) ? shippedAgentRender(stem, tool, localConfig.scope) : undefined;
-
-          if (shipped && await fileContentEqualToBuffer(path.join(agentsDir, file), Buffer.from(shipped.content))) continue;
-        }
+        // A built-in's copy is teamai's: only one pull delivered from a team
+        // agent that replaces it here, on record, can be the team's.
+        if (BUILTIN_AGENT_NAMES.has(stem)
+          && !(replacedBuiltins.get(stem)?.(tool) && delivered?.[path.join(agentsDir, file)] !== undefined)) continue;
 
         if (directStems.has(stem)) continue; // canonical direct-pickup wins (self mode)
 
@@ -428,11 +428,7 @@ export class AgentsHandler extends ResourceHandler {
     const aliases = await loadModelAliases(localConfig);
     // What each copy received at the last pull: a copy written with it is
     // unedited even after the alias has changed since (#830).
-    const { recordedAgentModels, deliveredHashes } = await import('../pull.js');
     const modelRecords = await recordedAgentModels(localConfig, state);
-    // A copy still holding the bytes teamai last wrote there is not an edit,
-    // even when this CLI would render it differently (#830).
-    const delivered = await deliveredHashes(localConfig, state);
 
     for (const [stem, toolFiles] of grouped) {
       // Determine if this agent is already in the team repo (root or agents/<ns>/).
@@ -2150,9 +2146,7 @@ export function agentOrigin(repoPath: string, stem: string, tool: ToolName, alia
     ],
   };
 
-  const shipped = shippedAgentRender(stem, tool, scope);
-
-  if (shipped) origin.shipped = shipped.content;
+  if (BUILTIN_AGENT_NAMES.has(stem)) origin.builtin = true;
 
   return origin;
 }

@@ -261,8 +261,9 @@ async function withDisk(previous: DeliveredHashes, next: Iterable<[string, strin
 
 /**
  * Whether the file at `file`, which has no delivery record, is teamai's
- * (#993): its bytes are `origin.shipped`, a version of `origin.pathspec` in
- * the history of `origin.repoPath`, or one of `origin.renders` of such a version, compared
+ * (#993): it holds a built-in teamai ships (`origin.builtin`), or its bytes
+ * are a version of `origin.pathspec` in the history of `origin.repoPath`, or
+ * one of `origin.renders` of such a version, compared
  * by git blob id. False when there is no file, or git cannot read the history:
  * without proof, it is the member's. Read-only; run it only for a file that
  * exists without a record, as it reads the history.
@@ -274,7 +275,7 @@ export async function isTeamaiCopy(file: string, origin: CopyOrigin): Promise<bo
 
   if (bytes === null) return false;
 
-  if (origin.shipped !== undefined && bytes.equals(Buffer.from(origin.shipped))) return true;
+  if (origin.builtin) return true;
 
   if (await matchesHistory(origin.repoPath, origin.pathspec, bytes)) return true;
 
