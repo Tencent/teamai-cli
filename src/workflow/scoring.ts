@@ -236,13 +236,13 @@ async function scoreEntries(config: LocalConfig, now: string, teamBatch: boolean
         const pin = run.scorers?.[scorer];
         const definition = pin && pinnedDefinition(scorer, pin);
 
-        if (!pin || !definition || elsewhere.has(entryIdOf(scorer, subject)) || !(all || isSampled(scorer, subject, definition.samplingRate))) return [];
+        if (!pin || !definition || !(all || isSampled(scorer, subject, definition.samplingRate))) return [];
 
         return entryOf(scorer, pin, subject);
       });
     });
 
-    return [...sampled.filter((entry) => !requested.some((request) => request.id === entry.id)), ...requested];
+    return [...sampled.filter((entry) => !elsewhere.has(entry.id) && !requested.some((request) => request.id === entry.id)), ...requested];
   });
 }
 

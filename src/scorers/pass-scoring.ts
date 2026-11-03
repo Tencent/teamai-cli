@@ -15,7 +15,7 @@ import { scoredPasses } from '../workflow/judge-work.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { installOwner, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
-import type { DriverIdentity, RunState, WorkflowFailure } from '../workflow/types.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { scoresDir } from './home.js';
 import type { RunSubject } from './label.js';
 import { Subject } from './subject.js';
@@ -26,7 +26,20 @@ export interface PassStarts {
   refused: Array<{ subject: string; failure: WorkflowFailure }>;
 }
 
+/** What a teamai-score run gave its pass, as one line: `pending` while the run has not ended. */
+export interface ScoredLine {
+  kind: 'scored' | 'pending';
+  line: string;
+}
+
 const StartKeySchema = z.object({ subject: z.string(), run: RunIdSchema });
+
+const EntrySchema = z.object({ scorer: z.string(), label: z.string(), code: z.string() });
+
+/** The label entries of every group a teamai-score run's `done` gives, or none. */
+const ScoredSchema = z.object({
+  done: z.object({ outcome: z.string(), outputs: z.object({ labels: z.array(z.object({ outputs: z.object({ labels: z.array(EntrySchema) }).catch({ labels: [] }) })) }).catch({ labels: [] }) }),
+});
 
 function startKey(config: LocalConfig, subject: RunSubject): string {
   const hash = createHash('sha256').update(Subject.format({ kind: 'run', subject })).digest('hex').slice(0, 32);
@@ -123,5 +136,17 @@ export const PassScoring = {
   /** Whether the scoring module started the scoring of `subject`, so no judge lease takes it. */
   async started(config: LocalConfig, subject: RunSubject): Promise<boolean> {
     return (await readFileSafe(startKey(config, subject))) !== null;
+  },
+
+  /** The line that says what teamai-score run `run` gave `subject`: each scorer's label or code, or why the run has not ended. */
+  said(subject: string, run: RunId, envelope: WorkflowEnvelope): ScoredLine {
+    if ('error' in envelope) return { kind: 'pending', line: `${subject} is not labelled yet (${envelope.error.code}): ${envelope.error.message}` };
+    const scored = ScoredSchema.safeParse(envelope.data);
+
+    if (scored.success && scored.data.done.outcome !== 'succeeded') return { kind: 'pending', line: `${subject} is not labelled: teamai-score run ${run} ended ${scored.data.done.outcome}.` };
+    const entries = scored.success ? scored.data.done.outputs.labels.flatMap((group) => group.outputs.labels) : [];
+    const given = entries.length === 0 ? 'no scorer sampled it' : entries.map(({ scorer, label, code }) => `${scorer} ${label || code}`).join(', ');
+
+    return { kind: 'scored', line: `${subject}: ${given} (teamai-score run ${run}).` };
   },
 };

@@ -17,7 +17,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { openJudgeEntries } from '../workflow/scoring.js';
-import { readRun, runsDir } from '../workflow/store.js';
+import { readRun, RunIdSchema, runsDir } from '../workflow/store.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
 
 const skill: DriverIdentity = { kind: 'skill', machine: 'm1', workspace: '/w' };
@@ -148,5 +148,38 @@ describe('a step whose workflow scores its passes itself', () => {
     const runId = await reviewedRun(config);
 
     expect(data(await leaseNext(config, runId, skill))).toMatchObject({ done: { outcome: 'succeeded' } });
+  });
+});
+
+describe('PassScoring.said', () => {
+  const run = RunIdSchema.parse('r5df4606a3a55cb41');
+  const done = (labels: unknown[]): WorkflowEnvelope => ({ data: { done: { run, outcome: 'succeeded', outputs: { labels } } } });
+
+  it('names the label or the code of each scorer of each group the run labelled', () => {
+    const groups = [
+      { item: { scorers: 'quality' }, outcome: 'success', outputs: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } },
+      { item: { scorers: 'depth,clarity' }, outcome: 'success', outputs: { labels: [{ scorer: 'depth', label: '', code: 'judge_failed' }, { scorer: 'clarity', label: 'bad', code: '' }] } },
+    ];
+
+    expect(PassScoring.said('run:r1:review:1', run, done(groups))).toEqual({
+      kind: 'scored', line: `run:r1:review:1: quality good, depth judge_failed, clarity bad (teamai-score run ${run}).`,
+    });
+  });
+
+  it('says no scorer sampled a pass whose run planned no group, or whose group broke before it labelled', () => {
+    expect(PassScoring.said('run:r1:review:1', run, done([]))).toEqual({ kind: 'scored', line: `run:r1:review:1: no scorer sampled it (teamai-score run ${run}).` });
+    expect(PassScoring.said('run:r1:review:1', run, done([{ item: {}, outcome: 'failed' }])).line).toContain('no scorer sampled it');
+  });
+
+  it('says a run that failed or was cancelled labelled nothing', () => {
+    const failed: WorkflowEnvelope = { data: { done: { run, outcome: 'failed' } } };
+
+    expect(PassScoring.said('run:r1:review:1', run, failed)).toEqual({ kind: 'pending', line: `run:r1:review:1 is not labelled: teamai-score run ${run} ended failed.` });
+  });
+
+  it('says why a run that has not ended has no label yet', () => {
+    const held: WorkflowEnvelope = { error: { code: 'confined_pending', message: 'Run r5 waits for a confined tool.' } };
+
+    expect(PassScoring.said('run:r1:review:1', run, held)).toEqual({ kind: 'pending', line: 'run:r1:review:1 is not labelled yet (confined_pending): Run r5 waits for a confined tool.' });
   });
 });

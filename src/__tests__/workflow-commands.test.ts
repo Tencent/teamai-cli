@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { z } from 'zod';
 import { getUserConfigPath, type LocalConfig } from '../types.js';
 
 const state = vi.hoisted(() => ({ config: undefined as LocalConfig | undefined }));
@@ -764,5 +765,72 @@ steps:
     expect(await capture(() => workflowNext(locked, claim))).toMatchObject({ data: { wait: { reason: 'claimed' } } });
     expect(next.mock.calls.map(([, run, , options]) => [run, options?.claim])).toEqual([[open, true], [locked, true]]);
     expect(await readRun(config, locked)).toMatchObject({ steps: [{ id: 'one', status: 'pending' }] });
+  });
+});
+
+const SHIP = `schemaVersion: v1alpha1
+name: ship
+description: Build it with a workflow of commands.
+steps:
+  - id: build
+    scorers: [quality]
+    workflow:
+      steps:
+        - id: compile
+          command: node -e "process.exit(0)"
+`;
+
+const QUALITY = `---
+labels:
+  - { value: good, score: 1, description: Did the work }
+  - { value: bad, score: 0, description: Did not }
+passingScore: 1
+samplingRate: 0
+---
+Judge the work.
+`;
+
+describe('workflow start --driver local scores the passes it settles', () => {
+  async function shipTeam(): Promise<LocalConfig> {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'ship.yaml'), SHIP);
+    fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), QUALITY);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    return config;
+  }
+
+  async function scoreRuns(config: LocalConfig) {
+    const ids = fs.readdirSync(path.join(config.dataHome ?? '', 'workflows', 'runs')).flatMap((name) => /^(r[0-9a-f]+)\.json$/.exec(name)?.[1] ?? []);
+    const runs = await Promise.all(ids.map((id) => readRun(config, id)));
+    return runs.filter((item) => typeof item === 'object' && item.name === 'teamai-score');
+  }
+
+  it('starts no teamai-score run for an unattended run, whose drain judges its passes', async () => {
+    const config = await shipTeam();
+    vi.stubEnv('TEAMAI_MODE', 'unattended');
+    vi.spyOn(log, 'info').mockImplementation(() => undefined);
+
+    const started = await capture(() => workflowStart('ship', { driver: 'local' }));
+
+    expect(started.data).toMatchObject({ done: { outcome: 'succeeded' } });
+    expect(await scoreRuns(config)).toEqual([]);
+  });
+
+  it('starts one teamai-score run for a scored pass of an attended run, and drives it to its end before it answers', async () => {
+    const config = await shipTeam();
+    vi.stubEnv('TEAMAI_MODE', 'attended');
+    const said = vi.spyOn(log, 'info').mockImplementation(() => undefined);
+    const warned = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+
+    const started = await capture(() => workflowStart('ship', { driver: 'local' }));
+
+    const run = z.object({ done: z.object({ run: z.string(), outcome: z.literal('succeeded') }) }).parse(started.data).done.run;
+    const scoring = await scoreRuns(config);
+    // Its command steps run the teamai on PATH, which in a unit test is not this build, so only its start and its end are this test's.
+    expect(scoring).toEqual([expect.objectContaining({ startedBy: 'cli', inputs: expect.objectContaining({ subject: `run:${run}:build:1`, demand: 'auto' }) })]);
+    expect(scoring.map((item) => typeof item === 'object' && item.status)).not.toContain('running');
+    expect([...said.mock.calls, ...warned.mock.calls].flat()).toContainEqual(expect.stringContaining(`run:${run}:build:1`));
   });
 });

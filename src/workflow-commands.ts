@@ -110,33 +110,13 @@ async function withPassScoring(
   await start(runId);
 
   for (const [scored, subject] of scoring) {
-    saidScored(subject, scored, await runLocalDriver(config, scored, process.cwd(), { tools: options.tools, toolPaths: options.toolPaths, sandbox: options.sandbox }));
+    const said = PassScoring.said(subject, scored, await runLocalDriver(config, scored, process.cwd(), { tools: options.tools, toolPaths: options.toolPaths, sandbox: options.sandbox }));
+
+    if (said.kind === 'pending') log.warn(said.line);
+    else log.info(said.line);
   }
 
   return driven;
-}
-
-const ScoreDoneSchema = z.object({
-  done: z.object({ outputs: z.object({ labels: z.array(z.object({ outputs: z.object({ labels: z.array(z.object({ scorer: z.string(), label: z.string(), code: z.string() })) }).optional() })) }).optional() }),
-});
-
-/** On stderr, what teamai-score run `run` gave `subject`: each scorer's label or code, or why it has not ended. */
-function saidScored(subject: string, run: RunId, envelope: WorkflowEnvelope): void {
-  if ('error' in envelope) {
-    log.warn(`${subject} is not labelled yet (${envelope.error.code}): ${envelope.error.message}`);
-
-    return;
-  }
-
-  const entries = (ScoreDoneSchema.safeParse(envelope.data).data?.done.outputs?.labels ?? []).flatMap((group) => group.outputs?.labels ?? []);
-
-  if (entries.length === 0) {
-    log.info(`${subject}: no scorer sampled it (teamai-score run ${run}).`);
-
-    return;
-  }
-
-  log.info(`${subject}: ${entries.map(({ scorer, label, code }) => `${scorer} ${label || code}`).join(', ')} (teamai-score run ${run}).`);
 }
 
 /**
