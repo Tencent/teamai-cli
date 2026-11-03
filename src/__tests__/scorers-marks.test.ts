@@ -85,6 +85,16 @@ describe('Marks', () => {
     });
   });
 
+  it('keeps what the judge call of a failed mark spent', async () => {
+    const config = scope();
+    const reader = runs();
+    await launch(config, [pass('style')], NOW, { reader });
+
+    await Marks.close(config, [pass('style')], { kind: 'failed', code: 'judge_answer_invalid', usage: { inputTokens: 300, outputTokens: 40 } }, { now: NOW });
+
+    expect(await Marks.states(config, [pass('style')], { now: NOW, readRun: reader.readRun })).toEqual([{ kind: 'failed', code: 'judge_answer_invalid', usage: { inputTokens: 300, outputTokens: 40 } }]);
+  });
+
   it('counts a lapse each time the launching run ends with the mark still open, and closes it at the fourth', async () => {
     const config = scope();
     const reader = runs();

@@ -7,6 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { ConfinedUsageSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
 import type { LocalConfig } from '../types.js';
 import { pathExists, readFileSafe, writeFileAtomic } from '../utils/fs.js';
 import { carriedMarks, type CarriedMark } from './attempts-upgrade.js';
@@ -41,11 +42,12 @@ export type MarkState =
   | { kind: 'waiting' }
   | { kind: 'lapsed'; lapses: number }
   | { kind: 'labelled' }
-  | { kind: 'failed'; code: JudgeFailureCode }
+  /** `usage`: what the judge call spent, when a judge ran and its tool reported it. */
+  | { kind: 'failed'; code: JudgeFailureCode; usage?: ConfinedUsage }
   | { kind: 'expired' };
 
 /** What a write or a settle of the launch says: a label, a failed attempt, or CI that has not finished. */
-export type MarkOutcome = { kind: 'labelled' } | { kind: 'failed'; code: JudgeFailureCode } | { kind: 'waiting' };
+export type MarkOutcome = { kind: 'labelled' } | { kind: 'failed'; code: JudgeFailureCode; usage?: ConfinedUsage } | { kind: 'waiting' };
 
 /** What the store needs of a run: whether it ended, and when it last changed. */
 export interface RunStatus {
@@ -84,7 +86,7 @@ const LineSchema = z.discriminatedUnion('state', [
   /** Open judge work an earlier teamai's attempts left, carried over on the upgrade: started again as a lapse. */
   z.object({ ...Mark, ...Restart, state: z.literal('carried') }),
   z.object({ ...Mark, state: z.literal('labelled') }),
-  z.object({ ...Mark, state: z.literal('failed'), code: z.enum(JUDGE_FAILURES) }),
+  z.object({ ...Mark, state: z.literal('failed'), code: z.enum(JUDGE_FAILURES), usage: ConfinedUsageSchema.optional() }),
 ]);
 
 type Line = z.infer<typeof LineSchema>;
@@ -240,6 +242,22 @@ async function openOrLapsed(line: Extract<Line, { state: 'open' }>, readRun: Rea
   return { state: { kind: 'lapsed', lapses }, restart: { ...restartOf(line), lapses } };
 }
 
+function failedState(line: Extract<Line, { state: 'failed' }>): MarkState {
+  const state: Extract<MarkState, { kind: 'failed' }> = { kind: 'failed', code: line.code };
+
+  if (line.usage) state.usage = line.usage;
+
+  return state;
+}
+
+function failedLine(outcome: Extract<MarkOutcome, { kind: 'failed' }>): LineState {
+  const line: Extract<LineState, { state: 'failed' }> = { state: 'failed', code: outcome.code };
+
+  if (outcome.usage) line.usage = outcome.usage;
+
+  return line;
+}
+
 /** The mark `line` leaves, before its window. */
 async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<Derived> {
   switch (line?.state) {
@@ -248,7 +266,7 @@ async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<D
     case 'labelled':
       return { state: { kind: 'labelled' }, restart: FRESH };
     case 'failed':
-      return { state: { kind: 'failed', code: line.code }, restart: FRESH };
+      return { state: failedState(line), restart: FRESH };
     case 'waiting':
       return { state: { kind: 'waiting' }, restart: restartOf(line) };
     case 'carried':
@@ -298,7 +316,7 @@ function closeLine(key: MarkKey, current: Line | undefined, outcome: MarkOutcome
     case 'labelled':
       return lineOf(key, now, { state: 'labelled' });
     case 'failed':
-      return lineOf(key, now, { state: 'failed', code: outcome.code });
+      return lineOf(key, now, failedLine(outcome));
     case 'waiting':
       return lineOf(key, now, { state: 'waiting', ...current && 'lapses' in current ? restartOf(current) : FRESH });
     default: {

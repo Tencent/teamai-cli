@@ -187,7 +187,7 @@ interface ScoreRun {
   /** The context of the attempt the engine leased next, for the step `step`. */
   next(step: string): Promise<Taken>;
   /** Reports what a verb answered as the attempt's outputs, or its failure, with what a confined run measured. */
-  report(taken: Taken, answer: ScoreVerbAnswer, measured?: { confined: ConfinedRunReport }): Promise<void>;
+  report(taken: Taken, answer: ScoreVerbAnswer, measured?: { confined?: ConfinedRunReport; tokens?: { input: number; output: number } }): Promise<void>;
 }
 
 /** A teamai-score run of `inputs`, started by `startedBy`, whose leases a test takes one by one. */
@@ -207,7 +207,7 @@ function runOf(config: LocalConfig, runId: string): ScoreRun {
     async report({ attempt, revision }, answer, measured) {
       data(await reportAttempt(config, runId, answer.ok
         ? { attempt, revision, outcome: 'success', driver: external, outputs: answer.output, ...measured }
-        : { attempt, revision, outcome: 'failed', driver: external, failure: { code: 'command_failed', message: answer.message } }));
+        : { attempt, revision, outcome: 'failed', driver: external, failure: { code: 'command_failed', message: answer.message }, ...measured?.tokens && { tokens: measured.tokens } }));
     },
   };
 }
@@ -732,7 +732,8 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
                 : id === 'publish' ? await ScoreVerbs.publish({ ...taken.ctx, cwd: tip ?? reportsTip() })
                   : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
     answers.set(lease.step, answer);
-    await run.report(taken, answer, id === 'judge' ? { confined: JUDGED } : undefined);
+    // A confined run that failed reports what it spent as tokens, with no confined run, as the local driver does.
+    await run.report(taken, answer, id === 'judge' ? (answer.ok ? { confined: JUDGED } : { tokens: { input: 10, output: 2 } }) : undefined);
   }
 }
 
@@ -759,7 +760,7 @@ describe('score label and score write', () => {
   it.each([
     ['an answer outside the schema', { answer: { label: 'great', reasoning: 'x' } }, 'judge_answer_invalid'],
     ['a judge that failed', 'failed' as const, 'judge_failed'],
-  ])('give each scorer a code for %s, and write records the failed attempt', async (_case, judge, code) => {
+  ])('give each scorer a code for %s, and write records the failed attempt with what the judge spent', async (_case, judge, code) => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
     const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge });
@@ -767,7 +768,7 @@ describe('score label and score write', () => {
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code }] } });
     expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 0, labels: [] } });
     expect(await LabelStore.local(config)).toEqual([]);
-    expect(await marksOf(config, runId, ['quality'])).toEqual([{ kind: 'failed', code }]);
+    expect(await marksOf(config, runId, ['quality'])).toEqual([{ kind: 'failed', code, usage: { inputTokens: 10, outputTokens: 2 } }]);
   });
 
   it('give judge_failed when the judge step recorded no confined run, so what judged is unknown', async () => {
@@ -1256,7 +1257,7 @@ describe('labels a stage decided', () => {
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'delivered', label: '', code: 'check_could_not_run' }] } });
   });
 
-  it('refuse to label a scorer with a check whose check stage left no record, and settle it', async () => {
+  it('refuse to label a scorer with a check whose check stage left no record, and settle it with what the judge spent', async () => {
     const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[delivered]') }, { delivered: scorer({ extra: 'check: { run: "exit 3", protect: [test] }\n' }) });
     const runId = await deliveredRun(config);
     mocks.ci.mockResolvedValue({ kind: 'unsupported' });
@@ -1265,6 +1266,8 @@ describe('labels a stage decided', () => {
     expect(answers.get('score[0].label')).toMatchObject({ ok: false, code: 'stage_record_missing' });
     expect(answers.get('score[0].settle')).toEqual({ ok: true, output: { settled: 1 } });
     expect(await LabelStore.local(config)).toEqual([]);
+    expect(await Marks.states(config, [{ scorer: 'delivered', subject: { kind: 'run', subject: { runId, step: 'change', pass: 1 } } }], { now: NOW, readRun: async () => ({ ended: true, changedAt: NOW }) }))
+      .toEqual([{ kind: 'failed', code: 'judge_failed', usage: { inputTokens: 10, outputTokens: 2 } }]);
   });
 });
 

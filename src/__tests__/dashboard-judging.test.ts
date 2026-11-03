@@ -121,6 +121,16 @@ describe('what judging a run cost', () => {
 
     expect((await workflowRunDetail(config, 'local', runId))?.scoring).toEqual({ judged: 3, inputTokens: 900, outputTokens: 120 });
   });
+
+  it('adds the tokens a failed judge call spent', async () => {
+    const config = await team(['quality', 'style']);
+    const runId = await reviewedRun(config);
+    await marked(config, runId, ['quality'], { kind: 'labelled' });
+    await label(config, runId, { scorer: 'quality', label: 'good', decidedBy: 'judge', judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read', usage: { inputTokens: 900, outputTokens: 120 } } });
+    await marked(config, runId, ['style'], { kind: 'failed', code: 'judge_answer_invalid', usage: { inputTokens: 300, outputTokens: 40 } });
+
+    expect((await workflowRunDetail(config, 'local', runId))?.scoring).toEqual({ judged: 2, inputTokens: 1200, outputTokens: 160 });
+  });
 });
 
 /**

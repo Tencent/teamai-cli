@@ -3,6 +3,7 @@
  * install judges has no label, from its mark and the scorer's sampling. Read only: nothing here opens or closes a mark.
  */
 import { z } from 'zod';
+import type { ConfinedUsage } from '../tool-launch/confined-level.js';
 import type { LocalConfig } from '../types.js';
 import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import { stepDefinitions } from '../workflow/scope.js';
@@ -98,22 +99,22 @@ function scoreRunsBySubject(runs: readonly RunState[]): Map<string, PassJudging[
 /** How judging stands for one run: each pass with labels or scorers this install judges, and its failed judge attempts. */
 export interface RunJudgingState {
   passes: Map<string, PassJudging>;
-  /** Failed attempts but those whose check could not run: a judge ran for each, and no label records it. */
-  failedJudgeCalls: number;
+  /** What each failed attempt spent, but those whose check could not run: a judge ran for each, and no label records it. */
+  failedJudgeCalls: ConfinedUsage[];
 }
 
 const stateKey = (subject: RunSubject, scorer: string): string => JSON.stringify([subject.runId, subject.step, subject.pass, scorer]);
 
 /** Adds to `pass` why each of `scorers` this install judges has no label, and gives the failed judge calls among them. */
-function addUnlabelled(pass: PassJudging, subject: RunSubject, scorers: readonly string[], context: { pins: Readonly<Record<string, PinnedScorer>>; stateOf: ReadonlyMap<string, MarkState>; expiresAt: string; isAll: boolean }): number {
-  let failedJudgeCalls = 0;
+function addUnlabelled(pass: PassJudging, subject: RunSubject, scorers: readonly string[], context: { pins: Readonly<Record<string, PinnedScorer>>; stateOf: ReadonlyMap<string, MarkState>; expiresAt: string; isAll: boolean }): ConfinedUsage[] {
+  const failedJudgeCalls: ConfinedUsage[] = [];
 
   for (const scorer of scorers) {
     const state = context.stateOf.get(stateKey(subject, scorer));
 
     if (!state) continue;
 
-    if (state.kind === 'failed' && state.code !== 'check_could_not_run') failedJudgeCalls += 1;
+    if (state.kind === 'failed' && state.code !== 'check_could_not_run') failedJudgeCalls.push(state.usage ?? {});
     const why = pass.scores.some((score) => score.scorer === scorer) ? undefined : unlabelledOf(state, samplingOf(context.pins, subject, scorer, context.isAll), context.expiresAt);
 
     if (why) pass.unlabelled.push({ scorer, state: why });
@@ -127,14 +128,14 @@ function judgingOf(run: RunState, { scored, pins }: Scored, labels: ReadonlyMap<
   const definitionOf = stepDefinitions(run);
   const expiresAt = new Date(Date.parse(run.updatedAt) + MARK_WINDOW_MS).toISOString();
   const passes = new Map<string, PassJudging>([...labels].map(([key, scores]) => [key, { scores, unlabelled: [], scoreRuns: [] }]));
-  let failedJudgeCalls = 0;
+  const failedJudgeCalls: ConfinedUsage[] = [];
 
   for (const { subject, scorers } of scored) {
     const pass = passes.get(passKey(subject)) ?? { scores: [], unlabelled: [], scoreRuns: [] };
     passes.set(passKey(subject), pass);
     pass.scores.sort((left, right) => scorers.indexOf(left.scorer) - scorers.indexOf(right.scorer));
     pass.scoreRuns = scoreRuns.get(Subject.format({ kind: 'run', subject })) ?? [];
-    failedJudgeCalls += addUnlabelled(pass, subject, scorers, { pins, stateOf, expiresAt, isAll: definitionOf(subject.step)?.scorers?.sampling === 'all' });
+    failedJudgeCalls.push(...addUnlabelled(pass, subject, scorers, { pins, stateOf, expiresAt, isAll: definitionOf(subject.step)?.scorers?.sampling === 'all' }));
   }
 
   return { passes, failedJudgeCalls };
@@ -196,8 +197,14 @@ export const RunJudging = {
 
   /** What judging run `runId` cost: each judge call its labels record, a batch's tokens once, and each failed judge call. */
   async total(config: LocalConfig, runId: string, judging: RunJudgingState | undefined): Promise<ScoringTotal> {
-    const labelled = await LabelStore.scoringTotal(config, runId, 'local');
+    const total = await LabelStore.scoringTotal(config, runId, 'local');
 
-    return { ...labelled, judged: labelled.judged + (judging?.failedJudgeCalls ?? 0) };
+    for (const usage of judging?.failedJudgeCalls ?? []) {
+      total.judged += 1;
+      total.inputTokens += usage.inputTokens ?? 0;
+      total.outputTokens += usage.outputTokens ?? 0;
+    }
+
+    return total;
   },
 } as const;

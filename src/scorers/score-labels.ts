@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { observedModel } from '../agent-observation.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { confinedAccess, installedConfinedTools } from '../tool-launch/confined.js';
+import { ConfinedUsageSchema, CostSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { writeFileAtomic } from '../utils/fs.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -29,12 +30,49 @@ import { ScoreStage, type StageRecord } from './score-stage.js';
 import { evidenceHash, judgedFacts, type JudgedFacts } from './scoring-evidence.js';
 import { failingLabel } from './scoring-stages.js';
 import { Subject } from './subject.js';
-import { ConfinedRunReportSchema, type ConfinedRunReport } from '../workflow/step-state.js';
+import { ConfinedRunReportSchema, TokenUsageSchema, type ConfinedRunReport } from '../workflow/step-state.js';
 
 /** The confined run that judge step `step` of `run` recorded on its pass, or undefined when it recorded none. */
 export type ReadJudgeRun = (run: RunState, step: string) => ConfinedRunReport | undefined;
 
 export const readJudgeRun: ReadJudgeRun = (run, step) => z.object({ confined: ConfinedRunReportSchema }).safeParse(run.steps.find((state) => state.id === step)).data?.confined;
+
+const JudgeSpendSchema = z.object({ confined: z.object({ usage: ConfinedUsageSchema.optional() }).optional(), tokens: TokenUsageSchema.optional(), cost: CostSchema.optional() });
+
+/**
+ * What judge step `step` of `run` spent: its confined run's usage, or the tokens and cost its report gave, which is all a
+ * confined run that failed reports. Undefined when it reported nothing.
+ */
+function judgeSpend(run: RunState, step: string): ConfinedUsage | undefined {
+  const spent = JudgeSpendSchema.safeParse(run.steps.find((state) => state.id === step)).data;
+
+  if (spent?.confined?.usage) return spent.confined.usage;
+
+  if (!spent?.tokens && !spent?.cost) return undefined;
+  const usage: ConfinedUsage = {};
+
+  if (spent.tokens?.input !== undefined) usage.inputTokens = spent.tokens.input;
+
+  if (spent.tokens?.output !== undefined) usage.outputTokens = spent.tokens.output;
+
+  if (spent.cost) usage.cost = spent.cost;
+
+  return usage;
+}
+
+/** The judge step of the group attempt `attempt` runs a step of. */
+function judgeStepOf(attempt: ScoreAttempt): string {
+  return [...attempt.step.split('.').slice(0, -1), 'judge'].join('.');
+}
+
+/** A failed attempt, with what its judge call spent when one ran: counted once, on the first mark it closes. */
+function failedOutcome(code: JudgeFailureCode, usage: ConfinedUsage | undefined): MarkOutcome {
+  const outcome: Extract<MarkOutcome, { kind: 'failed' }> = { kind: 'failed', code };
+
+  if (usage) outcome.usage = usage;
+
+  return outcome;
+}
 
 /** Why `score label` gave a planned scorer no label: the code in its entry. */
 export const LABEL_CODES = [...JUDGE_FAILURES, 'ci_pending'] as const;
@@ -42,7 +80,8 @@ export const LABEL_CODES = [...JUDGE_FAILURES, 'ci_pending'] as const;
 /** A scorer's entry: its label, with the reasoning kept locally, or the code of why it has none. */
 const EntrySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('labelled'), scorer: z.string().min(1), label: ScoreLabelSchema, reasoning: z.string().optional(), prompt: z.string().optional() }),
-  z.object({ kind: z.literal('failed'), scorer: z.string().min(1), code: z.enum(LABEL_CODES), message: z.string() }),
+  /** `usage`: what the judge call spent, on the first entry of a group whose judge ran and gave no label. */
+  z.object({ kind: z.literal('failed'), scorer: z.string().min(1), code: z.enum(LABEL_CODES), message: z.string(), usage: ConfinedUsageSchema.optional() }),
 ]);
 
 type Entry = z.infer<typeof EntrySchema>;
@@ -80,8 +119,14 @@ function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
 
-function failedAll(members: readonly Member[], code: (typeof LABEL_CODES)[number], message: string): Entry[] {
-  return members.map(({ name }) => ({ kind: 'failed', scorer: name, code, message }));
+function failedAll(members: readonly Member[], code: (typeof LABEL_CODES)[number], message: string, usage?: ConfinedUsage): Entry[] {
+  return members.map(({ name }, index) => {
+    const entry: Entry = { kind: 'failed', scorer: name, code, message };
+
+    if (usage && index === 0) entry.usage = usage;
+
+    return entry;
+  });
 }
 
 /** Each scorer of the group with the rubric its pin holds, or undefined when one does not parse. */
@@ -179,13 +224,13 @@ function verdictsIn(members: readonly [Member, ...Member[]], answer: string | un
 }
 
 /** The entries of the judge's answer: one label per member, or one code for all of them. */
-function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run }: { answer: string | undefined; judged: string | undefined; run: ConfinedRunReport | undefined }): Entry[] {
-  if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged || 'without running'}, so it gave no answer.`);
+function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run, spent }: { answer: string | undefined; judged: string | undefined; run: ConfinedRunReport | undefined; spent: ConfinedUsage | undefined }): Entry[] {
+  if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged || 'without running'}, so it gave no answer.`, spent);
   const verdicts = verdictsIn(members, answer);
 
-  if (!verdicts.ok) return failedAll(members, 'judge_answer_invalid', verdicts.message);
+  if (!verdicts.ok) return failedAll(members, 'judge_answer_invalid', verdicts.message, spent);
 
-  if (!run) return failedAll(members, 'judge_failed', 'The judge step recorded no confined run, so what judged is unknown.');
+  if (!run) return failedAll(members, 'judge_failed', 'The judge step recorded no confined run, so what judged is unknown.', spent);
 
   return verdicts.verdicts.map(({ judged: member, label, reasoning }, index) => {
     const { usage, ...ran } = run;
@@ -296,9 +341,9 @@ export const ScoreLabels = {
     } else if (decided) {
       entries = await stageEntries(labelling, dir, [first, ...rest], decided);
     } else {
-      const step = [...attempt.step.split('.').slice(0, -1), 'judge'].join('.');
+      const step = judgeStepOf(attempt);
 
-      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: read(attempt.run, step) });
+      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: read(attempt.run, step), spent: judgeSpend(attempt.run, step) });
     }
 
     await writeFileAtomic(path.join(dir, LABELS), JSON.stringify({ entries }));
@@ -333,7 +378,7 @@ export const ScoreLabels = {
 
     const outcomes = entries.flatMap((entry, index) => keysOf(subject.subject, [group.scorers[index] ?? { name: entry.scorer }]).map((key) => ({
       key,
-      outcome: entry.kind === 'labelled' ? { kind: 'labelled' } as const : entry.code === 'ci_pending' ? { kind: 'waiting' } as const : { kind: 'failed', code: entry.code } as const,
+      outcome: entry.kind === 'labelled' ? { kind: 'labelled' } as const : entry.code === 'ci_pending' ? { kind: 'waiting' } as const : failedOutcome(entry.code, entry.usage),
     })));
 
     const closed = await closeHeld(attempt, outcomes, now);
@@ -346,8 +391,8 @@ export const ScoreLabels = {
     if (attempt.hand !== '') return { ok: true, settled: 0 };
     const pins = subject.kind === 'run' ? {} : await pinScorers(attempt.config, scorers);
     const keys = keysOf(subject, scorers.map((name) => ({ name, pin: pins[name] })));
-    const code: JudgeFailureCode = 'judge_failed';
-    const closed = await closeHeld(attempt, keys.map((key) => ({ key, outcome: { kind: 'failed', code } })), now);
+    const spent = judgeSpend(attempt.run, judgeStepOf(attempt));
+    const closed = await closeHeld(attempt, keys.map((key, index) => ({ key, outcome: failedOutcome('judge_failed', index === 0 ? spent : undefined) })), now);
 
     return closed.ok ? { ok: true, settled: closed.closed } : closed;
   },
