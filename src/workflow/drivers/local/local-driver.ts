@@ -544,6 +544,8 @@ async function promptReport(
     env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(lock.run, lease.attempt, mode) },
   };
 
+  if (lease.output) input.output = lease.output;
+
   if (launch) input.launch = launch;
 
   if (resume) input.resume = resume.id;

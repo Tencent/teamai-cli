@@ -15,16 +15,19 @@ import { tokenMeter, toolStdout, type TokenUsage, type ToolReport } from '../../
 import type { LaunchAdapter } from '../../../tool-launch/adapters.js';
 import { executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
 import { budgeted } from '../../limits.js';
+import { expectedOutput } from '../../output.js';
 import type { Limit } from '../../requirements.js';
 import { MAX_TIMER_DELAY } from '../../shell-command.js';
 import type { StepModel } from '../../step-model.js';
-import type { WorkflowFailure } from '../../types.js';
+import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { agyGatewayEnv } from '../../../models/agy-gateway.js';
 
 export interface LocalToolRun {
   prompt: string;
   cwd: string;
   resultPath: string;
+  /** The step's declared output, which the result instruction asks the tool to match. */
+  output?: OutputSchema;
   /** The definition the step runs as. `settings` are the deployed OpenCode file's other fields, such as `mode` and `variant`. */
   agent?: { name: string; instructions: string; model?: string; settings?: NonNullable<ReturnType<typeof toolExtrasFor>> };
   /** The model and effort the launch passes: the step's, which replaces the definition's, or on Codex and OpenCode the definition's own. */
@@ -84,7 +87,7 @@ type ResultFile = ToolReport & { failure?: WorkflowFailure };
 
 function resultInstruction(input: LocalToolRun, prompt: string): string {
   return `${prompt}\n\nWrite the workflow result as JSON to ${input.resultPath}. `
-    + 'Use this shape: {"output":{},"failure":{"code":"optional","message":"optional"}}.';
+    + `Use this shape: {"output":...,"failure":{"code":"optional","message":"optional"}}, where output is ${expectedOutput(input.output)}.`;
 }
 
 /** Codex, and OpenCode 1 for a subagent, which `opencode run --agent` does not start, get the definition's instructions in the prompt. */
