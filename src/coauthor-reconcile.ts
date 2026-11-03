@@ -13,12 +13,15 @@ import {
 } from './types.js';
 import {
   writeJson,
+  writeJsonKeepingComments,
   readFileSafe,
   readJsonObject,
   writeFile,
   pathExists,
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { hookSyntaxOf } from './tools.js';
+import type { JsonSyntax } from './utils/json.js';
 
 // ─── Co-author reconcile engine ──────────────────────────────
 //
@@ -257,7 +260,7 @@ async function writeStripUnlessSet(file: string): Promise<boolean> {
   if (read.kind === 'invalid') throw new Error(`${file} is not a JSON object (${read.error})`);
 
   if (read.kind === 'ok' && 'attribution' in read.value) return false;
-  await applyClaude(file, false);
+  await applyClaude(file, false, hookSyntaxOf('claude'));
 
   return true;
 }
@@ -355,9 +358,9 @@ function removeTopLevelJsonMember(source: string, key: string): string | null {
  *
  * Returns true when the file changed.
  */
-async function applyClaude(file: string, enabled: boolean): Promise<boolean> {
+async function applyClaude(file: string, enabled: boolean, syntax: JsonSyntax): Promise<boolean> {
   // A file that does not parse is the member's to repair: writing it would replace all of it.
-  const read = await readJsonObject(file);
+  const read = await readJsonObject(file, syntax);
 
   if (read.kind === 'invalid') throw new Error(`${file} is not a JSON object (${read.error}); left as it is`);
   const settings = read.kind === 'ok' ? read.value : {};
@@ -383,7 +386,7 @@ async function applyClaude(file: string, enabled: boolean): Promise<boolean> {
   }
 
   if (JSON.stringify(settings.attribution ?? null) === before) return false;
-  await writeJson(file, settings);
+  await writeJsonKeepingComments(file, settings, () => writeJson(file, settings));
 
   return true;
 }
@@ -574,7 +577,7 @@ export async function reconcileCoAuthorForConfig(
     try {
       let changed: boolean;
 
-      if (t.family === 'claude') changed = await applyClaude(t.file, intent);
+      if (t.family === 'claude') changed = await applyClaude(t.file, intent, hookSyntaxOf(t.tool));
       else if (t.family === 'codex') changed = await applyCodex(t.file, intent);
       else changed = await applyCursor(t.file, intent);
 
