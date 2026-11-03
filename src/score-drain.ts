@@ -159,6 +159,13 @@ function readPublish(step: StepState, into: Finished): void {
   if (step.status === 'failed') into.unpublished.push({ kind: 'sessions', count: 1, reason: whyFailed(step) ?? 'teamai session push failed' });
 }
 
+/** Whether the steps under `prefix` are a teamai-score run, or one plan group of it, whose publish sends labels. */
+function scoresUnder(ids: ReadonlySet<string>, prefix: string): boolean {
+  const scored = /^(.+)\.score\[\d+\]$/u.exec(prefix)?.[1] ?? prefix;
+
+  return ids.has(`${scored}.plan`);
+}
+
 /**
  * What `ran` judged, through the plan and label steps of each teamai-score it ran, and archived, through the publish
  * step of each teamai-share-session, as the shipped files name them.
@@ -170,7 +177,7 @@ function readFinished(ran: RunState, reading: Reading): void {
     const [, prefix = '', name] = /^(.+)\.(plan|publish)$/u.exec(step.id) ?? [];
 
     if (name === 'plan') readPlan(ran, { plan: step, prefix }, reading);
-    else if (name === 'publish' && !ids.has(`${prefix}.plan`)) readPublish(step, reading.into);
+    else if (name === 'publish' && !scoresUnder(ids, prefix)) readPublish(step, reading.into);
   }
 }
 
