@@ -308,6 +308,11 @@ export interface WorkflowDefinition {
   invoke?: Invoke;
   /** Another name `workflow start` accepts. It starts nothing while another workflow has it as alias or name. */
   alias?: string;
+  /**
+   * The workflow's own steps, and those of every workflow they run, stay on this machine: their sessions are never
+   * archived and their outputs never published. A run of it as the root run publishes nothing and is never claimed.
+   */
+  private?: true;
   schemaVersion: 'v1alpha1';
   name: string;
   description: string;

@@ -2079,6 +2079,22 @@ describe('run records of graph runs', () => {
     ]);
   });
 
+  it('queues no record of a run of a private workflow, and records a run that runs one as a sub-workflow', async () => {
+    const quiet = await startTree({ quiet: workflow('quiet', `  - id: judge
+    command: node judge.js
+`, 'private: true\n') }, 'quiet');
+    await driveWith(quiet.config, quiet.runId);
+    expect(await pendingRecords(quiet.config)).toEqual([]);
+
+    const ship = await startTree({ quiet: workflow('quiet', `  - id: judge
+    command: node judge.js
+`, 'private: true\n'), ship: workflow('ship', `  - id: check
+    workflow: quiet
+`) }, 'ship');
+    await driveWith(ship.config, ship.runId);
+    expect(await endRecord(ship.config)).toMatchObject({ workflow: 'ship', status: 'succeeded' });
+  });
+
   it('counts skipped steps, and not the steps of a sub-workflow that never started', async () => {
     const { config, runId } = await startTree({ check: CHECK, ship: workflow('ship', `  - id: plan
     command: node plan.js

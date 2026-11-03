@@ -153,6 +153,29 @@ export function stepDefinitions(run: Pick<RunState, 'definition' | 'workflows' |
   };
 }
 
+/**
+ * Whether the step at a path is private: a step of a workflow file with `private: true`, or of any workflow such a step
+ * runs. A private workflow never makes the step that runs it private, nor anything around that step.
+ */
+export function privateSteps(run: Pick<RunState, 'definition' | 'workflows' | 'admitted'>): (path: string) => boolean {
+  return (path) => {
+    let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
+    let prefix = '';
+
+    for (const segment of path.split('.')) {
+      if (!workflow) return false;
+
+      if (isWorkflowFile(workflow) && workflow.private) return true;
+      const { id } = parseStepPath(segment)[0] ?? { id: segment };
+      const step: WorkflowStep | undefined = workflow.steps.find((item) => item.id === id);
+      workflow = step && workflowRunBy(run, step, prefix);
+      prefix = `${prefix}${segment}.`;
+    }
+
+    return false;
+  };
+}
+
 /** For each `run.steps` array, its instances by the prefix of the scope they are directly inside. */
 const scopeIndex = new WeakMap<readonly StepState[], Map<string, StepState[]>>();
 

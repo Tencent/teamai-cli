@@ -37,7 +37,7 @@ export const INVOKE_ALIAS_SINCE = '0.28.0';
  */
 export const STEP_ROLE_SINCE = '0.29.0';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias', 'private']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
 const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver', 'continue_on_failure']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
@@ -284,6 +284,11 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (aliasNode && (!alias || !TOKEN.test(alias))) diagnostics.push({ ...locate(file, lineCounter, aliasNode, 'alias', 'alias must be a non-empty token'), code: 'bad_alias' });
   else if (alias !== undefined && alias === name) diagnostics.push({ ...locate(file, lineCounter, aliasNode ?? root, 'alias', `alias must differ from the workflow name "${name}"`), code: 'bad_alias' });
 
+  const privateNode = valueNode(root, 'private');
+  const isPrivate = privateNode ? scalarOf(privateNode, z.boolean()) : undefined;
+
+  if (privateNode && isPrivate === undefined) diagnostics.push(locate(file, lineCounter, privateNode, 'private', 'private must be true or false'));
+
   const inputsPair = root.items.find((pair) => scalarString(pair.key) === 'inputs');
   let inputs: Record<string, OutputSchema> | undefined;
 
@@ -328,6 +333,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (invoke) header.invoke = invoke;
 
   if (alias) header.alias = alias;
+
+  if (isPrivate) header.private = true;
 
   if (inputs) header.inputs = inputs;
 
