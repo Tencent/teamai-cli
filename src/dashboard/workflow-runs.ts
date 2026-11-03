@@ -304,15 +304,21 @@ function newestFirst<T extends { startedAt: string }>(rows: T[]): T[] {
   return rows.sort((left, right) => right.startedAt.localeCompare(left.startedAt));
 }
 
-/** This machine's runs in the scope: every running one, then the newest settled ones. */
-export async function listLocalRuns(config: LocalConfig): Promise<LocalRunRow[]> {
+/** The runs Local runs lists: every running one, then the newest settled ones, none of a private workflow. */
+export async function listedRuns(config: LocalConfig): Promise<RunState[]> {
   // A private workflow's runs, such as one per judged pass, would bury the runs a person started.
   const runs = (await readRuns(config)).filter((run) => !run.definition.private).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const running = runs.filter((run) => run.status === 'running');
-  const settled = runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length));
-  const records = await runRecordStates(config, settled);
 
-  return [...running, ...settled].map((run) => localRow(run, records));
+  return [...running, ...runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length))];
+}
+
+/** This machine's runs in the scope: every running one, then the newest settled ones. */
+export async function listLocalRuns(config: LocalConfig): Promise<LocalRunRow[]> {
+  const runs = await listedRuns(config);
+  const records = await runRecordStates(config, runs.filter((run) => run.status !== 'running'));
+
+  return runs.map((run) => localRow(run, records));
 }
 
 function recordsDir(config: LocalConfig): string {
@@ -405,11 +411,11 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
 
     const [records, judging, benchmark] = await Promise.all([
       runRecordStates(config, run.status === 'running' ? [] : [run]),
-      RunJudging.of(config, run, new Date().toISOString()),
+      RunJudging.of(config, [run], new Date().toISOString()).then((byRun) => byRun.get(runId)),
       benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
     ]);
 
-    return { ...localDetail(run, localRow(run, records), judging.passes, judging.total), ...benchmark };
+    return { ...localDetail(run, localRow(run, records), judging?.passes ?? new Map(), await RunJudging.total(config, runId, judging)), ...benchmark };
   }
 
   if (usesBranchWorktree(config)) {

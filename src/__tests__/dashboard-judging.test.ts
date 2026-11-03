@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { judgingHealth } from '../dashboard/judging-health.js';
 import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { knownSecrets } from '../env-resolution.js';
 import { LabelStore } from '../scorers/label-store.js';
@@ -120,18 +121,29 @@ describe('what judging a run cost', () => {
   });
 });
 
+/**
+ * A pass of `review` with a scorer in each state: labelled by the judge, by hand and by CI, waiting for CI, judging in a
+ * live score run, lapsed three times, failed, not sampled, and not started.
+ */
+async function judgedPass(config: LocalConfig): Promise<{ runId: string; scoreRun: string }> {
+  const runId = await reviewedRun(config);
+  await label(config, runId, { scorer: 'quality', label: 'good', decidedBy: 'judge', judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read', usage: { inputTokens: 900, outputTokens: 120 } } });
+  await label(config, runId, { scorer: 'coverage', label: 'bad', judge: { kind: 'human' } });
+  await label(config, runId, { scorer: 'delivered', label: 'bad', decidedBy: 'ci' });
+  await marked(config, runId, ['waiting'], { kind: 'waiting' });
+  const scoreRun = await scoreRunOf(config, runId);
+  await marked(config, runId, ['judging'], undefined, scoreRun);
+  for (const gone of ['r00000000000000b1', 'r00000000000000b2', 'r00000000000000b3']) await marked(config, runId, ['lapsed'], undefined, gone);
+  await marked(config, runId, ['style'], { kind: 'failed', code: 'judge_answer_invalid' });
+  return { runId, scoreRun };
+}
+
+const EVERY_STATE = ['quality', 'coverage', 'delivered', 'waiting', 'judging', 'lapsed', 'style', 'rare', 'queued'];
+
 describe("a pass's scorers on the run page", () => {
   it('shows each scorer labelled, waiting for CI, judging in its score run, lapsed, failed, not sampled or not started', async () => {
-    const config = await team(['quality', 'coverage', 'delivered', 'waiting', 'judging', 'lapsed', 'style', 'rare', 'queued'], { rare: 0 });
-    const runId = await reviewedRun(config);
-    await label(config, runId, { scorer: 'quality', label: 'good', decidedBy: 'judge' });
-    await label(config, runId, { scorer: 'coverage', label: 'bad', judge: { kind: 'human' } });
-    await label(config, runId, { scorer: 'delivered', label: 'bad', decidedBy: 'ci' });
-    await marked(config, runId, ['waiting'], { kind: 'waiting' });
-    const scoreRun = await scoreRunOf(config, runId);
-    await marked(config, runId, ['judging'], undefined, scoreRun);
-    for (const gone of ['r00000000000000b1', 'r00000000000000b2', 'r00000000000000b3']) await marked(config, runId, ['lapsed'], undefined, gone);
-    await marked(config, runId, ['style'], { kind: 'failed', code: 'judge_answer_invalid' });
+    const config = await team(EVERY_STATE, { rare: 0 });
+    const { runId, scoreRun } = await judgedPass(config);
     const run = await readRun(config, runId);
     if (run === 'missing' || run === 'corrupt') throw new Error(`run ${runId} is ${run}`);
 
@@ -151,5 +163,32 @@ describe("a pass's scorers on the run page", () => {
       { scorer: 'queued', state: { kind: 'queued' } },
     ]);
     expect(pass?.scoreRuns).toEqual([{ run: scoreRun, status: 'running' }]);
+  });
+});
+
+/** `at` as the local day the daily limit counts it in. */
+const localDay = (at: Date): string => `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+
+describe('judging health on Workflow Runs', () => {
+  it('counts the week\'s labels and judge tokens, the passes by state and failure, lists each missing label, and the session launches per day', async () => {
+    const config = await team([...EVERY_STATE, 'old'], { rare: 0 });
+    const { runId, scoreRun } = await judgedPass(config);
+    await label(config, runId, { scorer: 'old', label: 'good', decidedBy: 'judge', scoredAt: new Date(Date.now() - 10 * DAY_MS).toISOString() });
+    const facts = markFacts(config, new Date().toISOString());
+    const session: MarkKey = { scorer: 'quality', sourceHash: 'h1', subject: { kind: 'session', subject: { platform: 'claude-code', sessionId: 's1' } } };
+    expect(await Marks.open(config, { run: SCORE_RUN, demand: 'auto', groups: [{ group: 'quality', keys: [session] }] }, facts)).toMatchObject({ status: 'done' });
+
+    const health = await judgingHealth(config, new Date().toISOString());
+    const missing = (scorer: string) => expect.objectContaining({ run: runId, workflow: 'review', step: 'review', pass: 1, scorer });
+
+    expect(health.labels).toEqual({ total: 3, passed: 1, byDecider: { judge: 1, hand: 1, ci: 1 }, inputTokens: 900, outputTokens: 120 });
+    expect(health.states).toEqual({ queued: 1, not_sampled: 1, judging: 1, waiting_ci: 1, lapsed: 1, failed: 1, expired: 0 });
+    expect(health.failures).toEqual([{ code: 'judge_answer_invalid', count: 1 }]);
+    expect(health.missing).toEqual([missing('waiting'), missing('judging'), missing('lapsed'), missing('style'), missing('queued')]);
+    expect(health.missing[1]?.state).toEqual({ kind: 'judging', run: scoreRun, since: expect.any(String) });
+    expect(health.sessions.dailyLimit).toBe(10);
+    expect(health.sessions.days).toHaveLength(7);
+    expect(health.sessions.days.at(-1)).toEqual({ day: localDay(new Date()), launches: 1 });
+    expect(health.sessions.days.slice(0, -1).every(({ launches }) => launches === 0)).toBe(true);
   });
 });

@@ -331,8 +331,15 @@ export async function startDashboard(port?: number): Promise<void> {
 
     try {
       if (route === '') {
+        const { judgingHealth } = await import('./dashboard/judging-health.js');
+
         json(200, workspace?.config
-          ? { configured: true, local: await runs.listLocalRuns(workspace.config), reported: await reportedHistory(workspace.id, workspace.config) }
+          ? {
+            configured: true,
+            local: await runs.listLocalRuns(workspace.config),
+            reported: await reportedHistory(workspace.id, workspace.config),
+            judging: await judgingHealth(workspace.config, new Date().toISOString()),
+          }
           : { configured: false });
 
         return;

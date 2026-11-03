@@ -80,52 +80,72 @@ function scoreRunsBySubject(runs: readonly RunState[]): Map<string, PassJudging[
   return bySubject;
 }
 
-export const RunJudging = {
-  /**
-   * Each pass of `run` with labels or scorers this install judges, and what judging it cost: each judge call its labels
-   * record, a batch's tokens once, and each failed attempt but one whose check could not run, since no judge ran for it.
-   */
-  async of(config: LocalConfig, run: RunState, now: string): Promise<{ passes: Map<string, PassJudging>; total: ScoringTotal }> {
-    const scored = scoredPasses(run, (await installOwner(config)).id);
-    const keys = scored.flatMap(({ subject, scorers }) => scorers.map((scorer): MarkKey => ({ scorer, subject: { kind: 'run', subject } })));
-    const stateKey = (subject: RunSubject, scorer: string) => `${passKey(subject)}\n${scorer}`;
+/** How judging stands for one run: each pass with labels or scorers this install judges, and its failed judge attempts. */
+export interface RunJudgingState {
+  passes: Map<string, PassJudging>;
+  /** Failed attempts but those whose check could not run: a judge ran for each, and no label records it. */
+  failedJudgeCalls: number;
+}
 
-    const [labels, states, labelled, runs] = await Promise.all([
-      LabelStore.ofRuns(config, [run.id], { published: false }),
+const stateKey = (subject: RunSubject, scorer: string): string => JSON.stringify([subject.runId, subject.step, subject.pass, scorer]);
+
+/** `run`'s passes from its `labels`, and why every other scorer of a pass this install judges has no label. */
+function judgingOf(run: RunState, scored: ReturnType<typeof scoredPasses>, labels: ReadonlyMap<string, PassScore[]>, stateOf: ReadonlyMap<string, MarkState>, scoreRuns: ReadonlyMap<string, PassJudging['scoreRuns']>): RunJudgingState {
+  const definitionOf = stepDefinitions(run);
+  const expiresAt = new Date(Date.parse(run.updatedAt) + MARK_WINDOW_MS).toISOString();
+  const passes = new Map<string, PassJudging>([...labels].map(([key, scores]) => [key, { scores, unlabelled: [], scoreRuns: [] }]));
+  let failedJudgeCalls = 0;
+
+  for (const { subject, scorers } of scored) {
+    const pass = passes.get(passKey(subject)) ?? { scores: [], unlabelled: [], scoreRuns: [] };
+    const all = definitionOf(subject.step)?.scorers?.sampling === 'all';
+    passes.set(passKey(subject), pass);
+    pass.scores.sort((left, right) => scorers.indexOf(left.scorer) - scorers.indexOf(right.scorer));
+    pass.scoreRuns = scoreRuns.get(Subject.format({ kind: 'run', subject })) ?? [];
+
+    for (const scorer of scorers) {
+      const state = stateOf.get(stateKey(subject, scorer));
+      const pin = run.scorers?.[scorer];
+      const rate = (pin && pinnedDefinition(scorer, pin)?.samplingRate) ?? 0;
+      const why = state && !pass.scores.some((score) => score.scorer === scorer) ? unlabelledOf(state, { is: all || isSampled(scorer, subject, rate), rate }, expiresAt) : undefined;
+
+      if (state?.kind === 'failed' && state.code !== 'check_could_not_run') failedJudgeCalls += 1;
+
+      if (why) pass.unlabelled.push({ scorer, state: why });
+    }
+  }
+
+  return { passes, failedJudgeCalls };
+}
+
+export const RunJudging = {
+  /** How judging stands for each of `runs` on this machine, by run id. */
+  async of(config: LocalConfig, runs: readonly RunState[], now: string): Promise<Map<string, RunJudgingState>> {
+    const install = (await installOwner(config)).id;
+    const scored = new Map(runs.map((run) => [run.id, scoredPasses(run, install)]));
+    const keys = [...scored.values()].flat().flatMap(({ subject, scorers }) => scorers.map((scorer): MarkKey => ({ scorer, subject: { kind: 'run', subject } })));
+
+    const [labels, states, all] = await Promise.all([
+      LabelStore.ofRuns(config, runs.map((run) => run.id), { published: false }),
       Marks.states(config, keys, markFacts(config, now)),
-      LabelStore.scoringTotal(config, run.id, 'local'),
       readRuns(config),
     ]);
 
-    const scoreRuns = scoreRunsBySubject(runs);
-    const definitionOf = stepDefinitions(run);
-    const expiresAt = new Date(Date.parse(run.updatedAt) + MARK_WINDOW_MS).toISOString();
-    const passes = new Map<string, PassJudging>([...labels.get(run.id) ?? []].map(([key, scores]) => [key, { scores, unlabelled: [], scoreRuns: [] }]));
     const stateOf = new Map(keys.flatMap((key, at) => {
       const state = states[at];
 
       return state && key.subject.kind === 'run' ? [[stateKey(key.subject.subject, key.scorer), state] as const] : [];
     }));
 
-    for (const { subject, scorers } of scored) {
-      const pass = passes.get(passKey(subject)) ?? { scores: [], unlabelled: [], scoreRuns: [] };
-      const all = definitionOf(subject.step)?.scorers?.sampling === 'all';
-      passes.set(passKey(subject), pass);
-      pass.scores.sort((left, right) => scorers.indexOf(left.scorer) - scorers.indexOf(right.scorer));
-      pass.scoreRuns = scoreRuns.get(Subject.format({ kind: 'run', subject })) ?? [];
+    const scoreRuns = scoreRunsBySubject(all);
 
-      for (const scorer of scorers) {
-        const state = stateOf.get(stateKey(subject, scorer));
-        const pin = run.scorers?.[scorer];
-        const rate = (pin && pinnedDefinition(scorer, pin)?.samplingRate) ?? 0;
-        const why = state && !pass.scores.some((score) => score.scorer === scorer) ? unlabelledOf(state, { is: all || isSampled(scorer, subject, rate), rate }, expiresAt) : undefined;
+    return new Map(runs.map((run) => [run.id, judgingOf(run, scored.get(run.id) ?? [], labels.get(run.id) ?? new Map(), stateOf, scoreRuns)]));
+  },
 
-        if (why) pass.unlabelled.push({ scorer, state: why });
-      }
-    }
+  /** What judging run `runId` cost: each judge call its labels record, a batch's tokens once, and each failed judge call. */
+  async total(config: LocalConfig, runId: string, judging: RunJudgingState | undefined): Promise<ScoringTotal> {
+    const labelled = await LabelStore.scoringTotal(config, runId, 'local');
 
-    const failed = states.filter((state) => state.kind === 'failed' && state.code !== 'check_could_not_run').length;
-
-    return { passes, total: { ...labelled, judged: labelled.judged + failed } };
+    return { ...labelled, judged: labelled.judged + (judging?.failedJudgeCalls ?? 0) };
   },
 } as const;
