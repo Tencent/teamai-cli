@@ -135,10 +135,11 @@ describe('session-start refresh cooldown (#1681)', () => {
     const m = machine();
     expect(m.run()).toBe(1);
     m.age();
+    const aged = fs.readFileSync(m.stamp, 'utf8');
     fs.renameSync(m.remote, `${m.remote}.away`);
     try {
       m.run();
-      expect(fs.existsSync(m.stamp)).toBe(false);
+      expect(fs.readFileSync(m.stamp, 'utf8')).toBe(aged);
     } finally {
       fs.renameSync(`${m.remote}.away`, m.remote);
     }
