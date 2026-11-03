@@ -18,7 +18,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
-import { ScoreVerbs, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext } from '../score-verbs.js';
+import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext } from '../score-verbs.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { Marks } from '../scorers/marks.js';
 import type { JudgeRun } from '../scorers/score-labels.js';
@@ -330,6 +330,90 @@ describe('score plan', () => {
 });
 
 /** Plans `subject` in a new teamai-score run, reports the plan, and leases the first group's evidence step. */
+const NESTED = `schemaVersion: v1alpha1
+name: nested
+description: Fix in an inline workflow, then mend in a workflow file.
+defaults: { scorers: { batch: true } }
+steps:
+  - id: outer
+    workflow:
+      steps:
+        - id: fix
+          prompt: Fix the change.
+          scorers: [quality, coverage]
+  - id: filed
+    needs: [outer]
+    workflow: inner
+`;
+const INNER = `schemaVersion: v1alpha1
+name: inner
+description: Mend the change.
+defaults: { scorers: { batch: false } }
+steps:
+  - id: mend
+    prompt: Mend the change.
+    scorers: [quality, coverage]
+`;
+
+describe('score plan in a nested workflow', () => {
+  it('batches a step of an inline workflow as the workflow around it says, and one of a workflow file as that file says', async () => {
+    const config = await team({ nested: NESTED, inner: INNER }, { quality: scorer(), coverage: scorer() });
+    const runId = String(data(await startRun(config, 'nested', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
+    const steps: string[] = [];
+    for (const session of ['session-fix', 'session-mend']) {
+      const lease = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+      steps.push(lease.step);
+      data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, tool: 'claude', session }));
+    }
+    const planned = async (step: string) => {
+      const subject = `run:${runId}:${step}:1`;
+      const { ctx } = await (await scoreRun(config, { subject })).next('plan');
+      return ScoreVerbs.plan({ subject }, ctx);
+    };
+
+    expect(steps).toEqual(['outer.fix', 'filed.mend']);
+    expect(await planned('outer.fix')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
+    expect(await planned('filed.mend')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }, { scorers: 'coverage' }] } });
+  });
+
+  it('reads the hand label of a teamai-score instance a step of another workflow runs, not the root run\'s inputs', async () => {
+    const rescore = `schemaVersion: v1alpha1
+name: rescore
+description: Label a subject again by hand.
+inputs:
+  subject: string
+steps:
+  - id: again
+    workflow: teamai-score
+    with: { subject: "{{ inputs.subject }}", scorers: [quality], label: good, batch: false, demand: named }
+`;
+    const config = await team({ review: REVIEW, rescore }, { quality: scorer(), coverage: scorer() });
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const runId = String(data(await startRun(config, 'rescore', { subject }, { secrets: await knownSecrets(config), startedBy: 'person' })).run);
+    const lease = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+    const ctx = { env: attemptEnv(config, runId, lease.attempt, 'unattended'), current: config, now: NOW };
+
+    expect(lease.step).toBe('again.plan');
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', label: 'good', demand: 'named' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ hand: 'good', scorers: 'quality', ci: false, protected: false }] } });
+  });
+
+  it('refuses a named scorer on a pass of a run that pinned none', async () => {
+    const config = await team({ review: REVIEW.replace('    scorers: [quality, coverage]\n', '') }, { quality: scorer() });
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: 'quality', demand: 'named' }, ctx)).toMatchObject({ ok: false, code: 'scorer_not_found', message: expect.stringContaining('pinned by run') });
+  });
+
+  it('judges every pass of a step that samples all, whatever its scorers sample', async () => {
+    const config = await team({ review: REVIEW.replace('scorers: [quality, coverage]', 'scorers: { names: [quality], sampling: all }') }, { quality: scorer({ rate: 0 }), coverage: scorer() });
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+  });
+});
+
 async function plannedGroup(config: LocalConfig, subject: string, inputs: Record<string, unknown> = {}, startedBy: StartedBy = 'cli'): Promise<{ run: ScoreRun; evidence: Taken; scorers: string }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const plan = await run.next('plan');
@@ -436,6 +520,17 @@ describe('score stage', () => {
     const { next } = await deliveredGroup(config, await deliveredRun(config));
 
     expect(await ScoreVerbs.stage({ stage: 'protected', evidence: root }, next.ctx)).toMatchObject({ ok: false, code: 'evidence_unreadable' });
+  });
+
+  it.each([
+    ['a stage that is none', 'lint', undefined],
+    ['a wait that is not a duration', 'ci', 'soon'],
+  ])('refuses %s', async (_case, stage, wait) => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
+
+    expect(await ScoreVerbs.stage({ stage, evidence: dir, wait }, next.ctx)).toMatchObject({ ok: false, code: 'invalid_arguments' });
+    expect(mocks.ci).not.toHaveBeenCalled();
   });
 });
 
@@ -600,6 +695,11 @@ describe('score subjects', () => {
     expect(await ScoreVerbs.subjects({ run: runId, step: 'fix' }, ctx)).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
     expect(await ScoreVerbs.subjects({ run: runId, step: 'lister' }, ctx)).toEqual({ ok: true, output: { list: [] } });
     expect(await ScoreVerbs.subjects({ run: runId }, { env: {}, current: config, now: NOW })).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
+    data(await reportAttempt(config, runId, { attempt: lister.attempt, revision: lister.revision, outcome: 'success', driver: external, outputs: {} }));
+    const other = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+
+    expect(other.step).toBe('other');
+    expect(await ScoreVerbs.subjects({ run: runId, step: 'outer' }, { env: attemptEnv(config, runId, other.attempt, 'unattended'), current: config, now: NOW })).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
   });
 
   it('lists a lapse, and a pass that waited on CI once its CI finished, but not one still waiting', async () => {
@@ -619,6 +719,18 @@ describe('score subjects', () => {
   });
 });
 
+/** labels.json as `score label` writes it, read loosely enough to tamper with. */
+const LabelsFile = z.object({
+  entries: z.array(z.looseObject({
+    scorer: z.string(),
+    label: z.looseObject({ label: z.string(), judge: z.json(), rubric: z.looseObject({ sourceHash: z.string() }), subject: z.looseObject({ pass: z.number() }) }),
+  })),
+});
+
+type LabelsFile = z.infer<typeof LabelsFile>;
+
+const eachEntry = (change: (entry: LabelsFile['entries'][number]) => LabelsFile['entries'][number]) => (file: LabelsFile): LabelsFile => ({ entries: file.entries.map(change) });
+
 describe('score verbs refuse what they cannot act on', () => {
   it.each<[string, PlanOptions, string]>([
     ['a subject that is none', { subject: 'pass:1' }, 'subject_invalid'],
@@ -636,6 +748,23 @@ describe('score verbs refuse what they cannot act on', () => {
     expect(await ScoreVerbs.plan({ scorers: '[]', label: '', batch: 'false', demand: 'auto', ...options, subject }, ctx)).toMatchObject({ ok: false, code });
   });
 
+  it.each<[string, 'evidence' | 'settle', EvidenceOptions, string]>([
+    ['evidence of a subject that is none', 'evidence', { subject: 'pass:1', scorers: 'quality' }, 'subject_invalid'],
+    ['evidence for scorers that are neither JSON nor names', 'evidence', { scorers: '[1]' }, 'invalid_arguments'],
+    ['evidence for no scorer', 'evidence', { scorers: '' }, 'invalid_arguments'],
+    ['evidence for a scorer the run did not pin', 'evidence', { scorers: 'tests' }, 'scorer_not_found'],
+    ['evidence for a scorer teamai pull did not cache', 'evidence', { subject: 'team-session:alice:claude-code:one', scorers: 'tests' }, 'scorer_not_found'],
+    ['evidence of a member\'s session while the team\'s pushed sessions cannot be read', 'evidence', { subject: 'team-session:alice:claude-code:gone', scorers: 'quality' }, 'reports_unreachable'],
+    ['to settle a subject that is none', 'settle', { subject: 'pass:1', scorers: 'quality' }, 'subject_invalid'],
+    ['to settle scorers that are neither JSON nor names', 'settle', { scorers: '[1]' }, 'invalid_arguments'],
+  ])('refuse %s', async (_case, verb, options, code) => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const { ctx } = await (await scoreRun(config, { subject: `run:${runId}:review:1` })).next('plan');
+
+    expect(await ScoreVerbs[verb]({ subject: `run:${runId}:review:1`, ...options }, ctx)).toMatchObject({ ok: false, code });
+  });
+
   it('plan batches the scorers of a step whose workflow sets defaults.scorers.batch', async () => {
     const config = await team({ review: REVIEW.replace('steps:', 'defaults: { scorers: { batch: true } }\nsteps:') }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
@@ -645,7 +774,14 @@ describe('score verbs refuse what they cannot act on', () => {
     expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
   });
 
-  it('write refuses labels.json that is not what label wrote, and writes nothing', async () => {
+  it.each<[string, (file: LabelsFile) => LabelsFile, string]>([
+    ['a label the scorer does not have', eachEntry((entry) => ({ ...entry, label: { ...entry.label, label: 'good' } })), '"good" with score 0 is not a label of scorer quality'],
+    ['an entry of another scorer', eachEntry((entry) => ({ ...entry, scorer: 'coverage' })), 'entry 1 is not of scorer quality'],
+    ['a rubric the run did not pin', eachEntry((entry) => ({ ...entry, label: { ...entry.label, rubric: { sourceHash: 'sha256:other' } } })), 'the label of quality is not of its pinned rubric'],
+    ['a hand label in a run no person started', eachEntry((entry) => ({ ...entry, label: { ...entry.label, judge: { kind: 'human' } } })), 'the label of quality is a hand label'],
+    ['a label of another pass', eachEntry((entry) => ({ ...entry, label: { ...entry.label, subject: { ...entry.label.subject, pass: 2 } } })), 'the label of quality is of another subject'],
+    ['no entry for the group\'s scorer', () => ({ entries: [] }), 'the entries are not one per scorer of the group'],
+  ])('write refuses labels.json with %s, and writes nothing', async (_case, tamper, problem) => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
     const subject = `run:${runId}:review:1`;
@@ -658,9 +794,9 @@ describe('score verbs refuse what they cannot act on', () => {
     const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
     await run.report(label, await ScoreVerbs.label({ evidence: dir, answer: '{"label":"bad","reasoning":"no"}', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED }));
     const file = path.join(dir, 'labels.json');
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"label":"bad","score":0,"passed":false', '"label":"good","score":0,"passed":false'));
+    fs.writeFileSync(file, JSON.stringify(tamper(LabelsFile.parse(JSON.parse(fs.readFileSync(file, 'utf8'))))));
 
-    expect(await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx)).toMatchObject({ ok: false, code: 'label_invalid', message: expect.stringContaining('"good" with score 0 is not a label of scorer quality') });
+    expect(await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx)).toMatchObject({ ok: false, code: 'label_invalid', message: expect.stringContaining(problem) });
     expect(await LabelStore.local(config)).toEqual([]);
   });
 });
