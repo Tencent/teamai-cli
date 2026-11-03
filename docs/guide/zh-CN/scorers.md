@@ -84,7 +84,14 @@ steps:
 ## 一次运行和它的评审
 
 ```console
-$ teamai workflow start review-and-fix --driver local     # 运行照常结束，评审从不阻塞它
+$ teamai workflow start review-and-fix --driver local     # 有人值守：每个被评分的轮次都有自己的 teamai-score 运行
+ℹ run:r3f9…:review:1: review-quality good (teamai-score run r7c2…).
+{"data":{"done":{"run":"r3f9…","outcome":"succeeded",…}}}
+```
+
+被评分步骤的一个轮次结算后，本地驱动上有人值守的 `workflow start` 或 `workflow resume` 会为该轮次启动一个 [`teamai-score`](#teamai-score-工作流) 运行（`demand: auto`），并在返回前驱动它，所以返回时标签已经写好。被评分运行的步骤和 `finally` 从不等待它，它也从不改变该运行的结果。无人值守的运行不启动它：运行结束时的[drain](#无人值守任务结束前运行-drain)会评判这些轮次。其他驱动运行的轮次，在运行它的安装上用 `teamai score --next` 评判：
+
+```console
 $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
 {"data":{"lease":{"ref":"s5d1e07c2a9b4a/a91c0d7e0","subject":{"runId":"r3f9…","step":"review","pass":1},
   "evidence":"…/scores/evidence/a91c0d7e0/","prompt":"…/prompt.md","answer":{"schema":{…}},
@@ -93,11 +100,48 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
 ```
 
-`samplingRate` 决定评判哪些成功的执行轮次，在每台机器上结果相同。`workflow next` 从不分发评审任务。`--lease <ref>` 在本机用租约选定的工具、以[受限配置](#隔离)评判，并像任意 driver 的答案一样结算租约。评审失败时租约保持打开。`scorers` 设置了 `sampling: all` 的步骤是例外：它的评分器评判每个成功的执行轮次，运行会等它们完成后才运行 `finally` 步骤并结束，在此期间 `workflow next` 返回带 `judging`（仍未结算的评判条目）的 `wait`。本地驱动自己评判它们，并立即结算失败的评审；其他驱动的轮次在运行它们的安装上用 `teamai score --next` 评判。[基准测试](benchmarks.md)就是这样评判它的 trial。
+`samplingRate` 决定评判哪些成功的执行轮次，在每台机器上结果相同；为未被选中的轮次启动的 teamai-score 运行结束时没有标签。`workflow next` 从不分发评审任务。`--lease <ref>` 在本机用租约选定的工具、以[受限配置](#隔离)评判，并像任意 driver 的答案一样结算租约。评审失败时租约保持打开。`scorers` 设置了 `sampling: all` 的步骤是例外：它的评分器评判每个成功的执行轮次，运行会等它们完成后才运行 `finally` 步骤并结束，在此期间 `workflow next` 返回带 `judging`（仍未结算的评判条目）的 `wait`。本地驱动自己评判它们，并立即结算失败的评审；其他驱动的轮次在运行它们的安装上用 `teamai score --next` 评判。[基准测试](benchmarks.md)就是这样评判它的 trial。
 
 标签记录 `used.skills`，即该轮次或其子 agent 加载过的团队技能。判定方式与[会话](#为会话评分)相同，依据该轮次开始时检出目录中由 teamai 交付并未经修改的技能。`workflow:` 步骤的标签列出其子轮次记录的全部技能。若子轮次都未记录，标签没有 `used`。
 
 证据目录包含 `evidence.json`、`prompt.md`、有记录范围时的 `diff.patch`、`repo/`（被评判提交中的跟踪文件，符号链接的目标以文本保存）、`transcripts/`（包含可读取的子代理）和 `outputs.json`。所有文件都经过脱敏，团队在 `env/secrets.yaml` 中声明的密钥值也会被遮蔽。不是文本的跟踪文件不会写入，并列在 `omitted` 里。缺失证据以 gap 代码列出。租约结算或过期后删除证据。
+
+### 在下一步之前拿到标签
+
+`scorers.start: workflow` 把步骤各轮次的评分交给工作流自己的步骤。teamai 不为它们启动 teamai-score 运行，评审租约不会领取它们，在 `sampling: all` 下运行也不会等待它们。`teamai score subjects` 列出它们，再由一个 `workflow: teamai-score` 步骤为每个轮次打标签：
+
+```yaml
+# workflows/fix-until-good.yaml
+schemaVersion: v1alpha1
+name: fix-until-good
+description: Fix a change, and revise it once when its review label is not good.
+inputs: { task: string }
+steps:
+  - id: fix
+    prompt: "{{ inputs.task }}"
+    workspace: new
+    scorers: { names: [review-quality], sampling: all, start: workflow }
+  - id: subjects
+    needs: [fix]
+    if: steps.fix.outcome != 'skipped'
+    command: teamai score subjects --run "$RUN" --step fix
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [string] }
+  - id: score
+    needs: [subjects]
+    for_each: steps.subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    timeout: 1h
+    continue_on_failure: true
+  - id: revise
+    needs: [fix, score]
+    if: steps.score.results[0].outputs.labels[0].outputs.labels[0].label != 'good'
+    prompt: The review of this change did not score good. Address what it asks for, with tests.
+    workspace: continue
+```
+
+`revise` 只在 `fix` 的标签写好之后运行，并且只在标签不是 `good` 时运行；缺失的标签读作 `null`。`teamai-score` 自己的 `timeout` 只约束根运行，所以这个步骤自己设置 `timeout`，并加上 `continue_on_failure: true`。
 
 ### 标签评判的 Harness
 

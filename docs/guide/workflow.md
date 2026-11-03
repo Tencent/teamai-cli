@@ -53,7 +53,7 @@ steps:
     scorers: { names: [review-quality], batch: false }
 ```
 
-`scorers: { names: [review-quality], sampling: all }` judges every succeeded pass, whatever each scorer's `samplingRate`, and the run waits for those judges before its [`finally` steps](workflow-advanced.md#finally-steps) and its end. See [A run and its judge](scorers.md#a-run-and-its-judge).
+`scorers: { names: [review-quality], sampling: all }` judges every succeeded pass, whatever each scorer's `samplingRate`, and the run waits for those judges before its [`finally` steps](workflow-advanced.md#finally-steps) and its end. See [A run and its judge](scorers.md#a-run-and-its-judge). `scorers: { names: [review-quality], start: workflow }` leaves the scoring of its passes to the workflow's own steps, as [Labels before the next step](scorers.md#labels-before-the-next-step) shows.
 
 Every step after the first lists the steps it waits for in `needs`. `needs: []` starts another branch with no dependency. Each `next` leases the first step in the file whose needs are done. `--driver local` runs one step at a time unless `workflows.max_parallel` is above 1. A step is skipped when a step it needs failed, or when every step it needs was skipped. A skipped step never runs. A failure does not stop other branches. When nothing is left to run, the run ends `failed` if any step failed, otherwise `succeeded`. A step with [`continue_on_failure: true`](workflow-advanced.md#let-a-step-fail-without-failing-its-workflow) fails without failing the run. A missing `needs`, a `needs` id that is not a step, or a cycle makes the file invalid. A missing `needs` also leaves the workflow with nothing to run, even when an older version was valid.
 

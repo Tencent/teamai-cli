@@ -53,7 +53,7 @@ steps:
     scorers: { names: [review-quality], batch: false }
 ```
 
-`scorers: { names: [review-quality], sampling: all }` 评判每一个成功的 pass，不管每个评分器的 `samplingRate`，运行会等这些评判完成后才运行它的 [`finally` 步骤](workflow-advanced.md#finally-步骤)并结束。见[一次运行和它的评审](scorers.md#一次运行和它的评审)。
+`scorers: { names: [review-quality], sampling: all }` 评判每一个成功的 pass，不管每个评分器的 `samplingRate`，运行会等这些评判完成后才运行它的 [`finally` 步骤](workflow-advanced.md#finally-步骤)并结束。见[一次运行和它的评审](scorers.md#一次运行和它的评审)。`scorers: { names: [review-quality], start: workflow }` 把其轮次的评分交给工作流自己的步骤，见[在下一步之前拿到标签](scorers.md#在下一步之前拿到标签)。
 
 第一个步骤之后的每个步骤都要用 `needs` 列出它等待的步骤。`needs: []` 表示另起一个没有依赖的分支。每次 `next` 租出文件中第一个依赖都已完成的步骤。`--driver local` 一次运行一个步骤，除非 `workflows.max_parallel` 大于 1。某个依赖失败，或所有依赖都被跳过时，该步骤会被跳过。被跳过的步骤不会运行。一个步骤失败不会停止其他分支。没有可运行的步骤时，只要有步骤失败，运行结果就是 `failed`，否则是 `succeeded`。带 [`continue_on_failure: true`](workflow-advanced.md#让步骤失败而不让工作流失败) 的步骤失败时不会让运行失败。缺少 `needs`、`needs` 中的 id 不是本工作流的步骤，或依赖成环，都会让该文件无效。缺少 `needs` 时，即使之前有有效版本，该工作流也没有可运行版本。
 
