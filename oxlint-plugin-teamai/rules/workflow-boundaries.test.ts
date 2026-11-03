@@ -51,3 +51,8 @@ rule.invalid('rejects a workflow module import of a benchmark module', `import {
 rule.valid('allows the engine to reach the place entry', `import { place } from './place/place.js';`, { filename: 'src/workflow/engine.ts' });
 rule.invalid('rejects a benchmark entry from a module it does not name', `import { startBenchmark } from './benchmark/start.js';`, undefined, { filename: 'src/pull.ts' });
 rule.valid('allows a benchmark entry from the module it names', `import { startBenchmark } from './benchmark/start.js';`, { filename: 'src/workflow-commands.ts' });
+rule.invalid('rejects a flat workflow module import of a scorers module', `import { scoresDir } from '../scorers/home.js';`, undefined, { filename: 'src/workflow/engine.ts' });
+rule.invalid('rejects a place module import of a scorers module', `import { stageEvidence } from '../../scorers/scoring-evidence.js';`, undefined, { filename: 'src/workflow/place/clone.ts' });
+rule.invalid('rejects a skill driver type import of a scorers module', `import type { JudgeUsage } from '../../../scorers/label.js';`);
+rule.invalid('rejects a workflow module new to the tree importing a scorers module', `import { scoresDir } from '../scorers/home.js';`, undefined, { filename: 'src/workflow/new-module.ts' });
+rule.valid('allows the engine to reach scoring through its hooks', `import { verifiedScorers } from '../scorers/engine-hooks.js';`, { filename: 'src/workflow/protocol.ts' });

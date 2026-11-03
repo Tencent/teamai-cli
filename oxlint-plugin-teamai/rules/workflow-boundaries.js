@@ -9,6 +9,7 @@ const LOCAL = 'src/workflow/drivers/local/';
 const PLACE = 'src/workflow/place/';
 const DISCOVERY = 'src/workflow/discovery/';
 const BENCHMARK = 'src/benchmark/';
+const SCORERS = 'src/scorers/';
 const FLAT = 'src/workflow/';
 
 /** Rule 1: what a module under `drivers/skill/` may import, besides its siblings, `zod` and `node:*`. */
@@ -44,7 +45,6 @@ const SKILL_IMPORTS = {
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
   // The confined tools of this machine, what each can do there, and the confined run the background runner starts.
   'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess'] },
-  'src/scorers/label.ts': { typeOnly: true },
   // The level a confined run reaches and what its tool can do there.
   'src/tool-launch/confined-level.ts': { typeOnly: true },
   // What describe proposes for the inputs of teamai's default share workflows, for the calling session.
@@ -132,6 +132,9 @@ export default defineRule({
 
       // The engine, the protocol and the drivers never import a feature built on them, such as benchmarks.
       if (from.startsWith(FLAT) && to.startsWith(BENCHMARK)) violation = true;
+
+      // They reach scoring only through its hooks, so the engine never learns how a pass is scored.
+      if (from.startsWith(FLAT) && to.startsWith(SCORERS) && to !== SCORERS + 'engine-hooks.ts') violation = true;
 
       if (from === 'src/workflow/pr-delivery.ts' && to === 'src/workflow/engine.ts') violation = true;
 
