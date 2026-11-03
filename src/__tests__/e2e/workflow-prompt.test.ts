@@ -47,8 +47,11 @@ describe('local prompt workflow CLI', () => {
     const initialized = await runCLI(['init', '--self', '--agent', 'claude', '--force'], repo);
     expect(initialized.code, `${initialized.stdout}\n${initialized.stderr}`).toBe(0);
     const fake = path.join(bin, 'claude');
+    // A prompt "Write fixed to a.txt." writes that file in the step's checkout, as an agent editing code would.
     fs.writeFileSync(fake, `#!/usr/bin/env node
 const fs = require('node:fs');
+const [, text, file] = /Write (\\w+) to ([\\w.]+)\\./.exec(process.argv.join(' ')) ?? [];
+if (file) fs.writeFileSync(file, text);
 fs.mkdirSync(require('node:path').dirname(process.env.TEAMAI_WORKFLOW_RESULT), { recursive: true });
 fs.writeFileSync(process.env.TEAMAI_WORKFLOW_RESULT, JSON.stringify({ output: { ok: true } }));
 process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-claude', session_id: 'fake-session' }) + '\\n');
@@ -109,5 +112,81 @@ steps:
     const resultFile = path.join(dataHome, 'workflows', 'runs', runId, 'attempts');
     expect(fs.readdirSync(resultFile)).toHaveLength(2);
     expect(path.resolve(resultFile).startsWith(`${path.resolve(repo)}${path.sep}`)).toBe(false);
+  });
+
+  it('keeps the fix of a for_each item for the items after it and the step that joins them', async () => {
+    // Steps that write push their branches, so this checkout has an origin that takes them.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-factory-e2e-'));
+    const work = path.join(root, 'work');
+    const origin = path.join(root, 'origin.git');
+    const url = 'http://127.0.0.1:9/team/app.git';
+    try {
+      execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+      fs.mkdirSync(work);
+      fs.writeFileSync(path.join(work, 'check.js'), "process.exit(require('fs').readFileSync(process.env.FILE, 'utf8') === 'fixed' ? 0 : 1);\n");
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+      execFileSync('git', ['add', 'check.js'], { cwd: work });
+      execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial'], { cwd: work });
+      execFileSync('git', ['remote', 'add', 'origin', url], { cwd: work });
+      const initialized = await runCLI(['init', '--self', '--agent', 'claude', '--force'], work);
+      expect(initialized.code, `${initialized.stdout}\n${initialized.stderr}`).toBe(0);
+      // After init, which names the team repository from the remote URL as written.
+      execFileSync('git', ['config', `url.${origin}.insteadOf`, url], { cwd: work });
+      execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: work });
+      const workflows = path.join(work, '.teamai', 'workflows');
+      fs.mkdirSync(workflows, { recursive: true });
+      // Item a is written broken and fixed once; item b starts from a and is right the first time.
+      fs.writeFileSync(path.join(workflows, 'factory.yaml'), `schemaVersion: v1alpha1
+name: factory
+description: Implement each item and fix it until its check passes, then document them together.
+inputs:
+  items: [{ id: string, first: string, after: [string] }]
+steps:
+  - id: build
+    for_each:
+      items: inputs.items
+    workspace: new
+    workflow:
+      steps:
+        - id: implement
+          prompt: Write {{ item.first }} to {{ item.id }}.txt.
+        - id: check
+          needs: [implement]
+          command: node check.js
+          env:
+            FILE: "{{ item.id }}.txt"
+        - id: fix
+          needs: [check]
+          if: steps.check.outcome == 'failed'
+          prompt: Write fixed to {{ item.id }}.txt.
+          loop: { back_to: check, max_iterations: 2 }
+  - id: docs
+    needs: [build]
+    workspace: new
+    prompt: Write documented to docs.txt.
+`);
+      const pulled = await runCLI(['pull'], work);
+      expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
+      const items = [{ id: 'a', first: 'broken', after: [] }, { id: 'b', first: 'fixed', after: ['a'] }];
+      const result = await runCLI(
+        ['workflow', 'start', 'factory', '--driver', 'local', '--tools', 'default=claude', '--inputs', JSON.stringify({ items })],
+        work,
+        { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` },
+      );
+
+      expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+      const completed = envelope(result.stdout);
+      expect(completed).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+      if ('error' in completed) throw new Error(completed.error.message);
+      const runId = String((completed.data.done as { run: string }).run);
+      const stored = JSON.parse(fs.readFileSync(path.join(await resolveProjectDataHome(work), 'workflows', 'runs', `${runId}.json`), 'utf8')) as RunState;
+      const docs = stored.steps.find((step) => step.id === 'docs');
+      const branch = docs && 'changes' in docs ? docs.changes?.branch : undefined;
+      if (!branch) throw new Error(`docs wrote no branch: ${JSON.stringify(docs)}`);
+      const show = (file: string): string => execFileSync('git', ['show', `${branch}:${file}`], { cwd: origin, encoding: 'utf8' });
+      expect({ a: show('a.txt'), b: show('b.txt'), docs: show('docs.txt') }).toEqual({ a: 'fixed', b: 'fixed', docs: 'documented' });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
