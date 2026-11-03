@@ -14,7 +14,7 @@ import {
 import { placedResourcePath } from '../push-namespaces.js';
 import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namespaces.js';
 import { loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
-import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
+import { isRecallEnabled, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
 import { dirContentEqual, fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import type { BuildIndexOptions, IndexedSkills } from '../utils/search-index.js';
 import { filterByTags, loadTagsConfig } from '../utils/tags.js';
@@ -686,6 +686,25 @@ async function overrideRootRules(
  * caller that cannot say what should be delivered must not guess.
  */
 export async function resolveDesiredAgents(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+): Promise<DesiredItems> {
+  const desired = await resolveTeamAgents(teamConfig, localConfig, roleContext);
+
+  // Recall off removes the `teamai-recall` agent whoever wrote it, so a team
+  // agent of that name is not delivered either: pull would write it, remove
+  // it, and redeploy it as missing on the next run.
+  if (desired.kind === 'conflict' || isRecallEnabled(localConfig, teamConfig)) return desired;
+
+  return { ...desired, items: desired.items.filter((item) => item.name !== 'teamai-recall') };
+}
+
+/**
+ * The team agents this directory receives, recall on or off: what decides
+ * which built-in agents the team replaces here.
+ */
+export async function resolveTeamAgents(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,

@@ -26,12 +26,39 @@ import type { DeliveryRecorder } from './git-exclude-delivered.js';
 //    ~/.claude-internal/agents/teamai-recall.md
 //    ~/.codebuddy/agents/teamai-recall.md
 //
+//  A team agent of the same name replaces a built-in one, as a
+//  team workflow replaces a default (#1388): the team's
+//  agents/teamai-recall.* or agents/<ns>/teamai-recall.*, when
+//  pull delivers it here, is the copy the tools get, and this
+//  deployment leaves it alone.
+//
 
 /**
  * Names of CLI built-in agents. Used by `AgentsHandler.scanLocalForPush`
  * to exclude them from team repo push (they are CLI-managed, not team-managed).
  */
 export const BUILTIN_AGENT_NAMES = new Set<string>(['teamai-recall']);
+
+/**
+ * The built-in agents the team replaces in this directory: those a team agent
+ * of the same name stands for in what pull delivers here. While the team's
+ * agents collide, pull keeps the installed ones, so every built-in name the
+ * team repo holds counts as replaced and the installed copy stays.
+ */
+export async function builtinAgentsReplacedByTeam(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ReadonlySet<string>> {
+  // Lazy: resources/agents.ts imports this module.
+  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }] = await Promise.all([
+    import('./resources/desired.js'), import('./resources/index.js'),
+  ]);
+
+  const desired = await resolveTeamAgents(teamConfig, localConfig, await buildRolePullContext(localConfig));
+
+  const names = desired.kind === 'resolved'
+    ? desired.items.map((item) => item.name)
+    : (await getHandler('agents').scanTeamForPull(teamConfig, localConfig)).map((item) => item.name);
+
+  return new Set(names.filter((name) => BUILTIN_AGENT_NAMES.has(name)));
+}
 
 /**
  * Resolve the path to the built-in agents directory bundled with the CLI.
@@ -120,9 +147,14 @@ export async function deployBuiltinAgents(
     return 0;
   }
 
-  const agentFiles = entries
+  let agentFiles = entries
     .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
     .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
+
+  const replaced = await builtinAgentsReplacedByTeam(teamConfig, localConfig);
+
+  for (const name of replaced) log.debug(`The team's ${name} agent replaces the built-in one`);
+  agentFiles = agentFiles.filter((file) => !replaced.has(path.basename(file, '.md')));
 
   if (agentFiles.length === 0) return 0;
 

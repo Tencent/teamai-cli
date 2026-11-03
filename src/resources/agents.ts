@@ -9,7 +9,7 @@ import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, Team
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
-import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
+import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam } from '../builtin-agents.js';
 import { isAgentToolId, isToolId, TOOLS } from '../tools.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
@@ -290,8 +290,6 @@ export class AgentsHandler extends ResourceHandler {
 
             if (tombstones.has(stem)) continue;
 
-            if (BUILTIN_AGENT_NAMES.has(stem)) continue;
-
             if (!namespace && retiredCopy(stem)) {
               directStems.add(stem);
               continue;
@@ -374,6 +372,7 @@ export class AgentsHandler extends ResourceHandler {
     const grouped = new Map<string, Map<string, string>>(); // stem → (tool → filePath)
 
     const install = installOf(teamConfig, localConfig);
+    const replacedBuiltins = await builtinAgentsReplacedByTeam(teamConfig, localConfig);
 
     for (const tool of Object.keys(install.toolPaths)) {
       // An excluded tool is neither written nor cleaned by teamai, so what it
@@ -394,7 +393,8 @@ export class AgentsHandler extends ResourceHandler {
 
         if (tombstones.has(stem)) continue;
 
-        if (BUILTIN_AGENT_NAMES.has(stem)) continue;
+        // A built-in's copy is teamai's, unless the team replaces it here.
+        if (BUILTIN_AGENT_NAMES.has(stem) && !replacedBuiltins.has(stem)) continue;
 
         if (directStems.has(stem)) continue; // canonical direct-pickup wins (self mode)
 

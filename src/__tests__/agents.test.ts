@@ -971,6 +971,15 @@ projects:
     expect(items.find((i) => i.name === 'teamai-recall')).toBeUndefined();
   });
 
+  it('scanLocalForPush offers an edited teamai-recall when the team repo replaces the built-in', async () => {
+    await fse.outputFile(path.join(repoPath, 'agents', 'teamai-recall.md'), '# team recall\n');
+    await fse.writeFile(path.join(homeDir, '.claude/agents', 'teamai-recall.md'), '# team recall, edited\n');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.find((i) => i.name === 'teamai-recall')).toMatchObject({ status: 'modified', relativePath: 'agents/teamai-recall.md' });
+  });
+
   // ── pushItem ────────────────────────────────────────────
 
   it('pushItem copies the local md file into team-repo/agents/', async () => {
