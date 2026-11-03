@@ -884,8 +884,9 @@ workflows:
 | `end_turn` | 在 `lease.limits` 处结束 prompt 的这一轮，并报告它停在的 `limit` 和 `durationMs`。 |
 | `unattended` | 对租约带 `permissions: "unattended"` 的 prompt，以其工具自己的无需询问即可编辑和运行命令的模式启动它；工具没有这种模式时让步骤失败，而不是照常启动。 |
 | `role` | 接受[以团队角色运行](#以团队角色运行步骤)的步骤（通过 `--prepare` 取得、租约带 `role`），并在 teamai 为该角色交付的克隆或 worktree 副本中运行它。 |
+| `confined` | 接受[限定在一个目录里的提示步骤](workflow.md#限定在一个目录里的提示步骤)：一组提供，每个为 `{ "level", "access", "tools" }`，即它在 `level`（`verified` 或 `best-effort`）下以 `access`（`read` 或 `full`）受限启动的工具，按尝试顺序排列。见[在自己的驱动里运行受限步骤](#在自己的驱动里运行受限步骤)。 |
 
-省略的键表示驱动做不到。隔离是尽力而为，除非 `strict: true` 让它成为下限。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns`、`network`、`unattended` 或 `role`，其 `isolation` 为 `none`：编程会话绝不绕过使用者自己的权限。
+省略的键表示驱动做不到。隔离是尽力而为，除非 `strict: true` 让它成为下限。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns`、`network`、`unattended` 或 `role`，其 `isolation` 为 `none`：编程会话绝不绕过使用者自己的权限。它只在评审该运行时声明 `confined`：本机有会话所用工具的受限评审器时，以 `verified` 提供该工具，否则以 `best-effort` 提供它，交给新的子 agent。
 
 ### 无人值守的 prompt
 
@@ -1207,6 +1208,12 @@ teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine
 3. 报告 prompt 时带上 `tool`、工具报告的 `model`、`session` 和 `tokens`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`（`{"amount":0.12,"unit":"USD"}`）。某个限制停止了工具时，报告带 `outcome: "success"` 和 `limit`：`timeout`、`budget` 或 `max_turns`；驱动无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。`limit` 是租约没有设置的限制时，报告返回 `invalid_report`；带有 `changes` 或 `read`（由 teamai 从克隆中填写）的报告也一样。
 
 `src/__tests__/e2e/benchmark-driver-contract.test.ts` 用这份约定检查运行 [benchmark](benchmarks.md#在自己的驱动里运行) 的驱动。
+
+## 在自己的驱动里运行受限步骤
+
+[限定在一个目录里](workflow.md#限定在一个目录里的提示步骤)的步骤只租给 `can.confined` 中有不低于其级别的提供的驱动。它的租约带 `confined`：`dir`、`level`、`tools`（达到该级别的各提供中的工具，按顺序排列，`prefer` 在最前），以及 `confined.json` 指定了 schema 时的 `schema`。这些工具在本机都解析不了该步骤的模型时，步骤等待，`wait.held[].missing` 列出 `model`；没有提供达到其级别时列出 `confined`。
+
+驱动在 `tools` 中第一个能解析 `lease.model` 的工具上运行 `lease.prompt`，以 `dir` 作为工具的工作目录和唯一可读的根目录，不带任何团队 env，也不保留会话。它把回答作为 `outputs` 报告，TeamAI 按步骤的 `output` 检查它，并按这次运行的测量报告 `confined`：`tool`、`isolation`、`access`，以及工具报告了时的 `model`、`effort` 和 `usage`。找不到工具运行的驱动报告 `outcome: "released"`。`src/workflow/conformance/confined.ts` 中的 `confinedConformanceScenarios` 检查这些租用规则。
 
 ## 在自己的驱动里评审
 

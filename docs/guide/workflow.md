@@ -355,6 +355,41 @@ teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
 - When the branch holds what the default branch holds, as once its pull request was squash-merged, the step pushes nothing and opens no pull request.
 - Opening the pull request waits while a `teamai pull` or `push` holds the member's team repo.
 
+### A prompt confined to a directory
+
+`workspace: { confined: <dir> }` runs a prompt step whose tool reads one directory and nothing else: not the checkout, the team's env, or a session. An earlier step writes that directory under `$TEAMAI_RUN_DIR`, with the evidence and a `confined.json` that says how isolated the step must be. Use it for a judgement that must rest on that evidence alone.
+
+```yaml
+schemaVersion: v1alpha1
+name: judge-change
+description: Judge the last commit from its diff alone.
+steps:
+  - id: evidence
+    command: |
+      mkdir -p "$TEAMAI_RUN_DIR/evidence"
+      git show HEAD > "$TEAMAI_RUN_DIR/evidence/change.diff"
+      echo '{"level":"best-effort"}' > "$TEAMAI_RUN_DIR/evidence/confined.json"
+  - id: judge
+    needs: [evidence]
+    workspace: { confined: evidence }
+    prompt: Read change.diff. Answer pass when the change does one thing and tests it, else fail.
+    output:
+      verdict: pass | fail
+```
+
+```text
+teamai workflow start judge-change --driver local
+  evidence    writes change.diff and confined.json in $TEAMAI_RUN_DIR/evidence
+  judge       the first tool here that reaches the level runs in that directory,
+              with no team env and no session kept; its reply is the outputs
+```
+
+- `<dir>` may be a template that reads inputs, `item` and the outputs of the steps the step needs. It is rendered when the step is leased, and a relative one is under `$TEAMAI_RUN_DIR`. A directory outside it, a symlink, or one without a readable `confined.json` fails the step with `confined_invalid`, which says what to fix.
+- `confined.json` is `{ "level": "verified" | "best-effort", "prefer": "<tool>", "schema": "<file>" }`. `verified` runs only on a tool version whose confined launch TeamAI checked, such as Claude Code 2.1.308, Codex 0.163.0 or OpenCode 2.1.2, and `best-effort` on any tool TeamAI launches confined, such as Cursor. `prefer` is tried first. `schema` is a JSON Schema file in the directory that the reply follows. The step that writes the evidence sets the level: the workflow file cannot set or lower it.
+- The step runs one prompt, once. Pull refuses `workspace: { confined }` on a command or `workflow` step, and beside `for_each`, `scorers`, `requires.env`, `agent`, `tool`, `session`, `role`, `interactive` or `deliver`. It may set `model`: a step whose model no tool that reaches its level resolves here stays pending.
+- The local driver runs it. When only such steps are left and no tool here can run them, it stops with `confined_pending`, which names what is missing; make that tool available, then run `teamai workflow resume`. In a coding session, the skill driver runs it in the background on the session's tool when that tool reaches `verified` here, else in a fresh subagent that reads only the directory, at `best-effort`. With `--no-judge`, or on a host that starts no child agent, the step waits for another driver.
+- The step records `confined`: the tool, the model and effort the tool reported, the isolation TeamAI measured, the access the tool had, and its usage.
+
 ## Deliver a PR
 
 Set `deliver: pr` on a step that writes a branch, and TeamAI opens a pull request from that branch once the step succeeds. It never merges it. A step writes a branch when it has `workspace: new` or `continue`, or when it is a prompt inside a workflow that opened one. A command that delivers must set `workspace`, since a command without one is read-only. A `workflow` step with `workspace: new` delivers its branch once, for all its steps. A step inside it that writes a branch of its own needs a later step that merges that branch through `needs`, or its own `deliver: pr`. Otherwise the delivery fails with `delivery_failed`, since the pull request would leave that work out. On a `for_each` step, each item delivers its own branch.

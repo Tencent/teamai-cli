@@ -355,6 +355,41 @@ teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
 - 分支的内容和默认分支相同时（比如它的 pull request 已被 squash 合并），步骤什么也不推送，也不打开 pull request。
 - 成员的团队仓库被 `teamai pull` 或 `push` 占用时，打开 pull request 会等待。
 
+### 限定在一个目录里的提示步骤
+
+`workspace: { confined: <dir> }` 让提示步骤的工具只读一个目录，别的都不读：不读检出、团队 env，也不读任何会话。前面的步骤在 `$TEAMAI_RUN_DIR` 下写好这个目录，放进证据和一个 `confined.json`，说明该步骤需要多强的隔离。判断只能依据这些证据时用它。
+
+```yaml
+schemaVersion: v1alpha1
+name: judge-change
+description: Judge the last commit from its diff alone.
+steps:
+  - id: evidence
+    command: |
+      mkdir -p "$TEAMAI_RUN_DIR/evidence"
+      git show HEAD > "$TEAMAI_RUN_DIR/evidence/change.diff"
+      echo '{"level":"best-effort"}' > "$TEAMAI_RUN_DIR/evidence/confined.json"
+  - id: judge
+    needs: [evidence]
+    workspace: { confined: evidence }
+    prompt: Read change.diff. Answer pass when the change does one thing and tests it, else fail.
+    output:
+      verdict: pass | fail
+```
+
+```text
+teamai workflow start judge-change --driver local
+  evidence    在 $TEAMAI_RUN_DIR/evidence 写入 change.diff 和 confined.json
+  judge       本机第一个达到该级别的工具在这个目录里运行，
+              不带团队 env，也不保留会话；它的回答就是输出
+```
+
+- `<dir>` 可以是模板，读取输入、`item` 和该步骤所需步骤的输出。它在步骤被租用时渲染，相对路径位于 `$TEAMAI_RUN_DIR` 下。目录在它之外、是符号链接，或没有可读的 `confined.json` 时，步骤以 `confined_invalid` 失败，并说明怎么修。
+- `confined.json` 是 `{ "level": "verified" | "best-effort", "prefer": "<tool>", "schema": "<file>" }`。`verified` 只在 TeamAI 检查过其受限启动的工具版本上运行，例如 Claude Code 2.1.308、Codex 0.163.0 或 OpenCode 2.1.2；`best-effort` 可在 TeamAI 能受限启动的任何工具上运行，例如 Cursor。`prefer` 最先尝试。`schema` 是该目录里的一个 JSON Schema 文件，回答要符合它。级别由写证据的步骤决定：工作流文件不能设置或降低它。
+- 该步骤只运行一个提示，一次。pull 拒绝把 `workspace: { confined }` 用在命令步骤或 `workflow` 步骤上，也拒绝它与 `for_each`、`scorers`、`requires.env`、`agent`、`tool`、`session`、`role`、`interactive` 或 `deliver` 同时出现。它可以设置 `model`：本机没有一个达到其级别的工具能解析该模型时，步骤保持待处理。
+- 本地 driver 运行它。只剩这类步骤而本机没有工具能运行时，它以 `confined_pending` 停下，并说明缺什么；让那个工具可用后，运行 `teamai workflow resume`。在编程会话中，会话所用工具在本机达到 `verified` 时，skill driver 在后台用它运行该步骤，否则交给只读这个目录的新子 agent，以 `best-effort` 运行。使用 `--no-judge`，或宿主不能启动子 agent 时，该步骤等待其他 driver。
+- 该步骤记录 `confined`：工具、工具报告的模型和 effort、TeamAI 测得的隔离级别、工具拥有的访问权限，以及用量。
+
 ## 交付 PR
 
 在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。其中写自己分支的步骤，需要有后续步骤通过 `needs` 合并那条分支，或者自己设置 `deliver: pr`。否则交付以 `delivery_failed` 失败，因为 pull request 会漏掉那部分工作。`for_each` 步骤的每个 item 各自交付自己的分支。

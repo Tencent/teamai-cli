@@ -884,8 +884,9 @@ A driver other than `local` declares what it can do in `driver.can` on each `nex
 | `end_turn` | Ends a prompt's turn at `lease.limits` and reports the `limit` it stopped at, with `durationMs`. |
 | `unattended` | Launches a prompt leased with `permissions: "unattended"` in its tool's own mode for editing and running commands without asking, and fails the step rather than launch a tool that has none. |
 | `role` | Takes a step that [runs as a team role](#run-a-step-as-a-team-role), leased with `role` through `--prepare`, and runs it in the clone or worktree copy teamai delivered that role into. |
+| `confined` | Takes [prompt steps confined to a directory](workflow.md#a-prompt-confined-to-a-directory): a list of offers, each `{ "level", "access", "tools" }`, the tools it launches confined at `level` (`verified` or `best-effort`) with `access` (`read` or `full`), in the order it tries them. See [Confined steps in your own driver](#confined-steps-in-your-own-driver). |
 
-An omitted key means the driver cannot. Isolation is best effort, unless `strict: true` makes it a floor. `next` lists any other key in `ignored`. The skill driver of a [coding session](workflow.md#run-from-a-coding-session) declares `hitl`, every `workspace` mode, `env: "commands"`, and `setup`. It never declares `tokens`, `max_turns`, `network`, `unattended`, or `role`, and its `isolation` is `none`: a coding session never bypasses its person's permissions.
+An omitted key means the driver cannot. Isolation is best effort, unless `strict: true` makes it a floor. `next` lists any other key in `ignored`. The skill driver of a [coding session](workflow.md#run-from-a-coding-session) declares `hitl`, every `workspace` mode, `env: "commands"`, and `setup`. It never declares `tokens`, `max_turns`, `network`, `unattended`, or `role`, and its `isolation` is `none`: a coding session never bypasses its person's permissions. It declares `confined` only while it judges the run: the session's tool at `verified` when this machine has its confined judge, else that tool at `best-effort`, for a fresh subagent.
 
 ### Unattended prompts
 
@@ -1207,6 +1208,12 @@ For each lease the driver:
 3. Reports a prompt with `tool`, the `model`, `session` and `tokens` the tool reported, `durationMs` measured around the tool launch only, and `cost` (`{"amount":0.12,"unit":"USD"}`) only when the tool stated one. When a limit stopped the tool, the report has `outcome: "success"` and `limit`: `timeout`, `budget` or `max_turns`; a `budget` or `max_turns` the driver could not hold the tool to goes in `unenforced`. A report whose `limit` the lease does not set answers `invalid_report`, as does one with `changes` or `read`, which teamai fills from the clone.
 
 `src/__tests__/e2e/benchmark-driver-contract.test.ts` checks this contract against a driver that runs a [benchmark](benchmarks.md#your-own-driver).
+
+## Confined steps in your own driver
+
+A step [confined to a directory](workflow.md#a-prompt-confined-to-a-directory) is leased only to a driver with a `can.confined` offer at its level or above. Its lease carries `confined`: `dir`, `level`, `tools`, the tools of the offers that reach the level in their order with `prefer` first, and `schema` when `confined.json` names one. A step whose model none of those tools resolves on this machine waits, with `wait.held[].missing` naming `model`, as one no offer reaches names `confined`.
+
+The driver runs `lease.prompt` on the first of `tools` that resolves `lease.model`, with `dir` as the tool's working directory and only readable root, none of the team's env, and no session kept. It reports the reply as `outputs`, which TeamAI checks against the step's `output`, and `confined` as that run measured it: `tool`, `isolation`, `access`, and `model`, `effort` and `usage` when the tool reported them. A driver that finds no tool to run reports `outcome: "released"`. `confinedConformanceScenarios` in `src/workflow/conformance/confined.ts` checks the leasing rules.
 
 ## Judge work in your own driver
 
