@@ -7,7 +7,6 @@ import { Subject } from './scorers/subject.js';
 import { scoreSession, type SessionDemand } from './session-flow/scoring.js';
 import type { LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
-import { isDelivered } from './utils/branch-worktree.js';
 import { DataBranches } from './utils/data-branches.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
@@ -300,11 +299,10 @@ async function pushPending(config: LocalConfig): Promise<{ data: { published: bo
   const labels = await LabelStore.push(config);
 
   if (!('data' in labels)) return labels;
-  const stuck = (await DataBranches.pushPending(config)).filter(({ result }) => !isDelivered(result));
+  // Labels that stay pending leave their commit on teamai-reports, and their own line says so, as the drain's does.
+  const stuck = (await DataBranches.sendPending(config)).filter(({ branch }) => labels.data.published || branch !== 'teamai-reports');
 
-  for (const { branch, result } of stuck) {
-    log.warn(`What workflow steps published to ${branch} stays pending on this machine: ${result.status === 'failed' ? result.reason.trim() : 'another teamai process is writing it'}.`);
-  }
+  for (const { message } of stuck) log.warn(message);
 
   return stuck.length === 0 ? labels : { data: { published: false } };
 }

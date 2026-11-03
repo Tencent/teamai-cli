@@ -241,6 +241,9 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     fs.renameSync(`${team}.away`, team);
     expect(offline.code, offline.stdout + offline.stderr).toBe(0);
     expect(envelope(offline.stdout).data).toMatchObject({ published: false });
+    // The labels' own line says they stay pending; teamai-reports is not reported stuck a second time.
+    expect(offline.stderr).toContain('The labels stay pending until teamai score --push can publish them.');
+    expect(offline.stderr).not.toContain('What workflow steps published to teamai-reports stays pending');
     expect(fs.readdirSync(path.join(dataHome, 'scores', 'pending'))).toHaveLength(1);
     const online = await runCLI(['score', '--push'], app, env);
     expect(envelope(online.stdout).data, online.stdout + online.stderr).toEqual({ published: true });
