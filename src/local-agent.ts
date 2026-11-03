@@ -5010,7 +5010,7 @@ async function installMcpServer(
     const hash = entryHash(entry);
     const valueHash = format === 'muse' ? museEntryHash(entry) : undefined;
     const allowBare = format === 'copilot' && projectScope;
-    const doc = await readJsonDoc(targetFile, serverKey, allowBare, active?.projectKey);
+    const doc = await readJsonDoc(targetFile, serverKey, { allowBare, projectKey: active?.projectKey, syntax: (active ?? place).syntax });
 
     if (!doc) {
       throw new Error(`install_mcp: cannot parse ${targetFile}`);
@@ -5117,12 +5117,12 @@ async function installMcpServer(
  * where. Whether it took it out.
  */
 async function removeMovedMcpEntry(
-  from: Pick<McpTarget, 'file' | 'projectKey'>, serverKey: McpKey, slug: string, target: string, recordedHash: string,
+  from: Pick<McpTarget, 'file' | 'projectKey' | 'syntax'>, serverKey: McpKey, slug: string, target: string, recordedHash: string,
 ): Promise<boolean> {
   const file = describeMcpLocation(from);
 
   try {
-    const doc = await readJsonDoc(from.file, serverKey, false, from.projectKey);
+    const doc = await readJsonDoc(from.file, serverKey, { projectKey: from.projectKey, syntax: from.syntax });
 
     if (!doc) throw new Error('it does not parse');
 
@@ -5241,7 +5241,7 @@ async function uninstallMcpServer(
     } else {
       const serverKey = mcpKeyOf(recorded);
       const allowBare = format === 'copilot' && projectScope;
-      const doc = await readJsonDoc(targetFile, serverKey, allowBare, projectKey);
+      const doc = await readJsonDoc(targetFile, serverKey, { allowBare, projectKey, syntax: recorded.syntax });
 
       if (!doc) throw new Error(`uninstall_mcp: cannot parse ${targetFile}. Ownership was kept; repair the config and uninstall the server again.`);
       // Also a bare entry another tool's mcpServers now sits beside (#882).
@@ -5679,8 +5679,8 @@ async function moveToLocalScope(
   if (records.length === 0 || tree.format === 'codex') return;
   const serverKey = mcpKeyOf(tree);
   const there = describeMcpLocation(local);
-  const from = await readJsonDoc(tree.file, serverKey);
-  const to = await readJsonDoc(local.file, serverKey, false, local.projectKey);
+  const from = await readJsonDoc(tree.file, serverKey, { syntax: tree.syntax });
+  const to = await readJsonDoc(local.file, serverKey, { projectKey: local.projectKey, syntax: local.syntax });
 
   if (!from || !to) {
     log.warn(`Did not move the local agent's MCP servers for ${tool} from ${tree.file} to ${there}: `
