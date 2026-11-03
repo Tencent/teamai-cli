@@ -241,6 +241,25 @@ steps:
     session: { from: plan }
 `;
 
+const ISOLATED_PUBLISH = `schemaVersion: v1alpha1
+name: trial
+description: A run with a step in a clone is isolated, so its step that publishes to a data branch is skipped.
+steps:
+  - id: tally
+    command: echo tally
+    output: { baseline: boolean }
+  - id: baseline
+    needs: [tally]
+    if: steps.tally.outputs.baseline
+    workspace: { clone: { commit: ${'c'.repeat(40)}, team: { treatment: none } } }
+    command: echo baseline
+  - id: publish
+    needs: [tally, baseline]
+    workspace: { team: { branch: teamai-reports } }
+    command: teamai score publish
+    deliver: publish
+`;
+
 /** Every protocol scenario a driver must pass, the ones each concern keeps in its own file included. */
 export const workflowConformanceScenarios: ConformanceScenario[] = [
   {
@@ -352,6 +371,19 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       { kind: 'report', lease: 'docs', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
     ],
+  },
+  {
+    name: 'an isolated run skips its step that publishes to a data branch, so a driver without the team workspace ends it',
+    workflowName: 'trial',
+    yaml: ISOLATED_PUBLISH,
+    operations: [
+      { kind: 'next', saveAs: 'tally', expect: { data: { lease: { step: 'tally' } } } },
+      { kind: 'report', lease: 'tally', body: { outcome: 'success', outputs: { baseline: false } }, expect: { data: { step: { status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+    expectState: { steps: [{ id: 'tally', status: 'succeeded' }, { id: 'baseline', status: 'skipped' }, {
+      id: 'publish', status: 'skipped', message: 'Step "publish" was skipped: this run is isolated, so it publishes nothing to a data branch.',
+    }] },
   },
   {
     name: 'recovery runs after a failure',

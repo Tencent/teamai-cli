@@ -34,7 +34,7 @@ import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, lease
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { contractClone, deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { contractClone, deliverableOf, deliveryTarget, isIsolated, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
   deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
@@ -798,12 +798,14 @@ export function parseReads(run: RunState, scope: Scope): RunReads | string {
 /**
  * Marks every pending step of a workflow that can no longer run as `skipped`, until nothing changes:
  * a stopped need its `if` does not read, all needs skipped, or a ready step whose `if` is false. A step that waits for a loop is neither skipped
- * nor ready until that loop is settled.
+ * nor ready until that loop is settled. A ready `deliver: publish` step of an isolated run is skipped with why, so no
+ * driver needs the team workspace for what the run keeps off the team's data anyway.
  * Returns whether a step is ready: everything it needs and everything its `if` and templates read has settled.
  */
 function skipUnreachable(run: RunState, scope: Scope, states: StepState[], { conditions, reads, waits }: RunReads): (step: StepState) => boolean {
   const byId = new Map(states.map((step) => [localId(scope, step), step]));
   const declared = new Map(scope.definition.steps.map((step) => [step.id, step.needs ?? []]));
+  const publishes = new Set(isIsolated(run) ? scope.definition.steps.filter((step) => step.deliver === 'publish').map((step) => step.id) : []);
   const needs = (step: StepState): Array<StepState | undefined> => (declared.get(localId(scope, step)) ?? []).map((id) => byId.get(id));
   const waiting = (step: StepState): boolean => (waits.get(localId(scope, step)) ?? []).some((owner) => !loopSettled(byId.get(owner)));
 
@@ -827,8 +829,11 @@ function skipUnreachable(run: RunState, scope: Scope, states: StepState[], { con
       const allSkipped = needs(step).length > 0 && needs(step).every((need) => need?.status === 'skipped');
       const conditionFalse = ready(step) && !conditionHolds(step);
 
-      if (!stoppedNeed && !allSkipped && !conditionFalse) continue;
-      skip(step, run.revision);
+      const unreachable = stoppedNeed || allSkipped || conditionFalse;
+      const isolatedPublish = !unreachable && ready(step) && publishes.has(localId(scope, step));
+
+      if (!unreachable && !isolatedPublish) continue;
+      skip(step, run.revision, isolatedPublish ? `Step "${localId(scope, step)}" was skipped: this run is isolated, so it publishes nothing to a data branch.` : undefined);
       changed = true;
     }
   }

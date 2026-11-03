@@ -249,7 +249,8 @@ const FailedSchema = StepBaseSchema.extend({
   status: z.literal('failed'), outcome: z.literal('failed').default('failed'), ...settledFields, failure: FailureSchema.optional(),
 });
 
-const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0) });
+/** `message`: why the engine skipped a step it could have run, when that is not its `if` or its needs. */
+const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0), message: z.string().optional() });
 
 /** A step cancelled while it delivered keeps what its agent settled, as `delivering` holds it. */
 const CancelledSchema = StepBaseSchema.extend({ status: z.literal('cancelled'), ...settledFields, failure: FailureSchema });
@@ -347,8 +348,8 @@ export function resetIteration(state: StepState): void {
   delete state.iteration;
 }
 
-export function skip(state: StepState, settledAt: number): SkippedStep {
-  return become<SkippedStep>(state, { status: 'skipped', settledAt });
+export function skip(state: StepState, settledAt: number, message?: string): SkippedStep {
+  return become<SkippedStep>(state, { status: 'skipped', settledAt, ...message !== undefined && { message } });
 }
 
 /** A released lease returns the step to `pending` with nothing from the attempt. */
