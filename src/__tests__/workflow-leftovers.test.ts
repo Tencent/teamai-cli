@@ -21,6 +21,7 @@ _setDriverPollMs(20);
 const dirs: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -66,6 +67,28 @@ async function state(config: LocalConfig, runId: string): Promise<RunState> {
 function branches(repo: string, runId: string): string[] {
   return git(repo, ['for-each-ref', '--format=%(refname)', `refs/heads/teamai/${runId}/`]).split('\n').filter(Boolean)
     .map((ref) => ref.slice(`refs/heads/teamai/${runId}/`.length));
+}
+
+/**
+ * Puts a git first on PATH that, the first time a command matching `deleting` runs, commits on `branch` in the repository
+ * git reaches with `repo` before it runs that command, as another machine pushing meanwhile would. Answers the new tip.
+ */
+function movesBefore(root: string, { deleting, repo, branch }: { deleting: string; repo: string; branch: string }): () => string {
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const bin = path.join(root, 'racing-bin');
+  const marker = path.join(root, 'raced');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+if test ! -f '${marker}' && echo " $* " | grep -Eq -- '${deleting}'; then
+  parent=$('${real}' ${repo} rev-parse 'refs/heads/${branch}')
+  new=$(echo concurrent | '${real}' -c user.name=Test -c user.email=test@example.com ${repo} commit-tree "$parent^{tree}" -p "$parent")
+  '${real}' ${repo} update-ref 'refs/heads/${branch}' "$new"
+  echo "$new" > '${marker}'
+fi
+exec '${real}' "$@"
+`, { mode: 0o755 });
+  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+  return () => fs.readFileSync(marker, 'utf8').trim();
 }
 
 const SHIP_ISSUE = `schemaVersion: v1alpha1
@@ -144,6 +167,33 @@ steps:
     expect(branches(origin, runId)).toContain('_run');
     expect(branches(cwd, runId)).toContain('_run');
     expect((await state(config, runId)).leftovers?.kept).toContainEqual({ branch: `teamai/${runId}/_run`, why: 'final' });
+  });
+
+  it('keeps a branch another machine moved on origin after its tip was checked, and warns naming it', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(NO_DELIVERY);
+    const left = `teamai/${runId}/left/p1`;
+    const moved = movesBefore(root, { deleting: `push .*--delete`, repo: `--git-dir=${origin}`, branch: left });
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+
+    const tip = moved();
+    expect(git(origin, ['for-each-ref', '--format=%(objectname)', `refs/heads/${left}`])).toBe(tip);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Branch ${left} of run ${runId} was not deleted on origin`));
+    expect((await state(config, runId)).leftovers).toMatchObject({ failed: [{ branch: left }] });
+  });
+
+  it('keeps a branch that moved in the checkout after its tip was checked', async () => {
+    const { config, cwd, root, runId } = await fixture(NO_DELIVERY);
+    const left = `teamai/${runId}/left/p1`;
+    const moved = movesBefore(root, { deleting: `(branch -D|update-ref -d refs/heads/).*${left}`, repo: `-C ${cwd}`, branch: left });
+    vi.spyOn(log, 'warn');
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+
+    const tip = moved();
+    expect(git(cwd, ['for-each-ref', '--format=%(objectname)', `refs/heads/${left}`])).toBe(tip);
+    expect((await state(config, runId)).leftovers).toMatchObject({ failed: [{ branch: left }] });
   });
 
   it('still succeeds when origin refuses a deletion, and warns naming the branch, which it keeps for doctor --fix', async () => {

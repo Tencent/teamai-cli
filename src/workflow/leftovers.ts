@@ -100,23 +100,29 @@ async function contains({ checkout, tip, holders }: { checkout: string; tip: str
 }
 
 /**
- * Deletes `branches` on origin and in the checkout. A branch checked out in a worktree teamai made goes with that
- * worktree; one checked out where the host put it stays in the checkout, and is not a failure.
+ * Deletes `branches` on origin and in the checkout, each only while it is still at the tip `tips` examined: a branch
+ * that moved since stays, as a failure `doctor --fix` tries again. A branch checked out in a worktree teamai made goes
+ * with that worktree; one checked out where the host put it stays in the checkout, and is not a failure.
  */
 async function deleteBranches(
   { checkout, runId, branches, tips }: { checkout: string; runId: string; branches: string[]; tips: Tips },
 ): Promise<Pick<RunLeftovers, 'deleted' | 'failed'>> {
   const failed: RunLeftovers['failed'] = [];
-  const onOrigin = branches.filter((branch) => tips.origin?.has(branch));
+  const onOrigin = branches.flatMap((branch) => {
+    const tip = tips.origin?.get(branch);
+
+    return tip === undefined ? [] : [{ branch, tip }];
+  });
 
   if (onOrigin.length > 0) {
-    const pushed = await git(checkout, ['push', '--quiet', 'origin', '--delete', ...onOrigin]);
+    const leases = onOrigin.map(({ branch, tip }) => `--force-with-lease=refs/heads/${branch}:${tip}`);
+    const pushed = await git(checkout, ['push', '--quiet', ...leases, 'origin', '--delete', ...onOrigin.map(({ branch }) => `refs/heads/${branch}`)]);
 
     if (pushed.code !== 0) {
       const left = await runBranches({ checkout, runId });
       const reason = sanitizeGitUrl(pushed.stderr.trim()) || 'git push failed';
 
-      for (const branch of onOrigin) {
+      for (const { branch } of onOrigin) {
         if ('error' in left || left.origin?.has(branch)) failed.push({ branch, reason: `on origin: ${reason}` });
       }
     }
@@ -125,7 +131,11 @@ async function deleteBranches(
   const worktrees = await checkedOut(checkout);
   const hostKept = new Set<string>();
 
-  for (const branch of branches.filter((name) => tips.local.has(name) && !failed.some((item) => item.branch === name))) {
+  for (const branch of branches.filter((name) => !failed.some((item) => item.branch === name))) {
+    const tip = tips.local.get(branch);
+
+    if (tip === undefined) continue;
+
     if ('error' in worktrees) {
       failed.push({ branch, reason: `in ${checkout}: ${worktrees.error}` });
       continue;
@@ -147,9 +157,9 @@ async function deleteBranches(
       }
     }
 
-    const removed = await git(checkout, ['branch', '-D', branch]);
+    const removed = await git(checkout, ['update-ref', '-d', `refs/heads/${branch}`, tip]);
 
-    if (removed.code !== 0) failed.push({ branch, reason: `in ${checkout}: ${removed.stderr.trim() || 'git branch -D failed'}` });
+    if (removed.code !== 0) failed.push({ branch, reason: `in ${checkout}: ${removed.stderr.trim() || 'git update-ref -d failed'}` });
   }
 
   return { deleted: branches.filter((branch) => !hostKept.has(branch) && !failed.some((item) => item.branch === branch)), failed };
