@@ -7,6 +7,7 @@ import { ModelProfileSchema, profileAgents, resolveProfile } from '../models/pro
 import { activeModelProfiles, refusedLegacyValueKeys, refuseLegacyValue, restoreModelProfiles, switchModelProfile } from '../models/switch.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { saveToolHomes } from '../tool-home.js';
+import { parseJsonAs } from '../utils/json.js';
 
 let home: string;
 let originalEnv: Record<string, string | undefined>;
@@ -516,6 +517,22 @@ describe('OpenCode model switching', () => {
     expect(await fse.readJson(openCodeFile())).toEqual(original);
   });
 
+  // OpenCode 2.1.2 parses opencode.json with jsonc-parser, comments and trailing commas allowed.
+  it('switches and restores a commented opencode.json, keeping the comment', async () => {
+    await fse.outputFile(openCodeFile(), '{\n  // the member\'s note\n  "model": "personal/one",\n}\n');
+    const profile = routed({ 'openai-chat-completions': ['glm-5.3'] });
+
+    expect(await switchModelProfile(profile, ['opencode'])).toEqual([expect.objectContaining({ status: 'switched' })]);
+    const active = await fse.readFile(openCodeFile(), 'utf8');
+    expect(active).toContain('// the member\'s note');
+    expect(parseJsonAs(active, 'jsonc')).toMatchObject({ model: 'teamai-chat/glm-5.3' });
+
+    expect((await restoreModelProfiles(['opencode']))[0].status).toBe('restored');
+    const restored = await fse.readFile(openCodeFile(), 'utf8');
+    expect(restored).toContain('// the member\'s note');
+    expect(parseJsonAs(restored, 'jsonc')).toEqual({ model: 'personal/one' });
+  });
+
   it('defaults to the first model OpenCode can reach when the profile lists a Gemini-only model first', async () => {
     await fse.ensureDir(path.dirname(openCodeFile()));
     const profile = routed({ gemini: ['gemini-3.8-flash'], anthropic: ['claude-opus-4-8'] });
@@ -590,6 +607,22 @@ describe('Pi model switching', () => {
     expect(active.providers.HAIHUB).toEqual(original.providers.HAIHUB);
     expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
     expect(await fse.readJson(piFile())).toEqual(original);
+  });
+
+  // Pi 1.4.0 strips `//` comments and trailing commas from models.json (dist/core/model-config.js:140).
+  it('switches and restores a commented models.json, keeping the comment', async () => {
+    await fse.outputFile(piFile(), '{\n  // the member\'s note\n  "providers": {\n    "Mine": { "baseUrl": "https://mine.example/v1" },\n  },\n}\n');
+    const profile = routed({ 'openai-chat-completions': ['glm-5.3'] });
+
+    expect((await switchModelProfile(profile, ['pi']))[0].status).toBe('switched');
+    const active = await fse.readFile(piFile(), 'utf8');
+    expect(active).toContain('// the member\'s note');
+    expect(Object.keys(Object(Object(parseJsonAs(active, 'jsonc')).providers))).toEqual(['Mine', 'team:tokenhub']);
+
+    expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
+    const restored = await fse.readFile(piFile(), 'utf8');
+    expect(restored).toContain('// the member\'s note');
+    expect(parseJsonAs(restored, 'jsonc')).toEqual({ providers: { Mine: { baseUrl: 'https://mine.example/v1' } } });
   });
 
   it('serves an Anthropic-only catalog over anthropic-messages', async () => {
