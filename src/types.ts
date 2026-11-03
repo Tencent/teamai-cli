@@ -1549,6 +1549,14 @@ export interface CopyOrigin {
   pathspec: string;
   /** teamai's renders of one version; null when that version renders nothing here. */
   renders?: ReadonlyArray<(content: Buffer, version: { path: string; blob: string }) => string | Uint8Array | null>;
+  /**
+   * The path holds an agent teamai ships under that name, which every pull
+   * wrote over before a team agent could replace it: a file there with no
+   * delivery record is teamai's, whichever teamai version wrote it.
+   */
+  builtin?: true;
+  /** What this teamai writes there for that built-in: a copy holding it is teamai's, even on record as a team delivery. */
+  shipped?: string;
 }
 
 // ─── Hook definitions (unified model, issue #19) ─────────

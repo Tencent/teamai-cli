@@ -261,8 +261,9 @@ async function withDisk(previous: DeliveredHashes, next: Iterable<[string, strin
 
 /**
  * Whether the file at `file`, which has no delivery record, is teamai's
- * (#993): its bytes are a version of `origin.pathspec` in the history of
- * `origin.repoPath`, or one of `origin.renders` of such a version, compared
+ * (#993): it holds a built-in teamai ships (`origin.builtin`), or its bytes
+ * are a version of `origin.pathspec` in the history of `origin.repoPath`, or
+ * one of `origin.renders` of such a version, compared
  * by git blob id. False when there is no file, or git cannot read the history:
  * without proof, it is the member's. Read-only; run it only for a file that
  * exists without a record, as it reads the history.
@@ -273,6 +274,8 @@ export async function isTeamaiCopy(file: string, origin: CopyOrigin): Promise<bo
   const bytes = await fse.readFile(file).catch(() => null);
 
   if (bytes === null) return false;
+
+  if (origin.builtin) return true;
 
   if (await matchesHistory(origin.repoPath, origin.pathspec, bytes)) return true;
 
@@ -591,6 +594,9 @@ export async function judgeCopy(previous: DeliveredHashes | undefined, item: Res
   if (await isMembersCopy(previous, item, target)) return { kind: 'member' };
 
   if (previous === undefined) return { kind: 'write' };
+
+  // The built-in a pull that kept its revision wrote while the team's copy was missing (#1691).
+  if (target.origin?.shipped !== undefined && await fileHash(target.dest) === contentHash(target.origin.shipped)) return { kind: 'write' };
   const verdict = classifyCopy(await withDisk(previous, await nextHashes(previous, item, target)));
 
   // A recorded skill the member added a file to, at a path the team now delivers too, is kept
