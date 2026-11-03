@@ -69,6 +69,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
       fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
       fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`);
       fs.writeFileSync(path.join(knowledge, 'workflows', `${scenario.workflowName}.yaml`), scenario.yaml);
+      for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
       git(root, 'init', '-q', '-b', 'main', knowledge);
       git(knowledge, 'add', '-A');
       git(knowledge, 'commit', '-qm', 'team');
@@ -125,8 +126,11 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
 
       // A handoff run is not on this install yet: resume, or the first next, claims it before it drives.
       if (profile === 'local') {
-        const resumed = await call(['resume', runId], checkout, tester);
-        expect(resumed, JSON.stringify(resumed)).toMatchObject({ data: { done: { run: runId } } });
+        const resumed = await runCLI(['workflow', 'resume', runId], checkout, tester);
+        expect(envelope(resumed.stdout), resumed.stderr).toMatchObject({ data: { done: { run: runId } } });
+        const merge = scenario.expectMergeBranch?.replace('<run>', runId);
+        if (merge) expect(resumed.stderr).toContain(`Run ${runId} left its changes on branch ${merge}. Bring them in with: git merge ${merge}`);
+        else expect(resumed.stderr).not.toContain('Bring them in with: git merge');
       } else {
         const client = cliConformanceClient((args) => call(args, checkout, tester));
         const driver = { ...profileDriver(profile), workspace: checkout };
@@ -142,6 +146,13 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
         const changes = changesOf(run, id);
         expect(git(origin, 'for-each-ref', '--format=%(objectname)', `refs/heads/${changes.branch}`), `${id} is pushed`).toBe(changes.to);
         for (const [file, text] of Object.entries(files)) expect(git(origin, 'show', `${changes.to}:${file}`)).toBe(text);
+      }
+      if (scenario.expectCopies) {
+        const copies = Object.entries(scenario.expectCopies).map(([branch, files]) => [branch.replace('<run>', runId), files] as const);
+        expect(Object.keys(run.copies ?? {}).toSorted(), 'the run records these copies and no other').toEqual(copies.map(([branch]) => branch).toSorted());
+        for (const [branch, files] of copies) {
+          for (const [file, text] of Object.entries(files)) expect(git(origin, 'show', `refs/heads/${branch}:${file}`), `${branch} holds ${file}`).toBe(text);
+        }
       }
       for (const id of refused ? [] : scenario.expectGone ?? []) {
         const { branch } = changesOf(run, id);
