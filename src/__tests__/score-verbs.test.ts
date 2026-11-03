@@ -18,7 +18,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
-import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext } from '../score-verbs.js';
+import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { Marks } from '../scorers/marks.js';
 import type { JudgeRun } from '../scorers/score-labels.js';
@@ -228,7 +228,11 @@ interface ScoreRun {
 
 /** A teamai-score run of `inputs`, started by `startedBy`, whose leases a test takes one by one. */
 async function scoreRun(config: LocalConfig, inputs: Record<string, unknown>, startedBy: StartedBy = 'cli'): Promise<ScoreRun> {
-  const runId = String(data(await startRun(config, 'teamai-score', { scorers: [], label: '', batch: false, demand: 'auto', ...inputs }, { secrets: await knownSecrets(config), startedBy })).run);
+  return runOf(config, String(data(await startRun(config, 'teamai-score', { scorers: [], label: '', batch: false, demand: 'auto', ...inputs }, { secrets: await knownSecrets(config), startedBy })).run));
+}
+
+/** Run `runId` of any workflow, whose leases a test takes one by one. */
+function runOf(config: LocalConfig, runId: string): ScoreRun {
   return {
     runId,
     async next(step) {
@@ -245,6 +249,21 @@ async function scoreRun(config: LocalConfig, inputs: Record<string, unknown>, st
 }
 
 describe('score plan', () => {
+  it('refuses a step of a workflow that is not teamai-score, and opens no mark', async () => {
+    const config = await team({ fixes: FIXES }, { quality: scorer() });
+    const run = runOf(config, String(data(await startRun(config, 'fixes', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run));
+    const fix = await run.next('outer.fix');
+    data(await reportAttempt(config, run.runId, { attempt: fix.attempt, revision: fix.revision, outcome: 'success', driver: external, tool: 'claude', session: 'session-fix' }));
+    const lister = await run.next('outer.lister');
+
+    expect(await ScoreVerbs.plan({ subject: `run:${run.runId}:outer.fix:1` }, lister.ctx)).toEqual({
+      ok: false,
+      code: 'score_attempt_required',
+      message: expect.stringContaining(`step outer.lister of run ${run.runId} is not inside a teamai-score instance`),
+    });
+    expect(fs.existsSync(path.join(root, 'data', 'scores', 'marks.jsonl'))).toBe(false);
+  });
+
   it('refuses a call from a shell no teamai-score attempt runs, and opens no mark', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
@@ -316,6 +335,14 @@ describe('score plan', () => {
     expect(await plan('session:claude-code:two', 'named')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
   });
 
+  it('judges a session automatically with each scorer that judges sessions and samples it, and only those', async () => {
+    const config = await team({}, { quality: scorer({ extra: 'sessions: true\n' }), coverage: scorer({ rate: 0, extra: 'sessions: true\n' }), tests: scorer() });
+    const subject = 'session:claude-code:one';
+    const { ctx } = await (await scoreRun(config, { subject })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject }, ctx)).toEqual({ ok: true, output: { groups: [{ subject, hand: '', scorers: 'quality', model: '', ci: false, protected: false }] } });
+  });
+
   it('takes a hand label only from a run a person started, as one group with no stage', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const subject = 'session:claude-code:one';
@@ -355,7 +382,16 @@ steps:
     scorers: [quality, coverage]
 `;
 
-describe('score plan in a nested workflow', () => {
+describe('score plan reads the workflow a step is in', () => {
+  it('batches the scorers of a step whose workflow sets defaults.scorers.batch', async () => {
+    const config = await team({ review: REVIEW.replace('steps:', 'defaults: { scorers: { batch: true } }\nsteps:') }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
+  });
+
   it('batches a step of an inline workflow as the workflow around it says, and one of a workflow file as that file says', async () => {
     const config = await team({ nested: NESTED, inner: INNER }, { quality: scorer(), coverage: scorer() });
     const runId = String(data(await startRun(config, 'nested', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
@@ -376,7 +412,7 @@ describe('score plan in a nested workflow', () => {
     expect(await planned('filed.mend')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }, { scorers: 'coverage' }] } });
   });
 
-  it('reads the hand label of a teamai-score instance a step of another workflow runs, not the root run\'s inputs', async () => {
+  it('labels by hand in a teamai-score instance a step of another workflow runs, from that instance\'s label input', async () => {
     const rescore = `schemaVersion: v1alpha1
 name: rescore
 description: Label a subject again by hand.
@@ -389,12 +425,21 @@ steps:
 `;
     const config = await team({ review: REVIEW, rescore }, { quality: scorer(), coverage: scorer() });
     const subject = `run:${await reviewedRun(config)}:review:1`;
-    const runId = String(data(await startRun(config, 'rescore', { subject }, { secrets: await knownSecrets(config), startedBy: 'person' })).run);
-    const lease = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
-    const ctx = { env: attemptEnv(config, runId, lease.attempt, 'unattended'), current: config, now: NOW };
+    const run = runOf(config, String(data(await startRun(config, 'rescore', { subject }, { secrets: await knownSecrets(config), startedBy: 'person' })).run));
+    const plan = await run.next('again.plan');
+    const planned = await ScoreVerbs.plan({ subject, scorers: '["quality"]', label: 'good', demand: 'named' }, plan.ctx);
 
-    expect(lease.step).toBe('again.plan');
-    expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', label: 'good', demand: 'named' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ hand: 'good', scorers: 'quality', ci: false, protected: false }] } });
+    expect(planned).toMatchObject({ ok: true, output: { groups: [{ hand: 'good', scorers: 'quality', ci: false, protected: false }] } });
+    await run.report(plan, planned);
+    const evidence = await run.next('again.score[0].evidence');
+    const written = await ScoreVerbs.evidence({ subject, scorers: 'quality' }, evidence.ctx);
+
+    expect(written).toMatchObject({ ok: true, output: { rubric: '', schema: '', delivers: false } });
+    await run.report(evidence, written);
+    const label = await run.next('again.score[0].label');
+    const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+
+    expect(await ScoreVerbs.label({ evidence: dir, answer: '', judge: '' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
   });
 
   it('refuses a named scorer on a pass of a run that pinned none', async () => {
@@ -495,15 +540,24 @@ describe('score stage', () => {
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'decided', by: 'ci', reasoning: expect.stringContaining('pull/57 failed') });
   });
 
-  it('ci that has not finished writes a pending record, and past --wait is judged as no CI', async () => {
+  it('ci that has not finished writes a pending record until --wait has passed, then is judged as no CI', async () => {
     const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
     const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
 
     expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: false, pending: true } });
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toMatchObject({ kind: 'pending' });
-    const later = { ...next.ctx, now: '2026-11-03T12:00:01.000Z' };
-    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, later)).toEqual({ ok: true, output: { decided: false } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, { ...next.ctx, now: '2026-11-03T11:59:59.999Z' })).toEqual({ ok: true, output: { decided: false, pending: true } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, { ...next.ctx, now: '2026-11-03T12:00:00.000Z' })).toEqual({ ok: true, output: { decided: false } });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'judge' });
+  });
+
+  it('ci without --wait reads a CI that has not finished as no CI', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
+
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir }, next.ctx)).toEqual({ ok: true, output: { decided: false } });
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'judge' });
   });
 
@@ -520,6 +574,20 @@ describe('score stage', () => {
     const { next } = await deliveredGroup(config, await deliveredRun(config));
 
     expect(await ScoreVerbs.stage({ stage: 'protected', evidence: root }, next.ctx)).toMatchObject({ ok: false, code: 'evidence_unreadable' });
+  });
+
+  it('refuses a group whose second scorer no longer parses', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { evidence, scorers } = await plannedGroup(config, subject, { batch: true });
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    const file = path.join(z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir, 'group.json');
+    const group = z.looseObject({ scorers: z.array(z.looseObject({ pin: z.looseObject({ content: z.string() }) })) }).parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+    fs.writeFileSync(file, JSON.stringify({ ...group, scorers: group.scorers.map((each, index) => (index === 1 ? { ...each, pin: { ...each.pin, content: 'no frontmatter' } } : each)) }));
+
+    expect(scorers).toBe('quality,coverage');
+    expect(await ScoreVerbs.stage({ stage: 'protected', evidence: path.dirname(file) }, evidence.ctx)).toMatchObject({ ok: false, code: 'evidence_unreadable' });
   });
 
   it.each([
@@ -647,8 +715,27 @@ describe('score label and score write', () => {
     const { answers } = await walk(config, subject, { inputs, startedBy: 'person' });
 
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
-    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good', source: 'session', subject: { platform: 'claude-code', sessionId: 'one' }, judge: { kind: 'human' } }]);
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good', source: 'session', subject: { platform: 'claude-code', sessionId: 'one' }, judge: { kind: 'human' }, used: { skills: [] } }]);
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'marks.jsonl'))).toBe(false);
+  });
+
+  it('label by hand a session gone from this machine, with what it used unknown', async () => {
+    const config = await team({}, { quality: scorer() });
+    const { answers } = await walk(config, 'session:claude-code:gone', { inputs: { scorers: ['quality'], label: 'good', demand: 'named' }, startedBy: 'person' });
+    const labels = await LabelStore.local(config);
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
+    expect(labels).toMatchObject([{ scorer: 'quality', label: 'good', source: 'session', subject: { platform: 'claude-code', sessionId: 'gone' }, judge: { kind: 'human' } }]);
+    expect(labels[0]).not.toHaveProperty('used');
+  });
+
+  it('label a session by its judge for a scorer with a check, as a pass that delivered nothing', async () => {
+    const config = await team({}, { quality: scorer({ extra: 'check: { run: "exit 3", protect: [test] }\n' }) });
+    plantSession(path.join(root, 'app'), 'one', 'Fix the login bug.');
+    const { answers } = await walk(config, 'session:claude-code:one', { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'It fixed the bug.' } } });
+
+    expect(answers.get('score[0].evidence')).toMatchObject({ ok: true, output: { delivers: false } });
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
   });
 
   it('settle a group whose evidence failed as a failed attempt, so automatic judging does not start it again', async () => {
@@ -682,7 +769,7 @@ steps:
 `;
 
 describe('score subjects', () => {
-  it('lists the passes of steps that start their own scoring, --step read from the calling attempt\'s workflow', async () => {
+  it('lists the passes of steps that start their own scoring, --step read from the workflow of the attempt of this run that calls it', async () => {
     const config = await team({ fixes: FIXES }, { quality: scorer() });
     const runId = String(data(await startRun(config, 'fixes', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
     const fix = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
@@ -695,11 +782,23 @@ describe('score subjects', () => {
     expect(await ScoreVerbs.subjects({ run: runId, step: 'fix' }, ctx)).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
     expect(await ScoreVerbs.subjects({ run: runId, step: 'lister' }, ctx)).toEqual({ ok: true, output: { list: [] } });
     expect(await ScoreVerbs.subjects({ run: runId }, { env: {}, current: config, now: NOW })).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
+    expect(await ScoreVerbs.subjects({ run: runId, step: 'fix' }, { env: { TEAMAI_WORKFLOW_ATTEMPT: `r0000000000000001/${lister.attempt}` }, current: config, now: NOW })).toEqual({ ok: true, output: { list: [] } });
     data(await reportAttempt(config, runId, { attempt: lister.attempt, revision: lister.revision, outcome: 'success', driver: external, outputs: {} }));
     const other = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
 
     expect(other.step).toBe('other');
+    expect(await ScoreVerbs.subjects({ run: runId, step: 'fix' }, ctx)).toEqual({ ok: true, output: { list: [] } });
     expect(await ScoreVerbs.subjects({ run: runId, step: 'outer' }, { env: attemptEnv(config, runId, other.attempt, 'unattended'), current: config, now: NOW })).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
+  });
+
+  it.each<[string, SubjectsOptions]>([
+    ['--lapsed with --run', { lapsed: true, run: 'r0000000000000001' }],
+    ['--lapsed with --step', { lapsed: true, step: 'fix' }],
+    ['neither --run nor --lapsed', {}],
+  ])('refuses %s', async (_case, options) => {
+    const config = await team({}, {});
+
+    expect(await ScoreVerbs.subjects(options, { env: {}, current: config, now: NOW })).toMatchObject({ ok: false, code: 'invalid_arguments' });
   });
 
   it('lists a lapse, and a pass that waited on CI once its CI finished, but not one still waiting', async () => {
@@ -723,7 +822,7 @@ describe('score subjects', () => {
 const LabelsFile = z.object({
   entries: z.array(z.looseObject({
     scorer: z.string(),
-    label: z.looseObject({ label: z.string(), judge: z.json(), rubric: z.looseObject({ sourceHash: z.string() }), subject: z.looseObject({ pass: z.number() }) }),
+    label: z.looseObject({ label: z.string(), score: z.number(), passed: z.boolean(), judge: z.json(), rubric: z.looseObject({ sourceHash: z.string() }), subject: z.looseObject({ pass: z.number() }) }),
   })),
 });
 
@@ -736,9 +835,11 @@ describe('score verbs refuse what they cannot act on', () => {
     ['a subject that is none', { subject: 'pass:1' }, 'subject_invalid'],
     ['scorers that are neither JSON nor names', { scorers: '[1]' }, 'invalid_arguments'],
     ['a demand that is neither auto nor named', { demand: 'now' }, 'invalid_arguments'],
+    ['an empty demand', { demand: '' }, 'invalid_arguments'],
     ['a batch that is not a boolean', { batch: 'yes' }, 'invalid_arguments'],
     ['a pass the run does not have', { subject: 'run:RUN:review:2' }, 'pass_not_found'],
     ['a scorer the run did not pin', { scorers: '["tests"]' }, 'scorer_not_found'],
+    ['a hand label of two scorers', { scorers: '["quality","coverage"]', label: 'good', demand: 'named' }, 'invalid_arguments'],
   ])('plan refuses %s', async (_case, options, code) => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
@@ -755,6 +856,7 @@ describe('score verbs refuse what they cannot act on', () => {
     ['evidence for a scorer the run did not pin', 'evidence', { scorers: 'tests' }, 'scorer_not_found'],
     ['evidence for a scorer teamai pull did not cache', 'evidence', { subject: 'team-session:alice:claude-code:one', scorers: 'tests' }, 'scorer_not_found'],
     ['evidence of a member\'s session while the team\'s pushed sessions cannot be read', 'evidence', { subject: 'team-session:alice:claude-code:gone', scorers: 'quality' }, 'reports_unreachable'],
+    ['evidence of a session gone from this machine', 'evidence', { subject: 'session:claude-code:gone', scorers: 'quality' }, 'evidence_empty'],
     ['to settle a subject that is none', 'settle', { subject: 'pass:1', scorers: 'quality' }, 'subject_invalid'],
     ['to settle scorers that are neither JSON nor names', 'settle', { scorers: '[1]' }, 'invalid_arguments'],
   ])('refuse %s', async (_case, verb, options, code) => {
@@ -765,17 +867,11 @@ describe('score verbs refuse what they cannot act on', () => {
     expect(await ScoreVerbs[verb]({ subject: `run:${runId}:review:1`, ...options }, ctx)).toMatchObject({ ok: false, code });
   });
 
-  it('plan batches the scorers of a step whose workflow sets defaults.scorers.batch', async () => {
-    const config = await team({ review: REVIEW.replace('steps:', 'defaults: { scorers: { batch: true } }\nsteps:') }, { quality: scorer(), coverage: scorer() });
-    const runId = await reviewedRun(config);
-    const subject = `run:${runId}:review:1`;
-    const { ctx } = await (await scoreRun(config, { subject })).next('plan');
-
-    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
-  });
-
   it.each<[string, (file: LabelsFile) => LabelsFile, string]>([
     ['a label the scorer does not have', eachEntry((entry) => ({ ...entry, label: { ...entry.label, label: 'good' } })), '"good" with score 0 is not a label of scorer quality'],
+    ['a label no scorer has', eachEntry((entry) => ({ ...entry, label: { ...entry.label, label: 'meh' } })), '"meh" with score 0 is not a label of scorer quality'],
+    ['a score its label does not have', eachEntry((entry) => ({ ...entry, label: { ...entry.label, score: 1 } })), '"bad" with score 1 is not a label of scorer quality'],
+    ['a passed its score does not give', eachEntry((entry) => ({ ...entry, label: { ...entry.label, passed: true } })), '"bad" with score 0 is not a label of scorer quality'],
     ['an entry of another scorer', eachEntry((entry) => ({ ...entry, scorer: 'coverage' })), 'entry 1 is not of scorer quality'],
     ['a rubric the run did not pin', eachEntry((entry) => ({ ...entry, label: { ...entry.label, rubric: { sourceHash: 'sha256:other' } } })), 'the label of quality is not of its pinned rubric'],
     ['a hand label in a run no person started', eachEntry((entry) => ({ ...entry, label: { ...entry.label, judge: { kind: 'human' } } })), 'the label of quality is a hand label'],
@@ -808,6 +904,65 @@ function claudeOnPath(): void {
   fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
 }
+
+describe('score label and score write read what the run recorded', () => {
+  /** A group of `quality` on the reviewed pass, its evidence written and its judge step answered `answer`, at its label step. */
+  async function judgedGroup(answer: unknown, startedBy: StartedBy = 'cli') {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['quality'] }, startedBy);
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    await run.report(evidence, written);
+    const judge = await run.next('score[0].judge');
+    await run.report(judge, { ok: true, output: { answer: z.json().parse(answer) } });
+    return { config, runId, run, label: await run.next('score[0].label'), dir: z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir };
+  }
+
+  it('write records the confined run that judged one scorer, with its usage and no batch', async () => {
+    const { config, run, label, dir } = await judgedGroup({ label: 'good', reasoning: 'ok' });
+    const labelled = await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED });
+
+    expect(labelled).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
+    await run.report(label, labelled);
+    expect(await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx)).toEqual({ ok: true, output: { written: 1 } });
+    const [stored] = await LabelStore.local(config);
+    expect(stored).toMatchObject({ judge: { kind: 'model', tool: 'claude', usage: { inputTokens: 10, outputTokens: 2 } } });
+    expect(stored?.judge).not.toHaveProperty('batched');
+  });
+
+  it('label gives judge_answer_invalid for an answer that is not JSON', async () => {
+    const { label, dir } = await judgedGroup({ label: 'good', reasoning: 'ok' });
+
+    expect(await ScoreVerbs.label({ evidence: dir, answer: 'good, I think', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED })).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code: 'judge_answer_invalid' }] } });
+  });
+
+  it.each<[string, StartedBy]>([['an agent', 'cli'], ['a person', 'person']])('label refuses a group that claims a hand label the run started by %s never gave', async (_case, startedBy) => {
+    const { label, dir } = await judgedGroup({ label: 'good', reasoning: 'ok' }, startedBy);
+    const file = path.join(dir, 'group.json');
+    fs.writeFileSync(file, JSON.stringify({ ...z.looseObject({}).parse(JSON.parse(fs.readFileSync(file, 'utf8'))), hand: true }));
+
+    expect(await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED })).toMatchObject({ ok: false, code: 'hand_label_refused' });
+  });
+
+  it('write refuses a group label has not labelled yet', async () => {
+    const { label, dir } = await judgedGroup({ label: 'good', reasoning: 'ok' });
+
+    expect(await ScoreVerbs.write({ evidence: dir }, label.ctx)).toMatchObject({ ok: false, code: 'evidence_unreadable', message: expect.stringContaining('Run the label step first') });
+  });
+
+  it('write of a hand label leaves open the mark automatic judging holds on the pass', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const holder = await plannedGroup(config, subject, { scorers: ['quality'] });
+    const { answers } = await walk(config, subject, { inputs: { scorers: ['quality'], label: 'good', demand: 'named' }, startedBy: 'person' });
+
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 1 } });
+    const held = { scorer: 'quality', subject: { kind: 'run' as const, subject: { runId, step: 'review', pass: 1 } } };
+    expect(await Marks.states(config, [held], { now: NOW, readRun: async () => ({ ended: false, changedAt: NOW }) })).toMatchObject([{ kind: 'open', run: holder.run.runId }]);
+  });
+});
 
 describe('labels a stage decided', () => {
   const clarityOnly = SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]');
