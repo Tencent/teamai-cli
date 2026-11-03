@@ -12,10 +12,12 @@ vi.mock('node:os', async (importOriginal) => {
 
 import type { LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
+import { scoresDir } from '../scorers/home.js';
 import { PassScoring } from '../scorers/pass-scoring.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { inProcessClient } from '../workflow/protocol.js';
+import { cancelRun } from '../workflow/run-controls.js';
 import { openJudgeEntries } from '../workflow/scoring.js';
 import { readRun, RunIdSchema, runsDir } from '../workflow/store.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
@@ -124,6 +126,32 @@ describe('PassScoring.start', () => {
     expect(runs).toHaveLength(1);
     expect([...first.runs, ...second.runs].map(({ run }) => run)).toEqual([runs[0]?.id]);
     expect(again.runs.map(({ run }) => run)).toEqual([runs[0]?.id]);
+  });
+
+  it('answers no run for a pass whose teamai-score run already ended', async () => {
+    const config = await team(review('[quality]'));
+    const runId = await reviewedRun(config);
+    const [first] = (await start(config, runId)).runs;
+
+    data(await cancelRun(config, String(first?.run), await knownSecrets(config)));
+
+    expect(await start(config, runId)).toEqual({ runs: [], refused: [] });
+    expect(await scoreRuns(config)).toHaveLength(1);
+  });
+
+  it('fails, rather than skips the pass, when it cannot record that it starts it', async () => {
+    const config = await team(review('[quality]'));
+    const runId = await reviewedRun(config);
+    const started = path.join(scoresDir(config), 'started', runId);
+    fs.mkdirSync(started, { recursive: true });
+    fs.chmodSync(started, 0o500);
+
+    try {
+      await expect(start(config, runId)).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      fs.chmodSync(started, 0o700);
+    }
+    expect(await scoreRuns(config)).toEqual([]);
   });
 
   it('leaves no judge lease open for a pass it started, nor for one its workflow scores itself', async () => {
