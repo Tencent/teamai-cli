@@ -285,6 +285,14 @@ it('runs pi with only its read tools, no context files, extensions, skills or sa
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
 
+it('fails a judge whose evidence has no prompt, and says to run teamai score again', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+
+  const result = await runLocalJudge({ tool: 'claude', evidence: path.join(root, 'missing'), schema: {} }, { resolveTool: () => null });
+
+  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: expect.stringMatching(/^The judge could not run: .*prompt\.md.*\. Fix that, then run teamai score again\.$/) });
+});
+
 it('fails a pi judge with the error pi reports, though pi exits 0', async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');
@@ -295,7 +303,7 @@ it('fails a pi judge with the error pi reports, though pi exits 0', async () => 
 
   const result = await runLocalJudge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then retry or submit the lease through another driver.' });
+  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then run teamai score again.' });
 });
 
 it('runs agy in plan mode with its sandbox on, the prompt as a stream-json user event, with read access', async () => {
@@ -333,7 +341,7 @@ it('reports the error agy gives in its result when it exits non-zero', async () 
   expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
     ok: false,
     code: 'judge_failed',
-    message: 'agy reported an error: invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high. Fix that, then retry or submit the lease through another driver.',
+    message: 'agy reported an error: invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high. Fix that, then run teamai score again.',
   });
 });
 
@@ -349,7 +357,7 @@ it('reports the reason agy prints when it refuses to start', async () => {
   expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
     ok: false,
     code: 'judge_failed',
-    message: `agy reported an error: ${refusal} Fix that, then retry or submit the lease through another driver.`,
+    message: `agy reported an error: ${refusal} Fix that, then run teamai score again.`,
   });
 });
 

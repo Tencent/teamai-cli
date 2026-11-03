@@ -57,7 +57,7 @@ function judgeFailure(tool: ConfinedTool, failure: Extract<ConfinedResult, { ok:
     case 'confined_tool_unavailable':
       return { ok: false, code: 'judge_tool_unavailable', message: failure.message, ...kept };
     case 'confined_failed':
-      return { ok: false, code: 'judge_failed', message: failure.reported === undefined ? failure.message : `${tool} reported an error: ${failure.reported.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, ...kept };
+      return { ok: false, code: 'judge_failed', message: failure.reported === undefined ? failure.message : `${tool} reported an error: ${failure.reported.replace(/\.?$/, '.')} Fix that, then run teamai score again.`, ...kept };
     case 'confined_reply_invalid':
       return answerInvalid(tool, kept);
     default: {
@@ -72,7 +72,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
   let prompt: string;
 
   try { prompt = await fs.readFile(path.join(input.evidence, 'prompt.md'), 'utf8'); }
-  catch (error) { return { ok: false, code: 'judge_failed', message: `The judge could not run: ${error instanceof Error ? error.message : String(error)}. Fix that, then retry this lease.` }; }
+  catch (error) { return { ok: false, code: 'judge_failed', message: `The judge could not run: ${error instanceof Error ? error.message : String(error)}. Fix that, then run teamai score again.` }; }
 
   const result = await runConfined({ tool: input.tool, model: input.model, dir: input.evidence, prompt, schema: input.schema, level: input.isolation ?? 'best-effort', timeoutMs: JUDGE_TIMEOUT_MS, group: input.group, signal: input.signal }, { resolveTool });
 
