@@ -23,6 +23,9 @@ export type StageVerdict =
   | { kind: 'unrunnable'; message: string }
   | { kind: 'judge' };
 
+/** What the CI of a delivered pass says: a stage verdict, or that it has not finished on commit `head`. */
+export type CiVerdict = StageVerdict | { kind: 'pending'; head: string };
+
 /** Whether a scorer judges `subject` in a lease of its own: its check is run on a delivered pass, for it alone. */
 export function judgedAlone(run: RunState, subject: RunSubject, definition: Pick<ScorerDefinition, 'check'>): boolean {
   return definition.check !== undefined && isDelivered(run, subject);
@@ -39,14 +42,15 @@ export function failingLabel(definition: Pick<ScorerDefinition, 'labels' | 'pass
   return below.reduce((best, label) => (label.score > best.score ? label : best));
 }
 
-const passOf = (run: RunState, subject: RunSubject): StepPass | undefined =>
+export const passOf = (run: RunState, subject: RunSubject): StepPass | undefined =>
   runPasses(run, agentPassOf).find((each) => each.step === subject.step && each.pass === subject.pass);
 
 /**
- * The CI of the pull request the pass delivered, read once: a failed one decides; a pending one, none, or a host whose
- * CI TeamAI does not read says nothing, and neither does a host that did not answer, which is warned of.
+ * The CI of the pull request the pass delivered, read once: a failed one decides; a pending one says it
+ * has not finished; none, or a host whose CI TeamAI does not read, says nothing, and neither does a host that did not
+ * answer, which is warned of.
  */
-async function ciStage(run: RunState, subject: RunSubject, pass: StepPass | undefined): Promise<StageVerdict> {
+export async function ciStage(run: RunState, subject: RunSubject, pass: StepPass | undefined): Promise<CiVerdict> {
   const receipt = run.deliveries?.find((each) => each.step === subject.step && each.pass === subject.pass);
   const head = pass?.delivery?.head;
 
@@ -55,13 +59,15 @@ async function ciStage(run: RunState, subject: RunSubject, pass: StepPass | unde
 
   if (ci.kind === 'unanswered') log.warn(`The CI of ${receipt.url} could not be read, so the judge of step "${subject.step}" decides without it: ${ci.reason}`);
 
+  if (ci.kind === 'read' && ci.status === 'pending') return { kind: 'pending', head };
+
   if (ci.kind !== 'read' || ci.status !== 'failed') return { kind: 'judge' };
 
   return { kind: 'decided', by: 'ci', reasoning: `Decided by CI, before any judge: the checks of commit ${head} on ${receipt.url} failed.` };
 }
 
 /** The delivery's own refusal of the pass, recorded when it changed a path no pull request TeamAI opens may change. */
-function protectedStage(pass: StepPass | undefined): StageVerdict {
+export function protectedStage(pass: StepPass | undefined): StageVerdict {
   if (pass?.failure?.code !== 'protected_path') return { kind: 'judge' };
 
   return { kind: 'decided', by: 'protected', reasoning: `Decided by protected paths, before any judge: ${pass.failure.message}` };
@@ -71,7 +77,7 @@ function protectedStage(pass: StepPass | undefined): StageVerdict {
  * The scorer's check, run as a benchmark trial's (#1180) in a fresh clone of the delivered commit, with its protected
  * paths put back as the commit the delivered work started from has them, until `expiresAt`. Its pass hands the pass on.
  */
-async function checkStage(run: RunState, subject: RunSubject, pass: StepPass | undefined, { scorer, check, expiresAt }: StageCheck): Promise<StageVerdict> {
+export async function checkStage(run: RunState, subject: RunSubject, pass: StepPass | undefined, { scorer, check, expiresAt }: StageCheck): Promise<StageVerdict> {
   const head = pass?.delivery?.head;
 
   // A pass that changed nothing delivered no commit: the check has nothing of it to say, as CI has not.
@@ -125,7 +131,8 @@ export async function decideBeforeJudge(run: RunState, subject: RunSubject, chec
   for (const stage of stages) {
     const verdict = await stage();
 
-    if (verdict.kind !== 'judge') return verdict;
+    // A pending CI says nothing to a lease's judge, as one that passed.
+    if (verdict.kind !== 'judge' && verdict.kind !== 'pending') return verdict;
   }
 
   return { kind: 'judge' };

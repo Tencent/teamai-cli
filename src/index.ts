@@ -6,7 +6,7 @@ import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
-import type { EvidenceOptions, PlanOptions } from './score-verbs.js';
+import type { EvidenceOptions, PlanOptions, StageOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -1051,8 +1051,8 @@ scoreCmd
   .option('--batch <bool>', 'true: the scorers share a judge launch where they can; false: as the step, the workflow\'s defaults.scorers.batch and scoring.yaml say')
   .option('--demand <demand>', 'auto: sample, and stop at daily_limit; named: someone asked, so every scorer is taken, a closed mark opens again, and daily_limit counts it but never refuses it', 'auto')
   .action(async (_cmdOpts, command: Command) => {
-    const { scoreVerbCommand } = await import('./score-verbs.js');
-    await scoreVerbCommand('plan', command.optsWithGlobals<PlanOptions>());
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.plan(command.optsWithGlobals<PlanOptions>(), ctx));
   });
 
 scoreCmd
@@ -1061,8 +1061,19 @@ scoreCmd
   .option('--subject <subject>', 'The group\'s subject, as plan printed it')
   .option('--scorers <names>', 'The group\'s scorers, joined by , as plan printed them')
   .action(async (_cmdOpts, command: Command) => {
-    const { scoreVerbCommand } = await import('./score-verbs.js');
-    await scoreVerbCommand('evidence', command.optsWithGlobals<EvidenceOptions>());
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.evidence(command.optsWithGlobals<EvidenceOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('stage')
+  .description('A step of a teamai-score run: one stage that may decide a delivered pass before its judge, check (the scorer\'s check on the delivered commit, stopped after 30 minutes), ci (a failed CI of its pull request) or protected (a protected-path refusal). Writes its record in the evidence directory and prints {"decided":true} or {"decided":false}; ci adds "pending":true while CI has not finished. A stage no scorer of the group takes runs nothing and prints {"decided":false}. A check that cannot run prints {"decided":true}, and label gives check_could_not_run.')
+  .argument('<stage>', 'check, ci or protected')
+  .option('--evidence <dir>', 'The evidence directory its evidence step printed')
+  .option('--wait <duration>', 'With ci: past this long since this machine first saw the CI pending, such as 2h, judge as if the pass had no CI')
+  .action(async (stage: string, _cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.stage({ ...command.optsWithGlobals<Omit<StageOptions, 'stage'>>(), stage }, ctx));
   });
 
 // ─── Hooks commands ─────────────────────────────────────

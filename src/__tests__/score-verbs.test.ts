@@ -5,7 +5,8 @@ import path from 'node:path';
 import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ home: '' }));
+const mocks = vi.hoisted(() => ({ home: '', ci: vi.fn() }));
+vi.mock('../workflow/pr-delivery.js', async (importOriginal) => ({ ...await importOriginal<typeof import('../workflow/pr-delivery.js')>(), deliveredCi: mocks.ci }));
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>();
   return { ...actual, homedir: () => mocks.home, default: { ...actual, homedir: () => mocks.home } };
@@ -21,7 +22,9 @@ import { ScoreVerbs, type ScoreVerbAnswer, type ScoreVerbContext } from '../scor
 import { evidenceHash } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { nextJudgeLease } from '../workflow/scoring.js';
-import { runScratchDir } from '../workflow/store.js';
+import { runScratchDir, updateRun } from '../workflow/store.js';
+import type { StepState } from '../workflow/step-state.js';
+import { PrUrlSchema } from '../workflow/pr-url.js';
 
 const external: DriverIdentity = { kind: 'external', machine: 'm1', workspace: '/w' };
 const NOW = '2026-11-03T10:00:00.000Z';
@@ -183,8 +186,8 @@ async function reviewedRun(config: LocalConfig, session = 'session-review'): Pro
   return runId;
 }
 
-/** A run of `ship` whose `change` pass committed a pagination and went on to deliver it. */
-async function deliveredRun(config: LocalConfig): Promise<string> {
+/** A run of `ship` whose `change` pass committed a pagination, delivered in pull request 57 unless `failure` refused it. */
+async function deliveredRun(config: LocalConfig, failure?: { code: 'protected_path'; message: string }): Promise<string> {
   const checkout = config.projectRoot ?? '';
   const from = git(checkout, 'rev-parse', 'HEAD');
   const runId = String(data(await startRun(config, 'ship', {}, { secrets: await knownSecrets(config), base: { ref: 'main', commit: from }, checkout })).run);
@@ -198,6 +201,11 @@ async function deliveredRun(config: LocalConfig): Promise<string> {
   data(await reportAttempt(config, runId, {
     attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, tool: 'claude', changes: { branch: lease.workspace.branch, base: from, from, to, commits: [to] },
   }));
+  await updateRun(config, runId, await knownSecrets(config), async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: {
+    ...run,
+    steps: run.steps.map((step): StepState => (step.status !== 'delivering' ? step : failure ? { ...step, status: 'failed', outcome: 'failed', failure } : { ...step, status: 'succeeded', outcome: 'success' })),
+    deliveries: failure ? [] : [{ url: PrUrlSchema.parse('https://github.com/acme/app/pull/57'), branch: lease.workspace.branch, base: 'main', step: 'change', pass: 1 }],
+  } }));
   return runId;
 }
 
@@ -356,5 +364,74 @@ describe('score evidence', () => {
 
     expect(await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx)).toMatchObject({ ok: false, code: 'evidence_missing', message: expect.stringContaining('session-gone') });
     expect(fs.existsSync(path.join(runScratchDir(config, run.runId), evidence.attempt))).toBe(false);
+  });
+});
+
+/** A planned group of a delivered pass, its evidence written and reported, and the lease of its next step. */
+async function deliveredGroup(config: LocalConfig, runId: string): Promise<{ run: ScoreRun; dir: string; next: Taken }> {
+  const subject = `run:${runId}:change:1`;
+  const { run, evidence, scorers } = await plannedGroup(config, subject);
+  const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+  await run.report(evidence, written);
+  const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+  return { run, dir, next: await run.next('score[0].check') };
+}
+
+describe('score stage', () => {
+  it('check runs nothing and decides nothing when no scorer of the group has a check', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
+
+    expect(await ScoreVerbs.stage({ stage: 'check', evidence: dir }, next.ctx)).toEqual({ ok: true, output: { decided: false } });
+    expect(fs.existsSync(path.join(dir, 'stage-check.json'))).toBe(false);
+  });
+
+  it.each([
+    ['a check that fails decides the group by check', 'exit 3', { kind: 'decided', by: 'check', reasoning: expect.stringContaining('`exit 3` exited 3') }],
+    ['a check that cannot run is terminal, as check_could_not_run', 'exit 127', { kind: 'unrunnable', message: expect.stringContaining('could not run') }],
+  ])('%s', async (_case, run, record) => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[delivered]') }, { delivered: scorer({ extra: `check: { run: "${run}", protect: [test] }\n` }) });
+    const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
+
+    expect(await ScoreVerbs.stage({ stage: 'check', evidence: dir }, next.ctx)).toEqual({ ok: true, output: { decided: true } });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-check.json'), 'utf8'))).toEqual(record);
+  });
+
+  it('ci reads the CI of the delivered commit once for the run, and a failed one decides', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'failed' });
+
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: true } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: true } });
+    expect(mocks.ci).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'decided', by: 'ci', reasoning: expect.stringContaining('pull/57 failed') });
+  });
+
+  it('ci that has not finished writes a pending record, and past --wait is judged as no CI', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
+
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: false, pending: true } });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toMatchObject({ kind: 'pending' });
+    const later = { ...next.ctx, now: '2026-11-03T12:00:01.000Z' };
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, later)).toEqual({ ok: true, output: { decided: false } });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'judge' });
+  });
+
+  it('protected decides a pass whose delivery refused a protected path', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const { dir, next } = await deliveredGroup(config, await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' }));
+
+    expect(await ScoreVerbs.stage({ stage: 'protected', evidence: dir }, next.ctx)).toEqual({ ok: true, output: { decided: true } });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-protected.json'), 'utf8'))).toEqual({ kind: 'decided', by: 'protected', reasoning: expect.stringContaining('AGENTS.md') });
+  });
+
+  it('refuses a directory that is not an evidence directory of the attempt\'s run', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const { next } = await deliveredGroup(config, await deliveredRun(config));
+
+    expect(await ScoreVerbs.stage({ stage: 'protected', evidence: root }, next.ctx)).toMatchObject({ ok: false, code: 'evidence_unreadable' });
   });
 });

@@ -87,6 +87,8 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'confined_pending',
       // Refusals of a score verb called outside a leased teamai-score attempt, and of a label no person gave.
       'score_attempt_required', 'hand_label_refused',
+      // Refusals of a score verb whose --evidence is no group's evidence directory of its run.
+      'evidence_unreadable',
       // Why a scorer got no label from a judge attempt: kept with its mark under scores/, never on a run.
       ...literalStrings('src/scorers/label.ts', 'JUDGE_FAILURES')];
 

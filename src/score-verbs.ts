@@ -2,15 +2,19 @@
  * The verbs of `teamai score` that the steps of a `teamai-score` run call: plan, evidence, stage, label, write, settle
  * and subjects. Each prints one JSON object, the step's outputs, on stdout; a refusal prints `{"error":…}` and exits 1.
  */
+import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit } from './config.js';
-import { EvidenceDir } from './scorers/evidence-dir.js';
+import { STAGES } from './scorers/definition.js';
+import { EvidenceDir, type GroupRecord } from './scorers/evidence-dir.js';
 import { DEMANDS } from './scorers/marks.js';
 import { ScoreAttempt } from './scorers/score-attempt.js';
 import { planGroups } from './scorers/score-plan.js';
+import { ScoreStage } from './scorers/score-stage.js';
 import { Subject } from './scorers/subject.js';
 import type { JsonObject, LocalConfig } from './types.js';
 import { setStderrOnly } from './utils/logger.js';
+import { durationMs } from './workflow/parse.js';
 
 /** Where a verb runs: the process's environment, the scope of its directory, and the time it reads as now. */
 export interface ScoreVerbContext {
@@ -92,9 +96,43 @@ async function evidence(options: EvidenceOptions, ctx: ScoreVerbContext): Promis
   return written.ok ? { ok: true, output: { ...written.output } } : written;
 }
 
-export const ScoreVerbs = { plan, evidence } as const;
+/** The attempt a verb on a group's evidence runs in, and that group as `score evidence` wrote it in a directory of this run's. */
+async function groupAt(verb: string, dir: string | undefined, ctx: ScoreVerbContext): Promise<{ ok: true; attempt: ScoreAttempt; dir: string; group: GroupRecord } | Extract<ScoreVerbAnswer, { ok: false }>> {
+  const read = await ScoreAttempt.read(verb, ctx.env, ctx.current);
 
-export type ScoreVerb = keyof typeof ScoreVerbs;
+  if (!read.ok) return read;
+  const runDir = path.dirname(read.attempt.dir);
+  const at = path.resolve(dir ?? '');
+  const inRun = path.dirname(at) === runDir;
+
+  if (!inRun) return { ok: false, code: 'evidence_unreadable', message: `--evidence ${dir ?? ''} is not an evidence directory of run ${read.attempt.run.id}, which are under ${runDir}. Pass the dir its evidence step printed.` };
+  const group = await EvidenceDir.read(at);
+
+  return group.ok ? { ok: true, attempt: read.attempt, dir: at, group: group.group } : group;
+}
+
+export interface StageOptions {
+  stage: string;
+  evidence?: string;
+  wait?: string;
+}
+
+async function stage(options: StageOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const at = await groupAt(`stage ${options.stage}`, options.evidence, ctx);
+
+  if (!at.ok) return at;
+  const known = STAGES.find((each) => each === options.stage);
+
+  if (!known) return refused('invalid_arguments', `${options.stage} is not a stage. Run teamai score stage check, ci or protected.`);
+  const waitMs = options.wait === undefined ? 0 : durationMs(options.wait);
+
+  if (waitMs === undefined) return refused('invalid_arguments', `--wait ${options.wait ?? ''} is not a duration such as 30m or 2h.`);
+  const ran = await ScoreStage.run(at.attempt, at.dir, at.group, known, { waitMs, now: ctx.now });
+
+  return ran.ok ? { ok: true, output: { ...ran.output } } : ran;
+}
+
+export const ScoreVerbs = { plan, evidence, stage } as const;
 
 async function currentConfig(): Promise<LocalConfig | undefined> {
   try {
@@ -106,9 +144,9 @@ async function currentConfig(): Promise<LocalConfig | undefined> {
 }
 
 /** Runs one verb in this process and prints its answer. */
-export async function scoreVerbCommand<Verb extends ScoreVerb>(verb: Verb, options: Parameters<(typeof ScoreVerbs)[Verb]>[0]): Promise<void> {
+export async function scoreVerbCommand(verb: (ctx: ScoreVerbContext) => Promise<ScoreVerbAnswer>): Promise<void> {
   setStderrOnly(true);
-  const answer = await ScoreVerbs[verb](options, { env: process.env, current: await currentConfig(), now: new Date().toISOString() });
+  const answer = await verb({ env: process.env, current: await currentConfig(), now: new Date().toISOString() });
 
   if (answer.ok) {
     process.stdout.write(`${JSON.stringify(answer.output)}\n`);
