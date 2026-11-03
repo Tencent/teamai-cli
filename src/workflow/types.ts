@@ -290,6 +290,14 @@ export interface StepScorers {
   sampling?: 'all';
 }
 
+/**
+ * Who started a run: a person, from a process with no agent evidence; an agent session; or one of the CLI's own automatic
+ * starts, which pass no agent evidence and take no inputs from an agent.
+ */
+export const STARTED_BY = ['person', 'agent', 'cli'] as const;
+
+export type StartedBy = typeof STARTED_BY[number];
+
 /** Whether an agent session may start a workflow: on its own (`allow`), after the person's yes (`ask`), or never (`deny`). */
 export const INVOKE_VALUES = ['allow', 'ask', 'deny'] as const;
 
@@ -430,6 +438,8 @@ export interface RunState {
   runMode?: RunMode;
   /** Whether `definition` is the team's or teamai's default. A claim keeps it. Absent on runs started before it was recorded, all team runs. */
   origin?: RunOrigin;
+  /** Who started the run. A claim keeps it. Absent on runs started before it was recorded. */
+  startedBy?: StartedBy;
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;

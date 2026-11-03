@@ -1,5 +1,5 @@
 /** Scenarios for the generic keys any workflow uses, such as `continue_on_failure`: none is a branch for one feature. */
-import type { ConformanceScenario, ScenarioJson } from '../conformance-interpreter.js';
+import { controlsYaml, type ConformanceScenario, type ScenarioJson } from '../conformance-interpreter.js';
 
 const JUDGE_EACH = `schemaVersion: v1alpha1
 name: build
@@ -89,5 +89,20 @@ export const primitiveConformanceScenarios: ConformanceScenario[] = [
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded', outputs: { verdicts: KEPT_VERDICTS } } } } },
     ],
     expectState: { status: 'succeeded', steps: [{ id: 'plan' }, { id: 'judge', status: 'cancelled', results: KEPT_VERDICTS }, { id: 'judge[0]' }, { id: 'judge[1]' }, { id: 'ship', status: 'skipped' }, { id: 'note', status: 'succeeded' }] },
+  },
+  {
+    name: 'startedBy: a run started from a process without agent evidence records that a person started it',
+    workflowName: 'build',
+    yaml: controlsYaml('  - id: work\n    command: echo work'),
+    operations: [],
+    expectState: { startedBy: 'person' },
+  },
+  {
+    name: 'startedBy: a run an agent session started records that an agent started it',
+    workflowName: 'build',
+    yaml: controlsYaml('  - id: work\n    command: echo work').replace('steps:\n', 'invoke: allow\nsteps:\n'),
+    env: { CLAUDE_CODE_SESSION_ID: 'agent-1670' },
+    operations: [],
+    expectState: { startedBy: 'agent' },
   },
 ];

@@ -12,7 +12,7 @@ import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from '.
 import {
   ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
-import type { Finalizing, RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
+import { STARTED_BY, type Finalizing, type RunState, type StepLease, type WorkflowDefinition, type WorkflowFailure } from './types.js';
 
 /**
  * The run state one install hands to another, at `workflows/runs/<id>/state.json` on `teamai-reports`. It carries what
@@ -59,6 +59,7 @@ const BodySchema = z.object({
   teamRevision: CommitIdSchema.optional(),
   runMode: RunModeSchema.optional(),
   origin: RunOriginSchema.optional(),
+  startedBy: z.enum(STARTED_BY).optional(),
   settledCount: z.number().int(),
   cancelledAttempts: z.array(z.string()),
   archive: z.array(withCommitIds(ArchivedPassSchema)),
@@ -245,7 +246,7 @@ type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : n
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
   end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', runMode: 'publish', origin: 'publish',
-  definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', verdicts: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
+  startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', verdicts: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
   stoppedAttempts: 'drop', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish',

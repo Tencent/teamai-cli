@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import type { AgentEvidence } from '../workflow/attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { readRun, RunIdSchema, withRunLock, type RunLock } from '../workflow/store.js';
 
@@ -110,6 +111,20 @@ describe('workflow protocol in process', () => {
   it('answers workflow_not_found for a name with no runnable version', async () => {
     const { config } = await fixture({ check: CHECK });
     expect(await (await protocol(config)).describe('missing', { ceiling: 3, can: {} })).toEqual({ error: { code: 'workflow_not_found', message: 'Workflow or alias missing has no unambiguous runnable version' } });
+  });
+
+  it('records a cli start only when the start passes no agent evidence', async () => {
+    const { config } = await fixture({ check: CHECK.replace('steps:\n', 'invoke: allow\nsteps:\n') });
+    const client = await protocol(config);
+    const startedBy = async (evidence: AgentEvidence): Promise<unknown> => {
+      const started = await client.start('check', { caller: { evidence, confirmed: false, mode: 'attended' }, startedBy: 'cli' });
+      if (!('data' in started)) throw new Error(JSON.stringify(started));
+      const run = await readRun(config, String(started.data.run));
+      return run === 'missing' || run === 'corrupt' ? run : run.startedBy;
+    };
+
+    expect(await startedBy({ kind: 'none' })).toBe('cli');
+    expect(await startedBy({ kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' })).toBe('agent');
   });
 
   it('refuses a start inside a workflow attempt before it looks the workflow up, and an answer from it', async () => {

@@ -89,8 +89,10 @@ export interface WorkflowClient {
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
    * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`. `alone`: what the local driver,
    * the run's only driver, gives strict requirements; a step it could never take refuses the start, `requirement_unmet`.
+   * The run records an agent as its starter when `caller` has agent evidence, else `startedBy: 'cli'` for one of the
+   * CLI's own automatic starts, else a person.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy?: 'cli' }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -568,14 +570,16 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
     setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, env, signal }),
-    start: async (name, { inputs, checkout, caller, timeout, alone }) => {
+    start: async (name, { inputs, checkout, caller, timeout, alone, startedBy }) => {
       const cached = await loadCachedWorkflow(config, name);
       const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
 
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);
 
-      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, runMode: caller.mode, checkout, base, timeout, alone });
+      return startRun(config, name, inputs ?? {}, {
+        secrets: env.secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy ?? 'person' : 'agent', checkout, base, timeout, alone,
+      });
     },
     runVersion: async (runId) => {
       const run = await readRun(config, runId);
