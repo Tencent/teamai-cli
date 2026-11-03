@@ -1432,14 +1432,6 @@ program
   });
 
 program
-  .command('score-sessions', { hidden: true })
-  .description('Judge this machine\'s finished sessions with the local judge (started by the session-start hook)')
-  .action(async () => {
-    const { scoreSessionsCommand } = await import('./score-sessions.js');
-    await scoreSessionsCommand();
-  });
-
-program
   .command('hook-dispatch <event> [hookArgs...]', { hidden: true })
   .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
   .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')

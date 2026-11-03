@@ -16,7 +16,10 @@ import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { durationMs } from '../workflow/parse.js';
+import type { WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
+import { readRuns, RunIdSchema, type RunId } from '../workflow/store.js';
+import type { WorkflowFailure } from '../workflow/types.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPolicy } from './session-policy.js';
 import { SessionPublish } from './session-publish.js';
@@ -215,4 +218,42 @@ async function backgroundScopes(cwd?: string): Promise<LocalConfig[]> {
   return scopes;
 }
 
-export const FinishedSessions = { list, reachedScopes, backgroundScopes } as const;
+/** The default workflow that archives and judges a data home's finished sessions; a team file of that name replaces it. */
+export const FINISHED_WORKFLOW = 'teamai-finished-sessions';
+
+/** How long a run of it may work before a start takes the data home again: its own timeout, which ends it. */
+const PASS_MS = 30 * 60 * 1000;
+
+/** A run of teamai-finished-sessions in the data home, and the directory a driver of it works from. */
+export type FinishedStart = { ok: true; run: RunId; cwd: string; running: boolean } | { ok: false; failure: WorkflowFailure };
+
+/** The run of teamai-finished-sessions this data home started inside its timeout and that has not ended. */
+async function workingRun(config: LocalConfig, now: number): Promise<RunId | undefined> {
+  const run = (await readRuns(config)).findLast((one) => one.name === FINISHED_WORKFLOW && one.status === 'running'
+    && Date.parse(one.createdAt) + (one.definition.timeout ?? PASS_MS) > now);
+
+  return run && RunIdSchema.parse(run.id);
+}
+
+/**
+ * Starts teamai-finished-sessions in `config` as the CLI's own start, with the session policies as its inputs and no
+ * agent evidence, whatever process calls it, from the directory whose teamai resolves to this data home. A run that
+ * already works on this data home is answered instead, with `running`, so two passes never archive one session twice.
+ */
+async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start'>; mode: RunMode }): Promise<FinishedStart> {
+  const cwd = SessionWork.leaseCwd(config);
+  const working = await workingRun(config, Date.now());
+
+  if (working) return { ok: true, run: working, cwd, running: true };
+
+  const answer = await client.start(FINISHED_WORKFLOW, {
+    inputs: { publish: 'policy', scorers: [] }, checkout: cwd, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli',
+  });
+
+  if ('error' in answer) return { ok: false, failure: answer.error };
+  const run = RunIdSchema.safeParse(answer.data.run);
+
+  return run.success ? { ok: true, run: run.data, cwd, running: false } : { ok: false, failure: { code: 'run_unreadable', message: `The new ${FINISHED_WORKFLOW} run id was missing` } };
+}
+
+export const FinishedSessions = { list, start, reachedScopes, backgroundScopes } as const;

@@ -36,6 +36,16 @@ export function agentEvidence(env: NodeJS.ProcessEnv): AgentEvidence {
 }
 
 /**
+ * `env` without what `agentEvidence` reads, for a process the CLI starts itself to drive a run of its own: the attempt
+ * marker and run directory, and every agent session variable, which a hook inherits from the session it runs in.
+ */
+export function withoutAgentEvidence(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const removed = new Set<string>([ATTEMPT_ENV, RUN_DIR_ENV, ...AGENT_SESSION_ENV]);
+
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !removed.has(name)));
+}
+
+/**
  * Why this process may not start or drive a workflow run: it runs inside a workflow attempt, as the marker says; or, for
  * a start, it works in a workflow's place: a worktree under `.teamai/workflow-worktrees`, or a checkout on a workflow
  * branch, the only trace a place the host made keeps.

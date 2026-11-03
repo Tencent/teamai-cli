@@ -126,7 +126,6 @@ export const NO_DRY_RUN_PREVIEW = {
   'contribute-check': 'hook-only',
   'todowrite-hint': 'hook-only',
   'mr-hint': 'hook-only',
-  'score-sessions': 'hook-only',
   'workflow start': 'creates a run and, with --driver local, runs its commands',
   score: 'leases judge work, runs judges, writes labels and, with --push, publishes them',
   'score plan': 'opens the scoring marks of the groups it plans',

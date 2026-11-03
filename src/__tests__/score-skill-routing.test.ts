@@ -15,7 +15,6 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { scoreSession } from '../session-flow/scoring.js';
-import { scoreSessions } from '../score-sessions.js';
 import { routingScorer } from '../scorers/skill-routing.js';
 import type { AvailableSkill } from '../scorers/skill-evidence.js';
 
@@ -172,37 +171,5 @@ Judge the session.
     const noNamespace = await scoreSession(untellable, { session: SESSION, source: 'claude-code', scorers: ['teamai:routing:legacy'] });
     expect('error' in noNamespace && noNamespace.error).toMatchObject({ code: 'scorer_not_found', message: expect.stringContaining('cannot tell the namespace') });
     expect(labels(untellable)).toEqual([]);
-  });
-});
-
-describe('the background session judge with skill_routing on (#1469)', () => {
-  const clock = (): string => '2026-10-25T12:00:00.000Z';
-
-  it('asks one question per delivered skill of a finished session in one judge launch', async () => {
-    const config = await fixture('skill_routing: true\n');
-    plantSession(config, { release: RELEASE, 'review-notes': REVIEW_NOTES });
-    fakeClaude(BOTH_ANSWERS);
-
-    await scoreSessions([config], { clock });
-
-    expect(labels(config).map(({ scorer, label }) => [scorer, label]).sort()).toEqual([
-      ['teamai:routing:ops:release', 'fit'],
-      ['teamai:routing:review-notes', 'idle'],
-    ]);
-    expect(calls()).toBe(1);
-  });
-
-  it('asks nothing while skill_routing is off, and nothing for a session whose captures recorded no skills', async () => {
-    const off = await fixture();
-    plantSession(off, { 'review-notes': REVIEW_NOTES });
-    fakeClaude('fit');
-    await scoreSessions([off], { clock });
-    expect(labels(off)).toEqual([]);
-
-    const unknown = await fixture('skill_routing: true\n');
-    plantSession(unknown, null);
-    await scoreSessions([unknown], { clock });
-    expect(labels(unknown)).toEqual([]);
-    expect(calls()).toBe(0);
   });
 });

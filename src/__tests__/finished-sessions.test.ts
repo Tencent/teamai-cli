@@ -18,10 +18,14 @@ import { SessionPublish } from '../session-flow/session-publish.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
+import { projectDataHome } from '../utils/partition.js';
 import { Marks } from '../scorers/marks.js';
 import { pinScorers } from '../scorers/cache.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
+import { resolveWorkflowEnv } from '../env-resolution.js';
+import { inProcessClient } from '../workflow/protocol.js';
+import { readRun } from '../workflow/store.js';
 import type { StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 
 const SCORER = `---
@@ -195,5 +199,92 @@ describe('session list --finished', () => {
 
     if (code === '') expect(answer).toMatchObject({ ok: true, list: [{ session: IDLE }] });
     else expect(answer).toMatchObject({ ok: false, code, message: expect.stringContaining(`Run ${runId} was not started from a person's terminal`) });
+  });
+});
+
+describe('the start of teamai-finished-sessions', () => {
+  it('starts one run as the CLI\'s own, with the policy inputs, from the scope\'s own directory, whatever agent session runs it', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'the-agent-session');
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const started = await FinishedSessions.start(config, { client, mode: 'attended' });
+
+    if (!started.ok) throw new Error(started.failure.message);
+    const run = await readRun(config, started.run);
+    expect(run).toMatchObject({ name: 'teamai-finished-sessions', status: 'running', startedBy: 'cli', inputs: { publish: 'policy', scorers: [] }, checkout: path.join(mocks.home, '.teamai') });
+    expect(started.cwd).toBe(path.join(mocks.home, '.teamai'));
+  });
+
+  it('answers the run already working on this data home instead of starting a second', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const first = await FinishedSessions.start(config, { client, mode: 'attended' });
+
+    const second = await FinishedSessions.start(config, { client, mode: 'attended' });
+
+    expect(first).toMatchObject({ ok: true, running: false });
+    expect(second).toEqual(first.ok ? { ...first, running: true } : first);
+  });
+});
+
+describe('the scopes a session start archives and judges sessions in', () => {
+  /** The user scope's config.yaml, with `scoring` as given. */
+  function userConfig(scoring: string): void {
+    const knowledge = path.join(root, 'knowledge');
+    fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
+    fs.mkdirSync(path.join(mocks.home, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(mocks.home, '.teamai', 'config.yaml'),
+      `repo:\n  localPath: ${JSON.stringify(knowledge)}\n  remote: local\n  kind: self\nusername: tester\nscope: user\nadditionalRoles: []\n${scoring}`);
+  }
+
+  it('is the user scope from a directory that no longer exists, when it turns session scoring on', async () => {
+    userConfig('scoring:\n  sessions: true\n');
+    expect(await FinishedSessions.backgroundScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
+  });
+
+  /** A workspace that selects project billing, with a child repo that selects checkout, and `files` in the team repo. */
+  function workspace(files: Record<string, string>): string {
+    const knowledge = path.join(root, 'knowledge');
+    for (const [file, text] of Object.entries({
+      'manifest/roles.yaml': 'version: 1\nroles:\n  - id: dev\n    resources: { knowledge: [], skills: [] }\n',
+      'manifest/projects.yaml': 'version: 1\nprojects:\n  - id: billing\n    name: Billing\n    resources: { scorers: [billing] }\n  - id: checkout\n    name: Checkout\n    resources: { scorers: [checkout] }\n',
+      ...files,
+    })) {
+      fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
+      fs.writeFileSync(path.join(knowledge, file), text);
+    }
+    const repoAt = (dir: string, project: string) => {
+      fs.mkdirSync(dir, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      const home = projectDataHome(fs.realpathSync(dir));
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(path.join(home, 'config.yaml'),
+        `repo:\n  localPath: ${JSON.stringify(knowledge)}\n  remote: https://git.example.com/team/team.git\nusername: tester\nscope: project\nadditionalRoles: []\nprojects: [${project}]\n`);
+    };
+    const ws = path.join(root, 'ws');
+    repoAt(ws, 'billing');
+    repoAt(path.join(ws, 'svc'), 'checkout');
+    return ws;
+  }
+
+  it('reads the settings of the namespaces a workspace child makes active', async () => {
+    const ws = workspace({ 'scorers/scoring.yaml': 'sessions: true\n', 'scorers/checkout/scoring.yaml': 'sessions: false\n' });
+    expect(await FinishedSessions.backgroundScopes(ws)).toEqual([]);
+  });
+
+  it('is the workspace when only a workspace child\'s namespace turns session scoring on', async () => {
+    const ws = workspace({ 'scorers/checkout/scoring.yaml': 'sessions: true\n' });
+    expect(await FinishedSessions.backgroundScopes(ws)).toMatchObject([{ scope: 'project', children: expect.any(Object) }]);
+  });
+
+  it('is the user scope when it publishes attended sessions automatically, though it scores none', async () => {
+    userConfig('sessions:\n  publish:\n    attended: auto\n');
+    expect(await FinishedSessions.backgroundScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
+  });
+
+  it('is none while no scope turns session scoring on', async () => {
+    userConfig('');
+    expect(await FinishedSessions.backgroundScopes(path.join(root, 'gone'))).toEqual([]);
   });
 });

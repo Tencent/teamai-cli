@@ -302,8 +302,8 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope | { start:
 
 /** `teamai score --drain`: drains every scope this directory reaches, in this run mode, and prints what it did. */
 async function drainHere(): Promise<void> {
-  const [{ Drain }, { reachedScopes }] = await Promise.all([import('./score-drain.js'), import('./score-sessions.js')]);
-  const drained = await Drain.run(await reachedScopes(process.cwd()), { mode: resolveRunMode(process.env) });
+  const [{ Drain }, { FinishedSessions }] = await Promise.all([import('./score-drain.js'), import('./session-flow/finished-sessions.js')]);
+  const drained = await Drain.run(await FinishedSessions.reachedScopes(process.cwd()), { mode: resolveRunMode(process.env) });
   Drain.print(drained);
 
   if (Drain.hasFailed(drained)) process.exitCode = 1;
