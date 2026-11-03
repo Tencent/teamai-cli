@@ -103,6 +103,14 @@ export const DECIDERS = ['check', 'ci', 'protected', 'judge'] as const;
 
 export type Decider = (typeof DECIDERS)[number];
 
+/**
+ * Why a scorer got no label from a judge attempt. `check_could_not_run`: the scorer's check of a delivered pass (#1247)
+ * could not start, was killed or timed out.
+ */
+export const JUDGE_FAILURES = ['judge_failed', 'lease_expired', 'evidence_empty', 'judge_answer_invalid', 'judge_tool_unavailable', 'check_could_not_run'] as const;
+
+export type JudgeFailureCode = (typeof JUDGE_FAILURES)[number];
+
 /** Whether a check, CI or protected-path stage decided a label before any judge ran. A label from before #1247 has none: a judge decided it. */
 export function isStageDecider(by: Decider | undefined): boolean {
   return by !== undefined && by !== 'judge';

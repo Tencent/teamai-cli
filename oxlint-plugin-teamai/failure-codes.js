@@ -85,8 +85,8 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'subject_invalid',
       // Why a run confined to one directory gave no reply, answered to the caller that launched it.
       'confined_tool_unavailable', 'confined_failed', 'confined_reply_invalid',
-      // Why a judge attempt closed: kept with the attempt under scores/, never on a run.
-      ...literalStrings('src/scorers/attempts.ts', 'JUDGE_FAILURES')];
+      // Why a scorer got no label from a judge attempt: kept with its mark under scores/, never on a run.
+      ...literalStrings('src/scorers/label.ts', 'JUDGE_FAILURES')];
 
 /** Every recognized producer code, including diagnostics and command-only refusals. */
 export const KNOWN_FAILURE_CODES = new Set([...diagnostics, ...answers, ...literalStrings('src/workflow/records.ts', 'RECORDED_FAILURES')]);
