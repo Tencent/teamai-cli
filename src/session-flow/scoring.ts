@@ -383,14 +383,6 @@ function triedEnvelope(tried: readonly Tried[]): WorkflowEnvelope {
  * team's `scorers/scoring.yaml` sets `batch`. The session is read in the scope it ran in, whichever scope `from` is.
  */
 export async function scoreSession(from: LocalConfig, demand: SessionDemand): Promise<WorkflowEnvelope> {
-  if (demand.label !== undefined) {
-    const [scorer, ...more] = new Set(demand.scorers);
-
-    return failure('invalid_arguments', more.length > 0
-      ? '--label is a value of one scorer. Pass one --scorer.'
-      : `--label is stored, and the label of the scorer file ${scorer} is never stored. Pass the name of a scorer teamai pull cached.`);
-  }
-
   const asked = await scorerFiles(demand.scorers);
 
   if ('error' in asked) return asked;

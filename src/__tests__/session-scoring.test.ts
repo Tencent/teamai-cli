@@ -1148,25 +1148,6 @@ describe('teamai score --session', () => {
   });
 });
 
-describe('teamai score --label', () => {
-  const labelsFile = () => path.join(root, 'data', 'scores', 'labels.jsonl');
-
-  it('refuses --label for more than one scorer or for a scorer file, which a teamai-score run cannot label', async () => {
-    const config = await fixture();
-    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
-    fs.writeFileSync(path.join(root, 'draft.md'), SCORER);
-    const asked = { session: SESSION, source: 'claude-code', label: 'bad' };
-
-    expect(await scoreSession(config, { ...asked, scorers: [quality(), draft(SCORER, 'tests').file] })).toEqual({ error: {
-      code: 'invalid_arguments', message: '--label is a value of one scorer. Pass one --scorer.',
-    } });
-    expect(await scoreSession(config, { ...asked, scorers: [path.join(root, 'draft.md')] })).toEqual({ error: {
-      code: 'invalid_arguments', message: `--label is stored, and the label of the scorer file ${path.join(root, 'draft.md')} is never stored. Pass the name of a scorer teamai pull cached.`,
-    } });
-    expect(fs.existsSync(labelsFile())).toBe(false);
-  });
-});
-
 describe('teamai score --team-session', () => {
   const ALICE_SESSION = 'a11ce000-0000-4000-8000-000000000001';
   // The scorer file sets the current directory first, since it names the repository a session is pushed for.

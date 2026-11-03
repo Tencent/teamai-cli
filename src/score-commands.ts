@@ -177,6 +177,8 @@ async function sessionScore(options: ScoreOptions): Promise<Scored> {
 
     if (cached !== undefined) return failure('invalid_arguments', `A scorer file is tried here, and --scorer ${cached} is judged by a teamai-score run. Score them in separate commands.`);
 
+    if (demand.label !== undefined) return failure('invalid_arguments', `--label is stored, and the label of the scorer file ${demand.scorers.find(isScorerFile)} is never stored. Pass the name of a scorer teamai pull cached.`);
+
     return scoreSession(loaded.config, demand);
   }
 

@@ -135,7 +135,6 @@ describe('NamedSubject.ofPass', () => {
 describe('NamedSubject.ofSession', () => {
   it.each([
     ['two scorers', { scorers: ['quality', 'style'] as const, label: 'good' }, '--label is a value of one scorer. Pass one --scorer.'],
-    ['a scorer file', { scorers: ['./scorers/quality.md'] as const, label: 'good' }, '--label is stored, and the label of the scorer file ./scorers/quality.md is never stored. Pass the name of a scorer teamai pull cached.'],
     ['--batch', { scorers: ['quality'] as const, label: 'good', batch: true }, '--label runs no judge. Leave out --batch.'],
   ])('refuses a hand label with %s before it looks for the session', async (_, demand, message) => {
     const config = await team(ONE_STEP);

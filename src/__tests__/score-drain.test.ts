@@ -858,6 +858,14 @@ describe('teamai score of a subject the person names', () => {
     } }, code: 1 });
   });
 
+  it('refuses --label for a scorer file, whose label is never stored', async () => {
+    await team();
+
+    expect(await scored({ scorer: ['./draft.md'], label: 'good' })).toEqual({ envelope: { error: {
+      code: 'invalid_arguments', message: '--label is stored, and the label of the scorer file ./draft.md is never stored. Pass the name of a scorer teamai pull cached.',
+    } }, code: 1 });
+  });
+
   it.each(['quality', 'teamai:routing:review'])('refuses scorer %s beside a scorer file, so the file is only tried and no label is stored here', async (named) => {
     const { config } = await team();
 

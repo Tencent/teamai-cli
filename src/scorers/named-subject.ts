@@ -138,13 +138,8 @@ async function ofPass(current: LocalConfig | undefined, named: NamedPass): Promi
 /** The label checks that need no session: a hand label is the value of one cached scorer, and runs no judge. */
 function handLabelRefusal(demand: SessionDemand): Refusal | undefined {
   if (demand.label === undefined) return undefined;
-  const [scorer, ...more] = new Set(demand.scorers);
 
-  if (more.length > 0) return refused('invalid_arguments', '--label is a value of one scorer. Pass one --scorer.');
-
-  if (scorer !== undefined && isScorerFile(scorer)) {
-    return refused('invalid_arguments', `--label is stored, and the label of the scorer file ${scorer} is never stored. Pass the name of a scorer teamai pull cached.`);
-  }
+  if (new Set(demand.scorers).size > 1) return refused('invalid_arguments', '--label is a value of one scorer. Pass one --scorer.');
 
   return demand.batch ? refused('invalid_arguments', '--label runs no judge. Leave out --batch.') : undefined;
 }
