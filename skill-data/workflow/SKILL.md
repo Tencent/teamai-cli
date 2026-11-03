@@ -39,7 +39,7 @@ Done when a turn has no `then`.
 In an unattended run nobody reads you: step 2 is for your own log, and you ask nothing. Keep running `then` until a turn has none, also after `done` while it carries `judging`, so the judge's label lands before your session ends.
 Run `teamai score --drain` before your session ends.
 
-An unattended session that reaches a `handoff` reports that the run waits for a person, and stops.
+An unattended session that reaches a `person` action reports its `message`, and stops.
 
 When you have lost the last turn, after a compaction or in a new session, run `teamai workflow next <run> --driver skill` once for the current one.
 
@@ -72,6 +72,10 @@ A `person` action with `why: handoff` means the run waits only on steps this ses
 2. Stop polling: the turn has no `then`, and the run is in the person's hands.
 
 Done when the person has the literal.
+
+A `person` action with `why: offered` comes only in an unattended run: `steps` need a person, so TeamAI offered the run on teamai-reports for one to continue, and released it. Report `message`, which carries the literal in `run` a person claims it with, and stop: the turn has no `then`, and the run is no longer this session's.
+
+Done when you reported `message`.
 
 ## Stop
 

@@ -616,7 +616,7 @@ teamai workflow resume <run> --tools default=claude --sandbox     # 装有 claud
 
 已发布的运行只有所有者能继续。在另一个已有该运行的安装实例上，`resume` 和 `publish` 都返回 `not_owner`，带上所有者的用户名和安装实例 id。同一成员的两个安装实例显示相同的用户名，靠安装实例 id 区分。要接管这个运行，执行 `teamai workflow resume <run> --claim`。认领会替换本机的运行副本，并释放其他机器持有的租约。此后原所有者不能再发布或继续这个运行，除非它再认领回来。
 
-要在编程会话中继续这个运行，由 agent 执行 `teamai workflow resume <run> --driver skill`，加 `--claim` 则从所有者那里接管。它以同样的方式认领运行，然后在会话的运行模式下用 skill 驱动运行它，选项与 skill 启动相同：`--parallel`、`--hitl` 或 `--auto-approve`，以及 `--no-judge`。不带这些选项时，一次只运行一个步骤，agent 在回答可选关卡前会先问你。在无人值守的运行中，它像 `--auto-approve` 那样回答可选关卡，并在认领之前拒绝剩余步骤需要人参与的运行（`unattended_denied`）；已经执行过的审批或交互步骤不再计入，除非循环可能再次执行它。已经结束的运行不需要任何人，所以从不因此被拒绝。无人值守的运行中会拒绝 `--hitl person`（`invalid_arguments`）：没有人会回答。它的第一个回合在工作流有 prompt 步骤或由会话评审时提出宿主问题，并重新派发另一台机器持有租约的步骤。必须用本地驱动运行的工作流会以 `teamai workflow resume <run>` 交还给你。接管运行由你决定，所以 agent 执行这两条命令前都会先问你。
+要在编程会话中继续这个运行，由 agent 执行 `teamai workflow resume <run> --driver skill`，加 `--claim` 则从所有者那里接管。它以同样的方式认领运行，然后在会话的运行模式下用 skill 驱动运行它，选项与 skill 启动相同：`--parallel`、`--hitl` 或 `--auto-approve`，以及 `--no-judge`。不带这些选项时，一次只运行一个步骤，agent 在回答可选关卡前会先问你。在无人值守的运行中，它像 `--auto-approve` 那样回答可选关卡；运行到只有人能处理的步骤时，它[把运行交给人](#运行需要人参与时)，会话随之停止。`invoke: ask` 的工作流会在认领之前被拒绝（`unattended_denied`）。无人值守的运行中会拒绝 `--hitl person`（`invalid_arguments`）：没有人会回答。它的第一个回合在工作流有 prompt 步骤或由会话评审时提出宿主问题，并重新派发另一台机器持有租约的步骤。必须用本地驱动运行的工作流会以 `teamai workflow resume <run>` 交还给你。接管运行由你决定，所以 agent 执行这两条命令前都会先问你。
 
 已发布的运行结束时，teamai 会发布它的结束状态，不带 `--sessions`。之后接手该运行的成员不会重新运行它的任何步骤。
 
@@ -800,6 +800,19 @@ $ teamai workflow resume --next --auto-approve                  # 运行器作�
 {"data":{"done":{"run":"rddf318b1e199572e","outcome":"succeeded","record":"published"},"cancelled":[]}}
 ```
 
+无人值守地接手待接手运行的编程会话也以同样的方式交回运行。假设 alice 在 `build` 运行时发布了 `release`。会话认领它，运行 `build`，到 `ship` 时再次把运行设为待接手并释放它。它的 agent 报告 `person` 动作的 `message` 后停止，因为该回合没有 `then`：
+
+```console
+$ teamai workflow resume --next --driver skill                  # 无人值守的编程会话
+✔ Claimed rbb036bfacd4cec62 (release) from alice
+{"data":{"turn":{"run":"rbb036bfacd4cec62","status":"driving","actions":[],"running":[{"attempt":"ac15e3ddd","step":"build","phase":"running"}],…,"then":{"kind":"poll","run":"teamai workflow next rbb036bfacd4cec62 --driver skill --wait"}}}}
+…
+$ teamai workflow next rbb036bfacd4cec62 --driver skill
+{"data":{"turn":{"run":"rbb036bfacd4cec62","status":"driving","actions":[{"kind":"person","why":"offered","steps":["ship"],"message":"Step \"ship\" needs a person, so run rbb036bfacd4cec62 is offered on teamai-reports. A person continues it with: teamai workflow resume rbb036bfacd4cec62 --claim","run":["teamai workflow resume rbb036bfacd4cec62 --claim"]}],…}}}
+```
+
+之后运行器会跳过它，由人认领，与上文相同。
+
 运行无法发布为待接手时（例如对团队仓库没有推送权限、origin 无法访问，或检出目录没有 `origin`），该步骤和以前一样以 `hitl_required` 失败。消息会说明原因，运行留在那台机器上：在那里先运行 `teamai workflow retry <run> <step>`，再在终端中运行 `teamai workflow resume <run>`。TeamAI 不会通知任何人有运行在等待。请查看 `teamai workflow resume` 或 Dashboard。
 
 ## 运行记录
@@ -914,7 +927,7 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 有人在场回答时，运行是有人值守的；在 CI 或云端 agent 中，运行是无人值守的。TeamAI 先看 `TEAMAI_MODE`（`attended` 或 `unattended`），再看 `CI`（已设置且不是 `0` 或 `false` 即为无人值守），都没有时按有人值守处理。`TEAMAI_MODE` 为其他值时，TeamAI 给出警告并忽略它。
 
-在无人值守的运行中，describe 不提问。它给出推荐选项的启动命令，并带上 `--auto-approve`，由 agent 根据自己的任务填写 `{inputs}`。需要人参与的工作流会被拒绝（`denied`），并说明原因：`invoke: ask`、`interactive` 步骤、必需审批、没有默认值的选择，或只有本地驱动能运行的路径。
+在无人值守的运行中，describe 不提问。它给出推荐选项的启动命令，并带上 `--auto-approve`，由 agent 根据自己的任务填写 `{inputs}`。`invoke: ask` 的工作流或只有本地驱动能运行的路径会被拒绝（`denied`），并说明原因。含 `interactive` 步骤、必需审批或没有默认值的选择的工作流照常启动，describe 会说明运行到这些步骤时会交给人。
 
 无论用哪种驱动，TeamAI 为步骤启动的每个进程（包括 setup）都会拿到这次运行的 `TEAMAI_MODE`。skill 驱动沿用启动时或 `resume --driver skill` 时解析出的模式；本地驱动在每次开始驱动时（`start` 或 `resume`）重新解析。
 

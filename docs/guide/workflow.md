@@ -616,7 +616,7 @@ teamai workflow resume <run> --tools default=claude --sandbox     # a CI runner 
 
 Only the owner continues a published run. On another install that has the run, `resume` and `publish` answer `not_owner` with the owner's user name and install id. Two installs of one member show the same user name, and the install id tells them apart. To take the run over, run `teamai workflow resume <run> --claim`. The claim replaces this machine's copy of the run and releases the leases other machines held. The previous owner can then no longer publish or resume the run, unless it claims it back.
 
-To continue the run from a coding session, the agent runs `teamai workflow resume <run> --driver skill`, with `--claim` to take it from the owner. It claims the run the same way, then drives it with the skill driver in the session's run mode, with the options of a skill start: `--parallel`, `--hitl` or `--auto-approve`, and `--no-judge`. Without them, one step runs at a time and the agent asks you before it answers an optional gate. In an unattended run it answers optional gates as `--auto-approve` does, and refuses, before claiming it, a run whose steps left need a person (`unattended_denied`); an approval or interactive step that already ran no longer counts, unless a loop can run it again. A run that already ended needs nobody, so it is never refused for that. `--hitl person` is refused in an unattended run (`invalid_arguments`): nobody would answer. Its first turn asks the host question when the workflow has prompt steps or the session judges it, and dispatches again the steps the other machine had leased. A workflow that must run with the local driver comes back to you as `teamai workflow resume <run>`. Taking the run over is your decision, so the agent asks you before it runs either command.
+To continue the run from a coding session, the agent runs `teamai workflow resume <run> --driver skill`, with `--claim` to take it from the owner. It claims the run the same way, then drives it with the skill driver in the session's run mode, with the options of a skill start: `--parallel`, `--hitl` or `--auto-approve`, and `--no-judge`. Without them, one step runs at a time and the agent asks you before it answers an optional gate. In an unattended run it answers optional gates as `--auto-approve` does, and when the run reaches a step only a person can take, it [offers the run to one](#when-a-run-reaches-a-person) and the session stops. A workflow with `invoke: ask` is refused before the run is claimed (`unattended_denied`). `--hitl person` is refused in an unattended run (`invalid_arguments`): nobody would answer. Its first turn asks the host question when the workflow has prompt steps or the session judges it, and dispatches again the steps the other machine had leased. A workflow that must run with the local driver comes back to you as `teamai workflow resume <run>`. Taking the run over is your decision, so the agent asks you before it runs either command.
 
 When a published run ends, teamai publishes how it ended, without `--sessions`. A member who then takes the run over runs none of its steps again.
 
@@ -800,6 +800,19 @@ $ teamai workflow resume --next --auto-approve                  # the runner job
 {"data":{"done":{"run":"rddf318b1e199572e","outcome":"succeeded","record":"published"},"cancelled":[]}}
 ```
 
+A coding session that takes offered runs unattended hands a run back the same way. Say alice published `release` while `build` ran. The session claims it, runs `build`, and at `ship` offers the run again and releases it. Its agent reports the `person` action's `message` and stops, since the turn has no `then`:
+
+```console
+$ teamai workflow resume --next --driver skill                  # an unattended coding session
+✔ Claimed rbb036bfacd4cec62 (release) from alice
+{"data":{"turn":{"run":"rbb036bfacd4cec62","status":"driving","actions":[],"running":[{"attempt":"ac15e3ddd","step":"build","phase":"running"}],…,"then":{"kind":"poll","run":"teamai workflow next rbb036bfacd4cec62 --driver skill --wait"}}}}
+…
+$ teamai workflow next rbb036bfacd4cec62 --driver skill
+{"data":{"turn":{"run":"rbb036bfacd4cec62","status":"driving","actions":[{"kind":"person","why":"offered","steps":["ship"],"message":"Step \"ship\" needs a person, so run rbb036bfacd4cec62 is offered on teamai-reports. A person continues it with: teamai workflow resume rbb036bfacd4cec62 --claim","run":["teamai workflow resume rbb036bfacd4cec62 --claim"]}],…}}}
+```
+
+Runners then leave it, and a person claims it, as above.
+
 When the run cannot be offered, such as with no push access to the team repo, origin down, or a checkout with no `origin`, the step fails with `hitl_required` as before. Its message says why, and the run stays on that machine: `teamai workflow retry <run> <step>`, then `teamai workflow resume <run>` from a terminal there. No one is notified that a run waits for them. Watch `teamai workflow resume` or the dashboard.
 
 ## Run records
@@ -914,7 +927,7 @@ When a step that waits for env or a budget works in a workspace that an earlier 
 
 A run is attended when a person is there to answer, and unattended in CI or a cloud agent. TeamAI takes the mode from `TEAMAI_MODE` (`attended` or `unattended`), else from `CI` (set, and not `0` or `false`, means unattended), else attended. It warns about any other `TEAMAI_MODE` value and ignores it.
 
-In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow that needs a person (`denied`), naming why: `invoke: ask`, an `interactive` step, a required approval, a choice without a default, or a route only the local driver can run.
+In an unattended run, describe asks no question. It answers the start of the recommended option with `--auto-approve`, and the agent fills `{inputs}` from its task. It refuses a workflow with `invoke: ask` or a route only the local driver can run (`denied`), naming why. A workflow with an `interactive` step, a required approval, or a choice without a default starts, and describe says the run is offered to a person when it reaches one.
 
 Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
 
