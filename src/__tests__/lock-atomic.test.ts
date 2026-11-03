@@ -149,6 +149,29 @@ describe('acquireLock never takes over a lock another live process may hold (#76
     expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('other');
   });
 
+  it('under the reclaim sentinel, does not rename over a lock re-created while the old owner\'s pid was checked', async () => {
+    // The second pass reads the old owner's lock; before its pid check, that
+    // owner releases and exits, and another process creates a fresh lock.
+    const deadPid = 999999;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: deadPid, owner: 'old', startedAt: 'x' }));
+    const realKill = process.kill.bind(process);
+    let deadPidChecks = 0;
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid !== deadPid) return realKill(pid, signal);
+      deadPidChecks += 1;
+      if (deadPidChecks === 2) {
+        fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, owner: 'other', startedAt: 'x' }));
+      }
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    });
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      kill.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('other');
+  });
+
   it('does not reclaim a lock whose owner is alive but belongs to another user (EPERM)', async () => {
     fs.writeFileSync(lockPath, JSON.stringify({ pid: 424242, owner: 'root-owned', startedAt: 'x' }));
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => {

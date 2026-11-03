@@ -342,7 +342,16 @@ export async function lockState(resolved: string): Promise<'live' | 'stale' | 'm
     return 'live'; // process alive → lock genuinely held
   } catch (err) {
     // EPERM: alive, owned by another user. ESRCH: the owning process is gone.
-    return errnoCode(err) === 'EPERM' ? 'live' : 'stale';
+    if (errnoCode(err) === 'EPERM') return 'live';
+  }
+
+  // The owner may have released the lock and exited after the read, and
+  // another process created a fresh one: only the dead owner's own file is stale.
+  try {
+    return (await fse.readFile(resolved, 'utf-8')) === content ? 'stale' : 'live';
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return 'missing';
+    throw err;
   }
 }
 
