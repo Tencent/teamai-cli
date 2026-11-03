@@ -4578,6 +4578,18 @@ describe('the team branch a lease names', () => {
     expect(leased).toMatchObject({ data: { lease: { step: 'task.propose', workspace: { mode: 'team', branch: 'teamai/tasks/backend/login-retry' } } } });
   });
 
+  it('holds the step from a driver that does not offer the team workspace, and names the run\'s own branch without a template', async () => {
+    const { config, runId } = await startTree({ build: graph(`  - id: tidy
+    workspace: { team: {} }
+    command: node tidy.js
+`) }, 'build');
+
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: ['read-only', 'new', 'continue'] } })).toMatchObject({ data: { wait: {
+      held: [{ step: 'tidy', reason: 'step "tidy" runs in the team workspace, which this driver does not provide', missing: ['workspace.team'] }],
+    } } });
+    expect(await leaseNext(config, runId, driverA, TEAM)).toMatchObject({ data: { lease: { step: 'tidy', workspace: { mode: 'team', branch: `teamai/${runId}/tidy/p1` } } } });
+  });
+
   it('fails the step, naming the branch, when what it reads does not make a branch name', async () => {
     const { config, runId } = await startTree({ build: graph(PROPOSE, 'inputs: { suite: string }\n') }, 'build', { suite: 'frontend' });
     const plan = leaseIn(await leaseNext(config, runId, driverA, TEAM));
