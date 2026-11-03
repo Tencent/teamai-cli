@@ -190,6 +190,6 @@ describe('the session-start pull of a tool a workflow launched (#1176)', () => {
     await pullHandler().execute({ cwd: project, [LAUNCH_PAYLOAD_KEY]: launchEnv(launch) }, 'claude', config);
 
     expect(mockSeed).toHaveBeenCalledWith('claude', project);
-    expect(mockPull).toHaveBeenCalledWith({ silent: true });
+    expect(mockPull).toHaveBeenCalledWith({ silent: true, sessionStart: true });
   });
 });
