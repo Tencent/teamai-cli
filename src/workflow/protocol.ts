@@ -12,7 +12,7 @@ import { confinedToolLevel, isConfinedTool } from '../tool-launch/confined.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 import type { JsonValue, LocalConfig } from '../types.js';
-import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
+import { attemptEnv, nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
 import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
@@ -598,7 +598,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const run = RunIdSchema.safeParse(runId);
       const prepare = options?.prepare;
 
-      if (prepare === undefined || !run.success) return withIgnored(await lease(), parsed.ignored);
+      if (prepare === undefined || !run.success) return withIgnored(withAttemptEnv(config, runId, next.runMode, await lease()), parsed.ignored);
 
       return withIgnored(await withRunLock(config, run.data, async (lock) => {
         const answer = prepare === true ? await prepareLeased({ config, lock, driver, env, answer: await leaseNext(config, runId, driver, { ...next, env, prepare: true }) })
@@ -607,7 +607,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         // A clone whose steps all settled is not needed any more.
         await sweepClones(config, lock.run);
 
-        return answer;
+        return withAttemptEnv(config, runId, next.runMode, answer);
       }, { waitMs: 0 }), parsed.ignored);
     },
     report: async (runId, body, options) => {
@@ -698,6 +698,22 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     judge: (ref, body, { group }) => runJudgeLease(config, ref, body, { group }),
   };
+}
+
+const CommandLeaseSchema = z.object({ attempt: z.string(), command: z.string(), env: z.record(z.string(), z.string()).optional() }).passthrough();
+
+/**
+ * A command lease with the env every process of its attempt gets, after the step's own, so a command any driver runs
+ * with `lease.env` alone finds its attempt and `$TEAMAI_RUN_DIR`, and changes no run. The mode is the one the driver
+ * sent, else this process's, as for setup.
+ */
+function withAttemptEnv(config: LocalConfig, runId: string, mode: RunMode | undefined, answer: WorkflowEnvelope): WorkflowEnvelope {
+  if (!('data' in answer)) return answer;
+  const lease = CommandLeaseSchema.safeParse(answer.data.lease);
+
+  if (!lease.success) return answer;
+
+  return { data: { ...answer.data, lease: { ...lease.data, env: { ...lease.data.env, ...attemptEnv(config, runId, lease.data.attempt, mode ?? resolveRunMode(process.env)) } } } };
 }
 
 function noCheckout(run: string, attempt: string): WorkflowFailure {

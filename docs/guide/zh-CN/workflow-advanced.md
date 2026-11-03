@@ -1203,7 +1203,7 @@ teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine
 
 对每个租约，驱动：
 
-1. 运行每个进程时带上 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，这样从中发出的 `teamai` 调用不会改变任何运行，并去掉 `lease.envScope.withhold` 里的名字。它在 `cwd` 中运行命令租约（例如 `teamai benchmark check`），没有 `cwd` 的租约则在它自己的工作区中运行，并把命令打印的 JSON 作为 `outputs` 报告。
+1. 运行每个进程时带上 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，这样从中发出的 `teamai` 调用不会改变任何运行，并去掉 `lease.envScope.withhold` 里的名字。命令租约的 `env` 已经带有 `TEAMAI_WORKFLOW_ATTEMPT`、`TEAMAI_RUN_DIR` 和 `TEAMAI_MODE`，所以 [`teamai-score`](scorers.md) 的 `teamai score` 步骤在任何驱动下都能运行。它在 `cwd` 中运行命令租约（例如 `teamai benchmark check`），没有 `cwd` 的租约则在它自己的工作区中运行，并把命令打印的 JSON 作为 `outputs` 报告。
 2. 在 `cwd` 中以 `lease.prompt` 启动 prompt 租约的 `lease.tool`，按原样使用 `lease.model`，并从工具启动起让它遵守 `lease.limits`。
 3. 报告 prompt 时带上 `tool`、工具报告的 `model`、`session` 和 `tokens`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`（`{"amount":0.12,"unit":"USD"}`）。某个限制停止了工具时，报告带 `outcome: "success"` 和 `limit`：`timeout`、`budget` 或 `max_turns`；驱动无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。`limit` 是租约没有设置的限制时，报告返回 `invalid_report`；带有 `changes` 或 `read`（由 teamai 从克隆中填写）的报告也一样。
 
