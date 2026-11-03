@@ -457,7 +457,7 @@ jobs:
       - run: npx teamai-cli workflow start ship-issue --driver local --tools default=claude --auto-approve --inputs '{"issue":${{ github.event.issue.number }}}'
 ```
 
-`--auto-approve` answers an optional `approve` request yes and an optional `choose` request with its default. Nobody can answer a required one in an unattended job, so its step fails with `hitl_required`, and so does the run. To start a run from another branch, such as one whose CI failed, check that branch out by name, for example `ref: ${{ github.head_ref }}` on a `pull_request` event. The default `pull_request` checkout is a detached merge commit, which `workflow start` refuses. TeamAI installs no trigger and does not wait for CI or a merge.
+`--auto-approve` answers an optional `approve` request yes and an optional `choose` request with its default. Nobody can answer a required one in an unattended job, so the job [hands the run to a person](#when-a-run-reaches-a-person) at that step and exits 0. To start a run from another branch, such as one whose CI failed, check that branch out by name, for example `ref: ${{ github.head_ref }}` on a `pull_request` event. The default `pull_request` checkout is a detached merge commit, which `workflow start` refuses. TeamAI installs no trigger and does not wait for CI or a merge.
 
 ### Take offered runs from CI
 
@@ -610,7 +610,8 @@ What `--next` does with each offered run:
 | The offered run | Unattended `--next` (CI, or `TEAMAI_MODE=unattended`) | Attended `--next` |
 |---|---|---|
 | Nothing in its steps left needs a person | takes it | takes it |
-| A step left has a required approval, is `interactive`, or is a choice with no default | skips it: listed as `needs a person` | takes it from a terminal; with no terminal, such as cron, skips it |
+| A step left may need a person, such as `pair` behind a choice, but none is ready now | takes it: listed as `may need a person at <step>`, and hands it back if it reaches one | takes it |
+| A step ready now is a required approval, `interactive`, or a choice `--auto-approve` cannot answer, as when a runner handed it back there | skips it: listed as `needs a person` | takes it from a terminal; with no terminal, such as cron, skips it |
 | A step left requires env with no value here | skips it: listed as `cannot run here` | skips it |
 | A prompt step left has no tool here: `--tools`, `workflows.tools` and your AI tool name none, or the one they name is not on `PATH` | skips it: listed as `cannot run here` | skips it |
 | A step left needs a sandbox (`requires: { isolation: sandbox, strict: true }`), and neither `--sandbox` nor `workflows.sandbox` declares one here | skips it: listed as `cannot run here` | skips it |
@@ -619,6 +620,80 @@ What `--next` does with each offered run:
 | Another runner claimed it a moment earlier | takes the next one | takes the next one |
 
 Any claim takes the offer away: `--next`, `resume <run>` on a machine without the run, `resume <run> --claim`, or a driver's `"claim": true`. So does your own `resume <run>` on the machine that published it; publish again to offer it again. So two runners never drive one run. Publish once you stop driving the run, since a runner can take it at once. The dashboard's [Workflow Runs page](dashboard.md#workflow-runs) shows the same runs. [Offer a run to a runner](workflow-advanced.md#offer-a-run-to-a-runner) has the rules for agent sessions and every error.
+
+### When a run reaches a person
+
+A run that only a person can go on with is handed to one instead of failing. Say a CI job starts `release`, whose `ship` step waits for a required approval:
+
+```yaml
+# workflows/release.yaml
+schemaVersion: v1alpha1
+name: release
+description: Build, then ship once a person approves.
+steps:
+  - id: build
+    command: echo build
+  - id: ship
+    needs: [build]
+    approve: { message: Ship it?, required: true }
+    command: ./scripts/ship.sh
+```
+
+The job runs `build`, reaches `ship`, publishes the run offered on `teamai-reports`, and exits 0:
+
+```console
+$ teamai workflow start release --driver local                 # in CI
+ℹ Run r6aa0e2c0927ff266 started. If it stops before it ends, continue it with: teamai workflow resume r6aa0e2c0927ff266
+ℹ Step "ship" needs a person, so run r6aa0e2c0927ff266 is offered on teamai-reports. A person continues it with: teamai workflow resume r6aa0e2c0927ff266 --claim
+{"data":{"handoff":{"run":"r6aa0e2c0927ff266","steps":["ship"],"resume":"teamai workflow resume r6aa0e2c0927ff266 --claim"}}}
+```
+
+A runner that takes offered runs leaves it, since the step ready now needs a person:
+
+```console
+$ teamai workflow resume --next --auto-approve                  # the runner job
+ℹ Left r6aa0e2c0927ff266 (release) offered for a person: only a person can answer the approval at ship
+{"data":{"idle":{"offered":1}}}
+```
+
+A person lists it, claims it from a terminal, and answers:
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW  STATUS          OWNER                   WHERE
+r6aa0e2c0927ff266  release   needs a person  ci (install a2aa3589…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r6aa0e2c0927ff266 --claim
+$ teamai workflow resume r6aa0e2c0927ff266 --claim
+Step "ship": Ship it?
+Options: yes, no
+teamai workflow respond r6aa0e2c0927ff266 ship <option> --pass 1
+Choice, followed by an optional note: yes Looks good
+{"data":{"done":{"run":"r6aa0e2c0927ff266","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+The same goes for an `interactive` step, and for a choice `--auto-approve` cannot answer. A runner hands a run back the same way, so it takes a run whose person step may never be reached. In `ship-issue` below, `pair` runs only when a person picks it, and `--auto-approve` picks `give-up`:
+
+```yaml
+  - id: stuck
+    needs: [build]
+    choose: { message: Stuck?, options: [give-up, pair], default: give-up }
+  - id: pair
+    needs: [stuck]
+    if: steps.stuck.choice == 'pair'
+    approve: { message: Pair on the failing test now?, required: true }
+    command: ./scripts/open-pairing.sh
+```
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW    STATUS   OWNER                      WHERE
+rddf318b1e199572e  ship-issue  running  alice (install ebee2326…)  offered on teamai-reports, may need a person at pair: teamai workflow resume --next
+$ teamai workflow resume --next --auto-approve                  # the runner job
+✔ Claimed rddf318b1e199572e (ship-issue) from alice
+⚠ Step "stuck" chose "give-up" by auto_approve.
+{"data":{"done":{"run":"rddf318b1e199572e","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+When the run cannot be offered, such as with no push access to the team repo, origin down, or a checkout with no `origin`, the step fails with `hitl_required` as before. Its message says why, and the run stays on that machine: `teamai workflow retry <run> <step>`, then `teamai workflow resume <run>` from a terminal there. No one is notified that a run waits for them. Watch `teamai workflow resume` or the dashboard.
 
 ## Run records
 

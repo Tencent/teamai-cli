@@ -457,7 +457,7 @@ jobs:
       - run: npx teamai-cli workflow start ship-issue --driver local --tools default=claude --auto-approve --inputs '{"issue":${{ github.event.issue.number }}}'
 ```
 
-`--auto-approve` 对可选的 `approve` 请求回答 yes，对可选的 `choose` 请求选择默认值。无人值守的作业里没人能回答必需的请求，因此它所在的步骤以 `hitl_required` 失败，运行也随之失败。要从另一条分支启动运行（例如 CI 失败的分支），请按分支名检出它，例如在 `pull_request` 事件中使用 `ref: ${{ github.head_ref }}`。默认的 `pull_request` checkout 是 detached merge commit，`workflow start` 会拒绝它。TeamAI 不安装触发器，也不等待 CI 或合并。
+`--auto-approve` 对可选的 `approve` 请求回答 yes，对可选的 `choose` 请求选择默认值。无人值守的作业里没人能回答必需的请求，因此作业会在该步骤[把运行交给人](#运行需要人参与时)，并以 0 退出。要从另一条分支启动运行（例如 CI 失败的分支），请按分支名检出它，例如在 `pull_request` 事件中使用 `ref: ${{ github.head_ref }}`。默认的 `pull_request` checkout 是 detached merge commit，`workflow start` 会拒绝它。TeamAI 不安装触发器，也不等待 CI 或合并。
 
 ### 从 CI 接手交出的运行
 
@@ -610,7 +610,8 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 | 待接手的运行 | 无人值守的 `--next`（CI，或 `TEAMAI_MODE=unattended`） | 有人值守的 `--next` |
 |---|---|---|
 | 剩余步骤都不需要人参与 | 接手 | 接手 |
-| 剩余的某个步骤有必需审批、是 `interactive`，或是没有默认值的选择 | 跳过：列为 `needs a person` | 在终端中接手；没有终端（如 cron）时跳过 |
+| 剩余的某个步骤可能需要人参与（例如选择背后的 `pair`），但现在就绪的步骤都不需要 | 接手：列为 `may need a person at <step>`，运行到需要人的步骤时再交回 | 接手 |
+| 现在就绪的某个步骤是必需审批、`interactive`，或 `--auto-approve` 无法回答的选择（例如运行器在那里把它交回） | 跳过：列为 `needs a person` | 在终端中接手；没有终端（如 cron）时跳过 |
 | 剩余的某个步骤要求的 env 在本机没有值 | 跳过：列为 `cannot run here` | 跳过 |
 | 剩余的某个提示词步骤在本机没有工具：`--tools`、`workflows.tools` 和你的 AI 工具都没有指定，或指定的工具不在 `PATH` 上 | 跳过：列为 `cannot run here` | 跳过 |
 | 剩余的某个步骤需要沙箱（`requires: { isolation: sandbox, strict: true }`），而本机既没有传 `--sandbox` 也没有设置 `workflows.sandbox` | 跳过：列为 `cannot run here` | 跳过 |
@@ -619,6 +620,80 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 | 另一个运行器刚刚抢先认领了它 | 接手下一个 | 接手下一个 |
 
 任何认领都会撤下运行的待接手状态：`--next`、在没有该运行的机器上执行 `resume <run>`、`resume <run> --claim`，或驱动的 `"claim": true`。你在发布它的机器上自己执行 `resume <run>` 也会撤下；再次发布即可重新留给运行器接手。因此不会有两个运行器驱动同一个运行。请在不再驱动该运行之后再发布，因为运行器可能立即接手。Dashboard 的[工作流运行页](dashboard.md#工作流运行workflow-runs)显示同样的这些运行。[把运行留给运行器接手](workflow-advanced.md#把运行留给运行器接手)说明 agent 会话适用的规则和每个错误。
+
+### 运行需要人参与时
+
+只有人才能继续的运行会交给人，而不是失败。例如 CI 作业启动 `release`，其中 `ship` 步骤等待必需审批：
+
+```yaml
+# workflows/release.yaml
+schemaVersion: v1alpha1
+name: release
+description: Build, then ship once a person approves.
+steps:
+  - id: build
+    command: echo build
+  - id: ship
+    needs: [build]
+    approve: { message: Ship it?, required: true }
+    command: ./scripts/ship.sh
+```
+
+作业运行 `build`，到达 `ship` 后把运行以待接手状态发布到 `teamai-reports`，并以 0 退出：
+
+```console
+$ teamai workflow start release --driver local                 # 在 CI 中
+ℹ Run r6aa0e2c0927ff266 started. If it stops before it ends, continue it with: teamai workflow resume r6aa0e2c0927ff266
+ℹ Step "ship" needs a person, so run r6aa0e2c0927ff266 is offered on teamai-reports. A person continues it with: teamai workflow resume r6aa0e2c0927ff266 --claim
+{"data":{"handoff":{"run":"r6aa0e2c0927ff266","steps":["ship"],"resume":"teamai workflow resume r6aa0e2c0927ff266 --claim"}}}
+```
+
+接手运行的运行器会跳过它，因为现在就绪的步骤需要人：
+
+```console
+$ teamai workflow resume --next --auto-approve                  # 运行器作业
+ℹ Left r6aa0e2c0927ff266 (release) offered for a person: only a person can answer the approval at ship
+{"data":{"idle":{"offered":1}}}
+```
+
+由人列出它，在终端中认领并回答：
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW  STATUS          OWNER                   WHERE
+r6aa0e2c0927ff266  release   needs a person  ci (install a2aa3589…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r6aa0e2c0927ff266 --claim
+$ teamai workflow resume r6aa0e2c0927ff266 --claim
+Step "ship": Ship it?
+Options: yes, no
+teamai workflow respond r6aa0e2c0927ff266 ship <option> --pass 1
+Choice, followed by an optional note: yes Looks good
+{"data":{"done":{"run":"r6aa0e2c0927ff266","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+`interactive` 步骤，以及 `--auto-approve` 无法回答的选择，也按同样方式处理。运行器也会这样把运行交回，所以它会接手一个需要人的步骤可能永远不会运行的运行。下面的 `ship-issue` 中，只有人选了 `pair` 才会运行 `pair`，而 `--auto-approve` 选的是 `give-up`：
+
+```yaml
+  - id: stuck
+    needs: [build]
+    choose: { message: Stuck?, options: [give-up, pair], default: give-up }
+  - id: pair
+    needs: [stuck]
+    if: steps.stuck.choice == 'pair'
+    approve: { message: Pair on the failing test now?, required: true }
+    command: ./scripts/open-pairing.sh
+```
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW    STATUS   OWNER                      WHERE
+rddf318b1e199572e  ship-issue  running  alice (install ebee2326…)  offered on teamai-reports, may need a person at pair: teamai workflow resume --next
+$ teamai workflow resume --next --auto-approve                  # 运行器作业
+✔ Claimed rddf318b1e199572e (ship-issue) from alice
+⚠ Step "stuck" chose "give-up" by auto_approve.
+{"data":{"done":{"run":"rddf318b1e199572e","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+运行无法发布为待接手时（例如对团队仓库没有推送权限、origin 无法访问，或检出目录没有 `origin`），该步骤和以前一样以 `hitl_required` 失败。消息会说明原因，运行留在那台机器上：在那里先运行 `teamai workflow retry <run> <step>`，再在终端中运行 `teamai workflow resume <run>`。TeamAI 不会通知任何人有运行在等待。请查看 `teamai workflow resume` 或 Dashboard。
 
 ## 运行记录
 
