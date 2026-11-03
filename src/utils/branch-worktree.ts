@@ -972,6 +972,13 @@ async function commitAndPushImpl(
  */
 export interface BranchWriteContext {
   /**
+   * Whether this update fetched or pushed the branch just before `write`, so
+   * `origin/<branch>` holds what origin held when the lock was taken. False
+   * when origin could not be reached and that ref may be stale.
+   */
+  readonly isOriginFresh: boolean;
+
+  /**
    * Register work that must run only after the publish is DELIVERED (see
    * {@link isDelivered}) and still under the branch lock, before any other
    * writer can enter. The one user today: clearing the local vote deltas a
@@ -1012,8 +1019,10 @@ async function updateImpl(
   try {
     const { wt, current } = await openWorktree(spec, localConfig, options);
 
+    let isOriginFresh = current;
+
     try {
-      if (!current) await syncWorktree(spec, wt);
+      if (!current) isOriginFresh = await syncWorktree(spec, wt);
     } catch (e) {
       log.debug(`[${spec.logTag}] sync before write failed, writing onto the local copy: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1021,6 +1030,7 @@ async function updateImpl(
     let delivered: (() => Promise<void>) | undefined;
 
     const change = await write(wt, {
+      isOriginFresh,
       onDelivered: (fn) => {
         if (!delivered) delivered = fn;
       },
@@ -1292,8 +1302,10 @@ async function restageSnapshotIndex(spec: BranchWorktreeSpec, git: SimpleGit, sh
  *    then re-apply. That object is never stored in `refs/stash`, so a concurrent
  *    `git stash` in another worktree of this repo is left alone. Stash-apply
  *    conflicts restore the original uncommitted files, never conflict markers.
+ *
+ * Returns whether the fetch reached origin.
  */
-async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void> {
+async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boolean> {
   const git = createGitWithBlockTimeout(wt);
   const upstream = `origin/${spec.branch}`;
 
@@ -1304,7 +1316,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
   } catch (e) {
     log.debug(`[${spec.logTag}] fetch failed, using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
-    return;
+    return false;
   }
 
   // Counted while conflicted files are restored, which never moves HEAD; the
@@ -1317,7 +1329,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
   const [behind, ahead] = counts.trim().split(/\s+/).map((count) => Number.parseInt(count, 10));
 
   // Already at origin's commit: nothing to fast-forward or rebase, uncommitted files stay as they are.
-  if (behind === 0 && ahead === 0) return;
+  if (behind === 0 && ahead === 0) return true;
 
   let carried: string | null = null;
 
@@ -1327,7 +1339,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
     if (!carried) {
       log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy`);
 
-      return;
+      return true;
     }
 
     try {
@@ -1336,7 +1348,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
       log.debug(`[${spec.logTag}] could not clear the worktree for rebase; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
       await applyDirtySnapshot(spec, git, carried);
 
-      return;
+      return true;
     }
   }
 
@@ -1359,24 +1371,26 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
       await applyDirtySnapshot(spec, git, carried);
       log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
-      return;
+      return true;
     }
 
     if (dirty) {
       log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
-      return;
+      return true;
     }
 
     log.debug(`[${spec.logTag}] dropping ${ahead} unpushed commit(s) that conflict with ${upstream}: ${e instanceof Error ? e.message : String(e)}`);
     await git.raw(['reset', '--hard', upstream]);
 
-    return;
+    return true;
   }
 
   if (carried) {
     await applyDirtySnapshot(spec, git, carried);
   }
+
+  return true;
 }
 
 /**

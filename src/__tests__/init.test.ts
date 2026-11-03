@@ -1224,7 +1224,7 @@ describe('init', () => {
     async function register(result: PublishResult, runWrite = false): Promise<void> {
       const reports = await import('../utils/reports-branch.js');
       const update = vi.spyOn(reports, 'updateReports').mockImplementation(async (_config, write) => {
-        if (runWrite) await write('/reports', { onDelivered: vi.fn() });
+        if (runWrite) await write('/reports', { isOriginFresh: true, onDelivered: vi.fn() });
         return result;
       });
       try {
