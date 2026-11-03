@@ -290,6 +290,13 @@ describe('coveredDelivery', () => {
     expect(refusal?.message).toBe(`A task covers skills/dev/deploy, which is in namespace dev, and the arm's roles or projects don't receive dev, so leaving it out changes nothing. Fix the team's tasks, push them, run teamai pull, and start again.`);
   });
 
+  it('refuses every covered path when each arm runs with no team assets', async () => {
+    const { config, revision, selection, files } = team();
+    const refusal = await coveredRefusal(config, { paths: ['skills/lint'], revision, arms: [{ name: 'bare', team: { kind: 'none' } }], member: selection, files });
+
+    expect(refusal?.message).toBe(`A task covers skills/lint, but every arm runs with team: none, so no arm receives it. Fix the team's tasks, push them, run teamai pull, and start again.`);
+  });
+
   it('accepts a path only one arm role receives', async () => {
     const { config, revision, selection, files } = team();
 

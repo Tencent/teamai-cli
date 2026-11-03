@@ -155,6 +155,10 @@ export async function coveredDelivery(
     return { refusal: { code: 'arm_team_unresolved', message: `A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. ${TASK_FIX}` } };
   }
 
+  if (selections.length === 0) {
+    return { refusal: { code: 'arm_team_unresolved', message: `A task covers ${paths.join(', ')}, but every arm runs with team: none, so no arm receives it. ${TASK_FIX}` } };
+  }
+
   // Every selection the run's arms pull under, so a path only a role arm receives is not refused. A path refuses
   // only when every selection's delivery leaves it unchanged: each read is the member as the clone's own pull reads
   // it, on a scope with no state of its own.
