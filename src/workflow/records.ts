@@ -124,6 +124,11 @@ export type WorkflowRunRecord = {
   iterations?: number;
   /** The pull requests the run delivered, in the order they first appeared. Public on a public team repo; absent when it delivered none. */
   prs?: string[];
+  /**
+   * The run branches its pull requests use, the head and, when it is the run's, the base of each; absent when it
+   * delivered none. `teamai doctor --fix` keeps them on origin once the run settled longer ago than workflows.retention.
+   */
+  prBranches?: string[];
   /** The run opens a clone, so it stays on the machine that started it, and its steps are measurements in no workflow total. */
   isolated?: true;
   username: string;
@@ -270,6 +275,7 @@ export function buildEndRecord(
 
   // Receipts are what delivery recorded, never a step's outputs, and each URL appears once.
   const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
+  const prBranches = pullRequestBranches(run);
 
   return definedFields<CurrentWorkflowRunRecord>({
     ...buildStartRecord(run, driver, username, now),
@@ -291,7 +297,15 @@ export function buildEndRecord(
     // bounded history length (their true count is unknowable now).
     iterations: run.settledCount ?? run.settledAttempts.length,
     prs: prs.length ? prs : undefined,
+    prBranches: prBranches.length ? prBranches : undefined,
   });
+}
+
+/** The run branches its pull requests use: the branch each came from, and the one it went into when that is the run's. */
+export function pullRequestBranches(run: Pick<RunState, 'id' | 'deliveries'>): string[] {
+  const own = (branch: string): boolean => branch.startsWith(`teamai/${run.id}/`);
+
+  return [...new Set((run.deliveries ?? []).flatMap((receipt) => [receipt.branch, receipt.base].filter(own)))];
 }
 
 /**
@@ -313,6 +327,8 @@ export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunR
   if (next.failure === undefined) delete merged.failure;
 
   if (next.prs === undefined) delete merged.prs;
+
+  if (next.prBranches === undefined) delete merged.prBranches;
 
   return merged;
 }

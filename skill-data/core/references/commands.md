@@ -107,7 +107,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai doctor` — Diagnose configuration issues, and print the run mode (attended or unattended) and what set it: TEAMAI_MODE, CI, or the default
   - `--json` — Output the report as JSON (suitable for CI)
-  - `--fix` — Remove lock files left behind by dead processes
+  - `--fix` — Remove lock files left behind by dead processes, delete again the run branches a succeeded workflow run could not delete, and remove what runs settled longer ago than workflows.retention left behind (branches but those a pull request uses, worktrees, kept refs, base pins on origin)
 
 ## roles
 

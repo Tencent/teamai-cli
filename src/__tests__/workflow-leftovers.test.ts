@@ -8,6 +8,8 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { readRun } from '../workflow/store.js';
+import { sweepLeftovers } from '../workflow/leftovers.js';
+import { getReportsDir } from '../types.js';
 import { log } from '../utils/logger.js';
 import { fakeGh } from './helpers/fake-gh.js';
 import type { LocalConfig } from '../types.js';
@@ -168,5 +170,102 @@ describe('the branches of a run that succeeded', () => {
     expect(branches(origin, runId)).toEqual(['join/p1']);
     expect(branches(cwd, runId)).toEqual(['join/p1', 'left/p1']);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+const FAILS_AFTER_DELIVERY = `schemaVersion: v1alpha1
+name: ship
+description: A step delivers its branch, a second one works on another, and a third fails.
+steps:
+  - id: change
+    workspace: new
+    deliver: pr
+    command: node -e "require('fs').writeFileSync('change.txt', 'C')"
+  - id: docs
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('docs.txt', 'D')"
+  - id: broken
+    needs: [change, docs]
+    workspace: new
+    command: node -e "require('fs').writeFileSync('broken.txt', 'B'); process.exit(1)"
+`;
+
+const DAY = 86_400_000;
+
+describe('doctor --fix past workflows.retention', () => {
+  it('keeps what a failed run left until the retention passed, then removes it but the pull request branch, once', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_AFTER_DELIVERY);
+    fakeGh(path.join(root, 'gh'));
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    const attempt = run.steps.flatMap((step) => ('attempt' in step && step.attempt ? [step.attempt] : []))[0] ?? '';
+    git(cwd, ['update-ref', `refs/teamai/kept/${attempt}`, 'HEAD']);
+    git(cwd, ['push', '-q', 'origin', `HEAD:refs/heads/teamai/${runId}/base`]);
+    const worktrees = () => git(cwd, ['worktree', 'list', '--porcelain']).split('\n').filter((line) => line.startsWith('worktree ')).length;
+    expect(branches(origin, runId)).toEqual(['base', 'broken/p1', 'change/p1', 'docs/p1']);
+    expect(worktrees()).toBe(2);
+    const settled = Date.parse(run.updatedAt);
+
+    expect(await sweepLeftovers(config, null, { now: settled + 13 * DAY, checkout: cwd })).toMatchObject({ swept: [] });
+    expect(branches(origin, runId)).toEqual(['base', 'broken/p1', 'change/p1', 'docs/p1']);
+
+    const swept = await sweepLeftovers(config, null, { now: settled + 14 * DAY, checkout: cwd });
+
+    expect(swept.swept).toEqual([expect.objectContaining({
+      run: runId, branches: [`teamai/${runId}/base`, `teamai/${runId}/broken/p1`, `teamai/${runId}/docs/p1`], refs: [`refs/teamai/kept/${attempt}`], failed: [],
+    })]);
+    expect(branches(origin, runId)).toEqual(['change/p1']);
+    expect(branches(cwd, runId)).toEqual(['change/p1']);
+    expect(worktrees()).toBe(1);
+    expect(git(cwd, ['for-each-ref', 'refs/teamai/'])).toBe('');
+    expect(await sweepLeftovers(config, null, { now: settled + 15 * DAY, checkout: cwd })).toMatchObject({ swept: [] });
+  });
+
+  it('keeps every run with workflows.retention never', async () => {
+    const { config, cwd, origin, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    config.workflows = { tools: {}, retention: 'never' };
+
+    expect(await sweepLeftovers(config, null, { now: Date.now() + 365 * DAY, checkout: cwd })).toMatchObject({ retention: { retention: { kind: 'never' } }, swept: [] });
+    expect(branches(origin, runId)).toEqual(['join/p1', 'left/p1']);
+  });
+
+  it('deletes again what a succeeded run could not delete as it settled', async () => {
+    const { config, cwd, origin, runId } = await fixture(NO_DELIVERY);
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\nwhile read old new ref; do case "$new" in 0000000000000000000000000000000000000000) exit 1;; esac; done\n');
+    fs.chmodSync(hook, 0o755);
+    vi.spyOn(log, 'warn');
+    await runLocalDriver(config, runId, cwd);
+    expect(branches(origin, runId)).toEqual(['join/p1', 'left/p1']);
+    fs.rmSync(hook);
+
+    await sweepLeftovers(config, null, { now: Date.now(), checkout: cwd });
+
+    expect(branches(origin, runId)).toEqual(['join/p1']);
+    expect((await state(config, runId)).leftovers).toMatchObject({ by: 'success', failed: [] });
+  });
+
+  it('removes the branches on origin of a run another machine started, from its record on teamai-reports, but its pull request branch', async () => {
+    const { config, cwd, origin } = await fixture(NO_DELIVERY);
+    const ran = 'r0123456789abcdef';
+    const recent = 'rfedcba9876543210';
+    for (const branch of [`teamai/${ran}/build-0/p1`, `teamai/${ran}/change/p1`, `teamai/${ran}/base`, `teamai/${recent}/change/p1`]) git(cwd, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
+    const http: LocalConfig = { ...config, repo: { ...config.repo, kind: 'http' } };
+    const records = path.join(getReportsDir(http), 'workflows', 'runs');
+    fs.mkdirSync(records, { recursive: true });
+    const now = Date.parse('2026-11-03T12:00:00.000Z');
+    const record = (run: string, endedAt: string, extra: object) => fs.writeFileSync(path.join(records, `${run}.json`), JSON.stringify({
+      schemaVersion: 'v1alpha1', run, workflow: 'ship-issue', phase: 'end', status: 'failed', startedAt: endedAt, endedAt, username: 'ci', publishedAt: endedAt, ...extra,
+    }));
+    record(ran, '2026-10-01T12:00:00.000Z', { prs: ['https://github.com/fixture/app/pull/1'], prBranches: [`teamai/${ran}/change/p1`] });
+    record(recent, '2026-11-01T12:00:00.000Z', {});
+
+    const swept = await sweepLeftovers(http, null, { now, checkout: cwd });
+
+    expect(swept.swept).toEqual([expect.objectContaining({ run: ran, from: 'teamai-reports', branches: [`teamai/${ran}/base`, `teamai/${ran}/build-0/p1`] })]);
+    expect(branches(origin, ran)).toEqual(['change/p1']);
+    expect(branches(origin, recent)).toEqual(['change/p1']);
   });
 });
