@@ -655,6 +655,45 @@ steps:
     expect(other).toMatchObject({ data: { wait: { reason: expect.stringContaining('another driver') } } });
   });
 
+  it('continues the copy of its for_each item for a prompt with no workspace', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Each item implements a change and fixes it on its own branch.
+inputs:
+  names: [string]
+steps:
+  - id: build
+    for_each:
+      items: inputs.names
+    workspace: new
+    workflow:
+      steps:
+        - id: implement
+          prompt: Implement it.
+        - id: fix
+          needs: [implement]
+          prompt: Fix it.
+`, { names: ['a'] });
+    const owner = driver(workspace);
+    const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
+    const can = { workspace: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
+    const branches: Record<string, string | undefined> = {};
+
+    for (let turn = 0; turn < 2; turn += 1) {
+      const leased = await leaseNext(config, runId, owner, { base, can });
+      const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number; step: string; workspace?: { mode: string; branch: string; start: { commit: string } } } : undefined;
+      if (!lease?.workspace) throw new Error(JSON.stringify(leased));
+      branches[lease.step] = lease.workspace.branch;
+      expect(lease.workspace.mode, lease.step).toBe('continue');
+      await reportAttempt(config, runId, {
+        attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: owner,
+        changes: { branch: lease.workspace.branch, base: base.commit, from: lease.workspace.start.commit, to: lease.workspace.start.commit, commits: [] },
+      });
+    }
+
+    expect(branches).toEqual({ 'build[0].implement': branchName(runId, 'build[0]', 1), 'build[0].fix': branchName(runId, 'build[0]', 1) });
+  });
+
   it('runs a workspace step from a detached HEAD in its own worktree', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
@@ -2846,8 +2885,9 @@ steps:
     }
 
     for (const item of ['fan[0]', 'fan[1]']) {
-      expect(ran.get(`${item}.test`), item).toBe(branchName(runId, `${item}.implement`, 1));
-      expect(ran.get(`${item}.review`), item).toBe(branchName(runId, `${item}.implement`, 1));
+      expect(ran.get(`${item}.implement`), item).toBe(branchName(runId, item, 1));
+      expect(ran.get(`${item}.test`), item).toBe(branchName(runId, item, 1));
+      expect(ran.get(`${item}.review`), item).toBe(branchName(runId, item, 1));
     }
     const run = await readRun(config, runId);
     const fan = typeof run === 'object' ? run.steps.find((step) => step.id === 'fan') : undefined;

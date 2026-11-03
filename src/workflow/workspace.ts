@@ -103,8 +103,8 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
 
 /**
  * How a step runs. An explicit `workspace` wins. A command that omits it is read-only, even inside a copy, which it reads.
- * A prompt that omits it continues the nearest enclosing copy, or stays read-only. A `for_each` copy is `new`
- * per item, so siblings do not share a worktree.
+ * A prompt that omits it continues the nearest enclosing copy, or stays read-only. Inside a `for_each` item that copy
+ * is the item's own, so siblings do not share a worktree.
  */
 export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): WorkspaceMode {
   switch (step.workspace) {
@@ -125,7 +125,7 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
 
     if (ancestor.workspace !== 'new' && ancestor.workspace !== 'continue') continue;
 
-    return ancestor.forEach ? 'new' : 'continue';
+    return 'continue';
   }
 
   return 'read-only';
