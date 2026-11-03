@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { hookSourceMatches } from './utils/hook-source.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
-import { pathExists, readFileSafe, readJson5Object, readJsonObject, remove, writeFile } from './utils/fs.js';
+import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { channelsOf, TOOLS, type BlocksHeader, type ChannelProbe, type RunTime } from './tools.js';
@@ -399,7 +399,7 @@ function managedBlockBody(block: string): string {
  * pull warns with it and doctor's fix says it.
  */
 export async function unreadableRulesFileMessage(tool: string, gate: { readonly file: string }): Promise<string> {
-  const read = await readJson5Object(gate.file);
+  const read = await readJsonObject(gate.file, 'json5');
   const why = read.kind === 'invalid' ? ` (${read.error})` : '';
 
   return `${gate.file} does not parse as JSON or JSON5${why}, so teamai cannot tell which `

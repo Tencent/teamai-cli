@@ -15,7 +15,7 @@ import { realFilePath } from './git-exclude.js';
 import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
 import { pathExists, readFileIfExists } from './utils/fs.js';
 import { hookSyntaxOf, mcpSyntaxOf } from './tools.js';
-import { JSON_SYNTAX_CLAUSE, mapStrings, parseJson, parseJson5, parseJsonAs, type JsonSyntax } from './utils/json.js';
+import { mapStrings, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
 
 /**
  * What teamai holds in the gated place. `summary` opens the fix
@@ -262,10 +262,10 @@ type StoreRead =
 /**
  * Only an absent store means the tool has not asked yet; one that is there
  * but cannot be read or parsed leaves its verdict unknown. `syntax` is how the
- * tool parses the file: a `JsonSyntax`, `line-comments`, which drops the `//`
- * lines Copilot heads config.json with, or `json5`, what OpenClaw takes.
+ * tool parses the file: a `JsonSyntax`, or `line-comments`, which drops the
+ * `//` lines Copilot heads config.json with.
  */
-async function readStore(file: string, { syntax = 'json' }: { syntax?: JsonSyntax | 'line-comments' | 'json5' } = {}): Promise<StoreRead> {
+async function readStore(file: string, { syntax = 'json' }: { syntax?: JsonSyntax | 'line-comments' } = {}): Promise<StoreRead> {
   let raw: string | null;
 
   try {
@@ -277,15 +277,12 @@ async function readStore(file: string, { syntax = 'json' }: { syntax?: JsonSynta
   if (raw === null) return { kind: 'missing' };
 
   try {
-    const value = syntax === 'json5' ? parseJson5(raw)
-      : syntax === 'line-comments' ? parseJson(raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n'))
-        : parseJsonAs(raw, syntax);
+    const value = syntax === 'line-comments' ? parseJson(raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n'))
+      : parseJsonAs(raw, syntax);
 
     return isJsonObject(value) ? { kind: 'ok', value } : { kind: 'unreadable', reason: 'does not parse (not a JSON object)' };
   } catch (error) {
-    const clause = syntax === 'json5' || syntax === 'line-comments' ? '' : JSON_SYNTAX_CLAUSE[syntax];
-
-    return { kind: 'unreadable', reason: `does not parse${clause} (${error instanceof Error ? error.message : String(error)})` };
+    return { kind: 'unreadable', reason: `does not parse (${error instanceof Error ? error.message : String(error)})` };
   }
 }
 

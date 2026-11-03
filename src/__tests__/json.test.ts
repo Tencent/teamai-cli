@@ -66,12 +66,11 @@ describe('editJsonText', () => {
     expect(edited).not.toContain('stale');
   });
 
-  it('removes the comment just before a removed key with it, and keeps the others', () => {
-    const edited = editJsonText('{\n  // keep\n  "a": 1,\n  // about b\n  "b": 2\n}\n', { a: 1 });
+  it('removes a key and keeps the member\'s comment above it, since teamai writes no comment', () => {
+    const mcp = '{\n  "mcpServers": {\n    // my own servers below\n    "teamai-x": { "url": "https://t" },\n    "mine": { "url": "https://m" }\n  }\n}\n';
 
-    expect(edited).toContain('// keep');
-    expect(edited).not.toContain('about b');
-    expect(parseJsonAs(edited, 'jsonc')).toEqual({ a: 1 });
+    expect(editJsonText(mcp, { mcpServers: { mine: { url: 'https://m' } } }))
+      .toBe('{\n  "mcpServers": {\n    // my own servers below\n    "mine": { "url": "https://m" }\n  }\n}\n');
   });
 
   it('creates nested objects the original does not hold', () => {
@@ -80,7 +79,7 @@ describe('editJsonText', () => {
     expect(parseJsonAs(editJsonText(settings, next), 'jsonc')).toEqual(next);
   });
 
-  it('replaces an array whole and changes a scalar in place', () => {
+  it('edits a changed array element and a scalar in place', () => {
     const next = { theme: 'light', hooks: { Stop: [{ command: 'other' }] }, stale: true };
     const edited = editJsonText(settings, next);
 

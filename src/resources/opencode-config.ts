@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { isJsonObject, type JsonObject, type JsonValue } from '../types.js';
 import { mcpSyntaxOf } from '../tools.js';
 import { readFileSafe, writeJsonAtomic, writeJsonKeepingComments, pathExists, remove, symlinkTarget } from '../utils/fs.js';
-import { isPlainJson, JSON_SYNTAX_CLAUSE, parseJsonAs, type JsonSyntax } from '../utils/json.js';
+import { isPlainJson, parseJsonAs, type JsonSyntax } from '../utils/json.js';
 import { log } from '../utils/logger.js';
 
 // ─── OpenCode config activation ──────────────────────────────
@@ -174,7 +174,7 @@ export async function reconcileOpencodeInstructionSet(
 
       data = parsed;
     } catch {
-      log.warn(`Could not parse ${configFileAbs}${JSON_SYNTAX_CLAUSE[syntax]} — skipping OpenCode ${purpose}`);
+      log.warn(`Could not parse ${configFileAbs} — skipping OpenCode ${purpose}`);
 
       return false;
     }

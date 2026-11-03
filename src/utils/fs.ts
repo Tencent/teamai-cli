@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { isJsonObject } from '../types.js';
 import { log } from './logger.js';
 import { expandHome } from './home.js';
-import { editJsonText, isPlainJson, parseJson, parseJson5, parseJsonAs, type JsonSyntax } from './json.js';
+import { editJsonText, isPlainJson, parseJson, parseJsonAs, type JsonSyntax } from './json.js';
 
 const IGNORED_NAMES = new Set([
   '__pycache__',
@@ -187,21 +187,6 @@ export async function readJsonObject(filePath: string, syntax: JsonSyntax = 'jso
     return isJsonObject(value)
       ? { kind: 'ok', value }
       : { kind: 'invalid', error: 'not a JSON object' };
-  } catch (e) {
-    return { kind: 'invalid', error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-/** `readJsonObject` for a file the tool reads as JSON5 (`parseJson5`). */
-export async function readJson5Object(filePath: string): Promise<JsonObjectRead> {
-  const raw = await readFileSafe(filePath);
-
-  if (raw === null) return { kind: 'missing' };
-
-  try {
-    const value = parseJson5(raw);
-
-    return isJsonObject(value) ? { kind: 'ok', value } : { kind: 'invalid', error: 'not a JSON object' };
   } catch (e) {
     return { kind: 'invalid', error: e instanceof Error ? e.message : String(e) };
   }

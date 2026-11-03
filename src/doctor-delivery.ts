@@ -6,7 +6,6 @@ import semver from 'semver';
 import { z } from 'zod';
 import { hookSyntaxOf, isToolId } from './tools.js';
 import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
-import { JSON_SYNTAX_CLAUSE } from './utils/json.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -1058,7 +1057,7 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
     + 'elsewhere the teamai sessionStart hook adds the team rules and instructions';
 
   const fix = read.kind === 'invalid'
-    ? `${why}, but ${file} does not parse${JSON_SYNTAX_CLAUSE[syntax]} (${read.error}), so Cursor runs no hooks from it and those workspaces `
+    ? `${why}, but ${file} does not parse (${read.error}), so Cursor runs no hooks from it and those workspaces `
       + 'get none of them. Fix the file by hand (teamai does not rewrite a file it cannot parse), then run '
       + '`teamai hooks inject`.'
     : !registered && disabledByTeam

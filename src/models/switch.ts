@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { JSON_SYNTAX_CLAUSE, parseJsonAs, type JsonSyntax } from '../utils/json.js';
+import { parseJsonAs, type JsonSyntax } from '../utils/json.js';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { parse as parseToml, type TomlTable, type TomlValue } from 'smol-toml';
@@ -440,7 +440,7 @@ async function jsonObject(file: string, syntax: JsonSyntax = 'json'): Promise<Js
   try {
     parsed = parseJsonAs(raw, syntax);
   } catch (error) {
-    throw new Error(`Cannot parse ${file}${JSON_SYNTAX_CLAUSE[syntax]}: ${messageOf(error)}`, { cause: error });
+    throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }
 
   // The parsed document itself, not a schema copy, which would drop a `__proto__` key the file holds.

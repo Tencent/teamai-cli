@@ -12,20 +12,6 @@ export function parseJson(text: string): JsonValue {
   return JSON.parse(text);
 }
 
-/**
- * A document of a tool that takes JSON5, as that tool reads it: plain JSON
- * first, then JSON5 (comments, trailing commas, unquoted keys). OpenClaw's
- * `parseConfigJson5` does the same with the same `json5` package. For reads
- * only: writing the value back would drop the member's comments.
- */
-export function parseJson5(text: string): JsonValue {
-  try {
-    return parseJson(text);
-  } catch {
-    return JSON5.parse(text);
-  }
-}
-
 /** Whether `text` is blank or plain JSON, which teamai writes back as JSON.stringify writes it: no comment to keep. */
 export function isPlainJson(text: string): boolean {
   if (text.trim() === '') return true;
@@ -43,16 +29,12 @@ export function isPlainJson(text: string): boolean {
  * How a tool parses one of its JSON config files: `json` strictly, `jsonc`
  * with comments and trailing commas (jsonc-parser with `allowTrailingComma`),
  * `json-comments` with comments but no trailing commas (comments stripped,
- * then JSON.parse).
+ * then JSON.parse), `json5` as OpenClaw 2026.10.9's `parseConfigJson5` does:
+ * JSON.parse, then the `json5` package (unquoted keys too). teamai edits a
+ * `jsonc` or `json-comments` file keeping its comments (`editJsonText`), and
+ * rewrites a `json5` one only while it is plain JSON.
  */
-export type JsonSyntax = 'json' | 'jsonc' | 'json-comments';
-
-/** What a "does not parse" diagnosis adds to name the syntax: nothing for strict JSON, the only syntax most tools take. */
-export const JSON_SYNTAX_CLAUSE: Readonly<Record<JsonSyntax, string>> = {
-  json: '',
-  jsonc: ' as JSON with comments',
-  'json-comments': ' as JSON with comments and no trailing commas',
-};
+export type JsonSyntax = 'json' | 'jsonc' | 'json-comments' | 'json5';
 
 /** `text` as the tool that takes `syntax` reads it. Throws, naming the offset, on text that does not parse that way. */
 export function parseJsonAs(text: string, syntax: JsonSyntax): JsonValue {
@@ -61,6 +43,7 @@ export function parseJsonAs(text: string, syntax: JsonSyntax): JsonValue {
   try {
     return parseJson(text);
   } catch {
+    if (syntax === 'json5') return JSON5.parse(text);
     const errors: ParseError[] = [];
     const root = parseTree(text, errors, { allowTrailingComma: syntax === 'jsonc', disallowComments: false });
     const [first] = errors;
@@ -91,11 +74,12 @@ function valueOfNode(node: Node): JsonValue {
 
     case 'array':
       return (node.children ?? []).map(valueOfNode);
+    case 'property':
+      return node.children?.[1] === undefined ? null : valueOfNode(node.children[1]);
     case 'string':
     case 'number':
     case 'boolean':
     case 'null':
-    case 'property':
       return JsonValueSchema.parse(node.value ?? null);
     default: {
       const unhandled: never = node.type;
@@ -111,9 +95,9 @@ function valueOfNode(node: Node): JsonValue {
  * key by key and arrays element by element: a new key or a last element goes
  * on its own line after the last one there, so no sibling is reformatted or
  * loses the comment after it. A removed key or element takes its own text,
- * its comma, the comment on its line and the comment lines just above it,
- * which document it, and never a trailing comma the tool may refuse. A
- * scalar that changed is replaced in place.
+ * its comma and the comment on its line, and never a trailing comma the tool
+ * may refuse. teamai writes no comment, so every comment above it is the
+ * member's and stays. A scalar that changed is replaced in place.
  */
 export function editJsonText(original: string, next: JsonValue): string {
   const formattingOptions = formattingOf(original);
@@ -173,9 +157,19 @@ function keptElements(before: readonly JsonValue[], after: readonly JsonValue[])
   return kept;
 }
 
+/** A comment that ends on its line, after optional blanks: `// …` or a one-line `/* … *\/`. */
+const LINE_COMMENT = /^[ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)?/;
+
+/** The node at `path` in `text`, read as `jsonc`, which accepts every syntax `editJsonText` edits. */
+function nodeAt(text: string, path: JSONPath): Node | undefined {
+  const root = parseTree(text, [], { allowTrailingComma: true });
+
+  return root === undefined ? undefined : findNodeAtLocation(root, path);
+}
+
 /** `text` without the property or element at `path`, as `editJsonText` removes one. */
 function withoutNode(text: string, path: JSONPath): string {
-  const value = findNodeAtLocation(parseTree(text, [], { allowTrailingComma: true }) ?? emptyNode(), path);
+  const value = nodeAt(text, path);
   const node = value?.parent?.type === 'property' ? value.parent : value;
   const siblings = node?.parent?.children;
 
@@ -185,7 +179,7 @@ function withoutNode(text: string, path: JSONPath): string {
   const ownComma = /^[ \t]*,/.exec(text.slice(end));
 
   if (ownComma) end += ownComma[0].length;
-  end += /^[ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)?/.exec(text.slice(end))?.[0].length ?? 0;
+  end += LINE_COMMENT.exec(text.slice(end))?.[0].length ?? 0;
   const lineStart = text.lastIndexOf('\n', start - 1) + 1;
   const lineEnd = /^[ \t]*(?:\r?\n|$)/.exec(text.slice(end));
 
@@ -193,10 +187,6 @@ function withoutNode(text: string, path: JSONPath): string {
     start = lineStart;
     end += lineEnd[0].length;
 
-    // Comment lines just above it document it.
-    for (let above = /(?:^|\n)([ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)[ \t]*\r?\n)$/.exec(text.slice(0, start)); above; above = /(?:^|\n)([ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)[ \t]*\r?\n)$/.exec(text.slice(0, start))) {
-      start -= above[1].length;
-    }
   } else {
     end += /^[ \t]*/.exec(text.slice(end))?.[0].length ?? 0;
   }
@@ -220,7 +210,7 @@ function withoutNode(text: string, path: JSONPath): string {
  * start its line: `modify` handles those without touching a member.
  */
 function withAppended(text: string, path: JSONPath, key: string | null, value: JsonValue, formattingOptions: FormattingOptions): string | null {
-  const container = findNodeAtLocation(parseTree(text, [], { allowTrailingComma: true }) ?? emptyNode(), path);
+  const container = nodeAt(text, path);
   const last = container?.children?.at(-1);
 
   if (last === undefined) return null;
@@ -233,7 +223,7 @@ function withAppended(text: string, path: JSONPath, key: string | null, value: J
   const rendered = (key === null ? '' : `${JSON.stringify(key)}: `) + JSON.stringify(value, null, unit).split('\n').join(`${eol}${indent}`);
   let at = last.offset + last.length;
   const comma = /^[ \t]*,/.exec(text.slice(at));
-  const lineComment = (from: number): number => from + (/^[ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)?/.exec(text.slice(from))?.[0].length ?? 0);
+  const lineComment = (from: number): number => from + (LINE_COMMENT.exec(text.slice(from))?.[0].length ?? 0);
 
   // A member list written with a trailing comma keeps one.
   if (comma) {
@@ -245,10 +235,6 @@ function withAppended(text: string, path: JSONPath, key: string | null, value: J
   const lineEnd = lineComment(at);
 
   return `${text.slice(0, at)},${text.slice(at, lineEnd)}${eol}${indent}${rendered}${text.slice(lineEnd)}`;
-}
-
-function emptyNode(): Node {
-  return { type: 'object', offset: 0, length: 0, children: [] };
 }
 
 /** The indentation and line ending `text` uses: its first indented line's, else two spaces; CRLF when it has one. */

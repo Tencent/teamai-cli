@@ -6,7 +6,7 @@ import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { z } from 'zod';
 import { readJson, readJsonObject, writeJson, writeJsonKeepingComments, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { JSON_SYNTAX_CLAUSE, mapStrings, type JsonSyntax } from './utils/json.js';
+import { mapStrings, type JsonSyntax } from './utils/json.js';
 import {
   COPILOT_TOOL_ID,
   TEAMAI_HOOK_DESCRIPTION_PREFIX,
@@ -3250,7 +3250,7 @@ export async function readHookFile<T>(file: string, fallback: T, format: HookFor
   const read = await readJsonObject(file, syntax);
 
   if (read.kind === 'invalid') {
-    throw new Error(`${file} does not parse${JSON_SYNTAX_CLAUSE[syntax]} (${read.error}), so teamai left it as it is. Fix it, then run the command again.`);
+    throw new Error(`${file} does not parse (${read.error}), so teamai left it as it is. Fix it, then run the command again.`);
   }
 
   if (read.kind !== 'ok') return fallback;

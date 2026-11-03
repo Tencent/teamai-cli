@@ -65,7 +65,7 @@ import {
   pathExists,
   expandHome,
 } from './utils/fs.js';
-import { JSON_SYNTAX_CLAUSE, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
+import { parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
@@ -3351,7 +3351,7 @@ async function applyJson(
   const doc = await readJsonDoc(target.file, serverKey, { allowBare, projectKey: target.projectKey, syntax: target.syntax });
 
   if (!doc) {
-    log.warn(`Could not parse ${target.file}${JSON_SYNTAX_CLAUSE[target.syntax ?? 'json']} — teamai left its MCP servers for ${target.tool} unchanged`);
+    log.warn(`Could not parse ${target.file} — teamai left its MCP servers for ${target.tool} unchanged`);
 
     return null;
   }
