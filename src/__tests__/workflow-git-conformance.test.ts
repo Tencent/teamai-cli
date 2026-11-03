@@ -13,7 +13,7 @@ import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
-import type { DriverIdentity, RunState } from '../workflow/types.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
 import type { CopyContract } from '../workflow/workspace.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 
@@ -131,11 +131,13 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         fs.chmodSync(hook, 0o755);
       }
 
-      if (profile === 'local') await runLocalDriver(config, runId, checkout);
+      let driven: WorkflowEnvelope;
+      if (profile === 'local') driven = await runLocalDriver(config, runId, checkout);
       else {
         const client = inProcessConformanceClient(inProcessClient({ config, env: await resolveWorkflowEnv(config) }));
         const driver = { ...profileDriver(profile), workspace: checkout };
-        expect(await driveByProtocol({ client, runId, driver, can: DRIVER_PROFILES[profile].can, ...(scenario.handoff ? { claim: true as const } : {}) })).toMatchObject({ data: { done: {} } });
+        driven = await driveByProtocol({ client, runId, driver, can: DRIVER_PROFILES[profile].can, ...(scenario.handoff ? { claim: true as const } : {}) });
+        expect(driven).toMatchObject({ data: { done: {} } });
       }
 
       const run = await readRun(config, runId);
@@ -156,6 +158,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
           for (const [file, text] of Object.entries(files)) expect(git(origin, 'show', `refs/heads/${branch}:${file}`), `${branch} holds ${file}`).toBe(text);
         }
       }
+      if (scenario.expectDoneBranch) expect(driven).toMatchObject({ data: { done: { branch: scenario.expectDoneBranch.replace('<run>', runId) } } });
       if (!refused && scenario.expectFailure) {
         const { step: id, names, codeIsNot } = scenario.expectFailure;
         const step = run.steps.find((item) => item.id === id);

@@ -194,10 +194,11 @@ const SkillStateSchema = z.object({
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
   /**
-   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. `version`: what the run
-   * file said when the end was kept, so a tick asks the engine again only once it moved.
+   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. `branch`: the branch the
+   * run left its changes on, when the engine's `done` named one. `version`: what the run file said when the end was
+   * kept, so a tick asks the engine again only once it moved.
    */
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), version: RunVersionSchema.optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), branch: z.string().optional(), version: RunVersionSchema.optional() }).optional(),
 });
 
 export type SkillState = z.infer<typeof SkillStateSchema>;

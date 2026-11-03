@@ -148,10 +148,11 @@ export type Action =
   | PersonAction
   | HandoffAction
   /**
-   * `judging`: the judge running now, on the pass of `step` that `scorers` judge. `score`: the `score --next` that leases
-   * the run's judge work to the session's own judge, when the session judges the run.
+   * `branch`: the branch the run left its changes on, when it worked in a copy of its own. `judging`: the judge running
+   * now, on the pass of `step` that `scorers` judge. `score`: the `score --next` that leases the run's judge work to the
+   * session's own judge, when the session judges the run.
    */
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] }; score?: Literal };
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; branch?: string; judging?: { step: string; scorers: string[] }; score?: Literal };
 
 export interface RunningEntry {
   attempt: AttemptId;
@@ -423,6 +424,8 @@ function actionsOf(state: SkillState): Action[] {
     const done: Action = { kind: 'done', outcome: state.done.outcome, prs: state.done.prs };
 
     if (state.done.failure) done.failure = state.done.failure;
+
+    if (state.done.branch !== undefined) done.branch = state.done.branch;
 
     if (judge) done.judging = { step: judge.step, scorers: judge.scorers };
 

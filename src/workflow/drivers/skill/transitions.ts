@@ -73,7 +73,7 @@ export const TRANSITIONS = [
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
-  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, judging, score}`' },
+  { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end', next: 'done', action: '`done {outcome, failure, prs, branch, judging, score}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
@@ -155,7 +155,7 @@ export type EngineReply =
   | { kind: 'wait'; reason: string; delivering: string[]; held: NonNullable<Waiting['held']> }
   | { kind: 'hitl'; gate: AskedGate }
   /** `out`: the end reached `teamai-reports`, or another install owns the run and publishes it. */
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; out: boolean }
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; branch?: string; out: boolean }
   | { kind: 'error'; error: WorkflowFailure };
 
 /** What `score --next` answered: a lease, read as the judge it opens; nothing to take; or an error. */
@@ -782,6 +782,8 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       const done: NonNullable<SkillState['done']> = { outcome: engine.outcome, prs: engine.prs };
 
       if (engine.failure) done.failure = engine.failure;
+
+      if (engine.branch !== undefined) done.branch = engine.branch;
 
       if (input.version && agrees(input.version, engine)) done.version = input.version;
 

@@ -33,7 +33,7 @@ import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, lease
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { contractClone, deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { changedRunCopy, contractClone, deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
   deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
@@ -683,13 +683,15 @@ export function runData(run: RunState): RunData {
 
 /** The end `next` answers once the run has settled. */
 type DoneData = {
-  done: { run: string; outcome: RunStatus; end?: string; failure?: WorkflowFailure; prs?: string[]; outputs?: Record<string, JsonValue>; finally?: FinallyStopped[] };
+  /** `branch`: the copy a succeeded run opened as its workflow's header says `workspace: new`, when it left commits there. */
+  done: { run: string; outcome: RunStatus; end?: string; failure?: WorkflowFailure; prs?: string[]; branch?: string; outputs?: Record<string, JsonValue>; finally?: FinallyStopped[] };
 };
 
 function doneData(run: RunState): DoneData {
   const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
   const outputs = runOutputs(run);
   const unfinished = finallyStopped(run);
+  const branch = run.status === 'succeeded' ? changedRunCopy(run) : undefined;
   const done: DoneData['done'] = { run: run.id, outcome: run.status };
 
   if (run.end !== undefined) done.end = run.end;
@@ -697,6 +699,8 @@ function doneData(run: RunState): DoneData {
   if (run.failure) done.failure = run.failure;
 
   if (prs.length > 0) done.prs = prs;
+
+  if (branch !== undefined) done.branch = branch;
 
   if (outputs) done.outputs = outputs;
 

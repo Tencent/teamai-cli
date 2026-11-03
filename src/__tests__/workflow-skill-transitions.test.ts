@@ -312,6 +312,24 @@ steps:
     deliver: pr
 `;
 
+const TIDY = `schemaVersion: v1alpha1
+name: tidy
+description: Tidy the repository in one copy
+invoke: allow
+workspace: new
+steps:
+  - id: write
+    workspace: continue
+    command: node -e "require('fs').writeFileSync('tidy.txt', 'T')"
+`;
+
+// TIDY, whose last step fails after the copy took a commit.
+const TIDY_FAILS = `${TIDY}  - id: check
+    needs: [write]
+    workspace: continue
+    command: node -e "process.exit(1)"
+`;
+
 const PUBLISH = `schemaVersion: v1alpha1
 name: publish
 description: Build the package, then tell the team
@@ -693,6 +711,30 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         await releaseLock(held);
       }
       expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: ['https://github.com/fixture/app/pull/1'] }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run whose workflow header says workspace: new ends with done naming the branch its changes are on',
+    rows: ['D16'],
+    run: async () => {
+      const made = await harness({ tidy: TIDY });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'tidy', answers: { confirmed: false }, inputs: undefined }));
+      expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [], branch: `teamai/${run}/_run` }]);
+      expect(execFileSync('git', ['show', `teamai/${run}/_run:tidy.txt`], { cwd: made.work, encoding: 'utf8' })).toBe('T');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run whose workflow header says workspace: new and that failed ends with done naming no branch to bring in',
+    rows: ['D16'],
+    run: async () => {
+      const made = await harness({ tidy: TIDY_FAILS });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'tidy', answers: { confirmed: false }, inputs: undefined }));
+      const [done] = (await polledToDone(made, run)).actions;
+      expect(done).toMatchObject({ kind: 'done', outcome: 'failed' });
+      expect(done).not.toHaveProperty('branch');
+      expect(execFileSync('git', ['show', `teamai/${run}/_run:tidy.txt`], { cwd: made.work, encoding: 'utf8' })).toBe('T');
       return made.rows;
     },
   },

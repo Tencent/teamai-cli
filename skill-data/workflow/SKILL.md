@@ -113,7 +113,7 @@ Done when the turn carries a `dispatch` for its `attempt`.
 
 ## Done
 
-The `done` action carries the `outcome`, the pull requests the run opened in `prs`, and the `failure` when there is one. Tell the person the outcome and each pull request; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says. When `done` carries `score`, judge the run's scored steps yourself, as `references/judging.md` says.
+The `done` action carries the `outcome`, the pull requests the run opened in `prs`, the `branch` the run left its changes on when it worked in a copy of its own, and the `failure` when there is one. Tell the person the outcome and each pull request; for a `branch`, that branch and that `git merge <branch>` brings its changes in; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says. When `done` carries `score`, judge the run's scored steps yourself, as `references/judging.md` says.
 
 ## Errors
 

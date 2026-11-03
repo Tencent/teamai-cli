@@ -61,7 +61,7 @@ const NextDataSchema = z.object({
   wait: z.object({
     reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.object({ step: z.string(), missing: z.array(z.string()) })).optional(),
   }).optional(),
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), branch: z.string().optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
 });
 
 /** What `engineReply` reads from an answer to `next`. */
@@ -85,6 +85,8 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): NextAnswer {
     const reply: EngineReply = { kind: 'done', outcome: done.outcome, prs: done.prs ?? [], out: done.notPublished === undefined || done.notPublished.code === 'not_owner' };
 
     if (done.failure) reply.failure = done.failure;
+
+    if (done.branch !== undefined) reply.branch = done.branch;
 
     return { reply, cancelled };
   }

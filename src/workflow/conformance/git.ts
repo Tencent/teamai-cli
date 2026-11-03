@@ -38,6 +38,8 @@ export interface GitConformanceScenario {
    * records these copies and no other.
    */
   expectCopies?: Record<string, Record<string, string>>;
+  /** The branch, with `<run>` for the run id, the driver's `done` names as the one the run left its changes on. */
+  expectDoneBranch?: string;
   /** The step's `message` contains each named value as a whole word, and its `failure.code` is not `codeIsNot`. */
   expectFailure?: { step: string; names: GitConformanceName[]; codeIsNot?: string };
   /**
@@ -262,6 +264,7 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
     base: 'origin',
     expectState: { status: 'succeeded', steps: [{ id: 'review', status: 'succeeded', pass: 2, outputs: { verdict: 'pass' } }, { id: 'fix', status: 'skipped' }] },
     expectCopies: { 'teamai/<run>/_run': { 'fixed.txt': 'F' } },
+    expectDoneBranch: 'teamai/<run>/_run',
   },
   {
     name: 'a workflow whose header says workspace: new continues the copy of the step it runs in, and opens none',
