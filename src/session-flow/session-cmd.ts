@@ -40,7 +40,7 @@ import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPublish } from './session-publish.js';
-import { FinishedSessions } from './finished-sessions.js';
+import { FinishedSessions, type FinishedSession } from './finished-sessions.js';
 import { autoDetectInit } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
@@ -161,19 +161,15 @@ async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: s
     return;
   }
 
-  if (opts.json) {
-    process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
+  if (opts.json) process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
+  else printFinished(answer.list);
+}
 
-    return;
-  }
+/** Prints each finished session on a line of its own: its id, source, whether to publish it and its scorers. */
+function printFinished(list: readonly FinishedSession[]): void {
+  if (list.length === 0) console.log('No finished sessions to archive or judge here.');
 
-  if (answer.list.length === 0) {
-    console.log('No finished sessions to archive or judge here.');
-
-    return;
-  }
-
-  for (const one of answer.list) console.log(`  ${one.session}  ${one.source}  ${one.publish ? 'publish' : '-'}  ${one.scorers.join(', ') || '-'}`);
+  for (const one of list) console.log(`  ${one.session}  ${one.source}  ${one.publish ? 'publish' : '-'}  ${one.scorers.join(', ') || '-'}`);
 }
 
 /** The config of the scope of `cwd`, or of this directory; undefined where teamai is not set up. */

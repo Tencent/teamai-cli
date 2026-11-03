@@ -27,6 +27,8 @@ import { resolveWorkflowEnv } from '../env-resolution.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { readRun, readRuns } from '../workflow/store.js';
 import type { StartedBy, WorkflowEnvelope } from '../workflow/types.js';
+import { Command } from 'commander';
+import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 
 const SCORER = `---
 labels:
@@ -199,6 +201,65 @@ describe('session list --finished', () => {
 
     if (code === '') expect(answer).toMatchObject({ ok: true, list: [{ session: IDLE }] });
     else expect(answer).toMatchObject({ ok: false, code, message: expect.stringContaining(`Run ${runId} was not started from a person's terminal`) });
+  });
+});
+
+/** Runs `teamai session list --finished ...args` from `<root>/app`, and what it printed and its exit code. */
+async function listCommand(...args: string[]): Promise<{ code: number; out: string[]; err: string[] }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  vi.spyOn(console, 'log').mockImplementation((...said: unknown[]) => {
+    out.push(said.map(String).join(' '));
+  });
+  vi.spyOn(console, 'error').mockImplementation((...said: unknown[]) => {
+    err.push(said.map(String).join(' '));
+  });
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    out.push(String(chunk).trimEnd());
+    return true;
+  });
+  const app = path.join(root, 'app');
+  fs.mkdirSync(app, { recursive: true });
+  const program = new Command();
+  registerSessionFlowCommands(program.command('session'));
+  process.exitCode = 0;
+  try {
+    await program.parseAsync(['node', 'teamai', 'session', 'list', '--finished', '--cwd', app, ...args]);
+    return { code: Number(process.exitCode ?? 0), out, err };
+  } finally {
+    process.exitCode = 0;
+    vi.mocked(process.stdout.write).mockRestore();
+    vi.mocked(console.error).mockRestore();
+    vi.mocked(console.log).mockRestore();
+  }
+}
+
+describe('teamai session list --finished', () => {
+  it('prints each finished session of this directory\'s scope, as a line or as {"list":[...]} with --json', async () => {
+    await team({}, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
+
+    expect(await listCommand()).toEqual({ code: 0, out: [`  ${IDLE}  claude-code  -  quality`], err: [] });
+    expect(await listCommand('--json')).toEqual({
+      code: 0, out: [JSON.stringify({ list: [{ session: IDLE, source: 'claude-code', publish: false, scorers: ['quality'], demand: 'auto' }] })], err: [],
+    });
+  });
+
+  it('says when it finds no finished session', async () => {
+    await team({}, { scoring: { sessions: true } });
+
+    expect(await listCommand()).toEqual({ code: 0, out: ['No finished sessions to archive or judge here.'], err: [] });
+  });
+
+  it('refuses --all, and lists nothing where teamai is not set up, exiting 1 with why', async () => {
+    const refused = 'Error: --finished lists the sessions of this machine, so it takes no --author, --all or --repo-root.';
+
+    expect(await listCommand('--all')).toEqual({ code: 1, out: [], err: [refused] });
+    expect(await listCommand('--json')).toEqual({
+      code: 1,
+      out: [JSON.stringify({ error: { code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no sessions to list. Run teamai init.' } })],
+      err: ['Error: teamai is not set up in this directory, so it has no sessions to list. Run teamai init.'],
+    });
   });
 });
 
