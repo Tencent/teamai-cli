@@ -89,7 +89,22 @@ $ teamai workflow start review-and-fix --driver local     # 有人值守：每�
 {"data":{"done":{"run":"r3f9…","outcome":"succeeded",…}}}
 ```
 
-被评分步骤的一个轮次结算后，本地驱动上有人值守的 `workflow start` 或 `workflow resume` 会为该轮次启动一个 [`teamai-score`](#teamai-score-工作流) 运行（`demand: auto`），并在返回前驱动它，所以返回时标签已经写好。被评分运行的步骤和 `finally` 从不等待它，它也从不改变该运行的结果。无人值守的运行不启动它：运行结束时的[drain](#无人值守任务结束前运行-drain)会评判这些轮次。其他驱动运行的轮次，在运行它的安装上用 `teamai score --next` 评判：
+被评分步骤的一个轮次结算后，结算它的 `workflow report`（`workflow:` 步骤则是 `workflow next`）会为该轮次启动一个 [`teamai-score`](#teamai-score-工作流) 运行（`demand: auto`），并在之后每个应答的 `started` 中列出它，直到该运行结束。被评分运行的驱动像驱动自己的运行一样驱动它。被评分运行的步骤和 `finally` 从不等待它，它也从不改变该运行的结果：
+
+```console
+$ teamai workflow report r3f9… --json '{"attempt":"…","revision":3,"outcome":"success","driver":{…}}'   # 你自己的驱动
+{"data":{"accepted":true,…,"started":[{"run":"r7c2…","step":"review","pass":1,"scorers":["review-quality"]}]}}
+$ teamai workflow next r7c2… --json '{"driver":{…}}'                                                   # 像任何运行一样驱动它
+```
+
+| 驱动 | 谁启动该运行 | 谁驱动它 | `--no-judge` |
+|---|---|---|---|
+| `local`，有人值守 | 结算该轮次的 report | `workflow start` 或 `resume`，在返回前驱动，所以返回时标签已经写好 | 无此选项 |
+| `local`，无人值守 | 同上 | 同上，在 [drain](#无人值守任务结束前运行-drain) 之前。在此版本之前由 drain 评判该轮次 | 无此选项 |
+| `skill` | 同上 | skill 驱动，作为子运行：命令在后台 runner 中运行，评审按 agent 的 judging 参考执行 | 该运行照常启动，并保持运行，留给 `teamai workflow resume <run>` |
+| `none` 或你自己的驱动 | 同上 | 你的驱动，对 `started` 中的运行 id 执行 `workflow next` 和 `report` | 无此选项 |
+
+`sampling: all` 的轮次（见下文）仍通过评审租约评判，在运行它的安装上用 `teamai score --next`：
 
 ```console
 $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
@@ -108,7 +123,7 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 
 ### 在下一步之前拿到标签
 
-`scorers.start: workflow` 把步骤各轮次的评分交给工作流自己的步骤。teamai 不为它们启动 teamai-score 运行，评审租约不会领取它们，在 `sampling: all` 下运行也不会等待它们。`teamai score subjects` 列出它们，再由一个 `workflow: teamai-score` 步骤为每个轮次打标签：
+`scorers.start: workflow` 把步骤各轮次的评分交给工作流自己的步骤。teamai 不为它们启动 teamai-score 运行，评审租约不会领取它们，在 `sampling: all` 下运行也不会等待它们。`teamai score subjects` 列出它们，再由一个 `workflow: teamai-score` 步骤为每个轮次打标签。如果这样的步骤之后没有 `workflow: teamai-score` 步骤读取针对它的 `teamai score subjects --step`，pull 会发出警告，因为没有任何东西会为它的轮次评分：
 
 ```yaml
 # workflows/fix-until-good.yaml

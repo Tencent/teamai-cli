@@ -89,7 +89,22 @@ $ teamai workflow start review-and-fix --driver local     # attended: each score
 {"data":{"done":{"run":"r3f9…","outcome":"succeeded",…}}}
 ```
 
-When a pass of a scored step settles, an attended `workflow start` or `workflow resume` on the local driver starts one [`teamai-score`](#the-teamai-score-workflow) run for that pass, with `demand: auto`, and drives it before it returns, so the label is written by then. The scored run's steps and `finally` never wait for it, and it never changes the run's outcome. An unattended run starts none: the [drain](#drain-before-an-unattended-job-ends) it ends with judges its passes. A pass another driver ran is judged with `teamai score --next` on the install that ran it:
+When a pass of a scored step settles, the `workflow report` that settles it (`workflow next` for a `workflow:` step) starts one [`teamai-score`](#the-teamai-score-workflow) run for that pass, with `demand: auto`, and lists it in `started` on every answer until that run ends. The scored run's driver drives it as its own run. The scored run's steps and `finally` never wait for it, and it never changes the run's outcome:
+
+```console
+$ teamai workflow report r3f9… --json '{"attempt":"…","revision":3,"outcome":"success","driver":{…}}'   # your own driver
+{"data":{"accepted":true,…,"started":[{"run":"r7c2…","step":"review","pass":1,"scorers":["review-quality"]}]}}
+$ teamai workflow next r7c2… --json '{"driver":{…}}'                                                   # drive it as any run
+```
+
+| Driver | Who starts the run | Who drives it | `--no-judge` |
+|---|---|---|---|
+| `local`, attended | the report that settles the pass | `workflow start` or `resume`, before it returns, so the label is written by then | no such option |
+| `local`, unattended | the same | the same, before the [drain](#drain-before-an-unattended-job-ends). Before this release the drain judged the pass | no such option |
+| `skill` | the same | the skill driver, as a child run: its commands in the background runner, its judge as the agent's judging reference says | the run starts and stays running for `teamai workflow resume <run>` |
+| `none`, or your own | the same | your driver, with `workflow next` and `report` on the run id in `started` | no such option |
+
+A `sampling: all` pass, below, is still judged through a judge lease, with `teamai score --next` on the install that ran it:
 
 ```console
 $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
@@ -108,7 +123,7 @@ The evidence directory holds `evidence.json`, `prompt.md`, `diff.patch` when a r
 
 ### Labels before the next step
 
-`scorers.start: workflow` leaves the scoring of a step's passes to the workflow's own steps. teamai starts no teamai-score run for them, no judge lease takes them, and the run does not wait for them under `sampling: all`. `teamai score subjects` lists them, and a `workflow: teamai-score` step labels each:
+`scorers.start: workflow` leaves the scoring of a step's passes to the workflow's own steps. teamai starts no teamai-score run for them, no judge lease takes them, and the run does not wait for them under `sampling: all`. `teamai score subjects` lists them, and a `workflow: teamai-score` step labels each. Pull warns on such a step that no `workflow: teamai-score` step after it reads `teamai score subjects --step` for, since nothing would score its passes:
 
 ```yaml
 # workflows/fix-until-good.yaml
