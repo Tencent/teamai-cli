@@ -93,7 +93,7 @@ export const ScoreAttempt = {
     if (!runId.success || !attemptId.success || rest.length > 0 || !runDir) return refused(verb, `${ATTEMPT_ENV} and ${RUN_DIR_ENV} name no workflow attempt`);
     const found = await findRunConfig(runId.data, current);
 
-    if ('error' in found) return refused(verb, `run ${runId.data} is not on this machine`);
+    if ('error' in found) return refused(verb, `run ${runId.data} is not on this machine (${found.error.code}: ${found.error.message})`);
     const { config, run } = found;
 
     if (!await samePath(runScratchDir(config, run.id), runDir)) return refused(verb, `${RUN_DIR_ENV} is not the directory of run ${run.id}`);

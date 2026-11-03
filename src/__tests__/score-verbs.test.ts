@@ -228,6 +228,17 @@ describe('score plan', () => {
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'marks.jsonl'))).toBe(false);
   });
 
+  it('says why the run its attempt names cannot be found, rather than only that it is not here', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const env = { TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a01234567', TEAMAI_RUN_DIR: path.join(root, 'made-up') };
+
+    expect(await ScoreVerbs.plan({ subject: 'run:r0123456789abcdef:review:1', scorers: '[]', batch: 'false', demand: 'auto' }, { env, current: config, now: NOW })).toEqual({
+      ok: false,
+      code: 'score_attempt_required',
+      message: expect.stringContaining('run r0123456789abcdef is not on this machine (run_not_found: Run r0123456789abcdef was not found in the configured local scopes)'),
+    });
+  });
+
   it('refuses a call from a shell no teamai-score attempt runs, and opens no mark', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
