@@ -14,7 +14,8 @@ import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { realFilePath } from './git-exclude.js';
 import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
 import { pathExists, readFileIfExists } from './utils/fs.js';
-import { mapStrings, parseJson, parseJson5 } from './utils/json.js';
+import { hookSyntaxOf, mcpSyntaxOf } from './tools.js';
+import { JSON_SYNTAX_CLAUSE, mapStrings, parseJson, parseJson5, parseJsonAs, type JsonSyntax } from './utils/json.js';
 
 /**
  * What teamai holds in the gated place. `summary` opens the fix
@@ -261,10 +262,10 @@ type StoreRead =
 /**
  * Only an absent store means the tool has not asked yet; one that is there
  * but cannot be read or parsed leaves its verdict unknown. `syntax` is how the
- * tool parses the file: `line-comments` drops the `//` lines Copilot heads
- * config.json with, `json5` takes what OpenClaw takes.
+ * tool parses the file: a `JsonSyntax`, `line-comments`, which drops the `//`
+ * lines Copilot heads config.json with, or `json5`, what OpenClaw takes.
  */
-async function readStore(file: string, { syntax = 'json' }: { syntax?: 'json' | 'line-comments' | 'json5' } = {}): Promise<StoreRead> {
+async function readStore(file: string, { syntax = 'json' }: { syntax?: JsonSyntax | 'line-comments' | 'json5' } = {}): Promise<StoreRead> {
   let raw: string | null;
 
   try {
@@ -277,11 +278,14 @@ async function readStore(file: string, { syntax = 'json' }: { syntax?: 'json' | 
 
   try {
     const value = syntax === 'json5' ? parseJson5(raw)
-      : parseJson(syntax === 'line-comments' ? raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n') : raw);
+      : syntax === 'line-comments' ? parseJson(raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n'))
+        : parseJsonAs(raw, syntax);
 
     return isJsonObject(value) ? { kind: 'ok', value } : { kind: 'unreadable', reason: 'does not parse (not a JSON object)' };
   } catch (error) {
-    return { kind: 'unreadable', reason: `does not parse (${error instanceof Error ? error.message : String(error)})` };
+    const clause = syntax === 'json5' || syntax === 'line-comments' ? '' : JSON_SYNTAX_CLAUSE[syntax];
+
+    return { kind: 'unreadable', reason: `does not parse${clause} (${error instanceof Error ? error.message : String(error)})` };
   }
 }
 
@@ -294,7 +298,7 @@ async function readStore(file: string, { syntax = 'json' }: { syntax?: 'json' | 
  */
 async function qoderFolderTrust(gate: Extract<ReadGate, { kind: 'qoder-folder-trust' }>, cause: string): Promise<ReadGateVerdict> {
   const root = await realFilePath(gate.checkout);
-  const settings = await readStore(gate.config);
+  const settings = await readStore(gate.config, { syntax: hookSyntaxOf('qoder') });
 
   if (settings.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: settings.reason, question: 'Qoder CLI trusts this folder' });
   const value = settings.kind === 'ok' ? settings.value : {};
@@ -407,7 +411,7 @@ async function qoderMcpApproval(gate: Extract<ReadGate, { kind: 'qoder-mcp-appro
   let all = false;
 
   for (const file of files) {
-    const settings = await readStore(file);
+    const settings = await readStore(file, { syntax: hookSyntaxOf('qoder') });
 
     if (settings.kind === 'unreadable') return unreadable({ cause, file, reason: settings.reason, question: 'Qoder CLI approved these servers' });
     const mcp = settings.kind === 'ok' ? fieldOf(settings.value, 'mcp') : undefined;
@@ -506,7 +510,7 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
  */
 async function codebuddyMcpApproval(gate: Extract<ReadGate, { kind: 'codebuddy-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
   const cause = `${held.summary}, but CodeBuddy Code starts a project's .mcp.json servers only once you approve them`;
-  const settings = await readStore(gate.config);
+  const settings = await readStore(gate.config, { syntax: hookSyntaxOf('codebuddy') });
 
   if (settings.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: settings.reason, question: 'CodeBuddy Code approved these servers' });
   const value = settings.kind === 'ok' ? settings.value : {};
@@ -562,7 +566,7 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
   const { disabled } = lists;
   const cliHasRun = await pathExists(gate.cliConfig);
   const approvals = lists.approvals ?? (cliHasRun ? new Set<string>() : null);
-  const project = await readStore(path.join(root, '.cursor', 'mcp.json'));
+  const project = await readStore(path.join(root, '.cursor', 'mcp.json'), { syntax: mcpSyntaxOf('cursor', 'project') });
   const servers = project.kind === 'ok' ? fieldOf(project.value, 'mcpServers') : undefined;
 
   const approved = (name: string): boolean => {

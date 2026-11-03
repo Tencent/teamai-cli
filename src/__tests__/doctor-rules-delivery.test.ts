@@ -609,6 +609,14 @@ describe('doctor — rules delivered on disk', () => {
       expect(await (await namedCheck(OUTSIDE_HOME))!.check()).toBe(true);
     });
 
+    // cursor-agent 2026.10.21 strips comments from hooks.json before JSON.parse.
+    it('reads a commented ~/.cursor/hooks.json as Cursor does', async () => {
+      const command = 'bash -lc "teamai hook-dispatch session-start --tool cursor 2>/dev/null" || true';
+      await fse.outputFile(path.join(homeDir, CURSOR_HOOKS), `{\n  // the member's note\n  "version": 1,\n  "hooks": { "sessionStart": [{ "command": ${JSON.stringify(command)} }] }\n}\n`);
+
+      expect(await (await namedCheck(OUTSIDE_HOME))?.check()).toBe(true);
+    });
+
     it('fails when no teamai sessionStart hook is registered, saying why the rules file is not enough', async () => {
       await writeCursorHooks([]);
 
