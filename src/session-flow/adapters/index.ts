@@ -15,6 +15,7 @@ import { CursorAdapter } from './cursor.js';
 import { OpencodeAdapter } from './opencode.js';
 import { AgyAdapter, agyStoreRoots } from './agy.js';
 import { PiAdapter } from './pi.js';
+import { MuseAdapter } from './muse.js';
 import type { SessionPlatform } from './platform-facts.js';
 import { sessionStoreDir } from '../../locate.js';
 
@@ -43,6 +44,7 @@ export const ADAPTER_REGISTRY: AdapterRegistry = {
   agy: (toolRoots) => new AgyAdapter(agyStoreRoots(sessionStoreDir('agy', toolRoots))),
   pi: (toolRoots) => new PiAdapter('pi', sessionStoreDir('pi', toolRoots), !process.env.PI_CODING_AGENT_SESSION_DIR),
   omp: (toolRoots) => new PiAdapter('omp', sessionStoreDir('omp', toolRoots)),
+  muse: (toolRoots) => new MuseAdapter(sessionStoreDir('muse', toolRoots)),
   // TeamAI variants (different path prefixes, identical format)
   'claude-internal': (toolRoots) => new ClaudeCodeAdapter('claude-internal', sessionStoreDir('claude-internal', toolRoots)),
   tclaude: (toolRoots) => new ClaudeCodeAdapter('tclaude', sessionStoreDir('tclaude', toolRoots)),
@@ -100,3 +102,5 @@ export { OpencodeAdapter } from './opencode.js';
 export { AgyAdapter } from './agy.js';
 
 export { PiAdapter } from './pi.js';
+
+export { MuseAdapter } from './muse.js';
