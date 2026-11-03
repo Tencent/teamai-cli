@@ -2550,7 +2550,7 @@ steps:
     expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('fixed\n');
   });
 
-  it('gives up an interactive hand-back without HITL and leaves the step for a driver with HITL', async () => {
+  it('fails an interactive hand-back without HITL that it cannot offer to a person, naming the retry', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build
 description: Need a person.
@@ -2561,11 +2561,12 @@ steps:
 `);
     await leaseNext(config, runId, driverIdentity('local', workspace), { can: { hitl: true } });
     const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
-    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({
-      error: { code: 'busy', message: 'step "pair" needs hitl, which this driver does not declare' },
-    });
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect(adapter.runInteractive).not.toHaveBeenCalled();
-    expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'pair', status: 'pending' }] });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'pair', status: 'failed', failure: {
+      code: 'hitl_required',
+      message: expect.stringContaining(`Step "pair" needs a person, and run ${runId} could not be offered to one: `),
+    } }] });
   });
 
   it.each([1, 2])('ignores terminal Ctrl-C and Ctrl-\\ in an interactive tool at max_parallel %s', async (parallel) => {
