@@ -295,6 +295,87 @@ function controlOf(controlled: Awaited<ReturnType<typeof judgeOnce>>, member: As
   return verdict.passed ? { ...outcome, warning: CONTROL_WARNING } : outcome;
 }
 
+/** The scorer files `values` name, read once each, or why they cannot be tried together. */
+async function scorerFiles(values: readonly string[]): Promise<Asked[] | Failure> {
+  const asked: Asked[] = [];
+
+  for (const value of new Set(values)) {
+    const read = await scorerFile(value);
+
+    if ('error' in read) return read;
+    const twin = asked.find((other) => other.scorer === read.scorer);
+
+    if (twin) return failure('invalid_arguments', `--scorer ${twin.file} and --scorer ${read.file} are both scorer ${read.scorer}. Judge them in separate commands.`);
+    asked.push(read);
+  }
+
+  return asked;
+}
+
+type JudgeGroup = { choice: JudgeChoice; members: [Asked, ...Asked[]] };
+
+/** One judge call per file, or with `batch` one per tool and model the files resolve to. */
+function judgeGroups(asked: readonly Asked[], aliases: Awaited<ReturnType<typeof loadModelAliases>>, tools: readonly ConfinedTool[], batch: boolean): JudgeGroup[] | Failure {
+  const groups: JudgeGroup[] = [];
+
+  for (const member of asked) {
+    const chosen = chooseJudgeModel(aliases, member.definition, tools);
+
+    if (!chosen.ok) return failure('judge_model_unavailable', chosen.message);
+
+    if (chosen.note) log.info(chosen.note);
+    const { tool, model } = chosen.choice;
+    const group = batch ? groups.find(({ choice }) => choice.tool === tool && choice.model?.name === model?.name && choice.model?.effort === model?.effort) : undefined;
+
+    if (group) group.members.push(member);
+    else groups.push({ choice: chosen.choice, members: [member] });
+  }
+
+  return groups;
+}
+
+type Tried = { answer: TriedAnswer; stored: ReturnType<typeof storedOf>; control: ControlOutcome };
+
+/** Judges `group` on the session and on its control, and prints each file's verdict. */
+async function tryGroup(config: LocalConfig, sessions: { judged: JudgedSession; control: JudgedSession }, group: JudgeGroup, required: RequiredIsolation, storedLabels: readonly ScoreLabel[]): Promise<Tried[] | Failure> {
+  const { choice, members } = group;
+  const { subject, context: { used } } = sessions.judged;
+  const result = await judgeOnce(config, sessions.judged, members, choice, required);
+
+  if (!result.ok) return result.envelope;
+  const controlled = await judgeOnce(config, sessions.control, members, choice, required);
+
+  return result.verdicts.map(({ judged: member, label, passed, reasoning }) => {
+    const answer: TriedAnswer = {
+      scorer: member.scorer, file: member.file, subject, rubric: { sourceHash: member.pin.sourceHash },
+      label: label.value, score: label.score, passed, reasoning, stored: false,
+    };
+
+    if (used.skills.length > 0) answer.used = used;
+    log.info(`${member.scorer} from ${member.file}: ${label.value} (score ${label.score}, ${passed ? 'passed' : 'did not pass'}). Not stored: a scorer file's label is only tried.`);
+
+    if (!controlled.ok) log.warn(`${member.scorer}: the control could not be judged: ${controlled.envelope.error.message}`);
+    const memberControl = controlOf(controlled, member);
+
+    if ('warning' in memberControl) log.warn(`${member.scorer}: ${CONTROL_WARNING}`);
+
+    return { answer, stored: storedOf(storedLabels, member.scorer, subject), control: memberControl };
+  });
+}
+
+/** The command's answer: one file's label, stored labels and control, or each of them by scorer. */
+function triedEnvelope(tried: readonly Tried[]): WorkflowEnvelope {
+  const [only, ...more] = tried;
+
+  if (only && more.length === 0) return { data: { label: only.answer, stored: only.stored, control: only.control } };
+
+  return { data: {
+    labels: tried.map(({ answer }) => answer),
+    stored: Object.fromEntries(tried.map(({ answer, stored }) => [answer.scorer, stored])),
+    control: Object.fromEntries(tried.map(({ answer, control }) => [answer.scorer, control])),
+  } };
+}
+
 /**
  * Tries scorer files on one finished session, whatever their sampling says, and stores no label: each file's label is
  * printed next to the labels this scope keeps of its scorer and the control's verdict, a judge call on the session's
@@ -310,18 +391,9 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand): Pr
       : `--label is stored, and the label of the scorer file ${scorer} is never stored. Pass the name of a scorer teamai pull cached.`);
   }
 
-  const asked: Asked[] = [];
+  const asked = await scorerFiles(demand.scorers);
 
-  for (const value of new Set(demand.scorers)) {
-    const read = await scorerFile(value);
-
-    if ('error' in read) return read;
-    const twin = asked.find((other) => other.scorer === read.scorer);
-
-    if (twin) return failure('invalid_arguments', `--scorer ${twin.file} and --scorer ${read.file} are both scorer ${read.scorer}. Judge them in separate commands.`);
-    asked.push(read);
-  }
-
+  if ('error' in asked) return asked;
   const named = demand.teamSession ? await pushedSession(from, demand.teamSession) : await nativeSession(from, demand);
 
   if ('error' in named) return named;
@@ -340,8 +412,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand): Pr
   const mask = (text: string): string => redact(text, { envSecrets });
   const captures = pushedBy === undefined ? await SessionCaptures.read(config, platform, session.sessionId) : [];
   const judged = judgeSession({ platform, found, captures, mask, agent });
-  const { subject, context: { prompt, used } } = judged;
-  log.info(`First prompt: ${safeText(prompt) || '(none)'}`);
+  log.info(`First prompt: ${safeText(judged.context.prompt) || '(none)'}`);
 
   const tools = installedConfinedTools([]);
 
@@ -349,60 +420,20 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand): Pr
     return failure('judge_tool_unavailable', 'No installed tool can run a scorer judge with every tool turned off. Install a supported version of Claude Code, Codex or OpenCode.');
   }
 
-  const aliases = await loadModelAliases(config);
-  const batch = demand.batch || batchesScorers({ team: scoring.batch });
-  const groups: Array<{ choice: JudgeChoice; members: [Asked, ...Asked[]] }> = [];
+  const groups = judgeGroups(asked, await loadModelAliases(config), tools, demand.batch || batchesScorers({ team: scoring.batch }));
 
-  for (const member of asked) {
-    const chosen = chooseJudgeModel(aliases, member.definition, tools);
-
-    if (!chosen.ok) return failure('judge_model_unavailable', chosen.message);
-
-    if (chosen.note) log.info(chosen.note);
-
-    const group = batch
-      ? groups.find(({ choice }) => choice.tool === chosen.choice.tool && choice.model?.name === chosen.choice.model?.name && choice.model?.effort === chosen.choice.model?.effort)
-      : undefined;
-
-    if (group) group.members.push(member);
-    else groups.push({ choice: chosen.choice, members: [member] });
-  }
-
-  const control = judgeSession({ platform, found: firstPromptOnly(found), captures, mask });
+  if ('error' in groups) return groups;
+  const sessions = { judged, control: judgeSession({ platform, found: firstPromptOnly(found), captures, mask }) };
   const storedLabels = await LabelStore.local(config);
-  const tried: Array<{ answer: TriedAnswer; stored: ReturnType<typeof storedOf>; control: ControlOutcome }> = [];
+  const tried: Tried[] = [];
 
-  for (const { choice, members } of groups) {
-    const required = requiredIsolation([...scoring.isolation, ...members.map(({ scorer, pin, definition }) => ({ source: scorerIsolationSource(scorer, pin.relativePath), value: definition.isolation }))]);
-    const result = await judgeOnce(config, judged, members, choice, required);
+  for (const group of groups) {
+    const required = requiredIsolation([...scoring.isolation, ...group.members.map(({ scorer, pin, definition }) => ({ source: scorerIsolationSource(scorer, pin.relativePath), value: definition.isolation }))]);
+    const outcomes = await tryGroup(config, sessions, group, required, storedLabels);
 
-    if (!result.ok) return result.envelope;
-    const controlled = await judgeOnce(config, control, members, choice, required);
-
-    for (const { judged: member, label, passed, reasoning } of result.verdicts) {
-      const answer: TriedAnswer = {
-        scorer: member.scorer, file: member.file, subject, rubric: { sourceHash: member.pin.sourceHash },
-        label: label.value, score: label.score, passed, reasoning, stored: false,
-      };
-
-      if (used.skills.length > 0) answer.used = used;
-      log.info(`${member.scorer} from ${member.file}: ${label.value} (score ${label.score}, ${passed ? 'passed' : 'did not pass'}). Not stored: a scorer file's label is only tried.`);
-
-      if (!controlled.ok) log.warn(`${member.scorer}: the control could not be judged: ${controlled.envelope.error.message}`);
-      const memberControl = controlOf(controlled, member);
-
-      if ('warning' in memberControl) log.warn(`${member.scorer}: ${CONTROL_WARNING}`);
-      tried.push({ answer, stored: storedOf(storedLabels, member.scorer, subject), control: memberControl });
-    }
+    if ('error' in outcomes) return outcomes;
+    tried.push(...outcomes);
   }
 
-  const [only, ...more] = tried;
-
-  if (only && more.length === 0) return { data: { label: only.answer, stored: only.stored, control: only.control } };
-
-  return { data: {
-    labels: tried.map(({ answer }) => answer),
-    stored: Object.fromEntries(tried.map(({ answer, stored }) => [answer.scorer, stored])),
-    control: Object.fromEntries(tried.map(({ answer, control: scorerControl }) => [answer.scorer, scorerControl])),
-  } };
+  return triedEnvelope(tried);
 }
