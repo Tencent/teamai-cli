@@ -808,8 +808,8 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
  * shared by the whole machine, so one scope decides: the user scope when there
  * is one, else `runningScope`, the scope the update runs in.
  */
-export async function doUpdate(runningScope: LocalConfig | null): Promise<void> {
-  const result = await checkForUpdate();
+export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean }): Promise<void> {
+  const result = await checkForUpdate(options);
 
   if (!result.available) {
     log.info(`Already up to date (v${result.current})`);
@@ -1006,7 +1006,7 @@ export interface UpdateOptions {
  */
 export async function update(options: UpdateOptions): Promise<void> {
   if (options.check || options.dryRun) {
-    const result = await checkForUpdate({ dryRun: options.dryRun });
+    const result = await checkForUpdate({ force: true, dryRun: options.dryRun });
 
     if (result.available) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
@@ -1017,5 +1017,5 @@ export async function update(options: UpdateOptions): Promise<void> {
     return;
   }
 
-  await doUpdate(await resolveConfigForDir());
+  await doUpdate(await resolveConfigForDir(), { force: true });
 }

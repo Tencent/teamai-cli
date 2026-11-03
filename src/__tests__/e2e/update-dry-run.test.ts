@@ -20,7 +20,9 @@ describe('update --dry-run (real CLI)', () => {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-update-preview-'));
     home = path.join(sandbox, 'home');
     fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.teamai', 'state.json'), '{"lastUpdateCheck":null,"availableUpdate":null}\n');
+    fs.writeFileSync(path.join(home, '.teamai', 'state.json'), JSON.stringify({
+      lastUpdateCheck: new Date().toISOString(), availableUpdate: null,
+    }));
     registry = http.createServer((_req, res) => {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({
@@ -38,7 +40,7 @@ describe('update --dry-run (real CLI)', () => {
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  it.each([{ extra: [] }, { extra: ['--check'] }])('checks the registry without saving TeamAI state or taking a lock ($extra)', async ({ extra }) => {
+  it.each([{ extra: [] }, { extra: ['--check'] }])('bypasses a fresh cache without saving TeamAI state or taking a lock ($extra)', async ({ extra }) => {
     const statePath = path.join(home, '.teamai', 'state.json');
     const before = fs.readFileSync(statePath);
     const output = await new Promise<{ code: number | null; text: string }>((resolve, reject) => {

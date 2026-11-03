@@ -25,6 +25,8 @@ If a file occupies a tool's skills directory, `pull` keeps it, names the blocked
 
 ZCode's CLI reads hooks from `~/.zcode/cli/config.json` even in single-repo mode. `hooks inject` moves teamai's old project-file entries there, keeps personal settings, and gates team hooks to their project. `hooks list` and `doctor` check that same HOME file.
 
+Manual `teamai update`, `teamai update --check`, and `teamai update --dry-run` always query the npm registry. Automatic checks reuse their result for up to 12 hours. `--dry-run` does not save the check result or install an update.
+
 Auto-update runs when a session ends. The team can turn it off. A member's own policy wins. The CLI is shared by the machine, so the user-scope config and its team decide when there is one, else the workspace the session runs in:
 
 ```yaml
