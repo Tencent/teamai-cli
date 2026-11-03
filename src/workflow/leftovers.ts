@@ -11,6 +11,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { knownSecrets } from '../env-resolution.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { errnoCode } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
 import { publishRunEnd, type HandoffError } from './handoff.js';
@@ -55,9 +56,11 @@ async function runBranches(checkout: string, runId: string): Promise<Tips | { er
   return { local: refsUnder(local.stdout, prefix), origin: refsUnder(remote.stdout, prefix) };
 }
 
-/** The branches checked out in a worktree of `checkout`'s repository, with the worktree's path. */
-async function checkedOut(checkout: string): Promise<Map<string, string>> {
+/** The branches checked out in a worktree of `checkout`'s repository, with the worktree's path, or why they could not be listed. */
+async function checkedOut(checkout: string): Promise<Map<string, string> | { error: string }> {
   const listed = await git(checkout, ['worktree', 'list', '--porcelain']);
+
+  if (listed.code !== 0) return { error: `its worktrees could not be listed (${listed.stderr.trim() || 'git worktree list failed'})` };
   const found = new Map<string, string>();
   let dir: string | undefined;
 
@@ -115,6 +118,11 @@ async function deleteBranches(checkout: string, runId: string, branches: string[
   const hostKept = new Set<string>();
 
   for (const branch of branches.filter((name) => tips.local.has(name) && !failed.some((item) => item.branch === name))) {
+    if ('error' in worktrees) {
+      failed.push({ branch, reason: `in ${checkout}: ${worktrees.error}` });
+      continue;
+    }
+
     const dir = worktrees.get(branch);
 
     if (dir !== undefined && worktreeCheckout(dir) === undefined) {
@@ -122,7 +130,15 @@ async function deleteBranches(checkout: string, runId: string, branches: string[
       continue;
     }
 
-    if (dir !== undefined) await removeWorktree(checkout, dir);
+    if (dir !== undefined) {
+      const worktree = await removeWorktree(checkout, dir);
+
+      if (!worktree.ok) {
+        failed.push({ branch, reason: `in ${checkout}: worktree ${dir} was not removed (${worktree.reason})` });
+        continue;
+      }
+    }
+
     const removed = await git(checkout, ['branch', '-D', branch]);
 
     if (removed.code !== 0) failed.push({ branch, reason: `in ${checkout}: ${removed.stderr.trim() || 'git branch -D failed'}` });
@@ -209,6 +225,7 @@ export async function cleanUpSucceededRun(
 
     return;
   }
+
   const leftovers = await settleSucceeded(run, checkout, new Date().toISOString());
 
   if (!leftovers) return;
@@ -268,80 +285,127 @@ const SweptRecordSchema = RunRecordFieldsSchema.extend({ prBranches: z.array(z.s
 
 type SweptRecord = z.infer<typeof SweptRecordSchema>;
 
+function causeText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** The names in directory `dir`, none when it does not exist, or why it could not be read. */
+async function readNames(dir: string): Promise<{ names: string[] } | { error: string }> {
+  try {
+    return { names: await fs.readdir(dir) };
+  } catch (cause) {
+    return errnoCode(cause) === 'ENOENT' ? { names: [] } : { error: causeText(cause) };
+  }
+}
+
+async function readSweptRecord(file: string): Promise<{ value: SweptRecord } | { error: string }> {
+  try {
+    const parsed = SweptRecordSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+
+    return parsed.success ? { value: parsed.data } : { error: parsed.error.issues.map((issue) => `${issue.path.join('.') || 'record'}: ${issue.message}`).join('; ') };
+  } catch (cause) {
+    return { error: causeText(cause) };
+  }
+}
+
 /** The settled run records on teamai-reports, refreshed first when it can be. */
 async function settledRecords(config: LocalConfig): Promise<SweptRecord[]> {
   if (usesBranchWorktree(config)) {
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
 
     await readableReportsWorktree(config).catch((cause: unknown) => {
-      log.warn(`teamai-reports was not refreshed (${cause instanceof Error ? cause.message : String(cause)}), so runs other machines ended since the last pull are not swept.`);
+      log.warn(`teamai-reports was not refreshed (${causeText(cause)}), so runs other machines ended since the last pull are not swept.`);
     });
   }
 
   const dir = path.join(getReportsDir(config), RECORDS_DIR);
-  const files = (await fs.readdir(dir).catch(() => [])).filter((file) => file.endsWith('.json'));
+  const listed = await readNames(dir);
 
-  const records = await Promise.all(files.map(async (file) => {
-    try {
-      const parsed = SweptRecordSchema.safeParse(JSON.parse(await fs.readFile(path.join(dir, file), 'utf8')));
+  if ('error' in listed) {
+    log.warn(`The run records in ${dir} were not read (${listed.error}), so what runs other machines ended left is not removed.`);
 
-      return parsed.success ? [parsed.data] : [];
-    } catch {
+    return [];
+  }
+
+  const records = await Promise.all(listed.names.filter((file) => file.endsWith('.json')).map(async (file) => {
+    const at = path.join(dir, file);
+    const record = await readSweptRecord(at);
+
+    if ('error' in record) {
+      log.warn(`Run record ${at} was not read (${record.error}), so what its run left is not removed.`);
+
       return [];
     }
+
+    return [record.value];
   }));
 
   return records.flat().filter((record) => record.status !== 'running');
 }
 
-/** Removes the kept refs of `attempts`, the reader copies' changes, and returns the refs it removed. */
-async function removeKeptRefs(checkout: string, attempts: string[]): Promise<string[]> {
-  const removed: string[] = [];
+function warnNotRemoved(runId: string, reason: string): undefined {
+  log.warn(`What run ${runId} left behind was not removed: ${reason}. teamai doctor --fix tries again.`);
 
-  for (const attempt of attempts) {
-    const listed = await git(checkout, ['for-each-ref', '--format=%(refname)', `refs/teamai/kept/${attempt}`, `refs/teamai/kept-modules/${attempt}/`]);
+  return undefined;
+}
 
-    for (const ref of listed.stdout.split('\n').filter(Boolean)) {
-      if ((await git(checkout, ['update-ref', '-d', ref])).code === 0) removed.push(ref);
-    }
-  }
+/** The kept refs of `attempts`, the reader copies' changes, or why they could not be listed. */
+async function keptRefs(checkout: string, attempts: string[]): Promise<{ refs: string[] } | { error: string }> {
+  // for-each-ref with no pattern lists every ref.
+  if (attempts.length === 0) return { refs: [] };
+  const listed = await git(checkout, ['for-each-ref', '--format=%(refname)', ...attempts.flatMap((attempt) => [`refs/teamai/kept/${attempt}`, `refs/teamai/kept-modules/${attempt}/`])]);
 
-  return removed;
+  return listed.code === 0 ? { refs: listed.stdout.split('\n').filter(Boolean) } : { error: `its kept refs could not be listed (${listed.stderr.trim() || 'git for-each-ref failed'})` };
 }
 
 /**
  * Removes what run `runId` left in `checkout` and on its origin: the worktrees teamai made on its branches, the refs of
- * `attempts`, and every branch but `keep`. Undefined when the branches could not be listed.
+ * `attempts`, and every branch but `keep`. A worktree that stays is named on the deletion of its branch, and a kept ref
+ * that stays is a warning. Undefined, with a warning, when its branches, worktrees or kept refs could not be listed.
  */
-async function removeRun(checkout: string, runId: string, keep: ReadonlySet<string>, attempts: string[]): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: string[] } | undefined> {
+async function removeRun(
+  { checkout, runId, keep, attempts }: { checkout: string; runId: string; keep: ReadonlySet<string>; attempts: string[] },
+): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: string[] } | undefined> {
   const tips = await runBranches(checkout, runId);
 
-  if ('error' in tips) {
-    log.warn(`What run ${runId} left behind was not removed: ${tips.error}. teamai doctor --fix tries again.`);
+  if ('error' in tips) return warnNotRemoved(runId, tips.error);
+  const listed = await checkedOut(checkout);
 
-    return undefined;
-  }
+  if ('error' in listed) return warnNotRemoved(runId, listed.error);
+  const kept = await keptRefs(checkout, attempts);
 
+  if ('error' in kept) return warnNotRemoved(runId, kept.error);
   const worktrees: string[] = [];
 
-  for (const [branch, dir] of await checkedOut(checkout)) {
+  for (const [branch, dir] of listed) {
     if (!branch.startsWith(runBranchPrefix(runId)) || worktreeCheckout(dir) === undefined) continue;
-    await removeWorktree(checkout, dir);
-    worktrees.push(dir);
+
+    if ((await removeWorktree(checkout, dir)).ok) worktrees.push(dir);
   }
 
-  const refs = await removeKeptRefs(checkout, attempts);
+  const refs: string[] = [];
+
+  for (const ref of kept.refs) {
+    const deleted = await git(checkout, ['update-ref', '-d', ref]);
+
+    if (deleted.code === 0) refs.push(ref);
+    else log.warn(`Ref ${ref} of run ${runId} was not removed (${deleted.stderr.trim() || 'git update-ref -d failed'}). Remove it with git update-ref -d ${ref}.`);
+  }
+
   const all = namesOf(tips);
   const { deleted, failed } = await deleteBranches(checkout, runId, all.filter((branch) => !keep.has(branch)), tips);
 
   return { branches: deleted, worktrees, refs, failed, kept: all.filter((branch) => keep.has(branch)) };
 }
 
-/** The attempts of a run of this machine, whose kept refs go with it. */
-async function attemptsOf(config: LocalConfig, runId: string): Promise<string[]> {
+/** The attempts of a run of this machine, whose kept refs go with it, or why they could not be listed. */
+async function attemptsOf(config: LocalConfig, runId: string): Promise<{ names: string[] } | { error: string }> {
   const id = RunIdSchema.safeParse(runId);
 
-  return id.success ? (await fs.readdir(attemptsDir(config, id.data)).catch(() => [])).filter((name) => AttemptIdSchema.safeParse(name).success) : [];
+  if (!id.success) return { names: [] };
+  const listed = await readNames(attemptsDir(config, id.data));
+
+  return 'error' in listed ? listed : { names: listed.names.filter((name) => AttemptIdSchema.safeParse(name).success) };
 }
 
 /** Whether a sweep or a succeeded run's cleanup already went through for this revision of `run`. */
@@ -380,7 +444,14 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     }
 
     if (cleaned(run, 'retention')) continue;
-    const removed = await removeRun(at, run.id, new Set(pullRequestBranches(run)), await attemptsOf(config, run.id));
+    const attempts = await attemptsOf(config, run.id);
+
+    if ('error' in attempts) {
+      warnNotRemoved(run.id, `its attempts could not be listed (${attempts.error})`);
+      continue;
+    }
+
+    const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(pullRequestBranches(run)), attempts: attempts.names });
 
     if (!removed) continue;
     const { kept, ...gone } = removed;
@@ -402,7 +473,7 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
 
     // An older teamai did not record which branches its pull requests use, so none of its branches is known to be free.
     if (record.prs?.length && record.prBranches === undefined) continue;
-    const removed = await removeRun(checkout, record.run, new Set(record.prBranches), []);
+    const removed = await removeRun({ checkout, runId: record.run, keep: new Set(record.prBranches), attempts: [] });
 
     if (removed && removed.branches.length + removed.failed.length > 0) {
       swept.push({ run: record.run, from: 'teamai-reports', settledAt: endedAt, branches: removed.branches, worktrees: removed.worktrees, refs: [], failed: removed.failed });

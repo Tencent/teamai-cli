@@ -232,6 +232,21 @@ describe('doctor --fix past workflows.retention', () => {
     expect(branches(origin, runId)).toEqual(['join/p1', 'left/p1']);
   });
 
+  it('does not report a worktree it could not remove, and names it on the branch it leaves', async () => {
+    const { config, cwd, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const dir = git(cwd, ['worktree', 'list', '--porcelain']).split('\n').filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length)).find((at) => at !== cwd) ?? '';
+    git(cwd, ['worktree', 'lock', dir]);
+    vi.spyOn(log, 'warn');
+
+    const swept = await sweepLeftovers(config, null, { now: Date.parse((await state(config, runId)).updatedAt) + 14 * DAY, checkout: cwd });
+
+    expect(swept.swept).toEqual([expect.objectContaining({
+      run: runId, worktrees: [], failed: [{ branch: `teamai/${runId}/join/p1`, reason: expect.stringContaining(`worktree ${dir} was not removed`) }],
+    })]);
+    expect(fs.existsSync(dir)).toBe(true);
+  });
+
   it('deletes again what a succeeded run could not delete as it settled', async () => {
     const { config, cwd, origin, runId } = await fixture(NO_DELIVERY);
     const hook = path.join(origin, 'hooks', 'pre-receive');
@@ -268,5 +283,25 @@ describe('doctor --fix past workflows.retention', () => {
     expect(swept.swept).toEqual([expect.objectContaining({ run: ran, from: 'teamai-reports', branches: [`teamai/${ran}/base`, `teamai/${ran}/build-0/p1`] })]);
     expect(branches(origin, ran)).toEqual(['change/p1']);
     expect(branches(origin, recent)).toEqual(['change/p1']);
+  });
+
+  it('warns naming a run record on teamai-reports it cannot read, and sweeps the others', async () => {
+    const { config, cwd, origin } = await fixture(NO_DELIVERY);
+    const ran = 'r0123456789abcdef';
+    git(cwd, ['push', '-q', 'origin', `HEAD:refs/heads/teamai/${ran}/build-0/p1`]);
+    const http: LocalConfig = { ...config, repo: { ...config.repo, kind: 'http' } };
+    const records = path.join(getReportsDir(http), 'workflows', 'runs');
+    fs.mkdirSync(records, { recursive: true });
+    const endedAt = '2026-10-01T12:00:00.000Z';
+    fs.writeFileSync(path.join(records, `${ran}.json`), JSON.stringify({ schemaVersion: 'v1alpha1', run: ran, workflow: 'ship', phase: 'end', status: 'failed', startedAt: endedAt, endedAt, username: 'ci', publishedAt: endedAt }));
+    const broken = path.join(records, 'rfedcba9876543210.json');
+    fs.writeFileSync(broken, '{"run":');
+    const warn = vi.spyOn(log, 'warn');
+
+    const swept = await sweepLeftovers(http, null, { now: Date.parse('2026-11-03T12:00:00.000Z'), checkout: cwd });
+
+    expect(swept.swept).toEqual([expect.objectContaining({ run: ran, branches: [`teamai/${ran}/build-0/p1`] })]);
+    expect(branches(origin, ran)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^Run record ${broken} was not read \\(.+\\), so what its run left is not removed\\.$`)));
   });
 });

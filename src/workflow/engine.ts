@@ -2067,7 +2067,9 @@ async function settledRecordState(config: LocalConfig, run: RunState): Promise<R
   const state = await runRecordState(config, run);
 
   if (state !== 'pending') return state;
-  await publishPendingRecords(config, { run: run.id }).catch(() => undefined);
+  await publishPendingRecords(config, { run: run.id }).catch((cause: unknown) => {
+    log.warn(`The run record of ${run.id} was not published (${cause instanceof Error ? cause.message : String(cause)}). Publish it again: teamai workflow publish ${run.id}`);
+  });
 
   return runRecordState(config, run);
 }
