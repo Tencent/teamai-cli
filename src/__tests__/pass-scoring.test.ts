@@ -1,0 +1,152 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { z } from 'zod';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({ home: '' }));
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, homedir: () => mocks.home, default: { ...actual, homedir: () => mocks.home } };
+});
+
+import type { LocalConfig } from '../types.js';
+import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
+import { PassScoring } from '../scorers/pass-scoring.js';
+import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
+import { inProcessClient } from '../workflow/protocol.js';
+import { openJudgeEntries } from '../workflow/scoring.js';
+import { readRun, runsDir } from '../workflow/store.js';
+import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
+
+const skill: DriverIdentity = { kind: 'skill', machine: 'm1', workspace: '/w' };
+
+const QUALITY = `---
+labels:
+  - { value: good, score: 1, description: Did the work }
+  - { value: bad, score: 0, description: Did not }
+passingScore: 1
+samplingRate: 100
+---
+Judge the work.
+`;
+
+const review = (scorers: string) => `schemaVersion: v1alpha1
+name: review
+description: Review a change.
+steps:
+  - id: review
+    prompt: Review the change.
+    scorers: ${scorers}
+`;
+
+function data(envelope: WorkflowEnvelope): Record<string, unknown> {
+  if ('error' in envelope) throw new Error(`${envelope.error.code}: ${envelope.error.message}`);
+  return envelope.data;
+}
+
+let root = '';
+beforeEach(() => {
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pass-scoring-')));
+  mocks.home = path.join(root, 'home');
+  fs.mkdirSync(mocks.home, { recursive: true });
+  vi.stubEnv('HOME', mocks.home);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+async function team(workflow: string): Promise<LocalConfig> {
+  const knowledge = path.join(root, 'knowledge');
+  fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
+  fs.writeFileSync(path.join(knowledge, 'workflows', 'review.yaml'), workflow);
+  fs.writeFileSync(path.join(knowledge, 'scorers', 'quality.md'), QUALITY);
+  const config: LocalConfig = {
+    repo: { localPath: knowledge, remote: 'local', kind: 'self' },
+    username: 'tester', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data'),
+  };
+  await syncWorkflowDefinitions(config);
+  return config;
+}
+
+/** A run of `review` whose one pass the skill driver reported succeeded. */
+async function reviewedRun(config: LocalConfig): Promise<string> {
+  const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
+  const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, skill)).lease);
+  data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: skill }));
+  return runId;
+}
+
+async function scoreRuns(config: LocalConfig) {
+  const ids = fs.readdirSync(runsDir(config)).flatMap((name) => /^(r[0-9a-f]+)\.json$/.exec(name)?.[1] ?? []);
+  const runs = await Promise.all(ids.map((id) => readRun(config, id)));
+  return runs.flatMap((run) => (run !== 'missing' && run !== 'corrupt' && run.name === 'teamai-score' ? [run] : []));
+}
+
+async function start(config: LocalConfig, runId: string) {
+  return PassScoring.start(config, runId, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode: 'attended' });
+}
+
+describe('PassScoring.start', () => {
+  it('starts one root teamai-score run for a settled scored pass, as the CLI\'s own start, for the scored run\'s driver', async () => {
+    const config = await team(review('[quality]'));
+    const runId = await reviewedRun(config);
+
+    const started = await start(config, runId);
+
+    const [scored] = await scoreRuns(config);
+    expect(started).toEqual({ runs: [{ subject: `run:${runId}:review:1`, run: scored?.id }], refused: [] });
+    expect(scored).toMatchObject({
+      inputs: { subject: `run:${runId}:review:1`, scorers: [], label: '', batch: false, demand: 'auto' },
+      startedBy: 'cli', runMode: 'attended', driver: skill,
+    });
+  });
+
+  it('starts nothing for a pass of a step whose workflow starts its scoring itself', async () => {
+    const config = await team(review('{ names: [quality], start: workflow }'));
+    const runId = await reviewedRun(config);
+
+    expect(await start(config, runId)).toEqual({ runs: [], refused: [] });
+    expect(await scoreRuns(config)).toEqual([]);
+  });
+
+  it('starts a pass once when two processes see it settle at the same time, and answers that run again while it runs', async () => {
+    const config = await team(review('[quality]'));
+    const runId = await reviewedRun(config);
+
+    const [first, second] = await Promise.all([start(config, runId), start(config, runId)]);
+    const again = await start(config, runId);
+
+    const runs = await scoreRuns(config);
+    expect(runs).toHaveLength(1);
+    expect([...first.runs, ...second.runs].map(({ run }) => run)).toEqual([runs[0]?.id]);
+    expect(again.runs.map(({ run }) => run)).toEqual([runs[0]?.id]);
+  });
+
+  it('leaves no judge lease open for a pass it started, nor for one its workflow scores itself', async () => {
+    const auto = await team(review('[quality]'));
+    const runId = await reviewedRun(auto);
+    const before = await openJudgeEntries(auto, new Date().toISOString());
+
+    await start(auto, runId);
+
+    expect([before, await openJudgeEntries(auto, new Date().toISOString())]).toEqual([1, 0]);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.mkdirSync(mocks.home, { recursive: true });
+    const own = await team(review('{ names: [quality], start: workflow }'));
+    await reviewedRun(own);
+    expect(await openJudgeEntries(own, new Date().toISOString())).toBe(0);
+  });
+});
+
+describe('a step whose workflow scores its passes itself', () => {
+  it('holds no run for the judges of its sampling: all scorers', async () => {
+    const config = await team(review('{ names: [quality], sampling: all, start: workflow }'));
+    const runId = await reviewedRun(config);
+
+    expect(data(await leaseNext(config, runId, skill))).toMatchObject({ done: { outcome: 'succeeded' } });
+  });
+});

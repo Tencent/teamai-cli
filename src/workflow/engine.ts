@@ -1334,6 +1334,7 @@ export async function startRun(
  * Creates a run of a definition the caller already built and checked. The run file is written only when it would keep
  * what it was given unmasked. `secrets` are what the caller resolved for the operation. `alone`: what the run's only
  * driver, the local one, gives strict requirements; a start with a step it could never take for them is refused.
+ * `driver`: the run's driver from its start, so that driver's first `next` takes it as its own.
  */
 export async function createRun(
   config: LocalConfig,
@@ -1366,6 +1367,7 @@ export async function createRun(
     runMode: input.runMode,
     origin: input.origin,
     startedBy: input.startedBy,
+    driver,
     definition: input.definition,
     workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
     scorers: Object.keys(scorers).length > 0 ? scorers : undefined,

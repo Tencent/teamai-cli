@@ -11,7 +11,7 @@ import type { LocalConfig } from '../types.js';
 import { judgeablePasses, scoredPasses } from './judge-work.js';
 import { stepDefinitions } from './scope.js';
 import { installOwner } from './store.js';
-import type { RunState } from './types.js';
+import type { RunState, WorkflowStep } from './types.js';
 
 export function sameSubject(label: ScoreLabel, scorer: string, sourceHash: string, subject: RunSubject): boolean {
   return label.source === 'workflow' && label.scorer === scorer && label.rubric.sourceHash === sourceHash
@@ -39,13 +39,16 @@ export function isUnsettled(entry: VerdictEntry): boolean {
 }
 
 /**
- * Every entry this install judges of `run`'s steps whose scorers have `sampling: all`: one per pinned scorer this
- * teamai can read and pass of such a step. None for a run whose definition has no such step.
+ * Every entry this install judges of `run`'s steps whose scorers have `sampling: all`, unless the step's workflow
+ * scores its passes itself (`start: workflow`): one per pinned scorer this teamai can read and pass of such a step.
+ * None for a run whose definition has no such step.
  */
 export async function verdictEntries(config: LocalConfig, run: RunState, now: string): Promise<VerdictEntry[]> {
-  if (!judgeablePasses(run).some(({ definition }) => definition.scorers?.sampling === 'all')) return [];
+  const waits = (scorers: WorkflowStep['scorers']) => scorers?.sampling === 'all' && scorers.start !== 'workflow';
+
+  if (!judgeablePasses(run).some(({ definition }) => waits(definition.scorers))) return [];
   const definitionOf = stepDefinitions(run);
-  const passes = scoredPasses(run, (await installOwner(config)).id).filter(({ subject }) => definitionOf(subject.step)?.scorers?.sampling === 'all');
+  const passes = scoredPasses(run, (await installOwner(config)).id).filter(({ subject }) => waits(definitionOf(subject.step)?.scorers));
   const labels = await LabelStore.local(config);
 
   const entries = passes.flatMap(({ subject, scorers }) => scorers.flatMap((scorer) => {

@@ -34,6 +34,7 @@ import { installedConfinedTools, isConfinedTool } from '../tool-launch/confined.
 import { CONFINED_TOOLS } from '../tool-launch/tools.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { chooseJudgeModel } from '../scorers/judge-model.js';
+import { PassScoring } from '../scorers/pass-scoring.js';
 import { isSampled } from '../scorers/sampling.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, unknownIsolationText, type IsolationSetting } from '../scorers/isolation.js';
@@ -173,6 +174,17 @@ async function recentRuns(config: LocalConfig, now: string, kept: ReadonlySet<st
     .filter((run) => run.status === 'running' || kept.has(run.id) || Date.parse(run.updatedAt) + ENTRY_WINDOW_MS > Date.parse(now));
 }
 
+/**
+ * The entries of `runs` no judge lease takes: those of a pass the scoring module started a `teamai-score` run for,
+ * and those of a step whose own workflow scores its passes (`scorers.start: workflow`).
+ */
+async function scoredElsewhere(config: LocalConfig, runs: readonly RunState[], install: string): Promise<Set<string>> {
+  const passes = runs.flatMap((run) => scoredPasses(run, install).map((pass) => ({ ...pass, own: stepDefinitions(run)(pass.subject.step)?.scorers?.start === 'workflow' })));
+  const left = await Promise.all(passes.map(async ({ subject, scorers, own }) => (own || await PassScoring.started(config, subject) ? scorers.map((scorer) => entryIdOf(scorer, subject)) : [])));
+
+  return new Set(left.flat());
+}
+
 /** The sampled entries of each recent run, and the ones a member asked for, which replace a sampled one of the same id. */
 async function scoreEntries(config: LocalConfig, now: string, teamBatch: boolean | undefined): Promise<RunEntry[]> {
   const install = (await installOwner(config)).id;
@@ -184,6 +196,7 @@ async function scoreEntries(config: LocalConfig, now: string, teamBatch: boolean
   ]);
 
   const runs = await recentRuns(config, now, kept);
+  const elsewhere = await scoredElsewhere(config, runs, install);
 
   return runs.flatMap((run) => {
     const entryOf = (scorer: string, pin: PinnedScorer, subject: RunSubject, request?: ScoreRequest): RunEntry[] => {
@@ -223,7 +236,7 @@ async function scoreEntries(config: LocalConfig, now: string, teamBatch: boolean
         const pin = run.scorers?.[scorer];
         const definition = pin && pinnedDefinition(scorer, pin);
 
-        if (!pin || !definition || !(all || isSampled(scorer, subject, definition.samplingRate))) return [];
+        if (!pin || !definition || elsewhere.has(entryIdOf(scorer, subject)) || !(all || isSampled(scorer, subject, definition.samplingRate))) return [];
 
         return entryOf(scorer, pin, subject);
       });
