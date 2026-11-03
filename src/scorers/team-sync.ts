@@ -6,7 +6,7 @@ import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions, type SyncWorkflowResult } from '../workflow/cache.js';
 import { stepWorkflow, type WorkflowStep } from '../workflow/types.js';
-import { anyScorerChecks, syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from './cache.js';
+import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from './cache.js';
 import { ScoreSubjects } from './score-subjects.js';
 
 export type UnknownScorer = { file: string; scorer: string } & (
@@ -59,7 +59,7 @@ export interface SyncScoredWorkflowsResult extends SyncWorkflowResult {
  */
 export async function syncScorersThenWorkflows(config: LocalConfig, options: SyncScorerOptions = {}): Promise<SyncScoredWorkflowsResult> {
   const scorers = await syncScorerDefinitions(config, options);
-  const workflows = await syncWorkflowDefinitions(config, { scopeLabel: options.scopeLabel, dryRun: options.dryRun, scorerHasCheck: () => anyScorerChecks(config, scorers.cached) });
+  const workflows = await syncWorkflowDefinitions(config, { scopeLabel: options.scopeLabel, dryRun: options.dryRun });
   const valid = new Set(scorers.cached);
 
   const unknownScorers = workflows.settled.flatMap(({ relativePath, definition }) => scorersListedBy(definition)

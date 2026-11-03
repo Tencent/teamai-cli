@@ -5,10 +5,14 @@
  * or let a prompt read anything but the evidence an earlier step wrote. A refusal is a coded diagnostic, so no older
  * version of the file keeps running: the default does.
  */
-import { REPORTS_BRANCH } from '../types.js';
+import { REPORTS_BRANCH, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import { stepWorkflow, type ScoreOverrideCode, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
+import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
 import { confinedOf } from '../workflow/workspace.js';
+import { anyScorerChecks, cachedScorerNames } from './cache.js';
+
+/** Why pull refuses a team teamai-score.yaml, one code per part of this contract. */
+export type ScoreOverrideCode = 'score_override_contract' | 'score_override_command' | 'score_override_workflow_step' | 'score_override_prompt' | 'score_override_confined_dir' | 'score_override_judge_prompt' | 'score_override_step_missing' | 'score_override_publish';
 
 const LABELS_GO_THROUGH = 'which every label of teamai\'s default teamai-score goes through';
 
@@ -203,12 +207,14 @@ function missingSteps(steps: readonly Walked[], scorerHasCheck: boolean): Proble
 
 /**
  * Why `team`, a team file named like teamai's default `shipped`, is refused at pull, one diagnostic each, located at
- * `file`; none when it may replace the default. `scorerHasCheck`: a scorer cached here has a `check`, so the override
- * keeps the step that runs it.
+ * `file`; none when it may replace the default. While a scorer `config` caches has a `check`, the override keeps the step
+ * that runs it. Scorers sync before workflows, so the cache holds this pull's.
  */
-function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefinition; shipped: WorkflowDefinition; file: string; scorerHasCheck: boolean }): WorkflowDiagnostic[] {
+async function problems({ team, shipped, file, config }: { team: WorkflowDefinition; shipped: WorkflowDefinition; file: string; config: LocalConfig }): Promise<WorkflowDiagnostic[]> {
   const verbs = verbsOf(shipped);
   const steps = walk(team);
+  const keepsCheck = steps.some(({ list, path }) => list === 'steps' && path === 'score.check');
+  const scorerHasCheck = !keepsCheck && await anyScorerChecks(config, await cachedScorerNames(config));
   const found = [...contractProblems(team, shipped), ...runProblems(team, shipped), ...steps.flatMap((walked) => stepProblems(walked, verbs)), ...missingSteps(steps, scorerHasCheck)];
 
   return found.map((problem) => ({ file, line: 1, column: 1, ...problem }));

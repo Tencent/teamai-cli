@@ -29,14 +29,9 @@ import {
   remotelyReachableRevision, revisionHoldsSources, withoutStaleTeamRevision, type ReachableRevision,
 } from '../utils/team-revision.js';
 
-/**
- * `scorerHasCheck`: whether a team scorer has a `check`, so a team file that replaces teamai-score must keep its check
- * step. Asked once, on the first such file. Scorers are scoring's to sync, before this.
- */
 export interface SyncWorkflowOptions {
   scopeLabel?: string;
   dryRun?: boolean;
-  scorerHasCheck: () => Promise<boolean>;
 }
 
 export interface SyncWorkflowResult {
@@ -257,7 +252,6 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
   const knowledgeRoot = getKnowledgeDir(config);
   // Asked on the first valid file: a team without workflows starts no git here.
   let reachable: Promise<ReachableRevision | undefined> | undefined;
-  let scorerHasCheck: Promise<boolean> | undefined;
   const checked: Checked[] = [];
   const rawCandidates: Array<{ stem: string; relativePath: string; full: string; namespace: string | null }> = [];
 
@@ -433,7 +427,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       continue;
     }
 
-    const refused = DefaultWorkflows.overrideProblems(relativePath, resolved.definition, { scorerHasCheck: await (scorerHasCheck ??= options.scorerHasCheck()) });
+    const refused = await DefaultWorkflows.overrideProblems(relativePath, resolved.definition, config);
 
     if (refused.length > 0) {
       checked.push({ stem, relativePath, diagnostics: refused });
@@ -855,8 +849,7 @@ export async function loadWorkflowBundle(config: LocalConfig, name: string): Pro
  */
 export async function loadWorkflowBundleAt(config: LocalConfig, name: string, revision: string): Promise<WorkflowBundle | { failed: string }> {
   return withTeamRevision(config, revision, async (at) => {
-    // The caller compares this bundle with the one the run started with, which that machine's pull checked against its scorers.
-    await syncWorkflowDefinitions(at, { scopeLabel: `team commit ${revision.slice(0, 7)}`, scorerHasCheck: () => Promise.resolve(false) });
+    await syncWorkflowDefinitions(at, { scopeLabel: `team commit ${revision.slice(0, 7)}` });
 
     return loadWorkflowBundle(at, name);
   });

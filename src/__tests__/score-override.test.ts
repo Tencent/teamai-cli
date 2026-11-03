@@ -21,12 +21,14 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function teamWith(files: Record<string, string>): LocalConfig {
+function teamWith(files: Record<string, string>, scorers: Record<string, string> = {}): LocalConfig {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-score-override-'));
   dirs.push(root);
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+  fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), body);
+  for (const [name, body] of Object.entries(scorers)) fs.writeFileSync(path.join(knowledge, 'scorers', `${name}.md`), body);
   return { repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
 }
 
@@ -37,8 +39,8 @@ function shippedWith(from: string, to: string): string {
 }
 
 /** Pulls `files`; the codes of what pull refused, and where teamai-score comes from after it. */
-async function pulled(files: Record<string, string>): Promise<{ codes: Array<string | undefined>; refused: string[]; source: string | undefined; warned: string[] }> {
-  const config = teamWith(files);
+async function pulled(files: Record<string, string>, scorers: Record<string, string> = {}): Promise<{ codes: Array<string | undefined>; refused: string[]; source: string | undefined; warned: string[] }> {
+  const config = teamWith(files, scorers);
   const warn = vi.spyOn(log, 'warn');
   const result = await syncScorersThenWorkflows(config);
   const source = (await listCachedWorkflows(config)).find(({ definition }) => definition.name === 'teamai-score')?.source;
@@ -113,6 +115,16 @@ describe('a team teamai-score.yaml', () => {
   it('says where the publish step must publish', async () => {
     expect((await pulled({ 'teamai-score': shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }') })).refused).toEqual([
       'workflows/teamai-score.yaml:1: field "steps.score.publish": step "score.publish" runs teamai score publish without deliver: publish in workspace: { team: { branch: teamai-reports } }, where every member\'s labels are. Give it both, as teamai\'s default teamai-score does',
+    ]);
+  });
+
+  it('may drop its check step until a scorer of the team has a check', async () => {
+    const renamed = SHIPPED.replace('- id: check\n', '- id: verify\n').replaceAll('steps.check.', 'steps.verify.').replace('needs: [evidence, check]', 'needs: [evidence, verify]');
+    const scorer = (extra: string) => `---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 1\n${extra}---\nJudge the work.\n`;
+
+    expect(await pulled({ 'teamai-score': renamed }, { clarity: scorer('') })).toMatchObject({ codes: [], source: 'team' });
+    expect((await pulled({ 'teamai-score': renamed }, { delivered: scorer('check: { run: npm test, protect: [test] }\n') })).refused).toEqual([
+      'workflows/teamai-score.yaml:1: field "steps": drops step score.check, which every label of teamai\'s default teamai-score goes through while a scorer here has a check. Keep it',
     ]);
   });
 

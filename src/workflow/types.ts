@@ -1,6 +1,6 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
-import type { RunOrigin } from '../default-workflows.js';
+import type { ContractCode, RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
 import type { TeamPin } from './team-pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
@@ -382,17 +382,12 @@ export interface WorkflowDiagnostic {
    *   changed.
    * `alias_conflict`: another workflow has the same alias, or takes it as its name. The workflow is cached and starts by
    *   name; only the alias starts nothing.
-   * `default_override_alias`, `score_override_*`: a team file that would replace a default its contract guards breaks
-   *   that contract (`DefaultWorkflows.overrideProblems`); teamai's default runs, never an older team copy.
-   * `judging_scored`: a step runs teamai-score or teamai-finished-sessions and lists scorers, so the judging would be
-   *   judged; the kept copy would judge it too.
+   * `ContractCode`: a team file breaks the contract of a default it replaces or runs (`DefaultWorkflows.overrideProblems`);
+   *   teamai's default runs, never an older team copy.
    */
   code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_role' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict'
-    | 'default_override_alias' | 'judging_scored' | ScoreOverrideCode;
+    | ContractCode;
 }
-
-/** Why pull refuses a team teamai-score.yaml, one code per part of its contract (`src/scorers/score-override.ts`). */
-export type ScoreOverrideCode = 'score_override_contract' | 'score_override_command' | 'score_override_workflow_step' | 'score_override_prompt' | 'score_override_confined_dir' | 'score_override_judge_prompt' | 'score_override_step_missing' | 'score_override_publish';
 
 export type StepOutcome = 'success' | 'failed' | 'released';
 
