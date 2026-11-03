@@ -465,7 +465,7 @@ describe('routing on an arm that never receives a covered skill', () => {
    * The record of one repetition of task `fix`, which covers skills/dev/auth, on `arms`, each trial's prompt observed
    * loading no skill, with `withheldFrom` the arms plan found the skill's path withheld from.
    */
-  async function routingOf(arms: string, withheldFrom: string[]): Promise<Record<string, Record<string, string> | undefined>> {
+  async function routingOf(arms: string, withheldFrom: string[]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-table-'));
     dirs.push(root);
     const config = benchmarkRunConfig(root);
@@ -493,17 +493,25 @@ describe('routing on an arm that never receives a covered skill', () => {
     // As plan resolves skills/dev/auth to the skill auth, withheld from the arms whose selection pull leaves it out of.
     Object.assign(fix, { coversSkills: ['auth'], ...(withheldFrom.length > 0 ? { coversWithheldFrom: [withheldFrom] } : {}) });
 
-    return Object.fromEntries(benchmarkRecord(run, planned.found).trials.map(({ arm, routing }) => [arm, routing]));
+    const record = benchmarkRecord(run, planned.found);
+
+    return { routing: Object.fromEntries(record.trials.map(({ arm, routing }) => [arm, routing])), tasks: record.tasks };
   }
 
   it("records no routing on an arm whose role pull leaves the covered skill out of, and keeps the other arm's", async () => {
-    const routing = await routingOf('  - name: dev\n    role: dev\n  - name: ops\n    role: ops\n', ['ops']);
+    const { routing } = await routingOf('  - name: dev\n    role: dev\n  - name: ops\n    role: ops\n', ['ops']);
 
     expect(routing).toEqual({ dev: { auth: 'missed' }, ops: undefined });
   });
 
+  it('carries the arms each covered path is withheld from onto the record, so a table can pick an arm that receives it', async () => {
+    const { tasks } = await routingOf('  - name: ops\n    role: ops\n  - name: dev\n    role: dev\n', ['ops']);
+
+    expect(tasks.map(({ id, covers, coversWithheldFrom }) => ({ id, covers, coversWithheldFrom }))).toEqual([{ id: 'fix', covers: ['skills/dev/auth'], coversWithheldFrom: [['ops']] }]);
+  });
+
   it("records no routing on an arm that runs without the covered skill's definition file, and keeps it without another file", async () => {
-    const routing = await routingOf('  - name: pulled\n  - name: no-definition\n    team: { without: [skills/dev/auth/SKILL.md] }\n  - name: no-readme\n    team: { without: [skills/dev/auth/README.md] }\n', []);
+    const { routing } = await routingOf('  - name: pulled\n  - name: no-definition\n    team: { without: [skills/dev/auth/SKILL.md] }\n  - name: no-readme\n    team: { without: [skills/dev/auth/README.md] }\n', []);
 
     expect(routing).toEqual({ 'pulled': { auth: 'missed' }, 'no-definition': undefined, 'no-readme': { auth: 'missed' } });
   });

@@ -482,14 +482,16 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
 
   paths.forEach((path) => {
     const skill = nameOf(path);
+    // The arms whose clone did not receive the path, as plan read it; none on a record from before plan kept them.
+    const withheld = new Set(tasks.flatMap(({ covers, coversWithheldFrom }) => (covers ?? []).flatMap((covered, index) => (covered === path ? coversWithheldFrom?.[index] ?? [] : []))));
     // One table per arm that runs without exactly this path; a covered path no arm leaves out still shows its rows.
     const withoutArms = arms.filter(({ team }) => team.kind === 'without' && team.paths.length === 1 && team.paths[0] === path);
 
     for (const without of withoutArms.length > 0 ? withoutArms : [undefined]) {
       // The arm that leaves nothing out: the pulled arm that differs from `without` only by that, or, when no arm
-      // leaves the path out, the first pulled arm, so the rows and loads still show.
+      // leaves the path out, the first pulled arm that receives the path, so the rows and loads still show.
       const has = without === undefined
-        ? arms.find((arm) => arm.team.kind === 'pulled')
+        ? arms.find((arm) => arm.team.kind === 'pulled' && !withheld.has(arm.name))
         : arms.find((arm) => arm !== without && arm.tool === without.tool && (arm.model ?? undefined) === (without.model ?? undefined)
           && (arm.effort ?? undefined) === (without.effort ?? undefined) && (arm.role ?? undefined) === (without.role ?? undefined)
           && (arm.workflow?.sourceHash ?? undefined) === (without.workflow?.sourceHash ?? undefined) && arm.team.kind === 'pulled');

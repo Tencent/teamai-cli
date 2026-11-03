@@ -54,6 +54,8 @@ export const BenchmarkRecordSchema = z.object({
     /** The team repo paths the task covers, each listed once, sorted; absent when it covers none. */
     covers: z.array(z.string().min(1)).nonempty().optional(),
     coversSkills: z.array(z.string().min(1).nullable()).nonempty().optional(),
+    /** Aligned with `covers`: the arms whose clone did not receive that path, as plan read it; absent on older records and when every arm received each path. */
+    coversWithheldFrom: z.array(z.array(z.string())).nonempty().optional(),
   })),
   arms: z.array(z.object({
     name: z.string(), tool: z.string(), model: z.string().optional(), alias: z.string().optional(), effort: z.string().optional(),
@@ -149,7 +151,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     limits: plan.limits,
     baselineTeamRevision: plan.baselineTeamRevision,
     scorers: plan.scorers,
-    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined })),
+    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]) })),
     arms: plan.arms,
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
