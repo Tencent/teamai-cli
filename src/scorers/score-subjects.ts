@@ -16,6 +16,7 @@ import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import { RunScorers, type RunScorerPins } from './run-scorers.js';
 import { isSampled } from './sampling.js';
 import { markFacts, type Refusal } from './score-plan.js';
+import { ScoreStage } from './score-stage.js';
 import { ciStage, passOf } from './scoring-stages.js';
 import { Subject } from './subject.js';
 import { SCORE_WORKFLOW } from './judging-workflows.js';
@@ -164,7 +165,7 @@ export const ScoreSubjects = {
 
   /**
    * The subjects automatic judging starts again, once each, sorted: those whose mark is a lapse, or waits on CI that has
-   * since finished, and the passes no teamai-score run planned, of each run inside its 14 days.
+   * since finished or outwaited the ci step's `--wait`, and the passes no teamai-score run planned, of each run inside its 14 days.
    */
   async lapsed(config: LocalConfig, now: string): Promise<string[]> {
     const facts = markFacts(config, now);
@@ -184,7 +185,7 @@ export const ScoreSubjects = {
         if ('error' in found) continue;
         const ci = await ciStage(found.run, key.subject.subject, passOf(found.run, key.subject.subject));
 
-        if (ci.kind === 'pending') continue;
+        if (ci.kind === 'pending' && !await ScoreStage.isCiWaitOver(config, ci.head, now)) continue;
       }
 
       list.add(Subject.format(key.subject));

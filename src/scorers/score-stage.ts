@@ -5,7 +5,8 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { readFileIfExists, writeFileAtomic } from '../utils/fs.js';
+import type { LocalConfig } from '../types.js';
+import { writeFileAtomic } from '../utils/fs.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { STAGES, type Stage } from './definition.js';
 import { readRecord, rubricsOf, type GroupRecord } from './evidence-dir.js';
@@ -38,8 +39,13 @@ const readStage = (file: string) => readRecord(file, StageRecordSchema);
 /** The CI verdict of each delivered commit this run read, so its groups read CI once. */
 const ciCacheFile = (attempt: ScoreAttempt, head: string) => path.join(path.dirname(attempt.dir), 'ci', `${head}.json`);
 
-/** When this machine first saw the CI of a delivered commit pending: `--wait` counts from then. */
-const pendingSinceFile = (attempt: ScoreAttempt, head: string) => path.join(scoresDir(attempt.config), 'ci-pending', head);
+/**
+ * When this machine first saw the CI of a delivered commit pending, which `--wait` counts from, and when the last ci
+ * step's `--wait` passes, which `score subjects --lapsed` reads.
+ */
+const CiWaitSchema = z.object({ since: z.string(), until: z.string() });
+
+const ciWaitFile = (config: LocalConfig, head: string) => path.join(scoresDir(config), 'ci-pending', head);
 
 async function cachedCi(attempt: ScoreAttempt, read: () => Promise<CiVerdict>, head: string | undefined): Promise<CiVerdict> {
   if (head === undefined) return read();
@@ -55,12 +61,12 @@ async function cachedCi(attempt: ScoreAttempt, read: () => Promise<CiVerdict>, h
 
 /** A pending CI past `waitMs` since this machine first saw it pending reads as no CI, so the judge decides without it. */
 async function pastWait(attempt: ScoreAttempt, head: string, waitMs: number, now: string): Promise<boolean> {
-  const file = pendingSinceFile(attempt, head);
-  const since = await readFileIfExists(file);
+  const file = ciWaitFile(attempt.config, head);
+  const since = (await readRecord(file, CiWaitSchema))?.since ?? now;
+  const until = new Date(Date.parse(since) + waitMs).toISOString();
+  await writeFileAtomic(file, JSON.stringify({ since, until }));
 
-  if (since === null) await writeFileAtomic(file, now);
-
-  return Date.parse(since ?? now) + waitMs <= Date.parse(now);
+  return Date.parse(until) <= Date.parse(now);
 }
 
 function outputOf(record: StageRecord): StageOutput {
@@ -132,6 +138,13 @@ export const ScoreStage = {
     await writeFileAtomic(recordFile(dir, stage), JSON.stringify(record));
 
     return answered(outputOf(record));
+  },
+
+  /** Whether the pending CI of delivered commit `head` has waited past the `--wait` the last ci step gave it. */
+  async isCiWaitOver(config: LocalConfig, head: string, now: string): Promise<boolean> {
+    const wait = await readRecord(ciWaitFile(config, head), CiWaitSchema);
+
+    return wait !== undefined && Date.parse(wait.until) <= Date.parse(now);
   },
 
   /** The records the group's stages wrote, in the order they decide. */

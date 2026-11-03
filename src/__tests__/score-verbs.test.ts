@@ -758,13 +758,15 @@ interface Walk {
   fake?: Record<string, ScoreVerbAnswer>;
   /** The checkout of teamai-reports each publish step runs in; a fresh one at an empty tip by default. */
   tip?: string;
+  /** The ci step's `--wait`; 2h, as shipped, by default. */
+  wait?: string;
 }
 
 /**
  * Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step
  * path, and what the engine answered when the run ended.
  */
-async function walk(config: LocalConfig, subject: string, { judge, confinedRecorded = true, inputs = {}, startedBy = 'cli', fake = {}, tip }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
+async function walk(config: LocalConfig, subject: string, { judge, confinedRecorded = true, inputs = {}, startedBy = 'cli', fake = {}, tip, wait = '2h' }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const answers = new Map<string, ScoreVerbAnswer>();
   const items = (index: string) => {
@@ -785,7 +787,7 @@ async function walk(config: LocalConfig, subject: string, { judge, confinedRecor
     const answer: ScoreVerbAnswer = fake[id] ?? (id === 'plan'
       ? await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, taken.ctx)
       : id === 'evidence' ? await ScoreVerbs.evidence({ subject: item?.subject, scorers: item?.scorers }, taken.ctx)
-        : id === 'check' || id === 'ci' || id === 'protected' ? await ScoreVerbs.stage({ stage: id, evidence: dir, wait: '2h' }, taken.ctx)
+        : id === 'check' || id === 'ci' || id === 'protected' ? await ScoreVerbs.stage({ stage: id, evidence: dir, wait }, taken.ctx)
           : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1.' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
             : id === 'label' ? await ScoreVerbs.label({ evidence: dir, answer: judged?.ok ? JSON.stringify(judged.output.answer) : '', judge: judged === undefined ? '' : judged.ok ? 'success' : 'failed' }, taken.ctx)
               : id === 'write' ? await ScoreVerbs.write({ evidence: dir }, taken.ctx)
@@ -1082,6 +1084,18 @@ describe('score subjects', () => {
     expect(await lapsed()).toEqual({ ok: true, output: { list: ['session:claude-code:one'] } });
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'passed' });
     expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${runId}:change:1`, 'session:claude-code:one'] } });
+  });
+
+  it('lists a pass whose CI is still pending once the ci step\'s --wait has passed, so the next run judges it without CI', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const runId = await deliveredRun(config);
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
+    const { answers } = await walk(config, `run:${runId}:change:1`, { wait: '30m' });
+    const lapsed = (now: string) => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now });
+
+    expect(answers.get('score[0].label')).toMatchObject({ ok: true, output: { labels: [{ code: 'ci_pending' }] } });
+    expect(await lapsed('2026-11-03T10:29:59.999Z')).toEqual({ ok: true, output: { list: [] } });
+    expect(await lapsed('2026-11-03T10:30:00.000Z')).toEqual({ ok: true, output: { list: [`run:${runId}:change:1`] } });
   });
 
   it('lists a pass of an ended run inside its 14 days that no teamai-score run planned, for a scorer that samples it', async () => {
