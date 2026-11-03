@@ -371,6 +371,15 @@ export function runCopyBranch(runId: string): string {
   return `teamai/${runId}/_run`;
 }
 
+/** The branch of the copy the run opened, as its workflow's header says `workspace: new`, when the run left commits on it. */
+export function changedRunCopy(run: Pick<RunState, 'id' | 'definition' | 'copies' | 'base'>): string | undefined {
+  if (run.definition.workspace !== 'new') return undefined;
+  const branch = runCopyBranch(run.id);
+  const commit = run.copies?.[branch]?.commit;
+
+  return commit === undefined || commit === run.base?.commit ? undefined : branch;
+}
+
 /** What finding a step's workspace reads of a run: its definitions, and the pass of each step instance. */
 type StepTree = Pick<RunState, 'definition' | 'workflows'> & { steps: readonly { id: string; pass?: number; item?: unknown }[] };
 

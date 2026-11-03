@@ -14,7 +14,7 @@ import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retryStep } from './workflow/run-controls.js';
-import { isIsolated, runCopyBranch } from './workflow/workspace.js';
+import { changedRunCopy, isIsolated } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -93,11 +93,10 @@ const DoneRunSchema = z.object({ run: z.string() });
 async function nameRunCopy(config: LocalConfig, runId: string): Promise<void> {
   const run = await readRun(config, runId);
 
-  if (run === 'missing' || run === 'corrupt' || run.definition.workspace !== 'new') return;
-  const branch = runCopyBranch(run.id);
-  const commit = run.copies?.[branch]?.commit;
+  if (run === 'missing' || run === 'corrupt') return;
+  const branch = changedRunCopy(run);
 
-  if (commit === undefined || commit === run.base?.commit) return;
+  if (branch === undefined) return;
   log.info(`Run ${run.id} left its changes on branch ${branch}. Bring them in with: git merge ${branch}`);
 }
 
