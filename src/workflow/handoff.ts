@@ -845,10 +845,9 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
   return (id: string): boolean => done(id);
 }
 
-/** What a run carries: its definitions, the steps it settled for good, and its status. */
+/** What a run carries: its definitions and its status. */
 export interface CarriedRun extends Definitions {
   source: WorkflowSource;
-  settled: string[];
   status: RunStatus;
 }
 
@@ -863,7 +862,7 @@ export async function carriedRun(config: LocalConfig, runId: string, { published
   if (stored === 'corrupt') return refused(runUnreadable(runId));
 
   const local = stored === 'missing' ? undefined
-    : { definition: stored.definition, workflows: stored.workflows ?? {}, source: DefaultWorkflows.sourceOfRun(stored), settled: settledSteps(stored), status: stored.status };
+    : { definition: stored.definition, workflows: stored.workflows ?? {}, source: DefaultWorkflows.sourceOfRun(stored), status: stored.status };
 
   if (local && !claim) return ok(local);
 
@@ -875,7 +874,7 @@ export async function carriedRun(config: LocalConfig, runId: string, { published
   const definitions = await definitionsOf(config, origin.value);
 
   return definitions.ok
-    ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status })
+    ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), status: origin.value.status })
     : definitions;
 }
 

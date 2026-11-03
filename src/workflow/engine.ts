@@ -331,8 +331,14 @@ function stepArgument(step: string): string {
   return /^[A-Za-z0-9_.-]+$/.test(step) ? step : `'${step}'`;
 }
 
-function waitingHitl(run: RunState) {
-  const state = run.steps.find((step) => step.status === 'waiting');
+/** The first gate of `run` that waits, as a driver with HITL is asked it; with `byAgent`, only one an agent may answer. */
+function waitingHitl(run: RunState, { byAgent }: { byAgent: boolean }) {
+  const state = run.steps.find((step) => {
+    const hitl = step.status === 'waiting' ? locateStep(run, step.id)?.step.hitl : undefined;
+
+    return hitl !== undefined && !(byAgent && onlyPersonAnswers(hitl, { autoApprove: true }));
+  });
+
   const located = state && locateStep(run, state.id);
 
   if (!state || !located?.step.hitl) return undefined;
@@ -367,9 +373,10 @@ function answerOptionalGates(run: RunState, now: string): boolean {
 }
 
 /**
- * How a driver without HITL hands a step only a person can take to one. `offers`: it offers the run to a person, so the
- * step waits, held for `hitl` as an interactive step is. `unoffered`: it could not, for `reason`, so the step fails
- * `hitl_required` saying so. A driver that hands nothing over sends none, and the step fails `hitl_required`.
+ * How a driver nobody attends hands a step only a person can take to one: a driver without HITL, or one whose HITL is an
+ * agent's, which answers optional gates but takes no step only a person can. `offers`: it offers the run to a person, so
+ * the step waits, held for `hitl` as an interactive step is. `unoffered`: it could not, for `reason`, so the step fails
+ * `hitl_required` saying so. A driver without HITL that hands nothing over sends none, and the step fails `hitl_required`.
  */
 export type PersonHandoff = { kind: 'offers' } | { kind: 'unoffered'; reason: string };
 
@@ -380,6 +387,24 @@ function personRequired(run: string, step: string, unoffered: string | undefined
   return unoffered === undefined
     ? { code: 'hitl_required', message: `Step "${step}" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it, then resume the run where a person answers, from a terminal in an attended run (TEAMAI_MODE=attended, or neither TEAMAI_MODE nor CI set): ${retry}` }
     : { code: 'hitl_required', message: `Step "${step}" needs a person, and run ${run} could not be offered to one: ${unoffered}. Its state is on this machine. Retry the step here, then resume the run where a person answers: ${retry}` };
+}
+
+/** Fails each waiting step of `run` whose answer only a person gives, as a driver with an agent's HITL that could not offer the run to one, for `reason`. */
+function failForPerson(run: RunState, reason: string): boolean {
+  const definitionOf = stepDefinitions(run);
+  let changed = false;
+
+  for (const state of run.steps) {
+    const hitl = state.status === 'waiting' ? definitionOf(state.id)?.hitl : undefined;
+
+    if (!hitl || !onlyPersonAnswers(hitl, { autoApprove: true })) continue;
+    const failure = personRequired(run.id, state.id, reason);
+    log.warn(failure.message);
+    failStep(state, failure, run.revision);
+    changed = true;
+  }
+
+  return changed;
 }
 
 function answerWithoutHitl(run: RunState, now: string, { autoApprove, handoff }: { autoApprove: boolean; handoff: PersonHandoff | undefined }): boolean {
@@ -1783,7 +1808,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     const before = JSON.stringify(run);
 
     const context: OfferContext = {
-      can, allow: config.workflows?.allow ?? {}, facts: env.facts, prepare: options.prepare === true,
+      // The HITL of a driver nobody attends is its agent's, which works in no interactive step: only a person does.
+      can: can.hitl === true && options.handoff !== undefined ? { ...can, hitl: false } : can, allow: config.workflows?.allow ?? {}, facts: env.facts, prepare: options.prepare === true,
       // Admitted workflows too: their own steps' keys are withheld from the steps that do not require them.
       runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {}), ...Object.values(run.admitted ?? {}).map(({ definition }) => definition)]),
     };
@@ -1847,8 +1873,10 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     if (older) return { save: false, envelope: error('run_unreadable', older) };
     const { handoff } = options;
     const isAutoApproved = options.autoApprove ?? config.workflows?.auto_approve === true;
-    // What a driver without HITL that offers the run to a person is told it waits for: the answers only a person gives.
-    const personHolds = (): Held[] => (can.hitl || handoff?.kind !== 'offers' ? [] : waitingForPerson(run, { autoApprove: isAutoApproved }));
+    // What a driver nobody attends that offers the run to a person is told it waits for: the answers only a person gives.
+    // An agent's HITL answers every other gate, as auto-approve would.
+    const personHolds = (): Held[] => (handoff?.kind === 'offers' ? waitingForPerson(run, { autoApprove: can.hitl === true || isAutoApproved }) : []);
+    const byAgent = can.hitl === true && handoff !== undefined;
 
     for (;;) {
       // Ends reached through reports, and deadlines passed, apply before an open lease is handed back, so a restarted
@@ -1874,12 +1902,14 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       if (can.hitl && options.autoApprove === true && answerOptionalGates(run, now)) continue;
 
       if (options.canTakeLease !== false && !can.hitl && answerWithoutHitl(run, now, { autoApprove: isAutoApproved, handoff })) continue;
+
+      if (options.canTakeLease !== false && byAgent && handoff?.kind === 'unoffered' && failForPerson(run, handoff.reason)) continue;
       // An open lease the driver does not list is handed back before another lease is issued, as a restarted driver expects.
       const leased = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !running.has(step.lease.attempt));
 
       if (!leased) {
         if (options.canTakeLease === false || 'inProgress' in result) {
-          const hitl = can.hitl ? waitingHitl(run) : undefined;
+          const hitl = can.hitl ? waitingHitl(run, { byAgent }) : undefined;
 
           return hitl ? answer({ hitl }) : wait(undefined, personHolds());
         }

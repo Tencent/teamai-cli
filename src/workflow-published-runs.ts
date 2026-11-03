@@ -11,7 +11,7 @@ import type { WorkflowEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
 import { describeWorkflow, type WorkflowDescription } from './workflow/describe.js';
-import { canFor, ceilingOf, isLeft, listOf, localReason, personClauses, stepNeeds } from './workflow/drivers/skill/skill-driver.js';
+import { canFor, ceilingOf, isLeft, listOf, localReason, personClauses } from './workflow/drivers/skill/skill-driver.js';
 import { launchToolFor } from './workflow/drivers/local/local-driver.js';
 import { memberTools, type MemberTool } from './tool-launch/call.js';
 import { executableOf, type LaunchTool } from './tool-launch/tools.js';
@@ -42,14 +42,13 @@ export interface Lack {
 export interface Offer {
   at: string;
   /**
-   * What needs a person before `taker` can go on, a clause each; empty when a runner can take the run. For the local
-   * driver, the steps ready now in the published state that only a person can take, such as an approval the run was
-   * handed back at. For the skill driver, whose unattended resume refuses them, every step left that may need one.
+   * What needs a person before `taker` can go on, a clause each; empty when a runner can take the run: the steps ready
+   * now in the published state that only a person can take, such as an approval the run was handed back at.
    */
   needs: string[];
   /**
-   * The steps the run has not settled for good that may need a person, whether or not the run reaches them. A local
-   * runner takes the run anyway, and hands it back to a person if it reaches one.
+   * The steps the run has not settled for good that may need a person, whether or not the run reaches them. A runner
+   * takes the run anyway, and hands it back to a person if it reaches one.
    */
   mayNeed: string[];
   /** What those steps need of the machine that runs them, whichever it is: the env keys they require, and the prompt steps among them, which run on a tool. */
@@ -137,7 +136,7 @@ async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapsho
 
 /**
  * Offered run `snapshot` as `taker` finds it, judged from the run's own workflows by the rules a resume applies: the
- * steps the run has not settled for good that need a person, as the skill driver's unattended resume counts them; what
+ * steps ready now that only a person can take, and those left that may need one; what
  * those steps use of a machine, and what of it this one lacks, its env and, by `toolLacksOf`, its prompt tools; the
  * run's `invoke` for the caller; and, for the skill driver, a local route.
  */
@@ -153,15 +152,9 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
 
   const settled = new Set(settledSteps({ definition, workflows, steps: snapshot.steps }));
 
-  // The skill driver's unattended session answers optional gates as auto-approve does (R19, R26).
+  // The skill driver's session answers every optional gate: its agent, or auto-approve in an unattended run (R19, R26).
   const isAutoApproved = taker.driver === 'skill' || (taker.autoApprove ?? config.workflows?.auto_approve === true);
-
-  // The skill driver keeps the static check: it declares HITL in every host profile, so a gate it reaches waits for the
-  // person's answer in its session (D10), and it has no row that offers the run back to a person. An unattended session
-  // that took a run whose person step is only possible would wait there for nobody, so its resume refuses it (R24).
-  const needs = taker.driver === 'skill'
-    ? stepNeeds(description, settled)
-    : personNeeds(personSteps(handedRun(snapshot, definitions.value), new Date().toISOString(), { autoApprove: isAutoApproved }));
+  const needs = personNeeds(personSteps(handedRun(snapshot, definitions.value), new Date().toISOString(), { autoApprove: isAutoApproved }));
 
   const { facts } = description;
 

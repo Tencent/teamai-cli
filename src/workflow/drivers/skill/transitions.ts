@@ -5,7 +5,7 @@
  */
 import type { RunMode } from '../../../launch-context.js';
 import type { ToolId } from '../../../tools.js';
-import type { Judging, RunReadied, RunVersion } from '../../protocol.js';
+import type { Judging, PersonHandoff, RunReadied, RunVersion } from '../../protocol.js';
 import type { EnvScope } from '../../requirements.js';
 import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
@@ -33,7 +33,7 @@ export const TRANSITIONS = [
   { id: 'R4', state: 'none', input: 'describe', guard: 'R27 does not apply, and nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
   { id: 'R23', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1 and R16 do not apply, and the definition has a local route, as R2\'s', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the local route\'s reason, no literal: nobody is there to run the local driver' },
-  { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R23 do not apply, and `attendedReason` names what needs a person: `invoke: ask`, an interactive step, a required approval, or a choice without a default', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
+  { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R23 do not apply, and `attendedReason` names what needs a person before the run starts: `invoke: ask`. A step only a person can take needs none: D28 hands the run to one when it reaches it', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
   { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R23, R17 and R27 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
   { id: 'R27', state: 'none', input: 'describe', guard: 'the session names no tool, the definition has a step whose model or judging needs one (`needsTool`), and R1, R16, R2, R23 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: tool` with the reason, the describe literal with `--tools default=\'{tool}\'` for the agent to fill, and the ids of the tools teamai knows' },
   { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route or a benchmark trial; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
@@ -46,7 +46,7 @@ export const TRANSITIONS = [
   { id: 'R20', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` answers that another install owns the run (a resume without `--claim`, or a takeover), or that this machine lacks it (a takeover)', effects: 'none', next: 'unchanged', action: 'error `not_owner` or `run_not_found`, next: the `resume <run> --driver skill --claim` literal, with the `--tools default=<tool>` the resume declared, run only when the person agrees' },
   { id: 'R21', state: 'any', input: 'R19\'s input', guard: '`WorkflowClient.resume` refuses the run otherwise: teamai-reports does not hold it or moved while it was claimed, its definition cannot be read here, or its copies cannot be brought to the commits it recorded', effects: 'none', next: 'unchanged', action: 'error with the refusal\'s code and message, next null' },
   { id: 'R22', state: 'any', input: 'resume `--driver skill`, `next --takeover`', guard: 'the caller is not the session skill.json here names as the run\'s owner, and `WorkflowClient.resumeRefusal` refuses it by the `invoke` of the run\'s own definition, as a start is refused: agent evidence (a session variable, or `--driver skill` itself), and `invoke: deny`, or `invoke: ask` without `--confirmed` or in an unattended run', effects: 'none', next: 'unchanged', action: 'error `invoke_denied`, `unattended_denied` or `confirm_needed`; next: for `confirm_needed` the same call with `--confirmed`, run only when the person agrees, else null' },
-  { id: 'R24', state: 'any', input: 'R19\'s input, or `next --takeover` with skill.json here', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s, counting only the steps the run has not settled for good (succeeded or skipped, a step in `for_each` items once every item settled it or a step that holds it, and every step in a workflow or `for_each` step that settled whole; none while a workflow or step loop of the run could run them again), and its `invoke: ask`, for a run still running (one that ended needs nobody to ready it as it ended); read before the claim or the takeover, from the published run a `--claim` would install, else this machine\'s copy, so R20 and R21 come after it', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, next null; the run and its skill state stay as they were: nothing is claimed or taken over' },
+  { id: 'R24', state: 'any', input: 'R19\'s input, or `next --takeover` with skill.json here', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s, for a run still running (one that ended needs nobody to ready it as it ended); read before the claim or the takeover, from the published run a `--claim` would install, else this machine\'s copy, so R20 and R21 come after it', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, next null; the run and its skill state stay as they were: nothing is claimed or taken over' },
   { id: 'R26', state: 'any', input: 'R24\'s input, with skill.json here that R19 does not replace', guard: 'run mode `unattended`, R8 and R24 do not apply, and the skill.json\'s run mode is `attended`', effects: 'its run mode becomes `unattended`, and its HITL mode that of `--hitl` or `--auto-approve`, else `auto-approve`', next: 'unchanged', action: 'the S row of the call' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
   { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`, or `none` for a run without a prompt step, which asked it only for its judge; on `h4`, which starts no child agent, drop `sessionJudge`', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
@@ -57,7 +57,7 @@ export const TRANSITIONS = [
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`', next: 'drive', action: '' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued or placing', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
   { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
@@ -73,6 +73,9 @@ export const TRANSITIONS = [
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
+  { id: 'D28', state: 'drive', input: 'reply wait, before D13 to D15', guard: 'run mode `unattended`, it lists steps held for `hitl`, and no attempt or judge is open', effects: '`WorkflowClient.offer`: publish the run on teamai-reports, offered, from the run\'s checkout', next: 'drive', action: 'D29 or D30 by the offer\'s answer' },
+  { id: 'D29', state: 'drive', input: 'D28\'s offer answered `offers`', guard: '', effects: 'none', next: 'drive', action: '`person why:offered` naming those steps and the person\'s `teamai workflow resume <run> --claim` literal; waiting held; no `then`' },
+  { id: 'D30', state: 'drive', input: 'D28\'s offer answered `unoffered`', guard: '', effects: 'engine `next` as D1, with `handoff: unoffered` and the reason, so each of those steps fails `hitl_required` saying why the run could not be offered', next: 'drive', action: 'the reply\'s row' },
   { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end; `branch` from that read, when the end is `succeeded`', next: 'done', action: '`done {outcome, failure, prs, branch, judging, score}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
@@ -262,6 +265,8 @@ export interface TurnAnswer {
   events: 'unseen' | 'none';
   after: 'poll' | 'wake' | 'none';
   quiet: boolean;
+  /** The steps the run was offered to a person at, which the turn names. */
+  offered?: string[];
 }
 
 /** A row that moves the run to `state`. */
@@ -563,6 +568,8 @@ interface TickRequest {
   running: AttemptId[];
   canTakeLease: boolean;
   autoApprove: boolean;
+  /** In run mode `unattended`: nobody answers here, so the engine holds the steps only a person can take, for the run to be offered to one. */
+  handoff?: PersonHandoff;
 }
 
 /**
@@ -595,7 +602,11 @@ export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; ver
 
   if (state.host.kind === 'pending') return { row: 'R12' };
 
-  return { row: 'D1', request: { running, canTakeLease: role === 'call' && hasSlot(state), autoApprove } };
+  const request: TickRequest = { running, canTakeLease: role === 'call' && hasSlot(state), autoApprove };
+
+  if (state.options.mode === 'unattended') request.handoff = { kind: 'offers' };
+
+  return { row: 'D1', request };
 }
 
 /**
@@ -735,6 +746,7 @@ function choicePending(state: SkillState): Answered<'R14'> {
  */
 export function replyRow(state: SkillState, input: { reply: EngineReply; at: string; version?: RunVersion }):
   | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
+  | (MovedWithEffects<'D28'> & { waiting: Waiting; offer: string[] })
   | Answered<'D17', Relayed>
   | undefined {
   if (state.done) return undefined;
@@ -756,7 +768,13 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       return { row: lease.executor === 'command' ? 'D6' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
     }
 
-    case 'wait':
+    case 'wait': {
+      const people = engine.held.filter(({ missing }) => missing.includes('hitl')).map(({ step }) => step);
+
+      if (state.options.mode === 'unattended' && people.length > 0 && state.attempts.length === 0 && !state.judging?.open) {
+        return { row: 'D28', state, effects: [], waiting: { reason: engine.reason, held: engine.held }, offer: people };
+      }
+
       if (engine.held.length > 0 && state.attempts.length === 0) {
         return { row: 'D14', state, effects: [], waiting: { reason: engine.reason, held: engine.held }, turn: { kind: 'turn', events: 'unseen', after: 'none', quiet: false } };
       }
@@ -766,6 +784,8 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       }
 
       return { row: 'D15', state, effects: [], waiting: { reason: engine.reason } };
+    }
+
     case 'hitl': {
       const asked = engine.gate;
       const row = asked.required ? 'D10' : state.options.hitl === 'recommend' ? 'D12' : 'D11';
@@ -794,6 +814,26 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       return { row: 'D17', answer: { kind: 'engine-error', error: engine.error, next: 'next' } };
     default: {
       const unhandled: never = engine;
+
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * D29 and D30: what D28's offer of the run to a person at `steps` answered. D29's turn names them and ends the loop;
+ * D30 asks the engine again with the reason it could not, which fails each of them.
+ */
+export function offeredRow(input: { steps: string[]; offered: PersonHandoff }): { row: 'D29'; turn: TurnAnswer } | { row: 'D30'; handoff: PersonHandoff } {
+  const { steps, offered } = input;
+
+  switch (offered.kind) {
+    case 'offers':
+      return { row: 'D29', turn: { kind: 'turn', events: 'unseen', after: 'none', quiet: false, offered: steps } };
+    case 'unoffered':
+      return { row: 'D30', handoff: offered };
+    default: {
+      const unhandled: never = offered;
 
       return unhandled;
     }

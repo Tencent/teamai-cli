@@ -2921,6 +2921,29 @@ steps:
     expect(await readRun(runner.config, runId)).toMatchObject({ steps: [{ id: 'build', status: 'succeeded' }, { id: 'stuck', answer: { choice: 'give-up', channel: 'auto_approve' } }, { id: 'pair', status: 'skipped' }] });
   });
 
+  it('lets an unattended skill session take an offered run whose person step is not ready yet, and leaves one handed back at a required approval', async () => {
+    // An agent session takes only a workflow that allows it.
+    const allowed = (yaml: string) => yaml.replace('\nsteps:', '\ninvoke: allow\nsteps:');
+    const acme = team({ 'ship-issue': allowed(SHIP_ISSUE), release: allowed(RELEASE) });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'unattended' as const }, driver: 'skill' as const, hasPerson: false };
+    const later = await startRun(alice.config, 'ship-issue', {}, { secrets: {} });
+    const laterId = 'data' in later ? String(later.data.run) : '';
+    await publishRun(alice.config, laterId, { env: {}, checkout: alice.checkout });
+    const handed = await startRun(alice.config, 'release', {}, { secrets: {} });
+    const handedId = 'data' in handed ? String(handed.data.run) : '';
+    expect(await runStep(alice, handedId)).toBe('build');
+    await publishRun(alice.config, handedId, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(runner, skill);
+    expect(runs.map((run) => [run.run, run.offer?.needs, run.offer?.mayNeed])).toEqual([
+      [laterId, [], ['pair']], [handedId, ['only a person can answer the approval at ship'], ['ship']],
+    ]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self: (await installOwner(runner.config)).id }).map((run) => run.run)).toEqual([laterId]);
+  });
+
   it('says a choice with a default may need a person for a runner without --auto-approve, and not for one with it', async () => {
     const acme = team({ 'ship-issue': SHIP_ISSUE });
     const alice = await acme.member('alice');

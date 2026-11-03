@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { packagedSkillRoots } from '../../../skill-content.js';
 import type { WorkflowDescription } from '../../describe.js';
+import { offeredToPerson } from '../../handoff.js';
 import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
@@ -138,6 +139,18 @@ export interface HandoffAction {
   run: Literal[];
 }
 
+/**
+ * The run reached `steps`, which only a person can take, in a session nobody attends, so it is offered on teamai-reports.
+ * The agent reports `message` and stops: the turn has no `then`. A person continues the run with `run`.
+ */
+export interface OfferedAction {
+  kind: 'person';
+  why: 'offered';
+  steps: string[];
+  message: string;
+  run: Literal[];
+}
+
 export type Action =
   /** The agent's own answer, once per run with prompt steps: how its host runs a child. */
   | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
@@ -147,6 +160,7 @@ export type Action =
   | GateAction
   | PersonAction
   | HandoffAction
+  | OfferedAction
   /**
    * `branch`: the branch the run left its changes on, when it worked in a copy of its own. `judging`: the judge running
    * now, on the pass of `step` that `scorers` judge. `score`: the `score --next` that leases the run's judge work to the
@@ -452,11 +466,19 @@ function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullab
   };
 }
 
+/** The run offered to a person at `steps`, and the claim that person runs. */
+function offeredOf(state: SkillState, steps: string[]): OfferedAction {
+  const claim = resumeLiteral(state.invocation, state.run, { claim: true });
+
+  return { kind: 'person', why: 'offered', steps, message: offeredToPerson(state.run, steps, claim), run: [claim] };
+}
+
 /**
  * The turn of `state` that shows `events`, with `after` as its `then` while the run drives, or an attempt or a judge of
- * it is open. A `quiet` turn carries no action; any other shows the handoff of a `waiting` that holds steps.
+ * it is open. A `quiet` turn carries no action; any other shows the run `offered` to a person at those steps, else the
+ * handoff of a `waiting` that holds steps.
  */
-export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string }): Turn {
+export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string; offered?: string[] }): Turn {
   const running = state.attempts.map((open): RunningEntry => {
     const entry: RunningEntry = { attempt: open.attempt, step: open.step, phase: open.phase };
 
@@ -466,7 +488,9 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
   });
 
   const waiting = input.waiting && !state.done && state.attempts.length === 0 ? input.waiting : undefined;
-  const handoff = waiting?.held && !input.quiet ? [handoffOf(state, { reason: waiting.reason, held: waiting.held }, input.localTool)] : [];
+
+  const handoff = input.quiet ? [] : input.offered ? [offeredOf(state, input.offered)]
+    : waiting?.held ? [handoffOf(state, { reason: waiting.reason, held: waiting.held }, input.localTool)] : [];
 
   const turn: Turn = {
     run: state.run,

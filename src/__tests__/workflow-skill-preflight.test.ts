@@ -545,16 +545,24 @@ describe('skill driver preflight in an unattended run', () => {
     } } } });
   });
 
+  it('denies an invoke: ask workflow, naming what needs the person', async () => {
+    const made = await harness({ gated: GATED });
+    expect(await made.call({ kind: 'describe', name: 'gated' }, unattended)).toEqual({ data: { describe: expect.objectContaining({
+      ask: { kind: 'denied', reason: needsPerson('gated', 'the team asks that a person agree before it starts (invoke: ask)') },
+    }) } });
+  });
+
   it.each([
     ['a required approval', 'deploy', { deploy: DEPLOY }, 'only a person can answer the approval at go-live'],
     ['an interactive step', 'draft', { draft: DRAFT }, 'write is interactive, worked with a person'],
-    ['invoke: ask', 'gated', { gated: GATED }, 'the team asks that a person agree before it starts (invoke: ask)'],
-    ['a choice without a default', 'pick', { pick: PICK }, 'the choice at target has no default, so --auto-approve leaves it to a person'],
-  ])('denies a workflow with %s, naming what needs the person', async (_case, name, workflows, needs) => {
+    ['a choice without a default', 'pick', { pick: PICK }, 'only a person can answer the choice at target'],
+  ])('starts a workflow with %s, saying the run goes to a person on teamai-reports when it reaches that step', async (_case, name, workflows, needs) => {
     const made = await harness(workflows);
-    expect(await made.call({ kind: 'describe', name }, unattended)).toEqual({ data: { describe: expect.objectContaining({
-      ask: { kind: 'denied', reason: needsPerson(name, needs) },
-    }) } });
+    expect(await made.call({ kind: 'describe', name }, unattended)).toMatchObject({ data: { describe: { ask: {
+      kind: 'start',
+      start: `teamai workflow start ${name} --driver skill --auto-approve`,
+      say: expect.stringContaining(`- Nobody attends this run, so when it reaches a step only a person can take, it is offered on teamai-reports for one to continue, and this session stops: ${needs}.`),
+    } } } });
   });
 
   it('keeps the {inputs} slot for the agent to fill from its task, and lists the inputs', async () => {
