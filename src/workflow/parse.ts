@@ -1912,7 +1912,7 @@ function outputDiagnostics(
     }
 
     const step = steps.find((candidate) => candidate.id === path.step);
-    const unavailable = step && unavailableField(path, !!step.forEach, step.hitl?.options);
+    const unavailable = step && unavailableField(path, !!step.forEach, step.hitl?.options, step.deliver === 'pr');
 
     if (unavailable) {
       diagnostics.push(at(unavailable));

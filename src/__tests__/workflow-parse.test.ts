@@ -792,6 +792,91 @@ steps:
     ]);
   });
 
+  it('reads the pull request of a step, a workflow step, each for_each item and each pass with deliver: pr, and passes it out as an output', () => {
+    expect(parse(`schemaVersion: v1alpha1
+name: build
+description: Build and deliver.
+inputs:
+  targets: [string]
+outputs:
+  pr: steps.fix.pr
+steps:
+  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          workspace: continue
+          command: node patch.js
+  - id: build
+    needs: []
+    for_each: inputs.targets
+    workspace: new
+    command: node build.js
+    deliver: pr
+  - id: bump
+    needs: []
+    workspace: new
+    command: node bump.js
+    deliver: pr
+    loop: { back_to: bump, while: "steps.bump.passes[0].pr == null", max_iterations: 2 }
+  - id: report
+    needs: [fix, build, bump]
+    if: steps.fix.pr == null || steps.bump.pr != null
+    env:
+      FIX: "{{ steps.fix.pr.url }}"
+      FIRST: "{{ steps.build.results[0].pr.url }}"
+    command: node report.js
+`)).toMatchObject({ ok: true });
+  });
+
+  it('rejects a read of the pull request of a step without deliver: pr', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Build.
+steps:
+  - id: build
+    workspace: new
+    command: node build.js
+  - id: report
+    needs: [build]
+    if: steps.build.pr != null
+    command: node report.js
+`)).toEqual([
+      { message: `${FILE}:10: field "steps[1].if": step "report" if reads steps.build.pr, but step "build" has no deliver: pr, so it has no pr` },
+    ]);
+  });
+
+  it('rejects a read of the pull request of a for_each step, whose pull requests are per item', () => {
+    const content = `${FAN.replace('    for_each: inputs.targets\n', '    for_each: inputs.targets\n    workspace: new\n    deliver: pr\n')}  - id: report
+    needs: [build]
+    if: steps.build.pr != null
+    command: node report.js
+`;
+    expect(rejected(content)).toEqual([
+      { message: `${FILE}:16: field "steps[1].if": step "report" if reads steps.build.pr, but step "build" has for_each, so its pr is in steps.build.results` },
+    ]);
+  });
+
+  it('rejects a read of a pull request field other than url', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Build.
+steps:
+  - id: build
+    workspace: new
+    command: node build.js
+    deliver: pr
+  - id: report
+    needs: [build]
+    if: steps.build.pr.number > 0
+    command: node report.js
+`)).toEqual([
+      { message: `${FILE}:11: field "steps[1].if": step "report" if reads steps.build.pr.number, which is not in a pull request: url` },
+    ]);
+  });
+
   it('reports a rejected for_each step once, not again at each read of its results', () => {
     const content = `${FAN.replace('node build.js', 'node build.js {{ item }}')}  - id: report
     needs: [build]
@@ -846,7 +931,7 @@ describe('expressions in templates', () => {
     ['a double-quoted string', '{{ filter(steps.build.results, .outcome == "failed") }}', "strings use single quotes, as in 'failed'"],
     ['= for ==', "{{ any(steps.build.results, .outcome = 'failed') }}", 'any is called as any(list, predicate)'],
     ['a field a step does not have', '{{ length(steps.build.result) }}',
-      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results or steps.<id>.branches'],
+      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
     ['a string compared with <', "{{ length(steps.build.results) < 'x' }}", "compares 'x' with <, but it is not a number"],
   ])('rejects a call with %s, with the parse error', (_case, text, message) => {
     expect(rejected(TRIAGE.replace(FIX_PROMPT, `'Fix ${text.replaceAll("'", "''")}.'`))).toEqual([
