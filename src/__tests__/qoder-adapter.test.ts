@@ -25,7 +25,7 @@ import { ADAPTER_REGISTRY } from '../session-flow/adapters/index.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 
-const SID = 'c0ffee00-0000-4000-8000-0000000000d0de';
+const SID = 'c0ffee00-0000-4000-8000-00000000d0de';
 const SUB = 'agent-01020304-0000-4000-8000-000000000099';
 
 /** Write the transcript Claude Code-shaped tools keep, plus one subagent. */
