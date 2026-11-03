@@ -1,7 +1,7 @@
 /**
  * The passes of a run that are judge work: what a judge can judge, and which of those this install judges for the
  * scorers their steps list. A feature reads a run's judge work here, from the run file alone, rather than through the
- * engine or the judge entries the engine waits on.
+ * engine.
  */
 import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
 import { stepDefinitions } from './scope.js';

@@ -398,8 +398,8 @@ export async function sweepClones(config: LocalConfig, runId?: string): Promise<
 /**
  * Stages, from its clone, the evidence the judges of each workflow step in `succeeded` read, when it runs in a clone:
  * `succeeded` holds the steps the operation about to save `run` settled `success`. Such a step settles once its last
- * step does, under the run lock, so its evidence exists before that save makes its judge entry or a dependent visible.
- * A prompt's evidence is staged by its report. Evidence already staged is kept, so a later step in the clone never
+ * step does, under the run lock, so its evidence exists before that save makes a dependent visible, or the run that
+ * judges it can start. A prompt's evidence is staged by its report. Evidence already staged is kept, so a later step in the clone never
  * overwrites it. Reading the clone stops at the run's deadline, so a large checkout never holds the run lock past it.
  */
 export async function stageSettledEvidence(config: LocalConfig, run: RunState, succeeded: readonly string[]): Promise<void> {
