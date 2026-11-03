@@ -332,7 +332,7 @@ OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claud
   // ~/.openclaw/openclaw.json
   {
     agents: { defaults: { workspace: "~/work/team-ws" } }, // teamai 把 AGENTS.md 写到这里
-    plugins: { load: { paths: ["~/.openclaw/teamai/teamai-team-hooks.mjs"] } }, // 手动加
+    plugins: { load: { paths: ["/Users/ana/.openclaw/teamai/teamai-team-hooks.mjs"] } }, // 手动加
   }
   ```
 

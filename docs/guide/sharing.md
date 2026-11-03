@@ -341,7 +341,7 @@ OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude C
   // ~/.openclaw/openclaw.json
   {
     agents: { defaults: { workspace: "~/work/team-ws" } }, // teamai writes AGENTS.md here
-    plugins: { load: { paths: ["~/.openclaw/teamai/teamai-team-hooks.mjs"] } }, // add by hand
+    plugins: { load: { paths: ["/Users/ana/.openclaw/teamai/teamai-team-hooks.mjs"] } }, // add by hand
   }
   ```
 
