@@ -12,7 +12,8 @@ import { observedEffort, observedModel, type ObservedEffort, type ObservedModel 
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV } from '../launch-context.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
 import { movedToolHome, realHost, toolHome } from '../tool-home.js';
-import { isToolId } from '../tools.js';
+import { isToolId, mcpSyntaxOf } from '../tools.js';
+import { parseJsonAs } from '../utils/json.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
@@ -253,7 +254,7 @@ function inlineEnvKey(options: { apiKey?: string } | undefined): void {
 
 async function openCodeSettings(env: NodeJS.ProcessEnv, tmp: string): Promise<string | undefined> {
   const text = await optionalFile(process.env.OPENCODE_CONFIG || path.join(toolHome('opencode'), 'opencode.json'));
-  const settings = text ? OpenCodeConfigSchema.parse(JSON.parse(text)) : {};
+  const settings = text ? OpenCodeConfigSchema.parse(parseJsonAs(text, mcpSyntaxOf('opencode', 'user'))) : {};
 
   for (const entry of Object.values(settings.provider ?? {})) inlineEnvKey(entry?.options);
 
