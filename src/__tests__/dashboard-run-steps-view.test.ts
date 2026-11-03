@@ -29,7 +29,7 @@ function render(steps: Step[], language: 'en' | 'zh-CN' = 'en'): { html: string;
 const REVISION = 'c'.repeat(40);
 const text = (html: string): string => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 const STEPS: Step[] = [
-  { step: 'plan', pass: 1, status: 'succeeded', tokens: { input: 900, output: 274 }, scores: [{ scorer: 'review-quality', label: 'partial', passed: false }],
+  { step: 'plan', pass: 1, status: 'succeeded', tokens: { input: 900, output: 274 }, scores: [{ scorer: 'review-quality', label: 'partial', score: 0.5, passed: false }],
     harness: { tool: 'claude', model: 'claude-sonnet-5-5', role: { of: 'step', names: ['spec'] }, teamRevision: REVISION } },
   { step: 'implement', pass: 1, status: 'succeeded', harness: { tool: 'claude', model: 'claude-sonnet-5-5', role: { of: 'member', names: ['frontend'] }, teamRevision: REVISION } },
 ];

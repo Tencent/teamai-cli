@@ -518,7 +518,7 @@ describe('evidence of what a run delivered', () => {
 
     const detail = await workflowRunDetail(config, 'local', runId);
 
-    expect(detail?.steps.find((step) => step.step === 'change')?.scores).toEqual([{ scorer: 'quality', label: 'partial', passed: false, decidedBy: 'protected' }]);
+    expect(detail?.steps.find((step) => step.step === 'change')?.scores).toEqual([{ scorer: 'quality', label: 'partial', score: 0.5, passed: false, decidedBy: 'protected' }]);
     expect(detail?.scoring).toEqual({ judged: 0, inputTokens: 0, outputTokens: 0 });
   });
 

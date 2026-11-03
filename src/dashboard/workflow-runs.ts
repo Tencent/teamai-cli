@@ -20,7 +20,7 @@ import { agentHarnessOf, harnessChanges, readRecordedAgent, type AgentHarness, t
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { LabelStore, type PassScore, type ScoringTotal } from '../scorers/label-store.js';
-import { RunJudging } from '../scorers/run-judging.js';
+import { RunJudging, type PassJudging } from '../scorers/run-judging.js';
 import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { benchmarkRecordFile, BenchmarkRunRecordSchema } from '../benchmark/result.js';
 import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmark/table.js';
@@ -148,6 +148,10 @@ interface StepRow {
   gate?: Gate;
   /** The labels scorers gave this pass. */
   scores?: PassScore[];
+  /** For a pass this machine judges, each scorer without a label and why. */
+  unlabelled?: PassJudging['unlabelled'];
+  /** The teamai-score runs of this pass on this machine, oldest first. */
+  scoreRuns?: PassJudging['scoreRuns'];
   /** What this pass delivered (#1387): the outcomes the page can read, a pull request only on https. */
   outcomes?: WorkOutcome[];
   /** What the pass ran as, when its record observed a tool. */
@@ -214,17 +218,11 @@ function rowOf(record: ReadRecord): RunRow {
   return row;
 }
 
-/** A pass's label as the page shows it; `decidedBy` only when a stage before the judge decided it. */
-function scoreCell({ scorer, label, passed, decidedBy }: PassScore): PassScore {
-  const cell: PassScore = { scorer, label, passed };
+/** What the page shows of judging, by `${step}#${pass}`: the labels, and on this machine why the others have none. */
+type Judging = ReadonlyMap<string, Pick<PassJudging, 'scores'> & Partial<PassJudging>>;
 
-  if (decidedBy) cell.decidedBy = decidedBy;
-
-  return cell;
-}
-
-function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, PassScore[]> | undefined, gate?: Gate): StepRow {
-  const passScores = scores?.get(`${entry.step}#${entry.pass}`);
+function stepRow(entry: StepEntry, status: string, judging: Judging | undefined, gate?: Gate): StepRow {
+  const pass = judging?.get(`${entry.step}#${entry.pass}`);
 
   const outcomes = entry.outcomes?.flatMap((outcome) => {
     const parsed = WorkOutcomeSchema.safeParse(outcome);
@@ -241,7 +239,11 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
 
   if (gate) row.gate = gate;
 
-  if (passScores) row.scores = passScores.map(scoreCell);
+  if (pass?.scores.length) row.scores = pass.scores;
+
+  if (pass?.unlabelled?.length) row.unlabelled = pass.unlabelled;
+
+  if (pass?.scoreRuns?.length) row.scoreRuns = pass.scoreRuns;
 
   if (outcomes?.length) row.outcomes = outcomes;
 
@@ -371,7 +373,7 @@ async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> 
   }
 }
 
-function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
+function localDetail(run: RunState, row: LocalRunRow, judging: Judging, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
   const live = new Map(run.steps.map((state) => [`${state.id}#${state.pass ?? 1}`, state]));
   const record = localRecord(run);
 
@@ -386,7 +388,7 @@ function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string
 
     if (answer) answered.answer = answer;
 
-    return stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), scores, gate);
+    return stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), judging, gate);
   });
 
   return { run: row, steps: withHarnessChanges(steps), scoring };
@@ -401,14 +403,13 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
 
     if (run === 'missing' || run === 'corrupt') return undefined;
 
-    const [records, scores, scoring, benchmark] = await Promise.all([
+    const [records, judging, benchmark] = await Promise.all([
       runRecordStates(config, run.status === 'running' ? [] : [run]),
-      LabelStore.ofRuns(config, [runId], { published: false }),
-      RunJudging.total(config, run, new Date().toISOString()),
+      RunJudging.of(config, run, new Date().toISOString()),
       benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
     ]);
 
-    return { ...localDetail(run, localRow(run, records), scores.get(runId), scoring), ...benchmark };
+    return { ...localDetail(run, localRow(run, records), judging.passes, judging.total), ...benchmark };
   }
 
   if (usesBranchWorktree(config)) {
@@ -427,7 +428,7 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
     benchmarkOf(path.join(getReportsDir(config), benchmarkRecordPath(runId))),
   ]);
 
-  const passes = scores.get(runId);
+  const passes = new Map([...scores.get(runId) ?? []].map(([key, labels]) => [key, { scores: labels }]));
 
   return {
     run: reportedRow(record),

@@ -222,10 +222,10 @@ describe('LabelStore', () => {
     const config = clone(origin(), 'shown');
     await LabelStore.append(config, modelLabel('2026-10-22T11:00:00.000Z', 'bad'), 'model');
     expect((await LabelStore.ofRuns(config, [runSubject.runId], { published: false })).get(runSubject.runId)?.get('review#1'))
-      .toEqual([{ scorer: 'quality', label: 'bad', passed: false }]);
+      .toEqual([{ scorer: 'quality', label: 'bad', score: 0, passed: false }]);
     await LabelStore.append(config, { ...modelLabel('2026-10-22T10:00:00.000Z', 'good'), judge: { kind: 'human' } }, 'person');
     expect((await LabelStore.ofRuns(config, [runSubject.runId], { published: false })).get(runSubject.runId)?.get('review#1'))
-      .toEqual([{ scorer: 'quality', label: 'good', passed: true }]);
+      .toEqual([{ scorer: 'quality', label: 'good', score: 1, passed: true, decidedBy: 'hand' }]);
   });
 
   it('shows the newest model label of a scorer across its rubric versions', async () => {
@@ -233,6 +233,6 @@ describe('LabelStore', () => {
     await LabelStore.append(config, modelLabel('2026-10-22T10:00:00.000Z', 'good'), 'old rubric');
     await LabelStore.append(config, { ...modelLabel('2026-10-22T11:00:00.000Z', 'bad'), rubric: { sourceHash: 'h2' } }, 'new rubric');
     expect((await LabelStore.ofRuns(config, [runSubject.runId], { published: false })).get(runSubject.runId)?.get('review#1'))
-      .toEqual([{ scorer: 'quality', label: 'bad', passed: false }]);
+      .toEqual([{ scorer: 'quality', label: 'bad', score: 0, passed: false }]);
   });
 });

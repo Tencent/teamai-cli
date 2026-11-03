@@ -600,7 +600,7 @@ describe('scoring totals', () => {
     expect(sampled.totals).toEqual(unsampled.totals);
 
     const detail = await workflowRunDetail(sampled.config, 'local', sampled.runId);
-    expect(detail?.steps).toEqual([expect.objectContaining({ step: 'review', pass: 1, scores: [{ scorer: 'quality', label: 'good', passed: true, decidedBy: 'judge' }] })]);
+    expect(detail?.steps).toEqual([expect.objectContaining({ step: 'review', pass: 1, scores: [{ scorer: 'quality', label: 'good', score: 1, passed: true, decidedBy: 'judge' }] })]);
     expect(detail?.scoring).toEqual({ judged: 1, inputTokens: 1000, outputTokens: 50 });
     expect(JSON.stringify(detail)).not.toContain('Quokka-marmalade');
     expect((await workflowRunDetail(unsampled.config, 'local', unsampled.runId))?.scoring).toEqual({ judged: 0, inputTokens: 0, outputTokens: 0 });

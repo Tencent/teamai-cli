@@ -7,6 +7,7 @@ import { knownSecrets } from '../env-resolution.js';
 import { LabelStore } from '../scorers/label-store.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { Marks, type MarkKey, type MarkOutcome } from '../scorers/marks.js';
+import { markFacts } from '../scorers/score-plan.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
@@ -75,26 +76,33 @@ async function sourceHash(config: LocalConfig, runId: string, name: string): Pro
   return pin.sourceHash;
 }
 
-/** A label of pass 1 of `review` in `runId`, as `teamai score write` appends one. */
-async function label(config: LocalConfig, runId: string, fields: { scorer: string; label: 'good' | 'bad'; decidedBy: 'judge' | 'ci' | 'check' | 'protected' } & Partial<Pick<ScoreLabel, 'judge' | 'scoredAt'>>): Promise<void> {
-  const { scorer: name, label: value, decidedBy, ...rest } = fields;
+/** A label of pass 1 of `review` in `runId`, as `teamai score write` appends one; a hand label has no `decidedBy`. */
+async function label(config: LocalConfig, runId: string, fields: { scorer: string; label: 'good' | 'bad'; decidedBy?: 'judge' | 'ci' | 'check' | 'protected' } & Partial<Pick<ScoreLabel, 'judge' | 'scoredAt'>>): Promise<void> {
+  const { scorer: name, label: value, ...rest } = fields;
   await LabelStore.append(config, {
     source: 'workflow', scorer: name, rubric: { sourceHash: await sourceHash(config, runId, name) }, label: value, score: value === 'good' ? 1 : 0, passed: value === 'good',
     judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' }, scoredAt: new Date().toISOString(),
-    subject: { runId, step: 'review', pass: 1 }, decidedBy, ...rest,
+    subject: { runId, step: 'review', pass: 1 }, ...rest,
   }, undefined);
 }
 
 const keyOf = (runId: string, name: string): MarkKey => ({ scorer: name, subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } });
 
-/** Opens `names` on pass 1 of `runId` for the score run `SCORE_RUN`, then records `outcome` for them, as plan and write do. */
-async function marked(config: LocalConfig, runId: string, names: string[], outcome?: MarkOutcome): Promise<void> {
-  const now = new Date().toISOString();
-  const facts = { now, readRun: async () => ({ ended: false, changedAt: now }) };
+/** Opens `names` on pass 1 of `runId` for the score run `scoreRun`, then records `outcome` for them, as plan and write do; a run that is not on this machine has ended. */
+async function marked(config: LocalConfig, runId: string, names: string[], outcome?: MarkOutcome, scoreRun = SCORE_RUN): Promise<void> {
+  const facts = markFacts(config, new Date().toISOString());
   const keys = names.map((name) => keyOf(runId, name));
-  expect(await Marks.open(config, { run: SCORE_RUN, demand: 'auto', groups: [{ group: names.join(','), keys }] }, facts)).toMatchObject({ status: 'done' });
+  expect(await Marks.open(config, { run: scoreRun, demand: 'auto', groups: [{ group: names.join(','), keys }] }, facts)).toMatchObject({ status: 'done' });
   if (outcome) expect(await Marks.close(config, keys, outcome, facts)).toEqual({ status: 'done' });
 }
+
+/** A teamai-score run of pass 1 of `review` in `runId` that has not ended. */
+async function scoreRunOf(config: LocalConfig, runId: string): Promise<string> {
+  const inputs = { subject: `run:${runId}:review:1`, scorers: [], label: '', batch: false, demand: 'auto' };
+  return String(data(await startRun(config, 'teamai-score', inputs, { secrets: await knownSecrets(config), startedBy: 'cli' })).run);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe('what judging a run cost', () => {
   it('counts each judge call from the labels and the failed marks, a batch\'s tokens once, and no stage decision', async () => {
@@ -109,5 +117,39 @@ describe('what judging a run cost', () => {
     await marked(config, runId, ['style'], { kind: 'failed', code: 'judge_answer_invalid' });
 
     expect((await workflowRunDetail(config, 'local', runId))?.scoring).toEqual({ judged: 3, inputTokens: 900, outputTokens: 120 });
+  });
+});
+
+describe("a pass's scorers on the run page", () => {
+  it('shows each scorer labelled, waiting for CI, judging in its score run, lapsed, failed, not sampled or not started', async () => {
+    const config = await team(['quality', 'coverage', 'delivered', 'waiting', 'judging', 'lapsed', 'style', 'rare', 'queued'], { rare: 0 });
+    const runId = await reviewedRun(config);
+    await label(config, runId, { scorer: 'quality', label: 'good', decidedBy: 'judge' });
+    await label(config, runId, { scorer: 'coverage', label: 'bad', judge: { kind: 'human' } });
+    await label(config, runId, { scorer: 'delivered', label: 'bad', decidedBy: 'ci' });
+    await marked(config, runId, ['waiting'], { kind: 'waiting' });
+    const scoreRun = await scoreRunOf(config, runId);
+    await marked(config, runId, ['judging'], undefined, scoreRun);
+    for (const gone of ['r00000000000000b1', 'r00000000000000b2', 'r00000000000000b3']) await marked(config, runId, ['lapsed'], undefined, gone);
+    await marked(config, runId, ['style'], { kind: 'failed', code: 'judge_answer_invalid' });
+    const run = await readRun(config, runId);
+    if (run === 'missing' || run === 'corrupt') throw new Error(`run ${runId} is ${run}`);
+
+    const pass = (await workflowRunDetail(config, 'local', runId))?.steps.find((step) => step.step === 'review' && step.pass === 1);
+
+    expect(pass?.scores).toEqual([
+      { scorer: 'quality', label: 'good', score: 1, passed: true, decidedBy: 'judge' },
+      { scorer: 'coverage', label: 'bad', score: 0, passed: false, decidedBy: 'hand' },
+      { scorer: 'delivered', label: 'bad', score: 0, passed: false, decidedBy: 'ci' },
+    ]);
+    expect(pass?.unlabelled).toEqual([
+      { scorer: 'waiting', state: { kind: 'waiting_ci' } },
+      { scorer: 'judging', state: { kind: 'judging', run: scoreRun, since: expect.any(String) } },
+      { scorer: 'lapsed', state: { kind: 'lapsed', lapses: 3, expiresAt: new Date(Date.parse(run.updatedAt) + 14 * DAY_MS).toISOString() } },
+      { scorer: 'style', state: { kind: 'failed', code: 'judge_answer_invalid' } },
+      { scorer: 'rare', state: { kind: 'not_sampled', samplingRate: 0 } },
+      { scorer: 'queued', state: { kind: 'queued' } },
+    ]);
+    expect(pass?.scoreRuns).toEqual([{ run: scoreRun, status: 'running' }]);
   });
 });

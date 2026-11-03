@@ -11,7 +11,7 @@ import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConf
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { scoresDir, scoresLocked } from './home.js';
-import { isStageDecider, labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
+import { isStageDecider, labelId, type Decider, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
 
 function labelsFile(config: LocalConfig): string {
   return path.join(scoresDir(config), 'labels.jsonl');
@@ -87,8 +87,11 @@ async function publishedLabels(config: LocalConfig): Promise<ScoreLabel[]> {
 /** Where `publish` left the labels. `unsupported`: the team repo has no teamai-reports branch, so they stay pending here. */
 export type LabelDelivery = { state: 'published' } | { state: 'pending' | 'unsupported'; reason: string };
 
-/** What Workflow Runs shows of a label: never its reasoning, judge, or usage. `decidedBy` is absent on labels from before #1247. */
-export type PassScore = Pick<ScoreLabel, 'scorer' | 'label' | 'passed'> & Pick<RunLabel, 'decidedBy'>;
+/**
+ * What Workflow Runs shows of a label: never its reasoning, judge, or usage. `decidedBy` is `hand` for a hand label, and
+ * absent on a model label from before #1247, which a judge decided.
+ */
+export type PassScore = Pick<ScoreLabel, 'scorer' | 'label' | 'score' | 'passed'> & { decidedBy?: Decider | 'hand' };
 
 type RunLabel = Extract<ScoreLabel, { source: 'workflow' }>;
 
@@ -99,11 +102,12 @@ export interface ScoringTotal {
   outputTokens: number;
 }
 
-/** A label as Workflow Runs shows it; `decidedBy` only when the label recorded it. */
+/** A label as Workflow Runs shows it; `decidedBy` only when it is a hand label or the label recorded it. */
 function passScoreOf(label: RunLabel): PassScore {
-  const score: PassScore = { scorer: label.scorer, label: label.label, passed: label.passed };
+  const score: PassScore = { scorer: label.scorer, label: label.label, score: label.score, passed: label.passed };
+  const decidedBy = label.judge.kind === 'human' ? 'hand' : label.decidedBy;
 
-  if (label.decidedBy) score.decidedBy = label.decidedBy;
+  if (decidedBy) score.decidedBy = decidedBy;
 
   return score;
 }
