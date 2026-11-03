@@ -685,13 +685,13 @@ Pull refuses a file that changes what a label means, and teamai's default runs i
 | Code | The file |
 |---|---|
 | `score_override_contract` | changes `inputs` or any `outputs`, drops `private: true`, or sets `invoke` to anything but `deny` |
-| `score_override_command` | runs a command other than a score verb with the arguments teamai's gives it, or gives a verb other `env` |
+| `score_override_command` | runs a command other than a score verb with the arguments teamai's gives it, gives a verb other `env`, or adds a `finally` step or a `setup` command |
 | `score_override_workflow_step` | has a `workflow:` step other than the inline `score` |
 | `score_override_prompt` | has a prompt step not confined to a directory, or one that lists `scorers` |
 | `score_override_confined_dir` | confines the judge to a directory that is not an output of a step it needs |
 | `score_override_judge_prompt` | has a judge prompt that does not read `steps.evidence.outputs.rubric` and `steps.evidence.outputs.schema` |
 | `score_override_publish` | runs `teamai score publish` without `deliver: publish` to `teamai-reports`, or publishes to another branch |
-| `score_override_step_missing` | drops `evidence`, `label`, `write`, `publish` or `settle`, or `check` while a scorer here has a check |
+| `score_override_step_missing` | drops or renames `plan`, `evidence`, `judge`, `label`, `write`, `publish` or `settle`, or `check` while a scorer here has a check |
 | `default_override_alias` | is another workflow with `alias: teamai-score` |
 
 A project runs teamai's default, or the project team's file, never a user scope's `teamai-score`, and each start from the project says so:

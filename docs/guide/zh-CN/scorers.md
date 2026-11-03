@@ -685,13 +685,13 @@ pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
 | 代码 | 该文件 |
 |---|---|
 | `score_override_contract` | 改变了 `inputs` 或任何 `outputs`，去掉了 `private: true`，或把 `invoke` 设为 `deny` 以外的值 |
-| `score_override_command` | 运行的命令不是带有 teamai 版本所给参数的 score 动词，或给动词的 `env` 不同 |
+| `score_override_command` | 运行的命令不是带有 teamai 版本所给参数的 score 动词，给动词的 `env` 不同，或添加了 `finally` 步骤或 `setup` 命令 |
 | `score_override_workflow_step` | 含有内联 `score` 以外的 `workflow:` 步骤 |
 | `score_override_prompt` | 含有不限定在目录里的提示步骤，或列出 `scorers` 的提示步骤 |
 | `score_override_confined_dir` | 把评审者限定在的目录不是它所依赖步骤的输出 |
 | `score_override_judge_prompt` | 评审提示没有读取 `steps.evidence.outputs.rubric` 和 `steps.evidence.outputs.schema` |
 | `score_override_publish` | 运行 `teamai score publish` 却没有 `deliver: publish` 到 `teamai-reports`，或发布到其他分支 |
-| `score_override_step_missing` | 去掉了 `evidence`、`label`、`write`、`publish` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
+| `score_override_step_missing` | 去掉或改名了 `plan`、`evidence`、`judge`、`label`、`write`、`publish` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
 | `default_override_alias` | 是另一个带 `alias: teamai-score` 的工作流 |
 
 项目运行 teamai 的默认版本或项目团队的文件，从不运行用户作用域的 `teamai-score`，每次从该项目启动时都会提示：
