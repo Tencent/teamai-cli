@@ -1,6 +1,6 @@
 /**
  * The passes of a run that are judge work: what a judge can judge, and which of those this install judges for the
- * scorers the run pinned. A feature reads a run's judge work here, from the run file alone, rather than through the
+ * scorers their steps list. A feature reads a run's judge work here, from the run file alone, rather than through the
  * engine or the judge entries the engine waits on.
  */
 import type { RunSubject } from '../scorers/label.js';
@@ -10,7 +10,7 @@ import { agentPassOf, agentSucceeded } from './step-state.js';
 import { parseStepPath } from './step-path.js';
 import type { RunState, WorkflowStep } from './types.js';
 
-/** A succeeded pass of a step that lists scorers this run pinned. */
+/** A succeeded pass of a step that lists scorers, by name: whether each has a valid version is the scoring module's to read. */
 export interface ScorablePass {
   subject: RunSubject;
   scorers: string[];
@@ -40,16 +40,15 @@ export function judgeablePasses(run: RunState): Array<{ pass: RunPass; definitio
 }
 
 /**
- * The passes of `run` this install may judge: judgeable passes of steps that list a scorer the run pinned. A prompt pass
+ * The passes of `run` this install may judge: judgeable passes of steps that list a scorer. A prompt pass
  * belongs to the install that settled it; a workflow pass to the install that settled its first child that has a
  * stamp. Sampling is left to the caller.
  */
 export function scoredPasses(run: RunState, install: string): ScorablePass[] {
   const all = runPasses(run, agentPassOf);
-  const pinned = run.scorers ?? {};
 
   return judgeablePasses(run).flatMap(({ pass, definition }) => {
-    const scorers = (definition.scorers?.names ?? []).filter((name) => Object.hasOwn(pinned, name));
+    const scorers = definition.scorers?.names ?? [];
 
     if (scorers.length === 0) return [];
 

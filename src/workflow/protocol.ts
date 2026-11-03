@@ -8,7 +8,6 @@ import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { startedByPasses, verifiedScorers } from '../scorers/engine-hooks.js';
 import { scoringUnavailable } from '../scorers/home.js';
-import type { PinnedScorer } from '../scorers/pin.js';
 import { confinedToolLevel, isConfinedTool } from '../tool-launch/confined.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
@@ -338,10 +337,10 @@ export type Judging =
   | { kind: 'elsewhere'; reason: string };
 
 /**
- * Who judges `description`'s scored steps on this machine: the confined judge of `tool`, the session, or nobody. `pinned`:
- * the scorers a run pinned, when it has started.
+ * Who judges `description`'s scored steps on this machine: the confined judge of `tool`, the session, or nobody. The
+ * scorers of `run`, once it has started, are read at its team pin, and only when this line needs them.
  */
-async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined, pinned?: Record<string, PinnedScorer>): Promise<Judging> {
+async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined, run?: RunState): Promise<Judging> {
   const { scored, confined } = description.facts;
 
   if (scored.length === 0 && confined.length === 0) return { kind: 'none' };
@@ -358,7 +357,7 @@ async function judgingOf(config: LocalConfig, description: WorkflowDescription, 
     : level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile` : `The ${tool} executable is not on PATH`;
 
   const scorers = [...new Set(scored.flatMap((step) => step.scorers))];
-  const verified = await verifiedScorers(config, scorers, pinned);
+  const verified = await verifiedScorers(config, scorers, run);
 
   if (!verified.ok) return { kind: 'elsewhere', reason: `${reason}. ${verified.reason}` };
 
@@ -723,7 +722,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         definition: run.definition, source: DefaultWorkflows.sourceOfRun(run), workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts,
       });
 
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, tool, run.scorers) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, tool, run) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });

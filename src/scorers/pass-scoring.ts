@@ -11,7 +11,7 @@ import { z } from 'zod';
 import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { getFileMtime, listDirs, readFileSafe, writeJsonAtomic } from '../utils/fs.js';
-import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
+import type { ScorablePass } from '../workflow/judge-work.js';
 import type { WorkflowClient } from '../workflow/protocol.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { installOwner, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
@@ -19,6 +19,7 @@ import type { DriverIdentity, RunState, WorkflowEnvelope, WorkflowFailure } from
 import { scoresDir } from './home.js';
 import type { RunSubject } from './label.js';
 import { MARK_WINDOW_MS } from './marks.js';
+import { RunScorers } from './run-scorers.js';
 import { Subject } from './subject.js';
 
 /** What a start did: the `teamai-score` runs of the run's passes still to drive, and the passes whose start was refused. */
@@ -75,11 +76,15 @@ async function startedRun(file: string): Promise<RunId | undefined> {
   }
 }
 
-/** The passes of `run` the scoring module starts: those its step does not leave to the workflow's own steps. */
-async function startable(config: LocalConfig, run: RunState): Promise<ScorablePass[]> {
+/**
+ * The passes of `run` the scoring module starts: those its step does not leave to the workflow's own steps, with a
+ * scorer the run's team pin holds. Why none starts when that pin cannot be read here.
+ */
+async function startable(config: LocalConfig, run: RunState): Promise<{ ok: true; passes: ScorablePass[] } | { ok: false; reason: string }> {
   const definitionOf = stepDefinitions(run);
+  const scored = await RunScorers.scoredPasses(config, run, (await installOwner(config)).id);
 
-  return scoredPasses(run, (await installOwner(config)).id).filter(({ subject }) => definitionOf(subject.step)?.scorers?.start !== 'workflow');
+  return scored.ok ? { ok: true, passes: scored.passes.filter(({ subject }) => definitionOf(subject.step)?.scorers?.start !== 'workflow') } : scored;
 }
 
 /** Whether `run` ended and last changed longer ago than a mark lasts, so none of its passes is scored again. */
@@ -125,7 +130,15 @@ export const PassScoring = {
     if (run === 'missing' || run === 'corrupt' || isPastScoring(run, now)) return starts;
     const driver: DriverIdentity | undefined = run.driver;
 
-    for (const { subject, scorers } of await startable(config, run)) {
+    const passes = await startable(config, run);
+
+    if (!passes.ok) {
+      starts.refused.push({ subject: `run ${run.id}`, failure: { code: 'scorer_not_found', message: passes.reason } });
+
+      return starts;
+    }
+
+    for (const { subject, scorers } of passes.passes) {
       const file = startKey(config, subject);
       const text = Subject.format({ kind: 'run', subject });
 

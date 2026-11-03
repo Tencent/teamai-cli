@@ -15,6 +15,7 @@ import { stepDefinitions } from '../workflow/scope.js';
 import { parseStepPath } from '../workflow/step-path.js';
 import type { RunState } from '../workflow/types.js';
 import { cachedScorerNames, pinScorers } from './cache.js';
+import { RunScorers } from './run-scorers.js';
 import { isScorerFile, type ScorerDefinition } from './definition.js';
 import { scoringUnavailable } from './home.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
@@ -97,11 +98,11 @@ function passIn(run: RunState, named: NamedPass): { ok: true; step: string; pass
   return ofStep.includes(pass) ? { ok: true, step, pass } : refused('pass_not_found', `Pass ${pass} of step ${step} did not succeed in run ${run.id}. Succeeded passes: ${ofStep.join(', ')}.`);
 }
 
-/** The pass `named` asks for, whose evidence is still here, and the definitions the run pinned for its scorers. */
+/** The pass `named` asks for, whose evidence is still here, and the definitions of its scorers at the run's team pin. */
 async function ofPass(current: LocalConfig | undefined, named: NamedPass): Promise<({ ok: true } & NamedSubject) | Refusal> {
   const file = named.scorers.find(isScorerFile);
 
-  if (file !== undefined) return refused('invalid_arguments', `--run takes scorer names, not the file ${file}: a run pins its scorers when it starts`);
+  if (file !== undefined) return refused('invalid_arguments', `--run takes scorer names, not the file ${file}: a run reads its scorers at the team revision it started from`);
   const found = await findRunConfig(named.run, current);
 
   if ('error' in found) return refused(found.error.code, found.error.message);
@@ -120,13 +121,15 @@ async function ofPass(current: LocalConfig | undefined, named: NamedPass): Promi
     return refused('evidence_missing', `Pass ${pass} of step ${step} in run ${run.id} cannot be scored: no longer on this machine: ${missing.join('; ')}. Restore what is missing, or score another pass. No label was written.`);
   }
 
-  const pins = run.scorers ?? {};
-  const pinned = definitionsOf(named.scorers, pins);
+  const read = await RunScorers.of(config, run);
+
+  if (!read.ok) return refused('scorer_not_found', `${read.reason} No label was written.`);
+  const pinned = definitionsOf(named.scorers, read.pins);
 
   if (!pinned.ok) {
-    const listed = Object.keys(pins).sort();
+    const listed = Object.keys(read.pins).sort();
 
-    return refused('scorer_not_found', `Scorer ${pinned.unpinned} is not pinned by run ${run.id}, so it has no rubric to judge its passes with. ${listed.length > 0 ? `Scorers it pinned: ${listed.join(', ')}.` : 'The run pinned no scorer.'}`);
+    return refused('scorer_not_found', `Scorer ${pinned.unpinned} is not a scorer of run ${run.id} at the team revision it started from, so it has no rubric to judge its passes with. ${listed.length > 0 ? `Its scorers: ${listed.join(', ')}.` : 'Its steps list no scorer it can read.'}`);
   }
 
   return { ok: true, config, subject: { kind: 'run', subject }, definitions: pinned.definitions };

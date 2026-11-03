@@ -12,7 +12,8 @@ import { stepWorkflow, type RunState, type WorkflowDefinition, type WorkflowStep
 import type { RunSubject } from './label.js';
 import { Marks, type MarkFacts } from './marks.js';
 import { PassScoring } from './pass-scoring.js';
-import { pinnedDefinition } from './pin.js';
+import { pinnedDefinition, type PinnedScorer } from './pin.js';
+import { RunScorers, type RunScorerPins } from './run-scorers.js';
 import { isSampled } from './sampling.js';
 import { markFacts, type Refusal } from './score-plan.js';
 import { ciStage, passOf } from './scoring-stages.js';
@@ -78,9 +79,9 @@ function unscored(steps: readonly WorkflowStep[], prefix: string): string[] {
   });
 }
 
-/** Whether a scorer `name` that run `run` pinned samples pass `subject`, every pass of a step that samples all. */
-function samples(run: RunState, name: string, subject: RunSubject, all: boolean): boolean {
-  const pin = run.scorers?.[name];
+/** Whether scorer `name`, as `pins` holds it, samples pass `subject`, every pass of a step that samples all. */
+function samples(pins: Readonly<Record<string, PinnedScorer>>, name: string, subject: RunSubject, all: boolean): boolean {
+  const pin = pins[name];
   const definition = pin && pinnedDefinition(name, pin);
 
   return definition !== undefined && (all || isSampled(name, subject, definition.samplingRate));
@@ -106,14 +107,21 @@ async function unplannedOf(config: LocalConfig, run: RunState, install: string, 
   const ended = run.status !== 'running';
   const list: string[] = [];
 
+  // Read only once a pass has an unmarked scorer: most passes of most runs are marked, and the read clones the team pin.
+  let pins: Promise<RunScorerPins> | undefined;
+
   for (const { subject, scorers } of scoredPasses(run, install)) {
     const own = definitionOf(subject.step)?.scorers;
     const all = own?.sampling === 'all';
 
     if (!await isLeftToLapsed(config, { all, start: own?.start, ended, subject })) continue;
-    const keys = scorers.filter((name) => samples(run, name, subject, all)).map((scorer) => ({ scorer, subject: { kind: 'run' as const, subject } }));
+    const states = await Marks.states(config, scorers.map((scorer) => ({ scorer, subject: { kind: 'run' as const, subject } })), facts);
+    const unmarked = scorers.filter((_, at) => states[at]?.kind === 'unmarked');
 
-    if ((await Marks.states(config, keys, facts)).some((state) => state.kind === 'unmarked')) list.push(Subject.format({ kind: 'run', subject }));
+    if (unmarked.length === 0) continue;
+    const read = await (pins ??= RunScorers.of(config, run));
+
+    if (read.ok && unmarked.some((name) => samples(read.pins, name, subject, all))) list.push(Subject.format({ kind: 'run', subject }));
   }
 
   return list;

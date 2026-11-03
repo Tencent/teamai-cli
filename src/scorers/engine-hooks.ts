@@ -6,9 +6,10 @@ import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import type { StartedRun, WorkflowClient } from '../workflow/protocol.js';
+import type { RunState } from '../workflow/types.js';
+import { verifiedScorers as verifiedAmong } from './judges-here.js';
 import { PassScoring } from './pass-scoring.js';
-
-export { verifiedScorers } from './judges-here.js';
+import { RunScorers } from './run-scorers.js';
 
 /**
  * Starts the scoring of every settled scored pass of run `runId` that none started yet, and answers each run that
@@ -21,4 +22,15 @@ export async function startedByPasses(config: LocalConfig, runId: string, option
   for (const { subject, failure } of starts.refused) log.warn(`The scoring of ${subject} did not start (${failure.code}): ${failure.message}`);
 
   return starts.runs.map(({ subject, scorers, run }) => ({ run, step: subject.step, pass: subject.pass, scorers }));
+}
+
+/**
+ * The scorers among `names` whose judge must be `verified` here, for describe's judging line. Once `run` has started,
+ * they are read at its team pin, and none when that pin cannot be read here; before, as cached now.
+ */
+export async function verifiedScorers(config: LocalConfig, names: readonly string[], run?: RunState): Promise<{ ok: true; scorers: string[] } | { ok: false; reason: string }> {
+  if (!run) return verifiedAmong(config, names);
+  const read = await RunScorers.of(config, run);
+
+  return verifiedAmong(config, names, read.ok ? read.pins : {});
 }

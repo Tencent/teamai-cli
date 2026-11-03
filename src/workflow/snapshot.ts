@@ -76,8 +76,6 @@ const BodySchema = z.object({
   creating: z.array(UnresolvedCreateSchema).optional(),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
   releasedTokens: z.array(ReleasedTokensSchema).optional(),
-  /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
-  scorers: z.record(z.string(), z.object({ sourceHash: z.string() })).optional(),
   createdAt: z.string(),
   limitsFrom: LimitsFromSchema.optional(),
   updatedAt: z.string(),
@@ -250,7 +248,7 @@ type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : n
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
   end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', teamPin: 'publish', runMode: 'publish', origin: 'publish',
-  startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
+  startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
   stoppedAttempts: 'drop', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish',
@@ -341,9 +339,6 @@ const RUN_REWRITES = {
   id: () => ({}),
   definition: (run) => ({ definitionHash: definitionHash(run.definition, run.workflows) }),
   workflows: () => ({}),
-  scorers: (run) => (run.scorers
-    ? { scorers: Object.fromEntries(Object.entries(run.scorers).map(([name, pin]) => [name, { sourceHash: pin.sourceHash }])) }
-    : {}),
   failure: (run) => (run.failure ? { failure: handed(run.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
   finalizing: (run) => (run.finalizing ? { finalizing: handed(run.finalizing, FINALIZING_RULES, FINALIZING_REWRITES) } : {}),
   steps: (run) => {

@@ -4,14 +4,15 @@
  */
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
-import { scoredPasses } from '../workflow/judge-work.js';
+import { scoredPasses, type ScorablePass } from '../workflow/judge-work.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { installOwner, readRuns } from '../workflow/store.js';
 import type { RunState, RunStatus } from '../workflow/types.js';
 import type { JudgeFailureCode, RunSubject } from './label.js';
 import { LabelStore, type PassScore, type ScoringTotal } from './label-store.js';
 import { MARK_WINDOW_MS, Marks, type MarkKey, type MarkState } from './marks.js';
-import { pinnedDefinition } from './pin.js';
+import { pinnedDefinition, type PinnedScorer } from './pin.js';
+import { RunScorers } from './run-scorers.js';
 import { isSampled } from './sampling.js';
 import { markFacts } from './score-plan.js';
 import { Subject } from './subject.js';
@@ -72,9 +73,9 @@ function unlabelledOf(state: MarkState, sampled: { is: boolean; rate: number }, 
   return state.kind === 'unmarked' ? { kind: 'queued' } : { kind: 'expired' };
 }
 
-/** Whether automatic judging samples `scorer` on `subject`, at the rate `run` pinned; a step that judges every pass samples all. */
-function samplingOf(run: RunState, subject: RunSubject, scorer: string, isAll: boolean) {
-  const pin = run.scorers?.[scorer];
+/** Whether automatic judging samples `scorer` on `subject`, at the rate of the run's `pins`; a step that judges every pass samples all. */
+function samplingOf(pins: Readonly<Record<string, PinnedScorer>>, subject: RunSubject, scorer: string, isAll: boolean) {
+  const pin = pins[scorer];
   const rate = (pin && pinnedDefinition(scorer, pin)?.samplingRate) ?? 0;
 
   return { is: isAll || isSampled(scorer, subject, rate), rate };
@@ -104,7 +105,7 @@ export interface RunJudgingState {
 const stateKey = (subject: RunSubject, scorer: string): string => JSON.stringify([subject.runId, subject.step, subject.pass, scorer]);
 
 /** Adds to `pass` why each of `scorers` this install judges has no label, and gives the failed judge calls among them. */
-function addUnlabelled(pass: PassJudging, subject: RunSubject, scorers: readonly string[], context: { run: RunState; stateOf: ReadonlyMap<string, MarkState>; expiresAt: string; isAll: boolean }): number {
+function addUnlabelled(pass: PassJudging, subject: RunSubject, scorers: readonly string[], context: { pins: Readonly<Record<string, PinnedScorer>>; stateOf: ReadonlyMap<string, MarkState>; expiresAt: string; isAll: boolean }): number {
   let failedJudgeCalls = 0;
 
   for (const scorer of scorers) {
@@ -113,7 +114,7 @@ function addUnlabelled(pass: PassJudging, subject: RunSubject, scorers: readonly
     if (!state) continue;
 
     if (state.kind === 'failed' && state.code !== 'check_could_not_run') failedJudgeCalls += 1;
-    const why = pass.scores.some((score) => score.scorer === scorer) ? undefined : unlabelledOf(state, samplingOf(context.run, subject, scorer, context.isAll), context.expiresAt);
+    const why = pass.scores.some((score) => score.scorer === scorer) ? undefined : unlabelledOf(state, samplingOf(context.pins, subject, scorer, context.isAll), context.expiresAt);
 
     if (why) pass.unlabelled.push({ scorer, state: why });
   }
@@ -122,7 +123,7 @@ function addUnlabelled(pass: PassJudging, subject: RunSubject, scorers: readonly
 }
 
 /** `run`'s passes from its `labels`, and why every other scorer of a pass this install judges has no label. */
-function judgingOf(run: RunState, scored: ReturnType<typeof scoredPasses>, labels: ReadonlyMap<string, PassScore[]>, stateOf: ReadonlyMap<string, MarkState>, scoreRuns: ReadonlyMap<string, PassJudging['scoreRuns']>): RunJudgingState {
+function judgingOf(run: RunState, { scored, pins }: Scored, labels: ReadonlyMap<string, PassScore[]>, stateOf: ReadonlyMap<string, MarkState>, scoreRuns: ReadonlyMap<string, PassJudging['scoreRuns']>): RunJudgingState {
   const definitionOf = stepDefinitions(run);
   const expiresAt = new Date(Date.parse(run.updatedAt) + MARK_WINDOW_MS).toISOString();
   const passes = new Map<string, PassJudging>([...labels].map(([key, scores]) => [key, { scores, unlabelled: [], scoreRuns: [] }]));
@@ -133,10 +134,38 @@ function judgingOf(run: RunState, scored: ReturnType<typeof scoredPasses>, label
     passes.set(passKey(subject), pass);
     pass.scores.sort((left, right) => scorers.indexOf(left.scorer) - scorers.indexOf(right.scorer));
     pass.scoreRuns = scoreRuns.get(Subject.format({ kind: 'run', subject })) ?? [];
-    failedJudgeCalls += addUnlabelled(pass, subject, scorers, { run, stateOf, expiresAt, isAll: definitionOf(subject.step)?.scorers?.sampling === 'all' });
+    failedJudgeCalls += addUnlabelled(pass, subject, scorers, { pins, stateOf, expiresAt, isAll: definitionOf(subject.step)?.scorers?.sampling === 'all' });
   }
 
   return { passes, failedJudgeCalls };
+}
+
+/** A run's scored passes, and its scorers as its team pin holds them, which give the sampling rate of a scorer no mark took. */
+interface Scored {
+  scored: ScorablePass[];
+  pins: Readonly<Record<string, PinnedScorer>>;
+}
+
+/**
+ * `scored` with the scorers of `run` that have a version at its team pin, read only when a scorer of it has no mark or
+ * an expired one: a listed name with no valid version is never marked, and the read clones the pin.
+ */
+async function withPins(config: LocalConfig, run: RunState, scored: ScorablePass[], stateOf: ReadonlyMap<string, MarkState>): Promise<Scored> {
+  const isUnmarked = scored.some(({ subject, scorers }) => scorers.some((scorer) => {
+    const kind = stateOf.get(stateKey(subject, scorer))?.kind;
+
+    return kind === 'unmarked' || kind === 'expired';
+  }));
+
+  const read = isUnmarked ? await RunScorers.of(config, run) : undefined;
+
+  if (!read?.ok) return { scored, pins: {} };
+
+  return { scored: scored.flatMap((pass) => {
+    const scorers = pass.scorers.filter((name) => Object.hasOwn(read.pins, name));
+
+    return scorers.length > 0 ? [{ ...pass, scorers }] : [];
+  }), pins: read.pins };
 }
 
 export const RunJudging = {
@@ -160,7 +189,9 @@ export const RunJudging = {
 
     const scoreRuns = scoreRunsBySubject(all);
 
-    return new Map(runs.map((run) => [run.id, judgingOf(run, scored.get(run.id) ?? [], labels.get(run.id) ?? new Map(), stateOf, scoreRuns)]));
+    const judged = await Promise.all(runs.map(async (run) => [run, await withPins(config, run, scored.get(run.id) ?? [], stateOf)] as const));
+
+    return new Map(judged.map(([run, withRates]) => [run.id, judgingOf(run, withRates, labels.get(run.id) ?? new Map(), stateOf, scoreRuns)]));
   },
 
   /** What judging run `runId` cost: each judge call its labels record, a batch's tokens once, and each failed judge call. */

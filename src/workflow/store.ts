@@ -6,7 +6,6 @@ import { DriverSchema } from '../driver-identity.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { redactJson } from '../utils/redact.js';
 import { getDataHome, type JsonValue, type LocalConfig } from '../types.js';
-import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ArchivedPassSchema, FailureSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';
 import type { HandoffOwner } from './snapshot.js';
@@ -254,7 +253,6 @@ const RunProgressSchema = z.object({
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
   releasedTokens: z.array(ReleasedTokensSchema).optional(),
   stoppedAttempts: z.array(StoppedAttemptSchema).optional(),
-  scorers: z.record(z.string(), PinnedScorerSchema).optional(),
   teamPin: TeamPinSchema.optional(),
   finalizing: z.object({
     outcome: z.enum(['succeeded', 'failed', 'cancelled']), end: z.string().optional(), failure: FailureSchema.optional(), since: z.string(), until: z.string(),
@@ -302,7 +300,7 @@ export type RunUpdate<T> = { status: 'done'; value: T } | { status: 'busy' } | {
  * The definitions a run pins as they were pulled, which the run file keeps byte for byte. An admitted workflow output is
  * frozen with the run, so masking never rewrites it; admission refuses what holds a secret.
  */
-const PINNED: ReadonlySet<string> = new Set(['definition', 'workflows', 'scorers', 'admitted'] satisfies Array<keyof RunState>);
+const PINNED: ReadonlySet<string> = new Set(['definition', 'workflows', 'admitted'] satisfies Array<keyof RunState>);
 
 /** `run` as its file holds it: each of `secrets` masked in every field but the pinned definitions. */
 function maskedRun(run: RunState, secrets: Record<string, string>) {

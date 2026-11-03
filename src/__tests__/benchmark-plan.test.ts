@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { RunScorers } from '../scorers/run-scorers.js';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -431,7 +432,8 @@ describe('benchmark run judges', () => {
 
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
-    const pins = run.scorers ?? {};
+    const read = await RunScorers.of(config, run);
+    const pins = read.ok ? read.pins : {};
     expect(Object.keys(pins).sort()).toEqual([CORRECTNESS, 'teamai:correctness:t02']);
     expect(Object.values(pins).map((pin) => pin.generated)).toEqual([true, true]);
     expect(pins[CORRECTNESS]?.sourceHash).not.toBe(pins['teamai:correctness:t02']?.sourceHash);

@@ -987,7 +987,7 @@ benchmarkCmd
 
 benchmarkCmd
   .command('plan <suite>')
-  .description('The first step of a benchmark run: freeze the team revision this checkout last pulled, fetch every commit a trial reads into the commit cache, and print {"definition":{"definition","workflows","scorers","teamRevision"},"plan"}, the workflow the run\'s trials step runs and the plan its check and report steps read. Refuses a run with no timeout, or a longer one than the suite\'s: start it with workflow start --timeout.')
+  .description('The first step of a benchmark run: freeze the team revision this checkout last pulled, fetch every commit a trial reads into the commit cache, and print {"definition":{"definition","workflows"},"plan"}, the workflow the run\'s trials step runs and the plan its check and report steps read, and write the correctness scorers of tasks judged by successCriteria as files of the run, where teamai score plan reads them. Refuses a run with no timeout, or a longer one than the suite\'s: start it with workflow start --timeout.')
   .option('--aliases <whose>', 'Whose aliases resolve the arms\' model aliases: team (default), the team\'s models/aliases.yaml, or member, your ~/.teamai/models/aliases.yaml over the team\'s')
   .option('--tasks <json>', 'The task ids to plan, as a JSON array such as ["fix-login"]; [] or absent plans every task. A name the suite does not have is refused, listing the ones it has.')
   .option('--arms <json>', 'The arm names to plan, as a JSON array such as ["claude"]; [] or absent plans every arm. A name the suite does not have is refused, listing the ones it has.')

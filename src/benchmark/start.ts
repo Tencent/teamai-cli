@@ -9,6 +9,7 @@ import { isRecordableLabel, isRecordableName, observeCheckout } from '../agent-o
 import { loadLocalConfigForScope } from '../config.js';
 import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
 import { pinScorers } from '../scorers/cache.js';
+import { RunScorers } from '../scorers/run-scorers.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
 import { roleDeclaration, type RoleDeclaration } from '../roles.js';
@@ -55,12 +56,12 @@ export interface Chosen {
 }
 
 /**
- * What `teamai benchmark plan` prints: the workflow bundle a benchmark run's `from` step runs, its team scorers pinned at
- * `teamRevision`, the frozen baseline, and `plan`, the measurement its `check` and `report` steps read. Each is frozen
- * as `planBenchmark` freezes it, and the suite's timeout comes with them.
+ * What `teamai benchmark plan` prints: the workflow bundle a benchmark run's `from` step runs, and `plan`, the
+ * measurement its `check` and `report` steps read. Each is frozen as `planBenchmark` freezes it, and the suite's timeout
+ * comes with them. The correctness scorers it generates are files of the run, which `plan` writes.
  */
 export interface BenchmarkPlanned {
-  definition: CompiledBundle & { teamRevision: string };
+  definition: Omit<CompiledBundle, 'scorers'>;
   plan: BenchmarkPlan;
 }
 
@@ -69,7 +70,7 @@ export interface BenchmarkPlanned {
  * timeout, which bounds the run. Fills the commit cache with every commit a trial reads. Refused, as `team_ref_blocked`,
  * when this machine cannot pin the team a trial runs, so no trial runs with a team it did not ask for.
  */
-export async function planBenchmark(config: LocalConfig, name: string, options: BenchmarkStart): Promise<{ planned: BenchmarkPlanned; timeoutMs: number } | { refused: Refusal }> {
+export async function planBenchmark(config: LocalConfig, name: string, options: BenchmarkStart): Promise<{ planned: BenchmarkPlanned; generated: CompiledBundle['scorers']; timeoutMs: number } | { refused: Refusal }> {
   // First: no suite, arm or commit read later changes that this machine cannot pin the team a trial gets.
   const blocked = await trialBlocker(config);
 
@@ -80,15 +81,12 @@ export async function planBenchmark(config: LocalConfig, name: string, options: 
   const { suite, plan, committed, armWorkflows } = frozen;
   const { definition, workflows, scorers } = compileBundle(plan, committed, { armWorkflows, unattended: options.unattended });
 
-  return {
-    planned: { definition: { definition, workflows, scorers, teamRevision: plan.baselineTeamRevision }, plan },
-    timeoutMs: suite.timeoutMs,
-  };
+  return { planned: { definition: { definition, workflows }, plan }, generated: scorers, timeoutMs: suite.timeoutMs };
 }
 
 /**
  * `teamai benchmark plan <suite>`, as a step of the run whose attempt `env` marks: the suite planned from the run's
- * checkout. Refused when the run has no deadline, or one later than the suite's timeout allows, since then the suite's
+ * checkout, its generated correctness scorers written as files of the run, which `teamai score plan` reads. Refused when the run has no deadline, or one later than the suite's timeout allows, since then the suite's
  * timeout would bound nothing: start it with `workflow start --timeout`, as `teamai benchmark run` does. Its trial
  * prompts run unattended only when every step that runs the plan is a strict sandbox (`trialsUnattended`).
  */
@@ -107,6 +105,8 @@ export async function planStep(name: string, env: NodeJS.ProcessEnv, { memberAli
 
     return { failure: { code: 'invalid_arguments', message: `Run ${run.id} ${bound}, and suite "${name}" allows ${durationText(planned.timeoutMs)}. Start it with teamai workflow start ${run.name} --timeout ${durationText(planned.timeoutMs)}, or with teamai benchmark run ${name}, which sets it.` } };
   }
+
+  await RunScorers.writeGenerated(config, run.id, planned.generated);
 
   return { planned: planned.planned };
 }

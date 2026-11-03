@@ -440,12 +440,12 @@ steps:
     expect(await ScoreVerbs.label({ evidence: dir, answer: '', judge: '' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
   });
 
-  it('refuses a named scorer on a pass of a run that pinned none', async () => {
+  it('refuses a named scorer on a pass of a run whose steps list none', async () => {
     const config = await team({ review: REVIEW.replace('    scorers: [quality, coverage]\n', '') }, { quality: scorer() });
     const subject = `run:${await reviewedRun(config)}:review:1`;
     const { ctx } = await (await scoreRun(config, { subject })).next('plan');
 
-    expect(await ScoreVerbs.plan({ subject, scorers: 'quality', demand: 'named' }, ctx)).toMatchObject({ ok: false, code: 'scorer_not_found', message: expect.stringContaining('pinned by run') });
+    expect(await ScoreVerbs.plan({ subject, scorers: 'quality', demand: 'named' }, ctx)).toMatchObject({ ok: false, code: 'scorer_not_found', message: expect.stringContaining('at the team revision it started from') });
   });
 
   it('judges every pass of a step that samples all, whatever its scorers sample', async () => {
@@ -494,6 +494,60 @@ describe('score evidence', () => {
 
     expect(await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx)).toMatchObject({ ok: false, code: 'evidence_missing', message: expect.stringContaining('session-gone') });
     expect(fs.existsSync(path.join(runScratchDir(config, run.runId), evidence.attempt))).toBe(false);
+  });
+});
+
+/** `config`'s team files as a member's git checkout of a team origin, with one pushed commit. */
+async function pushedTeam(config: LocalConfig): Promise<{ config: LocalConfig; edit(text: string): void; push(): void }> {
+  const knowledge = config.repo.localPath;
+  const origin = path.join(root, 'team-origin.git');
+  git(root, 'init', '-q', '--bare', '-b', 'main', origin);
+  git(knowledge, 'init', '-q', '-b', 'main');
+  git(knowledge, 'remote', 'add', 'origin', origin);
+  const push = (): void => {
+    git(knowledge, 'add', '-A');
+    git(knowledge, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-qm', 'team');
+    git(knowledge, 'push', '-q', '-u', 'origin', 'main');
+  };
+  push();
+  const member: LocalConfig = { ...config, repo: { localPath: knowledge, remote: origin } };
+  await syncScorersThenWorkflows(member);
+  return { config: member, edit: (text) => fs.writeFileSync(path.join(knowledge, 'scorers', 'quality.md'), text), push };
+}
+
+/** The rubric `score evidence` gives the judge of pass 1 of `review` in run `runId`. */
+async function rubricOf(config: LocalConfig, runId: string): Promise<string> {
+  const subject = `run:${runId}:review:1`;
+  const { evidence, scorers } = await plannedGroup(config, subject);
+  const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+  return z.object({ rubric: z.string() }).parse(written.ok ? written.output : { rubric: `${written.code}: ${written.message}` }).rubric;
+}
+
+describe('the rubric a pass is judged by is the one its run started with', () => {
+  const REVIEW_ONE = REVIEW.replace('[quality, coverage]', '[quality]');
+
+  it('judges an open run\'s pass with the rubric it started with after an edit is pushed and pulled, and the next run\'s with the edit', async () => {
+    const { config, edit, push } = await pushedTeam(await team({ review: REVIEW_ONE }, { quality: scorer() }));
+    const open = await reviewedRun(config);
+    edit(scorer().replace('Judge the work.', 'Judge the tests first.'));
+    push();
+    await syncScorersThenWorkflows(config);
+    const next = await reviewedRun(config);
+
+    const opened = await rubricOf(config, open);
+
+    expect(opened).toContain('Judge the work.');
+    expect(opened).not.toContain('Judge the tests first.');
+    expect(await rubricOf(config, next)).toContain('Judge the tests first.');
+  });
+
+  it('judges with an edit the checkout had not committed when the run started, and not with one made after', async () => {
+    const { config, edit } = await pushedTeam(await team({ review: REVIEW_ONE }, { quality: scorer() }));
+    edit(scorer().replace('Judge the work.', 'Judge the uncommitted rubric.'));
+    const runId = await reviewedRun(config);
+    edit(scorer().replace('Judge the work.', 'Judge a later rubric.'));
+
+    expect(await rubricOf(config, runId)).toContain('Judge the uncommitted rubric.');
   });
 });
 

@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
-import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { driverIdentity } from '../driver-identity.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { publishRun } from '../workflow/handoff.js';
@@ -18,6 +17,7 @@ import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runScratchDir, runsDir, skillStatePath, updateRun, type RunId } from '../workflow/store.js';
 import { DeliveryReceiptSchema } from '../workflow/delivery-schema.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 // oxlint-disable-next-line teamai/workflow-boundaries -- checks runtime coverage of every transition
@@ -2095,14 +2095,16 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a resume decides session judging from the scorers its run pinned, not from a later pull',
+    name: 'a resume decides session judging from the scorers at its run\'s team pin, not from a later pull',
     rows: ['R19'],
     run: async () => {
       const made = await harness({ review: REVIEW }, { scorers: SCORERS });
+      // The team files as a commit of the repository they live in, which the run's team pin records.
+      for (const args of [['init', '-q', '-b', 'main'], ['add', 'knowledge'], ['-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'team']]) execFileSync('git', args, { cwd: made.root });
       const created = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
       if (!('data' in created)) throw new Error(JSON.stringify(created));
       const run = RunIdSchema.parse(created.data.run);
-      // The team now asks for verified isolation; the run keeps the best-effort scorer it pinned.
+      // The team now asks for verified isolation; the run keeps the best-effort scorer of the team revision it started from.
       fs.writeFileSync(path.join(made.config.repo.localPath, 'scorers', 'review-quality.md'), SCORERS['review-quality'].replace('samplingRate: 100', 'samplingRate: 100\nisolation: verified'));
       await syncScorerDefinitions(made.config);
       await turnOf(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} }, { tool: 'copilot' }));

@@ -328,15 +328,13 @@ export async function collectEvidence(
  * Stages the evidence the judges of `subject` read, collected from `source.checkout`, a clone that is gone once the step
  * settles, with git getting only `source.untrustedEnv` there. A judge never reads the clone itself. A report about to
  * settle the subject gives its pass as `settling`, and evidence of that pass an earlier report filled, maybe from
- * another commit, is collected again. Answers the directory, or undefined when the subject's step lists no scorer the
- * run pinned. A clone that gave no evidence leaves the directory empty, so its entries close `evidence_empty`.
+ * another commit, is collected again. Answers the directory, or undefined when the subject's step lists no scorer. A
+ * clone that gave no evidence leaves the directory empty, so its entries close `evidence_empty`.
  */
 export async function stageEvidence(config: LocalConfig, run: RunState, subject: RunSubject, source: {
   checkout: string; untrustedEnv: NodeJS.ProcessEnv; settling?: RunPass; expiresAt?: string | undefined;
 }): Promise<string | undefined> {
-  const pinned = run.scorers ?? {};
-
-  if (!(stepDefinitions(run)(subject.step)?.scorers?.names ?? []).some((name) => Object.hasOwn(pinned, name))) return undefined;
+  if ((stepDefinitions(run)(subject.step)?.scorers?.names ?? []).length === 0) return undefined;
   const dir = subjectEvidenceDirOf(scoresDir(config), subject);
 
   if (source.settling) await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 });

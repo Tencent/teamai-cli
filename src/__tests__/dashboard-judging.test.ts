@@ -1,8 +1,9 @@
 import fs from 'node:fs';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
+import { RunScorers } from '../scorers/run-scorers.js';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { judgingHealth } from '../dashboard/judging-health.js';
 import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { knownSecrets } from '../env-resolution.js';
@@ -72,7 +73,8 @@ async function reviewedRun(config: LocalConfig): Promise<string> {
 async function sourceHash(config: LocalConfig, runId: string, name: string): Promise<string> {
   const run = await readRun(config, runId);
   if (run === 'missing' || run === 'corrupt') throw new Error(`run ${runId} is ${run}`);
-  const pin = run.scorers?.[name];
+  const read = await RunScorers.of(config, run);
+  const pin = read.ok ? read.pins[name] : undefined;
   if (!pin) throw new Error(`run ${runId} pinned no ${name}`);
   return pin.sourceHash;
 }

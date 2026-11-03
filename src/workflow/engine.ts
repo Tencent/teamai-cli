@@ -1328,14 +1328,13 @@ export async function startRun(
  */
 export async function createRun(
   config: LocalConfig,
-  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'startedBy' | 'definition' | 'workflows' | 'scorers' | 'base' | 'checkout' | 'timeout'>
+  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'startedBy' | 'definition' | 'workflows' | 'base' | 'checkout' | 'timeout'>
     & Required<Pick<RunState, 'origin'>> & { secrets: Record<string, string>; driver?: DriverIdentity; alone?: DriverCan },
 ): Promise<WorkflowEnvelope> {
   const workflows = input.workflows ?? {};
   const unmet = alone && strictlyUnmet(input.definition, workflows, alone);
 
   if (unmet) return error('requirement_unmet', unmet);
-  const scorers = input.scorers ?? {};
   const holdsSecret = secretMismatch(input.inputs, secrets);
 
   if (holdsSecret) return error('invalid_inputs', holdsSecret);
@@ -1362,7 +1361,6 @@ export async function createRun(
     driver,
     definition: input.definition,
     workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
-    scorers: Object.keys(scorers).length > 0 ? scorers : undefined,
     steps: input.definition.steps.map((step) => ({ id: step.id, status: 'pending' })),
     settledAttempts: [],
     base: input.base,
@@ -2620,8 +2618,8 @@ async function admitReported(
 
 /**
  * Freezes the output of producer `path` with `run`: the whole output, hashed and never rewritten, and the workflow its
- * `field` defines, which a `from` step runs. The workflows it runs by name and its scorers join the run's. Why not, when
- * the producer already gave the run a workflow, or a name it brings is the run's already for something else.
+ * `field` defines, which a `from` step runs. The workflows it runs by name join the run's. Why not, when the producer
+ * already gave the run a workflow, or a name it brings is the run's already for something else.
  */
 function admitInto(run: RunState, path: string, field: string, output: AdmittedWorkflow['output'], admitted: Admitted): WorkflowFailure | undefined {
   if (run.admitted?.[path]) {
@@ -2631,17 +2629,15 @@ function admitInto(run: RunState, path: string, field: string, output: AdmittedW
   const taken = <Pinned>(mine: Record<string, Pinned> | undefined, theirs: Record<string, Pinned>): string | undefined => Object.keys(theirs)
     .find((key) => mine !== undefined && Object.hasOwn(mine, key) && JSON.stringify(mine[key]) !== JSON.stringify(theirs[key]));
 
-  const name = taken(run.workflows, admitted.workflows) ?? taken(run.scorers, admitted.scorers);
+  const name = taken(run.workflows, admitted.workflows);
 
   if (name !== undefined) {
-    return { code: 'invalid_output', message: `Step "${path}" output ${field} brings "${name}", which this run already holds with other content; name each workflow and generated scorer by its content.` };
+    return { code: 'invalid_output', message: `Step "${path}" output ${field} brings "${name}", which this run already holds with other content; name each workflow by its content.` };
   }
 
   run.admitted = { ...run.admitted, [path]: { output, hash: createHash('sha256').update(JSON.stringify(output)).digest('hex'), field, definition: admitted.definition } };
 
   if (Object.keys(admitted.workflows).length > 0) run.workflows = { ...run.workflows, ...admitted.workflows };
-
-  if (Object.keys(admitted.scorers).length > 0) run.scorers = { ...run.scorers, ...admitted.scorers };
 
   return undefined;
 }

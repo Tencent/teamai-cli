@@ -4,7 +4,6 @@ import path from 'node:path';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { knownSecrets } from '../env-resolution.js';
 import { getCurrentVersion } from '../package-info.js';
-import { pinScorers } from '../scorers/cache.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from '../session-flow/archive.js';
 import { getRepoIdentity } from '../session-flow/sync.js';
@@ -1255,19 +1254,14 @@ async function install(
   secrets: Record<string, string>,
 ): Promise<Result<ClaimReceipt>> {
   // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
-  const { definitionHash: _hash, copies: _copies, steps: _steps, scorers: publishedScorers, ...body } = snapshotBody(snapshot);
-  // A pinned scorer comes back only when this machine caches the same bytes; otherwise its passes are not scored here (D19).
-  const cached = await pinScorers(config, Object.keys(publishedScorers ?? {}));
-  const scorers = Object.fromEntries(Object.entries(cached).filter(([name, pin]) => publishedScorers?.[name]?.sourceHash === pin.sourceHash));
+  const { definitionHash: _hash, copies: _copies, steps: _steps, ...body } = snapshotBody(snapshot);
 
   const publication: RunPublication = { stateRevision: snapshot.stateRevision };
 
   if (Object.values(handed.copies).some((copy) => copy.commit !== undefined)) publication.reconcileCopies = true;
-  const pinned: Pick<RunState, 'workflows' | 'scorers'> = {};
+  const pinned: Pick<RunState, 'workflows'> = {};
 
   if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
-
-  if (Object.keys(scorers).length > 0) pinned.scorers = scorers;
   const copied: Pick<RunState, 'copies'> = {};
 
   if (Object.keys(handed.copies).length > 0) copied.copies = handed.copies;

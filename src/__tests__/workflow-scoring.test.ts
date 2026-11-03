@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { LabelStore } from '../scorers/label-store.js';
+import { RunScorers } from '../scorers/run-scorers.js';
 import type { LocalConfig } from '../types.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { projectRun } from '../workflow/snapshot.js';
@@ -100,11 +101,12 @@ async function labelled(config: LocalConfig, runId: string, step = 'review'): Pr
 }
 
 describe('a scored run', () => {
-  it('pins the scorers a run lists at start, skipping one with no valid file', async () => {
+  it('reads the scorers a run lists, skipping one with no valid file', async () => {
     const config = fixture(scorer(100));
     const runId = await settledRun(config);
     const run = await runOf(config, runId);
-    expect(Object.keys(run.scorers ?? {})).toEqual(['quality']);
+    const read = await RunScorers.of(config, run);
+    expect(read.ok ? Object.keys(read.pins) : read.reason).toEqual(['quality']);
     expect(run.steps[0]).toMatchObject({ installId: (await installOwner(config)).id });
   });
 });
@@ -115,7 +117,7 @@ describe('scoredPasses', () => {
     const run = await runOf(config, await settledRun(config));
     const install = (await installOwner(config)).id;
     const reported = { id: 'review', settledAt: 2, attempt: 'a1', installId: install, delivery: { branch: `teamai/${run.id}/review/p1`, head: 'c'.repeat(40) } };
-    const judged = [{ subject: { runId: run.id, step: 'review', pass: 1 }, scorers: ['quality'] }];
+    const judged = [{ subject: { runId: run.id, step: 'review', pass: 1 }, scorers: ['quality', 'nope'] }];
     const withStep = (step: StepState): RunState => ({ ...run, status: 'running', steps: [step] });
 
     expect(scoredPasses(withStep({ ...reported, status: 'delivering' }), install)).toEqual(judged);
@@ -136,7 +138,8 @@ describe('scoredPasses', () => {
     const config = fixture(scorer(100));
     const run = await runOf(config, await settledRun(config));
     const install = (await installOwner(config)).id;
-    expect(scoredPasses(run, install)).toEqual([{ subject: { runId: run.id, step: 'review', pass: 1 }, scorers: ['quality'] }]);
+    expect(scoredPasses(run, install)).toEqual([{ subject: { runId: run.id, step: 'review', pass: 1 }, scorers: ['quality', 'nope'] }]);
+    expect(await RunScorers.scoredPasses(config, run, install)).toEqual({ ok: true, passes: [{ subject: { runId: run.id, step: 'review', pass: 1 }, scorers: ['quality'] }] });
     expect(scoredPasses(run, 'another-install')).toEqual([]);
     const unstamped = structuredClone(run);
     for (const step of unstamped.steps) if ('installId' in step) delete step.installId;
@@ -365,12 +368,12 @@ steps:
 });
 
 describe('run snapshot', () => {
-  it('publishes the pinned scorers by hash only, and the install and within stamps as they are', async () => {
+  it('publishes no scorer, and the install and within stamps as they are', async () => {
     const config = fixture(scorer(100));
     const run = await runOf(config, await settledRun(config));
     const projected = projectRun({ ...run, archive: [{ step: 'x.y', pass: 1, outcome: 'success', within: { step: 'x', pass: 1 } }] }, {});
     if (!projected.ok) throw new Error(projected.error.message);
-    expect(projected.value.scorers).toEqual({ quality: { sourceHash: run.scorers?.quality?.sourceHash } });
+    expect(projected.value).not.toHaveProperty('scorers');
     expect(JSON.stringify(projected.value)).not.toContain('Judge the review.');
     expect(projected.value.steps[0]).toMatchObject({ installId: (await installOwner(config)).id });
     expect(projected.value.archive[0]).toMatchObject({ within: { step: 'x', pass: 1 } });

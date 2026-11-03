@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -165,9 +164,9 @@ describe('admitting a workflow output', () => {
 
   it.each([
     ['a value that is no bundle', { definition: 'generated' },
-      'Step "plan" output definition is not a workflow this run can admit: definition: Invalid input: expected record, received string; a bundle is { definition, workflows?, scorers?, teamRevision? }'],
+      'Step "plan" output definition is not a workflow this run can admit: definition: Invalid input: expected record, received string; a bundle is { definition, workflows? }'],
     ['a bundle with a key it does not define', { definition: GENERATED, trials: 3 },
-      'Step "plan" output definition is not a workflow this run can admit: Unrecognized key: "trials"; a bundle is { definition, workflows?, scorers?, teamRevision? }'],
+      'Step "plan" output definition is not a workflow this run can admit: Unrecognized key: "trials"; a bundle is { definition, workflows? }'],
     ['a definition that does not parse', { definition: { ...GENERATED, steps: [{ id: 'hello' }] } },
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, or workflow; or no action with end, approve, or choose'],
     ['a from step of its own', { definition: { ...GENERATED, steps: [{ id: 'make', command: 'node make.js', output: { definition: 'workflow' } }, { id: 'run', needs: ['make'], workflow: { from: 'make' } }] } },
@@ -176,8 +175,8 @@ describe('admitting a workflow output', () => {
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml: step "hello" has prompt_file, which a workflow output may not; print the prompt as prompt'],
     ['finally steps', { definition: { ...GENERATED, finally: [{ id: 'tidy', command: 'rm -rf tmp' }] } },
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml has finally steps, which a workflow output may not; only a run of that workflow runs them'],
-    ['a generated scorer without a colon', { definition: GENERATED, scorers: { correctness: { sourceHash: 'h', content: 'c', generated: true } } },
-      'Step "plan" output definition is not a workflow this run can admit: scorers.correctness: a generated scorer name holds a colon, such as teamai:correctness:<task>; a bundle is { definition, workflows?, scorers?, teamRevision? }'],
+    ['scorers, which a run reads at its team pin and from its own files', { definition: GENERATED, scorers: { 'teamai:correctness:fix': { sourceHash: 'h', content: 'c', generated: true } } },
+      'Step "plan" output definition is not a workflow this run can admit: Unrecognized key: "scorers"; a bundle is { definition, workflows? }'],
     ['a named workflow that names a credential a strict sandbox withholds', {
       definition: { ...GENERATED, steps: [{ id: 'hello', workflow: 'inner.0123456789ab', requires: { isolation: 'sandbox', strict: true } }] },
       workflows: { 'inner.0123456789ab': inner([{ id: 'push', command: 'git push', requires: { env: ['GH_TOKEN'] } }]) },
@@ -198,8 +197,6 @@ describe('admitting a workflow output', () => {
       },
     }, 'Step "plan" output definition is not a workflow this run can admit: workflows/inner.0123456789ab.yaml:6: field "steps[0].workflow": step "there" runs workflow "inner.ba9876543210" in a cycle: inner.0123456789ab -> inner.ba9876543210 -> inner.0123456789ab'],
     ['a definition with no name', { definition: { schemaVersion: 'v1alpha1', description: 'Say hello.', steps: [{ id: 'hello', command: 'node hello.js' }] } }, 'Step "plan" output definition is not a workflow this run can admit: workflows/definition.yaml:1: field "name": name must be a non-empty token'],
-    ['a team commit that does not exist', { definition: GENERATED, teamRevision: 'deadbeefdeadbeef' },
-      expect.stringMatching(/^Step "plan" output definition is not a workflow this run can admit: its team scorers could not be read at team commit deadbeefdeadbeef: the team repo at .+ does not have it/)],
   ])('fails the producer for %s, and runs nothing it printed', async (_case, definition, message) => {
     const config = testConfig();
     const runId = await startPlanned(config);
@@ -270,31 +267,12 @@ describe('admitting a workflow output', () => {
     expect(JSON.stringify(reported)).not.toContain('sekrit-value-123');
   });
 
-  it('fails the producer when a team scorer its output lists holds a secret value, and stores no copy of it', async () => {
-    const config = testConfig();
-    fs.mkdirSync(path.join(config.repo.localPath, 'scorers'));
-    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), '---\nlabels:\n  - { value: ok, score: 1, description: Fine. }\n  - { value: bad, score: 0, description: Not. }\npassingScore: 1\n---\nCompare with sekrit-value-123.\n');
-    const runId = await startPlanned(config);
-    const secrets = { DEPLOY_TOKEN: 'sekrit-value-123' };
-    const { lease } = LeaseSchema.parse(await leaseNext(config, runId, driver)).data;
-
-    const reported = await reportAttempt(config, runId, {
-      attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver,
-      outputs: { definition: { definition: { ...GENERATED, steps: [{ id: 'hello', prompt: 'Say hello.', scorers: { names: ['quality'] } }] } }, plan: {} },
-    }, secrets);
-
-    expect(reported).toMatchObject({ data: { step: { status: 'failed', failure: { code: 'invalid_output', message: expect.stringContaining('scorer quality holds the value of DEPLOY_TOKEN') } } } });
-    expect(JSON.stringify(await readRun(config, runId))).not.toContain('sekrit-value-123');
-  });
-
-  it('runs a named workflow the bundle brings, and pins its generated scorers under their names', async () => {
+  it('runs a named workflow the bundle brings, under the name it brings it by', async () => {
     const config = testConfig();
     const runId = await startPlanned(config);
-    const pin = { sourceHash: 'h1', relativePath: 'benchmarks/s/tasks/fix.yaml', content: '---\nlabels:\n  - { value: ok, score: 1, description: Fine. }\npassingScore: 1\n---\nJudge it.\n', generated: true };
     const bundle = {
       definition: { ...GENERATED, steps: [{ id: 'arm', workflow: 'inner.0123456789ab' }] },
       workflows: { 'inner.0123456789ab': inner([{ id: 'work', command: 'node work.js' }]) },
-      scorers: { 'teamai:correctness:fix': pin },
     };
 
     await settle(config, runId, 'plan', { definition: bundle, plan: {} });
@@ -305,7 +283,6 @@ describe('admitting a workflow output', () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error(`run ${run}`);
     expect(Object.keys(run.workflows ?? {})).toEqual(['inner.0123456789ab']);
-    expect(run.scorers).toEqual({ 'teamai:correctness:fix': pin });
   });
 });
 
@@ -330,7 +307,7 @@ outputs:`)}`);
     const reported = await settle(config, runId, 'plan', { definition: { definition: GENERATED, workflows }, plan: {} });
 
     expect(reported).toMatchObject({ data: { step: { status: 'failed', failure: { code: 'invalid_output',
-      message: 'Step "plan" output definition brings "inner.0123456789ab", which this run already holds with other content; name each workflow and generated scorer by its content.' } } } });
+      message: 'Step "plan" output definition brings "inner.0123456789ab", which this run already holds with other content; name each workflow by its content.' } } } });
     const run = await readRun(config, runId);
     expect(typeof run === 'object' && run.workflows?.['inner.0123456789ab']?.steps).toEqual([{ id: 'work', command: 'node team-work.js' }]);
   });
@@ -385,53 +362,5 @@ describe('a run with a from step', () => {
     await settle(config, runId, 'plan', { definition: { definition: GENERATED }, plan: {} });
 
     expect(await retryStep(config, runId, {}, 'plan')).toEqual({ error: { code: 'not_retryable', message: `Run ${runId} is isolated: it runs only on the machine that started it, and a step that ran again would change what it already admitted or measured. Start a new run: ${command}` } });
-  });
-});
-
-describe('the team scorers a bundle lists', () => {
-  const scorer = (rubric: string) => `---
-labels:
-  - { value: good, score: 1, description: Fine. }
-  - { value: bad, score: 0, description: Not fine. }
-passingScore: 1
----
-${rubric}
-`;
-  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toString().trim();
-
-  it('pins them as the team commit the bundle names stores them, not as the member has them now', async () => {
-    const config = testConfig();
-    const root = path.dirname(config.repo.localPath);
-    const file = path.join(config.repo.localPath, 'scorers', 'quality.md');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, scorer('Judge as the team did then.'));
-    git(root, 'init', '--quiet');
-    git(root, 'add', '-A');
-    git(root, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '--quiet', '-m', 'scorer');
-    const frozen = git(root, 'rev-parse', 'HEAD');
-    fs.writeFileSync(file, scorer('Judge as the team does now.'));
-    const runId = await startPlanned(config);
-    const definition = { ...GENERATED, steps: [{ id: 'fix', prompt: 'Fix it.', scorers: ['quality'] }] };
-
-    await settle(config, runId, 'plan', { definition: { definition, teamRevision: frozen }, plan: {} });
-
-    const run = await readRun(config, runId);
-    if (typeof run !== 'object') throw new Error(`run ${run}`);
-    expect(run.scorers?.quality?.content).toContain('Judge as the team did then.');
-  });
-
-  it('pins them from the member cache when the bundle names no team commit', async () => {
-    const config = testConfig();
-    const file = path.join(config.repo.localPath, 'scorers', 'quality.md');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, scorer('Judge as the member has it.'));
-    const runId = await startPlanned(config);
-    const definition = { ...GENERATED, steps: [{ id: 'fix', prompt: 'Fix it.', scorers: ['quality'] }] };
-
-    await settle(config, runId, 'plan', { definition: { definition }, plan: {} });
-
-    const run = await readRun(config, runId);
-    if (typeof run !== 'object') throw new Error(`run ${run}`);
-    expect(run.scorers?.quality?.content).toContain('Judge as the member has it.');
   });
 });

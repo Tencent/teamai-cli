@@ -102,8 +102,8 @@ describe('NamedSubject.ofPass', () => {
   });
 
   it.each([
-    ['a scorer file', { scorers: ['./scorers/quality.md'] }, 'invalid_arguments', '--run takes scorer names, not the file ./scorers/quality.md: a run pins its scorers when it starts'],
-    ['a scorer the run did not pin', { scorers: ['style'], step: 'review' }, 'scorer_not_found', 'Scorer style is not pinned by run {run}, so it has no rubric to judge its passes with. Scorers it pinned: quality.'],
+    ['a scorer file', { scorers: ['./scorers/quality.md'] }, 'invalid_arguments', '--run takes scorer names, not the file ./scorers/quality.md: a run reads its scorers at the team revision it started from'],
+    ['a scorer the run does not list', { scorers: ['style'], step: 'review' }, 'scorer_not_found', 'Scorer style is not a scorer of run {run} at the team revision it started from, so it has no rubric to judge its passes with. Its scorers: quality.'],
     ['a pass that did not succeed', { scorers: ['quality'], pass: 2 }, 'pass_not_found', 'Pass 2 of step review did not succeed in run {run}. Succeeded passes: 1.'],
     ['a scorer no step lists', { scorers: ['style'] }, 'step_not_found', 'Run {run} lists scorer style on no step. Pass --step <path> to pick one: review.'],
     ['a step with no succeeded pass', { scorers: ['quality'], step: 'missing' }, 'step_not_found', 'Step missing has no succeeded pass in run {run}. Steps with one: review.'],
@@ -287,12 +287,12 @@ describe('NamedSubject.ofPass of other runs', () => {
     expect(await NamedSubject.ofPass(config, { run, scorers: ['quality'] })).toMatchObject({ ok: false, code: 'evidence_missing' });
   });
 
-  it('refuses a scorer on a run that pinned none', async () => {
+  it('refuses a scorer on a run whose steps list none', async () => {
     const config = await team(workflow('', step('review')));
     const run = await ran(config);
 
     expect(await NamedSubject.ofPass(config, { run, step: 'review', scorers: ['quality'] })).toEqual({
-      ok: false, code: 'scorer_not_found', message: `Scorer quality is not pinned by run ${run}, so it has no rubric to judge its passes with. The run pinned no scorer.`,
+      ok: false, code: 'scorer_not_found', message: `Scorer quality is not a scorer of run ${run} at the team revision it started from, so it has no rubric to judge its passes with. Its steps list no scorer it can read.`,
     });
   });
 });

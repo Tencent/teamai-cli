@@ -30,6 +30,7 @@ import { z } from 'zod';
 import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import type { LocalConfig } from '../../types.js';
 import { compileBundle, freezePlan, type BenchmarkPlan } from '../../benchmark/plan.js';
+import { RunScorers } from '../../scorers/run-scorers.js';
 import type { BenchmarkRunRecord, TrialResult } from '../../benchmark/result.js';
 import { planOfRun } from '../../benchmark/run-plan.js';
 import { commitCheckFiles, type CommittedSuite } from '../../benchmark/trial.js';
@@ -662,7 +663,7 @@ const PLANNER: DriverIdentity = { kind: 'local', machine: 'planner', workspace: 
  * frozen as `frozenBenchmark` freezes it, with its plan, or what `outputsOf` makes of them. The trials wait for a driver.
  */
 export async function startBenchmarkRun(config: LocalConfig, files: BenchmarkSuiteFiles, { body = PLANNED_BENCHMARK, outputsOf, unattended = false }: {
-  body?: string; outputsOf?: (bundle: ReturnType<typeof compileBundle>, plan: BenchmarkPlan) => unknown; unattended?: boolean;
+  body?: string; outputsOf?: (bundle: Omit<ReturnType<typeof compileBundle>, 'scorers'>, plan: BenchmarkPlan) => unknown; unattended?: boolean;
 } = {}): Promise<WorkflowEnvelope> {
   const frozen = await frozenBenchmark(config, files);
   if (!('plan' in frozen)) return frozen;
@@ -673,8 +674,10 @@ export async function startBenchmarkRun(config: LocalConfig, files: BenchmarkSui
   const started = await startRun(config, 'planned', {}, { secrets: {}, timeout: frozen.committed.suite.timeoutMs });
   if ('error' in started) return started;
   const runId = String(started.data.run);
-  // As the step prints them, JSON on its stdout, without the team revision, which this config has no team repo to pin at.
-  const outputs: unknown = JSON.parse(JSON.stringify(outputsOf ? outputsOf(bundle, frozen.plan) : { definition: { ...bundle, workflows: {} }, plan: frozen.plan }));
+  // As the step does: its generated scorers written as files of the run, and the rest printed as JSON on its stdout.
+  const { scorers: generated, ...printed } = bundle;
+  await RunScorers.writeGenerated(config, runId, generated);
+  const outputs: unknown = JSON.parse(JSON.stringify(outputsOf ? outputsOf(printed, frozen.plan) : { definition: { ...printed, workflows: {} }, plan: frozen.plan }));
   for (let leased = PlanLeaseSchema.safeParse(await leaseNext(config, runId, PLANNER)); leased.success; leased = PlanLeaseSchema.safeParse(await leaseNext(config, runId, PLANNER))) {
     const { attempt, revision } = leased.data.data.lease;
     await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver: PLANNER, outputs });

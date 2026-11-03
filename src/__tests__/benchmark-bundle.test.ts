@@ -132,7 +132,7 @@ describe('the workflow a benchmark plan prints', () => {
     const [arm] = arms;
     if (!arm) throw new Error('no arm');
     const plan: BenchmarkPlan = { ...frozen.plan, arms: [arm], trials: trialsOf(frozen.committed.suite.tasks, arms, 1) };
-    const bundle = compileBundle(plan, frozen.committed, { armWorkflows: new Map([['flow', pinned]]), unattended: false });
+    const { scorers: _generated, ...bundle } = compileBundle(plan, frozen.committed, { armWorkflows: new Map([['flow', pinned]]), unattended: false });
 
     const started = await startBenchmarkRun(config, files, { outputsOf: () => ({ definition: bundle, plan }) });
     if ('error' in started) throw new Error(started.error.message);

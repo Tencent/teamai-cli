@@ -2,7 +2,6 @@
 
 import type { RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
-import type { PinnedScorer } from '../scorers/pin.js';
 import type { TeamPin } from './team-pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
 import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
@@ -472,11 +471,9 @@ export interface RunState {
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
-  /** The scorers its steps list, by name, as they were cached when it started. A name with no valid scorer then is absent. */
-  scorers?: Record<string, PinnedScorer>;
   /**
    * The `workflow` outputs of the steps a `from` step runs, by the path of the producing step, admitted when it reported
-   * and frozen for the run's life. The named workflows and generated scorers each brought are in `workflows` and `scorers`.
+   * and frozen for the run's life. The named workflows each brought are in `workflows`.
    */
   admitted?: Record<string, AdmittedWorkflow>;
   /**

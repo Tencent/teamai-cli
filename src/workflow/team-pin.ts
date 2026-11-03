@@ -46,7 +46,7 @@ async function pushedRevision(root: string, head: string): Promise<string> {
  * What the checkout holds past `revision` under the team files, untracked files included, read through a copy of its
  * index, so the member's own index is left as it is and the copy's stat data spares hashing unchanged files.
  */
-async function changesPast(config: LocalConfig, root: string, revision: string): Promise<string | undefined> {
+async function changesPast(root: string, spec: string, revision: string): Promise<string | undefined> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-team-pin-'));
 
   try {
@@ -54,7 +54,6 @@ async function changesPast(config: LocalConfig, root: string, revision: string):
     const own = await git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'index']);
     const copied = own.code === 0 && await fs.copyFile(own.stdout.trim(), index).then(() => true, () => false);
     const withIndex = boundedGit(undefined, { ...process.env, GIT_INDEX_FILE: index });
-    const spec = teamPathspec(config);
 
     for (const args of [...copied ? [] : [['read-tree', 'HEAD']], ['add', '-A', '--', spec]]) {
       const ran = await withIndex(root, args);
@@ -70,6 +69,12 @@ async function changesPast(config: LocalConfig, root: string, revision: string):
   }
 }
 
+async function isSamePath(left: string, right: string): Promise<boolean> {
+  const [one, other] = await Promise.all([fs.realpath(left).catch(() => left), fs.realpath(right).catch(() => right)]);
+
+  return one === other;
+}
+
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 export const TeamPin = {
@@ -79,11 +84,13 @@ export const TeamPin = {
    */
   async capture(config: LocalConfig): Promise<{ pin: TeamPin; patch?: string } | undefined> {
     const root = repositoryRoot(config);
-    const head = await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+    const [top, head] = await Promise.all([git(root, ['rev-parse', '--show-toplevel']), git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])]);
+    const spec = teamPathspec(config);
 
-    if (head.code !== 0) return undefined;
+    // A clone at the revision reads the team files where the checkout does only when this is the repository's top.
+    if (top.code !== 0 || head.code !== 0 || spec.startsWith('..') || !await isSamePath(top.stdout.trim(), root)) return undefined;
     const revision = await pushedRevision(root, head.stdout.trim());
-    const patch = await changesPast(config, root, revision);
+    const patch = await changesPast(root, spec, revision);
 
     return patch === undefined ? { pin: { revision } } : { pin: { revision, patch: sha256(patch) }, patch };
   },
