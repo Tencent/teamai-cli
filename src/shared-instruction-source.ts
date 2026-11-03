@@ -28,14 +28,19 @@ export const SHARED_INSTRUCTION_PREFERRED_DIR: SharedInstructionSourceDir = 'age
 /**
  * The source directories that exist in `repoPath`, in collection order
  * (preferred first, so a later directory never overrides an earlier one).
+ *
+ * Existence is by PATH, not by "is a directory": a repo whose `claudemd` is
+ * a regular file is a broken repo, and the caller must see the same failure
+ * it saw before (`readdir` on a file raises ENOTDIR, which pull reports as a
+ * skipped sync). Silently ignoring it would hide a broken team repo.
  */
 export async function existingSharedInstructionDirs(repoPath: string): Promise<SharedInstructionSourceDir[]> {
   const present = await Promise.all(
     SHARED_INSTRUCTION_SOURCE_DIRS.map(async (dir) => {
       try {
-        const stat = await fs.stat(path.join(repoPath, dir));
+        await fs.stat(path.join(repoPath, dir));
 
-        return stat.isDirectory() ? dir : null;
+        return dir;
       } catch {
         return null;
       }
@@ -94,39 +99,4 @@ export async function findSharedInstructionFile(
   }
 
   return null;
-}
-
-/**
- * The shared-instruction source directories that hold a file with this name,
- * for the both-present case: the file is written under one of them and the
- * other copy is a duplicate of the same content.
- */
-export async function duplicateSharedInstructionNames(
-  repoPath: string,
-): Promise<Map<string, SharedInstructionSourceDir[]>> {
-  const dirs = await existingSharedInstructionDirs(repoPath);
-
-  if (dirs.length < 2) return new Map();
-
-  const byName = new Map<string, SharedInstructionSourceDir[]>();
-
-  for (const dir of dirs) {
-    const root = path.join(repoPath, dir);
-    let entries: string[];
-
-    try {
-      entries = await fs.readdir(root);
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      if (!entry.endsWith('.md')) continue;
-      const sources = byName.get(entry) ?? [];
-      sources.push(dir);
-      byName.set(entry, sources);
-    }
-  }
-
-  return new Map([...byName].filter(([, sources]) => sources.length > 1));
 }
