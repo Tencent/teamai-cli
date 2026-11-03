@@ -34,12 +34,10 @@ function teamPathspec(config: LocalConfig): string {
 
 /** The newest commit of HEAD that a ref of the team remote holds, or HEAD when none does. */
 async function pushedRevision(root: string, head: string): Promise<string> {
+  // The boundary commits rev-list marks with `-` are the pushed parents of what is not pushed; none when all is.
   const listed = await git(root, ['rev-list', '--boundary', head, '--not', '--remotes=origin']);
-  const lines = listed.code === 0 ? listed.stdout.split('\n').filter(Boolean) : [];
 
-  if (lines.length === 0) return head;
-
-  return lines.find((line) => line.startsWith('-'))?.slice(1) ?? head;
+  return listed.stdout.split('\n').find((line) => line.startsWith('-'))?.slice(1) ?? head;
 }
 
 /**

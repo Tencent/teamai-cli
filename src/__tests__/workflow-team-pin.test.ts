@@ -25,8 +25,8 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** A member's team checkout with one pushed commit that holds `workflows/build.yaml` and `files`, synced. */
-async function pushedTeam(files: Record<string, string>): Promise<{ config: LocalConfig; write(file: string, text: string): void; push(message: string): void }> {
+/** A member's team checkout with one commit that holds `workflows/build.yaml` and `files`, pushed unless `pushed` is false, synced. */
+async function pushedTeam(files: Record<string, string>, { pushed = true } = {}): Promise<{ config: LocalConfig; write(file: string, text: string): void; push(message: string): void }> {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-team-pin-')));
   dirs.push(root);
   const team = path.join(root, 'team');
@@ -47,7 +47,7 @@ async function pushedTeam(files: Record<string, string>): Promise<{ config: Loca
     git(team, 'commit', '-qm', message);
   };
   commit('base');
-  git(team, 'push', '-q', '--set-upstream', 'origin', 'main');
+  if (pushed) git(team, 'push', '-q', '--set-upstream', 'origin', 'main');
   const config: LocalConfig = {
     repo: { localPath: team, remote: path.join(root, 'origin.git') },
     username: 'tester', scope: 'project', additionalRoles: [], dataHome: path.join(root, 'data'),
@@ -83,6 +83,12 @@ describe('a run reads team files at the team revision it started from', () => {
 
     expect(await readAtPin(config, first, 'scorers/quality.md')).toBe('v1\n');
     expect(await readAtPin(config, second, 'scorers/quality.md')).toBe('v2\n');
+  });
+
+  it('pins the checkout\'s own commit when the team remote holds none of its history', async () => {
+    const { config } = await pushedTeam({ 'scorers/quality.md': 'v1\n' }, { pushed: false });
+
+    expect(await TeamPin.capture(config)).toEqual({ pin: { revision: git(config.repo.localPath, 'rev-parse', 'HEAD') } });
   });
 
   it('carries the checkout\'s uncommitted edits, new files and unpushed commits, and not a later edit', async () => {
