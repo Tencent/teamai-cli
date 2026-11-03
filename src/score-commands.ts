@@ -112,57 +112,99 @@ function refusedWith(refusal: { code: string; message: string }): WorkflowEnvelo
   return failure(refusal.code, refusal.message);
 }
 
-async function score(options: ScoreOptions): Promise<WorkflowEnvelope | { start: ScoreStart }> {
+/** What a `teamai score` call answers: an envelope, or the teamai-score run it starts. */
+type Scored = WorkflowEnvelope | { start: ScoreStart };
+
+/** Whether `options` name a pass: `--run`, `--step` or `--pass`. */
+function namesPass(options: ScoreOptions): boolean {
+  return [options.run, options.step, options.pass].some((flag) => flag !== undefined);
+}
+
+/** Whether `options` name a session: on this machine, pushed, or labelled by hand. */
+function namesSession(options: ScoreOptions): boolean {
+  return [options.session, options.source, options.teamSession, options.author, options.label].some((flag) => flag !== undefined);
+}
+
+/** Why the flags of `options` cannot go together, or undefined. */
+function flagConflict(options: ScoreOptions): WorkflowEnvelope | undefined {
   if (options.drain) return failure('invalid_arguments', '--drain goes alone: teamai score --drain');
-  const asksForPass = options.run !== undefined || options.step !== undefined || options.pass !== undefined;
-  const namesSession = options.session !== undefined || options.source !== undefined || options.teamSession !== undefined || options.author !== undefined || options.label !== undefined;
-  const asksForSession = namesSession || (!asksForPass && (options.scorer?.length || options.batch));
 
-  if (asksForPass && namesSession) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
-
+  if (namesPass(options) && namesSession(options)) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
   const file = options.push ? options.scorer?.find(isScorerFile) : undefined;
 
-  if (file !== undefined) return failure('invalid_arguments', `--push publishes stored labels, and the label of the scorer file ${file} is never stored. Leave out --push to try the file`);
+  return file === undefined ? undefined : failure('invalid_arguments', `--push publishes stored labels, and the label of the scorer file ${file} is never stored. Leave out --push to try the file`);
+}
 
-  if (asksForSession) {
-    const demand = sessionDemandOf(options);
+/** What the flags of `options` ask for: a scorer with no pass flag judges a session, the one the agent session names. */
+function askOf(options: ScoreOptions): 'pass' | 'session' | 'push' | 'none' {
+  if (namesSession(options)) return 'session';
 
-    if (!('scorers' in demand)) return demand;
-    const loaded = await localConfig();
+  if (namesPass(options)) return 'pass';
 
-    if (!loaded.ok) return loaded.envelope;
+  if ((options.scorer ?? []).length > 0 || options.batch === true) return 'session';
 
-    // A scorer file's label is only tried, never stored, so it is judged here and starts no teamai-score run.
-    if (demand.scorers.some(isScorerFile)) {
-      if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives a teamai-score run, and a scorer file is judged here without one. Leave out --driver.');
+  return options.push ? 'push' : 'none';
+}
 
-      return scoreSession(loaded.config, demand);
+/** The teamai-score run that judges the session `options` name, or a scorer file judged here. */
+async function sessionScore(options: ScoreOptions): Promise<Scored> {
+  const demand = sessionDemandOf(options);
+
+  if (!('scorers' in demand)) return demand;
+  const loaded = await localConfig();
+
+  if (!loaded.ok) return loaded.envelope;
+
+  // A scorer file's label is only tried, never stored, so it is judged here and starts no teamai-score run.
+  if (demand.scorers.some(isScorerFile)) {
+    if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives a teamai-score run, and a scorer file is judged here without one. Leave out --driver.');
+
+    return scoreSession(loaded.config, demand);
+  }
+
+  const named = await NamedSubject.ofSession(loaded.config, demand);
+
+  return named.ok ? { start: { named, scorers: demand.scorers, label: demand.label, batch: demand.batch === true, push: demand.push === true } } : refusedWith(named);
+}
+
+/** The teamai-score run that judges the pass `options` name. */
+async function passScore(options: ScoreOptions): Promise<Scored> {
+  const demand = passOf(options);
+
+  if (!('run' in demand)) return demand;
+  const loaded = await localConfig();
+  const named = await NamedSubject.ofPass(loaded.ok ? loaded.config : undefined, demand);
+
+  return named.ok ? { start: { named, scorers: demand.scorers, batch: options.batch === true, push: options.push === true } } : refusedWith(named);
+}
+
+async function score(options: ScoreOptions): Promise<Scored> {
+  const conflict = flagConflict(options);
+
+  if (conflict !== undefined) return conflict;
+  const ask = askOf(options);
+
+  switch (ask) {
+    case 'session':
+      return sessionScore(options);
+    case 'pass':
+      return passScore(options);
+    case 'push': {
+      const loaded = await localConfig();
+
+      return loaded.ok ? pushPending(loaded.config) : loaded.envelope;
     }
 
-    const named = await NamedSubject.ofSession(loaded.config, demand);
+    case 'none':
+      return options.driver === undefined
+        ? failure('invalid_arguments', 'Pass --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels')
+        : failure('invalid_arguments', '--driver picks who drives the teamai-score run that --run, --session or --team-session starts. Pass one of them.');
+    default: {
+      const unhandled: never = ask;
 
-    return named.ok ? { start: { named, scorers: demand.scorers, label: demand.label, batch: demand.batch === true, push: demand.push === true } } : refusedWith(named);
+      return unhandled;
+    }
   }
-
-  if (asksForPass) {
-    const demand = passOf(options);
-
-    if (!('run' in demand)) return demand;
-    const loaded = await localConfig();
-    const named = await NamedSubject.ofPass(loaded.ok ? loaded.config : undefined, demand);
-
-    return named.ok ? { start: { named, scorers: demand.scorers, batch: options.batch === true, push: options.push === true } } : refusedWith(named);
-  }
-
-  if (options.push) {
-    const loaded = await localConfig();
-
-    return loaded.ok ? pushPending(loaded.config) : loaded.envelope;
-  }
-
-  if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives the teamai-score run that --run, --session or --team-session starts. Pass one of them.');
-
-  return failure('invalid_arguments', 'Pass --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels');
 }
 
 /** `teamai score --drain`: drains every scope this directory reaches, in this run mode, and prints what it did. */
