@@ -385,6 +385,28 @@ servers:
 
 密钥写 `${VAR}`，并在 `env/secrets.yaml` 里声明。只给一个项目时，写到 `mcp/<ns>/mcp.yaml`。
 
+
+OpenCode 的 `opencode.json`、Cursor 的 `mcp.json` 和 `hooks.json`、CodeBuddy 的 settings 和 MCP 文件、Qoder 的 `settings.json` 以及 Pi 的 `models.json` 可以带注释，因为这些工具本身就这样读。teamai 按同样的方式读，只改自己的条目：你写的行和注释保持原样。下面是 pull 上面的 `local-formatter` server 之后的 `~/.config/opencode/opencode.json`：
+
+```jsonc
+{
+  "mcp": {
+    "notes": { "type": "local", "command": ["notes-mcp"], "enabled": false }, // 等 API key 到了再开
+    "local-formatter": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@acme/formatter-mcp"
+      ],
+      "enabled": true
+    },
+  },
+}
+```
+
+团队去掉 `local-formatter` 后，下一次 pull 只删掉它那几行，`notes` 和它的注释保持不变。Claude Code、Codex、Muse 等工具不接受带注释的文件，teamai 也一样：pull 会警告文件无法解析，不改动它。
+
 stdio server 的 `env` 键在 Codex TOML 中保持原样：`HTTP.PROXY` 是一个变量，`ProgramFiles(x86)` 等名称会自动加引号。
 
 Codex MCP 表头中的 `mcp_servers` 键可以不加引号，或使用单引号、双引号，子表也一样。引号不影响 teamai 判断应更新哪个服务器，或保留哪个成员自有服务器。

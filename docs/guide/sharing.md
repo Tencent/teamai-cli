@@ -394,6 +394,27 @@ servers:
 
 Write secrets as `${VAR}` and declare the key in `env/secrets.yaml`. A server for one project goes in `mcp/<ns>/mcp.yaml`.
 
+OpenCode's `opencode.json`, Cursor's `mcp.json` and `hooks.json`, CodeBuddy's settings and MCP files, Qoder's `settings.json` and Pi's `models.json` may hold comments, since those tools read them so. teamai reads them the same way and edits only its own entries: your lines and comments stay as you wrote them. Here is `~/.config/opencode/opencode.json` after a pull of the `local-formatter` server above:
+
+```jsonc
+{
+  "mcp": {
+    "notes": { "type": "local", "command": ["notes-mcp"], "enabled": false }, // off until the API key arrives
+    "local-formatter": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@acme/formatter-mcp"
+      ],
+      "enabled": true
+    },
+  },
+}
+```
+
+When the team drops `local-formatter`, the next pull takes its lines out and leaves `notes` and its comment as they are. Claude Code, Codex, Muse and the other tools reject a commented file, so teamai does too: pull warns that the file does not parse and changes nothing in it.
+
 For stdio servers, `env` keys stay literal in Codex's TOML: `HTTP.PROXY` is one variable, and names such as `ProgramFiles(x86)` are quoted automatically.
 
 Codex MCP table headers can use bare, single-quoted or double-quoted `mcp_servers` keys, including on sub-tables. Quoting does not change which server teamai updates or protects as the member's own.
