@@ -10,7 +10,7 @@ import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
 import { getDataHome, getReportsDir, getVotesDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
-import { commitAndPushReports, ensureReportsWorktree, readReportsOriginFiles, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
+import { commitAndPushReports, ensureReportsWorktree, fetchReportsOriginFile, readReportsOriginFiles, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { isPublished } from '../utils/branch-worktree.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsage } from '../team-push.js';
@@ -398,6 +398,24 @@ describe('git-kind reports: reading what origin holds', () => {
       'members/alice.yaml': 'username: alice\n',
       'members/nobody.yaml': null,
     });
+  });
+
+  it('reads a file as absent inside an update once origin deleted the branch, though the clone still tracks it', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const wt = await ensureReportsWorktree(alice);
+    await simpleGit(origin).raw(['branch', '-D', 'teamai-reports']);
+    fs.rmSync(wt, { recursive: true, force: true });
+
+    const result = await updateReports(
+      alice,
+      async (worktree, update) => ({ value: await fetchReportsOriginFile(worktree, 'members/alice.yaml', update), write: null }),
+      READ_ONLY,
+    );
+
+    expect(await simpleGit(clone).raw(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/teamai-reports'])).not.toBe('');
+    expect(result.value).toEqual({ status: 'absent' });
   });
 });
 

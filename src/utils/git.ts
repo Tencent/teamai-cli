@@ -322,7 +322,8 @@ export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
  * With `identityFallback`, a commit git cannot attribute, as on a CI runner
  * with no user.email, is made as `TeamAI <teamai@localhost>` like a workflow
  * workspace commit. Only the git config keys left unset are filled in, so an
- * identity the user configured is kept.
+ * identity the user configured is kept. The identity is looked up only after
+ * a commit fails, so a commit git can attribute costs no extra git process.
  */
 export async function commitSkippingHooks(
   git: SimpleGit,
@@ -330,8 +331,18 @@ export async function commitSkippingHooks(
   paths?: readonly string[],
   options: { identityFallback?: boolean } = {},
 ) {
-  const identity = options.identityFallback ? await fallbackIdentityConfig(git) : [];
+  try {
+    return await commitWith(git, message, paths, []);
+  } catch (e) {
+    const identity = options.identityFallback ? await fallbackIdentityConfig(git) : [];
 
+    if (identity.length === 0) throw e;
+
+    return commitWith(git, message, paths, identity);
+  }
+}
+
+async function commitWith(git: SimpleGit, message: string, paths: readonly string[] | undefined, identity: readonly string[]) {
   if (paths === undefined && identity.length === 0) return git.commit(message, { '--no-verify': null });
   const commit = [...identity, '--literal-pathspecs', 'commit', '--no-verify', '-m', message];
 

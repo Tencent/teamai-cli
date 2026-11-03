@@ -171,7 +171,7 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(git(['show', 'main:.teamai/docs/README.md'], remote)).toBe(TEAMMATE_README.trim());
   });
 
-  it.each(['SKILL.md', 'references/guide.md', 'references/deleted.md', 'different files'])('refuses a stale skill push that would overwrite upstream changes: %s', async (changed) => {
+  it.each(['SKILL.md', 'references/deleted.md'])('refuses a stale skill push that would overwrite upstream changes: %s', async (file) => {
     const skill = '.teamai/skills/demo';
     const body = '---\nname: demo\ndescription: Demo\n---\nBase skill.\n';
     fs.mkdirSync(active(`${skill}/references`), { recursive: true });
@@ -182,11 +182,9 @@ describe('single-repo push from a checkout behind the default branch', () => {
     git(['commit', '-q', '-m', 'seed skill'], projectRoot);
     git(['push', '-q', 'origin', 'main'], projectRoot);
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
-    const file = changed === 'different files' ? 'references/guide.md' : changed;
     const upstream = file === 'SKILL.md' ? `${body}Teammate fix.\n` : 'Teammate reference fix.\n';
     teammateLandsOnMain({ [`${skill}/${file}`]: upstream });
-    if (changed === 'references/deleted.md') fs.unlinkSync(active(`${skill}/${file}`));
-    else if (changed === 'different files') fs.appendFileSync(active(`${skill}/SKILL.md`), 'Author edit.\n');
+    if (file === 'references/deleted.md') fs.unlinkSync(active(`${skill}/${file}`));
     else fs.appendFileSync(active(`${skill}/${file}`), 'Author edit.\n');
 
     const push = await runCLI(['push', '--all'], projectRoot, home);

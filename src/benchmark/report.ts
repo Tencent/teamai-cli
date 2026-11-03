@@ -15,7 +15,7 @@ import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { runComparisons, type ArmComparison } from './history.js';
 import { benchmarkRecord, benchmarkRecordFile, unlaunchedTrial, type BenchmarkRunRecord } from './result.js';
 import { planOfRun, trialsUnattended, type RunPlan } from './run-plan.js';
-import { benchmarkTable, formatBenchmarkTable, type BenchmarkTable } from './table.js';
+import { benchmarkTable, formatBenchmarkTable, type AssetEffect, type BenchmarkTable } from './table.js';
 import { toolUnavailableNotice } from './trial.js';
 
 /**
@@ -25,7 +25,7 @@ import { toolUnavailableNotice } from './trial.js';
  */
 export interface BenchmarkReport {
   text: string;
-  table: BenchmarkTable & { pairs: ArmComparison[] };
+  table: BenchmarkTable & { pairs: ArmComparison[]; assets: AssetEffect[] };
 }
 
 /**

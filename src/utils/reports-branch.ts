@@ -187,17 +187,22 @@ export type ReportsOriginRead =
 /**
  * A file on origin's reports branch, fetched first so a failed fetch reads as `unreachable`, never as a missing file the
  * way {@link readReportsOriginFile} would. `dir` is a checkout of the repository the branch lives in.
+ *
+ * Inside an {@link updateReports} write, pass its context: once that update reached origin, the file is read from the
+ * ref it fetched, without asking origin again.
  */
-export async function fetchReportsOriginFile(dir: string, relPath: string): Promise<ReportsOriginRead> {
-  const git = createGit(dir);
+export async function fetchReportsOriginFile(dir: string, relPath: string, update?: ReportsWriteContext): Promise<ReportsOriginRead> {
+  if (update?.isOriginFresh !== true) {
+    const git = createGit(dir);
 
-  try {
-    const heads = await git.listRemote(['--heads', 'origin', REPORTS_BRANCH]);
+    try {
+      const heads = await git.listRemote(['--heads', 'origin', REPORTS_BRANCH]);
 
-    if (heads.trim() === '') return { status: 'absent' };
-    await fetchTrackingRef(git, REPORTS_BRANCH);
-  } catch (e) {
-    return { status: 'unreachable', reason: failureReason(e) };
+      if (heads.trim() === '') return { status: 'absent' };
+      await fetchTrackingRef(git, REPORTS_BRANCH);
+    } catch (e) {
+      return { status: 'unreachable', reason: failureReason(e) };
+    }
   }
 
   const text = await readReportsOriginFile(dir, relPath);

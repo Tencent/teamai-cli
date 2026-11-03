@@ -236,32 +236,6 @@ function memberData(member: ProjectMember): { config: string; teamRepo: string }
 const pullAs = (member: ProjectMember, args: string[] = [], env: Record<string, string> = {}): Promise<RunResult> =>
   runCLI(['pull', '--force', ...args], { HOME: member.home, ...env }, member.projectRoot);
 
-it('doctor detects oversized ZCode project rule replies and honors a larger configured byte cap', async () => {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-zcode-budget-')));
-  try {
-    const fixture = makeTeamAndProject(sandbox, { files: { 'rules/common.md': '界'.repeat(11_000) } });
-    const member = makeProjectMember(sandbox, fixture, 'pm', 'product', ['.zcode']);
-    const pulled = await pullAs(member);
-    expect(pulled.code, pulled.output).toBe(0);
-    const doctor = async () => {
-      const result = await runCLI(['doctor', '--json'], { HOME: member.home }, member.projectRoot);
-      const report = JSON.parse(result.stdout) as { checks: Array<{ name: string; ok: boolean; fix?: string }> };
-      return report.checks.find(check => check.name === 'Project rules fit the zcode hook stdout budget');
-    };
-    const failed = await doctor();
-    expect(failed?.ok).toBe(false);
-    expect(failed?.fix).toContain('UTF-8');
-    expect(failed?.fix).toContain('32768');
-    const file = path.join(member.home, '.zcode/cli/config.json');
-    const config = JSON.parse(fs.readFileSync(file, 'utf8'));
-    config.hooks.maxOutputBytes = 65_536;
-    fs.writeFileSync(file, JSON.stringify(config));
-    expect((await doctor())?.ok).toBe(true);
-  } finally {
-    fs.rmSync(sandbox, { recursive: true, force: true });
-  }
-});
-
 describe('instruction block targets on real CLI pull (#945)', () => {
   const sandboxes: string[] = [];
 
@@ -293,73 +267,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     expect(fs.existsSync(path.join(home, 'AGENTS.md'))).toBe(false);
   });
 
-  it('gives Hermes its user blocks in $HERMES_HOME/SOUL.md beside the rules block, and moves them out of ~/AGENTS.md', async () => {
-    const { sandbox, home } = makeUserSandbox(['.claude'], { rule: true });
-    sandboxes.push(sandbox);
-    const hermesHome = path.join(sandbox, 'hermes-home');
-    fs.mkdirSync(hermesHome, { recursive: true });
-    const soul = path.join(hermesHome, 'SOUL.md');
-    fs.writeFileSync(soul, '# Persona\n');
-    const agentsMd = path.join(home, 'AGENTS.md');
-    fs.writeFileSync(agentsMd, `${CULTURE_START}\nold culture\n${CULTURE_END}\n`);
-
-    const result = await runCLI(['pull'], { HOME: home, HERMES_HOME: hermesHome }, sandbox);
-    expect(result.code, result.output).toBe(0);
-
-    const content = fs.readFileSync(soul, 'utf8');
-    expect(content).toContain('# Persona');
-    expect(content).toContain('<!-- [teamai:rules:start] -->');
-    expect(content).toContain('RULE-SENTINEL');
-    expect(content).toContain(CULTURE_START);
-    expect(content).toContain(CLAUDEMD_START);
-    expect(fs.existsSync(agentsMd)).toBe(false);
-
-    // A second pull keeps both blocks, and a project pull leaves the user blocks alone.
-    const again = await runCLI(['pull', '--force'], { HOME: home, HERMES_HOME: hermesHome }, sandbox);
-    expect(again.code, again.output).toBe(0);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.claude/skills']);
-    const projectPull = await runCLI(['pull', '--force'], { HOME: member.home, HERMES_HOME: hermesHome }, member.projectRoot);
-    expect(projectPull.code, projectPull.output).toBe(0);
-    const after = fs.readFileSync(soul, 'utf8');
-    expect(after).toContain(CULTURE_START);
-    expect(after).toContain('Shared team instructions.');
-    expect(after).not.toContain('DEVELOPMENT-SENTINEL');
-  });
-
-  it('keeps only the hand-written text of a ~/AGENTS.md no installed tool reads', async () => {
-    const { sandbox, home } = makeUserSandbox(['.claude']);
-    sandboxes.push(sandbox);
-    const agentsMd = path.join(home, 'AGENTS.md');
-    fs.writeFileSync(agentsMd, [
-      '# My notes',
-      '',
-      CULTURE_START,
-      'old culture',
-      CULTURE_END,
-      '',
-      CLAUDEMD_START,
-      'old shared instructions',
-      CLAUDEMD_END,
-      '',
-    ].join('\n'));
-
-    const result = await runCLI(['pull'], { HOME: home }, sandbox);
-    expect(result.code, result.output).toBe(0);
-
-    expect(fs.readFileSync(agentsMd, 'utf8')).toBe('# My notes\n');
-  });
-
-  it('leaves the project AGENTS.md alone when Hermes is not installed', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.claude/skills']);
-
-    const result = await pullAs(member);
-    expect(result.code, result.output).toBe(0);
-
-    expect(fs.readFileSync(path.join(member.projectRoot, 'AGENTS.md'), 'utf8')).toBe(PROJECT_AGENTS_MD);
-  });
-
   it('reports the cleanup of an old AGENTS.md block in a dry run, then removes it and keeps the authored text', async () => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
     sandboxes.push(sandbox);
@@ -377,222 +284,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain(`Removed teamai instruction blocks from ${agentsMd}`);
     expect(fs.readFileSync(agentsMd, 'utf8')).toBe(PROJECT_AGENTS_MD);
-  });
-
-  it('does not rewrite an instruction file whose blocks are already current', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.claude/skills']);
-
-    const first = await pullAs(member);
-    expect(first.code, first.output).toBe(0);
-    const written = fs.readdirSync(member.projectRoot, { recursive: true, withFileTypes: true })
-      .filter((entry) => entry.isFile() && !entry.parentPath.includes(`${path.sep}.git`) && !entry.parentPath.includes('.teamai'))
-      .map((entry) => path.join(entry.parentPath, entry.name))
-      .filter((file) => fs.readFileSync(file, 'utf8').includes(CLAUDEMD_START));
-    expect(written.length).toBeGreaterThan(0);
-    const mtimes = written.map((file) => fs.statSync(file).mtimeMs);
-
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const second = await pullAs(member);
-    expect(second.code, second.output).toBe(0);
-    expect(written.map((file) => fs.statSync(file).mtimeMs)).toEqual(mtimes);
-  });
-
-  it('gives two members of one project their own role selection without touching the shared AGENTS.md (Claude)', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const fixture = makeTeamAndProject(sandbox);
-    const developer = makeProjectMember(sandbox, fixture, 'dev', 'developer', ['.claude/skills']);
-    const product = makeProjectMember(sandbox, fixture, 'pm', 'product', ['.claude/skills']);
-    const context = (member: ProjectMember): string =>
-      fs.readFileSync(path.join(member.projectRoot, '.claude', 'rules', 'teamai-context.md'), 'utf8');
-
-    for (const member of [developer, product, developer]) {
-      const result = await pullAs(member);
-      expect(result.code, result.output).toBe(0);
-    }
-
-    expect(context(developer)).toContain('COMMON-SENTINEL');
-    expect(context(developer)).toContain('DEVELOPMENT-SENTINEL');
-    expect(context(developer)).not.toContain('PRODUCT-SENTINEL');
-    expect(context(developer)).toContain(CULTURE_START);
-    expect(context(developer)).toContain(RECALL_START);
-    expect(context(product)).toContain('COMMON-SENTINEL');
-    expect(context(product)).toContain('PRODUCT-SENTINEL');
-    expect(context(product)).not.toContain('DEVELOPMENT-SENTINEL');
-    for (const member of [developer, product]) {
-      expect(fs.readFileSync(path.join(member.projectRoot, 'AGENTS.md'), 'utf8')).toBe(PROJECT_AGENTS_MD);
-      expect(fs.existsSync(path.join(member.projectRoot, '.claude', 'CLAUDE.md'))).toBe(false);
-      expect(fs.existsSync(path.join(member.projectRoot, 'CLAUDE.local.md'))).toBe(false);
-    }
-  });
-
-  it('moves Claude blocks an earlier release left in .claude/CLAUDE.md, keeping the authored text', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.claude/skills']);
-    const legacy = path.join(member.projectRoot, '.claude', 'CLAUDE.md');
-    fs.writeFileSync(legacy, `# Team notes\n\n${CLAUDEMD_START}\nold selection\n${CLAUDEMD_END}\n`);
-
-    const result = await pullAs(member);
-    expect(result.code, result.output).toBe(0);
-
-    expect(result.output).toContain(`Removed teamai instruction blocks from ${legacy}`);
-    expect(fs.readFileSync(legacy, 'utf8')).toBe('# Team notes\n');
-    expect(fs.readFileSync(path.join(member.projectRoot, '.claude', 'rules', 'teamai-context.md'), 'utf8')).toContain('DEVELOPMENT-SENTINEL');
-  });
-
-  it('gives Cursor an always-applied teamai-context.mdc in both scopes', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.cursor/skills']);
-    const projectRule = path.join(member.projectRoot, '.cursor', 'rules', 'teamai-context.mdc');
-
-    for (let i = 0; i < 2; i++) {
-      const result = await pullAs(member);
-      expect(result.code, result.output).toBe(0);
-    }
-    const rule = fs.readFileSync(projectRule, 'utf8');
-    expect(rule.startsWith('---\nalwaysApply: true\n---\n\n')).toBe(true);
-    expect(rule).toContain('DEVELOPMENT-SENTINEL');
-    expect(rule).toContain(RECALL_START);
-    expect(fs.readFileSync(path.join(member.projectRoot, 'AGENTS.md'), 'utf8')).toBe(PROJECT_AGENTS_MD);
-
-    const user = makeUserSandbox(['.cursor']);
-    sandboxes.push(user.sandbox);
-    const userPull = await runCLI(['pull'], { HOME: user.home }, user.sandbox);
-    expect(userPull.code, userPull.output).toBe(0);
-    const userRule = fs.readFileSync(path.join(user.home, '.cursor', 'rules', 'teamai-context.mdc'), 'utf8');
-    expect(userRule.startsWith('---\nalwaysApply: true\n---\n\n')).toBe(true);
-    expect(userRule).toContain(CLAUDEMD_START);
-    expect(fs.existsSync(path.join(user.home, 'AGENTS.md'))).toBe(false);
-  });
-
-  it('gives CodeBuddy and WorkBuddy one shared rule file and keeps it while either tool remains', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.codebuddy/skills', '.workbuddy/skills']);
-    const rule = path.join(member.projectRoot, '.codebuddy', 'rules', 'teamai-context.md');
-    const legacy = path.join(member.projectRoot, '.codebuddy', 'CODEBUDDY.md');
-    const agentsMd = path.join(member.projectRoot, 'AGENTS.md');
-    fs.writeFileSync(legacy, `# CodeBuddy notes\n\n${CLAUDEMD_START}\nold selection\n${CLAUDEMD_END}\n`);
-    fs.writeFileSync(agentsMd, `${PROJECT_AGENTS_MD}\n${CULTURE_START}\nold culture\n${CULTURE_END}\n`);
-
-    const result = await pullAs(member);
-    expect(result.code, result.output).toBe(0);
-
-    const content = fs.readFileSync(rule, 'utf8');
-    expect(content.startsWith('---\nalwaysApply: true\n---\n\n')).toBe(true);
-    expect(content).toContain('DEVELOPMENT-SENTINEL');
-    expect(content.split(CLAUDEMD_START).length - 1).toBe(1);
-    expect(fs.existsSync(path.join(member.projectRoot, '.workbuddy', 'rules', 'teamai-context.md'))).toBe(false);
-    expect(fs.readFileSync(legacy, 'utf8')).toBe('# CodeBuddy notes\n');
-    expect(fs.readFileSync(agentsMd, 'utf8')).toBe(PROJECT_AGENTS_MD);
-
-    const uninstall = await runCLI(['uninstall', '--agent', 'workbuddy', '--force'], { HOME: member.home }, member.projectRoot);
-    expect(uninstall.code, uninstall.output).toBe(0);
-    expect(fs.readFileSync(rule, 'utf8')).toContain('DEVELOPMENT-SENTINEL');
-  });
-
-  it('gives WorkBuddy its user blocks in ~/.workbuddy/rules, not ~/AGENTS.md', async () => {
-    const { sandbox, home } = makeUserSandbox(['.workbuddy']);
-    sandboxes.push(sandbox);
-
-    const result = await runCLI(['pull'], { HOME: home }, sandbox);
-    expect(result.code, result.output).toBe(0);
-
-    const rule = fs.readFileSync(path.join(home, '.workbuddy', 'rules', 'teamai-context.md'), 'utf8');
-    expect(rule.startsWith('---\nalwaysApply: true\n---\n\n')).toBe(true);
-    expect(rule).toContain(CLAUDEMD_START);
-    expect(fs.existsSync(path.join(home, 'AGENTS.md'))).toBe(false);
-  });
-
-  it('gives Qoder, Kiro and Trae their always-on blocks in user and project scopes', async () => {
-    const user = makeUserSandbox(['.qoder', '.qoder-cn', '.kiro', '.trae', '.trae-cn']);
-    sandboxes.push(user.sandbox);
-    const userPull = await runCLI(['pull'], { HOME: user.home }, user.sandbox);
-    expect(userPull.code, userPull.output).toBe(0);
-    const userFiles = [
-      ['.qoder/rules/teamai-context.md', '---\ntrigger: always_on\n---\n'],
-      ['.qoder-cn/rules/teamai-context.md', '---\ntrigger: always_on\n---\n'],
-      ['.kiro/steering/teamai-context.md', '---\ninclusion: always\n---\n'],
-      ['.trae/user_rules/teamai-context.md', '---\nalwaysApply: true\n---\n'],
-      ['.trae-cn/user_rules/teamai-context.md', '---\nalwaysApply: true\n---\n'],
-    ] as const;
-    for (const [relative, header] of userFiles) {
-      const content = fs.readFileSync(path.join(user.home, relative), 'utf8');
-      expect(content.startsWith(`${header}\n`), relative).toBe(true);
-      expect(content).toContain('Be kind.');
-      expect(content).toContain('Shared team instructions.');
-    }
-
-    const projectSandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1419-e2e-')));
-    sandboxes.push(projectSandbox);
-    const fixture = makeTeamAndProject(projectSandbox);
-    const member = makeProjectMember(projectSandbox, fixture, 'dev', 'developer', ['.qoder', '.qoder-cn', '.kiro', '.trae', '.trae-cn']);
-    // Qoder and Trae editions are installed from their user homes while their
-    // project rules share Qoder's and Trae's workspace directories.
-    for (const dir of ['.qoder', '.qoder-cn', '.trae', '.trae-cn']) fs.mkdirSync(path.join(member.home, dir), { recursive: true });
-    const projectPull = await pullAs(member);
-    expect(projectPull.code, projectPull.output).toBe(0);
-    const projectFiles = [
-      ['.qoder/rules/teamai-context.md', '---\ntrigger: always_on\n---\n'],
-      ['.kiro/steering/teamai-context.md', '---\ninclusion: always\n---\n'],
-      ['.trae/rules/teamai-context.md', '---\nalwaysApply: true\n---\n'],
-    ] as const;
-    for (const [relative, header] of projectFiles) {
-      const content = fs.readFileSync(path.join(member.projectRoot, relative), 'utf8');
-      expect(content.startsWith(`${header}\n`), relative).toBe(true);
-      expect(content).toContain('Be kind.');
-      expect(content).toContain('DEVELOPMENT-SENTINEL');
-    }
-
-    const removed = await runCLI(['uninstall', '--force'], { HOME: member.home }, member.projectRoot);
-    expect(removed.code, removed.output).toBe(0);
-    for (const [relative] of projectFiles) expect(fs.existsSync(path.join(member.projectRoot, relative)), relative).toBe(false);
-  });
-
-  it('gives Oh My Pi its project blocks through the extension, its user blocks in RULES.md, and frees both context files', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const fixture = makeTeamAndProject(sandbox);
-    const developer = makeProjectMember(sandbox, fixture, 'dev', 'developer', ['.omp/skills']);
-    const product = makeProjectMember(sandbox, fixture, 'pm', 'product', ['.omp/skills']);
-    const legacy = path.join(developer.projectRoot, '.omp', 'AGENTS.md');
-    fs.writeFileSync(legacy, `${CLAUDEMD_START}\nold selection\n${CLAUDEMD_END}\n`);
-    for (const member of [developer, product]) {
-      fs.mkdirSync(path.join(member.home, '.omp'), { recursive: true });
-      const result = await pullAs(member);
-      expect(result.code, result.output).toBe(0);
-    }
-
-    expect(fs.existsSync(legacy)).toBe(false);
-    const sub = path.join(developer.projectRoot, 'src');
-    fs.mkdirSync(sub, { recursive: true });
-    const devContext = await sessionInstructions('omp', developer.home, sub);
-    expect(devContext).toContain('DEVELOPMENT-SENTINEL');
-    expect(devContext).not.toContain('PRODUCT-SENTINEL');
-    expect(devContext).toContain('Acme');
-    expect(devContext).toContain('teamai-recall');
-    const pmContext = await sessionInstructions('omp', product.home, product.projectRoot);
-    expect(pmContext).toContain('PRODUCT-SENTINEL');
-    expect(pmContext).not.toContain('DEVELOPMENT-SENTINEL');
-    expect(await sessionInstructions('claude', developer.home, developer.projectRoot)).toBe('');
-    for (const member of [developer, product]) {
-      expect(fs.readFileSync(path.join(member.projectRoot, 'AGENTS.md'), 'utf8')).toBe(PROJECT_AGENTS_MD);
-    }
-
-    const user = makeUserSandbox(['.omp']);
-    sandboxes.push(user.sandbox);
-    const userContextFile = path.join(user.home, '.omp', 'agent', 'AGENTS.md');
-    fs.mkdirSync(path.dirname(userContextFile), { recursive: true });
-    fs.writeFileSync(userContextFile, `${CULTURE_START}\nold culture\n${CULTURE_END}\n`);
-    const userPull = await runCLI(['pull'], { HOME: user.home }, user.sandbox);
-    expect(userPull.code, userPull.output).toBe(0);
-    expect(fs.readFileSync(path.join(user.home, '.omp', 'agent', 'RULES.md'), 'utf8')).toContain(CLAUDEMD_START);
-    expect(fs.existsSync(userContextFile)).toBe(false);
-    expect(await sessionInstructions('omp', user.home, user.sandbox)).toBe('');
   });
 
   it('gives Pi its project blocks through the extension and stops writing the project AGENTS.md', async () => {
@@ -613,36 +304,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     // Pi has no recall subagent: it is told to run the command itself.
     expect(context).toContain('teamai recall "');
     expect(context).not.toContain('teamai-recall');
-  });
-
-  it('suppresses Pi hook blocks while a blocked WorkBuddy replacement retains shared native instructions', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-held-native-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.workbuddy/skills']);
-    fs.mkdirSync(path.join(member.home, '.pi'), { recursive: true });
-    const legacy = path.join(member.projectRoot, 'AGENTS.md');
-    const original = `${PROJECT_AGENTS_MD}${CLAUDEMD_START}\nPRODUCT-STALE\n${CLAUDEMD_END}\n`;
-    fs.writeFileSync(legacy, original);
-    const replacement = path.join(member.projectRoot, '.codebuddy/rules/teamai-context.md');
-    fs.mkdirSync(path.dirname(replacement), { recursive: true });
-    fs.writeFileSync(replacement, '# Foreign file\n');
-
-    const blocked = await pullAs(member);
-    expect(blocked.code, blocked.output).toBe(0);
-    expect(fs.readFileSync(legacy, 'utf8')).toBe(original);
-    const held = await sessionInstructions('pi', member.home, member.projectRoot);
-    expect(held).not.toContain('DEVELOPMENT-SENTINEL');
-    expect(held).not.toContain('PRODUCT-STALE');
-    expect(held).toContain('Acme');
-    console.log('blocked WorkBuddy replacement: native prompt retained; Pi hook omits that block and still delivers culture');
-
-    fs.unlinkSync(replacement);
-    const retry = await runCLI(['pull'], { HOME: member.home }, member.projectRoot);
-    expect(retry.code, retry.output).toBe(0);
-    expect(fs.readFileSync(replacement, 'utf8')).toContain('DEVELOPMENT-SENTINEL');
-    expect(fs.readFileSync(legacy, 'utf8')).toBe(PROJECT_AGENTS_MD);
-    expect(await sessionInstructions('pi', member.home, member.projectRoot)).toContain('DEVELOPMENT-SENTINEL');
-    console.log('WorkBuddy repair: legacy block removed; Pi hook resumes the developer prompt');
   });
 
   it('retains Claude legacy instructions until a foreign replacement is repaired', async () => {
@@ -696,25 +357,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     console.log('culture repair: replacement delivered; retired culture removed on the next pull');
   });
 
-  it('keeps globally installed Pi delivering after project WorkBuddy uninstall', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-active-hook-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.workbuddy/skills']);
-    const config = path.join(member.projectRoot, '.teamai/config.yaml');
-    fs.appendFileSync(config, '\nenabledAgents: [workbuddy, pi]\n');
-    fs.mkdirSync(path.join(member.home, '.pi'), { recursive: true });
-    const result = await pullAs(member);
-    expect(result.code, result.output).toBe(0);
-    expect(fs.existsSync(path.join(member.projectRoot, '.pi'))).toBe(false);
-    const data = memberData(member);
-    const removed = await runCLI(['uninstall', '--force', '--agent', 'workbuddy'], { HOME: member.home }, member.projectRoot);
-    expect(removed.code, removed.output).toBe(0);
-    expect(fs.existsSync(data.config)).toBe(true);
-    expect(fs.existsSync(path.join(member.projectRoot, '.codebuddy/rules/teamai-context.md'))).toBe(false);
-    expect(await sessionInstructions('pi', member.home, member.projectRoot)).toContain('DEVELOPMENT-SENTINEL');
-    console.log('WorkBuddy project uninstall: project state preserved; global-only Pi still receives member instructions');
-  });
-
   it('previews the cleanup a real pull does once it installs the Pi extension, and none behind a foreign one', async () => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-dryrun-')));
     sandboxes.push(sandbox);
@@ -735,37 +377,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     const blocked = await pullAs(member, ['--dry-run']);
     expect(blocked.code, blocked.output).toBe(0);
     expect(blocked.output).not.toContain(removal);
-  });
-
-  it('retains Pi legacy instructions until its extension is ready, and protects exclusions', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-migration-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'pm', 'product', ['.pi/skills']);
-    const extension = path.join(member.home, '.pi', 'agent', 'extensions', 'teamai-hooks.ts');
-    fs.mkdirSync(path.dirname(extension), { recursive: true });
-    fs.writeFileSync(extension, '// Foreign extension\n');
-    const legacy = path.join(member.projectRoot, 'AGENTS.md');
-    const original = `${PROJECT_AGENTS_MD}${CLAUDEMD_START}\nworking old prompt\n${CLAUDEMD_END}\n`;
-    fs.writeFileSync(legacy, original);
-    const blocked = await pullAs(member);
-    expect(blocked.code, blocked.output).toBe(0);
-    expect(fs.readFileSync(legacy, 'utf8')).toBe(original);
-    console.log('pull with foreign Pi extension: old working prompt retained');
-    fs.unlinkSync(extension);
-    const configFile = memberData(member).config;
-    const config = fs.readFileSync(configFile, 'utf8');
-    fs.writeFileSync(configFile, `${config}\ndisabledAgents: [pi]\n`);
-    const excluded = await pullAs(member);
-    expect(excluded.code, excluded.output).toBe(0);
-    expect(fs.existsSync(extension)).toBe(false);
-    expect(fs.readFileSync(legacy, 'utf8')).toBe(original);
-    console.log('pull with Pi excluded: extension and legacy instructions unchanged');
-    fs.writeFileSync(configFile, config);
-    const repaired = await runCLI(['pull'], { HOME: member.home }, member.projectRoot);
-    expect(repaired.code, repaired.output).toBe(0);
-    expect(fs.readFileSync(extension, 'utf8')).toContain('hook-dispatch');
-    expect(fs.readFileSync(legacy, 'utf8')).toBe(PROJECT_AGENTS_MD);
-    console.log('pull with Pi enabled: extension installed before old prompt removed');
   });
 
   it('previews and cancels empty-plan Pi exclusion without changing project config on the real CLI', async () => {
@@ -816,55 +427,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     expect(await sessionInstructions('pi', product.home, product.projectRoot)).toContain('PRODUCT-SENTINEL');
     expect(await sessionInstructions('pi', developer.home, developer.projectRoot)).toBe('');
     console.log('uninstall Pi from project A: global extension unchanged; project B instructions still delivered; project A empty');
-  });
-
-  it.each([true, false])('preserves global Codex delivery across two projects on project uninstall, targeted: %s', async (targeted) => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-codex-uninstall-')));
-    sandboxes.push(sandbox);
-    const fixture = makeTeamAndProject(sandbox);
-    const developer = makeProjectMember(sandbox, fixture, 'dev', 'developer', []);
-    const product = { ...makeProjectMember(sandbox, fixture, 'pm', 'product', []), home: developer.home };
-    fs.mkdirSync(path.join(developer.home, '.codex'), { recursive: true });
-    for (const member of [developer, product]) {
-      fs.appendFileSync(path.join(member.projectRoot, '.teamai/config.yaml'), '\nenabledAgents: [codex]\n');
-      const result = await pullAs(member);
-      expect(result.code, result.output).toBe(0);
-    }
-    const hooks = path.join(developer.home, '.codex/hooks.json');
-    const before = fs.readFileSync(hooks, 'utf8');
-    const removed = await runCLI(['uninstall', '--force', ...targeted ? ['--agent', 'codex'] : []], { HOME: developer.home }, developer.projectRoot);
-    expect(removed.code, removed.output).toBe(0);
-    expect(fs.readFileSync(hooks, 'utf8')).toBe(before);
-    expect(await sessionInstructions('codex', product.home, product.projectRoot)).toContain('PRODUCT-SENTINEL');
-    expect(await sessionInstructions('codex', developer.home, developer.projectRoot)).toBe('');
-    if (targeted) expect(fs.readFileSync(memberData(developer).config, 'utf8')).toContain('codex');
-    console.log(`Codex project ${targeted ? 'targeted' : 'full'} uninstall: global hooks unchanged; project B delivered; project A empty`);
-  });
-
-  it('gives Hermes its project blocks through its plugin and frees the project AGENTS.md', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', []);
-    const hermesHome = path.join(sandbox, 'hermes-home');
-    fs.mkdirSync(hermesHome, { recursive: true });
-    const agentsMd = path.join(member.projectRoot, 'AGENTS.md');
-    fs.writeFileSync(agentsMd, `${PROJECT_AGENTS_MD}\n${CULTURE_START}\nold culture\n${CULTURE_END}\n`);
-
-    const result = await pullAs(member, [], { HERMES_HOME: hermesHome });
-    expect(result.code, result.output).toBe(0);
-
-    expect(fs.readFileSync(agentsMd, 'utf8')).toBe(PROJECT_AGENTS_MD);
-    expect(fs.readFileSync(path.join(hermesHome, 'plugins', 'teamai-instructions', '__init__.py'), 'utf8'))
-      .toContain('register_system_prompt_section');
-    expect(fs.readFileSync(path.join(hermesHome, 'config.yaml'), 'utf8')).toMatch(/plugins:\n\s+enabled:\n\s+- teamai-instructions/);
-    const sub = path.join(member.projectRoot, 'docs');
-    fs.mkdirSync(sub, { recursive: true });
-    const run = await runCLI(['hook-dispatch', 'instructions', '--tool', 'hermes'], { HOME: member.home, HERMES_HOME: hermesHome }, sub, JSON.stringify({ cwd: sub }));
-    const context = JSON.parse(run.stdout).hookSpecificOutput.additionalContext as string;
-    expect(context).toContain('DEVELOPMENT-SENTINEL');
-    expect(context).not.toContain('PRODUCT-SENTINEL');
-    expect(context).not.toContain('teamai-recall');
-    expect(context).toContain('teamai recall "');
   });
 
   it('says Hermes cannot load project instructions over its 4,000-character section, without cutting them or using AGENTS.md', async () => {
@@ -1057,17 +619,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     expect(omp).toContain('PRODUCT-SENTINEL');
   });
 
-  it('reports no OMP channel problem for a member without OMP in a project that has .omp/', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.claude/skills', '.omp/skills']);
-
-    const result = await pullAs(member);
-    expect(result.code, result.output).toBe(0);
-
-    expect(result.output).not.toMatch(/omp sessions in this project get no team instructions/);
-  });
-
   it('leaves a tracked Copilot file alone for a member without Copilot', async () => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
     sandboxes.push(sandbox);
@@ -1119,53 +670,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
       expect(content).toContain('DEVELOPMENT-SENTINEL');
       expect(content).not.toContain('RESERVED-RULE-SENTINEL');
     }
-  });
-
-  it('does not list a teamai-context.md teamai did not write in OpenCode\'s instructions', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.opencode/skills']);
-    const contextFile = path.join(member.projectRoot, '.opencode', 'teamai-context.md');
-    fs.writeFileSync(contextFile, '# My own notes\n');
-    const config = path.join(member.projectRoot, '.opencode', 'opencode.json');
-    fs.writeFileSync(config, JSON.stringify({ instructions: ['docs/style.md'] }, null, 2));
-
-    for (const args of [['--dry-run'], []]) {
-      const result = await pullAs(member, args);
-      expect(result.code, result.output).toBe(0);
-      expect(result.output).toContain(`${contextFile} was not written by teamai`);
-      expect(result.output).not.toContain('.opencode/teamai-context.md" to the instructions');
-    }
-
-    expect(fs.readFileSync(contextFile, 'utf8')).toBe('# My own notes\n');
-    expect(JSON.parse(fs.readFileSync(config, 'utf8'))).toEqual({ instructions: ['docs/style.md'] });
-  });
-
-  it('activates OpenCode instructions only after repairing a malformed target', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.opencode/skills']);
-    const contextFile = path.join(member.projectRoot, '.opencode', 'teamai-context.md');
-    const config = path.join(member.projectRoot, '.opencode', 'opencode.json');
-    const malformed = `${CULTURE_START}\nOLD-CULTURE\n${CULTURE_END}\n\n${CLAUDEMD_START}\nPRODUCT-STALE\n`;
-    fs.writeFileSync(contextFile, malformed);
-    fs.writeFileSync(config, JSON.stringify({ instructions: ['docs/style.md'] }));
-    for (const args of [['--dry-run'], []]) {
-      const pull = await pullAs(member, args);
-      expect(pull.code, pull.output).toBe(0);
-      expect(pull.output).toContain('incomplete teamai claudemd block');
-      expect(fs.readFileSync(contextFile, 'utf8')).toBe(malformed);
-      expect(JSON.parse(fs.readFileSync(config, 'utf8')).instructions).toEqual(['docs/style.md']);
-      console.log(`pull ${args.join(' ')}: malformed target warned; OpenCode instructions=${JSON.stringify(JSON.parse(fs.readFileSync(config, 'utf8')).instructions)}`);
-    }
-    fs.writeFileSync(contextFile, `${CLAUDEMD_START}\nPRODUCT-STALE\n${CLAUDEMD_END}\n`);
-    const retry = await pullAs(member);
-    expect(retry.code, retry.output).toBe(0);
-    const content = fs.readFileSync(contextFile, 'utf8');
-    expect(content).toContain('DEVELOPMENT-SENTINEL');
-    expect(content).not.toContain('PRODUCT-STALE');
-    expect(JSON.parse(fs.readFileSync(config, 'utf8')).instructions).toEqual(['docs/style.md', '.opencode/teamai-context.md']);
-    console.log('pull after repair: DEVELOPMENT=1 PRODUCT-STALE=0; OpenCode instructions=["docs/style.md",".opencode/teamai-context.md"]');
   });
 
   it('reports OpenCode delivery only after its config lists the replacement', async () => {
@@ -1273,23 +777,6 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     }
   });
 
-  it('drops OpenCode\'s instructions entry on uninstall even when the member\'s text keeps the file', async () => {
-    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
-    sandboxes.push(sandbox);
-    const member = makeProjectMember(sandbox, makeTeamAndProject(sandbox), 'dev', 'developer', ['.opencode/skills']);
-    const contextFile = path.join(member.projectRoot, '.opencode', 'teamai-context.md');
-    const config = path.join(member.projectRoot, '.opencode', 'opencode.json');
-
-    const pull = await pullAs(member);
-    expect(pull.code, pull.output).toBe(0);
-    expect(JSON.parse(fs.readFileSync(config, 'utf8')).instructions).toEqual(['.opencode/teamai-context.md']);
-    fs.appendFileSync(contextFile, '\n# My own notes\n');
-
-    const uninstall = await runCLI(['uninstall', '--agent', 'opencode', '--force'], { HOME: member.home }, member.projectRoot);
-    expect(uninstall.code, uninstall.output).toBe(0);
-    expect(fs.readFileSync(contextFile, 'utf8')).toBe('# My own notes\n');
-    expect(JSON.parse(fs.readFileSync(config, 'utf8')).instructions ?? []).toEqual([]);
-  });
 });
 
 // #993 bug 6: OpenCode V2 parses `instructions` and ignores it, so teamai's

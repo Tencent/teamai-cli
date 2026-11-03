@@ -5,7 +5,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkVerdict } from '../workflow/check.js';
-import { restoreProtected } from '../workflow/check-run.js';
+import { restoreProtected, writeAdded } from '../workflow/check-run.js';
 import type { CommandExit } from '../workflow/shell-command.js';
 
 const dirs: string[] = [];
@@ -257,5 +257,73 @@ describe('restoreProtected', () => {
     const failure = await restoreClone(clone, repo, start);
 
     expect(failure).toMatchObject({ code: 'trial_prepare_failed', message: expect.stringContaining(TEST) });
+  });
+});
+
+describe('writeAdded', () => {
+  function git(cwd: string, args: string[]): string {
+    return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim();
+  }
+
+  /** A new repo under a temporary directory. */
+  function repo(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-add-'));
+    dirs.push(dir);
+    git(dir, ['init', '-q']);
+    return dir;
+  }
+
+  /** Commits `files` in `dir`, those in `executable` with the executable bit, and answers the commit. */
+  function commit(dir: string, files: Record<string, string>, executable: readonly string[] = []): string {
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), text);
+    }
+    git(dir, ['add', '-A']);
+    for (const file of executable) git(dir, ['update-index', '--chmod=+x', file]);
+    git(dir, ['commit', '-q', '-m', 'commit']);
+    return git(dir, ['rev-parse', 'HEAD']);
+  }
+
+  const OTHER_CASE = "require('node:assert').ok(true);\n";
+  const ANSWER_CASE = "require('node:assert').strictEqual(require('../answer.js'), 42);\n";
+
+  it.each([
+    ['a test the solution brought', {}],
+    ['the case the solution added to an existing test, over the agent\'s own edit of it', { 'test/answer.test.js': OTHER_CASE }],
+  ])('writes %s, as solutionCommit has it', async (_, existing: Record<string, string>) => {
+    const project = repo();
+    const start = commit(project, { 'test/other.test.js': OTHER_CASE, ...existing });
+    const solution = commit(project, { 'answer.js': 'module.exports = 42;\n', 'test/answer.test.js': `${existing['test/answer.test.js'] ?? ''}${ANSWER_CASE}` });
+    const clone = repo();
+    git(clone, ['fetch', '-q', project, start]);
+    git(clone, ['checkout', '-q', '--detach', start]);
+    if ('test/answer.test.js' in existing) fs.writeFileSync(path.join(clone, 'test/answer.test.js'), 'process.exit(0);\n');
+
+    const failure = await writeAdded({ clone, add: [{ kind: 'solution', commit: solution, paths: ['test/answer.test.js'] }], sources: [project], env: process.env });
+
+    expect(failure).toBeUndefined();
+    expect(fs.readFileSync(path.join(clone, 'test/answer.test.js'), 'utf8')).toBe(`${existing['test/answer.test.js'] ?? ''}${ANSWER_CASE}`);
+    expect(fs.existsSync(path.join(clone, 'answer.js'))).toBe(false);
+  });
+
+  it("writes a suite directory's file over the one the agent wrote at its path, executable as the suite has it", async () => {
+    const project = repo();
+    const start = commit(project, { 'test.js': OTHER_CASE });
+    const suiteFiles = repo();
+    const refresh = "require('node:assert').strictEqual(require('../../answer.js'), 42);\n";
+    const committed = commit(suiteFiles, { 'test/auth/refresh.test.js': refresh }, ['test/auth/refresh.test.js']);
+    const clone = repo();
+    git(clone, ['fetch', '-q', project, start]);
+    git(clone, ['checkout', '-q', '--detach', start]);
+    fs.mkdirSync(path.join(clone, 'test/auth'), { recursive: true });
+    fs.writeFileSync(path.join(clone, 'test/auth/refresh.test.js'), 'process.exit(0);\n');
+
+    const failure = await writeAdded({ clone, add: [{ kind: 'suite', commit: committed, paths: ['test/auth/refresh.test.js'] }], sources: [project, suiteFiles], env: process.env });
+
+    expect(failure).toBeUndefined();
+    expect(fs.readFileSync(path.join(clone, 'test/auth/refresh.test.js'), 'utf8')).toBe(refresh);
+    // Windows keeps no executable bit on disk.
+    if (process.platform !== 'win32') expect(fs.statSync(path.join(clone, 'test/auth/refresh.test.js')).mode & 0o111).not.toBe(0);
   });
 });

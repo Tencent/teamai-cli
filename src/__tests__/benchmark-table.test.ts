@@ -459,3 +459,60 @@ describe('benchmark task by arm matrix', () => {
     expect(formatBenchmarkTable(table)).toContain('| Task | claude |\n| --- | --- |\n| fix | - |\n');
   });
 });
+
+describe('routing on an arm that never receives a covered skill', () => {
+  /**
+   * The record of one repetition of task `fix`, which covers skills/dev/auth, on `arms`, each trial's prompt observed
+   * loading no skill, with `withheldFrom` the arms plan found the skill's path withheld from.
+   */
+  async function routingOf(arms: string, withheldFrom: string[]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-table-'));
+    dirs.push(root);
+    const config = benchmarkRunConfig(root);
+    const suite = `schemaVersion: v1alpha1\nname: fix\nrepo: ${PRODUCT_URL}\ndefaults: { tool: claude }\narms:\n${arms}repetitions: 1\ntimeout: 10m\n`;
+    const task = fixTask('{{startingCommit}}').replace(/startingCommit: .*\n/, (line) => `${line}covers: [skills/dev/auth]\n`);
+    const started = await startBenchmarkRun(config, { name: 'fix', suite, tasks: { fix: task } });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    await settleBaselines(config, runId, driver, can);
+    const StepLeaseSchema = z.object({ data: z.object({ lease: z.object({ attempt: z.string(), revision: z.number(), step: z.string() }) }) });
+    for (;;) {
+      const leased = StepLeaseSchema.safeParse(await leaseNext(config, runId, driver, { can: { ...can, role: true }, prepare: true }));
+      if (!leased.success) break;
+      const { attempt, revision, step } = leased.data.data.lease;
+      await reportAttempt(config, runId, step.endsWith('.prompt')
+        ? { attempt, revision, outcome: 'success', driver, used: { skills: [] } }
+        : { attempt, revision, outcome: 'success', exitCode: 0, outputs: { result: 'passed' }, driver });
+    }
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    const planned = planOfRun(run);
+    if ('failure' in planned) throw new Error(planned.failure.message);
+    const [fix] = planned.found.plan.tasks;
+    if (!fix) throw new Error('task fix missing');
+    // As plan resolves skills/dev/auth to the skill auth, withheld from the arms whose selection pull leaves it out of.
+    Object.assign(fix, { coversSkills: ['auth'], ...(withheldFrom.length > 0 ? { coversWithheldFrom: [withheldFrom] } : {}) });
+
+    const record = benchmarkRecord(run, planned.found);
+
+    return { routing: Object.fromEntries(record.trials.map(({ arm, routing }) => [arm, routing])), tasks: record.tasks };
+  }
+
+  it("records no routing on an arm whose role pull leaves the covered skill out of, and keeps the other arm's", async () => {
+    const { routing } = await routingOf('  - name: dev\n    role: dev\n  - name: ops\n    role: ops\n', ['ops']);
+
+    expect(routing).toEqual({ dev: { auth: 'missed' }, ops: undefined });
+  });
+
+  it('carries the arms each covered path is withheld from onto the record, so a table can pick an arm that receives it', async () => {
+    const { tasks } = await routingOf('  - name: ops\n    role: ops\n  - name: dev\n    role: dev\n', ['ops']);
+
+    expect(tasks.map(({ id, covers, coversWithheldFrom }) => ({ id, covers, coversWithheldFrom }))).toEqual([{ id: 'fix', covers: ['skills/dev/auth'], coversWithheldFrom: [['ops']] }]);
+  });
+
+  it("records no routing on an arm that runs without the covered skill's definition file, and keeps it without another file", async () => {
+    const { routing } = await routingOf('  - name: pulled\n  - name: no-definition\n    team: { without: [skills/dev/auth/SKILL.md] }\n  - name: no-readme\n    team: { without: [skills/dev/auth/README.md] }\n', []);
+
+    expect(routing).toEqual({ 'pulled': { auth: 'missed' }, 'no-definition': undefined, 'no-readme': { auth: 'missed' } });
+  });
+});

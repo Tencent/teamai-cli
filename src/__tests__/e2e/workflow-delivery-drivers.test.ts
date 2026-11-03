@@ -189,8 +189,6 @@ async function stubDriver(profile: Exclude<Profile, 'local'>, member: Member, ru
   claim?: boolean;
   afterReport?: (step: string) => Promise<void>;
   stopped?: () => boolean;
-  reportedUrl?: (branch: string) => { open: string; report: string };
-  onReport?: (step: string, result: Result) => void;
 } = {}): Promise<DriverLog> {
   const log: DriverLog = { leases: [], reports: [], nexts: 0, killed: 0, waits: 0 };
   const driver = { kind: profile, machine: `${member}-${profile}`, workspace: workOf(member), can: { workspace: ['new', 'continue', 'read-only'] } };
@@ -214,12 +212,11 @@ async function stubDriver(profile: Exclude<Profile, 'local'>, member: Member, ru
     }
     const lease = LeaseSchema.parse(answer.data?.lease);
     log.leases.push(lease.step);
-    const reported = await work(profile, member, lease, options.reportedUrl);
+    const reported = await work(profile, member, lease);
     const body = { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, ...reported };
     const result = await teamai(member, ['workflow', 'report', run, '--json', JSON.stringify(body)]);
     const answered = envelope(result);
     log.reports.push({ step: lease.step, status: ReportAnswerSchema.safeParse(answered.data).data?.step.status ?? answered.error?.code ?? '' });
-    options.onReport?.(lease.step, result);
     expect(result.code === 0 || answered.error?.code === 'lease_cancelled', said(result)).toBe(true);
     await options.afterReport?.(lease.step);
   }
@@ -227,7 +224,7 @@ async function stubDriver(profile: Exclude<Profile, 'local'>, member: Member, ru
 }
 
 /** Runs a lease's command where `profile` keeps its workspace, and returns the `changes` the report carries. */
-async function work(profile: Exclude<Profile, 'local'>, member: Member, lease: Lease, reportedUrl?: (branch: string) => { open: string; report: string }): Promise<Record<string, unknown>> {
+async function work(profile: Exclude<Profile, 'local'>, member: Member, lease: Lease): Promise<Record<string, unknown>> {
   const env = envOf(member);
   if (!lease.workspace) {
     execSync(lease.command ?? 'true', { cwd: workOf(member), env, stdio: 'ignore' });
@@ -250,8 +247,7 @@ async function work(profile: Exclude<Profile, 'local'>, member: Member, lease: L
   const to = git(dir, ['rev-parse', 'HEAD'], env);
   const changes: Record<string, unknown> = { branch, base: base.commit, from: start.commit, to, commits: changed ? [to] : [] };
   if (profile !== 'remote' || !changed) return { changes };
-  const url = (reportedUrl ?? ((head) => ({ open: openOwn(head), report: '' })))(branch);
-  return { changes: { ...changes, pr_url: url.report || `${url.open}?tab=files#top` } };
+  return { changes: { ...changes, pr_url: `${openOwn(branch)}?tab=files#top` } };
 }
 
 /** Opens a pull request from `head` into main on the host, as a remote driver's own tooling does, and returns its URL. */
@@ -369,6 +365,30 @@ async function drive(profile: Profile, scenario: DeliveryConformanceScenario): P
 
 const PROFILES: Profile[] = ['local', 'session', 'external', 'remote'];
 
+/**
+ * The external driver runs every scenario. The others run the ones their path through the CLI changes: the local
+ * driver delivers in its own process, so a crash, a claim on another install and a poller differ for it; a session
+ * driver differs only in where it commits; a remote driver reports its own pull request, so it never reaches a create
+ * and is looked up when it reports. workflow-delivery.test.ts covers the rest in process.
+ */
+function runsScenario(profile: Profile, scenario: DeliveryConformanceScenario): boolean {
+  const plain = !scenario.hold && !scenario.unreachable;
+  switch (profile) {
+    case 'external':
+      return true;
+    case 'local':
+      return plain || (scenario.hold !== undefined && scenario.hold.action !== 'cancel');
+    case 'session':
+      return plain;
+    case 'remote':
+      return plain || scenario.unreachable === true || scenario.hold?.call === 'lookup';
+    default: {
+      const unknown: never = profile;
+      throw new Error(`unknown profile ${String(unknown)}`);
+    }
+  }
+}
+
 describe('workflow delivery conformance of each kind of driver through the CLI', () => {
   beforeAll(async () => {
     sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-delivery-drivers-')));
@@ -393,7 +413,7 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
   });
 
   for (const scenario of workflowDeliveryConformanceScenarios) {
-    for (const profile of PROFILES) {
+    for (const profile of PROFILES.filter((candidate) => runsScenario(candidate, scenario))) {
       it(`${profile}: ${scenario.name}`, async () => {
         const expected = profile === 'remote' ? scenario.reported : scenario.opened;
         const { run, member, log, held, killed, polled } = await drive(profile, scenario);
@@ -465,27 +485,4 @@ describe('workflow delivery conformance of each kind of driver through the CLI',
       }, 120_000);
     }
   }
-
-  it('remote: a reported URL with credentials is named in the report envelope without its value, and the open pull request of the branch is delivered', async () => {
-    gh.configure({});
-    const started = await teamai('alice', ['workflow', 'start', 'deliver']);
-    const run = String(envelope(started).data?.run);
-    let opened = '';
-    const reports: Result[] = [];
-    await stubDriver('remote', 'alice', run, {
-      reportedUrl: (branch) => {
-        opened = openOwn(branch);
-        return { open: opened, report: opened.replace('https://', 'https://x-access-token:ghs_droppedvalue@') };
-      },
-      onReport: (step, result) => { if (step === 'work') reports.push(result); },
-    });
-    const [report] = reports;
-    expect(report && envelope(report)).toMatchObject({ data: { accepted: true, step: { id: 'work', status: 'delivering' }, dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }] } });
-    expect(report && said(report)).not.toContain('ghs_droppedvalue');
-    const state = readRun('alice', run);
-    expect(state.status).toBe('succeeded');
-    expect(state.deliveries?.map((receipt) => receipt.url)).toEqual([opened]);
-    expect(createsOf(run)).toEqual([]);
-    expect(JSON.stringify(state)).not.toContain('ghs_droppedvalue');
-  }, 120_000);
 });

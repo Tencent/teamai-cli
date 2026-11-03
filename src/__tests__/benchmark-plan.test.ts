@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
@@ -27,6 +27,7 @@ const LeaseSchema = z.object({ data: z.object({ lease: z.object({ step: z.string
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   // Retried: on Windows another process, such as a virus scanner, can briefly hold a file just written (EBUSY).
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
@@ -79,6 +80,14 @@ describe('benchmark plan run', () => {
     const next = await leaseNext(config, runId, driver, { can: offered, prepare });
 
     expect(next).toEqual({ data: { wait: { reason: expect.any(String), held: [{ step: 'trials.baselines.t01', reason: expect.any(String), missing: [missing] }] }, cancelled: [] } });
+  });
+
+  it('holds a task baseline, and so every trial, from a driver that declares nothing', async () => {
+    const { config, runId } = await startFix();
+
+    const next = await leaseNext(config, runId, driver, { can: {}, prepare: true });
+
+    expect(next).toEqual({ data: { wait: { reason: expect.any(String), held: [{ step: 'trials.baselines.t01', reason: expect.any(String), missing: expect.arrayContaining(['workspace.clone']) }] }, cancelled: [] } });
   });
 
   it('leases a task baseline, a clone of the starting commit with no team assets, before any trial', async () => {
@@ -179,6 +188,26 @@ describe('benchmark plan run', () => {
     expect(recordOf(run).trials).toEqual([expect.objectContaining({ unenforced: ['max_turns', 'budget'] })]);
   });
 
+  it('leases a driver that cannot end the turn a trial prompt under on_limit: fail, and records on_limit as not enforced', async () => {
+    const { config, runId } = await startFix({ trial: '{ timeout: 10s }' });
+    const noEndTurn: DriverCan = { ...can, end_turn: false };
+    await settleBaselines(config, runId, driver, noEndTurn);
+    const leased = await leaseNext(config, runId, driver, { can: noEndTurn, prepare: true });
+    const prompt = LeaseSchema.parse(leased).data.lease;
+    const terms = z.object({ data: z.object({ lease: z.object({ unenforced: z.unknown(), limits: z.unknown().optional() }) }) }).parse(leased).data.lease;
+    await reportAttempt(config, runId, { attempt: prompt.attempt, revision: prompt.revision, outcome: 'success', driver });
+    const check = LeaseSchema.parse(await leaseNext(config, runId, driver, { can: noEndTurn, prepare: true })).data.lease;
+
+    await reportAttempt(config, runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', exitCode: 0, outputs: { result: 'passed' }, driver });
+    await leaseNext(config, runId, driver, { can: noEndTurn, prepare: true });
+    const run = await readRun(config, runId);
+
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    // Under on_limit: fail the trial's timeout is the lease's deadline, which fails it, so the lease carries no limits.
+    expect(terms).toEqual({ unenforced: [{ requirement: 'on_limit' }] });
+    expect(recordOf(run).trials).toEqual([expect.objectContaining({ result: 'passed', unenforced: ['on_limit'] })]);
+  });
+
   it('refuses a trial report that names an unenforced budget its suite does not set', async () => {
     const { config, runId } = await startFix();
     const lease = await leasePrompt(config, runId);
@@ -242,14 +271,18 @@ describe('benchmark plan run', () => {
     expect(next).toMatchObject({ data: { done: { run: runId, outcome: 'succeeded' } } });
   });
 
-  it.each(['passed', 'failed'] as const)('records a trial %s as the check command step it leases after the prompt answers', async (result) => {
+  it.each([
+    ['passed', 'passed'],
+    ['failed', 'failed'],
+    ['could_not_run', 'error'],
+  ] as const)('records a trial whose check outputs %s as %s, the check command step it leases after the prompt answers', async (output, result) => {
     const { config, runId } = await startFix();
     const prompt = await leasePrompt(config, runId);
     await reportAttempt(config, runId, { ...prompt, outcome: 'success', driver });
     const check = z.object({ data: z.object({ lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number(), command: z.string() }) }) })
       .parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
 
-    await reportAttempt(config, runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', exitCode: 0, outputs: { result }, driver });
+    await reportAttempt(config, runId, { attempt: check.attempt, revision: check.revision, outcome: 'success', exitCode: 0, outputs: { result: output }, driver });
     const next = await leaseNext(config, runId, driver, { can, prepare: true });
 
     const run = await readRun(config, runId);
@@ -286,6 +319,35 @@ describe('benchmark plan run', () => {
 
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
     expect(recordOf(run)).toMatchObject({ tasks: [{ id: 't01', baseline: 'could_not_run' }], trials: [{ result: 'not_run' }] });
+  });
+
+  it('records that the check could not run for a baseline whose step failed without a result, as when its setup fails', async () => {
+    const { config, runId } = await startFix();
+    const baseline = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    await reportAttempt(config, runId, { attempt: baseline.attempt, revision: baseline.revision, outcome: 'failed', driver });
+
+    const next = await leaseNext(config, runId, driver, { can, prepare: true });
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    expect(next).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(recordOf(run)).toMatchObject({ tasks: [{ id: 't01', baseline: 'could_not_run' }], trials: [{ result: 'not_run' }] });
+  });
+
+  it("ends the run failed at its timeout while a trial's check runs, and records the trial an error", async () => {
+    const { config, runId } = await startFix();
+    const prompt = await leasePrompt(config, runId);
+    await reportAttempt(config, runId, { ...prompt, outcome: 'success', driver });
+    LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true }));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 11 * 60_000);
+
+    const next = await leaseNext(config, runId, driver, { can, prepare: true });
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    expect(next).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } });
+    expect(recordOf(run)).toMatchObject({ tasks: [{ id: 't01', baseline: 'valid' }], trials: [{ step: 'trials.r1.t01.a01.prompt', result: 'error' }] });
   });
 
   it("runs a task's trials whatever another task's baseline did, and ends the run succeeded with both scopes failed", async () => {
@@ -475,5 +537,199 @@ describe('benchmark plan on a machine that cannot pin the team a trial gets', ()
     const planned = await planBenchmark(config, 'fix', { checkout: root, memberAliases: false, unattended: false });
 
     expect(planned).toEqual({ refused: { error: { code: 'team_ref_blocked', message: 'A benchmark installs each trial\'s team assets from a commit of the team repo, and this team is served over HTTP, which has no commits to install from. Run the benchmark from a workspace whose team is a git repo.' } } });
+  });
+});
+
+/** Suite `fix` on the project, every arm on claude unless `arms` says otherwise, with `arms` after its defaults. */
+const startSuite = (arms: string): string => `schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults:\n  tool: claude\n${arms}repetitions: 1\ntimeout: 10m\n`;
+const SKILL = (name: string): string => `---\nname: ${name}\ndescription: Helps with ${name}.\n---\nUse ${name}.\n`;
+const ROLES = 'version: 1\nroles:\n  - id: frontend\n    resources: { knowledge: [frontend], skills: [frontend] }\n  - id: review\n    resources: { knowledge: [review], skills: [review] }\n';
+
+/**
+ * A member who pulled a git team at its main, which the team remote has: suite `fix` of `arms` with task `fix`, which
+ * starts from the project checkout's commit, over `team`, and each branch of `branches` on the remote, main with its
+ * files. `delivered` are files pull wrote into the checkout, as its record hashes them.
+ */
+async function pulledMember({ arms, team = {}, branches = {}, delivered = {}, config: overrides = {} }: {
+  arms: string; team?: Record<string, string>; branches?: Record<string, Record<string, string>>; delivered?: Record<string, string>; config?: Partial<LocalConfig>;
+}) {
+  const { git, recordDelivery } = await import('./helpers/delivered-checkout.js');
+  const { syncTeamDefinitions } = await import('../benchmark/suite-cache.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-start-'));
+  dirs.push(root);
+  const write = (repo: string, files: Record<string, string>): void => {
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+      fs.writeFileSync(path.join(repo, file), text);
+    }
+  };
+  const commit = (repo: string, files: Record<string, string>): string => {
+    write(repo, files);
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-qm', 'commit');
+    return git(repo, 'rev-parse', 'HEAD');
+  };
+  const [repo, project] = [path.join(root, 'team'), path.join(root, 'project')];
+  for (const dir of [repo, project]) git(root, 'init', '-q', '-b', 'main', dir);
+  const startingCommit = commit(project, { 'test.js': 'process.exit(1);\n' });
+  const pulled = commit(repo, {
+    'teamai.yaml': 'team: acme\nrepo: https://github.com/acme/team.git\nprovider: git\n',
+    'benchmarks/fix/suite.yaml': startSuite(arms),
+    'benchmarks/fix/tasks/fix.yaml': `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Fix.\nstartingCommit: ${startingCommit}\ncheck: { run: node test.js, protect: [test.js] }\n`,
+    ...team,
+  });
+  git(repo, 'update-ref', 'refs/remotes/origin/main', pulled);
+  for (const [branch, files] of Object.entries(branches)) {
+    git(repo, 'checkout', '-qb', branch);
+    git(repo, 'update-ref', `refs/remotes/origin/${branch}`, commit(repo, files));
+    git(repo, 'checkout', '-q', 'main');
+  }
+  write(project, delivered);
+  const config: LocalConfig = {
+    repo: { localPath: repo, remote: 'https://github.com/acme/team.git', kind: 'git' },
+    username: 'tester', scope: 'project', additionalRoles: [], projectRoot: project, dataHome: path.join(root, 'data'), usageReportEnabled: false, ...overrides,
+  };
+  const recordPull = (rev: string) => recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: Object.keys(delivered).map((file) => path.join(project, file)) });
+  await recordPull(pulled);
+  await syncTeamDefinitions(config);
+  return {
+    config, project, pulled, recordPull, commit: (files: Record<string, string>) => commit(repo, files),
+    plan: (memberAliases = false) => planBenchmark(config, 'fix', { checkout: project, memberAliases, unattended: false }),
+  };
+}
+
+describe('benchmark plan refusals at start', () => {
+  it.each<{ refused: string; arms: string; code: string; message: string; team?: Record<string, string>; config?: Partial<LocalConfig> }>([
+    {
+      refused: 'an arm on a team ref the team repo does not have', arms: 'arms:\n  - name: now\n  - name: gone\n    team: no-such-branch\n', code: 'arm_team_unresolved',
+      message: 'Arm "gone" runs on team ref "no-such-branch", which is no branch, tag or commit of this checkout\'s team repo that holds teamai.yaml. Its branches: main. Fetch it, or fix the arm\'s team, push it, run teamai pull, and start again.',
+    },
+    {
+      refused: 'an arm without a path the pulled revision does not have', arms: 'arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/nope] }\n', code: 'arm_team_unresolved',
+      message: 'Arm "ablated" runs without skills/nope, which team revision {pulled} does not have. Fix the arm\'s team, push it, run teamai pull, and start again.',
+    },
+    {
+      refused: 'an arm whose role the team revision it runs on does not declare', arms: 'arms:\n  - name: now\n  - name: audit\n    role: audit\n', code: 'role_unavailable',
+      team: { 'manifest/roles.yaml': ROLES }, config: { primaryRole: 'frontend' },
+      message: 'Arm "audit" runs with role audit, which manifest/roles.yaml at team revision {pulled} does not declare; it declares frontend, review. Add the role to manifest/roles.yaml, or fix the arm\'s role, push it, run teamai pull, and start again.',
+    },
+    {
+      refused: 'a task that lists a scorer the member receives no valid scorer of', arms: 'arms:\n  - name: now\nscorers: [quality, missing]\n', code: 'scorer_not_found',
+      team: { 'scorers/quality.md': '---\nlabels:\n  - { value: tidy, score: 1, description: Small }\n  - { value: messy, score: 0, description: Not }\npassingScore: 1\nsamplingRate: 0\n---\nJudge how tidy the change is.\n' },
+      message: 'Suite "fix" lists scorer "missing", which has no valid scorers/missing.md for this member. Add the scorer, or remove it from benchmarks/fix/suite.yaml, push it, run teamai pull, and start again.',
+    },
+    {
+      refused: 'an arm whose model alias names no model for its tool', arms: '  model: strong\narms:\n  - name: strong\n  - name: codex\n    tool: codex\n', code: 'arm_model_missing',
+      team: { 'models/aliases.yaml': 'aliases:\n  strong:\n    claude: claude-strong-1\n' },
+      message: 'Arm "codex" uses model alias "strong", which has no model for codex in models/aliases.yaml. Add one and start again.',
+    },
+    {
+      refused: 'an arm whose model is a local path, which a record would publish', arms: '  model: /home/member/models/private.gguf\narms:\n  - name: strong\n', code: 'arm_unpublishable',
+      message: 'Arm "strong" has a model that is not a plain name, such as a URL or a local path, and a benchmark record publishes it. Fix the suite or the team\'s models/aliases.yaml, push it, run teamai pull, and start again.',
+    },
+    {
+      refused: 'in single-repo mode, where the project commit decides the team assets', arms: 'arms:\n  - name: now\n  - name: ablated\n    team: { without: [skills/fixer] }\n', code: 'team_ref_blocked',
+      config: { repo: { localPath: '', remote: 'local', kind: 'self' } },
+      message: 'Benchmarks do not run in single-repo mode: the project\'s own commit decides which team assets a checkout has, so no arm can run on a team revision of its own. Start the benchmark from a checkout whose team has a team repo of its own.',
+    },
+  ])('refuses $refused', async ({ arms, code, message, team = {}, config = {} }) => {
+    const member = await pulledMember({ arms, team, config });
+
+    const planned = await member.plan();
+
+    expect(planned).toEqual({ refused: { error: { code, message: message.replace('{pulled}', member.pulled.slice(0, 7)) } } });
+  });
+
+  it('refuses an arm whose team branch has a manifest/roles.yaml that cannot be read', async () => {
+    const member = await pulledMember({
+      arms: '  role: review\narms:\n  - name: now\n  - name: broken\n    team: broken-roles\n', team: { 'manifest/roles.yaml': ROLES }, config: { primaryRole: 'frontend' },
+      branches: { 'broken-roles': { 'manifest/roles.yaml': 'version: 1\nroles:\n  - id: review\n    resources: { skills: [review] }\n' } },
+    });
+    const { git } = await import('./helpers/delivered-checkout.js');
+    const broken = git(member.config.repo.localPath, 'rev-parse', '--short=7', 'refs/remotes/origin/broken-roles');
+
+    const planned = await member.plan();
+
+    expect(planned).toEqual({ refused: { error: {
+      code: 'role_unavailable',
+      message: `Arm "broken" runs with role review, and manifest/roles.yaml at team revision ${broken} cannot be read: Invalid roles manifest: roles.0.resources.knowledge: Invalid input: expected array, received undefined. Fix manifest/roles.yaml on that revision, or run the arm on another team revision, push it, run teamai pull, and start again.`,
+    } } });
+  });
+
+  it('refuses an arm without team assets on a machine whose user-scope install delivers to its tool', async () => {
+    const member = await pulledMember({ arms: 'arms:\n  - name: now\n  - name: bare\n    team: none\n' });
+    // Another team's user-scope install: one of this team would refuse every arm first, as the team could not be pinned.
+    const { getUserConfigPath } = await import('../types.js');
+    fs.mkdirSync(path.dirname(getUserConfigPath()), { recursive: true });
+    fs.writeFileSync(getUserConfigPath(), `repo:\n  localPath: ${JSON.stringify(path.join(member.project, '..', 'other-team'))}\n  remote: https://example.com/acme/other-team.git\n  kind: git\nusername: tester\nscope: user\nadditionalRoles: []\n`);
+    onTestFinished(() => fs.rmSync(getUserConfigPath(), { force: true }));
+
+    const planned = await member.plan();
+
+    expect(planned).toEqual({ refused: { error: {
+      code: 'arm_team_unclean',
+      message: 'Arm "bare" runs without team assets, and this machine\'s user-scope teamai install delivers team assets to claude in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.',
+    } } });
+  });
+
+  it.each([
+    ['its delivered team assets were edited', async (member: Awaited<ReturnType<typeof pulledMember>>) => {
+      fs.appendFileSync(path.join(member.project, '.claude', 'skills', 'fixer', 'SKILL.md'), 'A local edit.\n');
+    }],
+    ['its team revision is on no branch of the team remote', async (member: Awaited<ReturnType<typeof pulledMember>>) => {
+      await member.recordPull(member.commit({ 'local.md': 'Not pushed.\n' }));
+    }],
+  ])('refuses to plan when the checkout\'s pull, as %s, has no team revision another machine can pull', async (_, change) => {
+    const member = await pulledMember({ arms: 'arms:\n  - name: now\n', team: { 'skills/fixer/SKILL.md': SKILL('fixer') }, delivered: { '.claude/skills/fixer/SKILL.md': SKILL('fixer') } });
+    await change(member);
+
+    const planned = await member.plan();
+
+    expect(planned).toEqual({ refused: { error: {
+      code: 'team_revision_unpullable',
+      message: 'Benchmarks start from the team revision this checkout last pulled, and it has none that another machine can pull. Push any team changes, run teamai pull, and start again.',
+    } } });
+  });
+
+  it('refuses a task that starts from a commit neither the checkout nor the suite repo has', async () => {
+    const member = await pulledMember({ arms: 'arms:\n  - name: now\n' });
+    const missing = 'f'.repeat(40);
+    member.commit({ 'benchmarks/fix/tasks/fix.yaml': `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Fix.\nstartingCommit: ${missing}\ncheck: { run: node test.js, protect: [test.js] }\n` });
+    const { git } = await import('./helpers/delivered-checkout.js');
+    const head = git(member.config.repo.localPath, 'rev-parse', 'HEAD');
+    git(member.config.repo.localPath, 'update-ref', 'refs/remotes/origin/main', head);
+    await member.recordPull(head);
+    const { syncTeamDefinitions } = await import('../benchmark/suite-cache.js');
+    await syncTeamDefinitions(member.config);
+    // The suite repo is a directory that is not there, so the fetch fails here and never reaches the network.
+    vi.stubEnv('GIT_CONFIG_COUNT', '1');
+    vi.stubEnv('GIT_CONFIG_KEY_0', `url.${path.join(member.project, '..', 'no-such-origin')}/.insteadOf`);
+    vi.stubEnv('GIT_CONFIG_VALUE_0', 'https://github.com/fixture/');
+
+    const planned = await member.plan();
+
+    expect(planned).toEqual({ refused: { error: {
+      code: 'commit_unreachable',
+      message: 'Task "fix" starts from fffffff, which neither this checkout nor https://github.com/fixture/app.git has. Push it, or fix startingCommit, and start again.',
+    } } });
+  });
+
+  it("plans each arm's model with the member's aliases under --member-aliases, and names member as the source of each model they decided", async () => {
+    const member = await pulledMember({
+      arms: '  model: strong\narms:\n  - name: strong\n  - name: fast\n    model: fast\n  - name: codex\n    tool: codex\n',
+      team: { 'models/aliases.yaml': 'aliases:\n  strong:\n    claude: { model: claude-strong-1, effort: high }\n    codex: { model: gpt-strong-1, effort: high }\n  fast:\n    claude: claude-fast-1\n' },
+    });
+    const { localAliasesPath } = await import('../models/aliases.js');
+    fs.mkdirSync(path.dirname(localAliasesPath()), { recursive: true });
+    fs.writeFileSync(localAliasesPath(), 'aliases:\n  strong:\n    claude: claude-member-1\n');
+    onTestFinished(() => fs.rmSync(localAliasesPath(), { force: true }));
+
+    const planned = await member.plan(true);
+
+    expect('planned' in planned && planned.planned.plan.arms).toMatchObject([
+      { name: 'strong', model: 'claude-member-1', source: 'member' },
+      { name: 'fast', model: 'claude-fast-1', source: 'team' },
+      { name: 'codex', model: 'gpt-strong-1', source: 'team' },
+    ]);
   });
 });

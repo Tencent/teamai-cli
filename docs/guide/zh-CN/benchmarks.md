@@ -238,6 +238,7 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | `check` | `run`：任务完成后以 0 退出的命令；`protect`：agent 不能提供的路径。 |
 | `check.add` | 可选：check 之前写入、agent 永远拿不到的文件：按 `solutionCommit` 中的样子写入的文件，例如解决方案的测试；或者 `{ from, to }`，套件目录中的一个文件或目录。目录会加入其下的所有文件，但不包括以点开头的条目，例如 `.DS_Store`；要加入点文件，在 `from` 中直接指明它。见[解决方案带来的测试](#解决方案带来的测试)和[套件目录中的测试](#套件目录中的测试)。 |
 | `successCriteria` | 代替 `check`：由评判器按这些标准判定。 |
+| `covers` | 可选：该任务的工作预期需要的团队仓库路径，写法与 [`without`](#去掉团队资产) 相同。[资产效果](#资产效果) 表按覆盖它的任务拆分一个去掉了该路径的 arm。 |
 | `source` | 可选：任务的来源：会话的 `platform` 和 `sessionId`，或工作流 pass 的 `runId`、`step` 和 `pass`。不会从它运行任何东西；[`digest --json`](self-improvement.md#teamai-读取什么) 会把它指向的失败标为已覆盖。 |
 
 `teamai pull` 和 `teamai review --branch` 检查每个文件，并带文件和行号报告每个问题。`benchmarks/<namespace>/<suite>/` 下的套件只发给该角色或项目的成员，见[角色和项目](distribution.md#角色和项目)。
@@ -676,6 +677,7 @@ These results hold for these tasks, this run and this machine.
 | 任务 | 每个任务在每个 arm 上的通过率。 |
 | 基线 | 没有运行的任务及原因。 |
 | Skill | 仅当某个 arm 改变团队 skill 时出现：它新增、去掉或改变的每个 skill，以及该 arm 的 trial 中有多少加载了它，与什么都不改变的 arm 并列。 |
+| 资产效果 | 仅当某个任务覆盖一个团队仓库路径时出现：每个被覆盖资产一张表，见[资产效果](#资产效果)。 |
 
 ```text
 | Arm | Skill | Change | Loaded in this arm | Loaded in the defaults arm |
@@ -684,6 +686,48 @@ These results hold for these tasks, this run and this machine.
 ```
 
 只有 teamai 能看到的加载才计数：`unknown` 是其工具不报告 skill 加载的 trial，而不是没有加载该 skill 的 trial。
+
+### 资产效果
+
+任务的 `covers` 写明该任务的工作预期需要哪些团队仓库路径，结果按每个被覆盖的路径回答：一个恰好 [`without`](#去掉团队资产) 该路径的 arm，在覆盖它的任务上是不是通过得更少——并且在其他任务上没有更差。设有一个 skill `auth-tokens`、一条规则 `rules/auth.md`，两个任务都覆盖，一个任务都不覆盖：
+
+```yaml
+# benchmarks/fix-auth/tasks/refresh-race.yaml
+schemaVersion: v1alpha1
+title: Close the refresh token race
+prompt: |
+  Two refreshes of one token can race; the loser revokes the winner's session. Fix it.
+startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/refresh.test.ts
+  protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
+covers: [skills/auth-tokens, rules/auth.md]
+```
+
+运行的结果随之为每个被某个 arm 去掉的覆盖资产附一张表：
+
+```text
+Asset effect · skills/auth-tokens · no-auth-tokens -> pulled · claude
+
+task   covers   passed without   passed with   loaded with
+expired-token   yes   1/3   3/3   3/3 fit
+refresh-race   yes   0/3   2/3   2/3 fit, 1 missed
+login-copy   no   3/3   3/3   1/3 extra, 2 idle
+
+tasks that cover it   +67 pp   1/6 -> 5/6   95% +11 to +86 pp
+other tasks   0 pp   3/3 -> 3/3   not separated
+passed when loaded 6/6 · passed when not loaded 2/3
+```
+
+这样读：
+
+- skill 在 `expired-token` 上有用，而且每次都加载了：它在那里有效。
+- 在 `refresh-race` 上它加载了两次、任务通过了两次；没加载的那一次也没通过，`missed` 计数点名了它。一个覆盖该 skill、每次都加载、却没有变化的任务说的是相反的事：description 触达了任务，正文没有帮助。
+- `login-copy` 没有变差，尽管 skill 在不需要它的地方加载了一次。
+
+`loaded with` 用的是[路由](scorers.md#skill-路由)打分器在已结束会话上读的值，只是改由任务而非评判器判定：`fit` 加载了且任务覆盖它，`missed` 没加载但任务覆盖它，`extra` 加载了但任务不覆盖它，`idle` 没加载也不覆盖，`unknown` 是工具不报告 skill 加载——`unknown` 的 trial 仍计入通过率，但不计入"加载时"或"未加载时"。只有 skill 有这一列：teamai 只观察 skill 加载，规则、`claudemd/` 文件、文档或整个命名空间目录都读作 `not observed`。在 dashboard 的[基准测试页面](dashboard.md#基准测试benchmarks)，Compare 页签在配对之下显示这些表（没有可比的两个 arm 时单独显示），skill 还会链接到它在真实会话上的 `teamai:routing:...` 计数。
+
+`not separated` 是一个答案，不是失败：配对差异的 95% 区间穿过零，这些 trial 无法把差异与偶然区分开。一条规则通常只影响少数任务——增加覆盖它的任务或重复次数，直到区间离开零。去掉多个路径的 arm 没有单资产表：它的差异属于整个集合，Compare 已经显示。`plan` 会拒绝没有任何 arm 收到的覆盖路径（每个 arm 按其团队修订、role 以及去掉的路径来读），以及两个同名的覆盖 skill 路径，因为 trial 的加载记录只有裸名。
 
 结果不是运行的状态：所有 trial 都失败的运行仍然成功。运行只在超时或被取消时失败。
 
