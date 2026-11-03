@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { startedByPasses } from './scorers/engine-hooks.js';
+import { FINISHED_WORKFLOW } from './scorers/judging-workflows.js';
 import { PassScoring } from './scorers/pass-scoring.js';
 import { Subject } from './scorers/subject.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -90,7 +91,7 @@ async function endsFinishedSessionsRun(config: LocalConfig, envelope: WorkflowEn
   const ended = DoneRunSchema.safeParse('error' in envelope ? undefined : envelope.data.done);
 
   if (!ended.success) return false;
-  const [run, { FINISHED_WORKFLOW }] = await Promise.all([readRun(config, ended.data.run), import('./session-flow/finished-sessions.js')]);
+  const run = await readRun(config, ended.data.run);
 
   return run !== 'missing' && run !== 'corrupt' && run.name === FINISHED_WORKFLOW;
 }

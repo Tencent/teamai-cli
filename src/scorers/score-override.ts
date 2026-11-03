@@ -10,6 +10,7 @@ import { canonicalJson } from '../utils/canonical-json.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
 import { confinedOf } from '../workflow/workspace.js';
 import { anyScorerChecks, cachedScorerNames } from './cache.js';
+import { JUDGING_WORKFLOWS, SCORE_WORKFLOW } from './judging-workflows.js';
 
 /** Why pull refuses a team teamai-score.yaml, one code per part of this contract. */
 export type ScoreOverrideCode = 'score_override_contract' | 'score_override_command' | 'score_override_workflow_step' | 'score_override_prompt' | 'score_override_confined_dir' | 'score_override_judge_prompt' | 'score_override_step_missing' | 'score_override_publish';
@@ -228,21 +229,18 @@ function callerWarnings(file: string, definition: WorkflowDefinition): string[] 
   return walk(definition).flatMap(({ path, step }) => {
     const child = stepWorkflow(step);
 
-    if (child?.kind !== 'named' || child.name !== 'teamai-score' || step.timeout !== undefined) return [];
+    if (child?.kind !== 'named' || child.name !== SCORE_WORKFLOW || step.timeout !== undefined) return [];
 
     return [`${file}: step "${path}" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.`];
   });
 }
-
-/** The workflows that judge. A step that runs one is never judged itself. */
-const JUDGING = new Set(['teamai-score', 'teamai-finished-sessions']);
 
 /** Why pull refuses `definition`, at `file`: a step runs a workflow that judges and lists scorers, which would judge it. */
 function callerProblems(file: string, definition: WorkflowDefinition): WorkflowDiagnostic[] {
   return walk(definition).flatMap(({ path, field, step }) => {
     const child = stepWorkflow(step);
 
-    if (child?.kind !== 'named' || !JUDGING.has(child.name) || step.scorers === undefined) return [];
+    if (child?.kind !== 'named' || !JUDGING_WORKFLOWS.includes(child.name) || step.scorers === undefined) return [];
 
     return [{ file, line: 1, column: 1, field: `${field}.scorers`, code: 'judging_scored', message: `step "${path}" runs ${child.name} and lists scorers, so its judging would be judged in turn. Remove scorers from the step` }];
   });

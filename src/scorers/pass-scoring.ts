@@ -21,6 +21,7 @@ import type { RunSubject } from './label.js';
 import { MARK_WINDOW_MS } from './marks.js';
 import { RunScorers } from './run-scorers.js';
 import { Subject } from './subject.js';
+import { SCORE_WORKFLOW } from './judging-workflows.js';
 
 /** What a start did: the `teamai-score` runs of the run's passes still to drive, and the passes whose start was refused. */
 export interface PassStarts {
@@ -178,7 +179,7 @@ export const PassScoring = {
       const options: Parameters<WorkflowClient['start']>[1] = { inputs, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli', driver };
 
       if (run.checkout !== undefined) options.checkout = run.checkout;
-      const answer = await client.start('teamai-score', options);
+      const answer = await client.start(SCORE_WORKFLOW, options);
       const started = 'data' in answer ? RunIdSchema.safeParse(answer.data.run) : undefined;
 
       if (started?.success) {

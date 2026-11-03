@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { getCurrentVersion } from './package-info.js';
+import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 import { ScoreOverride, type ScoreOverrideCode } from './scorers/score-override.js';
 import type { LocalConfig } from './types.js';
 import { formatDiagnostic, parseWorkflow } from './workflow/parse.js';
@@ -103,7 +104,7 @@ function sourceOfRun(run: { origin?: RunOrigin }): WorkflowSource {
 }
 
 /** The defaults a team file replaces only by keeping what their module says it must, by name. */
-const CONTRACTS = new Map([['teamai-score', ScoreOverride]]);
+const CONTRACTS = new Map([[SCORE_WORKFLOW, ScoreOverride]]);
 
 /**
  * Why pull refuses a team file over a default's contract: `default_override_alias` for a file that takes a guarded name

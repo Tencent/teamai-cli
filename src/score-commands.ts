@@ -12,6 +12,7 @@ import { log, setStderrOnly } from './utils/logger.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 import { startWorkflow } from './workflow-commands.js';
+import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 
 export interface ScoreOptions {
   run?: string;
@@ -252,8 +253,6 @@ export async function scoreCommand(options: ScoreOptions): Promise<void> {
   if ('start' in scored) await startScore(scored.start, options.driver);
   else writeEnvelope(scored);
 }
-
-export const SCORE_WORKFLOW = 'teamai-score';
 
 /** `value` as one shell word: as it is when the shell reads nothing special in it, else single-quoted. */
 function shellWord(value: string): string {

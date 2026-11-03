@@ -11,6 +11,7 @@ import type { LocalConfig } from '../types.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { stepWorkflow, type RunState, type WorkflowStep } from '../workflow/types.js';
 import type { RunPlan } from './run-plan.js';
+import { SCORE_WORKFLOW } from '../scorers/judging-workflows.js';
 
 /** No label and no code: the trial's `teamai-score` step never labelled the scorer before the run's steps ended. */
 const RUN_ENDED = 'run_ended';
@@ -43,7 +44,7 @@ const ScoredItemSchema = z.object({
 function runsTeamaiScore(step: WorkflowStep | undefined): boolean {
   const child = step ? stepWorkflow(step) : undefined;
 
-  return child?.kind === 'named' && child.name === 'teamai-score';
+  return child?.kind === 'named' && child.name === SCORE_WORKFLOW;
 }
 
 /** The item results of every `teamai-score` step of `run`. */

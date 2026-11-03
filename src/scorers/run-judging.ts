@@ -17,9 +17,7 @@ import { RunScorers } from './run-scorers.js';
 import { isSampled } from './sampling.js';
 import { markFacts } from './score-plan.js';
 import { Subject } from './subject.js';
-
-/** The name every judging entry point starts; a team file of that name replaces the shipped one. */
-const SCORE_WORKFLOW = 'teamai-score';
+import { SCORE_WORKFLOW } from './judging-workflows.js';
 
 /**
  * Why a scorer of a pass has no label. `queued`: it is sampled and no score run took it yet. `judging`: score run `run`

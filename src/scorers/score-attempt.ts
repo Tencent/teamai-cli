@@ -11,10 +11,8 @@ import type { LocalConfig } from '../types.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { parseStepPath } from '../workflow/step-path.js';
 import { AttemptIdSchema, RunIdSchema, runScratchDir } from '../workflow/store.js';
+import { SCORE_WORKFLOW } from './judging-workflows.js';
 import { isWorkflowFile, workflowRunBy, type InlineWorkflow, type RunState, type WorkflowDefinition, type WorkflowStep } from '../workflow/types.js';
-
-/** The workflow every judging entry point runs; a team file of that name replaces teamai's. */
-export const SCORE_WORKFLOW = 'teamai-score';
 
 /** A `teamai-score` instance: its definition, what each of its step paths starts with, and the inputs it was given. */
 export interface ScoreInstance {

@@ -18,6 +18,7 @@ import { isSampled } from './sampling.js';
 import { markFacts, type Refusal } from './score-plan.js';
 import { ciStage, passOf } from './scoring-stages.js';
 import { Subject } from './subject.js';
+import { SCORE_WORKFLOW } from './judging-workflows.js';
 
 /** The step path every path of the calling attempt's workflow starts with, when that attempt is a step of run `runId`. */
 function callerPrefix(env: NodeJS.ProcessEnv, run: RunState): string {
@@ -65,7 +66,7 @@ function isScoredInWorkflow(steps: readonly WorkflowStep[], id: string): boolean
   return steps.some((step) => {
     const child = stepWorkflow(step);
 
-    return child?.kind === 'named' && child.name === 'teamai-score' && [...neededBy(steps, step.id)].some((need) => listing.has(need));
+    return child?.kind === 'named' && child.name === SCORE_WORKFLOW && [...neededBy(steps, step.id)].some((need) => listing.has(need));
   });
 }
 

@@ -8,6 +8,7 @@ import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from '../config.
 import { ATTEMPT_ENV, RUN_MODES, type RunMode } from '../launch-context.js';
 import { pinScorers } from '../scorers/cache.js';
 import { scoringUnavailable } from '../scorers/home.js';
+import { FINISHED_WORKFLOW } from '../scorers/judging-workflows.js';
 import { Marks, type Demand, type MarkKey } from '../scorers/marks.js';
 import { pinnedDefinition } from '../scorers/pin.js';
 import { markFacts } from '../scorers/score-plan.js';
@@ -283,9 +284,6 @@ async function backgroundScopes(cwd: string): Promise<LocalConfig[]> {
 
   return scopes;
 }
-
-/** The default workflow that archives and judges a data home's finished sessions; a team file of that name replaces it. */
-export const FINISHED_WORKFLOW = 'teamai-finished-sessions';
 
 /** How long a run of it may work before a start takes the data home again: its own timeout, which ends it. */
 const PASS_MS = 30 * 60 * 1000;
