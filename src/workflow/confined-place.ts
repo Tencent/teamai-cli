@@ -14,16 +14,16 @@ import { ConfinedLevelSchema, type DriverCan, type Held } from './requirements.j
 import { chooseStepModel, type StepModel } from './step-model.js';
 import type { WorkflowFailure } from './types.js';
 
-const CONFINED_FILE = 'confined.json';
+export const CONFINED_FILE = 'confined.json';
 
 /** `confined.json`: the level the step runs at, the tool to try first, and the reply's JSON Schema, a file in the directory. */
-const ConfinedFileSchema = z.object({
+export const ConfinedFileSchema = z.object({
   level: ConfinedLevelSchema,
   prefer: z.string().min(1).optional(),
   schema: z.string().min(1).optional(),
 }).strict();
 
-type ConfinedFile = z.infer<typeof ConfinedFileSchema>;
+export type ConfinedFile = z.infer<typeof ConfinedFileSchema>;
 
 /** A checked confined directory: its real path, and its `confined.json` with `schema` made the real path of that file. */
 export type ConfinedDir = ConfinedFile & { dir: string };

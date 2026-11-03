@@ -10,15 +10,16 @@ import { knownSecrets } from '../env-resolution.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { pushedSession } from '../session-flow/scoring.js';
 import { judgeSession, SessionWork, writeSessionEvidence, type JudgedSession } from '../session-flow/session-work.js';
-import { JsonValueSchema, type JsonValue } from '../types.js';
+import type { JsonValue } from '../types.js';
 import { readFileIfExists } from '../utils/fs.js';
 import { redact } from '../utils/redact.js';
+import { CONFINED_FILE, ConfinedFileSchema, type ConfinedFile } from '../workflow/confined-place.js';
 import type { RunState } from '../workflow/types.js';
 import { pinScorers } from './cache.js';
 import type { ScorerDefinition } from './definition.js';
 import { answerSchema, rubricPrompt, type Rubrics } from './evidence.js';
 import { requiredIsolation, scorerIsolationSource } from './isolation.js';
-import { ISOLATIONS, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type RunSubject } from './label.js';
+import { RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type RunSubject } from './label.js';
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import type { ScoreAttempt } from './score-attempt.js';
 import { judgeablePass, type Refusal } from './score-plan.js';
@@ -27,8 +28,8 @@ import { scopeScoring } from './settings.js';
 import { Subject } from './subject.js';
 
 const GROUP = 'group.json';
-const CONFINED = 'confined.json';
 const ANSWER_SCHEMA = 'answer.schema.json';
+const REPLY_SCHEMA = 'reply.schema.json';
 
 /** What the group judges: a pass, or a session with what one read of it gave; a hand label's gone session gave nothing. */
 const JudgedSchema = z.discriminatedUnion('kind', [
@@ -112,12 +113,7 @@ async function sessionRead(attempt: ScoreAttempt, subject: Exclude<Subject, { ki
   return { ok: true, judged: judgeSession(pushed.agent ? { ...read, agent: pushed.agent } : read) };
 }
 
-/** What a confined judge step reads in the directory: the isolation its scorers need, the tool to prefer, and its reply schema. */
-const ConfinedRecordSchema = z.object({ level: z.enum(ISOLATIONS), prefer: z.string().optional(), schema: JsonValueSchema });
-
-type ConfinedRecord = z.infer<typeof ConfinedRecordSchema>;
-
-async function writeJson(dir: string, name: string, value: GroupRecord | ConfinedRecord | JsonValue): Promise<void> {
+async function writeJson(dir: string, name: string, value: GroupRecord | ConfinedFile | JsonValue): Promise<void> {
   await fs.writeFile(path.join(dir, name), `${JSON.stringify(value, null, 2)}\n`);
 }
 
@@ -132,13 +128,14 @@ export async function readRecord<T>(file: string, schema: z.ZodType<T>): Promise
   }
 }
 
-/** Writes the group record, and for a judge its confined record and answer schema. */
-async function writeRecords(dir: string, group: GroupRecord, judge?: { confined: ConfinedRecord; answer: JsonValue }): Promise<void> {
+/** Writes the group record, and for a judge its `confined.json`, the reply schema it names, and the answer schema. */
+async function writeRecords(dir: string, group: GroupRecord, judge?: { confined: ConfinedFile; reply: JsonValue; answer: JsonValue }): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await writeJson(dir, GROUP, group);
 
   if (!judge) return;
-  await writeJson(dir, CONFINED, judge.confined);
+  await writeJson(dir, CONFINED_FILE, judge.confined);
+  await writeJson(dir, REPLY_SCHEMA, judge.reply);
   await writeJson(dir, ANSWER_SCHEMA, judge.answer);
 }
 
@@ -161,10 +158,10 @@ async function judgeRecords(attempt: ScoreAttempt, group: GroupRecord, rubrics: 
 
   if (!scoring.ok) return refused('scoring_settings_invalid', scoring.reason);
   const settings = group.scorers.map(({ name, pin }, index) => ({ source: scorerIsolationSource(name, pin.relativePath), value: rubrics[index]?.isolation }));
-  const confined: ConfinedRecord = { level: requiredIsolation([...scoring.isolation, ...settings]).level, schema: replySchema(rubrics) };
+  const confined: ConfinedFile = { level: requiredIsolation([...scoring.isolation, ...settings]).level, schema: REPLY_SCHEMA };
 
   if (prefer !== undefined) confined.prefer = prefer;
-  await writeRecords(attempt.dir, group, { confined, answer: answerSchema(rubrics) });
+  await writeRecords(attempt.dir, group, { confined, reply: replySchema(rubrics), answer: answerSchema(rubrics) });
 
   return { dir: attempt.dir, rubric: rubricPrompt(rubrics), schema: path.join(attempt.dir, ANSWER_SCHEMA), delivers: group.delivers };
 }
@@ -236,7 +233,7 @@ export const EvidenceDir = {
   },
 
   /** The isolation the group's judge needed and the tool it preferred, which a judge-group's evidence holds. */
-  async confined(dir: string): Promise<ConfinedRecord | undefined> {
-    return readRecord(path.join(dir, CONFINED), ConfinedRecordSchema);
+  async confined(dir: string): Promise<ConfinedFile | undefined> {
+    return readRecord(path.join(dir, CONFINED_FILE), ConfinedFileSchema);
   },
 } as const;

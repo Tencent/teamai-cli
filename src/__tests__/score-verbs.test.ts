@@ -21,10 +21,11 @@ import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/ty
 import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { Marks } from '../scorers/marks.js';
-import type { JudgeRun } from '../scorers/score-labels.js';
+import type { ConfinedRunReport } from '../workflow/step-state.js';
 import { evidenceHash } from '../scorers/scoring-evidence.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { nextJudgeLease } from '../workflow/scoring.js';
+import { checkConfinedDir } from '../workflow/confined-place.js';
 import { runScratchDir, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import { PrUrlSchema } from '../workflow/pr-url.js';
@@ -222,8 +223,8 @@ interface ScoreRun {
   runId: string;
   /** The context of the attempt the engine leased next, for the step `step`. */
   next(step: string): Promise<Taken>;
-  /** Reports what a verb answered as the attempt's outputs, or its failure. */
-  report(taken: Taken, answer: ScoreVerbAnswer): Promise<void>;
+  /** Reports what a verb answered as the attempt's outputs, or its failure, with what a confined run measured. */
+  report(taken: Taken, answer: ScoreVerbAnswer, measured?: { confined: ConfinedRunReport }): Promise<void>;
 }
 
 /** A teamai-score run of `inputs`, started by `startedBy`, whose leases a test takes one by one. */
@@ -240,9 +241,9 @@ function runOf(config: LocalConfig, runId: string): ScoreRun {
       expect(lease.step).toBe(step);
       return { ctx: { env: attemptEnv(config, runId, lease.attempt, 'unattended'), current: config, now: NOW }, attempt: lease.attempt, revision: lease.revision };
     },
-    async report({ attempt, revision }, answer) {
+    async report({ attempt, revision }, answer, measured) {
       data(await reportAttempt(config, runId, answer.ok
-        ? { attempt, revision, outcome: 'success', driver: external, outputs: answer.output }
+        ? { attempt, revision, outcome: 'success', driver: external, outputs: answer.output, ...measured }
         : { attempt, revision, outcome: 'failed', driver: external, failure: { code: 'command_failed', message: answer.message } }));
     },
   };
@@ -490,9 +491,11 @@ describe('score evidence', () => {
     const lease = z.object({ evidence: z.string() }).parse(data(await nextJudgeLease(config, { driver: external, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).lease);
     expect(await evidenceHash(dir)).toBe(await evidenceHash(lease.evidence));
     expect(await evidenceHash(dir)).toMatch(/^sha256:/);
-    expect(JSON.parse(fs.readFileSync(path.join(dir, 'confined.json'), 'utf8'))).toEqual({
-      level: 'verified', prefer: 'claude',
-      schema: { type: 'object', properties: { answer: JSON.parse(fs.readFileSync(path.join(dir, 'answer.schema.json'), 'utf8')) }, required: ['answer'], additionalProperties: false },
+    expect(await checkConfinedDir({ step: 'judge', runDir: runScratchDir(config, run.runId), dir })).toEqual({ ok: true, place: {
+      dir: fs.realpathSync(dir), level: 'verified', prefer: 'claude', schema: fs.realpathSync(path.join(dir, 'reply.schema.json')),
+    } });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'reply.schema.json'), 'utf8'))).toEqual({
+      type: 'object', properties: { answer: JSON.parse(fs.readFileSync(path.join(dir, 'answer.schema.json'), 'utf8')) }, required: ['answer'], additionalProperties: false,
     });
   });
 
@@ -621,7 +624,7 @@ describe('score stage', () => {
   });
 });
 
-const JUDGED: JudgeRun = { tool: 'claude', model: { requested: 'claude-x' }, usage: { inputTokens: 10, outputTokens: 2 }, isolation: 'verified', access: 'read' };
+const JUDGED: ConfinedRunReport = { tool: 'claude', model: { requested: 'claude-x' }, usage: { inputTokens: 10, outputTokens: 2 }, isolation: 'verified', access: 'read' };
 
 interface Walk {
   /** The judge step's answer, or a failure. */
@@ -634,7 +637,7 @@ interface Walk {
 }
 
 /** Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step path. */
-async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun = () => JUDGED, inputs = {}, startedBy = 'cli', fake = {} }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer> }> {
+async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun, inputs = {}, startedBy = 'cli', fake = {} }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer> }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const answers = new Map<string, ScoreVerbAnswer>();
   const items = (index: string) => {
@@ -660,7 +663,7 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun 
               : id === 'write' ? await ScoreVerbs.write({ evidence: dir }, taken.ctx)
                 : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
     answers.set(lease.step, answer);
-    await run.report(taken, answer);
+    await run.report(taken, answer, id === 'judge' ? { confined: JUDGED } : undefined);
   }
 }
 

@@ -19,7 +19,7 @@ import { pinScorers } from './cache.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
 import { EvidenceDir, readRecord, type GroupRecord } from './evidence-dir.js';
 import { chooseJudgeModel } from './judge-model.js';
-import { JUDGE_FAILURES, ModelJudgeSchema, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
+import { JUDGE_FAILURES, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
 import { Marks, type MarkKey, type MarkOutcome } from './marks.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
@@ -29,16 +29,12 @@ import { ScoreStage, type StageRecord } from './score-stage.js';
 import { evidenceHash, judgedFacts, type JudgedFacts } from './scoring-evidence.js';
 import { failingLabel } from './scoring-stages.js';
 import { Subject } from './subject.js';
-
-/** What the confined run of a judge step recorded: the tool, model and effort it ran, what it cost, and how confined it was. */
-export const JudgeRunSchema = ModelJudgeSchema.omit({ kind: true, batched: true });
-
-export type JudgeRun = z.infer<typeof JudgeRunSchema>;
+import { ConfinedRunReportSchema, type ConfinedRunReport } from '../workflow/step-state.js';
 
 /** The confined run that judge step `step` of `run` recorded on its pass, or undefined when it recorded none. */
-export type ReadJudgeRun = (run: RunState, step: string) => JudgeRun | undefined;
+export type ReadJudgeRun = (run: RunState, step: string) => ConfinedRunReport | undefined;
 
-export const readJudgeRun: ReadJudgeRun = (run, step) => z.object({ confined: JudgeRunSchema }).safeParse(run.steps.find((state) => state.id === step)).data?.confined;
+export const readJudgeRun: ReadJudgeRun = (run, step) => z.object({ confined: ConfinedRunReportSchema }).safeParse(run.steps.find((state) => state.id === step)).data?.confined;
 
 const CODES = [...JUDGE_FAILURES, 'ci_pending'] as const;
 
@@ -182,7 +178,7 @@ function verdictsIn(members: readonly [Member, ...Member[]], answer: string | un
 }
 
 /** The entries of the judge's answer: one label per member, or one code for all of them. */
-function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run }: { answer: string | undefined; judged: string | undefined; run: JudgeRun | undefined }): Entry[] {
+function judgeEntries(labelling: Labelling, members: readonly [Member, ...Member[]], { answer, judged, run }: { answer: string | undefined; judged: string | undefined; run: ConfinedRunReport | undefined }): Entry[] {
   if (judged !== 'success') return failedAll(members, 'judge_failed', `The judge step ended ${judged || 'without running'}, so it gave no answer.`);
   const verdicts = verdictsIn(members, answer);
 
