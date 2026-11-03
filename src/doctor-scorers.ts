@@ -86,7 +86,7 @@ async function carriedNote(localConfig: LocalConfig): Promise<string[]> {
   const counted = (count: number, one: string, many: string) => (count === 0 ? [] : [`${count} ${count === 1 ? one : many}`]);
   const parts = [...counted(carried?.passes ?? 0, 'open workflow pass', 'open workflow passes'), ...counted(carried?.sessions ?? 0, 'open session', 'open sessions')];
 
-  return parts.length === 0 ? [] : [`The upgrade carried ${parts.join(' and ')} over from judge attempts. teamai score --drain judges them.`];
+  return parts.length === 0 ? [] : [`The upgrade carried ${parts.join(' and ')} over from judge attempts. The next teamai score --drain starts teamai-score again for each, except a pass whose run last changed more than 14 days ago.`];
 }
 
 /**

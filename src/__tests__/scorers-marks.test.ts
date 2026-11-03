@@ -209,6 +209,16 @@ describe('Marks', () => {
       expect(await Marks.launchesToday(config, NOW)).toBe(3);
     });
 
+    it('counts each session one root run launches under the same group, as one teamai-finished-sessions run does', async () => {
+      const config = scope();
+      const reader = runs();
+      await launch(config, [session('review', 'a')], NOW, { reader, group: 'review', dailyLimit: 2 });
+      await launch(config, [session('review', 'b')], NOW, { reader, group: 'review', dailyLimit: 2 });
+
+      expect(await launch(config, [session('review', 'c')], NOW, { reader, group: 'review', dailyLimit: 2 })).toMatchObject({ opened: [], limited: true });
+      expect(await Marks.launchesToday(config, NOW)).toBe(2);
+    });
+
     it('spends no slot on a group whose scorers are all closed', async () => {
       const config = scope();
       const reader = runs();

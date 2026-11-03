@@ -423,13 +423,23 @@ async function startFinishedSessions(config: LocalConfig): Promise<void> {
   try {
     const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode: resolveRunMode(process.env) });
 
-    if (!started.ok) {
-      log.debug(`hook-dispatch: teamai-finished-sessions did not start: ${started.failure.code}: ${started.failure.message}`);
+    switch (started.kind) {
+      case 'failed':
+        log.debug(`hook-dispatch: teamai-finished-sessions did not start: ${started.failure.code}: ${started.failure.message}`);
 
-      return;
+        return;
+      case 'working':
+      case 'idle':
+        return;
+      case 'started':
+        break;
+      default: {
+        const unhandled: never = started;
+
+        return unhandled;
+      }
     }
 
-    if (started.running) return;
     const { resolveCliEntry } = await import('./builtin-hooks.js');
     const { spawn } = await import('node:child_process');
     spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', started.run, '--driver', 'local'], {

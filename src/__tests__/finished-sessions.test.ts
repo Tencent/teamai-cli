@@ -25,7 +25,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { inProcessClient } from '../workflow/protocol.js';
-import { readRun } from '../workflow/store.js';
+import { readRun, readRuns } from '../workflow/store.js';
 import type { StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 
 const SCORER = `---
@@ -205,12 +205,13 @@ describe('session list --finished', () => {
 describe('the start of teamai-finished-sessions', () => {
   it('starts one run as the CLI\'s own, with the policy inputs, from the scope\'s own directory, whatever agent session runs it', async () => {
     const config = await team({}, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
     vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'the-agent-session');
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
 
     const started = await FinishedSessions.start(config, { client, mode: 'attended' });
 
-    if (!started.ok) throw new Error(started.failure.message);
+    if (started.kind !== 'started') throw new Error(JSON.stringify(started));
     const run = await readRun(config, started.run);
     expect(run).toMatchObject({ name: 'teamai-finished-sessions', status: 'running', startedBy: 'cli', inputs: { publish: 'policy', scorers: [] }, checkout: path.join(mocks.home, '.teamai') });
     expect(started.cwd).toBe(path.join(mocks.home, '.teamai'));
@@ -218,13 +219,25 @@ describe('the start of teamai-finished-sessions', () => {
 
   it('answers the run already working on this data home instead of starting a second', async () => {
     const config = await team({}, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
     const first = await FinishedSessions.start(config, { client, mode: 'attended' });
 
     const second = await FinishedSessions.start(config, { client, mode: 'attended' });
 
-    expect(first).toMatchObject({ ok: true, running: false });
-    expect(second).toEqual(first.ok ? { ...first, running: true } : first);
+    expect(first).toMatchObject({ kind: 'started' });
+    expect(second).toEqual(first.kind === 'started' ? { ...first, kind: 'working' } : first);
+  });
+
+  it('starts no run while no session waits to be archived or judged and no lapse waits, and one for a session idle a minute', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    expect(await FinishedSessions.start(config, { client, mode: 'attended' })).toEqual({ kind: 'idle' });
+    expect(await readRuns(config)).toEqual([]);
+
+    capturedSession(IDLE, 'attended', { idleFor: 60 * 1000 });
+    expect(await FinishedSessions.start(config, { client, mode: 'attended' })).toMatchObject({ kind: 'started' });
   });
 });
 

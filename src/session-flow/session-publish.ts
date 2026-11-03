@@ -19,15 +19,8 @@ import { installOwner } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { isIsolated } from '../workflow/workspace.js';
 import { AgentSession, recordedToolRoots, sessionKey, type ToolRootsLookup } from './agent-session.js';
-import { archiveSessions, pushSession, type ArchiveSessionRef } from './archive.js';
-import { SessionCaptures } from './captures.js';
+import { archiveSessions, type ArchiveSessionRef } from './archive.js';
 import { SessionWork } from './session-work.js';
-
-/** What one publish pass archived, and what it could not, by why. */
-export interface SessionsPublished {
-  archived: number;
-  unpublished: Array<{ sessions: number; reason: string }>;
-}
 
 /** A session by the platform teamai reads it from, or, when teamai reads no sessions from its tool, by that tool. */
 type PublishedKey = { kind: 'platform'; platform: string; sessionId: string } | { kind: 'tool'; tool: string; sessionId: string };
@@ -93,44 +86,6 @@ async function record(config: LocalConfig, entry: PublicationRecord): Promise<vo
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(`${file}.tmp`, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
   await fs.rename(`${file}.tmp`, file);
-}
-
-/** Counts one more session that failed for `reason` in `unpublished`, one entry per reason. */
-function addUnpublished(unpublished: SessionsPublished['unpublished'], reason: string): void {
-  const same = unpublished.find((entry) => entry.reason === reason);
-
-  if (same) same.sessions += 1;
-  else unpublished.push({ sessions: 1, reason });
-}
-
-/** Archives each session captured here in `mode` that is finished at `now` and not archived from here yet. */
-async function captured(config: LocalConfig, mode: RunMode, now: string): Promise<SessionsPublished> {
-  const published: SessionsPublished = { archived: 0, unpublished: [] };
-
-  for (const { platform, sessionId } of await SessionWork.finished(await SessionCaptures.list(config), now, (of) => of === mode)) {
-    const ref = { platform, sessionId };
-
-    if (await isRecorded(config, ref)) continue;
-    const pushed = await pushSession(config, ref);
-
-    switch (pushed.status) {
-      case 'archived':
-        await record(config, { ...platformKey(ref), publishedAt: now });
-        published.archived += 1;
-        break;
-      case 'busy':
-      case 'failed':
-        addUnpublished(published.unpublished, pushed.message);
-        break;
-      default: {
-        const unhandled: never = pushed;
-
-        return unhandled;
-      }
-    }
-  }
-
-  return published;
 }
 
 /** What one publish pass did with the step sessions of one run. */
@@ -244,4 +199,4 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
   return published;
 }
 
-export const SessionPublish = { captured, steps, waitingSteps, isRecorded, archivedAt, recordArchived } as const;
+export const SessionPublish = { steps, waitingSteps, isRecorded, archivedAt, recordArchived } as const;

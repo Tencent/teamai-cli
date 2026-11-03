@@ -527,8 +527,8 @@ describe('hook-handlers registry', () => {
     const cwd = fs.realpathSync.native(os.tmpdir());
     const user = { ...scope, dataHome: '/data/user' };
     mockBackgroundPassScopes.mockResolvedValueOnce([scope, user]);
-    mockStartFinished.mockResolvedValueOnce({ ok: true, run: 'r1111111111111111', cwd: '/data/project', running: false })
-      .mockResolvedValueOnce({ ok: true, run: 'r2222222222222222', cwd: '/data/user', running: true });
+    mockStartFinished.mockResolvedValueOnce({ kind: 'started', run: 'r1111111111111111', cwd: '/data/project' })
+      .mockResolvedValueOnce({ kind: 'working', run: 'r2222222222222222', cwd: '/data/user' });
     mockSpawn.mockClear();
     vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'the-agent-session');
     vi.stubEnv('TEAMAI_WORKFLOW_ATTEMPT', 'r3333333333333333/a00000001');

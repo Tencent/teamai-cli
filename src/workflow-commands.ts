@@ -68,7 +68,12 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
   if (failed.success) await explainFailedSteps(config, failed.data.run, secrets);
 
   if (resolveRunMode(process.env) !== 'unattended') return;
-  const { Drain } = await import('./score-drain.js');
+  const [{ Drain }, { FINISHED_WORKFLOW }] = await Promise.all([import('./score-drain.js'), import('./session-flow/finished-sessions.js')]);
+  const ended = DoneRunSchema.safeParse(envelope.data.done);
+  const run = ended.success ? await readRun(config, ended.data.run) : 'missing';
+
+  // A drain drives a teamai-finished-sessions run itself, so the end of one starts no drain.
+  if (run !== 'missing' && run !== 'corrupt' && run.name === FINISHED_WORKFLOW) return;
 
   try {
     if (!await Drain.drainsUnattendedRun(config)) return;
@@ -80,6 +85,8 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
 }
 
 const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed') });
+
+const DoneRunSchema = z.object({ run: z.string() });
 
 /**
  * Drives run `runId` with the local driver through `drive`, then drives each teamai-score run its reports answered its

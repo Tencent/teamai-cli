@@ -118,6 +118,11 @@ function carriedFile(config: LocalConfig): string {
   return path.join(scoresDir(config), 'marks-carried.jsonl');
 }
 
+/** A session launch's slot of the day: a group of one subject in one root run, so a batch counts once and each session once. */
+function slotOf(run: string, group: string, key: MarkKey): string {
+  return `${run}\n${group}\n${Subject.format(key.subject)}`;
+}
+
 function idOf(key: MarkKey): string {
   return JSON.stringify([key.scorer, key.sourceHash ?? null, Subject.format(key.subject)]);
 }
@@ -204,8 +209,8 @@ async function readLedger(config: LocalConfig, now: string) {
     if (mark.line.state === 'open') launches.push({ key: mark.key, line: mark.line });
   }
 
-  /** Session launches of `now`'s local day, by run and group: a group is one launch. */
-  const slotsOn = (today: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && localDay(line.at) === localDay(today) ? [`${line.run}\n${line.group}`] : [])));
+  /** Session launches of `now`'s local day, by run, group and subject: a group of one subject is one launch. */
+  const slotsOn = (today: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && localDay(line.at) === localDay(today) ? [slotOf(line.run, line.group, key)] : [])));
 
   return { newest, slotsOn, torn: text !== '' && !text.endsWith('\n') };
 }
@@ -337,8 +342,9 @@ export const Marks = {
         }
 
         if (starts.length === 0) continue;
-        const slot = `${launch.run}\n${group}`;
-        const spends = starts.some(({ key }) => key.subject.kind !== 'run') && !slots.has(slot);
+        const counted = starts.find(({ key }) => key.subject.kind !== 'run');
+        const slot = counted && slotOf(launch.run, group, counted.key);
+        const spends = slot !== undefined && !slots.has(slot);
 
         if (spends && launch.demand === 'auto' && launch.dailyLimit !== undefined && slots.size >= launch.dailyLimit) {
           outcome.limited = true;

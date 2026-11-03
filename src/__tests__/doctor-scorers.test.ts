@@ -145,6 +145,6 @@ describe('scorerNotes', () => {
       leasedAt: '2026-10-25T00:00:00.000Z', expiresAt: '2999-01-01T00:00:00.000Z',
     });
 
-    expect(await scorerNotes(config)).toEqual(['The upgrade carried 2 open workflow passes and 1 open session over from judge attempts. teamai score --drain judges them.']);
+    expect(await scorerNotes(config)).toEqual(['The upgrade carried 2 open workflow passes and 1 open session over from judge attempts. The next teamai score --drain starts teamai-score again for each, except a pass whose run last changed more than 14 days ago.']);
   });
 });

@@ -112,6 +112,25 @@ describe('the scoring of a run\'s passes, through the real CLI', () => {
     expect(fixture.judgeLaunches()).toEqual([]);
   }, 180_000);
 
+  it('labels with teamai score --drain the pass of a start: workflow step its workflow did not score, once the run ended', async () => {
+    const fixture = await reviewFixture('{ names: [quality], start: workflow }', 'attended');
+    const started = await fixture.teamai(['workflow', 'start', 'review', '--driver', 'local']);
+    const { done } = DoneSchema.parse(envelope(started).data);
+
+    const drained = await fixture.teamai(['score', '--drain']);
+
+    expect(drained.code, said(drained)).toBe(0);
+    expect(said(drained)).toContain('✔ Judged 1 sampled pass here (quality)');
+    expect(fixture.runIds().map((id) => RunSchema.parse(fixture.runFile(id))).filter((run) => run.name === 'teamai-finished-sessions'))
+      .toEqual([expect.objectContaining({ startedBy: 'cli', status: 'succeeded' })]);
+    expect(labels(fixture)).toEqual([expect.objectContaining({ scorer: 'quality', label: 'good', subject: { runId: done.run, step: 'review', pass: 1 } })]);
+
+    const again = await fixture.teamai(['score', '--drain']);
+
+    expect(again.code, said(again)).toBe(0);
+    expect(said(again)).not.toContain('Judged');
+  }, 180_000);
+
   it('labels the pass of an unattended local run through one teamai-score run, leaving its drain no workflow pass to judge', async () => {
     const fixture = await reviewFixture('[quality]', 'unattended');
 

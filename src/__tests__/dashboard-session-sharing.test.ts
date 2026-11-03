@@ -12,7 +12,7 @@ vi.mock('node:os', async (importOriginal) => {
 
 import { readSessionSharing } from '../dashboard/session-sharing.js';
 import type { RunMode } from '../launch-context.js';
-import { Drain } from '../score-drain.js';
+import { SessionPublish } from '../session-flow/session-publish.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { SessionCaptures } from '../session-flow/captures.js';
@@ -157,14 +157,12 @@ describe('the session sharing read model', () => {
     });
   });
 
-  it('counts an unattended session as archived once an unattended drain published it', async () => {
-    vi.stubEnv('PATH', ['/usr/bin', '/bin'].join(path.delimiter));
+  it('counts an unattended session as archived once teamai-finished-sessions published it', async () => {
     const config = await team();
     captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
 
-    const drained = await Drain.run([config], { mode: 'unattended' });
+    await SessionPublish.recordArchived(config, { platform: 'claude-code', sessionId: UNATTENDED_OPEN }, new Date().toISOString());
 
-    expect(drained.capturedArchived).toBe(1);
     expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: new Date().toISOString() })).toMatchObject({
       captured: { unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 1 } },
     });

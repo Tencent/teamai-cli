@@ -11,6 +11,7 @@ import { scoringUnavailable } from '../scorers/home.js';
 import { Marks, type Demand, type MarkKey } from '../scorers/marks.js';
 import { pinnedDefinition } from '../scorers/pin.js';
 import { markFacts } from '../scorers/score-plan.js';
+import { ScoreSubjects } from '../scorers/score-subjects.js';
 import { scopeScoring } from '../scorers/settings.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
@@ -147,8 +148,11 @@ async function list(options: ListOptions, ctx: ListContext): Promise<Listed> {
   if ('ok' in request) return request;
   const scope = await scopeOf(request, ctx);
 
-  if (!scope.ok) return scope;
-  const { config } = scope;
+  return scope.ok ? listIn(scope.config, request, ctx.now) : scope;
+}
+
+/** The finished sessions of `config` that `request` asks for, at `now`. */
+async function listIn(config: LocalConfig, request: Request, now: string): Promise<Listed> {
   const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
   const publishing = SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies;
   const named = request.scorers.length > 0 ? await namedScorers(config, request.scorers) : undefined;
@@ -162,12 +166,12 @@ async function list(options: ListOptions, ctx: ListContext): Promise<Listed> {
 
   if (!RUN_MODES.some(wanted)) return { ok: true, list: found };
 
-  for (const session of await SessionWork.finished(await SessionCaptures.list(config), ctx.now, wanted, request.idleMs)) {
+  for (const session of await SessionWork.finished(await SessionCaptures.list(config), now, wanted, request.idleMs)) {
     const mode = SessionCaptures.runModeOf(session.captures) ?? 'attended';
     const key = { platform: session.platform, sessionId: session.sessionId };
     const publish = publishes(mode) && !((await SessionPublish.archivedAt(config, key) ?? -Infinity) >= session.activeAt);
     const candidates = !scores(mode) ? [] : named ?? await sampling?.(session) ?? [];
-    const scorers = await unmarked(config, candidates, key, ctx.now);
+    const scorers = await unmarked(config, candidates, key, now);
 
     if (publish || scorers.length > 0) found.push({ session: session.sessionId, source: session.platform, publish, scorers, demand: named ? 'named' : 'auto' });
   }
@@ -224,8 +228,14 @@ export const FINISHED_WORKFLOW = 'teamai-finished-sessions';
 /** How long a run of it may work before a start takes the data home again: its own timeout, which ends it. */
 const PASS_MS = 30 * 60 * 1000;
 
-/** A run of teamai-finished-sessions in the data home, and the directory a driver of it works from. */
-export type FinishedStart = { ok: true; run: RunId; cwd: string; running: boolean } | { ok: false; failure: WorkflowFailure };
+/**
+ * What a start of teamai-finished-sessions did in a data home: started a run, found one already working on it, or found
+ * nothing for a run to do. `cwd` is the directory a driver of the run works from.
+ */
+export type FinishedStart =
+  | { kind: 'started' | 'working'; run: RunId; cwd: string }
+  | { kind: 'idle' }
+  | { kind: 'failed'; failure: WorkflowFailure };
 
 /** The run of teamai-finished-sessions this data home started inside its timeout and that has not ended. */
 async function workingRun(config: LocalConfig, now: number): Promise<RunId | undefined> {
@@ -236,24 +246,39 @@ async function workingRun(config: LocalConfig, now: number): Promise<RunId | und
 }
 
 /**
+ * Whether a run would find work in `config` whatever idle time its file sets: a session it would list once idle at all,
+ * or a lapse. Nothing prunes ended runs, so a start that would find none starts none.
+ */
+async function hasWork(config: LocalConfig, now: string): Promise<boolean> {
+  const listed = await listIn(config, { idleMs: 1, publish: 'policy', scorers: [] }, now);
+
+  if (!listed.ok || listed.list.length > 0) return true;
+
+  // Its marks would land inside the repository: reading them first writes the carried ones.
+  return !scoringUnavailable(config) && (await ScoreSubjects.lapsed(config, now)).length > 0;
+}
+
+/**
  * Starts teamai-finished-sessions in `config` as the CLI's own start, with the session policies as its inputs and no
  * agent evidence, whatever process calls it, from the directory whose teamai resolves to this data home. A run that
- * already works on this data home is answered instead, with `running`, so two passes never archive one session twice.
+ * already works on this data home is answered instead, so two passes never archive one session twice.
  */
 async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start'>; mode: RunMode }): Promise<FinishedStart> {
   const cwd = SessionWork.leaseCwd(config);
   const working = await workingRun(config, Date.now());
 
-  if (working) return { ok: true, run: working, cwd, running: true };
+  if (working) return { kind: 'working', run: working, cwd };
+
+  if (!await hasWork(config, new Date().toISOString())) return { kind: 'idle' };
 
   const answer = await client.start(FINISHED_WORKFLOW, {
     inputs: { publish: 'policy', scorers: [] }, checkout: cwd, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli',
   });
 
-  if ('error' in answer) return { ok: false, failure: answer.error };
+  if ('error' in answer) return { kind: 'failed', failure: answer.error };
   const run = RunIdSchema.safeParse(answer.data.run);
 
-  return run.success ? { ok: true, run: run.data, cwd, running: false } : { ok: false, failure: { code: 'run_unreadable', message: `The new ${FINISHED_WORKFLOW} run id was missing` } };
+  return run.success ? { kind: 'started', run: run.data, cwd } : { kind: 'failed', failure: { code: 'run_unreadable', message: `The new ${FINISHED_WORKFLOW} run id was missing` } };
 }
 
 export const FinishedSessions = { list, start, reachedScopes, backgroundScopes } as const;

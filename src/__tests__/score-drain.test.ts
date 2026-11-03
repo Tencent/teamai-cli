@@ -17,22 +17,18 @@ vi.mock('../config.js', async (importOriginal) => ({
 import type { RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
 import { dataHomeKey } from '../dashboard-collector.js';
-import { driverIdentity } from '../driver-identity.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { scoreCommand, type ScoreOptions } from '../score-commands.js';
 import { Drain } from '../score-drain.js';
-import { judgePassLock } from '../score-sessions.js';
 import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
-import { SessionWork } from '../session-flow/session-work.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import * as cliPaths from '../utils/cli-path.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
-import { nextJudgeLease, submitJudgeLease } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { workflowResume, workflowStart } from '../workflow-commands.js';
 
@@ -253,121 +249,6 @@ describe('teamai score --drain', () => {
     expect(drained.lines).toContain('✔ Nothing left to do here');
   });
 
-  it('in an unattended job with no settings, judges each session captured unattended with every scorer that judges sessions', async () => {
-    const { config } = await team();
-    capturedSession(SESSION, 'unattended', { idleFor: 0 });
-    fakeClaude();
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('✔ Judged 1 sampled session here (quality)');
-    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, runMode: 'unattended' }]);
-  });
-
-  it('leaves a session whose scorer pins a model no judge tool here runs to another driver, says so, and exits 0', async () => {
-    const { config } = await team({
-      'scorers/quality.md': SCORER.replace('sessions: true\n', 'sessions: true\nmodel: strong\n'),
-      'models/aliases.yaml': 'aliases:\n  strong:\n    codex: gpt-6\n',
-    });
-    capturedSession(SESSION, 'unattended');
-    fakeClaude();
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). '
-      + 'A driver whose tools run it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
-    expect(drained.lines).not.toContain('✔ Nothing left to do here');
-    const other = { driver: { kind: 't3', machine: 'm2', workspace: '/w' }, judge: { isolation: 'best-effort' as const, tools: ['codex'] as [string] }, running: [] };
-    expect(await nextJudgeLease(config, other)).toMatchObject({ data: { lease: { source: 'session', subject: { sessionId: SESSION } } } });
-  });
-
-  it('leaves a session whose isolation no judge tool here reaches to another driver, says so, and exits 0', async () => {
-    await team({ 'scorers/scoring.yaml': 'isolation: verified\n' });
-    capturedSession(SESSION, 'unattended');
-    fakeClaude({ version: '2.0.0 (Claude Code)' });
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('ℹ Left open: 1 entry that needs an isolation no judge tool here reaches. '
-      + 'A driver whose judge reaches it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
-    expect(drained.lines).not.toContain('✔ Nothing left to do here');
-  });
-
-  it('leaves the judge entries to another driver when no judge tool is installed here, says so, and exits 0', async () => {
-    const { config } = await team();
-    capturedSession(SESSION, 'unattended');
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('ℹ Left open: 1 judge entry: no judge tool is installed here. '
-      + 'A driver whose tools judge it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
-    expect(drained.lines).not.toContain('✔ Nothing left to do here');
-    const other = { driver: { kind: 't3', machine: 'm2', workspace: '/w' }, judge: { isolation: 'best-effort' as const, tools: ['claude'] as [string] }, running: [] };
-    expect(await nextJudgeLease(config, other)).toMatchObject({ data: { lease: { source: 'session', subject: { sessionId: SESSION } } } });
-  });
-
-  it('leaves the session lease the background pass holds live when no judge tool is installed here', async () => {
-    const { config } = await team({ 'scorers/scoring.yaml': 'sessions: true\n' });
-    capturedSession(SESSION, 'attended');
-    capturedSession(STEP_SESSION, 'attended');
-    const driver = driverIdentity('local', SessionWork.leaseCwd(config));
-    const taken = data(await nextJudgeLease(config, { driver, judge: { isolation: 'best-effort', tools: ['claude'] }, running: [], only: 'session' }));
-    const { ref } = taken.lease as { ref: string };
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('ℹ Left open: 1 judge entry: no judge tool is installed here. '
-      + 'A driver whose tools judge it takes it with: teamai score --next --json \'{"driver":{…,"can":{"judge":{…}}}}\'');
-    expect(data(await submitJudgeLease(config, ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }))).toMatchObject({ label: { label: 'good' } });
-  });
-
-  it('judges nothing while the background pass judges, leaves its session lease live, and says what it left open', async () => {
-    const { config } = await team({ 'scorers/scoring.yaml': 'sessions: true\n' });
-    capturedSession(SESSION, 'attended');
-    capturedSession(STEP_SESSION, 'attended');
-    const driver = driverIdentity('local', SessionWork.leaseCwd(config));
-    const lock = judgePassLock(config);
-    expect(await acquireLock(lock)).toBe(true);
-    let drained: Awaited<ReturnType<typeof drain>>;
-    try {
-      // The pass offered a tool this drain does not: it holds a lease with codex.
-      const taken = data(await nextJudgeLease(config, { driver, judge: { isolation: 'best-effort', tools: ['codex'] }, running: [], only: 'session' }));
-      fakeClaude();
-      drained = await drain();
-      const { ref } = taken.lease as { ref: string };
-      expect(data(await submitJudgeLease(config, ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }))).toMatchObject({ label: { label: 'good' } });
-    } finally {
-      await releaseLock(lock);
-    }
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('ℹ Left open: 1 judge entry: another judge pass on this machine is running. Run teamai score --drain again once it ends.');
-    expect(drained.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
-    expect(drained.lines).not.toContain('✔ Nothing left to do here');
-  });
-
-  it('says once what it ignores in the scoring settings, however many leases it takes', async () => {
-    await team({ 'scorers/scoring.yaml': 'daily_limit: -1\n' });
-    capturedSession(SESSION, 'unattended');
-    fakeClaude();
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.lines.filter((printed) => printed.includes('daily_limit is -1')), drained.lines.join('\n')).toEqual([
-      '⚠ scorers/scoring.yaml: daily_limit is -1, not a whole number of 0 or more, so it is ignored.',
-    ]);
-  });
-
   it('warns once, and writes nothing into the repository, for a project whose teamai data is still inside it', async () => {
     const { config } = await team();
     const checkout = path.join(root, 'app');
@@ -382,66 +263,15 @@ describe('teamai score --drain', () => {
     await Drain.run([legacy], { mode: 'attended' });
 
     expect(warnings.filter((printed) => printed.includes('Scoring is off for this project'))).toHaveLength(1);
-    expect(fs.existsSync(judgePassLock(legacy))).toBe(false);
-    expect(fs.existsSync(path.dirname(judgePassLock(legacy)))).toBe(false);
-  });
-
-  it('prints a failed judgment and exits 1, and a second drain exits 0 without judging it again', async () => {
-    await team();
-    capturedSession(SESSION, 'unattended');
-    fakeClaude({ fails: true });
-    vi.stubEnv('CI', 'true');
-
-    const failed = await drain();
-
-    expect(failed.code, failed.lines.join('\n')).toBe(1);
-    expect(failed.lines).toContain(`✖ quality on claude-code session ${SESSION}: judge_failed. A failed judgment is final and is not retried. `
-      + `To ask for a new one: teamai score --session ${SESSION} --source claude-code --scorer quality`);
-
-    fakeClaude();
-    const again = await drain();
-
-    expect(again.code, again.lines.join('\n')).toBe(0);
-    expect(again.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
-    expect(again.lines).toContain('✔ Nothing left to do here');
-  });
-
-  it('prints a failed judgment of a pass and exits 1, and a second drain exits 0 without judging it again', async () => {
-    const { config } = await team({ 'workflows/review.yaml': WORKFLOW });
-    const runId = await settledRun(config, 'unattended');
-    fakeClaude({ fails: true });
-    vi.stubEnv('CI', 'true');
-
-    const failed = await drain();
-
-    expect(failed.code, failed.lines.join('\n')).toBe(1);
-    expect(failed.lines).toContain(`✖ quality on pass 1 of step review in run ${runId}: judge_failed. A failed judgment is final and is not retried. `
-      + `To ask for a new one: teamai score --run ${runId} --step review --pass 1 --scorer quality`);
-
-    fakeClaude();
-    const again = await drain();
-
-    expect(again.code, again.lines.join('\n')).toBe(0);
-    expect(again.lines.filter((printed) => printed.includes('Judged'))).toEqual([]);
-  });
-
-  it('publishes the labels it judged to teamai-reports', async () => {
-    const { origin } = await team();
-    capturedSession(SESSION, 'unattended');
-    fakeClaude();
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('✔ Published 1 label to teamai-reports');
-    expect(onReports(origin, 'scores')).toEqual([expect.stringMatching(/^scores\/tester\/\d{4}-\d{2}\.jsonl$/)]);
+    expect(fs.existsSync(path.join(checkout, '.teamai', 'scores'))).toBe(false);
   });
 
   it('exits 1 when it cannot publish, and the next drain publishes what stayed pending', async () => {
-    const { origin } = await team();
-    capturedSession(SESSION, 'unattended');
-    fakeClaude();
+    const { origin, config } = await team();
+    await LabelStore.append(config, {
+      scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
+      source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
+    }, 'Did the work.');
     vi.stubEnv('CI', 'true');
     const hook = path.join(origin, 'hooks', 'pre-receive');
     fs.writeFileSync(hook, '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
@@ -450,7 +280,7 @@ describe('teamai score --drain', () => {
 
     expect(failed.code, failed.lines.join('\n')).toBe(1);
     expect(failed.lines.filter((printed) => printed.startsWith('✖'))).toEqual([
-      expect.stringMatching(/^✖ Could not publish 1 label and 1 session to teamai-reports: [\s\S]*push refused[\s\S]*\. They stay pending; run teamai score --drain again\.$/),
+      expect.stringMatching(/^✖ Could not publish 1 label to teamai-reports: [\s\S]*push refused[\s\S]*\. It stays pending; run teamai score --drain again\.$/),
     ]);
     expect(failed.lines.join('\n').split('push refused')).toHaveLength(2);
     expect(onReports(origin, '')).toEqual([]);
@@ -459,14 +289,16 @@ describe('teamai score --drain', () => {
     const again = await drain();
 
     expect(again.code, again.lines.join('\n')).toBe(0);
-    expect(again.lines).toEqual(expect.arrayContaining(['✔ Published 1 label to teamai-reports', '✔ Archived 1 captured session to teamai-reports (scrubbed)']));
+    expect(again.lines).toContain('✔ Published 1 label to teamai-reports');
     expect(onReports(origin, 'scores')).toHaveLength(1);
-    expect(onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'))).toHaveLength(1);
   });
 
   it('says the cause ssh gives when it cannot publish, in one sentence', async () => {
     const { config } = await team();
-    capturedSession(SESSION, 'unattended');
+    await LabelStore.append(config, {
+      scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
+      source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
+    }, 'Did the work.');
     fakeClaude();
     vi.stubEnv('CI', 'true');
     const ssh = path.join(root, 'bin', 'ssh-denied');
@@ -478,15 +310,17 @@ describe('teamai score --drain', () => {
 
     expect(failed.code, failed.lines.join('\n')).toBe(1);
     expect(failed.lines.filter((printed) => printed.startsWith('✖ Could not publish'))).toEqual([
-      '✖ Could not publish 1 label and 1 session to teamai-reports: git@example.invalid: Permission denied (publickey).; fatal: Could not read from remote repository.; '
-        + 'Please make sure you have the correct access rights; and the repository exists. They stay pending; run teamai score --drain again.',
+      '✖ Could not publish 1 label to teamai-reports: git@example.invalid: Permission denied (publickey).; fatal: Could not read from remote repository.; '
+        + 'Please make sure you have the correct access rights; and the repository exists. It stays pending; run teamai score --drain again.',
     ]);
   });
 
-  it('says once that another process is writing teamai-reports, for labels and sessions alike', async () => {
+  it('says that another process is writing teamai-reports', async () => {
     const { config } = await team();
-    capturedSession(SESSION, 'unattended');
-    fakeClaude();
+    await LabelStore.append(config, {
+      scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
+      source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
+    }, 'Did the work.');
     vi.stubEnv('CI', 'true');
     const lock = path.join(path.dirname(getReportsDir(config)), REPORTS_LOCK_FILENAME);
     expect(await acquireLock(lock)).toBe(true);
@@ -498,7 +332,7 @@ describe('teamai score --drain', () => {
     }
 
     expect(drained.code, drained.lines.join('\n')).toBe(1);
-    expect(drained.lines, drained.lines.join('\n')).toContain('✖ Could not publish 1 label and 1 session to teamai-reports: another teamai process is writing teamai-reports. They stay pending; run teamai score --drain again.');
+    expect(drained.lines, drained.lines.join('\n')).toContain('✖ Could not publish 1 label to teamai-reports: another teamai process is writing teamai-reports. It stays pending; run teamai score --drain again.');
   });
 
   it('publishes the workflow run records a run could not publish to teamai-reports', async () => {
@@ -539,33 +373,10 @@ describe('teamai score --drain', () => {
     expect(onReports(origin, 'workflows/runs')).toEqual([`workflows/runs/${runId}.json`]);
   });
 
-  it('archives each session captured unattended once, scrubbed, on teamai-reports', async () => {
-    const { origin } = await team();
-    capturedSession(SESSION, 'unattended', { answer: `Added the retries. The deploy token is ${TOKEN}.` });
-    fakeClaude();
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('✔ Archived 1 captured session to teamai-reports (scrubbed)');
-    const [archived, ...more] = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
-    expect(more).toEqual([]);
-    expect(readOnReports(origin, archived)).toContain('Added the retries.');
-    expect(readOnReports(origin, archived)).not.toContain(TOKEN);
-
-    const again = await drain();
-
-    expect(again.code, again.lines.join('\n')).toBe(0);
-    expect(again.lines.filter((printed) => /Judged|Published|Archived/.test(printed))).toEqual([]);
-    expect(again.lines).toContain('✔ Nothing left to do here');
-  });
-
-  it('masks the value of a secret the team declares, whatever its name, in the sessions it archives', async () => {
+  it('masks the value of a secret the team declares, whatever its name, in the step sessions it archives', async () => {
     const dsn = 'mysql-prod-7Hq2xVb9Lk';
     const { origin, config } = await team({ 'env/secrets.yaml': 'secrets:\n  - key: WAREHOUSE_DSN\n', 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
     vi.stubEnv('WAREHOUSE_DSN', dsn);
-    capturedSession(SESSION, 'unattended', { answer: `Added the retries against ${dsn}.` });
     claudeSession(STEP_SESSION, `Reviewed it against ${dsn}.`);
     await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION });
     fakeClaude();
@@ -575,9 +386,8 @@ describe('teamai score --drain', () => {
 
     expect(drained.code, drained.lines.join('\n')).toBe(0);
     const archived = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
-    expect(archived).toHaveLength(2);
+    expect(archived).toHaveLength(1);
     const texts = archived.map((file) => readOnReports(origin, file));
-    expect(texts.join('\n')).toContain('Added the retries against');
     expect(texts.join('\n')).toContain('Reviewed it against');
     for (const text of texts) expect(text).not.toContain(dsn);
   });
@@ -649,7 +459,6 @@ describe('teamai score --drain', () => {
 
   it('reports the usage of an unattended session to stats/<member>.yaml under unattended, on a data home that never ran pull', async () => {
     const { origin } = await team();
-    capturedSession(SESSION, 'unattended');
     const key = await dataHomeKey(path.join(mocks.home, '.teamai'));
     const at = (minute: number) => new Date(Date.now() - (60 - minute) * 60 * 1000).toISOString();
     const events = [['session_start', at(0)], ['prompt_submit', at(1)], ['stop', at(2)]].map(([type, timestamp]) => line({
@@ -714,7 +523,6 @@ describe('teamai score --drain', () => {
 
   it('says only that nothing is left when a second drain finds nothing new, usage included', async () => {
     await team({ 'scorers/quality.md': SCORER.replace('sessions: true\n', '') });
-    capturedSession(SESSION, 'unattended');
     const key = await dataHomeKey(path.join(mocks.home, '.teamai'));
     fs.mkdirSync(path.join(mocks.home, '.teamai', 'dashboard'), { recursive: true });
     fs.writeFileSync(path.join(mocks.home, '.teamai', 'dashboard', 'events.jsonl'), line({
@@ -726,23 +534,6 @@ describe('teamai score --drain', () => {
     const again = await drain();
 
     expect(again).toEqual({ code: 0, lines: ['✔ Nothing left to do here'] });
-  });
-
-  it('judges sampled sessions within daily_limit, with every scorer that judges sessions', async () => {
-    const { config } = await team({
-      'scorers/rare.md': SCORER.replace('samplingRate: 100', 'samplingRate: 0'),
-      'scorers/scoring.yaml': 'daily_limit: 1\n',
-    });
-    capturedSession(SESSION, 'unattended');
-    capturedSession('7c1e0000-0000-4000-8000-000000000012', 'unattended');
-    fakeClaude();
-    vi.stubEnv('CI', 'true');
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('✔ Judged 1 sampled session here (quality)');
-    expect((await LabelStore.local(config)).map((label) => label.scorer)).toEqual(['quality']);
   });
 
   it('with unattended: off in teamai.yaml and scoring.yaml, neither judges nor archives an unattended job\'s sessions', async () => {
@@ -763,19 +554,6 @@ describe('teamai score --drain', () => {
     expect(drained.lines.filter((printed) => /Judged|Published|Archived/.test(printed))).toEqual([]);
     expect(await LabelStore.local(config)).toEqual([]);
     expect(onReports(origin, 'sessions')).toEqual([]);
-  });
-
-  it('in attended mode with publish attended auto, archives an attended session idle six hours and leaves an active one', async () => {
-    const { origin } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { attended: auto }\n' });
-    capturedSession(SESSION, 'attended', { answer: 'The idle answer.' });
-    capturedSession('7c1e0000-0000-4000-8000-000000000012', 'attended', { idleFor: 0, answer: 'The active answer.' });
-
-    const drained = await drain();
-
-    expect(drained.code, drained.lines.join('\n')).toBe(0);
-    expect(drained.lines).toContain('✔ Archived 1 captured session to teamai-reports (scrubbed)');
-    const archived = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
-    expect(archived.map((file) => readOnReports(origin, file))).toEqual([expect.stringContaining('The idle answer.')]);
   });
 
   it('in attended mode with no settings, neither archives nor judges an attended session idle six hours', async () => {
@@ -816,8 +594,10 @@ describe('teamai score --drain', () => {
   it('runs at the end of an unattended local run, which keeps the run\'s outcome as its exit code when a publish fails', async () => {
     const { origin, config } = await team({ 'workflows/mark.yaml': MARK });
     await syncWorkflowDefinitions(config);
-    capturedSession(SESSION, 'unattended');
-    fakeClaude();
+    await LabelStore.append(config, {
+      scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
+      source: 'session', subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: new Date().toISOString(),
+    }, 'Did the work.');
     fs.writeFileSync(path.join(origin, 'hooks', 'pre-receive'), '#!/bin/sh\necho "push refused" >&2\nexit 1\n', { mode: 0o755 });
     vi.stubEnv('CI', 'true');
 
@@ -828,8 +608,7 @@ describe('teamai score --drain', () => {
     const draining = started.lines.indexOf('ℹ Draining before exit (teamai score --drain)');
     expect(draining, started.lines.join('\n')).toBeGreaterThanOrEqual(0);
     expect(started.lines.slice(draining)).toEqual(expect.arrayContaining([
-      '✔ Judged 1 sampled session here (quality)',
-      expect.stringMatching(/^✖ Could not publish 1 workflow run record, 1 label and 1 session to teamai-reports: /),
+      expect.stringMatching(/^✖ Could not publish 1 workflow run record and 1 label to teamai-reports: /),
     ]));
   });
 
@@ -868,8 +647,6 @@ describe('teamai score --drain', () => {
     const checkout = path.join(root, 'app');
     fs.mkdirSync(checkout, { recursive: true });
     const runId = String(data(await startRun(config, 'mark', {}, { secrets: {}, runMode: 'unattended', checkout })).run);
-    capturedSession(SESSION, 'unattended');
-    fakeClaude();
     vi.stubEnv('CI', 'true');
 
     const resumed = await driveLocally(() => workflowResume(runId, {}));
@@ -877,7 +654,7 @@ describe('teamai score --drain', () => {
     expect(resumed.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     const draining = resumed.lines.indexOf('ℹ Draining before exit (teamai score --drain)');
     expect(draining, resumed.lines.join('\n')).toBeGreaterThanOrEqual(0);
-    expect(resumed.lines.slice(draining)).toContain('✔ Judged 1 sampled session here (quality)');
+    expect(resumed.lines.slice(draining)).toContain('✔ Nothing left to do here');
   });
 
 });

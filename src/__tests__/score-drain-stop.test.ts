@@ -1,7 +1,7 @@
 /**
- * An unattended session is never judge work at Stop (#1385): the real hook dispatcher runs Stop on it, and only a drain
- * makes it judge work. The detached background child, the pull and the update are stubbed; the background pass runs
- * inline.
+ * An unattended session is never finished at Stop (#1385): the real hook dispatcher runs Stop on it, and only a drain
+ * makes it a finished session. The detached background child, the pull, the update and the drain's
+ * teamai-finished-sessions run are stubbed; the background pass runs inline.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,10 @@ vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined), settleLateUsa
 vi.mock('../update.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../update.js')>()), doUpdate: vi.fn(async () => undefined) }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
 vi.mock('../utils/cli-path.js', () => ({ resolveCliPath: () => null }));
+vi.mock('../session-flow/finished-sessions.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../session-flow/finished-sessions.js')>();
+  return { ...actual, FinishedSessions: { ...actual.FinishedSessions, start: vi.fn(async () => ({ kind: 'idle' })) } };
+});
 
 const { hookDispatchCli } = await import('../hook-dispatch-cli.js');
 const { loadLocalConfig } = await import('../config.js');
@@ -34,7 +38,7 @@ const { syncScorerDefinitions } = await import('../scorers/cache.js');
 const { Drain } = await import('../score-drain.js');
 const { encodeCwdClaude } = await import('../session-flow/fs.js');
 const { AGENT_SESSION_ENV } = await import('../utils/session-id.js');
-const { nextJudgeLease } = await import('../workflow/scoring.js');
+const { FinishedSessions } = await import('../session-flow/finished-sessions.js');
 
 const SCORER = `---
 labels:
@@ -77,7 +81,7 @@ async function stop(env: Record<string, string>, payload: Record<string, unknown
 }
 
 describe('an unattended session at Stop', () => {
-  it('is no judge work after three Stops, however long after, until a drain reaches it', async () => {
+  it('is no finished session after three Stops, however long after, until a drain reaches it', async () => {
     const home = path.join(root, 'home');
     const team = path.join(root, 'team');
     fs.mkdirSync(path.join(team, 'scorers'), { recursive: true });
@@ -107,12 +111,11 @@ describe('an unattended session at Stop', () => {
       await stop({ TEAMAI_MODE: 'unattended' }, { session_id: SESSION, cwd, transcript_path: transcript });
     }
 
-    const later = new Date(Date.now() + 7 * HOUR).toISOString();
-    const request = { driver: { kind: 't3', machine: 'm1', workspace: '/w' }, judge: { isolation: 'best-effort' as const, tools: ['claude'] as [string] }, running: [] };
-    expect(await nextJudgeLease(config, request, later)).toEqual({ data: { idle: { open: 0, leased: 0 } } });
+    const finished = async () => FinishedSessions.list({}, { env: {}, current: config, now: new Date(Date.now() + 7 * HOUR).toISOString() });
+    expect(await finished()).toEqual({ ok: true, list: [] });
 
     await Drain.run([config], { mode: 'unattended' });
 
-    expect(await nextJudgeLease(config, request, later)).toMatchObject({ data: { lease: { source: 'session', subject: { platform: 'claude-code', sessionId: SESSION } } } });
+    expect(await finished()).toMatchObject({ ok: true, list: [{ session: SESSION, source: 'claude-code', scorers: ['quality'] }] });
   });
 });
