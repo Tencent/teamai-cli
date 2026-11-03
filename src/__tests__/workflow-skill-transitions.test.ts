@@ -2247,6 +2247,32 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a confined step D28 leased runs on the confined tool even when judging turns off before its runner begins',
+    rows: ['D28', 'J6', 'C12'],
+    run: async () => {
+      let leased = false;
+      const refusal = { code: 'scoring_settings_invalid', message: 'scoring.isolation in config.yaml is not a known level.' };
+      const made = await harness({ judged: JUDGED }, { client: (client) => ({
+        ...client,
+        next: async (...args) => {
+          const answer = await client.next(...args);
+          if ('data' in answer && JSON.stringify(answer.data.lease ?? {}).includes('"step":"judge"')) leased = true;
+          return answer;
+        },
+        scoreNext: async (...args) => (leased ? { error: refusal } : client.scoreNext(...args)),
+      }) });
+      fakeConfinedClaude(made.root, { verdict: 'pass' });
+      const turn = await chosen(made, 'judged', 1);
+      expect(dispatches(turn)).toEqual([]);
+      const done = await polledToDone(made, turn.run);
+      expect([...turn.events, ...done.events]).toContainEqual({ kind: 'judging-off', failure: refusal });
+      expect(dispatches(done)).toEqual([]);
+      const engine = await readRun(made.config, turn.run);
+      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judge')).toMatchObject({ status: 'succeeded', confined: { tool: 'claude' } });
+      return made.rows;
+    },
+  },
+  {
     name: 'a verified confined step no offer of this session reaches is given up at once, by cancelling the step above it that continue_on_failure lets fail',
     rows: ['D29'],
     run: async () => {

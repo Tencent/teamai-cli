@@ -67,7 +67,7 @@ export const TRANSITIONS = [
   { id: 'D6', state: 'drive', input: 'reply lease', guard: 'executor command', effects: 'phase preparing; spawn runner job `command`', next: 'drive', action: 'event `started`' },
   { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and neither D8 nor D28 applies', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D8', state: 'drive', input: 'reply lease', guard: 'executor prompt, workspace `new` or `continue`, and a host that makes places (h3)', effects: 'phase preparing with request `host`; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
-  { id: 'D28', state: 'drive', input: 'reply lease', guard: 'executor prompt, confined to a directory, while `judging`', effects: 'phase preparing; spawn runner job `confined`', next: 'drive', action: 'event `started`' },
+  { id: 'D28', state: 'drive', input: 'reply lease', guard: 'executor prompt, confined to a directory, while `judging`', effects: 'phase preparing, `runs: here`; spawn runner', next: 'drive', action: 'event `started`' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
   { id: 'D10', state: 'drive', input: 'reply hitl', guard: 'a required approval', effects: 'journal the gate: `seq` := seq + 1, unless it is the gate journalled already', next: 'drive', action: '`person why:approval` with the person\'s literals; waiting `<step> waits for the person\'s answer`' },
   { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
@@ -99,7 +99,7 @@ export const TRANSITIONS = [
   { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, its command exiting, or its confined run ending', guard: '', effects: 'stop the setup, command or confined run and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
   { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
   { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; write-ahead `released`', next: 'reporting', action: '' },
-  { id: 'C12', state: 'preparing', input: 'runner: prepared', guard: 'job `confined`', effects: '`runConfinedStep` outside the lock, on the first of the lease\'s tools that resolves its model, in its directory, with no team env and no session kept', next: 'running', action: '' },
+  { id: 'C12', state: 'preparing', input: 'runner: prepared', guard: 'attempt `runs: here`', effects: '`runConfinedStep` outside the lock, on the first of the lease\'s tools that resolves its model, in its directory, with no team env and no session kept', next: 'running', action: '' },
   { id: 'C13', state: 'running', input: 'runner: the confined run ended', guard: '', effects: 'write-ahead: `success` with the reply as outputs and what the run measured, else `failed` with its failure; `released` when no tool of the lease resolves its model here', next: 'reporting', action: '' },
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
@@ -761,6 +761,8 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       if (expiresAt !== undefined) attemptState.expiresAt = expiresAt;
 
       if (hosted) attemptState.request = { kind: 'host' };
+
+      if (runsHere) attemptState.runs = 'here';
       const preparing = withAttempt(state, attemptState);
 
       return { row: lease.executor === 'command' ? 'D6' : runsHere ? 'D28' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };

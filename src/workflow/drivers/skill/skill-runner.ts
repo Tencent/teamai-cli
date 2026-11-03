@@ -337,8 +337,8 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation, confined } = lease;
 
-  // While this machine judges the run, its confined tool runs the step here, as the local driver does (C12).
-  if (confined && state.judging) {
+  // D28 leased the step to this machine's confined tool, which runs it here, as the local driver does (C12).
+  if (open.runs === 'here' && confined) {
     const running = open.phase === 'preparing' ? traced(context, preparedRow(state, { attempt, row: 'C12' }))?.state ?? state : state;
     await writeSkillState(context.config, lock, running, context.env.secrets);
     const stage: Stage = { kind: 'confined', lease: { ...lease, confined } };

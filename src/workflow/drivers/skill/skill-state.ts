@@ -94,11 +94,12 @@ const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.nu
  * stopped, by its runner or by the agent that started its child; or it has a report to send.
  */
 const AttemptStateSchema = z.discriminatedUnion('phase', [
-  z.object({ ...AttemptBase, phase: z.literal('preparing'), request: HostRequestSchema.optional() }),
+  // runs: D28 leased the step to this machine's confined tool, so its runner runs it and offers it to no child.
+  z.object({ ...AttemptBase, phase: z.literal('preparing'), request: HostRequestSchema.optional(), runs: z.literal('here').optional() }),
   z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema, request: HostRequestSchema.optional() }),
   /** `refused`: why the place the agent adopted last was not prepared. */
   z.object({ ...AttemptBase, phase: z.literal('placing'), ask: PlaceAskSchema, refused: z.string().optional() }),
-  z.object({ ...AttemptBase, phase: z.literal('running') }),
+  z.object({ ...AttemptBase, phase: z.literal('running'), runs: z.literal('here').optional() }),
   /** `reissued`: an earlier session was shown this dispatch, and a child it started may still run. */
   z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema, reissued: z.literal(true).optional() }),
   z.object({ ...AttemptBase, phase: z.literal('dispatched'), dispatch: DispatchSchema }),

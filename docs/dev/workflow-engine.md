@@ -130,7 +130,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | D6 | drive | reply lease | executor command | phase preparing; spawn runner job `command` | drive | event `started` |
 | D7 | drive | reply lease | executor prompt, and neither D8 nor D28 applies | phase preparing; spawn runner job `prompt` | drive | event `started` |
 | D8 | drive | reply lease | executor prompt, workspace `new` or `continue`, and a host that makes places (h3) | phase preparing with request `host`; spawn runner job `prompt` | drive | event `started` |
-| D28 | drive | reply lease | executor prompt, confined to a directory, while `judging` | phase preparing; spawn runner job `confined` | drive | event `started` |
+| D28 | drive | reply lease | executor prompt, confined to a directory, while `judging` | phase preparing, `runs: here`; spawn runner | drive | event `started` |
 | D9 | drive | tick | a queued attempt whose `behind` is no longer open | phase preparing; spawn its job again | drive | |
 | D10 | drive | reply hitl | a required approval | journal the gate: `seq` := seq + 1, unless it is the gate journalled already | drive | `person why:approval` with the person's literals; waiting `<step> waits for the person's answer` |
 | D11 | drive | reply hitl | an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back | as D10 | drive | `choose about:gate decide:person` |
@@ -167,7 +167,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | C9 | stopping by its runner | runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, its command exiting, or its confined run ending | | stop the setup, command or confined run and every process it started (`tool-launch/process-stop.ts`); write-ahead `released` | reporting | |
 | C10 | preparing, running | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its setup or command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place) | unchanged | event `restarted` |
 | C11 | stopping by its runner | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its setup or command left; write-ahead `released` | reporting | |
-| C12 | preparing | runner: prepared | job `confined` | `runConfinedStep` outside the lock, on the first of the lease's tools that resolves its model, in its directory, with no team env and no session kept | running | |
+| C12 | preparing | runner: prepared | attempt `runs: here` | `runConfinedStep` outside the lock, on the first of the lease's tools that resolves its model, in its directory, with no team env and no session kept | running | |
 | C13 | running | runner: the confined run ended | | write-ahead: `success` with the reply as outputs and what the run measured, else `failed` with its failure; `released` when no tool of the lease resolves its model here | reporting | |
 
 ### Acks
