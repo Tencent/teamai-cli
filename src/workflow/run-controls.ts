@@ -53,7 +53,7 @@ async function controlRun(
 
   if (notPublished && 'data' in envelope) envelope.data.notPublished = notPublished;
 
-  if (runSettled && !notPublished) await cleanUpSucceededRun(config, runId, checkout, secrets);
+  if (runSettled) await cleanUpSucceededRun(config, { runId, checkout, secrets, notPublished });
 
   return envelope;
 }

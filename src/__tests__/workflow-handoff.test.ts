@@ -1236,6 +1236,21 @@ describe('workflow handoff through teamai-reports', () => {
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'succeeded', stateRevision: 2 });
   });
 
+  it('warns once that the branches of a run were not cleaned up when its end did not reach teamai-reports', async () => {
+    const acme = team({ copy: COPY });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'copy');
+    await work(alice, runId, 'change.txt');
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    receiveHook(acme.origin, 'exit 1');
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { done: { outcome: 'succeeded', notPublished: { code: 'records_pending' } } } });
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('were not cleaned up'))).toEqual([
+      [`The branches of run ${runId} were not cleaned up: its end did not reach teamai-reports. teamai doctor --fix tries again.`],
+    ]);
+  });
+
   it('publishes how a run ended on the next request when the end was saved but not published', async () => {
     const acme = team();
     const alice = await acme.member('alice');

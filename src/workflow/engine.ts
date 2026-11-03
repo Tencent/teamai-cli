@@ -2054,8 +2054,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
   if (done && notPublished) done.notPublished = notPublished;
 
-  // After the end is published: a publish checks the run's branches on origin, and this deletes some of them.
-  if (done && !notPublished) await cleanUpSucceededRun(config, runId, driver.workspace, env.secrets);
+  if (done) await cleanUpSucceededRun(config, { runId, checkout: driver.workspace, secrets: env.secrets, notPublished });
 
   return envelope;
 }

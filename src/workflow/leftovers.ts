@@ -13,7 +13,7 @@ import { knownSecrets } from '../env-resolution.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
-import { publishRunEnd } from './handoff.js';
+import { publishRunEnd, type HandoffError } from './handoff.js';
 import { pullRequestBranches, RECORDS_DIR } from './records.js';
 import { resolveRetention, type ResolvedRetention } from './retention.js';
 import { AttemptIdSchema, attemptsDir, isRunId, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
@@ -125,12 +125,16 @@ async function deleteBranches(checkout: string, runId: string, branches: string[
   return { deleted: branches.filter((branch) => !hostKept.has(branch) && !failed.some((item) => item.branch === branch)), failed };
 }
 
+function warnNotCleanedUp(runId: string, reason: string): void {
+  log.warn(`The branches of run ${runId} were not cleaned up: ${reason}. teamai doctor --fix tries again.`);
+}
+
 /** What a succeeded run keeps and deletes of its branches, deleted; undefined when `checkout` has none of them, or could not list them. */
 async function settleSucceeded(run: RunState, checkout: string, now: string): Promise<RunLeftovers | undefined> {
   const tips = await runBranches(checkout, run.id);
 
   if ('error' in tips) {
-    log.warn(`The branches of run ${run.id} were not cleaned up: ${tips.error}. teamai doctor --fix tries again.`);
+    warnNotCleanedUp(run.id, tips.error);
 
     return undefined;
   }
@@ -172,17 +176,28 @@ async function settleSucceeded(run: RunState, checkout: string, now: string): Pr
 }
 
 /**
- * Once run `runId` succeeded, deletes in `checkout` and on its origin each of its branches that a branch that stays
- * holds, and records what it did on the run. A deletion that fails is a warning naming the branch. Runs once per
- * settled revision, and again while a deletion failed.
+ * Once run `runId` succeeded and its end was published, deletes in `checkout` and on its origin each of its branches
+ * that a branch that stays holds, and records what it did on the run. The publish goes first because it checks the
+ * run's branches on origin. `notPublished` is why the end was not published: then nothing is deleted, and the run's
+ * owner is warned, unless another install owns the run now. A deletion that fails is a warning naming the branch. Runs
+ * once per settled revision, and again while a deletion failed.
  */
-export async function cleanUpSucceededRun(config: LocalConfig, runId: string, checkout: string, secrets: Record<string, string>): Promise<void> {
+export async function cleanUpSucceededRun(
+  config: LocalConfig,
+  { runId, checkout, secrets, notPublished }: { runId: string; checkout: string; secrets: Record<string, string>; notPublished: HandoffError | undefined },
+): Promise<void> {
   const run = await readRun(config, runId);
 
   // A run with no base and no copy never wrote a branch.
   if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded' || (run.base === undefined && run.copies === undefined)) return;
 
   if (run.leftovers?.revision === run.revision && run.leftovers.failed.length === 0) return;
+
+  if (notPublished) {
+    if (notPublished.code !== 'not_owner') warnNotCleanedUp(runId, 'its end did not reach teamai-reports');
+
+    return;
+  }
   const leftovers = await settleSucceeded(run, checkout, new Date().toISOString());
 
   if (!leftovers) return;
@@ -320,8 +335,8 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     const at = run.checkout ?? checkout;
 
     if (!expired(run.updatedAt)) {
-      if (run.status === 'succeeded' && !cleaned(run, 'success') && await publishRunEnd(config, run.id, at) === undefined) {
-        await cleanUpSucceededRun(config, run.id, at, secrets);
+      if (run.status === 'succeeded' && !cleaned(run, 'success')) {
+        await cleanUpSucceededRun(config, { runId: run.id, checkout: at, secrets, notPublished: await publishRunEnd(config, run.id, at) });
       }
 
       continue;
