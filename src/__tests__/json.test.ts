@@ -97,6 +97,65 @@ describe('editJsonText', () => {
     expect(edited.replace(/\r\n/g, '')).not.toContain('\n');
   });
 
+  it('adds a key after the member\'s, leaving their text and trailing comments as written', () => {
+    const opencode = [
+      '{',
+      '  "mcp": {',
+      '    "notes": { "type": "local", "command": ["echo", "notes"], "enabled": false }, // off for now',
+      '  },',
+      '}',
+      '',
+    ].join('\n');
+    const team = { type: 'local', command: ['npx', '-y', '@acme/formatter-mcp'], enabled: true };
+    const edited = editJsonText(opencode, { mcp: { notes: { type: 'local', command: ['echo', 'notes'], enabled: false }, 'local-formatter': team } });
+
+    expect(edited).toBe([
+      '{',
+      '  "mcp": {',
+      '    "notes": { "type": "local", "command": ["echo", "notes"], "enabled": false }, // off for now',
+      '    "local-formatter": {',
+      '      "type": "local",',
+      '      "command": [',
+      '        "npx",',
+      '        "-y",',
+      '        "@acme/formatter-mcp"',
+      '      ],',
+      '      "enabled": true',
+      '    },',
+      '  },',
+      '}',
+      '',
+    ].join('\n'));
+  });
+
+  it('removes the last key, keeping the comment of the key before it, and leaves no trailing comma', () => {
+    const hooks = '{\n  "hooks": {\n    "stop": [{ "command": "mine" }], // my own\n    "sessionStart": [{ "command": "teamai" }]\n  }\n}\n';
+    const edited = editJsonText(hooks, { hooks: { stop: [{ command: 'mine' }] } });
+
+    expect(edited).toBe('{\n  "hooks": {\n    "stop": [{ "command": "mine" }] // my own\n  }\n}\n');
+    expect(parseJsonAs(edited, 'json-comments')).toEqual({ hooks: { stop: [{ command: 'mine' }] } });
+  });
+
+  it('removes the first key and keeps the comment above the key after it', () => {
+    const mcp = '{\n  "mcpServers": {\n    "team": { "url": "https://x" },\n    // personal, keep\n    "notes": { "url": "https://n" }\n  }\n}\n';
+
+    expect(editJsonText(mcp, { mcpServers: { notes: { url: 'https://n' } } }))
+      .toBe('{\n  "mcpServers": {\n    // personal, keep\n    "notes": { "url": "https://n" }\n  }\n}\n');
+  });
+
+  it('adds an element to an array and keeps the comments on the member\'s elements', () => {
+    const linted = '{\n  "hooks": {\n    "Stop": [\n      // runs my linter\n      { "command": "lint" },\n    ],\n  },\n}\n';
+    const edited = editJsonText(linted, { hooks: { Stop: [{ command: 'lint' }, { command: 'teamai' }] } });
+
+    expect(edited).toBe('{\n  "hooks": {\n    "Stop": [\n      // runs my linter\n      { "command": "lint" },\n      {\n        "command": "teamai"\n      },\n    ],\n  },\n}\n');
+  });
+
+  it('removes an array element and keeps the comments on the others', () => {
+    const stale = '{\n  "Stop": [\n    { "command": "teamai-old" },\n    // runs my linter\n    { "command": "lint" }\n  ]\n}\n';
+
+    expect(editJsonText(stale, { Stop: [{ command: 'lint' }] })).toBe('{\n  "Stop": [\n    // runs my linter\n    { "command": "lint" }\n  ]\n}\n');
+  });
+
   it('leaves the text as it is when the value has not changed', () => {
     expect(editJsonText(settings, parseJsonAs(settings, 'jsonc'))).toBe(settings);
   });

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { applyEdits, modify, parseTree, printParseErrorCode, type FormattingOptions, type Node, type ParseError } from 'jsonc-parser';
+import { applyEdits, findNodeAtLocation, modify, parseTree, printParseErrorCode, type FormattingOptions, type JSONPath, type Node, type ParseError } from 'jsonc-parser';
 import JSON5 from 'json5';
 import { z } from 'zod';
 import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue } from '../types.js';
@@ -106,24 +106,44 @@ function valueOfNode(node: Node): JsonValue {
 }
 
 /**
- * `original`, a JSON-with-comments document, edited so it holds `next`: an
- * object is edited key by key, an array or a scalar that changed is replaced
- * whole, and a key `next` drops is removed with the comment between it and the
- * key before it, which documents it. Every other comment stays, and so does the
- * text outside the lines an edit touches; jsonc-parser formats those lines with
- * the original's indentation and line endings.
+ * `original`, a JSON-with-comments document, edited so it holds `next`, with
+ * every byte of the member's text outside the edits kept. Objects are edited
+ * key by key and arrays element by element: a new key or a last element goes
+ * on its own line after the last one there, so no sibling is reformatted or
+ * loses the comment after it. A removed key or element takes its own text,
+ * its comma, the comment on its line and the comment lines just above it,
+ * which document it, and never a trailing comma the tool may refuse. A
+ * scalar that changed is replaced in place.
  */
 export function editJsonText(original: string, next: JsonValue): string {
   const formattingOptions = formattingOf(original);
   let text = original;
 
-  const edit = (path: Array<string | number>, before: JsonValue | undefined, after: JsonValue | undefined): void => {
+  const edit = (path: JSONPath, before: JsonValue | undefined, after: JsonValue | undefined): void => {
     if (isJsonObject(before) && isJsonObject(after)) {
-      for (const key of Object.keys(before)) {
-        if (!Object.hasOwn(after, key)) text = applyEdits(text, modify(text, [...path, key], undefined, { formattingOptions }));
+      for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) text = withoutNode(text, [...path, key]);
+
+      for (const [key, value] of Object.entries(after)) {
+        if (Object.hasOwn(before, key)) edit([...path, key], before[key], value);
+        else text = withAppended(text, path, key, value, formattingOptions) ?? applyEdits(text, modify(text, [...path, key], value, { formattingOptions }));
       }
 
-      for (const [key, value] of Object.entries(after)) edit([...path, key], Object.hasOwn(before, key) ? before[key] : undefined, value);
+      return;
+    }
+
+    if (Array.isArray(before) && Array.isArray(after)) {
+      const kept = keptElements(before, after);
+
+      for (let index = before.length - 1; index >= 0; index--) if (!kept.has(index)) text = withoutNode(text, [...path, index]);
+      const matched = new Set(kept.values());
+
+      after.forEach((value, index) => {
+        if (matched.has(index)) return;
+        // After every element that stays, it is appended; before one, `modify` inserts it without touching that one.
+        const appended = [...matched].every((at) => at < index) ? withAppended(text, path, null, value, formattingOptions) : null;
+
+        text = appended ?? applyEdits(text, modify(text, [...path, index], value, { formattingOptions, isArrayInsertion: true }));
+      });
 
       return;
     }
@@ -135,6 +155,100 @@ export function editJsonText(original: string, next: JsonValue): string {
   edit([], parseJsonAs(original, 'jsonc'), next);
 
   return text;
+}
+
+/** Each element of `before` that stays, by its index, paired in order with the index of its equal in `after`. */
+function keptElements(before: readonly JsonValue[], after: readonly JsonValue[]): Map<number, number> {
+  const kept = new Map<number, number>();
+  let from = 0;
+
+  after.forEach((value, index) => {
+    const found = before.findIndex((element, at) => at >= from && isDeepStrictEqual(element, value));
+
+    if (found === -1) return;
+    kept.set(found, index);
+    from = found + 1;
+  });
+
+  return kept;
+}
+
+/** `text` without the property or element at `path`, as `editJsonText` removes one. */
+function withoutNode(text: string, path: JSONPath): string {
+  const value = findNodeAtLocation(parseTree(text, [], { allowTrailingComma: true }) ?? emptyNode(), path);
+  const node = value?.parent?.type === 'property' ? value.parent : value;
+  const siblings = node?.parent?.children;
+
+  if (node === undefined || siblings === undefined) return text;
+  let start = node.offset;
+  let end = node.offset + node.length;
+  const ownComma = /^[ \t]*,/.exec(text.slice(end));
+
+  if (ownComma) end += ownComma[0].length;
+  end += /^[ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)?/.exec(text.slice(end))?.[0].length ?? 0;
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+  const lineEnd = /^[ \t]*(?:\r?\n|$)/.exec(text.slice(end));
+
+  if (lineEnd && /^[ \t]*$/.test(text.slice(lineStart, start))) {
+    start = lineStart;
+    end += lineEnd[0].length;
+
+    // Comment lines just above it document it.
+    for (let above = /(?:^|\n)([ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)[ \t]*\r?\n)$/.exec(text.slice(0, start)); above; above = /(?:^|\n)([ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)[ \t]*\r?\n)$/.exec(text.slice(0, start))) {
+      start -= above[1].length;
+    }
+  } else {
+    end += /^[ \t]*/.exec(text.slice(end))?.[0].length ?? 0;
+  }
+
+  const removed = text.slice(0, start) + text.slice(end);
+  const index = siblings.indexOf(node);
+  const previous = index > 0 ? siblings[index - 1] : undefined;
+
+  // The last one goes with no comma of its own: the one before it loses the comma that would now trail.
+  if (ownComma || previous === undefined || index !== siblings.length - 1) return removed;
+  const previousEnd = previous.offset + previous.length;
+  const comma = /^[ \t]*,/.exec(removed.slice(previousEnd));
+
+  return comma ? removed.slice(0, previousEnd + comma[0].length - 1) + removed.slice(previousEnd + comma[0].length) : removed;
+}
+
+/**
+ * `text` with `value` (under `key`, in an object) added after the last member
+ * of the container at `path`, on its own line with that member's indentation,
+ * or null when the container is empty or missing, or its last member does not
+ * start its line: `modify` handles those without touching a member.
+ */
+function withAppended(text: string, path: JSONPath, key: string | null, value: JsonValue, formattingOptions: FormattingOptions): string | null {
+  const container = findNodeAtLocation(parseTree(text, [], { allowTrailingComma: true }) ?? emptyNode(), path);
+  const last = container?.children?.at(-1);
+
+  if (last === undefined) return null;
+  const lineStart = text.lastIndexOf('\n', last.offset - 1) + 1;
+  const indent = text.slice(lineStart, last.offset);
+
+  if (!/^[ \t]*$/.test(indent)) return null;
+  const unit = formattingOptions.insertSpaces === false ? '\t' : ' '.repeat(formattingOptions.tabSize ?? 2);
+  const eol = formattingOptions.eol ?? '\n';
+  const rendered = (key === null ? '' : `${JSON.stringify(key)}: `) + JSON.stringify(value, null, unit).split('\n').join(`${eol}${indent}`);
+  let at = last.offset + last.length;
+  const comma = /^[ \t]*,/.exec(text.slice(at));
+  const lineComment = (from: number): number => from + (/^[ \t]*(?:\/\/[^\r\n]*|\/\*[^\r\n]*?\*\/)?/.exec(text.slice(from))?.[0].length ?? 0);
+
+  // A member list written with a trailing comma keeps one.
+  if (comma) {
+    at = lineComment(at + comma[0].length);
+
+    return `${text.slice(0, at)}${eol}${indent}${rendered},${text.slice(at)}`;
+  }
+
+  const lineEnd = lineComment(at);
+
+  return `${text.slice(0, at)},${text.slice(at, lineEnd)}${eol}${indent}${rendered}${text.slice(lineEnd)}`;
+}
+
+function emptyNode(): Node {
+  return { type: 'object', offset: 0, length: 0, children: [] };
 }
 
 /** The indentation and line ending `text` uses: its first indented line's, else two spaces; CRLF when it has one. */
