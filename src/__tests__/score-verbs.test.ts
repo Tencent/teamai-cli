@@ -495,8 +495,8 @@ describe('score stage', () => {
     const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'failed' });
 
-    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: true } });
-    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: true } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: true, pending: false } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: true, pending: false } });
     expect(mocks.ci).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'decided', by: 'ci', reasoning: expect.stringContaining('pull/57 failed') });
   });
@@ -509,7 +509,7 @@ describe('score stage', () => {
     expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, next.ctx)).toEqual({ ok: true, output: { decided: false, pending: true } });
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toMatchObject({ kind: 'pending' });
     expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, { ...next.ctx, now: '2026-11-03T11:59:59.999Z' })).toEqual({ ok: true, output: { decided: false, pending: true } });
-    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, { ...next.ctx, now: '2026-11-03T12:00:00.000Z' })).toEqual({ ok: true, output: { decided: false } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir, wait: '2h' }, { ...next.ctx, now: '2026-11-03T12:00:00.000Z' })).toEqual({ ok: true, output: { decided: false, pending: false } });
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'judge' });
   });
 
@@ -518,7 +518,7 @@ describe('score stage', () => {
     const { dir, next } = await deliveredGroup(config, await deliveredRun(config));
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
 
-    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir }, next.ctx)).toEqual({ ok: true, output: { decided: false } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir }, next.ctx)).toEqual({ ok: true, output: { decided: false, pending: false } });
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'stage-ci.json'), 'utf8'))).toEqual({ kind: 'judge' });
   });
 
@@ -539,6 +539,7 @@ describe('score stage', () => {
 
     expect(written).toMatchObject({ ok: true, output: { rubric: '', delivers: false } });
     expect(await ScoreVerbs.stage({ stage: 'protected', evidence: dir }, evidence.ctx)).toEqual({ ok: true, output: { decided: false } });
+    expect(await ScoreVerbs.stage({ stage: 'ci', evidence: dir }, evidence.ctx)).toEqual({ ok: true, output: { decided: false, pending: false } });
   });
 
   it('refuses a directory that is not an evidence directory of the attempt\'s run', async () => {

@@ -28,7 +28,8 @@ export const StageRecordSchema = z.discriminatedUnion('kind', [
 export type StageRecord = z.infer<typeof StageRecordSchema>;
 
 /** What a stage step outputs: `pending` only when CI has not finished. */
-export type StageOutput = { decided: boolean; pending?: true };
+/** `pending` only for `ci`, which always prints it, as the step declares it. */
+export type StageOutput = { decided: boolean; pending?: boolean };
 
 const recordFile = (dir: string, stage: Stage) => path.join(dir, `stage-${stage}.json`);
 
@@ -85,12 +86,13 @@ export const ScoreStage = {
    * that delivers nothing, decides nothing and runs nothing.
    */
   async run(attempt: ScoreAttempt, dir: string, group: GroupRecord, stage: Stage, { waitMs, now }: { waitMs: number; now: string }): Promise<{ ok: true; output: StageOutput } | Refusal> {
+    const answered = (output: StageOutput) => ({ ok: true as const, output: stage === 'ci' ? { pending: false, ...output } : output });
     const rubrics = rubricsOf(group.scorers);
 
     if (!rubrics) return { ok: false, code: 'evidence_unreadable', message: `${dir} names a scorer that does not parse.` };
     const takes = rubrics.some((definition) => scorerStages(attempt, definition).includes(stage));
 
-    if (!takes || !group.delivers || group.judged.kind !== 'run') return { ok: true, output: { decided: false } };
+    if (!takes || !group.delivers || group.judged.kind !== 'run') return answered({ decided: false });
     const { subject } = group.judged;
     const found = await findRunConfig(subject.runId, attempt.config);
 
@@ -128,7 +130,7 @@ export const ScoreStage = {
 
     await writeFileAtomic(recordFile(dir, stage), JSON.stringify(record));
 
-    return { ok: true, output: outputOf(record) };
+    return answered(outputOf(record));
   },
 
   /** The records the group's stages wrote, in the order they decide. */

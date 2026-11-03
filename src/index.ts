@@ -1066,7 +1066,7 @@ scoreCmd
 
 scoreCmd
   .command('stage')
-  .description('A step of a teamai-score run: one stage that may decide a delivered pass before its judge, check (the scorer\'s check on the delivered commit, stopped after 30 minutes), ci (a failed CI of its pull request) or protected (a protected-path refusal). Writes its record in the evidence directory and prints {"decided":true} or {"decided":false}; ci adds "pending":true while CI has not finished. A stage no scorer of the group takes runs nothing and prints {"decided":false}. A check that cannot run prints {"decided":true}, and label gives check_could_not_run.')
+  .description('A step of a teamai-score run: one stage that may decide a delivered pass before its judge, check (the scorer\'s check on the delivered commit, stopped after 30 minutes), ci (a failed CI of its pull request) or protected (a protected-path refusal). Writes its record in the evidence directory and prints {"decided":true} or {"decided":false}; ci also prints "pending", true while CI has not finished, else false. A stage no scorer of the group takes runs nothing and prints {"decided":false}. A check that cannot run prints {"decided":true}, and label gives check_could_not_run.')
   .argument('<stage>', 'check, ci or protected')
   .option('--evidence <dir>', 'The evidence directory its evidence step printed')
   .option('--wait <duration>', 'With ci: past this long since this machine first saw the CI pending, such as 2h, judge as if the pass had no CI')
