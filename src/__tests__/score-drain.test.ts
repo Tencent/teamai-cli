@@ -636,6 +636,19 @@ describe('teamai score --drain', () => {
     ]);
   });
 
+  it('says the step sessions of one run it cannot read here in one line, though different tools ran them', async () => {
+    const { config } = await team({ 'workflows/review.yaml': `${WORKFLOW.replace('    scorers: [quality]\n', '')}  - id: check\n    needs: [review]\n    prompt: Check the change.\n` });
+    const runId = await settledRun(config, 'unattended', { tool: 'claude', session: '7c1e0000-0000-4000-8000-000000000051' }, { tool: 'codex', session: '7c1e0000-0000-4000-8000-000000000052' });
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    const skipped = drained.lines.filter((said) => said.includes('Skipped'));
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toMatch(new RegExp(`^ℹ Skipped 2 step sessions of ${runId}: these sessions could not be read here \\(claude-code: [^;]+; codex: [^)]+\\), so they stay unarchived \\(review, pass 1; check, pass 1\\)$`));
+  });
+
   it('lists once, with why, a step session it cannot read here, and still archives the readable step sessions of its run', async () => {
     const { origin, config } = await team({ 'workflows/review.yaml': `${WORKFLOW.replace('    scorers: [quality]\n', '')}  - id: check\n    needs: [review]\n    prompt: Check the change.\n` });
     const unreadable = '7c1e0000-0000-4000-8000-000000000023';

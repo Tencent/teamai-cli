@@ -167,18 +167,30 @@ function failureText(failure: AgentSessionFailure): string {
 }
 
 /**
- * Why a step session that `failure` keeps from being read here is never archived from this machine, given the `failures`
- * of every such session of its run: one reason per tool or platform, never per session, so the drain says them in one
- * line per run.
+ * Why the step sessions of one run that `failures` keep from being read here are never archived from this machine: one
+ * reason for the whole run, never per session or per tool, so the drain says them in one line per run.
  */
-function skippedReason(failure: ReadFailure, failures: readonly ReadFailure[]): string {
-  if (failure.kind === 'tool') return `teamai reads no sessions from ${failure.tool}`;
-  const same = failures.flatMap((other) => (other.kind === 'platform' && other.platform === failure.platform ? [other.failure] : []));
-  const causes = [...new Set(same.map(failureText))].join(', ');
+function skippedReason(failures: readonly ReadFailure[]): string {
+  const causes = new Map<string, Set<string>>();
 
-  return same.length > 1
-    ? `${failure.platform} could not read these sessions here (${causes}), so they stay unarchived`
-    : `${failure.platform} could not read this session here (${causes}), so it stays unarchived`;
+  for (const failure of failures) {
+    const [source, cause] = failure.kind === 'tool' ? [failure.tool, 'teamai reads no sessions from it'] : [failure.platform, failureText(failure.failure)];
+    causes.set(source, (causes.get(source) ?? new Set()).add(cause));
+  }
+
+  const [only, ...others] = causes;
+
+  if (only !== undefined && others.length === 0) {
+    const [source, said] = only;
+
+    if (failures[0]?.kind === 'tool') return `teamai reads no sessions from ${source}`;
+
+    return failures.length > 1
+      ? `${source} could not read these sessions here (${[...said].join(', ')}), so they stay unarchived`
+      : `${source} could not read this session here (${[...said].join(', ')}), so it stays unarchived`;
+  }
+
+  return `these sessions could not be read here (${[...causes].map(([source, said]) => `${source}: ${[...said].join(', ')}`).join('; ')}), so they stay unarchived`;
 }
 
 type UnrecordedPass = { pass: RunPass; key: PublishedKey };
@@ -239,11 +251,10 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
       else if (key.kind === 'platform') refs.set(sessionKey(key), { platform: key.platform, sessionId: key.sessionId });
     }
 
-    const failures = unread.map(({ failure }) => failure);
+    const reason = skippedReason(unread.map(({ failure }) => failure));
     const skipped: StepSessionsPublished['skipped'] = [];
 
-    for (const { pass, key, failure } of unread) {
-      const reason = skippedReason(failure, failures);
+    for (const { pass, key } of unread) {
       skipped.push({ step: pass.step, pass: pass.pass, reason });
       await record(config, { ...key, skippedAt: now, reason });
     }
