@@ -176,6 +176,25 @@ export function privateSteps(run: Pick<RunState, 'definition' | 'workflows' | 'a
   };
 }
 
+/** `defaults.scorers.batch` in effect at a step: that of the workflow file it is in, else of the one around that. */
+export function workflowBatch(run: RunState, step: string): boolean | undefined {
+  let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
+  let batch = run.definition.defaults?.scorers?.batch;
+  let prefix = '';
+
+  for (const segment of step.split('.').slice(0, -1)) {
+    const id = parseStepPath(segment)[0]?.id ?? segment;
+    const parent: WorkflowStep | undefined = workflow?.steps.find((candidate) => candidate.id === id);
+    workflow = parent && workflowRunBy(run, parent, prefix);
+
+    // A workflow file, named or admitted, sets its own; an inline workflow keeps the one around it.
+    if (workflow && isWorkflowFile(workflow)) batch = workflow.defaults?.scorers?.batch ?? batch;
+    prefix = `${prefix}${segment}.`;
+  }
+
+  return batch;
+}
+
 /** The first step of a private workflow in `run` that has not settled, whose work exists only on this machine until it does. */
 export function openPrivateStep(run: RunState): string | undefined {
   const isPrivate = privateSteps(run);
