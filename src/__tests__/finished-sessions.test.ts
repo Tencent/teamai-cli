@@ -26,6 +26,7 @@ import { leaseNext, startRun } from '../workflow/engine.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { readRun, readRuns } from '../workflow/store.js';
+import { cancelRun } from '../workflow/run-controls.js';
 import type { StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { Command } from 'commander';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
@@ -176,6 +177,28 @@ describe('session list --finished', () => {
     expect(await listed(config)).toEqual({ ok: true, list: [{ session: IDLE, source: 'claude-code', publish: false, scorers: ['docs'], demand: 'auto' }] });
   });
 
+  it('does not publish again a session archived the moment it was last active', async () => {
+    const config = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nsessions:\n  publish: { attended: auto }\n' });
+    capturedSession(IDLE, 'attended');
+    const file = path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(path.join(root, 'app')), `${IDLE}.jsonl`);
+    const captures = path.join(mocks.home, '.teamai', 'sessions', 'captures', 'claude-code', IDLE);
+    const capturedAt = Date.parse(String(JSON.parse(fs.readFileSync(path.join(captures, fs.readdirSync(captures)[0] ?? ''), 'utf8')).capturedAt));
+    // The file was last written before the capture, so the session was last active when it was captured.
+    const written = Math.floor(capturedAt / 1000) - 1;
+    fs.utimesSync(file, written, written);
+
+    await SessionPublish.recordArchived(config, { platform: 'claude-code', sessionId: IDLE }, new Date(capturedAt).toISOString());
+
+    expect(await listed(config)).toEqual({ ok: true, list: [] });
+  });
+
+  it('refuses an --idle that is not a duration, and an attempt of a run that is not on this machine', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+
+    expect(await listed(config, { idle: 'soon' })).toEqual({ ok: false, code: 'invalid_arguments', message: '--idle soon is not a duration. Pass a whole number of s, m or h, such as 6h.' });
+    expect(await listed(config, {}, { TEAMAI_WORKFLOW_ATTEMPT: 'r0000000000000000/a00000001' })).toMatchObject({ ok: false, code: 'run_not_found' });
+  });
+
   it('lists every finished session for the scorers a person names, with policies off, unsampled and as a named demand', async () => {
     const config = await team({ 'scorers/rare.md': SCORER.replace('samplingRate: 100', 'samplingRate: 0').replace('sessions: true\n', '') });
     capturedSession(IDLE, 'attended');
@@ -290,6 +313,31 @@ describe('the start of teamai-finished-sessions', () => {
     expect(second).toEqual(first.kind === 'started' ? { ...first, kind: 'working' } : first);
   });
 
+  it('starts a new run once the one before ended, though inside its timeout', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const first = await FinishedSessions.start(config, { client, mode: 'attended' });
+    if (first.kind !== 'started') throw new Error(JSON.stringify(first));
+    data(await cancelRun(config, first.run, {}));
+
+    const second = await FinishedSessions.start(config, { client, mode: 'attended' });
+
+    expect(second).toMatchObject({ kind: 'started' });
+    expect(second).not.toEqual(first);
+  });
+
+  it('starts a run for a single lapsed judgment, though no session waits', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    const pins = await pinScorers(config, ['quality']);
+    const key = { scorer: 'quality', sourceHash: pins.quality?.sourceHash ?? '', subject: { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: IDLE } } };
+    // A run that is gone: its mark still open lapsed.
+    await Marks.open(config, { run: 'r2222222222222222', demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => undefined });
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    expect(await FinishedSessions.start(config, { client, mode: 'attended' })).toMatchObject({ kind: 'started' });
+  });
+
   it('starts no run while no session waits to be archived or judged and no lapse waits, and one for a session idle a minute', async () => {
     const config = await team({}, { scoring: { sessions: true } });
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
@@ -354,6 +402,12 @@ describe('the scopes a session start archives and judges sessions in', () => {
 
   it('is the user scope when it publishes attended sessions automatically, though it scores none', async () => {
     userConfig('sessions:\n  publish:\n    attended: auto\n');
+    expect(await FinishedSessions.backgroundScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
+  });
+
+  it('is the user scope when it publishes attended sessions automatically, though its scoring settings do not load', async () => {
+    userConfig('sessions:\n  publish:\n    attended: auto\n');
+    fs.writeFileSync(path.join(root, 'knowledge', 'scorers', 'scoring.yaml'), 'sessions: [unclosed\n');
     expect(await FinishedSessions.backgroundScopes(path.join(root, 'gone'))).toMatchObject([{ scope: 'user' }]);
   });
 

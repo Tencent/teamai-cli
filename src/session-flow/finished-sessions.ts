@@ -188,11 +188,7 @@ async function judgingOf(config: LocalConfig) {
  * that sample it.
  */
 async function candidatesOf(config: LocalConfig, { names, isJudging }: { names: readonly string[]; isJudging: boolean }): Promise<Pick<Wants, 'candidates' | 'demand'> | Extract<Listed, { ok: false }>> {
-  if (names.length === 0) {
-    const sampling = isJudging ? await SessionWork.samplingScorers(config) : undefined;
-
-    return { candidates: async (session) => await sampling?.(session) ?? [], demand: 'auto' };
-  }
+  if (names.length === 0) return { candidates: isJudging ? await SessionWork.samplingScorers(config) : async () => [], demand: 'auto' };
 
   const named = await namedScorers(config, names);
 
@@ -232,8 +228,8 @@ async function listIn(config: LocalConfig, request: Request, now: string): Promi
  * The scopes `cwd` reaches: its project scope, with its workspace children, whose namespaces set scoring too, then the
  * user scope, each data home once. A directory that no longer exists reaches the user scope only.
  */
-async function reachedScopes(cwd?: string): Promise<LocalConfig[]> {
-  const detected = cwd === undefined || await pathExists(cwd) ? await detectProjectConfig(cwd).catch(() => null) : null;
+async function reachedScopes(cwd: string): Promise<LocalConfig[]> {
+  const detected = await pathExists(cwd) ? await detectProjectConfig(cwd).catch(() => null) : null;
   const project = detected && await readWorkspaceChildren(detected);
   // oxlint-disable-next-line teamai/config-load-options -- scoring scope discovery retains its existing migration policy and has no preview option
   const user = await loadLocalConfig();
@@ -254,14 +250,12 @@ async function reachedScopes(cwd?: string): Promise<LocalConfig[]> {
  * says otherwise, and a drain at the end of each unattended job takes them.
  */
 async function worksOnAttended(config: LocalConfig): Promise<boolean> {
-  const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
-
-  return (scoring?.ok === true && scoring.sessions.policies.attended.policy === 'auto')
+  return (await judgingOf(config))?.attended.policy === 'auto'
     || SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.attended.policy === 'auto';
 }
 
 /** The scopes `cwd` reaches that judge or publish attended sessions automatically, which the session-start hook works on. */
-async function backgroundScopes(cwd?: string): Promise<LocalConfig[]> {
+async function backgroundScopes(cwd: string): Promise<LocalConfig[]> {
   const scopes: LocalConfig[] = [];
 
   for (const config of await reachedScopes(cwd)) {
