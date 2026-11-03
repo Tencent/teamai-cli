@@ -148,7 +148,7 @@ steps:
     workspace: continue
 ```
 
-`revise` runs only after `fix`'s label is written, and only when it is not `good`; a label that is missing reads `null`. `teamai-score`'s own `timeout` binds only a root run, so the step sets one, with `continue_on_failure: true`.
+`revise` runs only after `fix`'s label is written, and only when it is not `good`; a label that is missing reads `null`. `teamai-score`'s own `timeout`, 336h, binds it as a step too, and the shorter of the two ends it, so the step sets a shorter one, with `continue_on_failure: true`.
 
 ### The harness a label judged
 
@@ -716,7 +716,7 @@ steps:
     continue_on_failure: true
 ```
 
-A judge no driver here can take keeps `teamai-score` open, and its own `timeout` binds only a root run. Give the step a `timeout` and `continue_on_failure: true`, as `teamai-share-session` does. Pull warns on a step without a timeout:
+A judge no driver here can take keeps `teamai-score` open until a timeout ends it. Its own `timeout`, 336h, binds it as a step and binds each `for_each` item, and the step's own ends it when that is shorter. Give the step a shorter `timeout` and `continue_on_failure: true`, as `teamai-share-session` does. Pull warns on a step without a timeout:
 
 ```text
 ⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.

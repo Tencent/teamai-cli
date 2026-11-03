@@ -148,7 +148,7 @@ steps:
     workspace: continue
 ```
 
-`revise` 只在 `fix` 的标签写好之后运行，并且只在标签不是 `good` 时运行；缺失的标签读作 `null`。`teamai-score` 自己的 `timeout` 只约束根运行，所以这个步骤自己设置 `timeout`，并加上 `continue_on_failure: true`。
+`revise` 只在 `fix` 的标签写好之后运行，并且只在标签不是 `good` 时运行；缺失的标签读作 `null`。`teamai-score` 自己的 `timeout` 是 336h，它作为步骤运行时同样生效，两者中较短的那个会结束它，所以这个步骤设置一个更短的 `timeout`，并加上 `continue_on_failure: true`。
 
 ### 标签评判的 Harness
 
@@ -716,7 +716,7 @@ steps:
     continue_on_failure: true
 ```
 
-本机没有 driver 能接手的评审者会让 `teamai-score` 保持打开，而它自己的 `timeout` 只约束根运行。像 `teamai-share-session` 一样，给该步骤设置 `timeout` 和 `continue_on_failure: true`。步骤没有 timeout 时 pull 会警告：
+本机没有 driver 能接手的评审者会让 `teamai-score` 一直保持打开，直到某个 timeout 结束它。它自己的 `timeout` 是 336h，作为步骤运行时和对每个 `for_each` 项都生效，步骤自己的 `timeout` 更短时由它结束。像 `teamai-share-session` 一样，给该步骤设置更短的 `timeout` 和 `continue_on_failure: true`。步骤没有 timeout 时 pull 会警告：
 
 ```text
 ⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
