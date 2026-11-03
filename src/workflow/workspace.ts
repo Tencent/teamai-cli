@@ -196,14 +196,14 @@ export function runsInCheckout(step: WorkflowStep, ancestors: readonly WorkflowS
 /** The workflow a step runs, as a walk of the tree reads it. */
 type ChildOf = (step: WorkflowStep) => WorkflowDefinition | InlineWorkflow | undefined;
 
-/** Whether `step`, inside `ancestors`, leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
-export function writesBranch(step: WorkflowStep, ancestors: readonly WorkflowStep[], childOf: ChildOf): boolean {
+/** Whether `step`, inside `outer`, leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
+export function writesBranch(step: WorkflowStep, outer: readonly Level[], childOf: ChildOf): boolean {
   const child = childOf(step);
 
-  if (child) return child.steps.some((inner) => writesBranch(inner, [...ancestors, placedStep(step, child, ancestors)], childOf));
+  if (child) return child.steps.some((inner) => writesBranch(inner, levelsInside(outer, { step }, child), childOf));
 
   return (step.prompt !== undefined || step.promptFile !== undefined || (step.workspace !== undefined && step.workspace !== 'read-only'))
-    && resolveMode(step, ancestors) !== 'read-only';
+    && resolveMode(step, outer.map((level) => level.step)) !== 'read-only';
 }
 
 /**
@@ -217,30 +217,31 @@ export function deliveryProblem(
   let delivering: string | undefined;
   const childOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
 
-  const visit = (steps: WorkflowStep[], ancestors: WorkflowStep[], prefix: string): WorkflowFailure | undefined => {
+  const visit = (steps: WorkflowStep[], outer: readonly Level[], prefix: string): WorkflowFailure | undefined => {
     for (const step of steps) {
       const path = `${prefix}${step.id}`;
       const child = childOf(step);
-      const placed = placedStep(step, child, ancestors);
+      const inside = levelsInside(outer, { step }, child);
+      const placed = inside.at(-1)?.step;
 
       if (step.deliver === 'pr') {
         // A team step's pull request goes into the team repo's default branch, whatever the checkout has checked out.
         if (!teamOf(step)) delivering ??= path;
 
-        if (step.workflow !== undefined && placed.workspace !== 'new' && !step.forEach) {
+        if (step.workflow !== undefined && placed?.workspace !== 'new' && !step.forEach) {
           return { code: 'bad_delivery', message: `Step "${path}" delivers its workflow, so it needs workspace: new to own the branch it delivers.` };
         }
 
-        if (child && !writesBranch(step, ancestors, childOf)) {
+        if (child && !writesBranch(step, outer, childOf)) {
           return { code: 'bad_delivery', message: `Step "${path}" has deliver: pr, but no step of the workflow it runs writes a branch, so it would deliver nothing. Set workspace: new on "${path}" so its prompt steps write, or give a step in that workflow workspace: new or continue.` };
         }
 
-        if (step.workflow === undefined && resolveMode(step, ancestors) === 'read-only') {
+        if (step.workflow === undefined && resolveMode(step, outer.map((level) => level.step)) === 'read-only') {
           return { code: 'bad_delivery', message: `Step "${path}" has deliver: pr but runs read-only. Set workspace: new on it, or on the workflow step that runs it.` };
         }
       }
 
-      const problem = child && visit(child.steps, [...ancestors, placed], `${path}.`);
+      const problem = child && visit(child.steps, inside, `${path}.`);
 
       if (problem) return problem;
     }
@@ -248,7 +249,7 @@ export function deliveryProblem(
     return undefined;
   };
 
-  const problem = visit(definition.steps, runLevels(definition), '');
+  const problem = visit(definition.steps, runLevels(definition).map((step) => ({ step })), '');
 
   if (problem || delivering === undefined || !base || base.ref !== undefined) return problem;
 
@@ -284,24 +285,31 @@ export function isRunLevel(step: WorkflowStep): boolean {
   return step === RUN_COPY;
 }
 
-/**
- * `step` as a level around the steps of `child`, the workflow it runs, inside `outer`. A step with no `workspace` that
- * runs a workflow whose header says `workspace: new` opens a copy, as `workspace: new` on it would, unless a copy is
- * already around it, which the workflow's steps then continue.
- */
-export function placedStep(step: WorkflowStep, child: WorkflowDefinition | InlineWorkflow | undefined, outer: readonly WorkflowStep[]): WorkflowStep {
-  if (step.workspace !== undefined || !child || !isWorkflowFile(child) || child.workspace !== 'new' || outer.some(opensCopy)) return step;
+/** A level on the way to a step: a step, or the run itself (`isRunLevel`), as `resolveMode` and `opensCopy` read it. */
+export interface Level {
+  step: WorkflowStep;
+}
 
-  return { ...step, workspace: 'new' };
+/**
+ * The levels the steps of `child`, the workflow `level`'s step runs, are inside: `outer`, then that step as placed
+ * there. A step with no `workspace` that runs a workflow whose header says `workspace: new` opens a copy, as
+ * `workspace: new` on it would, unless a copy is already around it, which the workflow's steps then continue. Every
+ * chain of levels starts at `runLevels` and grows through this.
+ */
+export function levelsInside<TLevel extends Level>(outer: readonly TLevel[], level: TLevel, child: WorkflowDefinition | InlineWorkflow | undefined): TLevel[] {
+  const { step } = level;
+
+  if (step.workspace !== undefined || !child || !isWorkflowFile(child) || child.workspace !== 'new' || outer.some((around) => opensCopy(around.step))) return [...outer, level];
+
+  return [...outer, { ...level, step: { ...step, workspace: 'new' } }];
 }
 
 /**
  * A level on the way to a step instance: the run itself (`instance` ''), or a step instance on the path, with its pass,
  * the `defaults.role` in effect where it sits, and the `for_each` item it runs for, at any depth.
  */
-interface PathLevel {
+interface PathLevel extends Level {
   instance: string;
-  step: WorkflowStep;
   pass: number;
   defaultRole?: string;
   item?: { value: unknown };
@@ -313,7 +321,7 @@ interface PathLevel {
  */
 function levelsTo(run: StepTree, path: string): PathLevel[] {
   let defaultRole = run.definition.defaults?.role;
-  const levels: PathLevel[] = [];
+  let levels: PathLevel[] = [];
   let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
   let prefix = '';
   let item: { value: unknown } | undefined;
@@ -334,13 +342,12 @@ function levelsTo(run: StepTree, path: string): PathLevel[] {
 
     if (parsed?.index !== undefined) item = { value: instanceOf(run, instance)?.item };
     workflow = workflowRunBy(run, step, prefix);
-    const placed = placedStep(step, workflow, levels.map((outer) => outer.step));
-    const level: PathLevel = { instance, step: placed, pass: instanceOf(run, instance)?.pass ?? 1 };
+    const level: PathLevel = { instance, step, pass: instanceOf(run, instance)?.pass ?? 1 };
 
     if (defaultRole !== undefined) level.defaultRole = defaultRole;
 
     if (item) level.item = item;
-    levels.push(level);
+    levels = levelsInside(levels, level, workflow);
 
     if (workflow && isWorkflowFile(workflow)) defaultRole = workflow.defaults?.role ?? defaultRole;
     prefix = `${instance}.`;
@@ -1070,8 +1077,7 @@ export type RoleIdSpec = Extract<StepRoleSpec, { kind: 'id' }>;
  * effect where it sits: its own workflow file's, else that of the nearest file around it that sets one. Before a lease
  * the role may be a template of the item (`StepRoleSpec`); a lease's levels hold the id it renders (`RoleIdSpec`).
  */
-export interface RoleLevel<TRole extends StepRoleSpec = StepRoleSpec> {
-  step: WorkflowStep;
+export interface RoleLevel<TRole extends StepRoleSpec = StepRoleSpec> extends Level {
   role?: TRole;
   defaultRole?: string;
 }

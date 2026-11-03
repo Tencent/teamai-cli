@@ -9,7 +9,7 @@ import { isSeq } from 'yaml';
 import { isYamlNode, locate, valueNode, type ParseContext, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import type { StepRoleSpec } from './template.js';
-import { cloneOf, copyOf, copyRoleConflict, isRunLevel, placedStep, resolveMode, resolvedRoleOf, roleLevelOf, runLevels, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
+import { cloneOf, copyOf, copyRoleConflict, isRunLevel, levelsInside, resolveMode, resolvedRoleOf, roleLevelOf, runLevels, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
 
 /** A step on the way to a step: its label, and, in this file, its field and YAML mapping. */
 interface Level extends RoleLevel {
@@ -390,7 +390,7 @@ export function roleDiagnostics(root: Node, workflow: Pick<WorkflowDefinition, '
           break;
         case 'inline':
           walk(runs.workflow.steps, {
-            node: valueNode(valueNode(level.written?.item, 'workflow'), 'steps'), at: `${at}steps[${index}].workflow.`, outer: levels, defaults, caller,
+            node: valueNode(valueNode(level.written?.item, 'workflow'), 'steps'), at: `${at}steps[${index}].workflow.`, outer: levelsInside(outer, level, runs.workflow), defaults, caller,
             around: { steps, outer, levelOf: (around) => levelOf(around, steps.indexOf(around)) },
           });
           break;
@@ -401,7 +401,7 @@ export function roleDiagnostics(root: Node, workflow: Pick<WorkflowDefinition, '
           if (!child) consume(levels, 'current_team');
           else {
             walk(child.steps, {
-              node: undefined, at: '', outer: [...outer, { ...level, step: placedStep(step, child, outer.map((around) => around.step)) }], defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, isOwn: false } : defaults,
+              node: undefined, at: '', outer: levelsInside(outer, level, child), defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, isOwn: false } : defaults,
               caller: {
                 step: caller?.step ?? level.label, node: caller?.node ?? valueNode(level.written?.item, 'workflow'),
                 field: caller?.field ?? `${level.written?.field ?? at}.workflow`, runs: [...caller?.runs ?? [], runs.name],
