@@ -317,6 +317,55 @@ steps:
 {"data":{"done":{"run":"r3319969c","outcome":"failed","end":"stuck"},"cancelled":[]}}
 ```
 
+副本里的循环会保留它在那里做的每个提交，即使最后一个 pass 被跳过。下面每个条目在条目自己的分支上实现一个任务并修复它。`open-pr` 从两个条目及其修复开始：
+
+```yaml
+schemaVersion: v1alpha1
+name: loop-fix-each-task
+description: Implement each task on its own branch, fix it until its tests pass, then join the tasks.
+inputs:
+  tasks: [{ id: string, title: string, after: [string] }]
+steps:
+  - id: tasks
+    for_each:
+      items: inputs.tasks
+    workspace: new
+    workflow:
+      steps:
+        - id: implement
+          prompt: "Implement {{ item.title }}."
+        - id: test
+          needs: [implement]
+          command: npm test
+        - id: fix
+          needs: [test]
+          if: steps.test.outcome == 'failed'
+          prompt: Make npm test pass.
+          loop: { back_to: test, max_iterations: 3 }
+  - id: open-pr
+    needs: [tasks]
+    workspace: new
+    deliver: pr
+    command: npm run build
+```
+
+```sh
+teamai workflow start loop-fix-each-task --driver local --inputs '{"tasks":[{"id":"api","title":"the /orders endpoint","after":[]},{"id":"ui","title":"the orders page","after":["api"]}]}'
+```
+
+当 `api` 的第一次测试失败时，运行过程如下：
+
+```text
+tasks[0].implement   teamai/<run>/tasks-0/p1   写入 1a2b3c4
+tasks[0].test        读取 1a2b3c4              失败
+tasks[0].fix         teamai/<run>/tasks-0/p1   写入 5d6e7f8
+tasks[0].test        读取 5d6e7f8              通过，因此跳过 fix，循环结束
+tasks[1].implement   teamai/<run>/tasks-1/p1   从 5d6e7f8（修复后的 api）开始
+open-pr              teamai/<run>/open-pr/p1   从 5d6e7f8 开始并合并 tasks-1
+```
+
+`implement` 和 `fix` 没有设置 `workspace`，所以它们继续条目的分支，`test` 读取同一个分支。
+
 ### 读取每一个 pass
 
 步骤的每次运行是一个 pass，从 1 开始编号。租约带有它的 `pass`。在 `loop-implement-task` 的一次运行中，`e2e` 的第二个租约是：

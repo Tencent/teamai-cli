@@ -84,6 +84,32 @@ steps:
           command: node -e "require('fs').writeFileSync('more.txt', 'M')"
 `;
 
+const FIXED_IN_LOOP = `schemaVersion: v1alpha1
+name: build
+description: A step starts from a copy whose fix loop ended on a skipped pass.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('a.txt', 'broken')"
+        - id: check
+          needs: [write]
+          command: node -e "process.exit(require('fs').readFileSync('a.txt', 'utf8') === 'fixed' ? 0 :1)"
+        - id: fix
+          needs: [check]
+          if: steps.check.outcome == 'failed'
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('a.txt', 'fixed')"
+          loop: { back_to: check, max_iterations: 2 }
+  - id: after
+    needs: [change]
+    workspace: new
+    command: node -e "const fs = require('fs'); if (fs.readFileSync('a.txt', 'utf8') !== 'fixed') process.exit(1); fs.writeFileSync('after.txt', 'A')"
+`;
+
 /**
  * The git rules every driver keeps: it pushes the commits it reports before it reports them, failed steps included,
  * and it fetches the run's branches for a lease commit its checkout lacks, or fails `workspace_base` naming it. A run
@@ -160,5 +186,19 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
     handoff: true,
     expectState: { status: 'succeeded', steps: [{ id: 'change', status: 'succeeded' }, { id: 'change.write', status: 'succeeded' }, { id: 'change.more', status: 'succeeded' }] },
     expectPushed: { 'change.more': { 'elsewhere.txt': 'only on the other machine', 'write.txt': 'W', 'more.txt': 'M' } },
+  },
+  {
+    name: 'a step that needs a copy whose fix loop ended on a skipped pass starts from the fix',
+    workflowName: 'build',
+    yaml: FIXED_IN_LOOP,
+    base: 'origin',
+    expectState: {
+      status: 'succeeded',
+      steps: [
+        { id: 'change', status: 'succeeded' }, { id: 'change.write', status: 'succeeded' }, { id: 'change.check', status: 'succeeded' },
+        { id: 'change.fix', status: 'skipped' }, { id: 'after', status: 'succeeded' },
+      ],
+    },
+    expectPushed: { after: { 'a.txt': 'fixed', 'after.txt': 'A' } },
   },
 ];

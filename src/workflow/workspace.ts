@@ -7,6 +7,7 @@ import { sameDriver } from '../driver-identity.js';
 import type { JsonValue } from '../types.js';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
+import { isUnder, passesWithin, runPasses, type RunPass } from './loop.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
@@ -102,8 +103,8 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
 
 /**
  * How a step runs. An explicit `workspace` wins. A command that omits it is read-only, even inside a copy, which it reads.
- * A prompt that omits it continues the nearest enclosing copy, or stays read-only. A `for_each` copy is `new`
- * per item, so siblings do not share a worktree.
+ * A prompt that omits it continues the nearest enclosing copy, or stays read-only. Inside a `for_each` item that copy
+ * is the item's own, so siblings do not share a worktree.
  */
 export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): WorkspaceMode {
   switch (step.workspace) {
@@ -124,7 +125,7 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
 
     if (ancestor.workspace !== 'new' && ancestor.workspace !== 'continue') continue;
 
-    return ancestor.forEach ? 'new' : 'continue';
+    return 'continue';
   }
 
   return 'read-only';
@@ -400,22 +401,81 @@ function workflowChildren(run: RunState, step: StepState): StepState[] {
   });
 }
 
-/** Branches a step merges, `after` items first, then its other needs. An omitted `needs` uses the parent step's needs. */
-function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): StepChanges[] {
-  const ordered: Array<{ changes: StepChanges; settledAt: number }> = [];
+/** A branch and the commit a step starts from or merges there. */
+type BranchHead = Extract<WorkspaceContract, { mode: 'new' | 'continue' }>['merge'][number];
+
+/**
+ * The writes of the current pass of step `state`: its own passes and those of every step under it, current or archived
+ * by a loop, so a fix loop that ends on a skipped pass still counts its fix. A step instance holds only the branch of its
+ * latest pass that wrote; an earlier pass on another branch, such as a failed attempt a retry replaced, is not part of it.
+ */
+function writesOf(run: RunState, state: StepState): StepChanges[] {
+  const current = passOf(state);
+
+  const passes: RunPass[] = [
+    ...[...state.passes ?? [], ...(current ? [current] : [])].map((pass) => ({ ...pass, step: state.id })),
+    ...passesWithin(run, runPasses(run), state.id, state.pass ?? 1),
+  ];
+
+  const latest = new Map<string, RunPass>();
+
+  for (const pass of passes) {
+    const known = latest.get(pass.step);
+
+    if (pass.changes && (!known || pass.pass > known.pass)) latest.set(pass.step, pass);
+  }
+
+  return passes.flatMap((pass) => (pass.changes && pass.changes.branch === latest.get(pass.step)?.changes?.branch ? [pass.changes] : []));
+}
+
+/**
+ * Where `writes` left each branch, in the order the branches first appear. Passes record no settle time, and a write
+ * starts from the commit the last one left, so the newest write on a branch is one no other write there goes on from.
+ * An attempt released with commits keeps none of them on its step, which can leave two such ends; the one the run
+ * recorded as the branch's tip is then the newest.
+ */
+function branchHeads(run: RunState, writes: readonly StepChanges[]): BranchHead[] {
+  const ends = new Map<string, { commits: string[]; last: string }>();
+
+  for (const write of writes) {
+    const found = ends.get(write.branch) ?? { commits: [], last: write.to };
+    const hasLaterWrite = writes.some((other) => other.branch === write.branch && other.from === write.to && other.to !== write.to);
+
+    if (!hasLaterWrite && !found.commits.includes(write.to)) found.commits.push(write.to);
+    ends.set(write.branch, { ...found, last: write.to });
+  }
+
+  // A step that reset its branch to an earlier commit leaves no end; the recorded tip, else the last write, is then where it is.
+  return [...ends].map(([branch, { commits, last }]) => {
+    const tip = run.copies?.[branch]?.commit;
+    const commit = tip !== undefined && (commits.includes(tip) || commits.length === 0) ? tip : commits.at(-1) ?? last;
+
+    return { branch, commit };
+  });
+}
+
+/**
+ * Branches a step merges, `after` items first, then its other needs, each where those needs left it together: two
+ * needs that wrote one copy leave it at the newest of their writes, whichever settled last. An omitted `needs` uses the
+ * parent step's needs. Only steps under a need write a branch it or a step under it opened, and they have all settled,
+ * so the run's recorded tip of that branch is where they left it; when it is not, the run's records disagree and the
+ * step fails rather than start without commits the branch may hold.
+ */
+function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): BranchHead[] | WorkflowFailure {
+  const writes: StepChanges[] = [];
+  const opened = new Map<string, string>();
   const visited = new Set<string>();
 
   const push = (step: StepState | undefined): void => {
     if (!step || visited.has(step.id)) return;
     visited.add(step.id);
-    const changes = changesOf(step);
+    const written = writesOf(run, step);
 
-    // A for_each step keeps each item's branch on that item, and a workflow step keeps each child's on that child.
-    if (!changes) {
+    // A skipped or read-only need wrote no branch, but its earlier dependencies still supply the copy's origin.
+    if (written.length === 0) {
       for (const item of itemsOf(run, step)) push(item);
 
       for (const child of workflowChildren(run, step)) push(child);
-      // A skipped or read-only need wrote no branch, but its earlier dependencies still supply the copy's origin.
       let id: string | undefined = step.id;
 
       while (id) {
@@ -433,16 +493,12 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
       return;
     }
 
-    const settledAt = 'settledAt' in step ? step.settledAt : 0;
-    const earlier = ordered.findIndex((item) => item.changes.branch === changes.branch);
+    writes.push(...written);
+    const under = isUnder(step.id);
 
-    if (earlier >= 0) {
-      if (settledAt > ordered[earlier]!.settledAt) ordered[earlier] = { changes, settledAt };
-
-      return;
+    for (const inside of run.steps) {
+      if (inside.id === step.id || under(inside.id)) opened.set(branchName(run.id, inside.id, inside.pass ?? 1), step.id);
     }
-
-    ordered.push({ changes, settledAt });
   };
 
   for (const itemId of itemIdsIn(state.id)) pushItemAfter(run, itemId, push);
@@ -456,7 +512,21 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     for (const id of definition.needs ?? []) push(states.find((item) => localId(scope, item) === id));
   }
 
-  return ordered.map((item) => item.changes);
+  const heads = branchHeads(run, writes);
+
+  for (const head of heads) {
+    const need = opened.get(head.branch);
+    const tip = run.copies?.[head.branch]?.commit;
+
+    if (need !== undefined && tip !== undefined && tip !== head.commit) {
+      return {
+        code: 'workspace_base',
+        message: `step "${state.id}" would start from branch ${head.branch} at ${head.commit}, where the steps of "${need}" left it, but the run recorded ${tip} as the tip of ${head.branch}. The run's records of that branch disagree, for a reason teamai does not know, so the step stops instead of leaving out commits the branch may hold. Run git log ${head.branch} to see which of the two it holds, and report this run to the teamai maintainers with its run file ${run.id}.json.`,
+      };
+    }
+  }
+
+  return heads;
 }
 
 /**
@@ -757,6 +827,8 @@ export function planWorkspace(
   }
 
   const changes = mergeChanges(run, scope, state, definition);
+
+  if (!Array.isArray(changes)) return { mode, fail: changes };
   const [first, ...rest] = mode === 'new' ? changes : [];
 
   return {
@@ -767,8 +839,8 @@ export function planWorkspace(
       base,
       configCommit: base.commit,
       branch,
-      start: first ? { commit: first.to, branch: first.branch } : { commit: copy?.commit ?? base.commit },
-      merge: (mode === 'continue' ? changes : rest).map((item) => ({ branch: item.branch, commit: item.to })),
+      start: first ? { commit: first.commit, branch: first.branch } : { commit: copy?.commit ?? base.commit },
+      merge: mode === 'continue' ? changes : rest,
     },
   };
 }
