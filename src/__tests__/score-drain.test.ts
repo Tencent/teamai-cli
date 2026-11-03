@@ -25,6 +25,7 @@ import YAML from 'yaml';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { log } from '../utils/logger.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import * as cliPaths from '../utils/cli-path.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
@@ -857,6 +858,19 @@ describe('teamai score of a subject the person names', () => {
     await team();
 
     expect(await scored({ push: true })).toEqual({ envelope: { data: { published: true } }, code: 0 });
+  });
+
+  it('keeps a label pending with --push while origin is unreachable, and says so once', async () => {
+    const { origin, config } = await team();
+    await LabelStore.append(config, [{ label: {
+      scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true, source: 'session',
+      subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' }, scoredAt: '2026-10-20T12:00:00.000Z',
+    }, reasoning: 'Did the work.' }]);
+    fs.renameSync(origin, `${origin}.away`);
+    const said = vi.spyOn(log, 'warn');
+
+    expect(await scored({ push: true })).toEqual({ envelope: { data: { published: false } }, code: 0 });
+    expect(said.mock.calls.flat().join('\n')).not.toContain('What workflow steps published to teamai-reports stays pending');
   });
 
   it('names, in an agent session, the teamai score of a session the person runs and what the agent runs', async () => {
