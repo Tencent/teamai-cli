@@ -3,7 +3,7 @@
  * `teamai-score` run starts, so a pass, a session or a scorer that cannot be labelled starts no run and writes nothing.
  */
 import { knownSecrets } from '../env-resolution.js';
-import { pushedSession, nativeSession, type SessionDemand } from '../session-flow/scoring.js';
+import { pushedSession, nativeSession, type NamedSession, type SessionDemand } from '../session-flow/scoring.js';
 import { safeText } from '../session-flow/session-cmd-shared.js';
 import { firstPrompt } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
@@ -17,7 +17,7 @@ import type { RunState } from '../workflow/types.js';
 import { cachedScorerNames, pinScorers } from './cache.js';
 import { isScorerFile, type ScorerDefinition } from './definition.js';
 import { scoringUnavailable } from './home.js';
-import { pinnedDefinition } from './pin.js';
+import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import { missingEvidence } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
 import { isRoutingScorer } from './skill-routing.js';
@@ -112,22 +112,16 @@ async function ofPass(current: LocalConfig | undefined, named: NamedPass): Promi
     return refused('evidence_missing', `Pass ${pass} of step ${step} in run ${run.id} cannot be scored: no longer on this machine: ${missing.join('; ')}. Restore what is missing, or score another pass. No label was written.`);
   }
 
-  const definitions = new Map<string, ScorerDefinition>();
+  const pins = run.scorers ?? {};
+  const pinned = definitionsOf(named.scorers, pins);
 
-  for (const scorer of named.scorers) {
-    const pin = run.scorers?.[scorer];
-    const definition = pin && pinnedDefinition(scorer, pin);
+  if (!pinned.ok) {
+    const listed = Object.keys(pins).sort();
 
-    if (!definition) {
-      const pinned = Object.keys(run.scorers ?? {}).sort();
-
-      return refused('scorer_not_found', `Scorer ${scorer} is not pinned by run ${run.id}, so it has no rubric to judge its passes with. ${pinned.length > 0 ? `Scorers it pinned: ${pinned.join(', ')}.` : 'The run pinned no scorer.'}`);
-    }
-
-    definitions.set(scorer, definition);
+    return refused('scorer_not_found', `Scorer ${pinned.unpinned} is not pinned by run ${run.id}, so it has no rubric to judge its passes with. ${listed.length > 0 ? `Scorers it pinned: ${listed.join(', ')}.` : 'The run pinned no scorer.'}`);
   }
 
-  return { ok: true, config, subject: { kind: 'run', subject }, definitions };
+  return { ok: true, config, subject: { kind: 'run', subject }, definitions: pinned.definitions };
 }
 
 /** The label checks that need no session: a hand label is the value of one cached scorer, and runs no judge. */
@@ -144,6 +138,21 @@ function handLabelRefusal(demand: SessionDemand): Refusal | undefined {
   return demand.batch ? refused('invalid_arguments', '--label runs no judge. Leave out --batch.') : undefined;
 }
 
+/** The definition of each of `scorers` as `pins` pins it, or the first scorer it pins no definition of. */
+function definitionsOf(scorers: readonly string[], pins: Readonly<Record<string, PinnedScorer>>): { ok: true; definitions: Map<string, ScorerDefinition> } | { ok: false; unpinned: string } {
+  const definitions = new Map<string, ScorerDefinition>();
+
+  for (const scorer of scorers) {
+    const pin = pins[scorer];
+    const definition = pin && pinnedDefinition(scorer, pin);
+
+    if (!definition) return { ok: false, unpinned: scorer };
+    definitions.set(scorer, definition);
+  }
+
+  return { ok: true, definitions };
+}
+
 /**
  * The session `demand` names, on this machine or pushed by a member, in the scope its labels are kept in, with each
  * named scorer cached there. A hand label must be one of its scorer's values. Says which session it is and its first
@@ -156,45 +165,51 @@ async function ofSession(from: LocalConfig, demand: SessionDemand): Promise<({ o
   const named = demand.teamSession ? await pushedSession(from, demand.teamSession) : await nativeSession(from, demand);
 
   if ('error' in named) return refused(named.error.code, named.error.message);
-  const { platform, found, config, pushedBy } = named;
-  const { session } = found;
+  const { platform, found: { session }, config, pushedBy } = named;
   const unready = await scoringRefusal(config);
 
   if (unready) return unready;
   const teamScorers = demand.scorers.filter((name) => !isRoutingScorer(name));
-  const pins = await pinScorers(config, teamScorers);
-  const definitions = new Map<string, ScorerDefinition>();
+  const pinned = definitionsOf(teamScorers, await pinScorers(config, teamScorers));
 
-  for (const scorer of teamScorers) {
-    const pin = pins[scorer];
-    const definition = pin && pinnedDefinition(scorer, pin);
+  if (!pinned.ok) return notCached(config, pinned.unpinned);
+  const { definitions } = pinned;
+  const invalid = labelRefusal(demand, definitions);
 
-    if (!definition) {
-      const known = await cachedScorerNames(config);
-
-      return refused('scorer_not_found', `Scorer ${scorer} is not cached here. ${known.length > 0 ? `Scorers: ${known.join(', ')}.` : 'Run teamai pull to cache the team\'s scorers.'}`);
-    }
-
-    definitions.set(scorer, definition);
-  }
-
-  const hand = demand.label === undefined ? undefined : definitions.get(demand.scorers[0]);
-
-  if (hand && !hand.labels.some((label) => label.value === demand.label)) {
-    return refused('label_invalid', `"${demand.label ?? ''}" is not a label of scorer ${demand.scorers[0]}. Use one of: ${hand.labels.map((label) => label.value).join(', ')}.`);
-  }
-
-  log.info(safeText(`${demand.label === undefined ? 'Scoring' : 'Labelling'} ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`));
-
-  if (pushedBy !== undefined) log.info(`Pushed by ${safeText(pushedBy)}`);
-  const envSecrets = await knownSecrets(config);
-  log.info(`First prompt: ${safeText(redact(firstPrompt(session), { envSecrets })) || '(none)'}`);
+  if (invalid) return invalid;
+  await introduce(named, demand.label !== undefined);
 
   const subject: Subject = demand.teamSession && pushedBy !== undefined
     ? { kind: 'team-session', subject: { author: pushedBy, name: demand.teamSession.name } }
     : { kind: 'session', subject: { platform, sessionId: session.sessionId } };
 
   return { ok: true, config, subject, definitions };
+}
+
+/** The refusal of `scorer`, which is not cached in `config`'s scope, with the scorers that are. */
+async function notCached(config: LocalConfig, scorer: string): Promise<Refusal> {
+  const known = await cachedScorerNames(config);
+
+  return refused('scorer_not_found', `Scorer ${scorer} is not cached here. ${known.length > 0 ? `Scorers: ${known.join(', ')}.` : 'Run teamai pull to cache the team\'s scorers.'}`);
+}
+
+/** The refusal of a hand label that is not a value of its scorer, of those in `definitions`. */
+function labelRefusal(demand: SessionDemand, definitions: ReadonlyMap<string, ScorerDefinition>): Refusal | undefined {
+  const [scorer] = demand.scorers;
+  const hand = demand.label === undefined ? undefined : definitions.get(scorer);
+
+  if (!hand || hand.labels.some((label) => label.value === demand.label)) return undefined;
+
+  return refused('label_invalid', `"${demand.label ?? ''}" is not a label of scorer ${scorer}. Use one of: ${hand.labels.map((label) => label.value).join(', ')}.`);
+}
+
+/** Says which session the person named, who pushed it, and its first prompt, redacted, before a label is written. */
+async function introduce({ platform, found: { session }, config, pushedBy }: NamedSession, labelling: boolean): Promise<void> {
+  log.info(safeText(`${labelling ? 'Labelling' : 'Scoring'} ${platform} session ${session.sessionId} in ${session.cwd || '(directory unknown)'}`));
+
+  if (pushedBy !== undefined) log.info(`Pushed by ${safeText(pushedBy)}`);
+  const envSecrets = await knownSecrets(config);
+  log.info(`First prompt: ${safeText(redact(firstPrompt(session), { envSecrets })) || '(none)'}`);
 }
 
 export const NamedSubject = { ofPass, ofSession } as const;
