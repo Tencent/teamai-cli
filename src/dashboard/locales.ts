@@ -978,7 +978,7 @@ export const dashboardMessages = {
   "Deleted": "已删除",
   "Not deleted: teamai doctor --fix tries again": "未删除：teamai doctor --fix 会再次尝试",
   "Kept for inspection": "保留以供检查",
-  "From": "从",
-  "teamai doctor --fix removes them, but the pull request branches.": "起，teamai doctor --fix 会移除它们，拉取请求使用的分支除外。",
+  "Eligible from": "可移除时间",
+  "teamai doctor --fix removes them, except pull request branches.": "teamai doctor --fix 会移除它们，拉取请求使用的分支除外。",
   "workflows.retention is never, so teamai doctor --fix keeps them.": "workflows.retention 为 never，teamai doctor --fix 会保留它们。",
 } satisfies Record<string, string>;

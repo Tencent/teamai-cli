@@ -21,7 +21,7 @@ function runBranchesHtml(b) {
  if(b.state==='kept') {
   const items=b.branches.map(x=>branchItem(x.branch, x.pr?'<span class="tag">'+label('Pull request')+'</span>':''));
   const why=b.retention==='never'?label('workflows.retention is never, so teamai doctor --fix keeps them.')
-   :label('From')+' '+e(when(b.eligibleAt))+', '+label('teamai doctor --fix removes them, but the pull request branches.')+' <small data-verbatim>workflows.retention '+e(b.retention)+' · '+e(b.file||t('the default'))+'</small>';
+   :label('teamai doctor --fix removes them, except pull request branches.')+' '+label('Eligible from')+' '+e(when(b.eligibleAt))+'<br><small data-verbatim>workflows.retention '+e(b.retention)+' · '+e(b.file||t('the default'))+'</small>';
   return branchList('Kept for inspection', items)+'<p>'+why+'</p>'+(b.retention==='never'?'':command('teamai doctor --fix'));
  }
  const kept=b.kept.map(x=>branchItem(x.branch, '<span class="tag">'+label(KEPT_BECAUSE[x.why])+'</span>'));

@@ -48,7 +48,7 @@ describe("a settled run's Branches", () => {
     const shown = text(render(KEPT).html);
 
     expect(shown).toContain(`Kept for inspection ${branch('change')} Pull request ${branch('docs')}`);
-    expect(shown).toContain('From 2026-11-17T08:00:00.000Z, teamai doctor --fix removes them, but the pull request branches. workflows.retention 14d · /home/ana/.teamai/config.yaml');
+    expect(shown).toContain('teamai doctor --fix removes them, except pull request branches. Eligible from 2026-11-17T08:00:00.000Z workflows.retention 14d · /home/ana/.teamai/config.yaml');
     expect(text(render({ ...KEPT, retention: 'never', eligibleAt: undefined }).html)).toContain('workflows.retention is never, so teamai doctor --fix keeps them.');
   });
 
