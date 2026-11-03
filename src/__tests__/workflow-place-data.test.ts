@@ -1,0 +1,186 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { LocalConfig } from '../types.js';
+import { DataBranches } from '../utils/data-branches.js';
+import { finishDataCheckout, openDataCheckout } from '../workflow/place/data.js';
+import type { AttemptId, RunId } from '../workflow/store.js';
+
+const GIT_ENV = { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' };
+const git = (cwd: string, ...args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } }).trim();
+const RUN = 'r0000000000000001' as RunId;
+const ATTEMPT = 'a1' as AttemptId;
+
+let sandbox = '';
+let remote = '';
+let config: LocalConfig;
+
+beforeEach(() => {
+  sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-place-data-')));
+  remote = path.join(sandbox, 'remote.git');
+  const seed = path.join(sandbox, 'seed');
+  const clone = path.join(sandbox, 'team-repo');
+  fs.mkdirSync(seed);
+  git(sandbox, 'init', '-q', '--bare', '-b', 'main', remote);
+  git(seed, 'init', '-q', '-b', 'main');
+  fs.writeFileSync(path.join(seed, 'README.md'), 'main only\n');
+  git(seed, 'add', '.');
+  git(seed, 'commit', '-qm', 'seed');
+  git(seed, 'remote', 'add', 'origin', remote);
+  git(seed, 'push', '-q', '-u', 'origin', 'main');
+  git(seed, 'checkout', '-q', '--orphan', 'teamai-reports');
+  git(seed, 'rm', '-qrf', '.');
+  fs.mkdirSync(path.join(seed, 'scores', 'bob'), { recursive: true });
+  fs.writeFileSync(path.join(seed, 'scores', 'bob', '2026-11.jsonl'), '{"bob":1}\n');
+  git(seed, 'add', '.');
+  git(seed, 'commit', '-qm', 'reports');
+  git(seed, 'push', '-q', '-u', 'origin', 'teamai-reports');
+  git(sandbox, 'clone', '-q', remote, clone);
+  config = { repo: { localPath: clone, remote }, username: 'tester', scope: 'user', additionalRoles: [], dataHome: path.join(sandbox, 'data') };
+});
+
+afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }));
+
+const onOrigin = (file: string): string | undefined => {
+  const shown = spawnSync('git', ['--git-dir', remote, 'show', `teamai-reports:${file}`], { encoding: 'utf8' });
+  return shown.status === 0 ? shown.stdout : undefined;
+};
+const tip = (): string => git(sandbox, '--git-dir', remote, 'rev-parse', 'teamai-reports');
+
+/** Opens the place of step `note`, has it stage `files`, and finishes it. */
+async function publish(files: Record<string, string>, before?: () => void) {
+  const opened = await openDataCheckout({ config, run: RUN, attempt: ATTEMPT, branch: 'teamai-reports' });
+  for (const [file, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(opened.dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(opened.dir, file), text);
+    if (opened.at.kind === 'checkout') git(opened.dir, 'add', '--', file);
+  }
+  before?.();
+  const finished = await finishDataCheckout({ config, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at });
+  return { opened, finished };
+}
+
+describe('the place of a deliver: publish step', () => {
+  it('opens at origin\'s tip of the data branch, without the default branch, and publishes what the step staged in the member\'s files', async () => {
+    const { opened, finished } = await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n', 'votes/tester.yaml': 'up: 1\n' });
+
+    expect(opened.at).toEqual({ kind: 'checkout', base: expect.stringMatching(/^[0-9a-f]{40}$/) });
+    expect(fs.existsSync(path.join(opened.dir, 'README.md'))).toBe(false);
+    expect(finished).toEqual({});
+    expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":1}\n');
+    expect(onOrigin('votes/tester.yaml')).toBe('up: 1\n');
+    expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":1}\n');
+    expect(git(sandbox, '--git-dir', remote, 'log', '-1', '--format=%s', 'teamai-reports')).toBe('[teamai] note: tester');
+    expect(fs.existsSync(opened.dir)).toBe(false);
+  });
+
+  it('refuses every staged path outside the member\'s own, a deletion included, and publishes nothing', async () => {
+    const before = tip();
+    const opened = await openDataCheckout({ config, run: RUN, attempt: ATTEMPT, branch: 'teamai-reports' });
+    fs.mkdirSync(path.join(opened.dir, 'scores', 'tester'), { recursive: true });
+    fs.writeFileSync(path.join(opened.dir, 'scores', 'tester', 'ok.jsonl'), '{}\n');
+    fs.writeFileSync(path.join(opened.dir, 'top.txt'), 'x\n');
+    git(opened.dir, 'add', '--', 'scores/tester/ok.jsonl', 'top.txt');
+    git(opened.dir, 'rm', '-q', '--', 'scores/bob/2026-11.jsonl');
+
+    const finished = await finishDataCheckout({ config, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at });
+
+    expect(finished).toEqual({
+      code: 'push_failed',
+      message: 'Step "note" staged files outside tester\'s own on teamai-reports, so nothing was published:\n'
+        + 'scores/bob/2026-11.jsonl: belongs to bob, not tester\ntop.txt: in no member\'s directory or file\n'
+        + 'A step publishes only paths such as scores/tester/… or votes/tester.yaml. Have it stage only those, then run the workflow again.',
+    });
+    expect(tip()).toBe(before);
+  });
+
+  it('refuses a deletion of the member\'s own file', async () => {
+    const opened = await openDataCheckout({ config: { ...config, username: 'bob' }, run: RUN, attempt: ATTEMPT, branch: 'teamai-reports' });
+    git(opened.dir, 'rm', '-q', '--', 'scores/bob/2026-11.jsonl');
+
+    const finished = await finishDataCheckout({ config: { ...config, username: 'bob' }, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at });
+
+    expect(finished).toMatchObject({ code: 'push_failed', message: expect.stringContaining('scores/bob/2026-11.jsonl: deleted; a step publishes new and changed files only') });
+    expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":1}\n');
+  });
+
+  it('succeeds with nothing published when the step staged nothing', async () => {
+    const before = tip();
+
+    const { finished } = await publish({});
+
+    expect(finished).toEqual({});
+    expect(tip()).toBe(before);
+  });
+
+  it('leaves the data pending, in an empty directory, with an http team repo', async () => {
+    const http: LocalConfig = { ...config, repo: { ...config.repo, kind: 'http' } };
+    const opened = await openDataCheckout({ config: http, run: RUN, attempt: ATTEMPT, branch: 'teamai-reports' });
+
+    expect(opened.at).toEqual({ kind: 'unavailable', reason: 'the team repo is served over http, which has no teamai-reports branch' });
+    expect(fs.readdirSync(opened.dir)).toEqual([]);
+    expect(await finishDataCheckout({ config: http, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at })).toEqual({
+      message: 'Step "note" left its data on this machine, pending: the team repo is served over http, which has no teamai-reports branch. Run teamai score --push to publish it.',
+    });
+  });
+
+  it('opens offline at the tip this machine last fetched', async () => {
+    await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n' });
+    const last = tip();
+    fs.renameSync(remote, `${remote}.away`);
+
+    const opened = await openDataCheckout({ config, run: RUN, attempt: ATTEMPT, branch: 'teamai-reports' });
+
+    expect(opened.at).toEqual({ kind: 'checkout', base: last });
+    expect(fs.readFileSync(path.join(opened.dir, 'scores', 'tester', '2026-11.jsonl'), 'utf8')).toBe('{"tester":1}\n');
+  });
+
+  it('opens offline, on a machine that never fetched the branch, on the branch this machine starts, and leaves the data pending', async () => {
+    git(config.repo.localPath, 'update-ref', '-d', 'refs/remotes/origin/teamai-reports');
+    fs.renameSync(remote, `${remote}.away`);
+
+    const { opened, finished } = await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n' });
+
+    expect(opened.at).toEqual({ kind: 'checkout', base: git(config.repo.localPath, 'rev-parse', 'refs/heads/teamai-reports~1') });
+    expect(finished).toMatchObject({ message: expect.stringMatching(/^Step "note" left its data on this machine, pending: .+\. Run teamai score --push to publish it\.$/) });
+  });
+
+  it('leaves the data pending when origin changed the file the step staged, and publishes nothing', async () => {
+    config = { ...config, username: 'bob' };
+    const before = { tip: '' };
+    const { finished } = await publish({ 'scores/bob/2026-11.jsonl': '{"bob":2}\n' }, () => {
+      const other = path.join(sandbox, 'other');
+      git(sandbox, 'clone', '-q', '--branch', 'teamai-reports', remote, other);
+      fs.writeFileSync(path.join(other, 'scores', 'bob', '2026-11.jsonl'), '{"bob":3}\n');
+      git(other, 'commit', '-qam', 'teammate');
+      git(other, 'push', '-q', 'origin', 'teamai-reports');
+      before.tip = tip();
+    });
+
+    expect(finished).toMatchObject({ message: expect.stringMatching(/^Step "note" left its data on this machine, pending: teamai-reports on origin changed what it staged: .*scores\/bob\/2026-11\.jsonl.*\. Run teamai score --push to publish it\.$/s) });
+    expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":3}\n');
+    expect(tip()).toBe(before.tip);
+  });
+});
+
+describe('DataBranches.pushPending', () => {
+  it('sends the commit a publish left on this machine while origin could not take it', async () => {
+    const away = `${remote}.away`;
+    const { finished } = await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n' }, () => fs.renameSync(remote, away));
+
+    expect(finished).toMatchObject({ message: expect.stringMatching(/^Step "note" left its data on this machine, pending: .+\. Run teamai score --push to publish it\.$/) });
+    fs.renameSync(away, remote);
+    expect(onOrigin('scores/tester/2026-11.jsonl')).toBeUndefined();
+
+    const pushed = await DataBranches.pushPending(config);
+
+    expect(pushed).toEqual([{ branch: 'teamai-reports', result: expect.objectContaining({ status: 'published' }) }]);
+    expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":1}\n');
+  });
+
+  it('pushes nothing for an http team repo', async () => {
+    expect(await DataBranches.pushPending({ ...config, repo: { ...config.repo, kind: 'http' } })).toEqual([]);
+  });
+});
