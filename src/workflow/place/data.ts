@@ -104,7 +104,7 @@ function refusals(listed: string[], member: string | undefined): string[] {
 }
 
 function pending(step: string, reason: string) {
-  return { message: `Step "${step}" left its data on this machine, pending: ${reason}. A later teamai pull or teamai score --push publishes what is pending.` };
+  return { message: `Step "${step}" left its data on this machine, pending: ${reason}. Run teamai score --push to publish it.` };
 }
 
 /**
