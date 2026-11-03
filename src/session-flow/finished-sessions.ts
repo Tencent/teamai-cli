@@ -21,7 +21,7 @@ import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { durationMs } from '../workflow/parse.js';
-import type { WorkflowClient } from '../workflow/protocol.js';
+import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { readRuns, RunIdSchema, type RunId } from '../workflow/store.js';
 import type { WorkflowFailure } from '../workflow/types.js';
@@ -332,9 +332,7 @@ async function start(config: LocalConfig, { client, mode }: { client: Pick<Workf
 
   if (!await hasWork(config, new Date().toISOString())) return { kind: 'idle' };
 
-  const answer = await client.start(FINISHED_WORKFLOW, {
-    inputs: { publish: 'policy', scorers: [] }, checkout: cwd, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli',
-  });
+  const answer = await startAsCli(client, FINISHED_WORKFLOW, { inputs: { publish: 'policy', scorers: [] }, checkout: cwd, mode });
 
   if ('error' in answer) return { kind: 'failed', failure: answer.error };
   const run = RunIdSchema.safeParse(answer.data.run);

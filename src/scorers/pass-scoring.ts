@@ -12,7 +12,7 @@ import type { RunMode } from '../launch-context.js';
 import type { JsonValue, LocalConfig } from '../types.js';
 import { getFileMtime, listDirs, readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import type { ScorablePass } from '../workflow/judge-work.js';
-import type { WorkflowClient } from '../workflow/protocol.js';
+import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { installOwner, readRun, RunIdSchema, type RunId } from '../workflow/store.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
@@ -176,10 +176,7 @@ export const PassScoring = {
       }
 
       const inputs = { subject: text, scorers: [], label: '', batch: false, demand: 'auto' };
-      const options: Parameters<WorkflowClient['start']>[1] = { inputs, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli', driver };
-
-      if (run.checkout !== undefined) options.checkout = run.checkout;
-      const answer = await client.start(SCORE_WORKFLOW, options);
+      const answer = await startAsCli(client, SCORE_WORKFLOW, { inputs, mode, driver, ...(run.checkout !== undefined && { checkout: run.checkout }) });
       const started = 'data' in answer ? RunIdSchema.safeParse(answer.data.run) : undefined;
 
       if (started?.success) {

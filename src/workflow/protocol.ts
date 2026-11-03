@@ -317,6 +317,14 @@ export async function resumeRefusal(
 }
 
 /** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */
+/**
+ * Starts `name` as one of the CLI's own automatic starts, in run mode `mode`: with no agent evidence, so no agent gave its
+ * inputs, and recorded as started by `cli`, which hand labels and policy overrides never trust as a person.
+ */
+export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: { inputs: unknown; checkout?: string; driver?: DriverIdentity; mode: RunMode }): Promise<WorkflowEnvelope> {
+  return client.start(name, { ...options, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli' });
+}
+
 export function workflowNotFound(name: string): WorkflowFailure {
   return { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` };
 }
