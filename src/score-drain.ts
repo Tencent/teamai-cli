@@ -41,6 +41,8 @@ interface FailedJudgment {
   scorers: readonly string[];
   subject: RunSubject | SessionSubject;
   code: string;
+  /** Which step of the judgment broke, and what it said, when no label step code says why. */
+  why?: string;
 }
 
 /** What could not reach teamai-reports, of one kind, and why. It stays pending, and the next drain retries it. */
@@ -95,11 +97,20 @@ async function finishUnattended(config: LocalConfig, now: string): Promise<void>
   }
 }
 
-const GroupsSchema = z.object({ groups: z.array(z.object({ subject: z.string() })) });
+/** `scorers`, as teamai-score plan gives it, names who a group that broke before its label step got nothing for. */
+const GroupsSchema = z.object({ groups: z.array(z.object({ subject: z.string(), scorers: z.string().optional() })) });
 
 const LabelEntriesSchema = z.object({ labels: z.array(z.object({ scorer: z.string(), code: z.string() })) });
 
+type LabelEntries = z.infer<typeof LabelEntriesSchema>['labels'];
+
+/** How the item of one plan group ended: its judge still open, or what its label step gave and why write stored none of it. */
+type Item = { kind: 'open' } | { kind: 'ended'; entries: LabelEntries; unwritten: string | undefined };
+
 const OPEN = new Set<StepState['status']>(['pending', 'waiting', 'leased', 'running']);
+
+/** What a failed step says of why: its driver's report, or the engine's failure. */
+const whyFailed = (step: Extract<StepState, { status: 'failed' }>): string | undefined => step.message ?? step.failure?.message;
 
 /** What a drain reads of its run: what it judged, archived and left, and how many judge steps are still open. */
 interface Reading {
@@ -111,22 +122,40 @@ type Judgeable = Exclude<Subject, { kind: 'team-session' }>;
 
 const kindOf = (subject: Judgeable): 'passes' | 'sessions' => (subject.kind === 'run' ? 'passes' : 'sessions');
 
-/** The label entries the item of teamai-score plan group `index` under `prefix` wrote, or `open` while its judge waits. */
-function itemOf(ran: RunState, prefix: string, index: number): 'open' | z.infer<typeof LabelEntriesSchema>['labels'] {
-  const step = (name: string) => ran.steps.find((one) => one.id === `${prefix}.score[${index}].${name}`);
-  const judge = step('judge');
+/** Why the write step `writeId` of an item stored no label: the first of `steps` that broke, with what it said, else write's own state. */
+function unwrittenWhy(steps: readonly StepState[], writeId: string): string {
+  const broke = steps.find((one) => one.status === 'failed' || one.status === 'cancelled');
 
-  if (judge && OPEN.has(judge.status)) return 'open';
-  const label = step('label');
+  if (!broke) return `step ${writeId} ${steps.find((one) => one.id === writeId)?.status ?? 'did not run'}`;
+  const why = broke.status === 'failed' ? whyFailed(broke) : undefined;
 
-  return LabelEntriesSchema.safeParse(label?.status === 'succeeded' ? label.outputs : undefined).data?.labels ?? [];
+  return `step ${broke.id} ${broke.status}${why === undefined ? '' : `: ${why}`}`;
 }
 
-/** Adds to `into` what `entries` gave `subject`: the scorers that labelled it, its wait for CI, and each failure by code. */
-function addEntries(into: Finished, judged: Judgeable, entries: z.infer<typeof LabelEntriesSchema>['labels']): void {
-  const labelled = entries.filter((entry) => entry.code === '').map((entry) => entry.scorer);
+/** How the item of teamai-score plan group `index` under `prefix` ended: a label counts once its write step stored it. */
+function itemOf(ran: RunState, prefix: string, index: number): Item {
+  const at = `${prefix}.score[${index}].`;
+  const steps = ran.steps.filter((one) => one.id.startsWith(at));
+  const step = (name: string) => steps.find((one) => one.id === `${at}${name}`);
+  const judge = step('judge');
 
-  if (labelled.length > 0) into.judged.push({ source: judged.kind === 'run' ? 'workflow' : 'session', scorers: labelled });
+  if (judge && OPEN.has(judge.status)) return { kind: 'open' };
+  const label = step('label');
+  const entries = LabelEntriesSchema.safeParse(label?.status === 'succeeded' ? label.outputs : undefined).data?.labels ?? [];
+
+  return { kind: 'ended', entries, unwritten: step('write')?.status === 'succeeded' ? undefined : unwrittenWhy(steps, `${at}write`) };
+}
+
+/**
+ * Adds to `into` what `item` gave `subject`, planned for `planned`: the scorers whose label its write stored, its wait
+ * for CI, and each failure by code, as `score_step_failed` a label the write did not store and a scorer with no entry.
+ */
+function addEntries(into: Finished, judged: Judgeable, { entries, unwritten }: Extract<Item, { kind: 'ended' }>, planned: readonly string[]): void {
+  const labelled = entries.filter((entry) => entry.code === '').map((entry) => entry.scorer);
+  const unstored = unwritten === undefined ? [] : [...labelled, ...planned.filter((name) => !entries.some((entry) => entry.scorer === name))];
+
+  if (unwritten !== undefined && unstored.length > 0) into.failed.push({ scorers: unstored, subject: judged.subject, code: 'score_step_failed', why: unwritten });
+  else if (labelled.length > 0) into.judged.push({ source: judged.kind === 'run' ? 'workflow' : 'session', scorers: labelled });
 
   if (entries.some((entry) => entry.code === 'ci_pending')) into.ciPending[kindOf(judged)] += 1;
 
@@ -145,13 +174,11 @@ function readPlan(ran: RunState, { plan, prefix }: { plan: StepState; prefix: st
     if (!parsed.ok || parsed.subject.kind === 'team-session') return;
     const item = itemOf(ran, prefix, index);
 
-    if (item === 'open') open[kindOf(parsed.subject)] += 1;
-    else addEntries(into, parsed.subject, item);
+    if (item.kind === 'open') open[kindOf(parsed.subject)] += 1;
+    else addEntries(into, parsed.subject, item, group.scorers?.split(',').filter(Boolean) ?? []);
   });
 }
 
-/** What a failed step says of why: its driver's report, or the engine's failure. */
-const whyFailed = (step: Extract<StepState, { status: 'failed' }>): string | undefined => step.message ?? step.failure?.message;
 
 /** What a teamai-share-session publish step did: archived its session, or failed to. */
 function readPublish(step: StepState, into: Finished): void {
@@ -371,14 +398,14 @@ function passesAndSessions({ passes, sessions }: { passes: number; sessions: num
 }
 
 /** Why `failed` failed, and the command a person runs for a new judgment. */
-function failedText({ scorers, subject, code }: FailedJudgment): string {
+function failedText({ scorers, subject, code, why }: FailedJudgment): string {
   const flags = scorers.map((scorer) => `--scorer ${scorer}`).join(' ');
 
   const [what, ask] = 'sessionId' in subject
     ? [`${subject.platform} session ${subject.sessionId}`, `teamai score --session ${subject.sessionId} --source ${subject.platform} ${flags}`]
     : [`pass ${subject.pass} of step ${subject.step} in run ${subject.runId}`, `teamai score --run ${subject.runId} --step ${subject.step} --pass ${subject.pass} ${flags}`];
 
-  return `${scorers.join(', ')} on ${what}: ${code}. A failed judgment is final and is not retried. To ask for a new one: ${ask}`;
+  return `${scorers.join(', ')} on ${what}: ${code}${why === undefined ? '' : ` (${why.replace(/\.$/u, '')})`}. A failed judgment is final and is not retried. To ask for a new one: ${ask}`;
 }
 
 /** What could not reach teamai-reports, each reason once, and that the next drain retries it. */

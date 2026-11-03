@@ -594,7 +594,7 @@ describe('teamai score --drain', () => {
       { subject: 'run:r1:review:1', labels: { labels: [{ scorer: 'quality', code: 'judge_failed' }, { scorer: 'depth', code: 'judge_failed' }] } },
       { subject: 'team-session:alice:2026-10-20-s1', labels: { labels: [{ scorer: 'quality', code: '' }] } },
     ];
-    // A team's own teamai-finished-sessions, whose steps answer as teamai score plan and label and teamai session push would.
+    // A team's own teamai-finished-sessions, whose steps answer as teamai score plan, label and write and teamai session push would.
     const { config } = await team({ 'workflows/teamai-finished-sessions.yaml': `schemaVersion: v1alpha1
 name: teamai-finished-sessions
 description: Stands in for the shipped one.
@@ -622,6 +622,9 @@ steps:
                 command: printf '%s' "$LABELS"
                 env: { LABELS: "{{ item.labels }}" }
                 output: { labels: [{ scorer: string, code: string }] }
+              - id: write
+                needs: [label]
+                command: echo written
   - id: share
     needs: [rescore]
     workflow:
@@ -644,6 +647,57 @@ steps:
       'ℹ Left open: 1 session whose CI has not finished. The next teamai score --drain labels them once it has.',
     ]));
     expect(drained.lines.filter((printed) => printed.includes('Judged'))).toHaveLength(1);
+  });
+
+  it('says a judgment whose label the write step did not store, or whose group broke before it labelled, failed, naming the step, and exits 1', async () => {
+    const groups = [
+      { subject: `session:claude-code:${SESSION}`, scorers: 'quality', labels: { labels: [{ scorer: 'quality', code: '' }] } },
+      { subject: `session:claude-code:${STEP_SESSION}`, scorers: 'depth', labels: 'not labels' },
+    ];
+    // As the shipped teamai-score runs when another process holds the label store: label gives the label, write refuses it.
+    const { config } = await team({ 'workflows/teamai-finished-sessions.yaml': `schemaVersion: v1alpha1
+name: teamai-finished-sessions
+description: Stands in for the shipped one.
+invoke: deny
+private: true
+inputs:
+  publish: policy | always | never
+  scorers: [string]
+steps:
+  - id: rescore
+    continue_on_failure: true
+    workflow:
+      steps:
+        - id: plan
+          command: echo '${JSON.stringify({ groups })}'
+          output: { groups: [{ subject: string, scorers: string, labels: json }] }
+        - id: score
+          needs: [plan]
+          for_each: steps.plan.outputs.groups
+          continue_on_failure: true
+          workflow:
+            steps:
+              - id: judge
+                command: echo judged
+              - id: label
+                needs: [judge]
+                command: printf '%s' "$LABELS"
+                env: { LABELS: "{{ item.labels }}" }
+                output: { labels: [{ scorer: string, code: string }] }
+              - id: write
+                needs: [label]
+                command: "echo 'busy: Another teamai process holds the label store, so no label was written. Run the step again.' >&2; exit 1"
+` });
+    await syncScorersThenWorkflows(config);
+    capturedSession(SESSION, 'unattended');
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(1);
+    expect(drained.lines.filter((printed) => /Judged|Nothing left/u.test(printed))).toEqual([]);
+    expect(drained.lines).toContainEqual(expect.stringMatching(new RegExp(`^✖ depth on claude-code session ${STEP_SESSION}: score_step_failed \\(step rescore\\.score\\[1\\]\\.label failed: .+\\)\\. A failed judgment is final`, 'u')));
+    expect(drained.lines).toContainEqual(expect.stringMatching(new RegExp(`^✖ quality on claude-code session ${SESSION}: score_step_failed \\(step rescore\\.score\\[0\\]\\.write failed: command exited with status 1: busy: Another teamai process holds the label store, so no label was written\\. Run the step again\\)\\. A failed judgment is final`, 'u')));
   });
 
   it('leaves open, with the command that takes them, the judges no tool here can take, and the next drain leaves the run to its driver', async () => {
