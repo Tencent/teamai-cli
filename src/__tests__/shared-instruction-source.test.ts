@@ -13,8 +13,7 @@ import fse from 'fs-extra';
 import { collectClaudemdFiles } from '../resources/desired.js';
 import {
   existingSharedInstructionDirs,
-  sharedInstructionWriteDir,
-  findSharedInstructionFile,
+  shadowedSharedInstructionNames,
 } from '../shared-instruction-source.js';
 import type { LocalConfig } from '../types.js';
 
@@ -96,19 +95,29 @@ describe('shared-instruction source directory', () => {
     expect(await existingSharedInstructionDirs(repoPath)).toEqual(['agentsmd', 'claudemd']);
   });
 
-  it('writes new files into the directory the repo already uses', async () => {
-    expect(await sharedInstructionWriteDir(repoPath)).toBe('claudemd');
+  it('raises the failure of a source directory that is not a directory', async () => {
+    await teamFile('claudemd', 'not a directory\n');
 
-    await teamFile('agentsmd/a.md', 'A\n');
-    expect(await sharedInstructionWriteDir(repoPath)).toBe('agentsmd');
+    // The caller (pull) reports this as a skipped sync, as it did before.
+    await expect(existingSharedInstructionDirs(repoPath)).rejects.toThrow(/ENOTDIR/);
   });
 
-  it('finds an existing file in either directory', async () => {
-    await teamFile('claudemd/note.md', 'NOTE\n');
+  it('names the copy pull delivers and the copies it leaves out', async () => {
+    await teamFile('claudemd/common.md', 'FROM CLAUDEMD\n');
+    await teamFile('agentsmd/common.md', 'FROM AGENTSMD\n');
 
-    const found = await findSharedInstructionFile(repoPath, 'note.md');
-    expect(found?.dir).toBe('claudemd');
+    const shadowed = await shadowedSharedInstructionNames(repoPath);
 
-    expect(await findSharedInstructionFile(repoPath, 'missing.md')).toBeNull();
+    expect(shadowed).toHaveLength(1);
+    expect(shadowed[0].name).toBe('common.md');
+    expect(shadowed[0].deliveredFrom).toBe('agentsmd');
+    expect(shadowed[0].shadowedIn).toEqual(['claudemd']);
+  });
+
+  it('reports no shadowed name when the directories hold different files', async () => {
+    await teamFile('claudemd/legacy.md', 'A\n');
+    await teamFile('agentsmd/modern.md', 'B\n');
+
+    expect(await shadowedSharedInstructionNames(repoPath)).toEqual([]);
   });
 });

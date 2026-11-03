@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
 import { isToolId } from './tools.js';
-import { existingSharedInstructionDirs } from './shared-instruction-source.js';
+import { existingSharedInstructionDirs, shadowedSharedInstructionNames } from './shared-instruction-source.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -2835,6 +2835,7 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
       )
         .map(([name, sources]) => (
           `claudemd: "${name}" is defined in ${listed(sources)} (legacy mode: all of them are in the managed block)`)),
+      ...shadowedNotes(team.shadowed),
     ];
   }
 
@@ -2843,7 +2844,18 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
     ...(team.agents.kind === 'resolved' ? team.agents.overrides : []).map((override) => describeOverride('agents', override)),
     ...team.rules.overrides.map((override) => describeOverride('rules', override)),
     ...team.claudemd.overrides.map((override) => describeOverride('claudemd', override)),
+    ...shadowedNotes(team.shadowed),
   ];
+}
+
+/**
+ * A shared-instruction file defined in more than one source directory: pull
+ * delivers one copy, so the note names the copy it delivers and the ones it
+ * leaves out (#1682).
+ */
+function shadowedNotes(shadowed: readonly { name: string; deliveredFrom: string; shadowedIn: string[] }[]): string[] {
+  return shadowed.map((entry) => (
+    `claudemd: "${entry.name}" is delivered from ${entry.deliveredFrom}/; ${listed(entry.shadowedIn.map((dir) => `${dir}/`))} not delivered`));
 }
 
 /** What `buildNamespaceNotes` reads from the team repo; throws when a manifest cannot be read. */
@@ -2851,6 +2863,9 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
   const desired = await import('./resources/desired.js');
   const { getHandler } = await import('./resources/index.js');
   const roleContext = await desired.buildRolePullContext(localConfig);
+  // A file name defined in both source directories is delivered once, from
+  // the preferred one. The note says so in both modes (#1682).
+  const shadowed = await shadowedSharedInstructionNames(localConfig.repo.localPath);
 
   if (!roleContext) {
     return {
@@ -2863,6 +2878,7 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
       claudemdFiles: (await Promise.all((await existingSharedInstructionDirs(localConfig.repo.localPath))
         .map(async (dir) => (await listFilesRecursive(path.join(localConfig.repo.localPath, dir)))
           .map((file) => ({ dir, file }))))).flat(),
+      shadowed,
     };
   }
 
@@ -2872,6 +2888,7 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
     agents: await desired.resolveDesiredAgents(teamConfig, localConfig, roleContext),
     rules: await desired.resolveDesiredRules(teamConfig, localConfig, roleContext),
     claudemd: await desired.collectClaudemdFiles(localConfig, roleContext),
+    shadowed,
   };
 }
 

@@ -29,20 +29,22 @@ export const SHARED_INSTRUCTION_PREFERRED_DIR: SharedInstructionSourceDir = 'age
  * The source directories that exist in `repoPath`, in collection order
  * (preferred first, so a later directory never overrides an earlier one).
  *
- * Existence is by PATH, not by "is a directory": a repo whose `claudemd` is
- * a regular file is a broken repo, and the caller must see the same failure
- * it saw before (`readdir` on a file raises ENOTDIR, which pull reports as a
- * skipped sync). Silently ignoring it would hide a broken team repo.
+ * Only ENOENT means "this repo does not use that directory". Every other
+ * failure is the caller's to see: a repo whose `claudemd` is a regular file
+ * raises ENOTDIR here, and pull reports it as a skipped sync — the same
+ * diagnostic it gave before this feature existed. Swallowing it would hide a
+ * broken team repo behind a silently empty instruction block.
  */
 export async function existingSharedInstructionDirs(repoPath: string): Promise<SharedInstructionSourceDir[]> {
   const present = await Promise.all(
     SHARED_INSTRUCTION_SOURCE_DIRS.map(async (dir) => {
       try {
-        await fs.stat(path.join(repoPath, dir));
+        await fs.readdir(path.join(repoPath, dir));
 
         return dir;
-      } catch {
-        return null;
+      } catch (error) {
+        if (isErrnoException(error) && error.code === 'ENOENT') return null;
+        throw error;
       }
     }),
   );
@@ -53,50 +55,45 @@ export async function existingSharedInstructionDirs(repoPath: string): Promise<S
   return found.sort((a, b) => rank(a) - rank(b));
 }
 
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
+}
+
 function rank(dir: SharedInstructionSourceDir): number {
   return dir === SHARED_INSTRUCTION_PREFERRED_DIR ? 0 : 1;
 }
 
 /**
- * The source directory a NEW shared-instruction file is written to: the one
- * the repo already uses, or `claudemd/` when the repo has neither (so a repo
- * that never chose a convention keeps the historical default).
+ * The shared-instruction file names that exist in more than one source
+ * directory, with the directory each copy is in. The preferred directory
+ * holds the copy pull delivers; the others are shadowed by it, and a team
+ * that keeps both should hear about it rather than discover it (#1682).
  */
-export async function sharedInstructionWriteDir(repoPath: string): Promise<SharedInstructionSourceDir> {
-  const dirs = await existingSharedInstructionDirs(repoPath);
-
-  if (dirs.length === 0) return 'claudemd';
-
-  // `existingSharedInstructionDirs` returns preferred-first, so this is the
-  // preferred dir when it exists, else the other one.
-  return dirs[0];
-}
-
-/**
- * The source directory holding this shared-instruction file, when it exists:
- * the write dir wins, else whichever source dir has it. A removal must find
- * the file wherever it was written, including a repo that switched source
- * directory after the file was contributed.
- */
-export async function findSharedInstructionFile(
+export async function shadowedSharedInstructionNames(
   repoPath: string,
-  fileName: string,
-): Promise<{ dir: SharedInstructionSourceDir; path: string } | null> {
+): Promise<Array<{ name: string; deliveredFrom: SharedInstructionSourceDir; shadowedIn: SharedInstructionSourceDir[] }>> {
   const dirs = await existingSharedInstructionDirs(repoPath);
-  const writeDir = await sharedInstructionWriteDir(repoPath);
-  const ordered = [writeDir, ...dirs.filter((dir) => dir !== writeDir)];
 
-  for (const dir of ordered) {
-    const candidate = path.join(repoPath, dir, fileName);
+  if (dirs.length < 2) return [];
 
-    try {
-      const stat = await fs.stat(candidate);
+  const byName = new Map<string, SharedInstructionSourceDir[]>();
 
-      if (stat.isFile()) return { dir, path: candidate };
-    } catch {
-      continue;
+  for (const dir of dirs) {
+    const entries = await fs.readdir(path.join(repoPath, dir));
+
+    for (const entry of entries) {
+      if (!entry.endsWith('.md')) continue;
+      const sources = byName.get(entry) ?? [];
+      sources.push(dir);
+      byName.set(entry, sources);
     }
   }
 
-  return null;
+  return [...byName].flatMap(([name, sources]) => sources.length > 1
+    ? [{
+      name,
+      deliveredFrom: sources[0],
+      shadowedIn: sources.slice(1),
+    }]
+    : []);
 }

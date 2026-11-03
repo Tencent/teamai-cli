@@ -7,7 +7,7 @@ import { AgentsHandler } from './agents.js';
 import { HooksHandler } from './hooks.js';
 import { McpHandler } from './mcp.js';
 import { RepoResourceHandler } from './repo-resource.js';
-import { existingSharedInstructionDirs } from '../shared-instruction-source.js';
+import { existingSharedInstructionDirs, SHARED_INSTRUCTION_SOURCE_DIRS } from '../shared-instruction-source.js';
 import type { ResourceType } from '../types.js';
 
 const handlers = {
@@ -20,8 +20,9 @@ const handlers = {
   mcp: new McpHandler(),
   models: new RepoResourceHandler('models', 'models'),
   // The shared-instruction SOURCE directory: `claudemd/` or `agentsmd/`,
-  // whichever the team repo uses (#1682).
-  claudemd: new RepoResourceHandler('claudemd', 'claudemd', undefined, existingSharedInstructionDirs),
+  // whichever the team repo uses (#1682). A push may also bring a file in
+  // the other directory, so both are scanned for push.
+  claudemd: new RepoResourceHandler('claudemd', 'claudemd', undefined, existingSharedInstructionDirs, SHARED_INSTRUCTION_SOURCE_DIRS),
   learnings: new RepoResourceHandler('learnings', 'learnings'),
   wiki: new RepoResourceHandler('wiki', 'teamwiki/evidence/code'),
   workflows: new RepoResourceHandler('workflows', 'workflows', (f) => f.endsWith('.yaml')),

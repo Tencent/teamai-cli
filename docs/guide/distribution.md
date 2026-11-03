@@ -108,10 +108,8 @@ sharing:
 Shared instructions live in `claudemd/` in the team repo. A team whose convention is `AGENTS.md` can name that directory `agentsmd/` instead — Claude Code reads `AGENTS.md` natively, and the directory name otherwise carries no meaning: the namespace layout, the per-tool delivery and the file format are the same under either name.
 
 - Either directory works; existing `claudemd/` repos keep working, with no migration.
-- New shared instructions are written into the directory the repo already uses. A repo with neither gets `claudemd/`.
-- When a repo has **both**, the files of both are collected, and a file name present in both is delivered once — the `agentsmd/` copy wins. Files whose names differ are all delivered, each under its own name. `teamai doctor` reports a same-named file defined in both directories.
-
-
+- A shared-instruction file is authored in the directory it belongs to and pushed from there, so a repo can bring in an `agentsmd/` file while `claudemd/` is still on the team repo.
+- When a repo has **both**, the files of both are collected, and a file name present in both is delivered once — the `agentsmd/` copy wins. Files whose names differ are all delivered, each under its own name. `teamai doctor` names the copy pull delivers and the one it leaves out.
 
 ### Git permissions
 

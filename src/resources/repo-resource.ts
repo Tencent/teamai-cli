@@ -212,6 +212,13 @@ export class RepoResourceHandler extends ResourceHandler {
      * uses neither keeps the default `dir`.
      */
     readonly dirResolver?: (repoPath: string) => Promise<string[]>,
+    /**
+     * Every directory this resource may be authored in, whether or not the
+     * repo has one yet. A push must offer a NEW file in a directory main
+     * does not have, so the local scan cannot be limited to the directories
+     * the team repo already uses (#1682).
+     */
+    readonly allDirs?: readonly string[],
   ) {
     super();
   }
@@ -228,9 +235,11 @@ export class RepoResourceHandler extends ResourceHandler {
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<ResourceItem[]> {
-    // The local copy is written under ONE directory — the convention the
-    // repo uses — so a push never splits a resource across two trees.
-    const dirs = await this.dirsIn(localConfig.repo.localPath);
+    // The local copy may sit under either source directory, including one
+    // the team repo does not have yet — a first `agentsmd/` file must be
+    // pushable, so the scan cannot be limited to the directories main
+    // already uses (#1682).
+    const dirs = this.allDirs ?? await this.dirsIn(localConfig.repo.localPath);
     const items: ResourceItem[] = [];
 
     for (const dir of dirs) {
@@ -245,6 +254,10 @@ export class RepoResourceHandler extends ResourceHandler {
     localConfig: LocalConfig,
   ): Promise<ResourceItem[]> {
     const items: ResourceItem[] = [];
+    // One entry per name, like pull delivers: a repo keeping both source
+    // directories holds two copies of a same-named file, but pull delivers
+    // one, so the count must not be two (#1682).
+    const claimed = new Set<string>();
 
     for (const dir of await this.dirsIn(localConfig.repo.localPath)) {
       const dirPath = path.join(localConfig.repo.localPath, dir);
@@ -252,14 +265,18 @@ export class RepoResourceHandler extends ResourceHandler {
       if (!await pathExists(dirPath)) continue;
       const files = await listRepoFilesRecursive(dirPath);
 
-      items.push(...files
-        .filter((file) => !this.fileFilter || this.fileFilter(file))
-        .map((file) => ({
+      for (const file of files) {
+        if (this.fileFilter && !this.fileFilter(file)) continue;
+
+        if (claimed.has(file)) continue;
+        claimed.add(file);
+        items.push({
           name: file,
           type: this.type,
           sourcePath: path.join(dirPath, ...file.split('/')),
           relativePath: `${dir}/${file}`,
-        })));
+        });
+      }
     }
 
     return items;
