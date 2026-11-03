@@ -127,6 +127,16 @@ describe('benchmark judges on the local driver', () => {
     expect(done.outputs.table.verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome })]);
   }, 120_000);
 
+  it('labels a trial whose judge stated no usage, and records no scoring cost for it', async () => {
+    const fixture = await judgedFixture({ judge: 'states-nothing' });
+
+    const done = await runLocally(fixture);
+
+    expect(done.outputs.table.verdicts).toEqual([expect.objectContaining({ scorer: CORRECTNESS, outcome: { kind: 'labelled', label: 'correct', passed: true } })]);
+    expect(done.outputs.table.verdicts[0]).not.toHaveProperty('scoringCost');
+    expect(RecordSchema.parse(fixture.benchmarkRecord(done.run)).trials).toEqual([expect.not.objectContaining({ scoringCost: expect.anything() })]);
+  }, 120_000);
+
   it('stops a judge still running at the suite timeout, and ends the run timed out with the trial unscored', async () => {
     const fixture = await judgedFixture({ judge: 'hangs', timeout: '20s' });
 

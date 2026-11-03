@@ -79,7 +79,8 @@ export type FakeTool = 'fixes' | 'does-nothing' | 'fails-first' | 'skips-the-che
 export type FirstLaunch = 'pulls-a-team-change' | 'kills-its-driver';
 
 /** What the fake `claude` judge answers: the first label of its scorer, `incorrect` where its scorer has one, a label its scorer lacks, or exit 1. */
-export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs';
+/** `states-nothing`: answers the first label, and states no usage or cost. */
+export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs' | 'states-nothing';
 
 /** One launch of the fake judge: the labels its answer schema allows, its evidence's diff.patch, and the trial roots left. */
 const JudgeLaunchSchema = z.object({ labels: z.array(z.string()), diff: z.string().nullable(), trialRoots: z.array(z.string()) });
@@ -591,7 +592,8 @@ if (process.argv.includes('--json-schema')) {
     const label = ${JSON.stringify(judge)} === 'another-label' ? 'no-such-label' : ${JSON.stringify(judge)} === 'incorrect' && labels.includes('incorrect') ? 'incorrect' : labels[0];
     console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-judge' }));
     const answer = { label, reasoning: 'The fake judge decided.' };
-    console.log(JSON.stringify({ type: 'result', structured_output: wrapped ? { answer } : answer, total_cost_usd: 0.1 }));
+    const usage = ${JSON.stringify(judge)} === 'states-nothing' ? {} : { total_cost_usd: 0.1 };
+    console.log(JSON.stringify({ type: 'result', structured_output: wrapped ? { answer } : answer, ...usage }));
   });
   return;
 }`;
