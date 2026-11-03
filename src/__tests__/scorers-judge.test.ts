@@ -43,8 +43,8 @@ console.log(JSON.stringify({type:'result',structured_output:{label:'good',reason
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), settings: z.object({ env: z.record(z.string(), z.string()) }) }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args).toEqual(expect.arrayContaining(['--restricted', '--tools=Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--permission-prompts', 'none', '--append-system-prompt-file']));
   expect(invocation.args.join(' ')).not.toContain('UNTRUSTED-PROMPT-SECRET');
-  expect(invocation.stdin).toContain('rubric');
-  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(invocation.stdin).toContain('Return only the requested JSON answer.');
+  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('confined');
   for (const key of ['GH_TOKEN', 'BASH_ENV', 'CANARY_TOKEN', '__TEAMAI_ENV_KEYS', 'TEAMAI_LAUNCHED_TOOL', 'TEAMAI_LAUNCHED_CHECKOUT', 'ANTHROPIC_API_KEY']) expect(invocation.env).not.toHaveProperty(key);
   expect(invocation.settings.env).toEqual({ ANTHROPIC_BASE_URL: 'https://gateway.test', ANTHROPIC_DEFAULT_SONNET_MODEL: 'gateway-sonnet' });
 });
@@ -97,7 +97,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:7,output_t
   expect(invocation.env.TEAMAI_JUDGE_API_KEY).toBe('gateway-credential');
   expect(invocation.env).not.toHaveProperty('JUDGE_GATEWAY_TOKEN');
   expect(invocation.env).not.toHaveProperty('BASH_ENV');
-  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('confined');
   expect(await fs.access(invocation.env.CODEX_HOME ?? '').then(() => true, () => false)).toBe(false);
 });
 
@@ -256,7 +256,7 @@ it('runs CodeBuddy with its Claude-like flags, the prompt on stdin, at best-effo
   expect(invocation.stdin).toContain('CODEBUDDY-INLINE-PROMPT');
   expect(invocation.cwd).toBe(await fs.realpath(evidence));
   expect(invocation.env.CODEBUDDY_API_KEY).toBe('buddy-key');
-  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('confined');
   expect(invocation.env.TEAMAI_MODE).toBe('unattended');
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });

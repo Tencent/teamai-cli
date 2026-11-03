@@ -61,7 +61,7 @@ describe('the workflow launch signal (#1176)', () => {
     expect(launchEnv(launch!)).toMatchObject({ TEAMAI_LAUNCHED_BY: 'workflow' });
     expect(readLaunch({ ...process.env, ...launchEnv(launch!) })).toEqual(launch);
     expect(readLaunch({ TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude' })).toBeUndefined();
-    expect(readLaunch({ ...launchEnv(launch!), TEAMAI_LAUNCHED_BY: 'scorer' })).toBeUndefined();
+    expect(readLaunch({ ...launchEnv(launch!), TEAMAI_LAUNCHED_BY: 'confined' })).toBeUndefined();
     expect(readLaunch(undefined)).toBeUndefined();
   });
 
@@ -125,7 +125,7 @@ describe('the source of a run mode (#1384)', () => {
 describe('who launched a session (#1384)', () => {
   it.each([
     [{ TEAMAI_LAUNCHED_BY: 'workflow' }, 'workflow'],
-    [{ TEAMAI_LAUNCHED_BY: 'scorer', TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' }, 'scorer'],
+    [{ TEAMAI_LAUNCHED_BY: 'confined', TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' }, 'confined'],
     [{ TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' }, 'workflow'],
     [{ TEAMAI_LAUNCHED_BY: '' }, undefined],
     [{}, undefined],

@@ -86,7 +86,7 @@ export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
  */
 export const RUN_DIR_ENV = 'TEAMAI_RUN_DIR';
 
-/** The variable that names who launched a tool's session: `workflow` for a step, `scorer` for a judge, or the {@link LaunchedBy} caller of one of teamai's own AI calls. */
+/** The variable that names who launched a tool's session: `workflow` for a step, `confined` for a run confined to a directory, or the {@link LaunchedBy} caller of one of teamai's own AI calls. */
 export const LAUNCHED_BY_ENV = 'TEAMAI_LAUNCHED_BY';
 
 /**
@@ -131,11 +131,11 @@ const ForwardedSessionRunSchema = z
 export const readSessionRun = ForwardedSessionRunSchema.parse;
 
 /**
- * Who in teamai launched a tool's session, as `TEAMAI_LAUNCHED_BY` carries it: a workflow step, a scorer judge, or the
+ * Who in teamai launched a tool's session, as `TEAMAI_LAUNCHED_BY` carries it: a workflow step, a run confined to a directory, or the
  * module whose AI call started it.
  */
 export type LaunchedBy =
-  | 'workflow' | 'scorer'
+  | 'workflow' | 'confined'
   | 'codebase' | 'deep-enrich' | 'enrich-with-ai' | 'import-local' | 'iwiki-dual' | 'import-mr' | 'recall-promote' | 'quality-update' | 'votes-judge';
 
 /** A tool launched by a workflow step, in the checkout whose pull record has key `checkout`. */

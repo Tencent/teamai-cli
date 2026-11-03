@@ -76,6 +76,8 @@ fs.writeFileSync(args[args.indexOf('-o')+1], JSON.stringify({ verdict: 'fixed' }
   const readable = Object.entries(z.object({ permissions: z.object({ judge: z.object({ filesystem: z.record(z.string(), z.string()) }) }) }).parse(parseToml(invocation.profile ?? '')).permissions.judge.filesystem).filter(([, access]) => access === 'read').map(([at]) => at);
   expect(readable).toEqual([':minimal', dir]);
   expect(invocation.stdin).toContain('Say whether the fix landed.');
+  // A confined step is any step's prompt, so what the launch adds names no rubric or evidence.
+  expect(invocation.stdin.replace('Say whether the fix landed.', '')).not.toMatch(/rubric|evidence/i);
   expect(invocation.args).toContain('--output-schema');
   expect(await listing()).toEqual(['transcript.md']);
 });
@@ -122,7 +124,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { verdict: 'fixe
   const { env } = Invocation.parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(Object.values(env)).not.toEqual(expect.arrayContaining([expect.stringMatching(/team-secret|team-loaded-key|member-gh-token|member-shell-secret/)]));
   expect(Object.keys(env).filter((key) => key.startsWith('__TEAMAI_ENV_') || key === 'TEAMAI_LAUNCHED_TOOL')).toEqual([]);
-  expect(env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(env.TEAMAI_LAUNCHED_BY).toBe('confined');
 });
 
 it('refuses a verified run on a tool that cannot reach verified, without starting it', async () => {

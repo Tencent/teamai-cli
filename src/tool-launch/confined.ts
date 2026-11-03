@@ -18,7 +18,7 @@ import { execCommand, probeBinary } from '../utils/exec.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 import { JsonValueSchema, type JsonValue } from '../types.js';
 import type { JudgeUsage } from '../scorers/label.js';
-import type { Isolation, JudgeAccess } from './confined-level.js';
+import type { ConfinedLevel, ConfinedAccess } from './confined-level.js';
 import { LAUNCH_ADAPTERS, type CallLaunch, type ConfinedLaunch } from './adapters.js';
 import { runTool, type ToolRun } from './run.js';
 import { toolStdout, type TokenUsage } from './stdout.js';
@@ -36,7 +36,7 @@ const COMMON_ENV = ['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'S
 const CODEX_DISABLED = ['hooks', 'plugins', 'apps', 'browser_use', 'computer_use', 'multi_agent', 'multi_agent_v2'];
 
 // Claude reads the prompt as a system prompt file, so its user turn only asks for the reply.
-const REQUEST = 'Apply the rubric to the evidence. Return only the requested JSON answer.\n';
+const REQUEST = 'Answer from the files in this directory alone. Return only the requested JSON answer.\n';
 
 type ToolLookup = { resolveTool?: (tool: string) => string | null };
 
@@ -56,18 +56,18 @@ function profileOf(tool: ConfinedTool): ConfinedLaunch {
 }
 
 /** What `tool`, run confined, can do beyond answering, by its adapter's profile. */
-export function confinedAccess(tool: ConfinedTool): JudgeAccess {
+export function confinedAccess(tool: ConfinedTool): ConfinedAccess {
   return profileOf(tool).access;
 }
 
-function profileIsolation(tool: ConfinedTool, version: string, isInsideCheckout: boolean): Isolation {
+function profileIsolation(tool: ConfinedTool, version: string, isInsideCheckout: boolean): ConfinedLevel {
   return profileOf(tool).verified?.test(version) && !isInsideCheckout ? 'verified' : 'best-effort';
 }
 
 export interface ConfinedToolLevel {
   tool: ConfinedTool;
   version: string;
-  isolation: Isolation;
+  isolation: ConfinedLevel;
 }
 
 /** The version of `tool` and the level its confined profile reaches on this machine; undefined when it is not on PATH. */
@@ -90,8 +90,8 @@ export async function confinedToolLevels({ resolveTool = resolveCliPath }: ToolL
 
 /** Tools this machine runs confined at `level`, all with `access`, in launch-tool order. */
 export interface ConfinedOffer {
-  level: Isolation;
-  access: JudgeAccess;
+  level: ConfinedLevel;
+  access: ConfinedAccess;
   tools: [ConfinedTool, ...ConfinedTool[]];
 }
 
@@ -125,7 +125,7 @@ export interface ConfinedInput {
   /** The JSON Schema the reply must follow, which tools that take one enforce. */
   schema?: JsonValue;
   /** The least level the run must reach; a tool that cannot reach it does not run. */
-  level: Isolation;
+  level: ConfinedLevel;
   timeoutMs: number;
   /** The directory the tool's process group is recorded in, where `stopRecordedGroup` finds it if its caller dies. */
   group?: string;
@@ -137,8 +137,8 @@ export interface ConfinedRun {
   tool: ConfinedTool;
   model?: ObservedModel;
   effort?: ObservedEffort;
-  isolation: Isolation;
-  access: JudgeAccess;
+  isolation: ConfinedLevel;
+  access: ConfinedAccess;
   usage?: JudgeUsage;
 }
 
@@ -170,7 +170,7 @@ function confinedEnv(tool: ConfinedTool): NodeJS.ProcessEnv {
   if (variable !== undefined && moved !== null) env[variable] = moved;
 
   if (tool === 'agy') Object.assign(env, agyGatewayEnv(restored));
-  env[LAUNCHED_BY_ENV] = 'scorer';
+  env[LAUNCHED_BY_ENV] = 'confined';
   env[RUN_MODE_ENV] = resolveRunMode(process.env);
 
   return env;
@@ -496,7 +496,7 @@ const REPLIES = {
 } satisfies { [F in Family]: (stdout: string, tmp: string) => Promise<JsonValue | undefined> };
 
 /** The level `context`'s tool reaches here, or why it does not reach `context.input.level`. */
-async function levelReached({ input, executable, dir, cwd, env, tmp }: LaunchContext): Promise<{ ok: true; isolation: Isolation } | ConfinedFailure> {
+async function levelReached({ input, executable, dir, cwd, env, tmp }: LaunchContext): Promise<{ ok: true; isolation: ConfinedLevel } | ConfinedFailure> {
   const version = await probeBinary(executable, ['--version'], (command, args, options) => execCommand(command, args, { ...options, env, cwd: tmp }));
   const checkout = launchAdapterIdOf(input.tool) === 'opencode' && await insideCheckout(cwd);
   const isolation = version ? profileIsolation(input.tool, version, checkout) : 'best-effort';
@@ -519,7 +519,7 @@ function reportedError(family: Family, run: ToolRun): string {
 }
 
 /** What ran, as far as the run showed it. A model or effort it did not observe stays undefined, which the JSON leaves out. */
-function ranOn(input: ConfinedInput, launch: Launch, run: ToolRun, isolation: Isolation): ConfinedRun {
+function ranOn(input: ConfinedInput, launch: Launch, run: ToolRun, isolation: ConfinedLevel): ConfinedRun {
   const model = observedModel({ requested: input.model?.name ?? launch.configuredModel, reported: toolStdout(launchAdapterIdOf(input.tool), run.stdout)?.model });
   const effort = observedEffort({ requested: input.model?.effort });
 
@@ -527,7 +527,7 @@ function ranOn(input: ConfinedInput, launch: Launch, run: ToolRun, isolation: Is
 }
 
 /** What a finished run gave: the error the tool reported, its exit code, or its reply. */
-async function outcomeOf({ input, tmp }: LaunchContext, launch: Launch, run: ToolRun, isolation: Isolation): Promise<ConfinedResult> {
+async function outcomeOf({ input, tmp }: LaunchContext, launch: Launch, run: ToolRun, isolation: ConfinedLevel): Promise<ConfinedResult> {
   const family = launchAdapterIdOf(input.tool);
   const raw = rawOf(run);
   const spent = spendOf(family, run.stdout);
