@@ -923,22 +923,13 @@ export function pollRow(state: SkillState, input: { session: string | undefined;
   return { row: 'D21' };
 }
 
-/** C1: the command of `attempt` runs in its prepared place. */
-export function preparedRow(state: SkillState, attempt: AttemptId): Moved<'C1'> | undefined {
-  const open = openAttempt(state, attempt);
+/** `row` C1: the command of `attempt` runs in its prepared place; C12: its confined run starts. */
+export function preparedRow<TRow extends 'C1' | 'C12'>(state: SkillState, input: { attempt: AttemptId; row: TRow }): Moved<TRow> | undefined {
+  const open = openAttempt(state, input.attempt);
 
   if (open?.phase !== 'preparing') return undefined;
 
-  return { row: 'C1', state: withAttempt(state, { ...open, phase: 'running' }) };
-}
-
-/** C12: the runner starts the confined run of `attempt`. */
-export function confinedRunRow(state: SkillState, attempt: AttemptId): Moved<'C12'> | undefined {
-  const open = openAttempt(state, attempt);
-
-  if (open?.phase !== 'preparing') return undefined;
-
-  return { row: 'C12', state: withAttempt(state, { ...open, phase: 'running' }) };
+  return { row: input.row, state: withAttempt(state, { ...open, phase: 'running' }) };
 }
 
 /** C13: the confined run of `attempt` ended, and `body` reports it. */

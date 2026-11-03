@@ -29,7 +29,7 @@ import { reportLiteral, runnerArgs } from './literals.js';
 import { readJob, type Job } from './job.js';
 import { applyEffects, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS } from './tick.js';
 import {
-  confinedEndedRow, confinedRunRow, exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
+  confinedEndedRow, exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
 } from './transitions.js';
 import type { Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
@@ -325,7 +325,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
     if (!scoped.ok) return failed(scoped.failure, 'place');
     // A runner that restarts a command already running starts it again in the place it was prepared in.
-    const running = open.phase === 'preparing' ? traced(context, preparedRow(state, attempt))?.state ?? state : state;
+    const running = open.phase === 'preparing' ? traced(context, preparedRow(state, { attempt, row: 'C1' }))?.state ?? state : state;
     await writeSkillState(context.config, lock, running, context.env.secrets);
 
     const stage: Stage = { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, mode: state.options.mode };
@@ -339,7 +339,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   // While this machine judges the run, its confined tool runs the step here, as the local driver does (C12).
   if (confined && state.judging) {
-    const running = open.phase === 'preparing' ? traced(context, confinedRunRow(state, attempt))?.state ?? state : state;
+    const running = open.phase === 'preparing' ? traced(context, preparedRow(state, { attempt, row: 'C12' }))?.state ?? state : state;
     await writeSkillState(context.config, lock, running, context.env.secrets);
     const stage: Stage = { kind: 'confined', lease: { ...lease, confined } };
 
