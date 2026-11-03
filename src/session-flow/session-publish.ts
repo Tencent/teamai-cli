@@ -165,7 +165,7 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
   const published: StepSessionsPublished[] = [];
 
   for (const { run, passes } of await unrecordedSteps(config, mode)) {
-    const checkout = run.checkout ?? SessionWork.leaseCwd(config);
+    const checkout = run.checkout ?? SessionWork.scopeCwd(config);
     const toolRoots = recordedToolRoots(checkout);
     const refs = new Map<string, ArchiveSessionRef>();
     const skipped: StepSessionsPublished['skipped'] = [];

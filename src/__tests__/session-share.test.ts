@@ -14,6 +14,7 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { SessionWork } from '../session-flow/session-work.js';
+import { markFacts } from '../scorers/score-plan.js';
 import { SessionShare } from '../session-share.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 
@@ -96,7 +97,7 @@ describe('the session share offer', () => {
 
   it('leaves out a scorer this session already has a label of', async () => {
     const config = await member({ scorers: { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n') } });
-    const [sampled] = await SessionWork.sampledScorers(config, { platform: 'claude-code', sessionId: SESSION }, NOW);
+    const [sampled] = await SessionWork.sampledScorers(config, { platform: 'claude-code', sessionId: SESSION }, markFacts(config, NOW));
     await LabelStore.append(config, [{ label: {
       scorer: 'review-quality', rubric: { sourceHash: sampled?.pin.sourceHash ?? '' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: SESSION },

@@ -308,7 +308,7 @@ async function hasWork(config: LocalConfig, now: string): Promise<boolean> {
  * already works on this data home is answered instead, so two passes never archive one session twice.
  */
 async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start'>; mode: RunMode }): Promise<FinishedStart> {
-  const cwd = SessionWork.leaseCwd(config);
+  const cwd = SessionWork.scopeCwd(config);
   const working = await workingRun(config, Date.now());
 
   if (working) return { kind: 'working', run: working, cwd };

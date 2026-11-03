@@ -11,7 +11,8 @@ import { installedConfinedTools } from './tool-launch/confined.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
-import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
+import { SessionWork, type SessionScorer } from './session-flow/session-work.js';
+import { markFacts } from './scorers/score-plan.js';
 import { getDataHome, type LocalConfig, type SessionShareOffered } from './types.js';
 import { nestedStart } from './workflow/attempt-marker.js';
 import { loadWorkflowTree, resolveStart } from './workflow/cache.js';
@@ -81,17 +82,17 @@ function filesOf(sources: readonly string[]): string {
  * The open scorers of `sampled`, without those whose required isolation is verified when `judge` is the session's
  * agent, which judges only best-effort. `judge` is asked only when a scorer needs verified isolation.
  */
-function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
-  const verifiedBy = (one: SampledScorer) => {
+function scorersProposal(sampled: readonly SessionScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
+  const verifiedBy = (one: SessionScorer) => {
     const required = requiredIsolation([...team, { source: scorerIsolationSource(one.scorer, one.pin.relativePath), value: one.definition.isolation }]);
 
     return required.level === 'verified' && judge() === 'driver' ? required.setBy : undefined;
   };
 
-  const proposed: SampledScorer[] = [];
+  const proposed: SessionScorer[] = [];
   const leftOut = new Map<string, { sources: readonly string[]; scorers: string[] }>();
 
-  for (const one of sampled.filter(({ state }) => state.kind === 'open')) {
+  for (const one of sampled) {
     const sources = verifiedBy(one);
 
     if (sources === undefined) {
@@ -111,7 +112,7 @@ function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { j
 }
 
 /** That `proposed`, one scorer or more, sample this session, with their sampling rates. */
-function samplingWhy(proposed: readonly SampledScorer[]): string {
+function samplingWhy(proposed: readonly SessionScorer[]): string {
   const [only, ...more] = proposed;
 
   if (only !== undefined && more.length === 0) return `${only.scorer} samples this session (samplingRate ${only.definition.samplingRate}).`;
@@ -176,7 +177,7 @@ async function propose(
 
   switch (policy.policy) {
     case 'ask': {
-      const sampled = await SessionWork.sampledScorers(config, { platform, sessionId }, now);
+      const sampled = await SessionWork.sampledScorers(config, { platform, sessionId }, markFacts(config, now));
 
       return { session, source, publish, judge, scorers: scorersProposal(sampled, { judge: () => judge().value, team: scoring.isolation }) };
     }
