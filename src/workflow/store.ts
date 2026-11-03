@@ -250,6 +250,9 @@ const RunProgressSchema = z.object({
     outcome: z.enum(['succeeded', 'failed', 'cancelled']), end: z.string().optional(), failure: FailureSchema.optional(), since: z.string(), until: z.string(),
   }).optional(),
   timeout: z.number().int().positive().optional(),
+  driveOptions: z.object({
+    tools: z.record(z.string(), z.string()).optional(), autoApprove: z.literal(true).optional(), sandbox: z.literal(true).optional(),
+  }).optional(),
 });
 
 export async function readRun(config: LocalConfig, runId: string): Promise<RunState | 'missing' | 'corrupt'> {

@@ -33,14 +33,14 @@ import {
   type LocalToolResult,
   type LocalToolRun,
 } from './local-tool-adapter.js';
-import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
+import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
-import type { DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
+import type { DriveOptions, DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
 import { isWorkflowError, stepWorkflow, WORKSPACE_MODES } from '../../types.js';
 import { contractClone, type SessionRef } from '../../workspace.js';
 import { headCommit } from '../../worktree.js';
@@ -119,6 +119,7 @@ const WaitReplySchema = z.object({
   delivering: z.array(z.unknown()).optional().catch(undefined),
   judging: z.number().optional().catch(undefined),
   reason: z.string().optional().catch(undefined),
+  held: z.array(z.object({ missing: z.array(z.string()) })).optional().catch(undefined),
 }).catch({});
 
 async function askHitl(hitl: LocalHitl, signal: AbortSignal): Promise<string> {
@@ -776,11 +777,55 @@ async function removeGitLocks(gitDir: string): Promise<void> {
   await Promise.all(locks.map((lock) => fs.rm(lock, { force: true })));
 }
 
-async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
+/**
+ * The flags a drive runs with: those `given`, over the ones the run `remembered` from this install's last drive, a
+ * `--tools` name at a time. A flag left out keeps what the run remembers.
+ */
+function drivenWith(given: Pick<LocalDriverOptions, 'tools' | 'autoApprove' | 'sandbox'>, remembered: DriveOptions | undefined): DriveOptions {
+  const driven: DriveOptions = {};
+  const tools = { ...remembered?.tools, ...given.tools };
+
+  if (Object.keys(tools).length > 0) driven.tools = tools;
+
+  if (given.autoApprove ?? remembered?.autoApprove) driven.autoApprove = true;
+
+  if (given.sandbox ?? remembered?.sandbox) driven.sandbox = true;
+
+  return driven;
+}
+
+/**
+ * `given` over what run `run` remembers, which the run then remembers for the next drive, so a resume without flags
+ * drives the run as this one does. Answers the error when the run file could not be written.
+ */
+async function rememberDrive(config: LocalConfig, run: RunState, given: LocalDriverOptions): Promise<LocalDriverOptions | { error: WorkflowFailure }> {
+  const driven = drivenWith(given, run.driveOptions);
+  // Neither given nor remembered, auto-approve stays unset, so the member's workflows.auto_approve decides.
+  const options = { ...given, tools: driven.tools ?? {}, autoApprove: given.autoApprove ?? run.driveOptions?.autoApprove, sandbox: driven.sandbox === true };
+
+  if (JSON.stringify(driven) === JSON.stringify(run.driveOptions ?? {})) return options;
+
+  const written = await updateRun(config, run.id, await knownSecrets(config), async (stored) => ({
+    value: undefined,
+    write: stored === 'missing' ? undefined : { ...stored, driveOptions: driven },
+  }));
+
+  if (written.status === 'busy') return { error: { code: 'busy', message: `Run ${run.id} is locked by another process, so it was not driven. Resume it again: teamai workflow resume ${run.id}` } };
+
+  if (written.status === 'corrupt') return { error: { code: 'run_unreadable', message: `Run ${run.id} could not be read` } };
+
+  return options;
+}
+
+async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: LocalDriverOptions): Promise<WorkflowEnvelope> {
   const runId = lock.run;
   const started = await readRun(config, runId);
   // Places go under the checkout the run started from, wherever in it the driver runs.
   const isStarted = started !== 'missing' && started !== 'corrupt';
+  const remembered = isStarted ? await rememberDrive(config, started, given) : given;
+
+  if ('error' in remembered) return remembered;
+  const options = remembered;
   const root = await placeRoot({ cwd, checkout: isStarted ? started.checkout : undefined });
   const unreconciled = await reconcileTakenCopies(config, runId, root);
 
@@ -1069,14 +1114,20 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
           const ends = deadlineSignal(run !== 'missing' && run !== 'corrupt' ? runDeadline(run) : undefined);
           const judging = await runHere((signal) => judgeRunEntries(config, runId, cwd, AbortSignal.any([signal, ends])));
 
-          if (signalled) return { error: { code: 'interrupted', message: `Stopped while the judges of run ${runId} ran. Continue with teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}.` } };
+          if (signalled) return { error: { code: 'interrupted', message: `Stopped while the judges of run ${runId} ran. Continue with teamai workflow resume ${runId}.` } };
 
           if (judging.kind === 'settled' || judging.kind === 'stopped') continue;
 
           if (judging.kind === 'skipped') log.info(judging.message);
         }
 
-        return { error: { code: 'busy', message: wait.reason ?? 'the next step is not available' } };
+        const reason = wait.reason ?? 'the next step is not available';
+        // A run claimed from another machine does not bring its --sandbox along: say which flag declares it here.
+        const needsSandbox = !isSandbox(config, options) && wait.held?.some(({ missing }) => missing.includes('isolation')) === true;
+
+        return { error: { code: 'busy', message: needsSandbox
+          ? `${reason}. If this machine is a disposable host, such as a CI runner or a container, declare it a sandbox: teamai workflow resume ${runId} --sandbox, or workflows.sandbox: true in config`
+          : reason } };
       }
 
       let timer: NodeJS.Timeout | undefined;

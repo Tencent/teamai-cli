@@ -102,6 +102,16 @@ async function explainFailedSteps(config: LocalConfig, runId: string, secrets: R
     if (!isolated) log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
   }
 
+  // A limit of the whole run, such as its timeout or token budget, fails no step: it stops the steps still running.
+  const { failure } = run;
+
+  if (failedIds.length === 0 && failure) {
+    log.error(redact(`Run ${runId} failed with ${failure.code}: ${failure.message}`, { envSecrets: secrets, patterns: false }));
+    const stopped = isolated ? [] : run.steps.filter((step) => step.status === 'cancelled' && step.failure?.code === failure.code);
+
+    for (const step of stopped) log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
+  }
+
   // An isolated run refuses a retry: what it admitted or measured would change.
   if (isolated) log.info(`Run ${runId} is isolated, so its steps do not run again. Start a new run: ${restartCommand(run)}`);
 }
@@ -420,7 +430,7 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
 
   const runId = startedRun.data;
 
-  log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}`);
+  log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
   const driven = await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
   await writeDriven(config, driven, secrets);
 

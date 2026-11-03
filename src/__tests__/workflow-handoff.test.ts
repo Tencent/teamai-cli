@@ -446,6 +446,21 @@ describe('workflow handoff through teamai-reports', () => {
     });
   });
 
+  it('leaves the flags a run was driven with on the install that gave them: a claim starts without them, and taking it back keeps them', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await start(alice);
+    const flags = { tools: { default: 'claude' }, autoApprove: true, sandbox: true } as const;
+    expect(await runLocalDriver(alice.config, runId, alice.checkout, { hitl: false, ...flags })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+    expect(await readRun(bob.config, runId)).not.toHaveProperty('driveOptions');
+    expect(await claimRun(alice.config, runId, { checkout: alice.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    expect(await readRun(alice.config, runId)).toMatchObject({ driveOptions: flags });
+  });
+
   it('names the owner by the team username, as the run records do', async () => {
     const acme = team();
     const alice = await acme.member('alice');
@@ -2897,6 +2912,27 @@ steps:
     }]);
     const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'attended' as const }, driver: 'skill' as const, hasPerson: true };
     expect((await publishedRuns(runner, skill))[0]?.offer?.lacks).toEqual([]);
+  });
+
+  it('names one --tools default=<tool> for every prompt step left with no tool configured here, whichever agent each runs', async () => {
+    vi.stubEnv('TEAMAI_AI_TOOL', '');
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const acme = team({ docs: `${DOCS}    agent: writer
+  - id: review
+    needs: [notes]
+    agent: reviewer
+    prompt: Review the release notes.
+` });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'docs', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect((await publishedRuns(runner))[0]?.offer?.lacks).toEqual([{
+      reason: 'no tool is configured here for the prompt steps notes and review', fix: 'pass --tools default=<tool>, or set workflows.tools.default',
+    }]);
   });
 
   it('lets a runner with no agent session take an offered run of an invoke: deny workflow, and refuses it to the skill driver', async () => {

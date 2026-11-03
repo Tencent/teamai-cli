@@ -194,8 +194,11 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
       byChoice.set(key, { ...group, prompts: [...group.prompts, run] });
     }
 
-    return [...byChoice.values()].flatMap(({ agent, tool, prompts }): Lack[] => {
-      const steps = `the prompt step${prompts.length > 1 ? 's' : ''} ${listOf(prompts.map((run) => run.step))}`;
+    // A step with no tool configured for its agent falls back to --tools default, so one default covers them all.
+    const unconfigured: StepRun[] = [];
+
+    const lacks = [...byChoice.values()].flatMap(({ agent, tool, prompts }): Lack[] => {
+      const steps = promptSteps(prompts);
       const flag = agent === undefined ? 'default' : agent;
       const choice = launchToolFor({ agent, tool }, config, flags, members);
 
@@ -207,7 +210,9 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
       }
 
       if (choice.failure.code === 'tool_unconfigured') {
-        return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
+        unconfigured.push(...prompts);
+
+        return [];
       }
 
       const fix = tool === undefined
@@ -216,7 +221,16 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
 
       return [{ reason: `${steps} ${prompts.length > 1 ? 'have' : 'has'} no tool teamai launches here (${choice.failure.message.replace(/\.$/, '')})`, fix }];
     });
+
+    if (unconfigured.length === 0) return lacks;
+
+    return [{ reason: `no tool is configured here for ${promptSteps(unconfigured)}`, fix: 'pass --tools default=<tool>, or set workflows.tools.default' }, ...lacks];
   };
+}
+
+/** `runs` as a clause: "the prompt step a" or "the prompt steps a and b". */
+function promptSteps(runs: readonly StepRun[]): string {
+  return `the prompt step${runs.length > 1 ? 's' : ''} ${listOf(runs.map((run) => run.step))}`;
 }
 
 /** What `runs` require of env that `env` cannot give here: a key with no value, or any key while the team env is unreadable. */

@@ -464,6 +464,8 @@ export interface RunState {
   base?: { ref?: string; commit: string };
   /** The checkout `workflow start` ran in, or the one a claim took the run into. Local run state only: never on a lease or a record. */
   checkout?: string;
+  /** How the local driver of this install last drove the run, which a resume without those flags drives it with again. Local run state only. */
+  driveOptions?: DriveOptions;
   /**
    * Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. A copy a
    * claim brought from another machine has no owner until a driver leases it. `from` is the run branch the copy started
@@ -511,6 +513,16 @@ export interface AdmittedWorkflow {
   hash: string;
   field: string;
   definition: WorkflowDefinition;
+}
+
+/**
+ * The flags `workflow start --driver local` or `workflow resume` drove a run with on this install: `--tools`, by name,
+ * `--auto-approve` and `--sandbox`. They describe this install, so a claim on another machine starts without them.
+ */
+export interface DriveOptions {
+  tools?: Record<string, string>;
+  autoApprove?: true;
+  sandbox?: true;
 }
 
 /** What this machine knows of the run's snapshot on `teamai-reports`. */

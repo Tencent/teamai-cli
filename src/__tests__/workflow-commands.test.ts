@@ -23,8 +23,8 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { startRun } from '../workflow/engine.js';
 import { publishRun } from '../workflow/handoff.js';
-import { driverLockPath, readRun } from '../workflow/store.js';
-import { workflowNext, workflowPublish, workflowReport, workflowResume, workflowStart } from '../workflow-commands.js';
+import { driverLockPath, readRun, runFilePath } from '../workflow/store.js';
+import { workflowNext, workflowPublish, workflowReport, workflowResume, workflowRetry, workflowStart } from '../workflow-commands.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { knownSecrets } from '../env-resolution.js';
 import { skillHarness } from './helpers/skill-harness.js';
@@ -427,6 +427,35 @@ steps:
     expect(printed.filter((line) => line.includes('teamai workflow retry'))).toEqual([]);
   });
 
+  it('says why the run failed and how to retry the step it stopped when a limit of the whole run stopped it', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'slow.yaml'), `schemaVersion: v1alpha1
+name: slow
+description: One step slower than the run may take.
+timeout: 1s
+steps:
+  - id: wait
+    command: node -e "setTimeout(() => {}, 10000)"
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('slow', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    expect(printed).toContainEqual(expect.stringMatching(new RegExp(`Run ${runId} failed with timeout: `)));
+    expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} wait, then continue the run with teamai workflow resume ${runId}`));
+  });
+
   it('names the item that failed, not the fan-out step that failed because of it', async () => {
     const config = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1
@@ -753,5 +782,108 @@ steps:
     expect(await capture(() => workflowNext(locked, claim))).toMatchObject({ data: { wait: { reason: 'claimed' } } });
     expect(next.mock.calls.map(([, run, , options]) => [run, options?.claim])).toEqual([[open, true], [locked, true]]);
     expect(await readRun(config, locked)).toMatchObject({ steps: [{ id: 'one', status: 'pending' }] });
+  });
+});
+
+describe('a run remembers how workflow start --driver local started it', () => {
+  /** Starts `name` from `yaml` with the local driver and `options`, and answers its run, the config and what stderr printed. */
+  async function started(name: string, yaml: string, options: Parameters<typeof workflowStart>[1]): Promise<{ config: LocalConfig; runId: string; printed: string[] }> {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${name}.yaml`), yaml);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-launch-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+    const answer = await capture(() => workflowStart(name, { driver: 'local', ...options }));
+    const done = answer.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    if (runId === '') throw new Error(JSON.stringify(answer));
+    return { config, runId, printed };
+  }
+
+  const review = `schemaVersion: v1alpha1
+name: review
+description: One prompt.
+steps:
+  - id: review
+    prompt: Review this project.
+`;
+
+  it('runs a retried prompt step on the tools the start named, unless --tools on resume names another', async () => {
+    const { config, runId } = await started('review', review, { tools: 'default=notatool' });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'review', status: 'failed', failure: { code: 'tool_unsupported', message: expect.stringContaining('"notatool"') } }] });
+
+    expect(await capture(() => workflowRetry(runId, 'review'))).toMatchObject({ data: { resume: `teamai workflow resume ${runId}` } });
+    expect(await capture(() => workflowResume(runId, {}))).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'review', pass: 2, status: 'failed', failure: { code: 'tool_unsupported', message: expect.stringContaining('"notatool"') } }] });
+
+    await capture(() => workflowRetry(runId, 'review'));
+    expect(await capture(() => workflowResume(runId, { tools: 'default=othertool' }))).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'review', pass: 3, failure: { message: expect.stringContaining('"othertool"') } }] });
+  });
+
+  const ship = `schemaVersion: v1alpha1
+name: ship
+description: Build, then ship once someone approves.
+steps:
+  - id: build
+    command: node -e "require('fs').statSync('built')"
+  - id: ship
+    needs: [build]
+    approve: { message: Ship it? }
+    command: node -e "require('fs').writeFileSync('shipped', '')"
+`;
+
+  it('answers an approval a retried step reaches with --auto-approve from the start, until resume --no-auto-approve', async () => {
+    const { runId } = await started('ship', ship, { autoApprove: true });
+    const work = process.cwd();
+    fs.writeFileSync(path.join(work, 'built'), '');
+
+    await capture(() => workflowRetry(runId, 'build'));
+    expect(await capture(() => workflowResume(runId, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.existsSync(path.join(work, 'shipped'))).toBe(true);
+
+    // Nobody answers here, so without auto-approve the optional approval is answered no and ship never runs.
+    const second = await started('ship', ship, { autoApprove: true });
+    fs.writeFileSync(path.join(process.cwd(), 'built'), '');
+    await capture(() => workflowRetry(second.runId, 'build'));
+    expect(await capture(() => workflowResume(second.runId, { autoApprove: false }))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(second.config, second.runId)).toMatchObject({ steps: [{ id: 'build', status: 'succeeded' }, { id: 'ship', status: 'skipped', answer: { choice: 'no' } }] });
+    expect(fs.existsSync(path.join(process.cwd(), 'shipped'))).toBe(false);
+  });
+
+  const sealed = `schemaVersion: v1alpha1
+name: sealed
+description: A build that runs only on a sandbox.
+steps:
+  - id: build
+    requires: { isolation: sandbox, strict: true }
+    command: node -e "require('fs').statSync('built')"
+`;
+
+  it('keeps --sandbox for a resume on this install, so the resume the start prints works as printed', async () => {
+    const { config, runId, printed } = await started('sealed', sealed, { sandbox: true });
+    expect(printed).toContainEqual(expect.stringMatching(new RegExp(`continue it with: teamai workflow resume ${runId}$`)));
+    fs.writeFileSync(path.join(process.cwd(), 'built'), '');
+
+    await capture(() => workflowRetry(runId, 'build'));
+    expect(await capture(() => workflowResume(runId, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(config, runId)).toMatchObject({ driveOptions: { sandbox: true }, steps: [{ id: 'build', status: 'succeeded' }] });
+  });
+
+  it('names --sandbox when a copy of the run that does not remember it reaches a step that needs a sandbox', async () => {
+    const { config, runId } = await started('sealed', sealed, { sandbox: true });
+    // A claim installs the run without this install's flags, as here.
+    const file = runFilePath(config, runId);
+    const { driveOptions: _dropped, ...claimed } = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(file, JSON.stringify(claimed));
+    await capture(() => workflowRetry(runId, 'build'));
+
+    expect(await capture(() => workflowResume(runId, {}))).toEqual({ error: { code: 'busy', message: expect.stringContaining('--sandbox') } });
   });
 });
