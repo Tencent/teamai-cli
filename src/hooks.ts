@@ -3536,7 +3536,8 @@ export async function hasTeamaiHooks(
   const priorTeamCommands = new Set((manifest?.[tool] ?? []).map((r) => r.command));
 
   const format = hookFormatOf(tool);
-  const events = hookEventsOf(await readJson<JsonValue>(expandHome(settingsPath)), format);
+  const settings = await readJsonObject(expandHome(settingsPath), hookSyntaxOf(tool));
+  const events = hookEventsOf(settings.kind === 'ok' && isJsonValue(settings.value) ? settings.value : null, format);
 
   if (!events) return false;
 

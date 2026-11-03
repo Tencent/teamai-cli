@@ -32,6 +32,15 @@ describe('hasTeamaiHooks', () => {
     expect(await hasTeamaiHooks(settingsPath, 'claude')).toBe(true);
   });
 
+  // CodeBuddy Code 2.179.1 reads settings.json with jsonc-parser; Claude Code refuses a comment.
+  it('reads a commented settings.json as the tool does', async () => {
+    const settingsPath = path.join(tmpDir, 'settings.json');
+    fs.writeFileSync(settingsPath, '{\n  // the member\'s note\n  "hooks": { "SessionStart": [{ "hooks": [{ "type": "command", "command": "teamai hook-dispatch" }], "description": "[teamai] hook-dispatch" },] },\n}\n');
+
+    expect(await hasTeamaiHooks(settingsPath, 'codebuddy')).toBe(true);
+    expect(await hasTeamaiHooks(settingsPath, 'claude')).toBe(false);
+  });
+
   it('returns false when file has only user hooks and manifest has stale record (P2#2 regression)', async () => {
     const settingsPath = path.join(tmpDir, 'settings.json');
     fs.writeFileSync(settingsPath, JSON.stringify({
