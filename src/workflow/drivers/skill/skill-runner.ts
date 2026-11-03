@@ -42,7 +42,7 @@ export function detachedRunners(config: LocalConfig): Runners {
       if (!entry) throw new Error('The teamai entry script is unknown, so the runner of a workflow step cannot start. Reinstall teamai.');
 
       const child = spawn(process.execPath, [entry, ...runnerArgs(run, attempt)], {
-        cwd: checkout, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ...attemptEnv(run, attempt, mode) },
+        cwd: checkout, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ...attemptEnv(config, run, attempt, mode) },
       });
 
       const failed = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => { child.once('spawn', () => resolve(undefined)).once('error', resolve); });
@@ -420,7 +420,7 @@ async function setUp(context: SkillContext, run: RunId, attempt: AttemptId, prep
  * stops it. Keeps its masked output in `output.log`, and answers with that masked `output`.
  */
 async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<CommandExit> {
-  const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt, stage.mode) } });
+  const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(context.config, run, attempt, stage.mode) } });
   const exited = (await whileOpen(context, run, attempt, { work: command.exit, phases: ['running'], expiresAt: stage.expiresAt })) ?? (await command.stop());
   const output = redact(exited.output, { envSecrets: context.env.secrets, patterns: false });
   await writeFileAtomic(path.join(attemptDir(context.config, run, attempt), 'output.log'), output);

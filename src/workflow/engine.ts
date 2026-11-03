@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
@@ -45,7 +46,7 @@ import {
   type Allow, type DriverCan, type EnvFacts, type Held, type InEffect, type Limit, type Negotiation, type ReportedUnenforced, type Terms, type TurnLimits,
 } from './requirements.js';
 import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
-import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutcomes, readRun, updateRun } from './store.js';
+import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutcomes, readRun, runScratchDir, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
 import { admitWorkflow, heldSecret, type Admitted } from './admission.js';
 import { workflowField } from './parse.js';
@@ -601,6 +602,7 @@ export async function finishRun(
 
   if (enterFinalizing(run, result, now)) return { kind: 'finalizing' };
   settleRun(run, now, result);
+  await fs.rm(runScratchDir(config, run.id), { recursive: true, force: true });
   const queued = await queueRunRecord(config, run, driver, 'end', secrets);
   run.endRecordQueued = queued;
 
@@ -1784,6 +1786,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     const older = missingNeeds(run);
 
     if (older) return { save: false, envelope: error('run_unreadable', older) };
+    // Made before any step it leases runs; a run a retry reopened gets it again.
+    await fs.mkdir(runScratchDir(config, run.id), { recursive: true });
 
     for (;;) {
       // Ends reached through reports, and deadlines passed, apply before an open lease is handed back, so a restarted

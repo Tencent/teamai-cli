@@ -62,6 +62,11 @@ export function driverLockPath(config: LocalConfig, runId: string): string {
   return path.join(runsDir(config), runId, 'driver.lock');
 }
 
+/** `runs/<run>/scratch/`: the directory a run's steps share as `$TEAMAI_RUN_DIR`, from its first lease until it ends. */
+export function runScratchDir(config: LocalConfig, run: string): string {
+  return path.join(runsDir(config), run, 'scratch');
+}
+
 /** `runs/<run>/attempts/`: a directory for each attempt of the run. */
 export function attemptsDir(config: LocalConfig, run: RunId): string {
   return path.join(runsDir(config), run, 'attempts');

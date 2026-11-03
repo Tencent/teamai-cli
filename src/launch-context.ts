@@ -80,6 +80,12 @@ export function resolveRunMode(env: NodeJS.ProcessEnv): RunMode {
  */
 export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
 
+/**
+ * The variable every process of a step gets: a directory of the root run under the data home, which its steps share,
+ * sub-workflows included, and which the engine removes when the run ends.
+ */
+export const RUN_DIR_ENV = 'TEAMAI_RUN_DIR';
+
 /** The variable that names who launched a tool's session: `workflow` for a step, `scorer` for a judge, or the {@link LaunchedBy} caller of one of teamai's own AI calls. */
 export const LAUNCHED_BY_ENV = 'TEAMAI_LAUNCHED_BY';
 

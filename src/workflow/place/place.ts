@@ -583,7 +583,7 @@ export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; at
   await markSetup(recorded.dir, 'unfinished');
   const settingUp: SettingUp = { ...baseOf(recorded), phase: 'setting-up' };
   await writePlaceRecord(config, settingUp);
-  const failure = await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(run, attempt, mode) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), expiresAt });
+  const failure = await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(config, run, attempt, mode) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), expiresAt });
 
   if (failure) return setupFailed(config, settingUp, failure);
   await markSetup(recorded.dir, 'finished');

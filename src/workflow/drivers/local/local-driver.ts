@@ -541,7 +541,7 @@ async function promptReport(
     cwd,
     resultPath: resultFile,
     // The lease `env` is set over the step's environment, as a command's is.
-    env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(lock.run, lease.attempt, mode) },
+    env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
   };
 
   if (launch) input.launch = launch;
@@ -992,7 +992,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
 
             // The lease `env` is set over the step's environment, so its values reach the shell only as variables.
             return startGroupedCommand({
-              command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(runId, lease.attempt, mode) }, detached, group: attemptDir(config, runId, lease.attempt),
+              command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, runId, lease.attempt, mode) }, detached, group: attemptDir(config, runId, lease.attempt),
             });
           },
         ) });

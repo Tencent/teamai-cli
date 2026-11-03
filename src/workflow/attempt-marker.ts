@@ -1,12 +1,13 @@
-import { ATTEMPT_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
+import { ATTEMPT_ENV, RUN_DIR_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
+import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { isRunId } from './store.js';
+import { isRunId, runScratchDir } from './store.js';
 import type { WorkflowFailure } from './types.js';
 import { git, worktreeCheckout } from './worktree.js';
 
-/** What every process of an attempt of `run` gets: the attempt marker, and the run's mode. */
-export function attemptEnv(run: string, attempt: string, mode: RunMode): Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV, string> {
-  return { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode };
+/** What every process of an attempt of `run` gets: the attempt marker, the run's mode, and the run's directory. */
+export function attemptEnv(config: LocalConfig, run: string, attempt: string, mode: RunMode): Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV | typeof RUN_DIR_ENV, string> {
+  return { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode, [RUN_DIR_ENV]: runScratchDir(config, run) };
 }
 
 /** Whether `env` marks its process as the runner of `attempt` of `run`. */
