@@ -18,7 +18,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
-import { ScoreVerbs, type ScoreVerbAnswer, type ScoreVerbContext } from '../score-verbs.js';
+import { ScoreVerbs, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext } from '../score-verbs.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { Marks } from '../scorers/marks.js';
 import type { JudgeRun } from '../scorers/score-labels.js';
@@ -447,10 +447,12 @@ interface Walk {
   readJudgeRun?: ScoreVerbContext['readJudgeRun'];
   inputs?: Record<string, unknown>;
   startedBy?: StartedBy;
+  /** What a step answers in place of its verb, by step id. */
+  fake?: Record<string, ScoreVerbAnswer>;
 }
 
 /** Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step path. */
-async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun = () => JUDGED, inputs = {}, startedBy = 'cli' }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer> }> {
+async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun = () => JUDGED, inputs = {}, startedBy = 'cli', fake = {} }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer> }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const answers = new Map<string, ScoreVerbAnswer>();
   const items = (index: string) => {
@@ -467,14 +469,14 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun 
     const [, index = '0', id = lease.step] = /^score\[(\d+)\]\.(.+)$/u.exec(lease.step) ?? [];
     const { item, dir } = items(index);
     const judged = answers.get(`score[${index}].judge`);
-    const answer: ScoreVerbAnswer = id === 'plan'
+    const answer: ScoreVerbAnswer = fake[id] ?? (id === 'plan'
       ? await ScoreVerbs.plan({ subject, scorers: JSON.stringify(inputs.scorers ?? []), label: String(inputs.label ?? ''), batch: String(inputs.batch ?? false), demand: String(inputs.demand ?? 'auto') }, taken.ctx)
       : id === 'evidence' ? await ScoreVerbs.evidence({ subject: item?.subject, scorers: item?.scorers }, taken.ctx)
         : id === 'check' || id === 'ci' || id === 'protected' ? await ScoreVerbs.stage({ stage: id, evidence: dir, wait: '2h' }, taken.ctx)
           : id === 'judge' ? (judge === 'failed' || judge === undefined ? { ok: false, code: 'judge_failed', message: 'The judge exited 1.' } : { ok: true, output: { answer: z.json().parse(judge.answer) } })
             : id === 'label' ? await ScoreVerbs.label({ evidence: dir, answer: judged?.ok ? JSON.stringify(judged.output.answer) : '', judge: judged === undefined ? '' : judged.ok ? 'success' : 'failed' }, taken.ctx)
               : id === 'write' ? await ScoreVerbs.write({ evidence: dir }, taken.ctx)
-                : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx);
+                : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
     answers.set(lease.step, answer);
     await run.report(taken, answer);
   }
@@ -614,5 +616,104 @@ describe('score subjects', () => {
     expect(await lapsed()).toEqual({ ok: true, output: { list: ['session:claude-code:one'] } });
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'passed' });
     expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${runId}:change:1`, 'session:claude-code:one'] } });
+  });
+});
+
+describe('score verbs refuse what they cannot act on', () => {
+  it.each<[string, PlanOptions, string]>([
+    ['a subject that is none', { subject: 'pass:1' }, 'subject_invalid'],
+    ['scorers that are neither JSON nor names', { scorers: '[1]' }, 'invalid_arguments'],
+    ['a demand that is neither auto nor named', { demand: 'now' }, 'invalid_arguments'],
+    ['a batch that is not a boolean', { batch: 'yes' }, 'invalid_arguments'],
+    ['a pass the run does not have', { subject: 'run:RUN:review:2' }, 'pass_not_found'],
+    ['a scorer the run did not pin', { scorers: '["tests"]' }, 'scorer_not_found'],
+  ])('plan refuses %s', async (_case, options, code) => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = (options.subject ?? 'run:RUN:review:1').replace('RUN', runId);
+    const { ctx } = await (await scoreRun(config, { subject: `run:${runId}:review:1` })).next('plan');
+
+    expect(await ScoreVerbs.plan({ scorers: '[]', label: '', batch: 'false', demand: 'auto', ...options, subject }, ctx)).toMatchObject({ ok: false, code });
+  });
+
+  it('plan batches the scorers of a step whose workflow sets defaults.scorers.batch', async () => {
+    const config = await team({ review: REVIEW.replace('steps:', 'defaults: { scorers: { batch: true } }\nsteps:') }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: '[]', label: '', batch: 'false', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
+  });
+
+  it('write refuses labels.json that is not what label wrote, and writes nothing', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['quality'] });
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    await run.report(evidence, written);
+    const judge = await run.next('score[0].judge');
+    await run.report(judge, { ok: true, output: { answer: { label: 'bad', reasoning: 'no' } } });
+    const label = await run.next('score[0].label');
+    const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+    await run.report(label, await ScoreVerbs.label({ evidence: dir, answer: '{"label":"bad","reasoning":"no"}', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED }));
+    const file = path.join(dir, 'labels.json');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"label":"bad","score":0,"passed":false', '"label":"good","score":0,"passed":false'));
+
+    expect(await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx)).toMatchObject({ ok: false, code: 'label_invalid', message: expect.stringContaining('"good" with score 0 is not a label of scorer quality') });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
+});
+
+/** A claude on PATH, which the stage-decided label names as the judge that would have run. */
+function claudeOnPath(): void {
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+}
+
+describe('labels a stage decided', () => {
+  const clarityOnly = SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]');
+
+  it('give the scorer\'s best failing label, decided by protected paths, with the judge that would have run', async () => {
+    const config = await team({ ship: clarityOnly }, { clarity: scorer() });
+    claudeOnPath();
+    const runId = await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' });
+    mocks.ci.mockResolvedValue({ kind: 'unsupported' });
+    const { answers } = await walk(config, `run:${runId}:change:1`);
+
+    expect(answers.has('score[0].judge')).toBe(false);
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: 'bad', code: '' }] } });
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'clarity', label: 'bad', passed: false, decidedBy: 'protected', judge: { kind: 'model', tool: 'claude', isolation: 'best-effort' } }]);
+  });
+
+  it('give ci_pending while CI has not finished, and leave the mark waiting for it', async () => {
+    const config = await team({ ship: clarityOnly }, { clarity: scorer() });
+    const runId = await deliveredRun(config);
+    mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
+    const { answers } = await walk(config, `run:${runId}:change:1`);
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: '', code: 'ci_pending' }] } });
+    expect(await Marks.states(config, [{ scorer: 'clarity', subject: { kind: 'run', subject: { runId, step: 'change', pass: 1 } } }], { now: NOW, readRun: async () => ({ ended: false, changedAt: NOW }) })).toEqual([{ kind: 'waiting' }]);
+  });
+
+  it('give check_could_not_run for a check that could not run', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[delivered]') }, { delivered: scorer({ extra: 'check: { run: "exit 127", protect: [test] }\n' }) });
+    const runId = await deliveredRun(config);
+    const { answers } = await walk(config, `run:${runId}:change:1`);
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'delivered', label: '', code: 'check_could_not_run' }] } });
+  });
+
+  it('refuse to label a scorer with a check whose check stage left no record, and settle it', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[delivered]') }, { delivered: scorer({ extra: 'check: { run: "exit 3", protect: [test] }\n' }) });
+    const runId = await deliveredRun(config);
+    mocks.ci.mockResolvedValue({ kind: 'unsupported' });
+    const { answers } = await walk(config, `run:${runId}:change:1`, { judge: { answer: { label: 'good', reasoning: 'ok' } }, fake: { check: { ok: true, output: { decided: false } } } });
+
+    expect(answers.get('score[0].label')).toMatchObject({ ok: false, code: 'stage_record_missing' });
+    expect(answers.get('score[0].settle')).toEqual({ ok: true, output: { settled: 1 } });
+    expect(await LabelStore.local(config)).toEqual([]);
   });
 });
