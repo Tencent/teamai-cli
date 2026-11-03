@@ -6,6 +6,7 @@ import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
+import type { PlanOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -1013,7 +1014,7 @@ benchmarkCmd
     await benchmarkCheck(cmdOpts);
   });
 
-program
+const scoreCmd = program
   .command('score')
   .description('Judge workflow passes with team scorers (scorers/<name>.md). Any driver takes judge work with --next, runs its own judge on the lease prompt with the lease evidence directory as its only readable root and settles it with --lease <ref> --submit, or judges it here with --lease <ref>. --run <id> --scorer <name> judges a pass on demand. A pass of a deliver: pr step is decided before any judge by the scorer\'s check, a failed CI on its pull request, or a protected-path refusal, and its label says which in decidedBy. --scorer <name> [--session <id>] judges a finished agent session here: the one --session names, or, inside a session, the one its agent session variable names; it never guesses. --team-session <name> judges a session a member pushed instead. --label <value> labels the session by hand instead of judging it. With --json, it leases that session to the driver\'s own judge instead. workflow next never hands out judge work, and a driver never lists a judge ref in workflow next running. Prints one JSON envelope; --drain prints lines.')
   .option('--next', 'Take judge work: workflow passes first, then finished sessions of each run mode whose scoring.sessions policy is auto (config.yaml, else scorers/scoring.yaml, which ~/.teamai/config.yaml can only make stricter; by default off attended, auto unattended). An attended session is finished 6 hours after its last activity, an unattended one once a score --drain reached it. A lease has ref, source (workflow or session), scorer, subject, evidence, prompt, answer.schema, expiresAt, the cwd to submit from and a submit command line; else idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live workflow lease of yours left out is handed back, and a session lease left out lapses: a session is judged once. A lease lapses 30 minutes after it was taken or renewed. Optional: run, a run id, to take only that run\'s workflow passes and never a session, from any directory, since the run\'s scope is found by its id; canTakeLease, false to renew running and take nothing, not even a lease handed back.')
@@ -1037,6 +1038,21 @@ program
   .action(async (cmdOpts: ScoreOptions) => {
     const { scoreCommand } = await import('./score-commands.js');
     await scoreCommand(cmdOpts);
+  });
+
+// The verbs a teamai-score run's steps call. `score` has --label, --run and --step too, and takes their values, so a verb
+// reads them with optsWithGlobals.
+scoreCmd
+  .command('plan')
+  .description('A step of a teamai-score run: sample each scorer on the subject, group the sampled ones that share a judge launch and take the same stages, and open their marks for the run. Prints {"groups":[{"subject","hand","scorers","model","ci","protected"}]}: empty when nothing is sampled, every scorer is judged or held, or past daily_limit for an auto demand. Refused outside a leased attempt of a teamai-score step.')
+  .option('--subject <subject>', 'run:<runId>:<step path>:<pass>, session:<source>:<sessionId> or team-session:<author>:<archive name>')
+  .option('--scorers <json>', 'A JSON array of scorer names; [] takes the scorers the pass\'s step pinned, or for a session every scorer with sessions: true')
+  .option('--label <value>', 'A hand label of the one scorer, honoured only in a run a person started; \'\' for none')
+  .option('--batch <bool>', 'true: the scorers share a judge launch where they can; false: as the step, the workflow\'s defaults.scorers.batch and scoring.yaml say')
+  .option('--demand <demand>', 'auto: sample, and stop at daily_limit; named: someone asked, so every scorer is taken, a closed mark opens again, and daily_limit counts it but never refuses it', 'auto')
+  .action(async (_cmdOpts, command: Command) => {
+    const { scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand('plan', command.optsWithGlobals<PlanOptions>());
   });
 
 // ─── Hooks commands ─────────────────────────────────────
