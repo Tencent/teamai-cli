@@ -267,6 +267,64 @@ steps:
     command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
 ```
 
+### 在一份副本里工作的工作流
+
+工作流头部的 `workspace: new` 表示它的步骤无论在哪里运行，都在同一份副本里工作。它适合既要单独运行、又要在另一个工作流的副本里运行的工作流，例如一个评审：修复它发现的问题，再评审修复：
+
+```yaml
+schemaVersion: v1alpha1
+name: review-and-fix
+description: Review the branch, fix what the review finds, and review the fix.
+invoke: allow
+workspace: new
+steps:
+  - id: review
+    workspace: read-only
+    prompt: Review the change on this branch against main, and list what must change.
+    output: { verdict: pass | fix, findings: [string] }
+  - id: fix
+    needs: [review]
+    if: steps.review.outputs.verdict == 'fix'
+    prompt: "Fix these findings: {{ steps.review.outputs.findings }}"
+    loop: { back_to: review, max_iterations: 3 }
+```
+
+单独启动时，运行在 `teamai/<run>/_run` 上打开这份副本。`review` 读取它，`fix` 提交到它，下一次 `review` 能看到修复。你的检出目录不会改变。运行结束时会给出这条分支：
+
+```text
+$ teamai workflow start review-and-fix --driver local --tools default=claude
+ℹ Run r3f9a1c27d4e8b605 started. If it stops before it ends, continue it with: teamai workflow resume r3f9a1c27d4e8b605
+{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded"}}}
+ℹ Run r3f9a1c27d4e8b605 left its changes on branch teamai/r3f9a1c27d4e8b605/_run. Bring them in with: git merge teamai/r3f9a1c27d4e8b605/_run
+```
+
+由一个有副本、或者位于副本里的步骤运行时，它的步骤沿用那份副本，不再打开别的副本。下面的 `fix` 提交到 `change` 的分支 `teamai/<run>/change/p1`，拉取请求里既有改动，也有对它的修复：
+
+```yaml
+schemaVersion: v1alpha1
+name: ship-reviewed
+description: Implement an issue, review and fix it, and deliver it for review.
+inputs: { issue: number }
+steps:
+  - id: change
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: implement
+          prompt: "Implement issue #{{ inputs.issue }}."
+        - id: check
+          needs: [implement]
+          workflow: review-and-fix
+```
+
+- 由一个外面没有副本的步骤运行时，这个步骤会打开一份，就像它自己写了 `workspace: new`。要得到拉取请求，就给这个步骤加 `deliver: pr`。头部不接受 `deliver`。
+- 头部只接受 `new`。运行这种工作流的步骤写了 `workspace: read-only` 时，pull 会拒绝：
+
+```text
+⚠ [workflows] workflows/nightly.yaml:6: field "steps[0].workspace": step "check" has workspace: read-only but runs workflow "review-and-fix", whose header says workspace: new, so its steps work in a copy; remove workspace from step "check" so it opens or continues one
+```
+
 ### 以团队角色运行步骤
 
 打开或沿用工作区的提示词步骤，可以用 `manifest/roles.yaml` 中你本人之外的角色运行。下例中，规划步骤知道规格撰写者知道的内容，评审步骤知道评审者知道的内容：

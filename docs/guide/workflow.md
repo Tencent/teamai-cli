@@ -267,6 +267,64 @@ steps:
     command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
 ```
 
+### A workflow that works in one copy
+
+`workspace: new` in a workflow's header says its steps work in one copy, wherever it runs. Use it for a workflow that runs on its own and inside another workflow's copy, such as a review that fixes what it finds and reviews the fix:
+
+```yaml
+schemaVersion: v1alpha1
+name: review-and-fix
+description: Review the branch, fix what the review finds, and review the fix.
+invoke: allow
+workspace: new
+steps:
+  - id: review
+    workspace: read-only
+    prompt: Review the change on this branch against main, and list what must change.
+    output: { verdict: pass | fix, findings: [string] }
+  - id: fix
+    needs: [review]
+    if: steps.review.outputs.verdict == 'fix'
+    prompt: "Fix these findings: {{ steps.review.outputs.findings }}"
+    loop: { back_to: review, max_iterations: 3 }
+```
+
+Started on its own, the run opens the copy on `teamai/<run>/_run`. `review` reads it, `fix` commits to it, and the next `review` sees the fix. Your checkout does not change. The run ends by naming the branch:
+
+```text
+$ teamai workflow start review-and-fix --driver local --tools default=claude
+ℹ Run r3f9a1c27d4e8b605 started. If it stops before it ends, continue it with: teamai workflow resume r3f9a1c27d4e8b605
+{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded"}}}
+ℹ Run r3f9a1c27d4e8b605 left its changes on branch teamai/r3f9a1c27d4e8b605/_run. Bring them in with: git merge teamai/r3f9a1c27d4e8b605/_run
+```
+
+Run by a step that has a copy, or that is inside one, its steps continue that copy and open no other. Here `fix` commits to `change`'s branch, `teamai/<run>/change/p1`, and the pull request holds the change and its fixes:
+
+```yaml
+schemaVersion: v1alpha1
+name: ship-reviewed
+description: Implement an issue, review and fix it, and deliver it for review.
+inputs: { issue: number }
+steps:
+  - id: change
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: implement
+          prompt: "Implement issue #{{ inputs.issue }}."
+        - id: check
+          needs: [implement]
+          workflow: review-and-fix
+```
+
+- Run by a step with no copy around it, that step opens one, as `workspace: new` on it would. To get a pull request, give that step `deliver: pr`. The header takes no `deliver`.
+- `new` is the only value the header takes. Pull rejects a `workspace: read-only` step that runs such a workflow:
+
+```text
+⚠ [workflows] workflows/nightly.yaml:6: field "steps[0].workspace": step "check" has workspace: read-only but runs workflow "review-and-fix", whose header says workspace: new, so its steps work in a copy; remove workspace from step "check" so it opens or continues one
+```
+
 ### Run a step as a team role
 
 A prompt step that opens or continues a workspace can run with a role from `manifest/roles.yaml` other than yours. Here a planning step knows what spec writers know, and a review step what reviewers know:
