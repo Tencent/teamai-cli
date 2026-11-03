@@ -185,7 +185,8 @@ const reportsBranchMocks = vi.hoisted(() => ({
   updateReports: vi.fn().mockResolvedValue({ status: 'published' }),
   readReportsOriginFile: vi.fn().mockResolvedValue(null),
 }));
-vi.mock('../utils/reports-branch.js', () => ({
+vi.mock('../utils/reports-branch.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../utils/reports-branch.js')>(),
   updateReports: (...args: unknown[]) => reportsBranchMocks.updateReports(...args),
   readReportsOriginFile: (...args: unknown[]) => reportsBranchMocks.readReportsOriginFile(...args),
 }));
