@@ -11,6 +11,8 @@ vi.mock('../utils/fs.js', () => ({
     ? { kind: 'ok', value: mockFiles[filePath] } : { kind: 'missing' })),
   readJson5Object: vi.fn(async (filePath: string) => (filePath in mockFiles
     ? { kind: 'ok', value: mockFiles[filePath] } : { kind: 'missing' })),
+  // The files these tests hold are plain JSON, which the comment-keeping writer writes as writeJson does.
+  writeJsonKeepingComments: vi.fn(async (_file: string, _data: unknown, writePlain: () => Promise<void>) => writePlain()),
   writeJson: vi.fn(async (filePath: string, data: unknown) => {
     mockFiles[filePath] = JSON.parse(JSON.stringify(data));
   }),

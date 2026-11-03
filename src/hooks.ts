@@ -4,9 +4,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { realpathSync } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { z } from 'zod';
-import { readJson, readJsonObject, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
+import { readJson, readJsonObject, writeJson, writeJsonKeepingComments, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { mapStrings } from './utils/json.js';
+import { JSON_SYNTAX_CLAUSE, mapStrings, type JsonSyntax } from './utils/json.js';
 import {
   COPILOT_TOOL_ID,
   TEAMAI_HOOK_DESCRIPTION_PREFIX,
@@ -54,7 +54,7 @@ import {
 } from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, selfLocalSettingsOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
+import { channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, selfLocalSettingsOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome } from './tool-home.js';
@@ -1034,6 +1034,7 @@ function regateTeamHookCommand(command: string, projectRoot: string, childRoots:
  */
 async function regateHeldTeamHooks(
   settingsPath: string,
+  tool: string,
   held: ManagedHookRecord[],
   projectRoot: string,
   childRoots: readonly string[],
@@ -1049,10 +1050,10 @@ async function regateHeldTeamHooks(
   if (regated.size === 0) return held;
   const swap = (value: JsonValue): JsonValue => mapStrings(value, (command) => regated.get(command) ?? command);
   const file = expandHome(settingsPath);
-  const contents = await readJsonObject(file);
+  const contents = await readJsonObject(file, hookSyntaxOf(tool));
 
   if (contents.kind !== 'ok' || !isJsonValue(contents.value)) return held;
-  await writeJson(file, swap(contents.value));
+  await writeHookFile(file, swap(contents.value));
 
   // SAFETY: mapStrings keeps every field of a record in place with its JSON type, and swaps only a
   // held command for its regated form, so each result is the record with its commands regated.
@@ -1629,7 +1630,7 @@ async function heldCodexFileHooks(file: string, recorded: readonly ManagedHookRe
   const records = recorded.filter((record) => held.has(record.id));
 
   if (records.length === 0) return [];
-  const hooks = (await readHookFile<CodexHooksJson>(expandHome(file), {}, 'codex')).hooks ?? {};
+  const hooks = (await readHookFile<CodexHooksJson>(expandHome(file), {}, 'codex', 'json')).hooks ?? {};
   const found: CodexTeamHook[] = [];
 
   for (const record of records) {
@@ -2204,7 +2205,7 @@ async function reconcileClaudeFormat(
 
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
-  const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {}, 'claude');
+  const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {}, 'claude', hookSyntaxOf(tool));
 
   if (!settings.hooks) settings.hooks = {};
 
@@ -2235,7 +2236,7 @@ async function reconcileClaudeFormat(
   }
 
   if (changed) {
-    await writeJson(expanded, settings);
+    await writeHookFile(expanded, settings);
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${settingsPath}`);
   } else {
     log.debug(`teamai hooks already up-to-date in ${settingsPath}`);
@@ -2254,7 +2255,7 @@ async function reconcileCursorFormat(
 ): Promise<void> {
   const expanded = expandHome(hooksPath);
   await ensureDir(path.dirname(expanded));
-  const hooksJson: CursorHooksJson = await readHookFile<CursorHooksJson>(expanded, { version: 1, hooks: {} }, 'cursor');
+  const hooksJson: CursorHooksJson = await readHookFile<CursorHooksJson>(expanded, { version: 1, hooks: {} }, 'cursor', hookSyntaxOf(tool));
 
   if (!hooksJson.version) hooksJson.version = 1;
 
@@ -2313,7 +2314,7 @@ async function reconcileCursorFormat(
   }
 
   if (changed) {
-    await writeJson(expanded, hooksJson);
+    await writeHookFile(expanded, hooksJson);
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
   } else {
     log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
@@ -2402,7 +2403,7 @@ export async function removeCopilotGlobalBuiltins(): Promise<void> {
 
 /** Upgrade only the source marker when unresolved team hooks require retaining the installed set. */
 async function markCopilotGlobalBuiltins(file: string): Promise<void> {
-  const json = await readHookFile<CopilotHooksJson>(file, { version: COPILOT_HOOK_SCHEMA_VERSION, hooks: {} }, 'copilot');
+  const json = await readHookFile<CopilotHooksJson>(file, { version: COPILOT_HOOK_SCHEMA_VERSION, hooks: {} }, 'copilot', hookSyntaxOf(COPILOT_TOOL_ID));
   const commands = new Set(builtinHookDefs(COPILOT_TOOL_ID).flatMap(def => copilotEntryCommands(toCopilotEntry(def))));
   let changed = false;
 
@@ -2426,7 +2427,7 @@ async function markCopilotGlobalBuiltins(file: string): Promise<void> {
     }
   }
 
-  if (changed) await writeJson(file, json);
+  if (changed) await writeHookFile(file, json);
 }
 
 async function reconcileCopilotFormat(
@@ -2449,7 +2450,7 @@ async function reconcileCopilotFormat(
   const hooksJson: CopilotHooksJson = await readHookFile<CopilotHooksJson>(expanded, {
     version: COPILOT_HOOK_SCHEMA_VERSION,
     hooks: {},
-  }, 'copilot');
+  }, 'copilot', hookSyntaxOf(tool));
 
   let changed = hooksJson.version !== COPILOT_HOOK_SCHEMA_VERSION;
   hooksJson.version = COPILOT_HOOK_SCHEMA_VERSION;
@@ -2519,7 +2520,7 @@ async function reconcileCopilotFormat(
     await rm(expanded, { force: true });
     log.success(`Removed ${hooksPath}: no hooks left in it`);
   } else if (changed || !existed) {
-    await writeJson(expanded, hooksJson);
+    await writeHookFile(expanded, hooksJson);
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
   } else {
     log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
@@ -2561,7 +2562,7 @@ export async function editCodexHookFile(
   plan: (hooks: Readonly<Record<string, readonly JsonValue[]>>) => CodexHookPlan,
   codexTrust: CodexTrustPolicy,
 ): Promise<boolean> {
-  const doc = await readHookFile<CodexHooksJson>(file, {}, 'codex');
+  const doc = await readHookFile<CodexHooksJson>(file, {}, 'codex', hookSyntaxOf(tool));
   // readHookFile refused a file whose hooks are not an object of lists.
   const hooks = doc.hooks ?? {};
   const next = { ...hooks };
@@ -2607,7 +2608,7 @@ export async function editCodexHookFile(
 
   const write = async (): Promise<void> => {
     await ensureDir(path.dirname(file));
-    await writeJson(file, codexFormatDocument(tool, { ...doc, hooks: next }));
+    await writeHookFile(file, codexFormatDocument(tool, { ...doc, hooks: next }));
   };
 
   if (codexTrust.kind === 'disabled' || !isCodexTrustGatedTool(tool) || [...retained].every(([to, from]) => to === from)) {
@@ -2798,7 +2799,7 @@ async function reconcileZcodeFormat(
   // .mjs, and only Windows ever wrote one — drop it everywhere so a stale copy
   // cannot sit in ~/.zcode forever.
   await rm(zcodeLegacyLauncherPath(expanded), { force: true });
-  const cfg: ZcodeHooksJson = await readHookFile<ZcodeHooksJson>(expanded, {}, 'zcode');
+  const cfg: ZcodeHooksJson = await readHookFile<ZcodeHooksJson>(expanded, {}, 'zcode', hookSyntaxOf(tool));
 
   if (!cfg.hooks) cfg.hooks = {};
   let changed = false;
@@ -2899,7 +2900,7 @@ async function reconcileZcodeFormat(
   }
 
   if (changed) {
-    await writeJson(expanded, cfg);
+    await writeHookFile(expanded, cfg);
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${settingsPath}`);
   } else {
     log.debug(`teamai hooks already up-to-date in ${settingsPath}`);
@@ -3063,7 +3064,7 @@ export async function applyAgentHook(
       log.debug(`agent hook [${def.slug}] already up-to-date in ${settingsPath}`);
     }
   } else {
-    const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {}, format);
+    const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {}, format, hookSyntaxOf(tool));
 
     if (!settings.hooks) settings.hooks = {};
     const existing = settings.hooks[def.event] ?? [];
@@ -3072,7 +3073,7 @@ export async function applyAgentHook(
 
     if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
       settings.hooks[def.event] = newArr;
-      await writeJson(expanded, settings);
+      await writeHookFile(expanded, settings);
       log.success(`Installed agent hook [${def.slug}] in ${settingsPath}`);
     } else {
       log.debug(`agent hook [${def.slug}] already up-to-date in ${settingsPath}`);
@@ -3111,7 +3112,7 @@ export async function removeAgentHook(
 
     if (written) log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
   } else {
-    const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {}, format);
+    const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {}, format, hookSyntaxOf(tool));
 
     if (!settings.hooks) return;
     let changed = false;
@@ -3132,7 +3133,7 @@ export async function removeAgentHook(
     }
 
     if (changed) {
-      await writeJson(expanded, settings);
+      await writeHookFile(expanded, settings);
       log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
     }
   }
@@ -3150,7 +3151,7 @@ export async function applyBridgedAgentHook(tool: string, def: AgentHookDef): Pr
 
 /** Whether `tool`'s bridged file holds the agent hook `slug`. */
 export async function hasBridgedAgentHook(tool: string, slug: string): Promise<boolean> {
-  const settings = await readHookFile<ClaudeSettingsJson>(bridgedTeamHookFile(tool), {}, 'claude');
+  const settings = await readHookFile<ClaudeSettingsJson>(bridgedTeamHookFile(tool), {}, 'claude', 'json');
 
   return Object.values(settings.hooks ?? {}).some((entries) => entries.some((entry) => isAgentClaudeEntry(hookFileEntryOf(entry), slug)));
 }
@@ -3245,11 +3246,11 @@ function hookEventsProblem(json: JsonValue, format: HookFormat): string | null {
  * stops here, the file left byte-identical and nothing recorded, and the first pull after the
  * repair writes it. The entries in each list are as the member wrote them.
  */
-export async function readHookFile<T>(file: string, fallback: T, format: HookFormat): Promise<T> {
-  const read = await readJsonObject(file);
+export async function readHookFile<T>(file: string, fallback: T, format: HookFormat, syntax: JsonSyntax): Promise<T> {
+  const read = await readJsonObject(file, syntax);
 
   if (read.kind === 'invalid') {
-    throw new Error(`${file} does not parse (${read.error}), so teamai left it as it is. Fix it, then run the command again.`);
+    throw new Error(`${file} does not parse${JSON_SYNTAX_CLAUSE[syntax]} (${read.error}), so teamai left it as it is. Fix it, then run the command again.`);
   }
 
   if (read.kind !== 'ok') return fallback;
@@ -3262,6 +3263,11 @@ export async function readHookFile<T>(file: string, fallback: T, format: HookFor
   // SAFETY: hookEventsProblem checked that the file holds a JSON object whose events are an object of
   // lists, the shape of every T a caller names; the entries in those lists are as the member wrote them.
   return read.value as T;
+}
+
+/** A hook file `readHookFile` read, written back: a file holding the member's comments keeps them. */
+async function writeHookFile<T>(file: string, data: T): Promise<void> {
+  await writeJsonKeepingComments(file, data, () => writeJson(file, data));
 }
 
 /**
@@ -3327,7 +3333,7 @@ export async function reconcileHooks(
   const held = [...projectRecords, ...adopted].filter((r) => heldIds.has(r.id));
 
   const heldRecords = opts.teamHookProjectRoot
-    ? await regateHeldTeamHooks(settingsPath, held, opts.teamHookProjectRoot, opts.teamHookChildRoots ?? [])
+    ? await regateHeldTeamHooks(settingsPath, tool, held, opts.teamHookProjectRoot, opts.teamHookChildRoots ?? [])
     : held;
 
   const keptHeld = new Map<ManagedHookRecord, string>();
@@ -5108,7 +5114,7 @@ export async function unreadableHookFiles(teamConfig: TeamaiConfig, localConfig:
 
   for (const { file, tool } of await projectHookFiles(teamConfig, localConfig)) {
     if (files.includes(file)) continue;
-    const read = await readJsonObject(file);
+    const read = await readJsonObject(file, hookSyntaxOf(tool));
 
     if (read.kind === 'invalid' || (read.kind === 'ok' && hookEventsProblem(isJsonValue(read.value) ? read.value : null, hookFormatOf(tool)) !== null)) files.push(file);
   }

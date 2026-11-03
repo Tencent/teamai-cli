@@ -37,7 +37,7 @@ import {
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
-import { hookFormatOf, isToolId } from './tools.js';
+import { hookFormatOf, hookSyntaxOf, isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope, readHookFile } from './hooks.js';
 import { codexBuildSkewMessage } from './codex-trust.js';
@@ -531,7 +531,7 @@ async function buildHookChecks(
     if (!installed) continue;
 
     // `hooks inject` leaves a hook file teamai cannot read as it is, as pull does: the fix is the file.
-    const unreadable = await readHookFile(settingsPath, {}, hookFormatOf(tool))
+    const unreadable = await readHookFile(settingsPath, {}, hookFormatOf(tool), hookSyntaxOf(tool))
       .then(() => undefined, (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)));
 
     checks.push({

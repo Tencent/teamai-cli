@@ -34,6 +34,13 @@ export function parseJson5(text: string): JsonValue {
  */
 export type JsonSyntax = 'json' | 'jsonc' | 'json-comments';
 
+/** What a "does not parse" diagnosis adds to name the syntax: nothing for strict JSON, the only syntax most tools take. */
+export const JSON_SYNTAX_CLAUSE: Readonly<Record<JsonSyntax, string>> = {
+  json: '',
+  jsonc: ' as JSON with comments',
+  'json-comments': ' as JSON with comments and no trailing commas',
+};
+
 /** `text` as the tool that takes `syntax` reads it. Throws, naming the offset, on text that does not parse that way. */
 export function parseJsonAs(text: string, syntax: JsonSyntax): JsonValue {
   if (syntax === 'json') return parseJson(text);
