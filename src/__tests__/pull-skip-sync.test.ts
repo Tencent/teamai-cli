@@ -96,6 +96,7 @@ import { pull, checkoutKey, compileRecallRulesBlock, cleanupInactiveNamespaceSki
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
 import { getHeadRev, createGit, pullRepo } from '../utils/git.js';
 import { log } from '../utils/logger.js';
+import { acquireLock } from '../update.js';
 import {
   TeamaiConfigSchema,
   TEAMAI_RECALL_RULES_START,
@@ -165,6 +166,96 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     vi.unstubAllEnvs();
     vi.clearAllMocks();
     await fse.remove(tmpDir);
+  });
+
+  const writeFetchStamp = (lastFetch: string) => fse.writeJson(path.join(tmpDir, 'last-fetch.json'), { lastFetch });
+
+  it('reuses a successful refresh across consecutive session starts (#1681)', async () => {
+    await pull({ sessionStart: true, silent: true });
+    await pull({ sessionStart: true, silent: true });
+
+    expect(pullRepo).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['expired', () => new Date(Date.now() - 61_000).toISOString()],
+    ['future', () => new Date(Date.now() + 60_000).toISOString()],
+    ['invalid', () => 'not-a-date'],
+  ])('refreshes on session start with an %s fetch stamp', async (_label, stamp) => {
+    await writeFetchStamp(stamp());
+
+    await pull({ sessionStart: true, silent: true });
+
+    expect(pullRepo).toHaveBeenCalledOnce();
+  });
+
+  it('does not extend the cooldown when a session reads the cache', async () => {
+    const lastFetch = new Date(Date.now() - 10_000).toISOString();
+    await writeFetchStamp(lastFetch);
+
+    await pull({ sessionStart: true, silent: true });
+
+    expect(pullRepo).not.toHaveBeenCalled();
+    expect(await fse.readJson(path.join(tmpDir, 'last-fetch.json'))).toEqual({ lastFetch });
+  });
+
+  it.each([{}, { silent: true }, { sessionStart: true, force: true }])(
+    'keeps manual and forced pulls fresh: %j', async (options) => {
+      await writeFetchStamp(new Date().toISOString());
+
+      await pull(options);
+
+      expect(pullRepo).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('waits for an overlapping session and then uses its fresh clone for local delivery', async () => {
+    await writeFetchStamp(new Date().toISOString());
+    vi.mocked(acquireLock).mockResolvedValueOnce(false).mockResolvedValue(true);
+
+    await pull({ sessionStart: true, silent: true });
+
+    expect(vi.mocked(acquireLock).mock.calls.filter(([lock]) => String(lock).endsWith('.sync-lock'))).toHaveLength(2);
+    expect(pullRepo).not.toHaveBeenCalled();
+    expect(saveStateForScope).toHaveBeenCalledOnce();
+  });
+
+  it('does not record a failed session-start fetch as a refresh, so the next start retries', async () => {
+    await writeFetchStamp(new Date(Date.now() - 61_000).toISOString());
+    vi.mocked(pullRepo).mockRejectedValueOnce(new Error('offline'));
+
+    await pull({ sessionStart: true, silent: true });
+    await pull({ sessionStart: true, silent: true });
+
+    expect(pullRepo).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps delivering a new worktree from the cached clone after a failed session-start fetch', async () => {
+    const lastFetch = new Date(Date.now() - 5 * 60_000).toISOString();
+    await writeFetchStamp(lastFetch);
+    vi.mocked(pullRepo).mockRejectedValueOnce(new Error('offline'));
+
+    await pull({ sessionStart: true, silent: true });
+    vi.mocked(saveStateForScope).mockClear();
+    await pull({ inline: true, gitHook: 'post-checkout', silent: true });
+
+    expect(pullRepo).toHaveBeenCalledOnce();
+    expect(saveStateForScope).toHaveBeenCalledOnce();
+    expect(await fse.readJson(path.join(tmpDir, 'last-fetch.json'))).toEqual({ lastFetch });
+  });
+
+  it('does not cool down a refresh whose submodule update failed', async () => {
+    vi.mocked(loadTeamConfig).mockResolvedValue({ ...baseTeamConfig, submodules: true });
+    vi.mocked(createGit).mockReturnValue({
+      subModule: vi.fn().mockResolvedValue(''),
+      submoduleUpdate: vi.fn().mockRejectedValue(new Error('submodule offline')),
+    } as never);
+
+    await pull({ sessionStart: true, silent: true });
+    await pull({ sessionStart: true, silent: true });
+
+    expect(pullRepo).toHaveBeenCalledTimes(2);
+    vi.mocked(createGit).mockReset();
   });
 
   it('should skip sync when HEAD rev matches lastPullRev', async () => {

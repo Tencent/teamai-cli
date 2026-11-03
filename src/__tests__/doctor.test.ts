@@ -950,7 +950,7 @@ describe('doctor — JSON report', () => {
         await doctor({ json: true });
 
         expect(emittedReport().notes?.filter((note) => note.includes('reads no sessions from'))).toEqual([
-            'Sessions are published and scored in unattended mode, but teamai reads no sessions from muse, lyre: they are neither published nor judged.',
+            'Sessions are published and scored in unattended mode, but teamai reads no sessions from lyre: they are neither published nor judged.',
         ]);
     });
 

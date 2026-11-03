@@ -545,7 +545,7 @@ jobs:
 
 ```console
 $ teamai benchmark run fix-auth --sandbox
-ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377 --sandbox
+ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
 `benchmark run` 先规划套件，所以无法运行的套件不会留下运行。然后它用套件的 `timeout` 启动工作流 `teamai-benchmark`，并用本地驱动驱动它。
@@ -554,7 +554,7 @@ $ teamai benchmark run fix-auth --sandbox
 
 | 选项或配置 | 效果 |
 | --- | --- |
-| `--sandbox` | 只为当前这个进程把本机声明为 sandbox。只在可以丢弃的机器上使用。 |
+| `--sandbox` | 为这次运行把本机声明为 sandbox，本机上的 `workflow resume` 会沿用它。只在可以丢弃的机器上使用。 |
 | 配置里的 `workflows.sandbox: true` | 为每个进程声明它，见[要求和限制](workflow-advanced.md#要求和限制)。 |
 | 两者都没有 | 运行在启动时以 `requirement_unmet` 被拒绝：trial 需要严格 sandbox。 |
 | `--member-aliases` | 你自己的 `~/.teamai/models/aliases.yaml` 优先于团队的 `models/aliases.yaml`，表格会把由你的文件决定的模型的来源显示为 `member`。 |
@@ -585,7 +585,7 @@ $ teamai benchmark run fix-auth --sandbox
 | 卡住的 trial | 没有 [`trial.timeout`](#trial-限制) 时，一个永不返回的工具会一直运行到套件超时，它之后的每个 trial 结算为 `not_run`。 |
 | 评判 | 带 `successCriteria` 的任务和套件的评分器在运行结束前评判，评判在运行了 trial 的那个安装上进行。机器无法评判时，需要评判的套件在启动时被拒绝。 |
 | 控制命令 | trial 的步骤要等运行的 `plan` 步骤报告后才存在。在此之前，对 trial 步骤执行 `teamai workflow cancel <run> <step>` 会返回 `step_not_found`。benchmark 运行是[隔离的](workflow-advanced.md#隔离运行)：`workflow retry`、`publish` 和 `--claim` 拒绝它，`publish` 和 `--claim` 返回 `isolated_run`，retry 会给出 `teamai benchmark run <suite>`。 |
-| 停下 | 用 `teamai workflow resume <run> --sandbox` 继续。 |
+| 停下 | 用 `teamai workflow resume <run>` 继续，沿用启动时的 `--sandbox`。 |
 
 无法运行的启动会被拒绝，消息说明该怎么做，并且不会创建运行。你的 user 范围 teamai 安装也能到达该团队，或团队通过 HTTP 提供时，运行无法固定 trial 得到的团队，会以 `team_ref_blocked` 拒绝，并说明要改什么。
 

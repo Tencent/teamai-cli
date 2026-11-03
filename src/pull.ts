@@ -128,14 +128,17 @@ function teamFetchStamp(localConfig: LocalConfig): string {
 /** How long an inline pull waits for another pull's partition lock. */
 const INLINE_LOCK_WAIT_MS = 60_000;
 
+/** Automatic session starts share a recent refresh; manual pulls stay fresh. */
+const SESSION_START_FETCH_COOLDOWN_MS = 60_000;
+
 /** `Error.name` of a team repo fetch stopped at `fetchTimeoutMs`. */
 const TEAM_FETCH_TIMEOUT = 'TeamFetchTimeout';
 
-async function teamFetchedWithinTtl(localConfig: LocalConfig): Promise<boolean> {
+async function teamFetchedWithinTtl(localConfig: LocalConfig, ttl = SOURCE_PULL_TTL_MS): Promise<boolean> {
   const stamp = await readJson<{ lastFetch: string }>(teamFetchStamp(localConfig));
   const elapsed = stamp ? Date.now() - new Date(stamp.lastFetch).getTime() : NaN;
 
-  return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= SOURCE_PULL_TTL_MS;
+  return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= ttl;
 }
 
 /**
@@ -161,7 +164,7 @@ async function teamFetchedWithinTtl(localConfig: LocalConfig): Promise<boolean> 
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
-  options: Pick<GlobalOptions, 'inline' | 'localOnly' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent'> = {},
+  options: Pick<GlobalOptions, 'inline' | 'localOnly' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent' | 'sessionStart' | 'force'> = {},
 ): Promise<{ label: string; version: string | null; submodulesFailed: boolean; submodulesChanged: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
@@ -223,6 +226,18 @@ async function refreshTeamRepo(
     return { label, version, submodulesFailed: false, submodulesChanged: false };
   }
 
+  // The scope lock is already held: a session that waited for another pull
+  // reads its successful refresh, then still checks this checkout's delivery.
+  if (options.sessionStart && !options.force && options.teamRef === undefined
+    && options.fetchTimeoutMs === undefined
+    && await teamFetchedWithinTtl(localConfig, SESSION_START_FETCH_COOLDOWN_MS)) {
+    const version = await getHeadRev(localConfig.repo.localPath).catch(() => null);
+
+    if (version !== null) {
+      return { label: 'refreshed within 60 seconds, not refetched', version, submodulesFailed: false, submodulesChanged: false };
+    }
+  }
+
   // The git-pull hook caps the fetch: git pull is waiting on it.
   const cap = options.fetchTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.fetchTimeoutMs);
 
@@ -251,9 +266,6 @@ async function refreshTeamRepo(
     if (!options.silent) log.warn(message);
     log.persist(message);
   }
-
-  await writeJson(teamFetchStamp(localConfig), { lastFetch: new Date().toISOString() })
-    .catch((e) => log.debug(`Could not record the team repo fetch: ${e instanceof Error ? e.message : String(e)}`));
 
   let version: string | null = null;
 
@@ -323,6 +335,12 @@ async function refreshTeamRepo(
   } catch (e) {
     submodulesFailed = true;
     log.warn(`Submodule update failed for ${localConfig.repo.localPath}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Only a complete refresh is recorded; a failed one keeps the last success's stamp.
+  if (!submodulesFailed) {
+    await writeJson(teamFetchStamp(localConfig), { lastFetch: new Date().toISOString() })
+      .catch((e) => log.debug(`Could not record the team repo fetch: ${e instanceof Error ? e.message : String(e)}`));
   }
 
   return { label: transition.label, version, submodulesFailed, submodulesChanged };
@@ -2173,7 +2191,10 @@ async function pullForScope(
           // The fast path's writers add what they write to the delivered paths (#915).
           const { recorder } = policy;
 
-          try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
+          try {
+            const { deployBuiltinAgents } = await import('./builtin-agents.js');
+            await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder, record: { kind: 'fast-path', delivered: await deliveredHashes(localConfig, state) } });
+          } catch {}
 
           try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
 
@@ -2876,7 +2897,10 @@ async function pullForScope(
   try {
     const { deployBuiltinAgents } = await import('./builtin-agents.js');
     const skipRecall = !isRecallEnabled(localConfig, freshConfig);
-    const deployed = await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder, dryRun, toolsMissingAgents: ledger.toolsMissingAgents });
+
+    const deployed = await deployBuiltinAgents(freshConfig, localConfig, {
+      skipRecall, recorder, dryRun, toolsMissingAgents: ledger.toolsMissingAgents, record: { kind: 'full-sync', ledger },
+    });
 
     if (deployed > 0 && !dryRun) {
       log.debug(`[${scopeLabel}] Deployed built-in agents to ${deployed} location(s)`);
@@ -3690,9 +3714,10 @@ export async function pull(
     // team's resources, and the holder is often the detached pull of the
     // worktree created just before: wait for it, within the hook's budget.
     // Git-pull hooks cap it like their fetch: `git pull` waits on them, and the holder
-    // may be a detached pull hung on the network.
+    // may be a detached pull hung on the network. Session starts also wait so
+    // each checkout can deliver from the refresh the holder completes.
     const lockWaitMs = options.fetchTimeoutMs ?? INLINE_LOCK_WAIT_MS;
-    const waitUntil = options.inline ? Date.now() + lockWaitMs : 0;
+    const waitUntil = options.inline || (options.sessionStart && config.repo.kind !== 'self' && !options.dryRun) ? Date.now() + lockWaitMs : 0;
     let acquired = await acquireLock(lock, { dryRun: options.dryRun });
 
     while (!acquired && Date.now() < waitUntil) {

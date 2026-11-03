@@ -11,14 +11,14 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
-import { outputMismatch } from '../workflow/output.js';
+import { expectedOutput, outputMismatch, OutputSchemaSchema } from '../workflow/output.js';
 import { CAN_KEYS, type DriverCan } from '../workflow/requirements.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
-import type { DriverIdentity, RunState } from '../workflow/types.js';
+import type { DriverIdentity, OutputSchema, RunState } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 
 _setDriverPollMs(20);
@@ -323,6 +323,29 @@ describe('workflow engine', () => {
       .toMatchObject({ error: { code: 'stale_revision' } });
     const stored = await readRun(config, runId);
     expect(stored).toMatchObject({ revision: 2, steps: [{ status: 'succeeded' }, { status: 'pending' }] });
+  });
+
+  it('asks a prompt step for its output as JSON Schema, or for a summary when it declares none', () => {
+    expect(expectedOutput(undefined)).toBe('a short summary of what you did, as a JSON string');
+    expect(expectedOutput({ type: 'object', fields: { verdict: { type: 'enum', values: ['pass', 'fail'] }, notes: { type: 'json' }, plan: { type: 'workflow' } } }))
+      .toBe('a value that matches this JSON Schema: `{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},"notes":{},'
+        + '"plan":{"type":"object","description":"A workflow bundle: { definition, workflows?, scorers?, teamRevision? }, where definition is a workflow file as JSON.","required":["definition"]}},'
+        + '"required":["verdict","notes","plan"]}`');
+    // The example in docs/guide/workflow.md, as the guide quotes it.
+    expect(expectedOutput({ type: 'object', fields: { summary: { type: 'string' }, risk: { type: 'enum', values: ['low', 'high'] }, files: { type: 'array', items: { type: 'string' } } } }))
+      .toBe('a value that matches this JSON Schema: `{"type":"object","properties":{"summary":{"type":"string"},"risk":{"type":"string","enum":["low","high"]},'
+        + '"files":{"type":"array","items":{"type":"string"}}},"required":["summary","risk","files"]}`');
+  });
+
+  it('reads every output a lease can carry', () => {
+    // Keyed by type, so a new kind of output fails the type check here until the lease schema reads it too.
+    const outputs: { [Type in OutputSchema['type']]: Extract<OutputSchema, { type: Type }> } = {
+      string: { type: 'string' }, number: { type: 'number' }, boolean: { type: 'boolean' }, json: { type: 'json' }, workflow: { type: 'workflow' },
+      enum: { type: 'enum', values: ['low', 'high'] },
+      array: { type: 'array', items: { type: 'string' } },
+      object: { type: 'object', fields: { summary: { type: 'string' } } },
+    };
+    for (const output of Object.values(outputs)) expect(OutputSchemaSchema.parse(output)).toEqual(output);
   });
 
   it('accepts extra keys on a shorthand object output', async () => {

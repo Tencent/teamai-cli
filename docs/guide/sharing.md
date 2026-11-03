@@ -114,6 +114,41 @@ teamai push --role frontend
 teamai remove agents code-reviewer
 ```
 
+### Replace the recall agent
+
+While [recall](knowledge.md#enabling--disabling-recall) is on, teamai installs its own `teamai-recall` agent. A team agent with that name replaces it, the way a team workflow replaces a [default workflow](workflow.md#default-workflows). Put it in `agents/` for everyone, or in `agents/<namespace>/` for one role:
+
+```yaml
+# agents/frontend/teamai-recall.yaml
+name: teamai-recall
+description: Search the team knowledge base for a frontend task and return doc_ids
+tools: [Bash, Read, Grep, Glob]
+instructions: |
+  Run `teamai recall --caller teamai-recall "<task>"` and read the top three hits.
+  For each component the task names, grep src/design-system/ and its Storybook stories.
+  Return at most ten lines: doc_ids, file paths, and the one rule that applies.
+```
+
+Keep `--caller teamai-recall` on each `teamai recall` call, as teamai's agent does: it is how the docs the agent opens are credited to recall.
+
+```console
+# a member with the frontend role
+$ teamai pull
+✔ [workspace] Synced 1 agents
+$ head -3 .claude/agents/teamai-recall.md
+---
+name: teamai-recall
+description: Search the team knowledge base for a frontend task and return doc_ids
+
+# a member with the backend role keeps teamai's
+$ head -3 .claude/agents/teamai-recall.md
+---
+name: teamai-recall
+description: >-
+```
+
+Once the team file exists, edit the copy in a tool and run `teamai push`, as for any team agent. An edit to teamai's own copy is never pushed, so the first version goes into the team repo as a commit. Delete the file, and the next `pull` puts teamai's agent back. While recall is off, pull installs neither.
+
 `pull` writes each tool's own format into that tool's agents directory: `<name>.toml` for the Codex family, `<name>.agent.md` for Copilot, `<name>.json` for Kiro, and `<name>.md` for the rest. Trae and Trae CN load `.trae/agents` only while the Beta setting "Enable Subagents Directory" is on, and accept only their own model ids, so their copy leaves out the agent's `model`. Trae CN's user copy in `~/.trae-cn/agents` takes one an alias or `tool_extras.trae-cn` gives it. A project's `.trae/agents` is read by both editions, so it never gets a `model`, and it takes the other keys of both `tool_extras.trae` and `tool_extras.trae-cn`; an agent whose two editions give one key different values is skipped there, with a warning naming the key. `push` refuses an edit to that file that changes or removes a key the other edition gives.
 
 Antigravity's copy keeps no team `model` (agy skips an agent whose model it does not know), only one an alias maps for agy, and lists agy's own names for the agent's tools: `tools: [Bash, Read]` becomes `run_command`, `view_file` and `read_file`. Without them an agy subagent has no shell. In a project, `.agents/agents` is agy's, so Muse Code gets no copy there while agy is installed. The CLI and Antigravity 2.0 run the agent as a subagent; Antigravity IDE has none, so its model can only hand the work to `agy --agent <name>` when the CLI is installed.

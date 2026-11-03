@@ -545,7 +545,7 @@ A matrix entry whose suite the pull request does not touch tries nothing and pas
 
 ```console
 $ teamai benchmark run fix-auth --sandbox
-ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377 --sandbox
+ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
 `benchmark run` plans the suite first, so a suite that cannot run leaves no run. It then starts the workflow `teamai-benchmark` with the suite's `timeout` and drives it with the local driver.
@@ -554,7 +554,7 @@ Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#una
 
 | Flag or setting | Effect |
 | --- | --- |
-| `--sandbox` | Declares this machine a sandbox for this process. Only on a machine you can throw away. |
+| `--sandbox` | Declares this machine a sandbox for this run, which `workflow resume` on this machine keeps. Only on a machine you can throw away. |
 | `workflows.sandbox: true` in config | Declares it for every process, as [Requirements and limits](workflow-advanced.md#requirements-and-limits) describes. |
 | neither | The run is refused at start with `requirement_unmet`: the trials require a strict sandbox. |
 | `--member-aliases` | Your own `~/.teamai/models/aliases.yaml` wins over the team's `models/aliases.yaml`, and the table shows `member` as the source of each model your file decided. |
@@ -585,7 +585,7 @@ The local driver runs each trial as fresh clone, team assets, setup, the arm's t
 | A hung trial | Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`. |
 | Judges | A task with `successCriteria`, and the suite's scorers, are judged before the run ends, on the install that ran the trials. Start refuses a suite that needs a judge on a machine that cannot judge. |
 | Control commands | A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`. |
-| Stopped | `teamai workflow resume <run> --sandbox` continues it. |
+| Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. |
 
 A start that cannot run refuses with a message that says what to do, and makes no run. When your user-scope teamai install also reaches the team, or the team is served over HTTP, the run cannot pin the team a trial gets, and refuses with `team_ref_blocked`, saying what to change.
 

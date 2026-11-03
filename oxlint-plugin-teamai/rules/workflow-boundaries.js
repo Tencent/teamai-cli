@@ -23,6 +23,8 @@ const SKILL_IMPORTS = {
   // The wire shapes the engine answers with, which every driver parses with the same schema.
   'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema'] },
   'src/workflow/step-state.ts': { names: ['FailureSchema'] },
+  // What a prompt step's output must be, as every driver's result instruction says it.
+  'src/workflow/output.ts': { names: ['expectedOutput'] },
   'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'runsDir', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
   'src/workflow/step-model.ts': {},
   'src/env-resolution.ts': {},

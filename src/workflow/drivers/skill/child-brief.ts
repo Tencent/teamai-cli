@@ -5,7 +5,9 @@ import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
 import { readFileSafe, writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
+import { expectedOutput } from '../../output.js';
 import { attemptDir, attemptResultPath, type AttemptId, type RunId } from '../../store.js';
+import type { OutputSchema } from '../../types.js';
 import type { Literal } from './literals.js';
 
 /** `attempts/<a>/result.json`, as the child writes it: what the step produced, or why it could not. */
@@ -39,12 +41,12 @@ export async function writeChildBrief(input: {
    */
   by: 'child' | 'person' | 'self';
   /** The step's output schema, when it declares one. */
-  output?: unknown;
+  output?: OutputSchema;
   report: Literal;
   secrets: Record<string, string>;
 }): Promise<string> {
   const { config, run, attempt, step, dir, changes, prompt, by, output, report, secrets } = input;
-  const expected = output === undefined ? 'a short summary of what you did, as a JSON string' : `a value that matches the JSON schema \`${JSON.stringify(output)}\``;
+  const expected = expectedOutput(output);
 
   const brief = [
     `# Step ${step}, attempt ${attempt} of run ${run}`,
