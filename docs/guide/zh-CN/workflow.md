@@ -390,6 +390,42 @@ pull request 合入这条分支来源中最近一条已经交付过的分支，�
 
 循环中 `workspace: new` 步骤的每个 pass 都有自己的 `/p<pass>` 分支，因此各开一个 pull request。之前的 pull request 保持打开，这是有意为之。在同一条 `continue` 分支上循环的步骤只有一个 pull request。
 
+设置了 `deliver: pr` 的步骤，若其分支相对运行的基准提交没有新提交，仍然成功，但不开 pull request。后续步骤读取 `steps.<id>.pr` 区分这两种情况：步骤开出或接受了 pull request 时，它是 `{ url }`，否则是 `null`。下面的 `fix-ci` 在 `patch` 没有改动时以 `nothing-to-fix` 结束，有改动时给 pull request 加标签：
+
+```yaml
+schemaVersion: v1alpha1
+name: fix-ci
+description: Fix the failing e2e tests on this branch, and open a pull request only when something changed.
+ends: { fixed: succeeded, nothing-to-fix: succeeded }
+steps:
+  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          prompt: Run npm run test:e2e and fix what fails. Change nothing when every test passes.
+  - id: nothing-to-fix
+    needs: [fix]
+    if: steps.fix.pr == null
+    end: nothing-to-fix
+  - id: fixed
+    needs: [fix]
+    if: steps.fix.pr != null
+    env: { PR: "{{ steps.fix.pr.url }}" }
+    command: gh pr edit "$PR" --add-label ci-fix
+    end: fixed
+```
+
+```text
+$ teamai workflow start fix-ci --driver local
+{"data":{"done":{"run":"rbd14d10aae2a1430","outcome":"succeeded","end":"nothing-to-fix","record":"published"},"cancelled":[]}}
+$ teamai workflow start fix-ci --driver local
+{"data":{"done":{"run":"rdd649ecb3eeb7403","outcome":"succeeded","end":"fixed","prs":["https://github.com/fixture/app/pull/1"],"record":"published"},"cancelled":[]}}
+```
+
+设置了 `deliver: pr` 的 `workflow` 步骤也有 `pr`，它的工作流可以通过 `outputs` 把它传出去。`for_each` 步骤由每个 item 各自交付，因此 `pr` 在 `results` 的每个条目上，例如 `steps.build.results[0].pr.url`。循环的步骤上，`steps.<id>.pr` 是最新一个 pass 的，`steps.<id>.passes[n].pr` 是每个 pass 的。在没有 `deliver: pr` 的步骤上读取 `pr`，pull 会拒绝。
+
 开出或接受 pull request 之前，TeamAI 将交付的提交与运行的基准提交比较。修改 CI 配置（例如 `.github/workflows` 或 `.gitlab-ci.yml`）、hooks、任意层级的 `AGENTS.md` 或 `CLAUDE.md`，或任一工具的 agent、rule、MCP 文件，步骤会以 `protected_path` 失败，消息列出这些文件。这些路径就是工作区步骤从运行基准获得的 agent 文件，再加上 CI 和 hook 路径。删除和重命名也算，分支从前序步骤带来的修改也算。之后运行 `teamai workflow retry <run> <step>`，会在新的 pass 中重新运行这个步骤。如果修改只来自另一个步骤之后在共享分支上记录的提交，步骤改为以 `delivery_failed` 失败，重试也不会重新运行它。消息会说明如何只交付该步骤自己的提交，或如何在新分支上重新运行那条分支的步骤。
 
 其他交付失败会让步骤以 `delivery_failed` 失败。消息说明出了什么问题、工作保存在哪条分支，并给出重试命令。修复原因（例如 provider 的凭据）后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，或让驱动调用 `next`。重试会再次交付同一条分支，不会重新运行步骤。运行在开 pull request 期间被取消时，这个 pull request 无法收回。运行会列出它，步骤保持 cancelled。

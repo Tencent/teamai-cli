@@ -390,6 +390,42 @@ A pull request goes into the nearest branch its own branch grew from that alread
 
 Each pass of a looped `workspace: new` step has its own `/p<pass>` branch, so it opens its own pull request. The earlier ones stay open, by design. A step that loops on one `continue` branch has one pull request.
 
+A step with `deliver: pr` whose branch has no commits beyond the run base still succeeds, and opens no pull request. Later steps read `steps.<id>.pr` to tell the two apart. It is `{ url }` once the step opened or took a pull request, and `null` otherwise. Here `fix-ci` ends `nothing-to-fix` when `patch` changes nothing, and labels the pull request when it does:
+
+```yaml
+schemaVersion: v1alpha1
+name: fix-ci
+description: Fix the failing e2e tests on this branch, and open a pull request only when something changed.
+ends: { fixed: succeeded, nothing-to-fix: succeeded }
+steps:
+  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          prompt: Run npm run test:e2e and fix what fails. Change nothing when every test passes.
+  - id: nothing-to-fix
+    needs: [fix]
+    if: steps.fix.pr == null
+    end: nothing-to-fix
+  - id: fixed
+    needs: [fix]
+    if: steps.fix.pr != null
+    env: { PR: "{{ steps.fix.pr.url }}" }
+    command: gh pr edit "$PR" --add-label ci-fix
+    end: fixed
+```
+
+```text
+$ teamai workflow start fix-ci --driver local
+{"data":{"done":{"run":"rbd14d10aae2a1430","outcome":"succeeded","end":"nothing-to-fix","record":"published"},"cancelled":[]}}
+$ teamai workflow start fix-ci --driver local
+{"data":{"done":{"run":"rdd649ecb3eeb7403","outcome":"succeeded","end":"fixed","prs":["https://github.com/fixture/app/pull/1"],"record":"published"},"cancelled":[]}}
+```
+
+A `workflow` step with `deliver: pr` has `pr` too, and its workflow's `outputs` can pass it on. On a `for_each` step each item delivers, so `pr` is on each entry of `results`, such as `steps.build.results[0].pr.url`. On a looped step, `steps.<id>.pr` is the latest pass's, and `steps.<id>.passes[n].pr` is each pass's. Pull rejects a read of `pr` on a step without `deliver: pr`.
+
 Before it opens or accepts a pull request, TeamAI compares the delivered commit with the run's base commit. A change to CI configuration (such as `.github/workflows` or `.gitlab-ci.yml`), to hooks, to `AGENTS.md` or `CLAUDE.md` at any depth, or to any tool's agent, rule, or MCP files fails the step with `protected_path`, and the message names the files. These are the agent files a workspace step gets from the run's base, plus CI and hook paths. Deletions and renames count, and so do changes the branch got from an earlier step. `teamai workflow retry <run> <step>` then runs the step again, in a new pass. When only a later commit that another step recorded on a shared branch made the change, the step fails with `delivery_failed` instead, and the retry does not run it again. Its message says how to deliver only the step's own commit, or how to run the steps of that branch again in a new one.
 
 Any other delivery failure fails the step with `delivery_failed`. Its message says what went wrong, names the branch the work is kept in, and gives the retry command. Fix the cause, such as the provider's credentials, then run `teamai workflow retry <run> <step>`, and run `teamai workflow resume <run>` or let your driver call `next`. The retry delivers the same branch again, without running the step again. A run cancelled while its pull request is being opened cannot take that pull request back. The run lists it, and the step stays cancelled.

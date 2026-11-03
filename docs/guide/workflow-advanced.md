@@ -170,7 +170,7 @@ A failed item does not stop the other items. The step settles when every item ha
 [{"item":{"id":"core","dir":"packages/core"},"outcome":"success"},{"item":{"id":"cli","dir":"packages/cli"},"outcome":"failed"}]
 ```
 
-When an item ran in a workspace, its entry also has `branch`. `steps.<id>.branches` lists those branches in the same order.
+When an item ran in a workspace, its entry also has `branch`. `steps.<id>.branches` lists those branches in the same order. When an item of a step with `deliver: pr` delivered a pull request, its entry also has `pr`, as `{ url }`.
 
 A step with `for_each` has no outputs of its own, and a step without `for_each` has no results. Pull rejects a read of either, including in workflow outputs and earlier passes. To read one item, index the results, as in `steps.build.results[1].outcome`.
 
@@ -374,7 +374,7 @@ Each run of a step is a pass, numbered from 1. A lease carries its `pass`. In a 
 {"data":{"lease":{"run":"rd50c3422","step":"e2e","attempt":"a54df2231","revision":4,"pass":2,"command":"npm run test:e2e"},"cancelled":[]}}
 ```
 
-`steps.<id>.outcome`, `steps.<id>.end`, and `steps.<id>.outputs` read the latest pass. `steps.<id>.passes` lists every pass of the step, the current one included once it has settled. Each element has `pass` and `outcome`, and `outputs` and `end` when that pass has them. A pass of a `for_each` step has `results` instead of `outputs`, including in a previous-pass read. In `loop-review-and-fix`, the workflow output `reviews` returns every review.
+`steps.<id>.outcome`, `steps.<id>.end`, and `steps.<id>.outputs` read the latest pass. `steps.<id>.passes` lists every pass of the step, the current one included once it has settled. Each element has `pass` and `outcome`, and `outputs`, `end` and `pr` when that pass has them. A pass of a `for_each` step has `results` instead of `outputs`, including in a previous-pass read. In `loop-review-and-fix`, the workflow output `reviews` returns every review.
 
 A step can read a later step of its own range, one that needs it directly or through its needs. That read gets the later step's previous pass, `null` on pass 1, and does not wait for it. In that read, `passes` lists only the earlier passes. Here `plan` reads the note of the last decision:
 
@@ -674,6 +674,7 @@ steps:
 | A step's outcome, end, or output | `steps.check.outcome`, `steps.check.end`, `steps.review.outputs.files` |
 | Every pass of a step | `steps.review.passes`, `steps.review.passes[0].outputs.verdict`. See [Read every pass](#read-every-pass). |
 | The results of a `for_each` step | `steps.build.results`, `steps.build.results[0].outcome`, `steps.build.branches` |
+| The pull request a step with `deliver: pr` delivered, or `null` | `steps.fix.pr`, `steps.fix.pr.url`, `steps.build.results[0].pr.url`. See [Deliver a PR](workflow.md#deliver-a-pr). |
 | The item of a `for_each` instance | `item`, `item.dir` |
 | A string | `'failed'`. Use single quotes. Write a quote inside a string twice: `'it''s'`. |
 | A number | `3`, `-1`, `1.5`. Write a digit before the decimal point: `0.5`, not `.5`. |
