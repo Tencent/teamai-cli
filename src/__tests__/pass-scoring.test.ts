@@ -190,18 +190,21 @@ describe('PassScoring.start past the 14 days a mark lasts', () => {
     expect(await scoreRuns(config)).toEqual([]);
   });
 
-  it('removes the start keys of a run that ended more than 14 days ago, and of a run that is gone, and keeps a recent run\'s', async () => {
+  it('removes the start keys of a run that ended more than 14 days ago, and of a run that is gone, and keeps those of a run that ended since, or has not ended', async () => {
     const config = await team(review('[quality]'));
-    const [ended, gone, recent] = [await reviewedRun(config), await reviewedRun(config), await reviewedRun(config)];
-    for (const runId of [ended, gone]) await start(config, runId);
+    const [ended, gone, running, recent] = [await reviewedRun(config), await reviewedRun(config), await reviewedRun(config), await reviewedRun(config)];
+    for (const runId of [ended, gone, running]) await start(config, runId);
     await agedRun(config, ended);
     await agedRun(config, gone);
     fs.rmSync(runFilePath(config, gone));
+    const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(scoresDir(config), 'started', running), old, old);
+    data(await leaseNext(config, recent, skill));
 
     await start(config, recent);
 
     const started = (runId: string) => PassScoring.started(config, { runId, step: 'review', pass: 1 });
-    expect([await started(ended), await started(gone), await started(recent)]).toEqual([false, false, true]);
+    expect([await started(ended), await started(gone), await started(running), await started(recent)]).toEqual([false, false, true, true]);
   });
 });
 

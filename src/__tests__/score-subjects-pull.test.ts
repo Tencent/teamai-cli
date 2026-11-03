@@ -17,12 +17,23 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** What pull warned about the team workflow `fix-until-good`, whose steps after `fix` are `after`. */
+/** A team workflow that takes teamai-score's inputs and scores nothing. */
+const REVIEW_IT = `schemaVersion: v1alpha1
+name: review-it
+description: Review a subject.
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: string }
+steps:
+  - id: review
+    command: "true"
+`;
+
+/** What pull warned about the team workflow `fix-until-good`, whose steps after `fix` are `after`, beside `review-it`. */
 async function warned(after: string): Promise<string[]> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-score-subjects-pull-'));
   dirs.push(root);
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(knowledge, 'workflows', 'review-it.yaml'), REVIEW_IT);
   fs.writeFileSync(path.join(knowledge, 'workflows', 'fix-until-good.yaml'), `schemaVersion: v1alpha1
 name: fix-until-good
 description: Fix a change.
@@ -64,7 +75,19 @@ describe('pull of a step that says scorers.start: workflow', () => {
     expect(await warned(SUBJECTS)).toContain(UNREAD);
   });
 
-  it('does not warn when a teamai-score step reads teamai score subjects for it', async () => {
-    expect(await warned(SUBJECTS + SCORE)).not.toContain(UNREAD);
+  it.each([
+    ['lists the subjects of another step', SUBJECTS.replace('--step fix', '--step review') + SCORE],
+    ['runs another teamai command for it', SUBJECTS.replace('teamai score subjects --run', 'teamai score --run') + SCORE],
+    ['reaches a workflow other than teamai-score', SUBJECTS + SCORE.replace('workflow: teamai-score', 'workflow: review-it')],
+  ])('warns when the step before teamai-score %s', async (_, after) => {
+    expect(await warned(after)).toContain(UNREAD);
+  });
+
+  it.each([
+    ['--run "$RUN" --step fix', SUBJECTS + SCORE],
+    ['--step=fix --run "$RUN"', SUBJECTS.replace('--run "$RUN" --step fix', '--step=fix --run "$RUN"') + SCORE],
+    ['--step fix --run "$RUN"', SUBJECTS.replace('--run "$RUN" --step fix', '--step fix --run "$RUN"') + SCORE],
+  ])('does not warn when a teamai-score step reads teamai score subjects %s for it', async (_, after) => {
+    expect(await warned(after)).not.toContain(UNREAD);
   });
 });
