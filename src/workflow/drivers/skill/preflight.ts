@@ -6,7 +6,7 @@ import type { ToolId } from '../../../tools.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
 import { envAdvice } from '../../requirements.js';
-import type { OutputSchema } from '../../types.js';
+import { onlyPersonAnswers, type OutputSchema } from '../../types.js';
 import { describeLiteral, localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
 import { judgedBy, type DescribeVerdict } from './transitions.js';
 import type { DescribeAsk, DescribedInput } from './turn.js';
@@ -99,7 +99,7 @@ export function stepNeeds(description: WorkflowDescription, settled: ReadonlySet
   const interactive = facts.interactive.filter(left);
   const gates = facts.gates.filter((gate) => left(gate.step));
   const required = gates.filter((gate) => gate.required);
-  const open = gates.filter((gate) => !gate.required && gate.kind === 'choose' && gate.default === undefined);
+  const open = gates.filter((gate) => !gate.required && onlyPersonAnswers(gate, { autoApprove: true }));
 
   return [
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),

@@ -2906,6 +2906,19 @@ steps:
     expect(await readRun(runner.config, runId)).toMatchObject({ steps: [{ id: 'build', status: 'succeeded' }, { id: 'stuck', answer: { choice: 'give-up', channel: 'auto_approve' } }, { id: 'pair', status: 'skipped' }] });
   });
 
+  it('says a choice with a default may need a person for a runner without --auto-approve, and not for one with it', async () => {
+    const acme = team({ 'ship-issue': SHIP_ISSUE });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'ship-issue', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect((await publishedRuns(runner)).map((run) => run.offer?.mayNeed)).toEqual([['stuck', 'pair']]);
+    expect((await publishedRuns(runner, { ...runnerTaker(), autoApprove: true })).map((run) => run.offer?.mayNeed)).toEqual([['pair']]);
+  });
+
   it('hands a run that reaches a required approval unattended to a person on teamai-reports: a second runner leaves it, and a person claims and finishes it', async () => {
     const acme = team({ release: RELEASE });
     const ci = await acme.member('ci');

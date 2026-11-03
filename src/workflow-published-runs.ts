@@ -23,7 +23,7 @@ import { definitionsOf, handedRun, settledSteps } from './workflow/handoff.js';
 import { invokeRefusal, type InvokeCaller } from './workflow/protocol.js';
 import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './workflow/snapshot.js';
 import { installOwner, readRuns, RunIdSchema, type RunId } from './workflow/store.js';
-import type { RunState, RunStatus, WorkflowFailure } from './workflow/types.js';
+import { onlyPersonAnswers, type RunState, type RunStatus, type WorkflowFailure } from './workflow/types.js';
 
 /**
  * Who would take an offered run: the calling process, as `invoke` judges it, whether a person answers what the run asks
@@ -153,13 +153,19 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
 
   const settled = new Set(settledSteps({ definition, workflows, steps: snapshot.steps }));
 
+  // The skill driver's unattended session answers optional gates as auto-approve does (R19, R26).
+  const isAutoApproved = taker.driver === 'skill' || (taker.autoApprove ?? config.workflows?.auto_approve === true);
+
+  // The skill driver keeps the static check: it declares HITL in every host profile, so a gate it reaches waits for the
+  // person's answer in its session (D10), and it has no row that offers the run back to a person. An unattended session
+  // that took a run whose person step is only possible would wait there for nobody, so its resume refuses it (R24).
   const needs = taker.driver === 'skill'
     ? stepNeeds(description, settled)
-    : personNeeds(personSteps(handedRun(snapshot, definitions.value), new Date().toISOString(), taker.autoApprove ?? config.workflows?.auto_approve === true));
+    : personNeeds(personSteps(handedRun(snapshot, definitions.value), new Date().toISOString(), { autoApprove: isAutoApproved }));
 
   const { facts } = description;
 
-  const mayNeed = [...facts.interactive, ...facts.gates.flatMap((gate) => (gate.required || (gate.kind === 'choose' && gate.default === undefined) ? [gate.step] : []))]
+  const mayNeed = [...facts.interactive, ...facts.gates.flatMap((gate) => (onlyPersonAnswers(gate, { autoApprove: isAutoApproved }) ? [gate.step] : []))]
     .filter((step) => isLeft(step, settled));
 
   const left = description.facts.runs.filter((run) => isLeft(run.step, settled));

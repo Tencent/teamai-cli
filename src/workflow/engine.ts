@@ -69,7 +69,7 @@ import type {
   WorkflowFailure,
   WorkflowStep,
 } from './types.js';
-import { hasAction, stepWorkflow } from './types.js';
+import { hasAction, onlyPersonAnswers, stepWorkflow } from './types.js';
 import { describeWorkflow } from './describe.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 
@@ -388,7 +388,8 @@ function personRequired(run: string, step: string, unoffered: string | undefined
 }
 
 function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, { autoApprove, person }: { autoApprove?: boolean; person: PersonOutcome }): boolean {
-  let changed = autoApprove ?? config.workflows?.auto_approve === true ? answerOptionalGates(run, now) : false;
+  const isAutoApproved = autoApprove ?? config.workflows?.auto_approve === true;
+  let changed = isAutoApproved ? answerOptionalGates(run, now) : false;
   const definitionOf = stepDefinitions(run);
 
   for (const state of run.steps) {
@@ -397,7 +398,7 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, { au
 
     if (!hitl) continue;
 
-    if (hitl.required || hitl.kind === 'choose') {
+    if (onlyPersonAnswers(hitl, { autoApprove: isAutoApproved })) {
       if (person.kind === 'waits') continue;
       const failure = personRequired(run.id, state.id, person.unoffered);
       log.warn(failure.message);
@@ -414,13 +415,13 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, { au
 }
 
 /** The steps of `run` that wait for an answer only a person gives, as held for `hitl` from a driver without it. */
-function waitingForPerson(run: RunState): Held[] {
+function waitingForPerson(run: RunState, { autoApprove }: { autoApprove: boolean }): Held[] {
   const definitionOf = stepDefinitions(run);
 
   return run.steps.flatMap((state) => {
     const hitl = state.status === 'waiting' ? definitionOf(state.id)?.hitl : undefined;
 
-    return hitl && (hitl.required || hitl.kind === 'choose') ? [heldFor(state.id, ['hitl'])] : [];
+    return hitl && onlyPersonAnswers(hitl, { autoApprove }) ? [heldFor(state.id, ['hitl'])] : [];
   });
 }
 
@@ -432,19 +433,18 @@ export type PersonStep = { step: string; kind: StepHitl['kind'] | 'interactive' 
  * that answers optional gates when `autoApprove`: one waiting for an answer that does not give, or an interactive one.
  * It settles a copy, so `run` stays as it is.
  */
-export function personSteps(run: RunState, now: string, autoApprove: boolean): PersonStep[] {
+export function personSteps(run: RunState, now: string, { autoApprove }: { autoApprove: boolean }): PersonStep[] {
   const copy = structuredClone(run);
-  const result = reconcileRun(copy, now);
+  const settled = reconcileRun(copy, now);
   const definitionOf = stepDefinitions(copy);
 
   const answers = copy.steps.flatMap((state): PersonStep[] => {
     const hitl = state.status === 'waiting' ? definitionOf(state.id)?.hitl : undefined;
-    const needed = hitl && (hitl.required || (hitl.kind === 'choose' && !(autoApprove && hitl.default !== undefined)));
 
-    return hitl && needed ? [{ step: state.id, kind: hitl.kind }] : [];
+    return hitl && onlyPersonAnswers(hitl, { autoApprove }) ? [{ step: state.id, kind: hitl.kind }] : [];
   });
 
-  const interactive = 'ready' in result ? result.ready.flatMap((ready): PersonStep[] => (ready.definition.interactive ? [{ step: ready.lease.id, kind: 'interactive' }] : [])) : [];
+  const interactive = 'ready' in settled ? settled.ready.flatMap((ready): PersonStep[] => (ready.definition.interactive ? [{ step: ready.lease.id, kind: 'interactive' }] : [])) : [];
 
   return [...answers, ...interactive];
 }
@@ -1886,7 +1886,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         if (options.canTakeLease === false || 'inProgress' in result) {
           const hitl = can.hitl ? waitingHitl(run) : undefined;
 
-          return hitl ? answer({ hitl }) : wait(undefined, can.hitl || person.kind !== 'waits' ? [] : waitingForPerson(run));
+          return hitl ? answer({ hitl }) : wait(undefined, can.hitl || person.kind !== 'waits' ? [] : waitingForPerson(run, { autoApprove: options.autoApprove ?? config.workflows?.auto_approve === true }));
         }
 
         const open = run.steps.filter((step) => step.status === 'leased').length;
@@ -1982,7 +1982,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }
 
         if (settledOne) continue;
-        const holds = [...held, ...can.hitl || person.kind !== 'waits' ? [] : waitingForPerson(run)];
+        const holds = [...held, ...can.hitl || person.kind !== 'waits' ? [] : waitingForPerson(run, { autoApprove: options.autoApprove ?? config.workflows?.auto_approve === true })];
 
         return answer({ wait: { reason: holds.map((item) => item.reason).join('; '), held: holds } });
       }

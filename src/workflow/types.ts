@@ -47,6 +47,15 @@ export interface StepHitl {
   required: boolean;
 }
 
+/**
+ * Whether only a person can answer `hitl` for a driver without HITL: a required request, or a choice that auto-approve
+ * does not answer, as it answers only a choice with a default and only when `autoApprove`. An optional approval nobody
+ * answers is skipped instead.
+ */
+export function onlyPersonAnswers(hitl: Pick<StepHitl, 'kind' | 'required' | 'default'>, { autoApprove }: { autoApprove: boolean }): boolean {
+  return hitl.required || (hitl.kind === 'choose' && !(autoApprove && hitl.default !== undefined));
+}
+
 export interface WorkflowStep {
   id: string;
   /** Step ids this step waits for. Absent only on the first step, which is a root. */
