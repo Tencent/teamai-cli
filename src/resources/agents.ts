@@ -6,10 +6,10 @@ import { z } from 'zod';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
-import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
+import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, fileContentEqualToBuffer, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
-import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam } from '../builtin-agents.js';
+import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
 import { isAgentToolId, isToolId, TOOLS } from '../tools.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
@@ -393,8 +393,14 @@ export class AgentsHandler extends ResourceHandler {
 
         if (tombstones.has(stem)) continue;
 
-        // A built-in's copy is teamai's, unless the team replaces it here.
-        if (BUILTIN_AGENT_NAMES.has(stem) && !replacedBuiltins.get(stem)?.(tool)) continue;
+        // A built-in's copy is teamai's, unless the team replaces it here
+        // and the copy is not teamai's own render of it.
+        if (BUILTIN_AGENT_NAMES.has(stem)) {
+          if (!replacedBuiltins.get(stem)?.(tool)) continue;
+          const shipped = isAgentToolId(tool) ? shippedAgentRender(stem, tool, localConfig.scope) : undefined;
+
+          if (shipped && await fileContentEqualToBuffer(path.join(agentsDir, file), Buffer.from(shipped.content))) continue;
+        }
 
         if (directStems.has(stem)) continue; // canonical direct-pickup wins (self mode)
 
@@ -2121,7 +2127,7 @@ export function agentOrigin(repoPath: string, stem: string, tool: ToolName, alia
 
   const extrasTool = PRE_830_EXTRAS_TOOL[tool];
 
-  return {
+  const origin: CopyOrigin = {
     repoPath,
     pathspec: `:(glob)agents/**/${stem}.*`,
     renders: [
@@ -2143,6 +2149,12 @@ export function agentOrigin(repoPath: string, stem: string, tool: ToolName, alia
       }] : [],
     ],
   };
+
+  const shipped = shippedAgentRender(stem, tool, scope);
+
+  if (shipped) origin.shipped = shipped.content;
+
+  return origin;
 }
 
 /** `agentOrigin` for a copy of a removed agent; for a tool teamai renders no agents for, the team agents verbatim. */

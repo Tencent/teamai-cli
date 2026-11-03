@@ -1549,6 +1549,8 @@ export interface CopyOrigin {
   pathspec: string;
   /** teamai's renders of one version; null when that version renders nothing here. */
   renders?: ReadonlyArray<(content: Buffer, version: { path: string; blob: string }) => string | Uint8Array | null>;
+  /** What teamai writes at this path for the agent it ships under that name, which a team agent can replace. */
+  shipped?: string;
 }
 
 // ─── Hook definitions (unified model, issue #19) ─────────

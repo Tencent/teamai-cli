@@ -31,6 +31,7 @@ vi.mock('../utils/git.js', async () => ({
 }));
 
 import { AgentsHandler } from '../resources/agents.js';
+import { shippedAgentRender } from '../builtin-agents.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import { getDataHome, type TeamaiConfig, type LocalConfig } from '../types.js';
 
@@ -238,6 +239,19 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     await handler.pullItem(item, teamConfig, localConfig, openLedger(recorded));
     expect(await fse.pathExists(stale)).toBe(false);
     expect(await fse.readFile(mine, 'utf8')).toBe('name = "my own helper"\n');
+  });
+
+  it('pullItem replaces teamai\'s own teamai-recall with the team agent that replaces it', async () => {
+    // A built-in leaves no delivery record: its bytes are what make the copy teamai's.
+    const srcPath = path.join(repoPath, 'agents', 'teamai-recall.yaml');
+    await fse.outputFile(srcPath, 'name: teamai-recall\ndescription: Our recall\ninstructions: Search docs/adr first.\n');
+    const copy = path.join(homeDir, '.claude/agents/teamai-recall.md');
+    await fse.outputFile(copy, shippedAgentRender('teamai-recall', 'claude', 'user')?.content ?? '');
+    const item = { name: 'teamai-recall', type: 'agents' as const, sourcePath: srcPath, relativePath: 'agents/teamai-recall.yaml' };
+
+    await handler.pullItem(item, teamConfig, localConfig, openLedger({}));
+
+    expect(await fse.readFile(copy, 'utf8')).toContain('Search docs/adr first.');
   });
 
   // ── scanLocalForPush ────────────────────────────────────
@@ -988,6 +1002,15 @@ projects:
     const items = await handler.scanLocalForPush(teamConfig, localConfig);
 
     expect(items.find((i) => i.name === 'teamai-recall')).toMatchObject({ status: 'modified', relativePath: 'agents/teamai-recall.md' });
+  });
+
+  it('scanLocalForPush leaves out teamai\'s own teamai-recall even when the team replaces it', async () => {
+    await fse.outputFile(path.join(repoPath, 'agents', 'teamai-recall.md'), '# team recall\n');
+    await fse.writeFile(path.join(homeDir, '.claude/agents', 'teamai-recall.md'), shippedAgentRender('teamai-recall', 'claude', 'user')?.content ?? '');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.find((i) => i.name === 'teamai-recall')).toBeUndefined();
   });
 
   // ── pushItem ────────────────────────────────────────────

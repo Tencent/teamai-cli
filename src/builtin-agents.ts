@@ -1,15 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureDir, fileHash, pathExists, readFileSafe, writeFile, remove, listFiles } from './utils/fs.js';
+import { ensureDir, fileHash, pathExists, writeFile, remove, listFiles } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
-import type { TeamaiConfig, LocalConfig } from './types.js';
+import type { TeamaiConfig, LocalConfig, Scope } from './types.js';
 import {
   contentHash, forgetDelivered, keepsTrackedCopy, type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
-import { agentStemFromFilename, renderForTool, reverseFromClaude } from './resources/agent-format.js';
-import { isAgentToolId } from './tools.js';
+import { agentStemFromFilename, renderForTool, reverseFromClaude, type RenderResult } from './resources/agent-format.js';
+import { isAgentToolId, type AgentToolId } from './tools.js';
 import { installOf, locate, writable } from './locate.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
@@ -126,6 +126,31 @@ function getBuiltinAgentsDir(): string {
   const distDir = path.dirname(fileURLToPath(import.meta.url));
 
   return path.join(distDir, '..', 'agents');
+}
+
+/**
+ * What teamai writes for its built-in agent `stem` in `tool`'s agents
+ * directory: the deployment below writes it, and a copy holding exactly these
+ * bytes is teamai's own, never the member's or the team's. Undefined for a
+ * name teamai ships no agent under. A shipped file that does not parse is a
+ * teamai bug, so it throws.
+ */
+export function shippedAgentRender(stem: string, tool: AgentToolId, scope: Scope): RenderResult | undefined {
+  if (!BUILTIN_AGENT_NAMES.has(stem)) return undefined;
+  const src = path.join(getBuiltinAgentsDir(), `${stem}.md`);
+  let source: string;
+
+  try {
+    source = fs.readFileSync(src, 'utf8');
+  } catch {
+    return undefined; // a dev checkout without the bundled agents
+  }
+
+  const parsed = reverseFromClaude(src, source);
+
+  if (!parsed.ok) throw new Error(`invalid built-in agent ${stem}.md: ${parsed.reason}`);
+
+  return renderForTool(parsed.spec, tool, undefined, scope);
 }
 
 /**
@@ -255,18 +280,10 @@ export async function deployBuiltinAgents(
       if (replaced.get(path.basename(file, '.md'))?.(tool)) continue;
 
       try {
-        const source = await readFileSafe(src);
-
-        const parsed = source
-          ? reverseFromClaude(src, source)
-          : { ok: false as const, reason: 'cannot read source file' };
-
-        if (!parsed.ok) {
-          throw new Error(`invalid built-in agent ${file}: ${parsed.reason}`);
-        }
-
-        const rendered = renderForTool(parsed.spec, tool, undefined, localConfig.scope);
         const stem = path.basename(file, '.md');
+        const rendered = shippedAgentRender(stem, tool, localConfig.scope);
+
+        if (rendered === undefined) throw new Error(`cannot read ${src}`);
 
         if (options?.dryRun) {
           options.recorder?.report('builtin', path.join(targetAgentsDir, `${stem}${rendered.ext}`));
