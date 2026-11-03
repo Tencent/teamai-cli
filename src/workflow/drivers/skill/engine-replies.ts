@@ -15,7 +15,7 @@ export function readLease(raw: unknown): ReadLease | undefined {
   const read = LeaseWireSchema.safeParse(raw);
 
   if (!read.success) return undefined;
-  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires } = read.data;
+  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires, confined } = read.data;
   let lease: ReadLease;
 
   if (command !== undefined) {
@@ -46,6 +46,8 @@ export function readLease(raw: unknown): ReadLease | undefined {
     if (defaultModel !== undefined) lease.defaultModel = defaultModel;
 
     if (output !== undefined) lease.output = output;
+
+    if (confined) lease.confined = confined;
   }
 
   if (expiresAt !== undefined) lease.expiresAt = expiresAt;

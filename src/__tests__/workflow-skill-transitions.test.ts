@@ -14,7 +14,7 @@ import { acquireLock, releaseLock } from '../update.js';
 import { WORKSPACE_MODES } from '../workflow/types.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
-import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runsDir, skillStatePath, updateRun, type RunId } from '../workflow/store.js';
+import { attemptDir, AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, runScratchDir, runsDir, skillStatePath, updateRun, type RunId } from '../workflow/store.js';
 import { DeliveryReceiptSchema } from '../workflow/delivery-schema.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
@@ -22,7 +22,7 @@ import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
 // oxlint-disable-next-line teamai/workflow-boundaries -- checks runtime coverage of every transition
 import { TRANSITIONS } from '../workflow/drivers/skill/transitions.js';
-import { fakeJudge, githubOrigin, sharedTeam, skillHarness, untilStopped } from './helpers/skill-harness.js';
+import { fakeConfinedClaude, fakeJudge, githubOrigin, sharedTeam, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
 const CHECK = `schemaVersion: v1alpha1
 name: check
@@ -421,6 +421,22 @@ steps:
   - id: ship
     needs: [prep]
     command: node -e "process.exit(0)"
+`;
+
+// A judgement answered from the evidence an earlier step left under $TEAMAI_RUN_DIR, at the level its confined.json asks for.
+const JUDGED = `schemaVersion: v1alpha1
+name: judged
+description: Judge a change from its evidence
+invoke: allow
+steps:
+  - id: evidence
+    command: node -e "const p=require('path'),fs=require('fs'),d=p.join(process.env.TEAMAI_RUN_DIR,'evidence');fs.mkdirSync(d);fs.writeFileSync(p.join(d,'confined.json'),JSON.stringify({level:'verified'}));fs.writeFileSync(p.join(d,'diff.txt'),'retries 3')"
+  - id: judge
+    needs: [evidence]
+    workspace: { confined: evidence }
+    prompt: Judge the change in diff.txt.
+    output:
+      verdict: pass | fail
 `;
 
 const SCORERS = { 'review-quality': `---
@@ -2210,6 +2226,57 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ review: REVIEW }, { scorers: SCORERS, client: (client) => ({ ...client, scoreNext: async () => ({ error: refusal }) }) });
       fakeJudge(made.root, 'thorough');
       expect((await chosen(made, 'review', 1)).events).toContainEqual({ kind: 'judging-off', failure: refusal });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a step confined to a directory runs on the confined tool of this machine, in the runner, as the local driver runs it',
+    rows: ['D28', 'C12', 'C13'],
+    run: async () => {
+      const made = await harness({ judged: JUDGED });
+      fakeConfinedClaude(made.root, { verdict: 'pass' });
+      const turn = await chosen(made, 'judged', 1);
+      expect(dispatches(turn)).toEqual([]);
+      const done = await polledToDone(made, turn.run);
+      expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
+      const engine = await readRun(made.config, turn.run);
+      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judge')).toMatchObject({
+        status: 'succeeded', tool: 'claude', outputs: { verdict: 'pass' }, confined: { tool: 'claude', isolation: 'verified', access: 'read' },
+      });
+      return made.rows;
+    },
+  },
+  {
+    name: 'a step confined at best-effort, in a session with no confined tool, goes to a fresh child that reads only its directory',
+    rows: ['D7', 'C2'],
+    run: async () => {
+      const made = await harness({ judged: JUDGED.replace("level:'verified'", "level:'best-effort'") }, { tool: 'copilot' });
+      const { run } = await chosen(made, 'judged', 1);
+      const [dispatch] = dispatches(await dispatchTurn(made, run));
+      if (!dispatch) throw new Error(`no dispatch for ${run}`);
+      const dir = path.join(runScratchDir(made.config, run), 'evidence');
+      expect(dispatch).toMatchObject({ step: 'judge', dir, needs: { confined: true } });
+      expect(fs.readFileSync(dispatch.brief, 'utf8')).toContain(`- Read only the files in \`${dir}\`. Read nothing outside it`);
+      await made.call({ kind: 'ack', run, attempt: dispatch.attempt });
+      childWrites(dispatch.brief, { kind: 'output', output: { verdict: 'fail' } });
+      await made.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false });
+      const engine = await readRun(made.config, run);
+      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judge')).toMatchObject({ status: 'succeeded', outputs: { verdict: 'fail' } });
+      return made.rows;
+    },
+  },
+  {
+    name: 'describe says who runs a step confined to a directory: the confined tool here, or else a fresh subagent of the session',
+    rows: ['R3'],
+    run: async () => {
+      const made = await harness({ judged: JUDGED });
+      fakeConfinedClaude(made.root, { verdict: 'pass' });
+      expect(await made.call({ kind: 'describe', name: 'judged' })).toMatchObject({ data: { describe: { judging: { kind: 'here', tool: 'claude' }, ask: { kind: 'ask', question: {
+        text: '- claude runs judge here, confined to the directory it answers from.\nHow should it run?',
+      } } } } });
+      expect(await made.call({ kind: 'describe', name: 'judged' }, { tool: 'copilot' })).toMatchObject({ data: { describe: { judging: { kind: 'session' }, ask: { kind: 'ask', question: {
+        text: '- A fresh subagent of this session runs judge, reading only its directory, at best-effort isolation, unless it asks for verified isolation, which another driver runs. The coding session\'s tool, copilot, has no confined judge teamai runs.\nHow should it run?',
+      } } } } });
       return made.rows;
     },
   },

@@ -10,7 +10,7 @@ import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { engineReply, reportReply, respondReply, scoreReply } from './engine-replies.js';
-import { canFor, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
+import { canFor, confinedCan, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
@@ -242,7 +242,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
     // The engine reads an absent autoApprove and an undefined one alike, and the CLI's JSON drops it.
     const body = {
-      driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: request.running, canTakeLease: request.canTakeLease,
+      driver: { ...state.driver, can: { ...canFor(state.host.kind === 'chosen' ? state.host.id : undefined), confined: confinedCan(state) } }, running: request.running, canTakeLease: request.canTakeLease,
       runMode: state.options.mode, autoApprove: request.autoApprove ? true : undefined,
     };
 

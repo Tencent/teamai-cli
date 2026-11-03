@@ -53,7 +53,7 @@ export interface DispatchAction {
    * `parallel`: the child may run beside other children of the run. `person`: the agent works the step itself, with the
    * person. `isolation`: the step requires a sandbox, which TeamAI does not enforce.
    */
-  needs: { place: Dispatch['place']; parallel: boolean; person: boolean; isolation?: 'sandbox' };
+  needs: { place: Dispatch['place']; parallel: boolean; person: boolean; isolation?: 'sandbox'; confined?: true };
   dir: string;
   /** The masked brief the child works from: the prompt, where to work, the result to write and the report to run. */
   brief: string;
@@ -350,6 +350,8 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
   const needs: DispatchAction['needs'] = { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true };
 
   if (dispatch.isolation) needs.isolation = dispatch.isolation;
+
+  if (dispatch.confined) needs.confined = true;
 
   const action: DispatchAction = {
     kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open), needs, dir: dispatch.dir, brief: dispatch.brief, model: dispatch.model,

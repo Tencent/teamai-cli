@@ -313,10 +313,10 @@ export function workflowNotFound(name: string): WorkflowFailure {
 }
 
 /**
- * Who judges a run's scored steps as the skill driver drives it: no step is scored; the confined judge of `tool`, the
- * session's tool, here; the session itself with `tool` once the run is done, at best-effort, since this machine has no
- * verified judge of it, for `reason`, leaving open the work of the `verified` scorers that ask for more; or nobody on
- * this machine, for `reason`.
+ * Who judges a run's scored steps, and runs its confined prompt steps, as the skill driver drives it: no step is scored
+ * or confined; the confined tool of `tool`, the session's tool, here; the session itself with `tool`, at best-effort,
+ * in a fresh child, since this machine has no verified confined run of it, for `reason`, leaving open the work of the
+ * `verified` scorers that ask for more; or nobody on this machine, for `reason`.
  */
 /** A workflow as `describe` answers it: what it does, who judges it here, and why it cannot deliver, when it cannot. */
 export type DescribedWorkflow = { description: WorkflowDescription; judging: Judging; undeliverable?: WorkflowFailure };
@@ -332,8 +332,10 @@ export type Judging =
  * the scorers a run pinned, when it has started.
  */
 async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined, pinned?: Record<string, PinnedScorer>): Promise<Judging> {
-  if (description.facts.scored.length === 0) return { kind: 'none' };
-  const unavailable = scoringUnavailable(config);
+  const { scored, confined } = description.facts;
+
+  if (scored.length === 0 && confined.length === 0) return { kind: 'none' };
+  const unavailable = scored.length > 0 ? scoringUnavailable(config) : undefined;
 
   if (unavailable) return { kind: 'elsewhere', reason: unavailable };
 
@@ -345,12 +347,13 @@ async function judgingOf(config: LocalConfig, description: WorkflowDescription, 
   const reason = !isConfinedTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`
     : level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile` : `The ${tool} executable is not on PATH`;
 
-  const scorers = [...new Set(description.facts.scored.flatMap((step) => step.scorers))];
+  const scorers = [...new Set(scored.flatMap((step) => step.scorers))];
   const verified = await verifiedScorers(config, scorers, pinned);
 
   if (!verified.ok) return { kind: 'elsewhere', reason: `${reason}. ${verified.reason}` };
 
-  if (verified.scorers.length === scorers.length) {
+  // A confined step whose confined.json asks for best-effort is still the session's to run.
+  if (confined.length === 0 && verified.scorers.length === scorers.length) {
     return { kind: 'elsewhere', reason: `${reason}, and ${verified.scorers.join(', ')} ${verified.scorers.length > 1 ? 'ask' : 'asks'} for verified isolation.` };
   }
 

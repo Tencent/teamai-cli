@@ -17,6 +17,7 @@ import type { LocalConfig } from '../../../types.js';
 import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
 import { attemptEnv } from '../../attempt-marker.js';
+import { runConfinedStep, type ConfinedStepEnd, type ConfinedStepLease } from '../../confined-step.js';
 import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
@@ -28,7 +29,7 @@ import { reportLiteral, runnerArgs } from './literals.js';
 import { readJob, type Job } from './job.js';
 import { applyEffects, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS } from './tick.js';
 import {
-  exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
+  confinedEndedRow, confinedRunRow, exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
 } from './transitions.js';
 import type { Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
@@ -77,6 +78,8 @@ type Stage =
    * `mode` is the run's. `expiresAt` is the lease's deadline, when it has one.
    */
   | { kind: 'run'; dir: string; command: string; env: NodeJS.ProcessEnv; mode: RunMode; expiresAt?: string }
+  /** A step confined to a directory, which this runner runs on a confined tool. `expiresAt` is the lease's deadline. */
+  | { kind: 'confined'; lease: ConfinedStepLease; expiresAt?: string }
   /** The engine refused the report; it stays stored, and the runner sends it again. */
   | { kind: 'retry' }
   /**
@@ -164,6 +167,13 @@ async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId)
       if (stage.kind === 'run') {
         const exited = await runCommand(context, run, attempt, stage);
         const sent = await locked(context, run, (lock) => report(context, lock, attempt, exited));
+
+        if (sent.kind === 'gone') return { data: { runner: { attempt, status: sent.status } } };
+      }
+
+      if (stage.kind === 'confined') {
+        const ended = await runConfinedHere(context, run, attempt, stage);
+        const sent = await locked(context, run, (lock) => confinedReport(context, lock, attempt, ended));
 
         if (sent.kind === 'gone') return { data: { runner: { attempt, status: sent.status } } };
       }
@@ -325,8 +335,20 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     return stage;
   }
 
+  const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation, confined } = lease;
+
+  // While this machine judges the run, its confined tool runs the step here, as the local driver does (C12).
+  if (confined && state.judging) {
+    const running = open.phase === 'preparing' ? traced(context, confinedRunRow(state, attempt))?.state ?? state : state;
+    await writeSkillState(context.config, lock, running, context.env.secrets);
+    const stage: Stage = { kind: 'confined', lease: { ...lease, confined } };
+
+    if (open.expiresAt !== undefined) stage.expiresAt = open.expiresAt;
+
+    return stage;
+  }
+
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
-  const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation } = lease;
 
   const picked = await pickChildModel({
     config: context.config, toolPaths: context.toolPaths, step: open.step, tool: state.orchestrator.tool ?? context.tool, agent, model, defaultModel,
@@ -334,14 +356,19 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   if (!picked.ok) return failed(picked.failure, 'model');
 
+  // A child of a confined step works in its directory, which holds everything it may read.
+  const workDir = confined ? confined.dir : dir;
+
   const brief = await writeChildBrief({
-    config: context.config, run: lock.run, attempt, step: open.step, dir, prompt: prepared.prompt ?? lease.prompt,
-    changes: writes ? 'commit' : interactive && place === 'checkout' && !readOnly ? 'keep' : 'none',
+    config: context.config, run: lock.run, attempt, step: open.step, dir: workDir, prompt: prepared.prompt ?? lease.prompt,
+    changes: confined ? 'confined' : writes ? 'commit' : interactive && place === 'checkout' && !readOnly ? 'keep' : 'none',
     by: interactive ? 'person' : state.host.kind === 'chosen' && state.host.id === 'h4' ? 'self' : 'child',
     output, report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
 
-  const dispatch: Dispatch = { place, dir, brief, model: picked.model };
+  const dispatch: Dispatch = { place, dir: workDir, brief, model: picked.model };
+
+  if (confined) dispatch.confined = true;
 
   if (interactive) dispatch.person = true;
 
@@ -426,6 +453,46 @@ async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId,
   await writeFileAtomic(path.join(attemptDir(context.config, run, attempt), 'output.log'), output);
 
   return { exitCode: exited.exitCode, stdout: exited.stdout, stderr: exited.stderr, output };
+}
+
+/**
+ * Runs the confined step of `stage` outside the run lock until it ends, or a check finds its attempt stopped, which
+ * stops its tool and waits for it to end.
+ */
+async function runConfinedHere(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'confined' }>): Promise<ConfinedStepEnd> {
+  const stop = new AbortController();
+  const work = runConfinedStep({ config: context.config, run, lease: stage.lease, signal: stop.signal });
+  const ended = await whileOpen(context, run, attempt, { work, phases: ['running'], expiresAt: stage.expiresAt });
+
+  if (ended) return ended;
+  stop.abort();
+
+  return work;
+}
+
+/**
+ * Under the lock: stores the report of the confined run (C13), `released` when no tool of its lease resolves the step's
+ * model here, or gives up a stopped attempt (C9), then sends it.
+ */
+async function confinedReport(context: SkillContext, lock: RunLock, attempt: AttemptId, ended: ConfinedStepEnd): Promise<Stage> {
+  const state = await readState(context, lock);
+  const open = state && openAttempt(state, attempt);
+
+  if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
+
+  if (!state || open?.phase !== 'running') return { kind: 'gone', status: 'gone' };
+  const id = { attempt, revision: open.revision, driver: state.driver };
+  let body: ReportBody;
+
+  if (ended.kind === 'ran') {
+    // The cost stays with what the confined run measured, which the report carries.
+    const { cost: _cost, ...measured } = ended.report;
+    body = { ...id, ...measured };
+  } else {
+    body = { ...id, outcome: 'released', message: ended.reason };
+  }
+
+  return send(context, lock, confinedEndedRow(state, { attempt, body }), attempt);
 }
 
 /** Under the lock: stores the report of the exited command (C8), or gives up a stopped attempt (C9), then sends it. */

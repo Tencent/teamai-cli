@@ -9,7 +9,7 @@ import type { ToolId } from '../../../tools.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
 import type { HostPlaceRequest, RunVersion } from '../../protocol.js';
-import { FailureSchema } from '../../step-state.js';
+import { ConfinedRunReportSchema, FailureSchema, TokenUsageSchema } from '../../step-state.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES } from './host-profiles.js';
 import { INVOCATIONS } from './literals.js';
@@ -28,6 +28,12 @@ const ReportBodySchema = z.object({
   outputs: z.unknown().optional(),
   message: z.string().optional(),
   failure: FailureSchema.optional(),
+  /** What a confined run the runner started measured: its tool, model, tokens and time, and the run itself. */
+  tool: z.string().optional(),
+  model: z.string().optional(),
+  tokens: TokenUsageSchema.optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  confined: ConfinedRunReportSchema.optional(),
 });
 
 export type ReportBody = z.infer<typeof ReportBodySchema>;
@@ -52,6 +58,8 @@ const DispatchSchema = z.object({
   place: z.enum(['workspace', 'checkout']),
   person: z.literal(true).optional(),
   isolation: z.literal('sandbox').optional(),
+  /** The step is confined to `dir`: a fresh child that reads that directory and its brief, and nothing more, works it. */
+  confined: z.literal(true).optional(),
   dir: z.string(),
   brief: z.string(),
   agent: z.string().optional(),

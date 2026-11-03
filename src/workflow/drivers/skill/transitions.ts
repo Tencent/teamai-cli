@@ -6,6 +6,7 @@
 import type { RunMode } from '../../../launch-context.js';
 import type { ToolId } from '../../../tools.js';
 import type { Judging, RunReadied, RunVersion } from '../../protocol.js';
+import type { ConfinedLease } from '../../lease-wire.js';
 import type { EnvScope } from '../../requirements.js';
 import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
@@ -57,14 +58,15 @@ export const TRANSITIONS = [
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`', next: 'drive', action: '' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at `verified` while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued or placing', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
   { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
   { id: 'D5', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a stopping or reporting', effects: 'none', next: 'drive', action: '' },
   { id: 'D6', state: 'drive', input: 'reply lease', guard: 'executor command', effects: 'phase preparing; spawn runner job `command`', next: 'drive', action: 'event `started`' },
-  { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and D8 does not apply', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
+  { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and neither D8 nor D28 applies', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D8', state: 'drive', input: 'reply lease', guard: 'executor prompt, workspace `new` or `continue`, and a host that makes places (h3)', effects: 'phase preparing with request `host`; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
+  { id: 'D28', state: 'drive', input: 'reply lease', guard: 'executor prompt, confined to a directory, while `judging`', effects: 'phase preparing; spawn runner job `confined`', next: 'drive', action: 'event `started`' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
   { id: 'D10', state: 'drive', input: 'reply hitl', guard: 'a required approval', effects: 'journal the gate: `seq` := seq + 1, unless it is the gate journalled already', next: 'drive', action: '`person why:approval` with the person\'s literals; waiting `<step> waits for the person\'s answer`' },
   { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
@@ -85,16 +87,18 @@ export const TRANSITIONS = [
   { id: 'D25', state: 'drive, done', input: 'a poll tick', guard: 'a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the events after the old `seen[s]`, no actions; `then: poll`' },
   { id: 'D26', state: 'drive', input: 'a poll tick', guard: 'the tick took D14, and D22 does not apply', effects: 'none', next: 'drive', action: '`then: wake` with the next literal, no actions' },
   { id: 'C1', state: 'preparing', input: 'runner: prepared', guard: 'job `command`', effects: 'run the command outside the lock with `{...stepEnvironment(env, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), the running teamai first on PATH, output masked into `output.log`', next: 'running', action: '' },
-  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
+  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined`', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
   { id: 'C3', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`; `pickChildModel` fails `model_unavailable`', effects: 'write-ahead `failed` with that failure', next: 'reporting', action: '' },
   { id: 'C4', state: 'preparing', input: 'runner: place busy, behind b', guard: '', effects: '`behind` := b', next: 'queued', action: '' },
   { id: 'C5', state: 'preparing', input: 'runner: needs a place', guard: 'request `host`, and no place an earlier attempt adopted for the branch passes the adopt checks', effects: 'the place to ask for: `name`, `branch`, `start`', next: 'placing', action: '`place` in each foreground turn until adopted' },
   { id: 'C6', state: 'preparing', input: 'runner: adopt refused', guard: 'request `adopt dir`', effects: '`refused` := why; the engine still leases a', next: 'placing', action: '`place` with `refused`' },
   { id: 'C7', state: 'preparing', input: 'runner: prepare or setup failed', guard: '', effects: 'write-ahead `failed` with its failure', next: 'reporting', action: '' },
   { id: 'C8', state: 'running', input: 'runner: the command exited', guard: '', effects: 'write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail', next: 'reporting', action: '' },
-  { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting', guard: '', effects: 'stop the setup or command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
+  { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, its command exiting, or its confined run ending', guard: '', effects: 'stop the setup, command or confined run and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
   { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
   { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; write-ahead `released`', next: 'reporting', action: '' },
+  { id: 'C12', state: 'preparing', input: 'runner: prepared', guard: 'job `confined`', effects: '`runConfinedStep` outside the lock, on the first of the lease\'s tools that resolves its model, in its directory, with no team env and no session kept', next: 'running', action: '' },
+  { id: 'C13', state: 'running', input: 'runner: the confined run ended', guard: '', effects: 'write-ahead: `success` with the reply as outputs and what the run measured, else `failed` with its failure; `released` when no tool of the lease resolves its model here', next: 'reporting', action: '' },
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
   { id: 'K3', state: 'drive, done', input: 'next `--ack dispatch.a`', guard: 'a neither offered nor dispatched', effects: 'none', next: 'unchanged', action: 'error `unknown_offer`, next: the next literal' },
@@ -140,7 +144,7 @@ export type ReadLease = { attempt: AttemptId; step: string; revision: number; ex
    * workspace, whose clone TeamAI makes, never a host. `interactive`: the person works in the step. `readOnly`: the step
    * set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
    */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; team?: true; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: unknown }
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; team?: true; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: unknown; confined?: ConfinedLease }
 );
 
 /** A gate as the engine asks it. */
@@ -735,7 +739,7 @@ function choicePending(state: SkillState): Answered<'R14'> {
  * is the turn a row decides for its call.
  */
 export function replyRow(state: SkillState, input: { reply: EngineReply; at: string; version?: RunVersion }):
-  | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
+  | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D28' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
   | Answered<'D17', Relayed>
   | undefined {
   if (state.done) return undefined;
@@ -746,6 +750,7 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       const { lease } = engine;
       const { attempt, step: id, revision, expiresAt } = lease;
       const hosted = lease.executor === 'prompt' && lease.writes && !lease.team && state.host.kind === 'chosen' && state.host.places === 'host';
+      const runsHere = lease.executor === 'prompt' && lease.confined !== undefined && state.judging !== undefined;
 
       const attemptState: AttemptState = { attempt, step: id, revision, spawnedAt: at, phase: 'preparing' };
 
@@ -754,7 +759,7 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
       if (hosted) attemptState.request = { kind: 'host' };
       const preparing = withAttempt(state, attemptState);
 
-      return { row: lease.executor === 'command' ? 'D6' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
+      return { row: lease.executor === 'command' ? 'D6' : runsHere ? 'D28' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
     }
 
     case 'wait':
@@ -925,6 +930,24 @@ export function preparedRow(state: SkillState, attempt: AttemptId): Moved<'C1'> 
   if (open?.phase !== 'preparing') return undefined;
 
   return { row: 'C1', state: withAttempt(state, { ...open, phase: 'running' }) };
+}
+
+/** C12: the runner starts the confined run of `attempt`. */
+export function confinedRunRow(state: SkillState, attempt: AttemptId): Moved<'C12'> | undefined {
+  const open = openAttempt(state, attempt);
+
+  if (open?.phase !== 'preparing') return undefined;
+
+  return { row: 'C12', state: withAttempt(state, { ...open, phase: 'running' }) };
+}
+
+/** C13: the confined run of `attempt` ended, and `body` reports it. */
+export function confinedEndedRow(state: SkillState, input: { attempt: AttemptId; body: ReportBody }): MovedWithEffects<'C13'> | undefined {
+  const open = openAttempt(state, input.attempt);
+
+  if (open?.phase !== 'running') return undefined;
+
+  return { row: 'C13', state: withAttempt(state, { ...open, phase: 'reporting', body: input.body }), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
 }
 
 /** C2: the prompt of `attempt` is offered to the agent as `dispatch`. */

@@ -122,14 +122,15 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
-| D1 | drive | tick | | engine `next {driver: identity + canFor(host), the can of the host's profile, and h1's for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner's check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}` | drive | |
+| D1 | drive | tick | | engine `next {driver: identity + canFor(host), the can of the host's profile, and h1's for a run without prompt steps, with can.confined: the session tool's own at `verified` while `judging`, else one of the run's tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner's check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}` | drive | |
 | D2 | drive | reply `cancelled` holds a | a queued or placing | drop a | drive | event `stopped` |
 | D3 | drive | reply `cancelled` holds a | a preparing or running | phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled` | drive | |
 | D4 | drive | reply `cancelled` holds a | a offered or dispatched | phase stopping by the agent, why as D3 | drive | `stop {why, report}` in each foreground turn until reported |
 | D5 | drive | reply `cancelled` holds a | a stopping or reporting | none | drive | |
 | D6 | drive | reply lease | executor command | phase preparing; spawn runner job `command` | drive | event `started` |
-| D7 | drive | reply lease | executor prompt, and D8 does not apply | phase preparing; spawn runner job `prompt` | drive | event `started` |
+| D7 | drive | reply lease | executor prompt, and neither D8 nor D28 applies | phase preparing; spawn runner job `prompt` | drive | event `started` |
 | D8 | drive | reply lease | executor prompt, workspace `new` or `continue`, and a host that makes places (h3) | phase preparing with request `host`; spawn runner job `prompt` | drive | event `started` |
+| D28 | drive | reply lease | executor prompt, confined to a directory, while `judging` | phase preparing; spawn runner job `confined` | drive | event `started` |
 | D9 | drive | tick | a queued attempt whose `behind` is no longer open | phase preparing; spawn its job again | drive | |
 | D10 | drive | reply hitl | a required approval | journal the gate: `seq` := seq + 1, unless it is the gate journalled already | drive | `person why:approval` with the person's literals; waiting `<step> waits for the person's answer` |
 | D11 | drive | reply hitl | an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back | as D10 | drive | `choose about:gate decide:person` |
@@ -155,16 +156,18 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
 | C1 | preparing | runner: prepared | job `command` | run the command outside the lock with `{...stepEnvironment(env, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), the running teamai first on PATH, output masked into `output.log` | running | |
-| C2 | preparing | runner: prepared | job `prompt` | `pickChildModel`; `writeChildBrief` | offered | `dispatch` in each foreground turn until acked |
+| C2 | preparing | runner: prepared | job `prompt` | `pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined` | offered | `dispatch` in each foreground turn until acked |
 | C3 | preparing | runner: prepared | job `prompt`; `pickChildModel` fails `model_unavailable` | write-ahead `failed` with that failure | reporting | |
 | C4 | preparing | runner: place busy, behind b | | `behind` := b | queued | |
 | C5 | preparing | runner: needs a place | request `host`, and no place an earlier attempt adopted for the branch passes the adopt checks | the place to ask for: `name`, `branch`, `start` | placing | `place` in each foreground turn until adopted |
 | C6 | preparing | runner: adopt refused | request `adopt dir` | `refused` := why; the engine still leases a | placing | `place` with `refused` |
 | C7 | preparing | runner: prepare or setup failed | | write-ahead `failed` with its failure | reporting | |
 | C8 | running | runner: the command exited | | write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail | reporting | |
-| C9 | stopping by its runner | runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting | | stop the setup or command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released` | reporting | |
+| C9 | stopping by its runner | runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, its command exiting, or its confined run ending | | stop the setup, command or confined run and every process it started (`tool-launch/process-stop.ts`); write-ahead `released` | reporting | |
 | C10 | preparing, running | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its setup or command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place) | unchanged | event `restarted` |
 | C11 | stopping by its runner | tick: its `runner.lock` is free | it was spawned more than `WAIT_GRACE_MS` ago | stop the process group its setup or command left; write-ahead `released` | reporting | |
+| C12 | preparing | runner: prepared | job `confined` | `runConfinedStep` outside the lock, on the first of the lease's tools that resolves its model, in its directory, with no team env and no session kept | running | |
+| C13 | running | runner: the confined run ended | | write-ahead: `success` with the reply as outputs and what the run measured, else `failed` with its failure; `released` when no tool of the lease resolves its model here | reporting | |
 
 ### Acks
 

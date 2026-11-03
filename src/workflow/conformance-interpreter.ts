@@ -105,10 +105,13 @@ export const DRIVER_PROFILES = {
   session: { kind: 'session', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
   external: { kind: 'external', can: { workspace: ['read-only', 'new', 'continue'] } },
-  /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next`. */
+  /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next` while a verified Claude judges its run. */
   skill: {
     kind: 'skill',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
+    can: {
+      hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false,
+      confined: [{ level: 'verified', access: 'read', tools: ['claude'] }],
+    },
   },
   /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
   'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },

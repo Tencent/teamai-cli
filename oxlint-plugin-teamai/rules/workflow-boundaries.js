@@ -21,8 +21,10 @@ const SKILL_IMPORTS = {
   'src/workflow/describe.ts': { typeOnly: true },
   'src/workflow/attempt-marker.ts': {},
   // The wire shapes the engine answers with, which every driver parses with the same schema.
-  'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema'] },
-  'src/workflow/step-state.ts': { names: ['FailureSchema'] },
+  'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema', 'ConfinedLease'] },
+  'src/workflow/step-state.ts': { names: ['FailureSchema', 'ConfinedRunReportSchema', 'TokenUsageSchema'] },
+  // A step confined to a directory, which the background runner runs as the local driver does.
+  'src/workflow/confined-step.ts': { names: ['runConfinedStep', 'ConfinedStepEnd', 'ConfinedStepLease'] },
   'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'runsDir', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
   'src/workflow/step-model.ts': {},
   'src/env-resolution.ts': {},

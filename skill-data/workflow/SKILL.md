@@ -99,6 +99,8 @@ On `h4` you are the child, so no child starts and nothing runs in the background
 
 A dispatch whose `needs.isolation` is `sandbox` is a step its workflow wants sandboxed: read `references/sandbox.md` before step 1.
 
+A dispatch whose `needs.confined` is true is a step answered from `dir` alone: read `references/judging.md` before step 1.
+
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
 The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself.

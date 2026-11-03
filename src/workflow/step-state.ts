@@ -11,7 +11,8 @@ import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.
 import type { RunState, StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
-const TokenUsageSchema: z.ZodType<TokenUsage> = z.object({
+/** The tokens an attempt spent, as its driver reports them. */
+export const TokenUsageSchema: z.ZodType<TokenUsage> = z.object({
   input: z.number().optional(),
   output: z.number().optional(),
   cachedInput: z.number().optional(),

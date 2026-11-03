@@ -22,3 +22,11 @@ When `done` carries `score`, this machine has no verified judge of your tool, an
 4. Run `score` again until it answers `idle`. Work a scorer requires `verified` for stays open for another driver.
 
 Without `score`, never judge the run's work yourself: teamai's confined judge or another driver judges it, and judging it here would downgrade verified judging to best-effort.
+
+## Steps confined to a directory
+
+A prompt step confined to a directory is answered from that directory alone, which an earlier step of the run wrote. Its `confined.json` says the isolation it needs. It runs where judging runs:
+
+- With teamai's confined judge of your tool here, TeamAI runs the step in the background on that tool, as it runs a judge. The turn shows the step `started` and `settled`; there is nothing else for you to do.
+- When this session judges the run, the step comes as a `dispatch` whose `needs.confined` is true. Start a fresh child for it, never one that worked another step, and give it only the prompt the Dispatch section names: it reads nothing from this session or the checkout. A step that asks for `verified` isolation never comes to you.
+- With `--no-judge` or on `h4`, no confined step runs here. The run waits on them in `held`, for another driver.

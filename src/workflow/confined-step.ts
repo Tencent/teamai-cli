@@ -25,10 +25,13 @@ export type ConfinedStepReport = Pick<ReportInput, 'outcome' | 'outputs' | 'tool
  */
 export type ConfinedStepEnd = { kind: 'ran'; report: ConfinedStepReport } | { kind: 'unresolved'; reason: string };
 
+/** What of a confined lease the run reads: its step, prompt, model, deadline and limits, and where it is confined. */
+export type ConfinedStepLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'model' | 'defaultModel' | 'expiresAt' | 'limits'> & { confined: ConfinedLease };
+
 export interface ConfinedStepInput {
   config: LocalConfig;
   run: RunId;
-  lease: LeaseWire & { attempt: ReportInput['attempt']; confined: ConfinedLease };
+  lease: ConfinedStepLease;
   signal?: AbortSignal;
   /** Where the tools' executables are looked up: PATH unless given. */
   resolveTool?: (executable: string) => string | null;
@@ -100,7 +103,7 @@ function spentOf(usage: ConfinedRun['usage']): Pick<ConfinedStepReport, 'tokens'
 }
 
 /** How long the run may take: what is left of the lease's deadline, and of its turn's timeout, the sooner of them. */
-function timeoutOf(lease: LeaseWire): number {
+function timeoutOf(lease: ConfinedStepLease): number {
   const left = lease.expiresAt === undefined ? MAX_TIMER_DELAY : Date.parse(lease.expiresAt) - Date.now();
 
   return Math.max(1, Math.min(MAX_TIMER_DELAY, left, lease.limits?.timeoutMs ?? MAX_TIMER_DELAY));

@@ -2,6 +2,7 @@
 import type { JudgeAccess } from '../../../tool-launch/confined-level.js';
 import { confinedAccess, isConfinedTool } from '../../../tool-launch/confined.js';
 import type { DriverCan } from '../../requirements.js';
+import type { SkillState } from './skill-state.js';
 
 export const HOST_CHOICES = ['h1', 'h2', 'h3', 'h4'] as const;
 
@@ -52,6 +53,22 @@ export const HOST_QUESTION = 'Pick how your host runs a child agent, the most sp
 /** What the skill driver declares on every `next` of a run whose host answered `host`; a run without prompt steps declares h1's. */
 export function canFor(host: HostChoice | undefined): Required<DriverCan> {
   return HOST_PROFILES[host ?? 'h1'].can;
+}
+
+/**
+ * The confined runs the skill driver offers on `next`: the session tool's own at `verified` while this machine judges
+ * the run with it, which the background runner starts; else a fresh child in the run's tool at `best-effort` while the
+ * session judges the run; else none, as after `--no-judge`, under `h4`, or once judging is off. A child reads its
+ * directory and nothing more.
+ */
+export function confinedCan(state: Pick<SkillState, 'judging' | 'sessionJudge' | 'orchestrator'>): NonNullable<DriverCan['confined']> {
+  if (state.judging) {
+    const { tool } = state.judging;
+
+    return [{ level: 'verified', access: isConfinedTool(tool) ? confinedAccess(tool) : 'full', tools: [tool] }];
+  }
+
+  return state.sessionJudge ? [{ level: 'best-effort', access: 'read', tools: [state.orchestrator.tool ?? state.sessionJudge.tool] }] : [];
 }
 
 /** The confined judge a driver offers `score --next`. */
