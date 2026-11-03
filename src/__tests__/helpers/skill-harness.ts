@@ -27,10 +27,10 @@ export function untilStopped(stopped: () => void): CommandRun {
 }
 
 /**
- * Puts on PATH a `claude` whose confined profile verifies, and that answers every confined run with `reply`, or exits
- * `exitCode` without an answer.
+ * Puts on PATH a `claude` whose confined profile verifies, and that answers every confined run with `reply`, stating
+ * `costUsd` when given, or exits `exitCode` without an answer.
  */
-export function fakeConfinedClaude(root: string, reply: unknown, exitCode = 0): void {
+export function fakeConfinedClaude(root: string, reply: unknown, { exitCode = 0, costUsd }: { exitCode?: number; costUsd?: number } = {}): void {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
@@ -38,14 +38,14 @@ if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); 
 process.stdin.resume(); process.stdin.on('end', () => {
 if (${exitCode} !== 0) process.exit(${exitCode});
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: ${JSON.stringify(reply)} }));
+console.log(JSON.stringify({ type: 'result', structured_output: ${JSON.stringify(reply)}${costUsd === undefined ? '' : `, total_cost_usd: ${costUsd}`} }));
 });\n`, { mode: 0o755 });
   vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
 }
 
 /** Puts on PATH a confined `claude` that labels every pass `label`, or exits `exitCode` without an answer. */
 export function fakeJudge(root: string, label: string, exitCode = 0): void {
-  fakeConfinedClaude(root, { label, reasoning: 'It read the change.' }, exitCode);
+  fakeConfinedClaude(root, { label, reasoning: 'It read the change.' }, { exitCode });
 }
 
 /**

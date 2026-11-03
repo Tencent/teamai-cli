@@ -470,29 +470,15 @@ async function runConfinedHere(context: SkillContext, run: RunId, attempt: Attem
   return work;
 }
 
-/**
- * Under the lock: stores the report of the confined run (C13), `released` when no tool of its lease resolves the step's
- * model here, or gives up a stopped attempt (C9), then sends it.
- */
+/** Under the lock: stores the report of the confined run (C13), or gives up a stopped attempt (C9), then sends it. */
 async function confinedReport(context: SkillContext, lock: RunLock, attempt: AttemptId, ended: ConfinedStepEnd): Promise<Stage> {
   const state = await readState(context, lock);
-  const open = state && openAttempt(state, attempt);
 
-  if (state && open?.phase === 'stopping') return stopped(context, lock, state, attempt);
+  if (!state) return { kind: 'gone', status: 'gone' };
 
-  if (!state || open?.phase !== 'running') return { kind: 'gone', status: 'gone' };
-  const id = { attempt, revision: open.revision, driver: state.driver };
-  let body: ReportBody;
+  if (openAttempt(state, attempt)?.phase === 'stopping') return stopped(context, lock, state, attempt);
 
-  if (ended.kind === 'ran') {
-    // The cost stays with what the confined run measured, which the report carries.
-    const { cost: _cost, ...measured } = ended.report;
-    body = { ...id, ...measured };
-  } else {
-    body = { ...id, outcome: 'released', message: ended.reason };
-  }
-
-  return send(context, lock, confinedEndedRow(state, { attempt, body }), attempt);
+  return send(context, lock, confinedEndedRow(state, { attempt, ended }), attempt);
 }
 
 /** Under the lock: stores the report of the exited command (C8), or gives up a stopped attempt (C9), then sends it. */

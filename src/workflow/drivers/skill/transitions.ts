@@ -6,6 +6,7 @@
 import type { RunMode } from '../../../launch-context.js';
 import type { ToolId } from '../../../tools.js';
 import type { Judging, RunReadied, RunVersion } from '../../protocol.js';
+import type { ConfinedStepEnd } from '../../confined-step.js';
 import type { ConfinedLease } from '../../lease-wire.js';
 import type { EnvScope } from '../../requirements.js';
 import type { StepModel } from '../../step-model.js';
@@ -932,13 +933,16 @@ export function preparedRow<TRow extends 'C1' | 'C12'>(state: SkillState, input:
   return { row: input.row, state: withAttempt(state, { ...open, phase: 'running' }) };
 }
 
-/** C13: the confined run of `attempt` ended, and `body` reports it. */
-export function confinedEndedRow(state: SkillState, input: { attempt: AttemptId; body: ReportBody }): MovedWithEffects<'C13'> | undefined {
-  const open = openAttempt(state, input.attempt);
+/** C13: the confined run of `attempt` ended: its report, or `released` when no tool of its lease resolves its model here. */
+export function confinedEndedRow(state: SkillState, input: { attempt: AttemptId; ended: ConfinedStepEnd }): MovedWithEffects<'C13'> | undefined {
+  const { attempt, ended } = input;
+  const open = openAttempt(state, attempt);
 
   if (open?.phase !== 'running') return undefined;
+  const id = { attempt, revision: open.revision, driver: state.driver };
+  const body: ReportBody = ended.kind === 'ran' ? { ...id, ...ended.report } : { ...id, outcome: 'released', message: ended.reason };
 
-  return { row: 'C13', state: withAttempt(state, { ...open, phase: 'reporting', body: input.body }), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
+  return { row: 'C13', state: withAttempt(state, { ...open, phase: 'reporting', body }), effects: [{ kind: 'send', attempt, body }] };
 }
 
 /** C2: the prompt of `attempt` is offered to the agent as `dispatch`. */

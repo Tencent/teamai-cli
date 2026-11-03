@@ -28,11 +28,12 @@ const ReportBodySchema = z.object({
   outputs: z.unknown().optional(),
   message: z.string().optional(),
   failure: FailureSchema.optional(),
-  /** What a confined run the runner started measured: its tool, model, tokens and time, and the run itself. */
+  /** What a confined run the runner started measured: its tool, model, tokens, time and cost, and the run itself. */
   tool: z.string().optional(),
   model: z.string().optional(),
   tokens: TokenUsageSchema.optional(),
   durationMs: z.number().int().nonnegative().optional(),
+  cost: ConfinedRunReportSchema.shape.usage.unwrap().shape.cost,
   confined: ConfinedRunReportSchema.optional(),
 });
 

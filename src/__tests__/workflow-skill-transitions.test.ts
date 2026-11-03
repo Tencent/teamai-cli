@@ -2234,14 +2234,14 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['D28', 'C12', 'C13'],
     run: async () => {
       const made = await harness({ judged: JUDGED });
-      fakeConfinedClaude(made.root, { verdict: 'pass' });
+      fakeConfinedClaude(made.root, { verdict: 'pass' }, { costUsd: 0.02 });
       const turn = await chosen(made, 'judged', 1);
       expect(dispatches(turn)).toEqual([]);
       const done = await polledToDone(made, turn.run);
       expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);
       const engine = await readRun(made.config, turn.run);
       expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judge')).toMatchObject({
-        status: 'succeeded', tool: 'claude', outputs: { verdict: 'pass' }, confined: { tool: 'claude', isolation: 'verified', access: 'read' },
+        status: 'succeeded', tool: 'claude', outputs: { verdict: 'pass' }, cost: { amount: 0.02, unit: 'USD' }, confined: { tool: 'claude', isolation: 'verified', access: 'read' },
       });
       return made.rows;
     },
