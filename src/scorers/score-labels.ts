@@ -33,9 +33,7 @@ import { Subject } from './subject.js';
 import { ConfinedRunReportSchema, TokenUsageSchema, type ConfinedRunReport } from '../workflow/step-state.js';
 
 /** The confined run that judge step `step` of `run` recorded on its pass, or undefined when it recorded none. */
-export type ReadJudgeRun = (run: RunState, step: string) => ConfinedRunReport | undefined;
-
-export const readJudgeRun: ReadJudgeRun = (run, step) => z.object({ confined: ConfinedRunReportSchema }).safeParse(run.steps.find((state) => state.id === step)).data?.confined;
+const readJudgeRun = (run: RunState, step: string): ConfinedRunReport | undefined => z.object({ confined: ConfinedRunReportSchema }).safeParse(run.steps.find((state) => state.id === step)).data?.confined;
 
 const JudgeSpendSchema = z.object({ confined: z.object({ usage: ConfinedUsageSchema.optional() }).optional(), tokens: TokenUsageSchema.optional(), cost: CostSchema.optional() });
 
@@ -316,7 +314,7 @@ export const ScoreLabels = {
    * The labels of the group in `dir`, written with their reasoning to `<dir>/labels.json`, and one entry per scorer
    * without it. A scorer with a check on a delivered pass is refused until its check stage recorded what it found.
    */
-  async label(attempt: ScoreAttempt, dir: string, group: GroupRecord, { answer, judged, now, read }: { answer?: string; judged?: string; now: string; read: ReadJudgeRun }): Promise<{ ok: true; labels: LabelOutput[] } | Refusal> {
+  async label(attempt: ScoreAttempt, dir: string, group: GroupRecord, { answer, judged, now }: { answer?: string; judged?: string; now: string }): Promise<{ ok: true; labels: LabelOutput[] } | Refusal> {
     const members = membersOf(group);
     const [first, ...rest] = members ?? [];
 
@@ -345,7 +343,7 @@ export const ScoreLabels = {
     } else {
       const step = judgeStepOf(attempt);
 
-      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: read(attempt.run, step), spent: judgeSpend(attempt.run, step) });
+      entries = judgeEntries(labelling, [first, ...rest], { answer, judged, run: readJudgeRun(attempt.run, step), spent: judgeSpend(attempt.run, step) });
     }
 
     await writeFileAtomic(path.join(dir, LABELS), JSON.stringify({ entries }));

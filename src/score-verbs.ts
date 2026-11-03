@@ -11,7 +11,7 @@ import { EvidenceDir, type GroupRecord } from './scorers/evidence-dir.js';
 import { DEMANDS } from './scorers/marks.js';
 import { ScoreAttempt } from './scorers/score-attempt.js';
 import { LabelStore } from './scorers/label-store.js';
-import { readJudgeRun, ScoreLabels, type ReadJudgeRun } from './scorers/score-labels.js';
+import { ScoreLabels } from './scorers/score-labels.js';
 import { planGroups } from './scorers/score-plan.js';
 import { ScoreSubjects } from './scorers/score-subjects.js';
 import { ScoreStage } from './scorers/score-stage.js';
@@ -27,8 +27,6 @@ export interface ScoreVerbContext {
   env: NodeJS.ProcessEnv;
   current: LocalConfig | undefined;
   now: string;
-  /** What the judge step's confined run recorded on its pass. */
-  readJudgeRun?: ReadJudgeRun;
   /** The directory the verb runs in: publish stages there. */
   cwd?: string;
 }
@@ -157,7 +155,7 @@ async function label(options: LabelOptions, ctx: ScoreVerbContext): Promise<Scor
   const at = await groupAt('label', options.evidence, ctx);
 
   if (!at.ok) return at;
-  const labelled = await ScoreLabels.label(at.attempt, at.dir, at.group, { answer: options.answer, judged: options.judge, now: ctx.now, read: ctx.readJudgeRun ?? readJudgeRun });
+  const labelled = await ScoreLabels.label(at.attempt, at.dir, at.group, { answer: options.answer, judged: options.judge, now: ctx.now });
 
   return labelled.ok ? { ok: true, output: { labels: labelled.labels.map((entry) => ({ ...entry })) } } : labelled;
 }

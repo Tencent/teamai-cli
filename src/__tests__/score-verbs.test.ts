@@ -739,7 +739,8 @@ const JUDGED: ConfinedRunReport = { tool: 'claude', model: { requested: 'claude-
 interface Walk {
   /** The judge step's answer, or a failure. */
   judge?: { answer: unknown } | 'failed';
-  readJudgeRun?: ScoreVerbContext['readJudgeRun'];
+  /** Whether the judge step's report records the confined run that answered; true by default. */
+  confinedRecorded?: boolean;
   inputs?: Record<string, unknown>;
   startedBy?: StartedBy;
   /** What a step answers in place of its verb, by step id. */
@@ -752,7 +753,7 @@ interface Walk {
  * Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step
  * path, and what the engine answered when the run ended.
  */
-async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun, inputs = {}, startedBy = 'cli', fake = {}, tip }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
+async function walk(config: LocalConfig, subject: string, { judge, confinedRecorded = true, inputs = {}, startedBy = 'cli', fake = {}, tip }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const answers = new Map<string, ScoreVerbAnswer>();
   const items = (index: string) => {
@@ -766,7 +767,7 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
     const next = data(leased);
     if (next.done) return { runId: run.runId, answers, ended: leased };
     const lease = LeaseSchema.parse(next.lease);
-    const taken = { ctx: { env: attemptEnv(config, run.runId, lease.attempt, 'unattended'), current: config, now: NOW, readJudgeRun }, attempt: lease.attempt, revision: lease.revision };
+    const taken = { ctx: { env: attemptEnv(config, run.runId, lease.attempt, 'unattended'), current: config, now: NOW }, attempt: lease.attempt, revision: lease.revision };
     const [, index = '0', id = lease.step] = /^score\[(\d+)\]\.(.+)$/u.exec(lease.step) ?? [];
     const { item, dir } = items(index);
     const judged = answers.get(`score[${index}].judge`);
@@ -781,7 +782,7 @@ async function walk(config: LocalConfig, subject: string, { judge, readJudgeRun,
                   : await ScoreVerbs.settle({ subject: item?.subject, scorers: item?.scorers }, taken.ctx));
     answers.set(lease.step, answer);
     // A confined run that failed reports what it spent as tokens, with no confined run, as the local driver does.
-    await run.report(taken, answer, id === 'judge' ? (answer.ok ? { confined: JUDGED } : { tokens: { input: 10, output: 2 } }) : undefined);
+    await run.report(taken, answer, id === 'judge' ? (answer.ok ? (confinedRecorded ? { confined: JUDGED } : undefined) : { tokens: { input: 10, output: 2 } }) : undefined);
   }
 }
 
@@ -822,7 +823,7 @@ describe('score label and score write', () => {
   it('give judge_failed when the judge step recorded no confined run, so what judged is unknown', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
-    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } }, readJudgeRun: () => undefined });
+    const { answers } = await walk(config, `run:${runId}:review:1`, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'ok' } }, confinedRecorded: false });
 
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code: 'judge_failed' }] } });
   });
@@ -1190,10 +1191,10 @@ describe('score verbs refuse what they cannot act on', () => {
     const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
     await run.report(evidence, written);
     const judge = await run.next('score[0].judge');
-    await run.report(judge, { ok: true, output: { answer: { label: 'bad', reasoning: 'no' } } });
+    await run.report(judge, { ok: true, output: { answer: { label: 'bad', reasoning: 'no' } } }, { confined: JUDGED });
     const label = await run.next('score[0].label');
     const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
-    await run.report(label, await ScoreVerbs.label({ evidence: dir, answer: '{"label":"bad","reasoning":"no"}', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED }));
+    await run.report(label, await ScoreVerbs.label({ evidence: dir, answer: '{"label":"bad","reasoning":"no"}', judge: 'success' }, label.ctx));
     const file = path.join(dir, 'labels.json');
     fs.writeFileSync(file, JSON.stringify(tamper(LabelsFile.parse(JSON.parse(fs.readFileSync(file, 'utf8'))))));
 
@@ -1220,13 +1221,13 @@ describe('score label and score write read what the run recorded', () => {
     const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
     await run.report(evidence, written);
     const judge = await run.next('score[0].judge');
-    await run.report(judge, { ok: true, output: { answer: z.json().parse(answer) } });
+    await run.report(judge, { ok: true, output: { answer: z.json().parse(answer) } }, { confined: JUDGED });
     return { config, runId, run, label: await run.next('score[0].label'), dir: z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir };
   }
 
   it('write records the confined run that judged one scorer, with its usage and no batch', async () => {
     const { config, run, label, dir } = await judgedGroup({ label: 'good', reasoning: 'ok' });
-    const labelled = await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED });
+    const labelled = await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, label.ctx);
 
     expect(labelled).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
     await run.report(label, labelled);
@@ -1239,7 +1240,7 @@ describe('score label and score write read what the run recorded', () => {
   it('label gives judge_answer_invalid for an answer that is not JSON', async () => {
     const { label, dir } = await judgedGroup({ label: 'good', reasoning: 'ok' });
 
-    expect(await ScoreVerbs.label({ evidence: dir, answer: 'good, I think', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED })).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code: 'judge_answer_invalid' }] } });
+    expect(await ScoreVerbs.label({ evidence: dir, answer: 'good, I think', judge: 'success' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: '', code: 'judge_answer_invalid' }] } });
   });
 
   it.each<[string, StartedBy]>([['an agent', 'cli'], ['a person', 'person']])('label refuses a group that claims a hand label the run started by %s never gave', async (_case, startedBy) => {
@@ -1247,7 +1248,7 @@ describe('score label and score write read what the run recorded', () => {
     const file = path.join(dir, 'group.json');
     fs.writeFileSync(file, JSON.stringify({ ...z.looseObject({}).parse(JSON.parse(fs.readFileSync(file, 'utf8'))), hand: true }));
 
-    expect(await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, { ...label.ctx, readJudgeRun: () => JUDGED })).toMatchObject({ ok: false, code: 'hand_label_refused' });
+    expect(await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, label.ctx)).toMatchObject({ ok: false, code: 'hand_label_refused' });
   });
 
   it('write refuses a group label has not labelled yet', async () => {
