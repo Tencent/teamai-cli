@@ -24,14 +24,15 @@ import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { benchmarkRecordFile, BenchmarkRunRecordSchema } from '../benchmark/result.js';
 import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmark/table.js';
 import { locateStep } from '../workflow/engine.js';
-import { benchmarkRecordPath, buildEndRecord, pullRequestBranches, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
-import { resolveRetention } from '../workflow/retention.js';
+import { benchmarkRecordPath, buildEndRecord, RECORDS_DIR, RunRecordFieldsSchema, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
+import { settledBranches, type SettledBranches } from '../workflow/leftovers.js';
+import { resolveRetention, retentionEnds, type ResolvedRetention } from '../workflow/retention.js';
 import { loadTeamConfig } from '../config.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { PublishedRuns, type PublishedRun, type Taker } from '../workflow-published-runs.js';
 import { installOwner, isRunId, readRun, readRuns, runsDir } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
-import type { RunLeftovers, StepHitl, RunState } from '../workflow/types.js';
+import type { StepHitl, RunState } from '../workflow/types.js';
 import { HttpError, type JsonBody } from './http.js';
 
 /** The newest runs each source lists; a run still running on this machine is always listed. */
@@ -70,18 +71,15 @@ function webUrls(prs: unknown[] | undefined): string[] {
   });
 }
 
-const RecordSchema: z.ZodType<ReadRecord> = z.object({
-  run: z.string().refine(isRunId),
+const RecordSchema: z.ZodType<ReadRecord> = RunRecordFieldsSchema.extend({
   workflow: z.string(),
   alias: z.string().optional().catch(undefined),
   sourceHash: z.string().optional(),
   teamRevision: z.string().optional(),
   origin: RunOriginSchema.optional().catch(undefined),
   driver: z.object({ kind: z.string() }).optional(),
-  status: z.enum(['running', 'succeeded', 'failed', 'cancelled']),
   end: z.string().optional(),
   startedAt: z.string(),
-  endedAt: z.string().optional(),
   durationMs: z.number().optional(),
   stepCounts: z.object({ total: z.number(), succeeded: z.number(), failed: z.number(), skipped: z.number(), cancelled: z.number() }).optional(),
   username: z.string(),
@@ -94,7 +92,6 @@ const RecordSchema: z.ZodType<ReadRecord> = z.object({
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
     outcomes: z.array(z.unknown()).optional().catch(undefined),
   })).optional(),
-  prs: z.array(z.unknown()).optional().catch(undefined),
 });
 
 /** One run as a row of the page. */
@@ -160,14 +157,13 @@ interface StepRow {
 /** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
 type ScoringTotal = Awaited<ReturnType<typeof LabelStore.scoringTotal>>;
 
+type KeptRunBranches = Extract<SettledBranches, { state: 'kept' }> & { retention: ResolvedRetention; eligibleAt?: string };
+
 /**
- * A settled local run's `teamai/<run>/…` branches (#1689). `cleaned`: what the run kept and deleted as it succeeded, or
- * what `doctor --fix` removed past `workflows.retention`, with the deletions that failed. `kept`: the branches it handed
- * out, kept for inspection, and from when `doctor --fix` removes all but the pull request ones; never under `never`.
+ * A settled local run's `teamai/<run>/…` branches (#1689), as `settledBranches` finds them. Kept branches carry the
+ * retention in effect and, unless it is `never`, from when `doctor --fix` removes all but the pull request ones.
  */
-export type RunBranches =
-  | ({ state: 'cleaned' } & Pick<RunLeftovers, 'by' | 'at' | 'kept' | 'deleted' | 'failed'>)
-  | { state: 'kept'; branches: Array<{ branch: string; pr: boolean }>; retention: string; file?: string; eligibleAt?: string };
+export type RunBranches = Exclude<SettledBranches, { state: 'kept' }> | KeptRunBranches;
 
 /** `benchmark` holds an ended benchmark run's tables, as the CLI prints them. */
 export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal; benchmark?: BenchmarkCells; branches?: RunBranches };
@@ -404,27 +400,16 @@ function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string
   return { run: row, steps: withHarnessChanges(steps), scoring };
 }
 
-/** What `run` left of its branches, once it settled and handed out any. */
+/** What `run` left of its branches, once it settled and left any. */
 async function branchesOf(config: LocalConfig, run: RunState): Promise<Pick<RunDetail, 'branches'>> {
-  if (run.status === 'running') return {};
+  const branches = settledBranches(run);
 
-  if (run.leftovers?.revision === run.revision) {
-    const { by, at, kept, deleted, failed } = run.leftovers;
+  if (branches?.state !== 'kept') return branches ? { branches } : {};
+  const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
+  const kept: KeptRunBranches = { ...branches, retention };
+  const ends = retentionEnds(run.updatedAt, retention);
 
-    return { branches: { state: 'cleaned', by, at, kept, deleted, failed } };
-  }
-
-  const pr = new Set(pullRequestBranches(run));
-  const handed = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.kind === undefined ? [branch] : []));
-  const branches = [...new Set([...handed, ...pr])].sort().map((branch) => ({ branch, pr: pr.has(branch) }));
-
-  if (branches.length === 0) return {};
-  const { retention, file } = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
-  const kept: RunBranches = { state: 'kept', branches, retention: retention.kind === 'never' ? 'never' : retention.text };
-
-  if (file !== undefined) kept.file = file;
-
-  if (retention.kind === 'after') kept.eligibleAt = new Date(Date.parse(run.updatedAt) + retention.ms).toISOString();
+  if (ends !== undefined) kept.eligibleAt = new Date(ends).toISOString();
 
   return { branches: kept };
 }

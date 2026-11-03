@@ -19,10 +19,11 @@ function branchItem(branch, note, cls) { return '<li'+(cls?' class="'+cls+'"':''
 function branchList(title, items) { return items.length?'<p class="label">'+label(title)+'</p><ul class="run-branches">'+items.join('')+'</ul>':''; }
 function runBranchesHtml(b) {
  if(b.state==='kept') {
-  const items=b.branches.map(x=>branchItem(x.branch, x.pr?'<span class="tag">'+label('Pull request')+'</span>':''));
-  const why=b.retention==='never'?label('workflows.retention is never, so teamai doctor --fix keeps them.')
-   :label('teamai doctor --fix removes them, except pull request branches.')+' '+label('Eligible from')+' '+e(when(b.eligibleAt))+'<br><small data-verbatim>workflows.retention '+e(b.retention)+' · '+e(b.file||t('the default'))+'</small>';
-  return branchList('Kept for inspection', items)+'<p>'+why+'</p>'+(b.retention==='never'?'':command('teamai doctor --fix'));
+  const items=b.branches.map(x=>branchItem(x.branch, x.isPullRequest?'<span class="tag">'+label('Pull request')+'</span>':''));
+  const never=b.retention.kind==='never';
+  const why=never?label('workflows.retention is never, so teamai doctor --fix keeps them.')
+   :label('teamai doctor --fix removes them, except pull request branches.')+' '+label('Eligible from')+' '+e(when(b.eligibleAt))+'<br><small data-verbatim>workflows.retention '+e(b.retention.text)+' · '+e(b.retention.file||t('the default'))+'</small>';
+  return branchList('Kept for inspection', items)+'<p>'+why+'</p>'+(never?'':command('teamai doctor --fix'));
  }
  const kept=b.kept.map(x=>branchItem(x.branch, '<span class="tag">'+label(KEPT_BECAUSE[x.why])+'</span>'));
  const deleted=b.deleted.map(x=>branchItem(x, '', 'muted'));

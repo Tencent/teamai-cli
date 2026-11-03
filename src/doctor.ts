@@ -1081,21 +1081,20 @@ export async function runChecks(
 
 /** `doctor --fix` for workflow runs: what it removed of each settled run, under the retention it names with its source. */
 async function sweepRunLeftovers({ localConfig, teamConfig }: DoctorContext): Promise<void> {
-  const { sweepLeftovers } = await import('./workflow/leftovers.js');
+  const { sweepLeftovers, warnNotDeleted } = await import('./workflow/leftovers.js');
   const checkout = localConfig.repo.businessRepoRoot ?? localConfig.projectRoot ?? process.cwd();
   const { retention, swept } = await sweepLeftovers(localConfig, teamConfig, { now: Date.now(), checkout });
-  const rule = retention.retention.kind === 'never' ? 'never' : retention.retention.text;
   const from = retention.file === undefined ? 'the default' : retention.file;
 
   if (swept.length === 0) return;
-  log.info(`Removed what ${swept.length} workflow run(s) left behind (workflows.retention ${rule}, from ${from}):`);
+  log.info(`Removed what ${swept.length} workflow run(s) left behind (workflows.retention ${retention.text}, from ${from}):`);
 
   for (const run of swept) {
     const removed = [...run.branches, ...run.worktrees.map((dir) => `worktree ${dir}`), ...run.refs];
 
     log.info(`  ${run.run} (settled ${run.settledAt}${run.from === 'teamai-reports' ? ', from teamai-reports' : ''}): ${removed.length > 0 ? removed.join(', ') : 'nothing'}`);
 
-    for (const { branch, reason } of run.failed) log.warn(`  Branch ${branch} of run ${run.run} was not deleted ${reason}. teamai doctor --fix tries again.`);
+    warnNotDeleted(run.run, run.failed);
   }
 
   log.info('');

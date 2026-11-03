@@ -10,7 +10,7 @@ import { hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfi
 import { RUN_MODES, type RunMode } from './launch-context.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
 import { memberTools } from './tool-launch/call.js';
-import { DEFAULT_RETENTION, parseRetention } from './workflow/retention.js';
+import { DEFAULT_RETENTION, resolveRetention } from './workflow/retention.js';
 import {
   getDataHome,
   getTeamaiHomeDir,
@@ -307,6 +307,7 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
   };
 
   const publishing = SessionPolicy.publish(ctx.localConfig, ctx.teamConfig).policies;
+  const retention = await resolveRetention(ctx.localConfig, ctx.teamConfig);
 
   const levelsFor = (key: string): MemberSettingSource[] => {
     const parts = reportPathParts(key);
@@ -378,9 +379,11 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
     if (machineShadowed && machineValue !== undefined) levels.push(settingSource('machine', machineValue, machineFile, undefined, false));
 
-    // A wrong value is skipped, and the next level decides.
+    // resolveRetention skips a wrong value, and the next level decides: every level above the one it took is unused.
     if (key === 'workflows.retention') {
-      return levels.map((level) => (level.level === 'default' || parseRetention(level.value) ? level : { ...level, used: false }));
+      const decided = levels.findIndex((level) => (level.level === 'default' ? retention.file === undefined : level.file === retention.file));
+
+      return levels.map((level, at) => (at < decided ? { ...level, used: false } : level));
     }
 
     if (mode && publishing[mode].source.kind === 'http-team') {
@@ -404,6 +407,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
     if (key === 'usageReportEnabled') return isUsageReportEnabled(ctx.localConfig, ctx.teamConfig ?? {});
 
+    if (key === 'workflows.retention') return retention.text;
+
     if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
     const mode = publishMode(key);
 
@@ -418,7 +423,7 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
       return resolveEffectiveUpdatePolicy(decidingConfig, decidingTeam);
     }
 
-    return levels.find((level) => level.used !== false)?.value;
+    return levels[0]?.value;
   };
 
   const reports: MemberSettingsReport[] = [];

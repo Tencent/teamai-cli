@@ -14,7 +14,7 @@ import { durationMs } from './parse.js';
 export const DEFAULT_RETENTION = '14d';
 
 /** How long leftovers stay: `never`, or a duration in milliseconds, with the text it was written as. */
-export type Retention = { kind: 'never' } | { kind: 'after'; ms: number; text: string };
+export type Retention = { kind: 'never'; text: 'never' } | { kind: 'after'; ms: number; text: string };
 
 // oxlint-disable-next-line teamai/no-unknown-parameters -- the parse itself: each level keeps the value as written
 export function parseRetention(value: unknown): Retention | undefined {
@@ -22,16 +22,18 @@ export function parseRetention(value: unknown): Retention | undefined {
 
   if (!text.success) return undefined;
 
-  if (text.data === 'never') return { kind: 'never' };
+  if (text.data === 'never') return { kind: 'never', text: 'never' };
   const ms = durationMs(text.data);
 
   return ms === undefined ? undefined : { kind: 'after', ms, text: text.data };
 }
 
 /** The retention in effect, and the file that set it, absent for the default. */
-export interface ResolvedRetention {
-  retention: Retention;
-  file?: string;
+export type ResolvedRetention = Retention & { file?: string };
+
+/** When what a run that settled at `settledAt` left goes past `retention`, in epoch milliseconds; undefined under `never`. */
+export function retentionEnds(settledAt: string, retention: Retention): number | undefined {
+  return retention.kind === 'after' ? Date.parse(settledAt) + retention.ms : undefined;
 }
 
 /** The retention for `config`'s scope, warning once of each level whose value is neither a duration nor `never`. */
@@ -49,9 +51,13 @@ export async function resolveRetention(config: LocalConfig, team: Pick<TeamaiCon
     if (value === undefined) continue;
     const retention = parseRetention(value);
 
-    if (retention) return { retention, file };
+    if (retention) return { ...retention, file };
     warnOnce(`Ignoring workflows.retention in ${file}: ${JSON.stringify(value)} is not a duration such as 14d, or never.`);
   }
 
-  return { retention: { kind: 'after', ms: 14 * 86_400_000, text: DEFAULT_RETENTION } };
+  const fallback = parseRetention(DEFAULT_RETENTION);
+
+  if (!fallback) throw new Error(`DEFAULT_RETENTION ${DEFAULT_RETENTION} is not a retention.`);
+
+  return fallback;
 }

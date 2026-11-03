@@ -29,10 +29,11 @@ const CLEANED: RunBranches = {
   kept: [{ branch: branch('change'), why: 'pr' }, { branch: branch('notes'), why: 'unmerged' }], deleted: [branch('build-0')],
   failed: [{ branch: branch('build-1'), reason: 'on origin: deleting is not allowed' }],
 };
-const KEPT: RunBranches = {
-  state: 'kept', retention: '14d', file: '/home/ana/.teamai/config.yaml', eligibleAt: '2026-11-17T08:00:00.000Z',
-  branches: [{ branch: branch('change'), pr: true }, { branch: branch('docs'), pr: false }],
-};
+const KEPT = {
+  state: 'kept', retention: { kind: 'after', ms: 14 * 86_400_000, text: '14d', file: '/home/ana/.teamai/config.yaml' }, eligibleAt: '2026-11-17T08:00:00.000Z',
+  branches: [{ branch: branch('change'), isPullRequest: true }, { branch: branch('docs'), isPullRequest: false }],
+} satisfies RunBranches;
+const NEVER: RunBranches = { state: 'kept', retention: { kind: 'never', text: 'never' }, branches: KEPT.branches };
 
 describe("a settled run's Branches", () => {
   it('names each branch a succeeded run kept and why, those it deleted, and those doctor --fix still has to delete', () => {
@@ -49,11 +50,11 @@ describe("a settled run's Branches", () => {
 
     expect(shown).toContain(`Kept for inspection ${branch('change')} Pull request ${branch('docs')}`);
     expect(shown).toContain('teamai doctor --fix removes them, except pull request branches. Eligible from 2026-11-17T08:00:00.000Z workflows.retention 14d · /home/ana/.teamai/config.yaml');
-    expect(text(render({ ...KEPT, retention: 'never', eligibleAt: undefined }).html)).toContain('workflows.retention is never, so teamai doctor --fix keeps them.');
+    expect(text(render(NEVER).html)).toContain('workflows.retention is never, so teamai doctor --fix keeps them.');
   });
 
   it('has a zh-CN translation for every message it shows', () => {
-    const keys = [CLEANED, { ...CLEANED, by: 'retention' as const }, KEPT, { ...KEPT, retention: 'never', file: undefined }].flatMap((b) => render(b, 'zh-CN').keys);
+    const keys = [CLEANED, { ...CLEANED, by: 'retention' as const }, KEPT, NEVER].flatMap((b) => render(b, 'zh-CN').keys);
     expect(keys.filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 });

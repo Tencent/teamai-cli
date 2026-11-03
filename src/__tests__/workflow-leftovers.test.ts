@@ -228,7 +228,7 @@ describe('doctor --fix past workflows.retention', () => {
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     config.workflows = { tools: {}, retention: 'never' };
 
-    expect(await sweepLeftovers(config, null, { now: Date.now() + 365 * DAY, checkout: cwd })).toMatchObject({ retention: { retention: { kind: 'never' } }, swept: [] });
+    expect(await sweepLeftovers(config, null, { now: Date.now() + 365 * DAY, checkout: cwd })).toMatchObject({ retention: { kind: 'never' }, swept: [] });
     expect(branches(origin, runId)).toEqual(['join/p1', 'left/p1']);
   });
 

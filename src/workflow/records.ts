@@ -30,7 +30,7 @@ import { uniqueOutcomes, type WorkOutcome } from '../outcomes.js';
 import { stepDefinitions } from './scope.js';
 import { isIsolated, runBranchPrefix } from './workspace.js';
 import { snapshotPath } from './snapshot.js';
-import { installOwner, runLockPath } from './store.js';
+import { installOwner, isRunId, runLockPath } from './store.js';
 import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { LIMIT_FAILURES, type Unenforced } from './requirements.js';
@@ -300,6 +300,14 @@ export function buildEndRecord(
     prBranches: prBranches.length ? prBranches : undefined,
   });
 }
+
+/** The fields of a run record on teamai-reports its readers share, from whichever version wrote it. */
+export const RunRecordFieldsSchema = z.object({
+  run: z.string().refine(isRunId),
+  status: z.enum(['running', 'succeeded', 'failed', 'cancelled']) satisfies z.ZodType<RunStatus>,
+  endedAt: z.string().optional(),
+  prs: z.array(z.unknown()).optional().catch(undefined),
+});
 
 /** The run branches its pull requests use: the branch each came from, and the one it went into when that is the run's. */
 export function pullRequestBranches(run: Pick<RunState, 'id' | 'deliveries'>): string[] {

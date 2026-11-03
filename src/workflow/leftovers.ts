@@ -14,9 +14,9 @@ import { getReportsDir, usesBranchWorktree, type LocalConfig, type TeamaiConfig 
 import { log } from '../utils/logger.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
 import { publishRunEnd, type HandoffError } from './handoff.js';
-import { pullRequestBranches, RECORDS_DIR } from './records.js';
-import { resolveRetention, type ResolvedRetention } from './retention.js';
-import { AttemptIdSchema, attemptsDir, isRunId, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
+import { pullRequestBranches, RECORDS_DIR, RunRecordFieldsSchema } from './records.js';
+import { resolveRetention, retentionEnds, type ResolvedRetention } from './retention.js';
+import { AttemptIdSchema, attemptsDir, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
 import type { KeptBranchReason, RunLeftovers, RunState } from './types.js';
 import { basePinBranch, runBranchPrefix } from './workspace.js';
 import { fetchMissingCommits, git, removeWorktree, worktreeCheckout } from './worktree.js';
@@ -25,6 +25,11 @@ import { fetchMissingCommits, git, removeWorktree, worktreeCheckout } from './wo
 interface Tips {
   local: Map<string, string>;
   origin?: Map<string, string>;
+}
+
+/** Every branch `tips` names, here or on origin, sorted. */
+function namesOf(tips: Tips): string[] {
+  return [...new Set([...tips.local.keys(), ...tips.origin?.keys() ?? []])].sort();
 }
 
 function refsUnder(listed: string, prefix: string): Map<string, string> {
@@ -130,6 +135,11 @@ function warnNotCleanedUp(runId: string, reason: string): void {
   log.warn(`The branches of run ${runId} were not cleaned up: ${reason}. teamai doctor --fix tries again.`);
 }
 
+/** The warning for each deletion in `failed`, which `doctor --fix` tries again. */
+export function warnNotDeleted(runId: string, failed: RunLeftovers['failed']): void {
+  for (const { branch, reason } of failed) log.warn(`Branch ${branch} of run ${runId} was not deleted ${reason}. teamai doctor --fix tries again.`);
+}
+
 /** What a succeeded run keeps and deletes of its branches, deleted; undefined when `checkout` has none of them, or could not list them. */
 async function settleSucceeded(run: RunState, checkout: string, now: string): Promise<RunLeftovers | undefined> {
   const tips = await runBranches(checkout, run.id);
@@ -140,7 +150,7 @@ async function settleSucceeded(run: RunState, checkout: string, now: string): Pr
     return undefined;
   }
 
-  const all = [...new Set([...tips.local.keys(), ...tips.origin?.keys() ?? []])].sort();
+  const all = namesOf(tips);
 
   if (all.length === 0) return undefined;
   const reasons = new Map<string, KeptBranchReason>(pullRequestBranches(run).map((branch) => [branch, 'pr']));
@@ -203,11 +213,37 @@ export async function cleanUpSucceededRun(
 
   if (!leftovers) return;
 
-  for (const { branch, reason } of leftovers.failed) log.warn(`Branch ${branch} of run ${runId} was not deleted ${reason}. teamai doctor --fix tries again.`);
+  warnNotDeleted(runId, leftovers.failed);
 
   await updateRun(config, runId, secrets, async (stored) => (
     stored === 'missing' || stored.status !== 'succeeded' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
   ));
+}
+
+/**
+ * What settled run `run` left of its branches. `cleaned`: what the run kept and deleted as it succeeded, or what
+ * `doctor --fix` removed past `workflows.retention`, at its current revision. `kept`: the copies it handed out and the
+ * branches its pull requests use, which stay until `doctor --fix` passes the retention. Undefined while it runs, or when
+ * it left none.
+ */
+export type SettledBranches =
+  | ({ state: 'cleaned' } & Omit<RunLeftovers, 'revision'>)
+  | { state: 'kept'; branches: Array<{ branch: string; isPullRequest: boolean }> };
+
+export function settledBranches(run: RunState): SettledBranches | undefined {
+  if (run.status === 'running') return undefined;
+
+  if (run.leftovers?.revision === run.revision) {
+    const { revision: _revision, ...leftovers } = run.leftovers;
+
+    return { state: 'cleaned', ...leftovers };
+  }
+
+  const pr = new Set(pullRequestBranches(run));
+  const handed = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.kind === undefined ? [branch] : []));
+  const branches = [...new Set([...handed, ...pr])].sort().map((branch) => ({ branch, isPullRequest: pr.has(branch) }));
+
+  return branches.length === 0 ? undefined : { state: 'kept', branches };
 }
 
 /** What `doctor --fix` removed of one run: from this machine's run, or from a record another machine published. */
@@ -228,13 +264,7 @@ export interface Sweep {
 }
 
 /** The fields of a run record on teamai-reports a sweep reads. */
-const SweptRecordSchema = z.object({
-  run: z.string().refine(isRunId),
-  status: z.enum(['running', 'succeeded', 'failed', 'cancelled']),
-  endedAt: z.string().optional(),
-  prs: z.array(z.unknown()).optional().catch(undefined),
-  prBranches: z.array(z.string()).optional().catch(undefined),
-});
+const SweptRecordSchema = RunRecordFieldsSchema.extend({ prBranches: z.array(z.string()).optional().catch(undefined) });
 
 type SweptRecord = z.infer<typeof SweptRecordSchema>;
 
@@ -301,7 +331,7 @@ async function removeRun(checkout: string, runId: string, keep: ReadonlySet<stri
   }
 
   const refs = await removeKeptRefs(checkout, attempts);
-  const all = [...new Set([...tips.local.keys(), ...tips.origin?.keys() ?? []])].sort();
+  const all = namesOf(tips);
   const { deleted, failed } = await deleteBranches(checkout, runId, all.filter((branch) => !keep.has(branch)), tips);
 
   return { branches: deleted, worktrees, refs, failed, kept: all.filter((branch) => keep.has(branch)) };
@@ -327,7 +357,13 @@ function cleaned(run: RunState, by: RunLeftovers['by']): boolean {
  */
 export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfig, 'workflows'> | null, { now, checkout }: { now: number; checkout: string }): Promise<Sweep> {
   const retention = await resolveRetention(config, team);
-  const expired = (settledAt: string | undefined): boolean => retention.retention.kind === 'after' && settledAt !== undefined && Date.parse(settledAt) + retention.retention.ms <= now;
+
+  const expired = (settledAt: string): boolean => {
+    const ends = retentionEnds(settledAt, retention);
+
+    return ends !== undefined && ends <= now;
+  };
+
   const secrets = await knownSecrets(config);
   const swept: SweptRun[] = [];
   const runs = await readRuns(config);
@@ -347,27 +383,29 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     const removed = await removeRun(at, run.id, new Set(pullRequestBranches(run)), await attemptsOf(config, run.id));
 
     if (!removed) continue;
-    const { kept, ...done } = removed;
-    const leftovers: RunLeftovers = { by: 'retention', at: new Date(now).toISOString(), revision: run.revision, kept: kept.map((branch) => ({ branch, why: 'pr' })), deleted: done.branches, failed: done.failed };
+    const { kept, ...gone } = removed;
+    const leftovers: RunLeftovers = { by: 'retention', at: new Date(now).toISOString(), revision: run.revision, kept: kept.map((branch) => ({ branch, why: 'pr' })), deleted: gone.branches, failed: gone.failed };
 
     await updateRun(config, run.id, secrets, async (stored) => (
       stored === 'missing' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
     ));
 
-    if (done.branches.length + done.worktrees.length + done.refs.length + done.failed.length > 0) swept.push({ run: run.id, from: 'local', settledAt: run.updatedAt, ...done });
+    if (gone.branches.length + gone.worktrees.length + gone.refs.length + gone.failed.length > 0) swept.push({ run: run.id, from: 'local', settledAt: run.updatedAt, ...gone });
   }
 
   const local = new Set(runs.map((run) => run.id));
 
   for (const record of await settledRecords(config)) {
-    if (local.has(record.run) || !expired(record.endedAt)) continue;
+    const { endedAt } = record;
+
+    if (local.has(record.run) || endedAt === undefined || !expired(endedAt)) continue;
 
     // An older teamai did not record which branches its pull requests use, so none of its branches is known to be free.
     if (record.prs?.length && record.prBranches === undefined) continue;
     const removed = await removeRun(checkout, record.run, new Set(record.prBranches), []);
 
     if (removed && removed.branches.length + removed.failed.length > 0) {
-      swept.push({ run: record.run, from: 'teamai-reports', settledAt: record.endedAt ?? '', branches: removed.branches, worktrees: removed.worktrees, refs: [], failed: removed.failed });
+      swept.push({ run: record.run, from: 'teamai-reports', settledAt: endedAt, branches: removed.branches, worktrees: removed.worktrees, refs: [], failed: removed.failed });
     }
   }
 

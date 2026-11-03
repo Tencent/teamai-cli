@@ -98,8 +98,8 @@ describe('dashboard workflow runs', () => {
     }));
 
     expect((await workflowRunDetail(run.config, 'local', run.id))?.branches).toEqual({
-      state: 'kept', retention: '14d', eligibleAt: '2026-11-03T08:00:00.000Z',
-      branches: [{ branch: branch('change'), pr: true }, { branch: branch('docs'), pr: false }],
+      state: 'kept', retention: { kind: 'after', ms: 14 * 86_400_000, text: '14d' }, eligibleAt: '2026-11-03T08:00:00.000Z',
+      branches: [{ branch: branch('change'), isPullRequest: true }, { branch: branch('docs'), isPullRequest: false }],
     });
   });
 
