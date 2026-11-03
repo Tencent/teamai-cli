@@ -143,6 +143,8 @@ interface StepRow {
   step: string;
   pass: number;
   status: string;
+  /** Why a skipped step of a run of this machine was skipped, when the engine said. */
+  message?: string;
   tokens?: TokenUsage;
   answer?: { choice: string; channel: string };
   gate?: Gate;
@@ -399,7 +401,11 @@ function localDetail(run: RunState, row: LocalRunRow, judging: Judging, scoring:
 
     if (answer) answered.answer = answer;
 
-    return stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), judging, gate);
+    const stepped = stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), judging, gate);
+
+    if (state?.status === 'skipped' && state.message !== undefined) stepped.message = state.message;
+
+    return stepped;
   });
 
   return { run: row, steps: withHarnessChanges(steps), scoring };

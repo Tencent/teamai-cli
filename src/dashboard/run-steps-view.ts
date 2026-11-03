@@ -11,7 +11,7 @@ const HARNESS_CHANGED: Record<HarnessChange['part'], string> = {
 
 /**
  * The Steps of a run's details as browser code: `runStepsTable(steps, run)` renders the `steps` of `/api/workflows/run`,
- * each pass with its harness, what changed in it since the step's previous pass, status, tokens, answer, how judging
+ * each pass with its harness, what changed in it since the step's previous pass, status and why it was skipped, tokens, answer, how judging
  * stands on it and outcomes. Each cell names its column, so a drawer narrower than the table shows each pass as a card.
  * The dashboard client embeds it after `judgingView`, and so supplies `e`, `t`, `label`, `number`, `runStatus`,
  * `outcomesHtml`, `agentHarness`, `harnessRole` and `passJudgingHtml`.
@@ -29,7 +29,7 @@ function harnessChanged(changes) {
 }
 function runStepsTable(steps, run) {
  return '<div class="table-scroll card-table"><table class="run-steps"><thead><tr>'+RUN_STEP_HEADS.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +steps.map(s=>'<tr>'+['<span data-verbatim>'+e(s.step)+'</span>'+agentHarness(s.harness)+harnessChanged(s.harnessChanges),number(s.pass),runStatus(s.status),s.tokens?number((s.tokens.input||0)+(s.tokens.output||0)):'—',s.answer?'<span data-verbatim>'+e(s.answer.choice)+'</span><small data-verbatim>'+e(s.answer.channel)+'</small>':'—',passJudgingHtml(s,run),outcomesHtml(s.outcomes)].map((cell,i)=>'<td data-label="'+label(RUN_STEP_HEADS[i])+'">'+cell+'</td>').join('')+'</tr>').join('')
+  +steps.map(s=>'<tr>'+['<span data-verbatim>'+e(s.step)+'</span>'+agentHarness(s.harness)+harnessChanged(s.harnessChanges),number(s.pass),runStatus(s.status)+(s.message?'<small data-verbatim>'+e(s.message)+'</small>':''),s.tokens?number((s.tokens.input||0)+(s.tokens.output||0)):'—',s.answer?'<span data-verbatim>'+e(s.answer.choice)+'</span><small data-verbatim>'+e(s.answer.channel)+'</small>':'—',passJudgingHtml(s,run),outcomesHtml(s.outcomes)].map((cell,i)=>'<td data-label="'+label(RUN_STEP_HEADS[i])+'">'+cell+'</td>').join('')+'</tr>').join('')
   +'</tbody></table></div>';
 }
 `;

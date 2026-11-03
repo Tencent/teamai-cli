@@ -47,6 +47,14 @@ describe("a run's Steps", () => {
     expect(first).toContain('<span class="harness-part"><span data-verbatim>spec</span> <span class="role-of step">step role</span></span>\u00a0·\u00a0<span class="harness-part" data-verbatim>ccccccc</span>');
   });
 
+  it('says under a skipped step\'s status why it was skipped, as the engine wrote it', () => {
+    const why = 'Step "publish" was skipped: this run is isolated, so it publishes nothing to a data branch.';
+    const { html } = render([{ step: 'publish', pass: 1, status: 'skipped', message: why }]);
+    const status = /<td data-label="STATUS">(.*?)<\/td>/s.exec(html)?.[1] ?? '';
+
+    expect(status).toContain('<small data-verbatim>Step &quot;publish&quot; was skipped: this run is isolated, so it publishes nothing to a data branch.</small>');
+  });
+
   it('switches to cards by the width of the drawer, not of the window', () => {
     expect(dashboardStyles).toContain('.card-table{container-type:inline-size}');
     expect(dashboardStyles).toMatch(/@container\(max-width:760px\)\{[^@]*\.run-steps thead[^{]*\{display:none\}/);
