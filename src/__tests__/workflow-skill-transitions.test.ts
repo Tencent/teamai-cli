@@ -2247,6 +2247,22 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a run started with --no-judge leaves a confined step open for another driver, though this machine has the tool to run it',
+    rows: ['D14'],
+    run: async () => {
+      const made = await harness({ judged: JUDGED });
+      fakeConfinedClaude(made.root, { verdict: 'pass' });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'judged', answers: { parallel: 1, confirmed: false, judge: false }, inputs: undefined }));
+      const chose = await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' }));
+      const polls = [chose];
+      for (let poll = 0; poll < 3; poll += 1) polls.push(await turnOf(await made.call({ kind: 'next', run, wait: true })));
+      expect(polls.flatMap(dispatches)).toEqual([]);
+      const engine = await readRun(made.config, run);
+      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judge')).toMatchObject({ status: 'pending' });
+      return made.rows;
+    },
+  },
+  {
     name: 'a confined step D28 leased runs on the confined tool even when judging turns off before its runner begins',
     rows: ['D28', 'J6', 'C12'],
     run: async () => {
