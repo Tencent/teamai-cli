@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
 import { isToolId } from './tools.js';
+import { existingSharedInstructionDirs } from './shared-instruction-source.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -2818,8 +2819,8 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
     // claudemd file names at the root and one level down, as the block collects them.
     // listFilesRecursive joins with '/' on every platform.
     const claudemdFiles = team.claudemdFiles
-      .map((file) => file.split('/'))
-      .filter((segments) => segments.length <= 2 && (segments[segments.length - 1] ?? '').endsWith('.md'));
+      .map((entry) => ({ dir: entry.dir, segments: entry.file.split('/') }))
+      .filter((entry) => entry.segments.length <= 2 && (entry.segments[entry.segments.length - 1] ?? '').endsWith('.md'));
 
     return [
       ...repeatedNames(team.skills, (item) => item.name, (item) => item.relativePath).map(([name, sources]) => (
@@ -2827,7 +2828,11 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
       ...repeatedNames(firstLevelRules, (item) => path.posix.basename(item.name), (item) => item.relativePath)
         .map(([name, sources]) => (
           `rules: "${name}" is defined in ${listed(sources)} (legacy mode: each is delivered at its own path)`)),
-      ...repeatedNames(claudemdFiles, (segments) => segments[segments.length - 1] ?? '', (segments) => `claudemd/${segments.join('/')}`)
+      ...repeatedNames(
+        claudemdFiles,
+        (entry) => entry.segments[entry.segments.length - 1] ?? '',
+        (entry) => `${entry.dir}/${entry.segments.join('/')}`,
+      )
         .map(([name, sources]) => (
           `claudemd: "${name}" is defined in ${listed(sources)} (legacy mode: all of them are in the managed block)`)),
     ];
@@ -2852,7 +2857,12 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
       mode: 'legacy' as const,
       skills: await getHandler('skills').scanTeamForPull(teamConfig, localConfig),
       rules: await getHandler('rules').scanTeamForPull(teamConfig, localConfig),
-      claudemdFiles: await listFilesRecursive(path.join(localConfig.repo.localPath, 'claudemd')),
+      // The shared-instruction source directory the team repo uses:
+      // `claudemd/` or `agentsmd/` (#1682). Each file carries its own source
+      // directory, so the note can name where a duplicate came from.
+      claudemdFiles: (await Promise.all((await existingSharedInstructionDirs(localConfig.repo.localPath))
+        .map(async (dir) => (await listFilesRecursive(path.join(localConfig.repo.localPath, dir)))
+          .map((file) => ({ dir, file }))))).flat(),
     };
   }
 

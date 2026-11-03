@@ -205,34 +205,64 @@ export class RepoResourceHandler extends ResourceHandler {
     readonly type: ResourceType,
     readonly dir: string = type,
     readonly fileFilter?: (file: string) => boolean,
+    /**
+     * The source directories this resource may live in, when the repo can
+     * choose (the shared-instruction `claudemd/` or `agentsmd/`). Resolved
+     * per repo, so one handler serves both conventions (#1682). A repo that
+     * uses neither keeps the default `dir`.
+     */
+    readonly dirResolver?: (repoPath: string) => Promise<string[]>,
   ) {
     super();
+  }
+
+  /** The directories this resource is read from, in the repo's own order. */
+  async dirsIn(repoPath: string): Promise<string[]> {
+    if (!this.dirResolver) return [this.dir];
+    const resolved = await this.dirResolver(repoPath);
+
+    return resolved.length > 0 ? resolved : [this.dir];
   }
 
   async scanLocalForPush(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<ResourceItem[]> {
-    return scanRepoResourceForPush(this.type, this.dir, teamConfig, localConfig, this.fileFilter);
+    // The local copy is written under ONE directory — the convention the
+    // repo uses — so a push never splits a resource across two trees.
+    const dirs = await this.dirsIn(localConfig.repo.localPath);
+    const items: ResourceItem[] = [];
+
+    for (const dir of dirs) {
+      items.push(...await scanRepoResourceForPush(this.type, dir, teamConfig, localConfig, this.fileFilter));
+    }
+
+    return items;
   }
 
   async scanTeamForPull(
     _teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<ResourceItem[]> {
-    const dirPath = path.join(localConfig.repo.localPath, this.dir);
+    const items: ResourceItem[] = [];
 
-    if (!await pathExists(dirPath)) return [];
-    const files = await listRepoFilesRecursive(dirPath);
+    for (const dir of await this.dirsIn(localConfig.repo.localPath)) {
+      const dirPath = path.join(localConfig.repo.localPath, dir);
 
-    return files
-      .filter((file) => !this.fileFilter || this.fileFilter(file))
-      .map((file) => ({
-        name: file,
-        type: this.type,
-        sourcePath: path.join(dirPath, ...file.split('/')),
-        relativePath: `${this.dir}/${file}`,
-      }));
+      if (!await pathExists(dirPath)) continue;
+      const files = await listRepoFilesRecursive(dirPath);
+
+      items.push(...files
+        .filter((file) => !this.fileFilter || this.fileFilter(file))
+        .map((file) => ({
+          name: file,
+          type: this.type,
+          sourcePath: path.join(dirPath, ...file.split('/')),
+          relativePath: `${dir}/${file}`,
+        })));
+    }
+
+    return items;
   }
 
   async pushItem(
@@ -256,8 +286,18 @@ export class RepoResourceHandler extends ResourceHandler {
     _teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<string[]> {
-    const target = path.resolve(localConfig.repo.localPath, this.dir, ...name.split('/'));
-    await fs.rm(target, { force: true });
+    const repoPath = localConfig.repo.localPath;
+
+    // The file may sit under any of the repo's source directories (#1682).
+    for (const dir of await this.dirsIn(repoPath)) {
+      const target = path.resolve(repoPath, dir, ...name.split('/'));
+
+      if (await pathExists(target)) {
+        await fs.rm(target, { force: true });
+
+        return [name];
+      }
+    }
 
     return [name];
   }

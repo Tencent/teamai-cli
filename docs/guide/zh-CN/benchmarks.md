@@ -80,7 +80,7 @@ arms:
 
 ### 去掉团队资产
 
-`without` 接受团队仓库中的路径，写法与 git 列出的一致：一个 skill、一条 rule、一个 agent、一个 `claudemd/` 文件、一篇文档、整个命名空间目录，或任何其他文件，例如 `hooks/hooks.yaml`：
+`without` 接受团队仓库中的路径，写法与 git 列出的一致：一个 skill、一条 rule、一个 agent、一个 `claudemd/`（或 `agentsmd/`）文件、一篇文档、整个命名空间目录，或任何其他文件，例如 `hooks/hooks.yaml`：
 
 ```yaml
 arms:
@@ -99,7 +99,7 @@ arms:
 | --- | --- |
 | pull 到的修订中没有的路径，或 `teamai.yaml` | 没有可去掉的内容，或者没有 trial 能安装团队。 |
 | 位于它列出的另一个路径之内的路径 | 只列出外层那个。 |
-| `skills/`、`rules/`、`agents/`、`claudemd/` 或 `docs/` 下、无论去不去掉 pull 都交付得一样的路径 | 去掉它什么都不改变。消息会说明原因：你的角色或项目不接收的命名空间、只通过你没有订阅的 tag 才接收的共享 skill、你排除的 skill、只带有你没有订阅的 tag 的 rule。 |
+| `skills/`、`rules/`、`agents/`、`claudemd/`（或 `agentsmd/`）、或 `docs/` 下、无论去不去掉 pull 都交付得一样的路径 | 去掉它什么都不改变。消息会说明原因：你的角色或项目不接收的命名空间、只通过你没有订阅的 tag 才接收的共享 skill、你排除的 skill、只带有你没有订阅的 tag 的 rule。 |
 | 你接收的某个命名空间会用自己的副本代替的共享路径 | 命名空间的副本仍会到达 trial：消息会说 `list skills/ops/release too`。 |
 
 其他位置的路径只需要存在。`without` 路径会去掉整个文件：要去掉共享文件中的一个条目，例如一个 MCP 服务器、hook、env 键或模型别名，推送一个不含它的团队仓库分支，并指定这个分支：

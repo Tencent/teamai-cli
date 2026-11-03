@@ -103,6 +103,16 @@ sharing:
 
 `teamai push` sends every distributed resource type — skills, rules, agents, docs, env, hooks, mcp, models, claudemd, learnings, wiki, workflows, prompts, scorers, and benchmarks — with `--project` and `--role` namespace placement.
 
+### Shared instructions: `claudemd/` or `agentsmd/`
+
+Shared instructions live in `claudemd/` in the team repo. A team whose convention is `AGENTS.md` can name that directory `agentsmd/` instead — Claude Code reads `AGENTS.md` natively, and the directory name otherwise carries no meaning: the namespace layout, the per-tool delivery and the file format are the same under either name.
+
+- Either directory works; existing `claudemd/` repos keep working, with no migration.
+- New shared instructions are written into the directory the repo already uses. A repo with neither gets `claudemd/`.
+- When a repo has **both**, the files of both are collected, and a file name present in both is delivered once — the `agentsmd/` copy wins. Files whose names differ are all delivered, each under its own name. `teamai doctor` reports a same-named file defined in both directories.
+
+
+
 ### Git permissions
 
 Teammates push branches and open pull requests. The default branch stays protected.
@@ -153,7 +163,7 @@ A role is a member's job, such as frontend. Someone who sets that role receives 
 
 A project is the service they are working on. After this directory is set to that project, it also receives the resources the project lists.
 
-`knowledge` covers rules and shared instructions (`claudemd/`). A project can also declare learnings, env, hooks, mcp, models, docs, and wiki on its own.
+`knowledge` covers rules and shared instructions (`claudemd/`, or `agentsmd/` when the team uses that name). A project can also declare learnings, env, hooks, mcp, models, docs, and wiki on its own.
 
 Benchmark suites follow `resources.benchmarks`. `benchmarks/<suite>/` goes to everyone. Once a role or project lists `<ns>`, `benchmarks/<ns>/<suite>/` goes only to members who have `<ns>` active, and `benchmarks/<ns>/` holds suites, not a `suite.yaml` of its own.
 

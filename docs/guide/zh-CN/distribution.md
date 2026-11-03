@@ -103,6 +103,16 @@ sharing:
 
 `teamai push` 发送所有分布式资源类型——skills、rules、agents、docs、env、hooks、mcp、models、claudemd、learnings、wiki、workflows、prompts、scorers、benchmarks——并按 `--project` 和 `--role` 做命名空间放置。
 
+### 共享指令：`claudemd/` 或 `agentsmd/`
+
+共享指令放在团队仓库的 `claudemd/` 里。约定用 `AGENTS.md` 的团队可以把这个目录命名为 `agentsmd/`——Claude Code 原生读取 `AGENTS.md`，而目录名本身不带别的含义：两种名字下，命名空间布局、按工具投递和文件格式完全一致。
+
+- 两种目录都可以，现有 `claudemd/` 仓库照常工作，不需要迁移。
+- 新的共享指令写进仓库已经在用的那个目录；两个都没有时用 `claudemd/`。
+- 仓库里**同时有**两个目录时，两个目录的文件都会被收集；同名文件只投递一次，`agentsmd/` 那份优先。名字不同的文件都会投递，各用自己的名字。`teamai doctor` 会报告同名文件同时存在于两个目录。
+
+
+
 ### Git 权限
 
 同事能推分支、能开 pull request。主干保持保护。
@@ -153,7 +163,7 @@ scripts:
 
 项目是正在做的服务。在当前目录设成这个项目后，会再收到项目上声明的资源。
 
-`knowledge` 包含 rules 和共享指令（`claudemd/`）。项目还可以单独声明 learnings、env、hooks、mcp、models、docs、wiki。
+`knowledge` 包含 rules 和共享指令（`claudemd/`，团队用这个名字时也可以是 `agentsmd/`）。项目还可以单独声明 learnings、env、hooks、mcp、models、docs、wiki。
 
 基准测试套件按 `resources.benchmarks` 分发。`benchmarks/<suite>/` 发给所有人。某个角色或项目列出 `<ns>` 后，`benchmarks/<ns>/<suite>/` 只发给激活了 `<ns>` 的成员，`benchmarks/<ns>/` 下放套件，不能直接放 `suite.yaml`。
 
