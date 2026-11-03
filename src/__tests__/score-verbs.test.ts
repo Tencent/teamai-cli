@@ -355,6 +355,54 @@ describe('score plan', () => {
   });
 });
 
+describe('score plan asks a session\'s routing questions', () => {
+  /** Session `one`, planted in the checkout, whose capture delivered the team skills `release` of `ops` and `review-notes`. */
+  function deliveredSession(config: LocalConfig): void {
+    plantSession(path.join(root, 'app'), 'one', 'Review this branch and cut a release.');
+    const captures = path.join(config.dataHome ?? '', 'sessions', 'captures', 'claude-code', 'one');
+    fs.mkdirSync(captures, { recursive: true });
+    fs.writeFileSync(path.join(captures, '0b6f2a52-5d7e-4c7e-9a43-000000000001.json'), JSON.stringify({
+      captureId: '0b6f2a52-5d7e-4c7e-9a43-000000000001', platform: 'claude-code', sessionId: 'one', capturedAt: '2026-11-03T09:00:00.000Z',
+      agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, teamSkillInfo: { release: { namespace: 'ops' }, 'review-notes': {} },
+    }));
+  }
+
+  const plan = async (config: LocalConfig, scorers: string[], batch = false) => ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: JSON.stringify(scorers), batch: String(batch), demand: scorers.length > 0 ? 'named' : 'auto' },
+    (await (await scoreRun(config, { subject: 'session:claude-code:one', scorers, batch, demand: scorers.length > 0 ? 'named' : 'auto' })).next('plan')).ctx);
+
+  it('puts every routing question in one group, apart from the team scorers without batch, while skill_routing is on', async () => {
+    const config = await team({}, { quality: scorer({ extra: 'sessions: true\n' }) });
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'scoring.yaml'), 'skill_routing: true\n');
+    deliveredSession(config);
+
+    expect(await plan(config, [])).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }, { scorers: 'teamai:routing:ops:release,teamai:routing:review-notes' }] } });
+  });
+
+  it('asks none while skill_routing is off', async () => {
+    const config = await team({}, { quality: scorer({ extra: 'sessions: true\n' }) });
+    deliveredSession(config);
+
+    expect(await plan(config, [])).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+  });
+
+  it('labels a routing question named on demand, whatever skill_routing says', async () => {
+    const config = await team({}, {});
+    deliveredSession(config);
+    const { answers } = await walk(config, 'session:claude-code:one', { inputs: { scorers: ['teamai:routing:ops:release'], demand: 'named' }, judge: { answer: { label: 'fit', reasoning: 'It cut the release with it.' } } });
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'teamai:routing:ops:release', label: 'fit', code: '' }] } });
+    expect(await LabelStore.local(config)).toEqual([expect.objectContaining({ scorer: 'teamai:routing:ops:release', label: 'fit', subject: { platform: 'claude-code', sessionId: 'one' } })]);
+  });
+
+  it('refuses a routing name that names no skill the session delivered, and says which it did', async () => {
+    const config = await team({}, {});
+    deliveredSession(config);
+
+    expect(await plan(config, ['teamai:routing:deploy'])).toEqual({ ok: false, code: 'scorer_not_found',
+      message: 'Scorer teamai:routing:deploy is not a routing question of session:claude-code:one. It names no team skill in this session\'s skills.available: teamai:routing:ops:release, teamai:routing:review-notes.' });
+  });
+});
+
 /** Plans `subject` in a new teamai-score run, reports the plan, and leases the first group's evidence step. */
 const NESTED = `schemaVersion: v1alpha1
 name: nested
