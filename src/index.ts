@@ -1072,7 +1072,7 @@ scoreCmd
 
 scoreCmd
   .command('label')
-  .description('A step of a teamai-score run: the labels of one group, from the run\'s hand label when a person started the root run, else the first stage that decided it (check, ci, protected), else the judge\'s --answer, each checked against the answer schema and the pinned scorer, with score and passed computed here. Writes them with reasoning to <dir>/labels.json and prints {"labels":[{"scorer","label","code"}]}, one per scorer and no reasoning; code is check_could_not_run, ci_pending, judge_failed or judge_answer_invalid for a scorer with no label. Exits 0 with codes. Refused outside a leased attempt of a teamai-score step.')
+  .description('A step of a teamai-score run: the labels of one group, from the run\'s hand label when a person started the root run, else the first stage that decided it (check, ci, protected), else the judge\'s --answer, each checked against the answer schema and the pinned scorer, with score and passed computed here. Writes them with reasoning to <dir>/labels.json and prints {"labels":[{"scorer","label","code"}]}, one per scorer and no reasoning; code is check_could_not_run, ci_pending, judge_failed or judge_answer_invalid for a scorer with no label, or judge_tool_unavailable when a stage decided it and no judge tool here runs its model to record the label. Exits 0 with codes. Refused outside a leased attempt of a teamai-score step.')
   .option('--evidence <dir>', 'The evidence directory its evidence step printed')
   .option('--answer <json>', 'The judge step\'s answer, as its output rendered it; \'\' when it gave none')
   .option('--judge <outcome>', 'The judge step\'s outcome: success, failed, timed_out, cancelled, or \'\' when it was skipped')
