@@ -56,6 +56,7 @@ All notable changes to this project will be documented in this file. See [standa
 - A scorer judges each pass and each session once, as `scores/marks.jsonl` in the data home records. The upgrade carries the judge attempts over there once, and `teamai doctor` says how many open passes and sessions it carried: the next `teamai score --drain`, or a session start where sessions are judged or archived automatically, starts `teamai-score` for each, a pass only within 14 days of its run's last change. A label is written under `scores/labels.lock`, so a push never clears one still being written (for [#1670](https://github.com/Tencent/teamai-cli/issues/1670)).
 - Judging a person or an agent names for a session (`demand: named`) counts toward `daily_limit`, and is never refused by it (for [#1670](https://github.com/Tencent/teamai-cli/issues/1670)).
 - A group whose scorers take `ci` waits for CI that has not finished, up to the `2h` its `ci` step sets, and its mark waits too, which is not a lapse: the next `teamai-finished-sessions` judges it once CI finished. A group whose scorers do not take `ci` is judged at once (for [#1670](https://github.com/Tencent/teamai-cli/issues/1670)).
+- A run judges with the scorers of the team revision it started from, plus the member's uncommitted or unpushed edits to them at start, so a rubric edited or pushed while a run is open changes the next run, not this one. Runs started before the upgrade keep the scorers they pinned (for [#1670](https://github.com/Tencent/teamai-cli/issues/1670)).
 
 ### 💥 Breaking Changes
 
