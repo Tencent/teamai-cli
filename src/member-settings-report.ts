@@ -10,6 +10,7 @@ import { hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfi
 import { RUN_MODES, type RunMode } from './launch-context.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
 import { memberTools } from './tool-launch/call.js';
+import { DEFAULT_RETENTION, parseRetention } from './workflow/retention.js';
 import {
   getDataHome,
   getTeamaiHomeDir,
@@ -120,6 +121,7 @@ const MEMBER_SETTING_REPORT_KEYS = [
   'workflows.auto_approve',
   'workflows.sandbox',
   'workflows.allow.network',
+  'workflows.retention',
   'recallEnabled',
   'contributeHintEnabled',
   'mrHintEnabled',
@@ -271,6 +273,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
     if (key === 'usageReportEnabled') return selectedTeam?.usageReport;
 
+    if (key === 'workflows.retention') return asJsonTree(selectedTeam?.workflows?.retention);
+
     if (key === 'updatePolicy') return selectedTeam?.autoUpdate === false ? 'skip' : selectedTeam?.autoUpdate === true ? 'auto' : undefined;
     const mode = publishMode(key);
 
@@ -285,6 +289,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
     if (key === 'workflows.auto_approve') return false;
 
     if (key === 'workflows.allow.network') return true;
+
+    if (key === 'workflows.retention') return DEFAULT_RETENTION;
 
     if (key === 'recallEnabled') return false;
 
@@ -372,6 +378,11 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
     if (machineShadowed && machineValue !== undefined) levels.push(settingSource('machine', machineValue, machineFile, undefined, false));
 
+    // A wrong value is skipped, and the next level decides.
+    if (key === 'workflows.retention') {
+      return levels.map((level) => (level.level === 'default' || parseRetention(level.value) ? level : { ...level, used: false }));
+    }
+
     if (mode && publishing[mode].source.kind === 'http-team') {
       return [settingSource('http-team', 'off'), ...levels.map((level) => level.level === 'default' ? level : { ...level, used: false })];
     }
@@ -407,7 +418,7 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
       return resolveEffectiveUpdatePolicy(decidingConfig, decidingTeam);
     }
 
-    return levels[0]?.value;
+    return levels.find((level) => level.used !== false)?.value;
   };
 
   const reports: MemberSettingsReport[] = [];

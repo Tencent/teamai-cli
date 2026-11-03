@@ -16,12 +16,12 @@ afterEach(() => {
 });
 
 /** A workspace whose own config.yaml adds `workspaceYaml`, loaded with the machine file below it as teamai loads it. */
-async function workspace(workspaceYaml: string): Promise<{ config: LocalConfig; scopeFile: string }> {
+async function workspace(workspaceYaml: string, teamYaml = ''): Promise<{ config: LocalConfig; scopeFile: string }> {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-member-settings-')));
   dirs.push(root);
   const team = path.join(root, 'team');
   fs.mkdirSync(team);
-  fs.writeFileSync(path.join(team, 'teamai.yaml'), 'team: t\nrepo: https://example.com/t.git\n');
+  fs.writeFileSync(path.join(team, 'teamai.yaml'), `team: t\nrepo: https://example.com/t.git\n${teamYaml}`);
   const dataHome = path.join(root, 'data');
   const scopeFile = path.join(dataHome, 'config.yaml');
   fs.mkdirSync(dataHome);
@@ -46,6 +46,30 @@ describe('readMemberSettingsPanel', () => {
       expect.objectContaining({ key: 'recallEnabled', value: false, source: { level: 'scope', value: false, file: scopeFile }, below: [{ level: 'machine', value: true, file: machineFile() }] }),
       { key: 'workflows.tools.default', value: 'codex', source: { level: 'machine', value: 'codex', file: machineFile() }, below: [], unused: [] },
     ]));
+  });
+
+  it('shows workflows.retention from the first level whose value is a duration or never, and the wrong one it skipped', async () => {
+    fs.mkdirSync(path.dirname(machineFile()), { recursive: true });
+    fs.writeFileSync(machineFile(), 'workflows: { retention: 7d }\n');
+    const { config, scopeFile } = await workspace('workflows: { retention: 2 weeks }\n', 'workflows: { retention: 30d }\n');
+
+    const read = await readMemberSettingsPanel(config);
+
+    expect(read.configured && read.rows).toContainEqual({
+      key: 'workflows.retention', value: '7d', source: { level: 'machine', value: '7d', file: machineFile() },
+      below: [{ level: 'team', value: '30d', file: path.join(config.repo.localPath, 'teamai.yaml') }],
+      unused: [{ level: 'scope', value: '2 weeks', file: scopeFile, used: false }],
+    });
+  });
+
+  it('shows a workspace that keeps its runs\' branches with workflows.retention never', async () => {
+    const { config, scopeFile } = await workspace('workflows: { retention: never }\n');
+
+    const read = await readMemberSettingsPanel(config);
+
+    expect(read.configured && read.rows).toContainEqual(
+      { key: 'workflows.retention', value: 'never', source: { level: 'scope', value: 'never', file: scopeFile }, below: [], unused: [] },
+    );
   });
 
   it('shows the 0 a member writes to opt out of auto-compact', async () => {
