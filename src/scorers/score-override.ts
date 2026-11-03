@@ -102,25 +102,45 @@ function publishesLabels(step: WorkflowStep): boolean {
   return step.command === PUBLISH && step.deliver === 'publish' && branch === REPORTS_BRANCH;
 }
 
-/** Why `team` changes what teamai's default `shipped` takes, gives or runs around its steps. */
-function headerProblems(team: WorkflowDefinition, shipped: WorkflowDefinition): Problem[] {
+/** Why the step at `walked` publishes, or runs the publish verb, other than as the default publishes the labels. */
+function publishProblems({ path, field, step }: Walked): Problem[] {
+  if ((step.command !== PUBLISH && step.deliver !== 'publish') || publishesLabels(step)) return [];
+
+  return [{ code: 'score_override_publish', field, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` }];
+}
+
+/** Whether a header field of the team file is the default's, either absent counting as `{}`. */
+function same<TField extends WorkflowDefinition['inputs'] | WorkflowDefinition['outputs'] | WorkflowDefinition['setup']>(team: TField, shipped: TField): boolean {
+  return canonicalJson(team ?? {}) === canonicalJson(shipped ?? {});
+}
+
+/** Why `team` changes what teamai's default `shipped` takes or gives, a workflow step's outputs included. */
+function contractProblems(team: WorkflowDefinition, shipped: WorkflowDefinition): Problem[] {
   const found: Problem[] = [];
   const contract = (field: string, message: string) => found.push({ code: 'score_override_contract', field, message });
 
-  if (canonicalJson(team.inputs ?? {}) !== canonicalJson(shipped.inputs ?? {})) contract('inputs', 'changes the inputs teamai\'s default teamai-score takes, which every workflow that runs it passes. Declare them as it ships them');
+  if (!same(team.inputs, shipped.inputs)) contract('inputs', 'changes the inputs teamai\'s default teamai-score takes, which every workflow that runs it passes. Declare them as it ships them');
 
-  if (canonicalJson(team.outputs ?? {}) !== canonicalJson(shipped.outputs ?? {})) contract('outputs', 'changes the outputs teamai\'s default teamai-score gives. Keep them as it ships them: no output may carry a judge\'s reasoning');
+  if (!same(team.outputs, shipped.outputs)) contract('outputs', 'changes the outputs teamai\'s default teamai-score gives. Keep them as it ships them: no output may carry a judge\'s reasoning');
   const shippedInline = inlineOutputs(shipped);
 
   for (const [path, outputs] of inlineOutputs(team)) {
     if (shippedInline.has(path) && shippedInline.get(path) !== outputs) contract(`steps.${path}.workflow.outputs`, `changes the outputs of the workflow step "${path}" runs. Keep them as teamai's default teamai-score ships them: no output may carry a judge's reasoning`);
   }
 
-  if (team.private !== true) contract('private', 'is not private, so its steps\' sessions and outputs could leave this machine. Set private: true');
+  return found;
+}
 
-  if ((team.invoke ?? 'deny') !== 'deny') contract('invoke', `sets invoke: ${team.invoke ?? 'deny'}, so an agent session could start it and label its own work. Set invoke: deny`);
+/** Why `team` runs other than teamai's default `shipped`: off this machine, started by an agent, or with a setup command. */
+function runProblems(team: WorkflowDefinition, shipped: WorkflowDefinition): Problem[] {
+  const found: Problem[] = [];
+  const invoke = team.invoke ?? 'deny';
 
-  if (canonicalJson(team.setup ?? {}) !== canonicalJson(shipped.setup ?? {})) {
+  if (team.private !== true) found.push({ code: 'score_override_contract', field: 'private', message: 'is not private, so its steps\' sessions and outputs could leave this machine. Set private: true' });
+
+  if (invoke !== 'deny') found.push({ code: 'score_override_contract', field: 'invoke', message: `sets invoke: ${invoke}, so an agent session could start it and label its own work. Set invoke: deny` });
+
+  if (!same(team.setup, shipped.setup)) {
     found.push({ code: 'score_override_command', field: 'setup', message: `runs setup ${team.setup?.command ?? 'none'} in the workspace of each step, where teamai's default teamai-score runs ${shipped.setup?.command ?? 'none'}. Give it the setup it ships` });
   }
 
@@ -168,11 +188,7 @@ function stepProblems(walked: Walked, verbs: Verbs): Problem[] {
 
   if (step.prompt !== undefined || step.promptFile !== undefined) found.push(...promptProblems(walked));
 
-  if ((step.command === PUBLISH || step.deliver === 'publish') && !publishesLabels(step)) {
-    found.push({ code: 'score_override_publish', field, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` });
-  }
-
-  return found;
+  return [...found, ...publishProblems(walked)];
 }
 
 /** The steps of `KEPT` the override's `steps` do not have; `score.check` too while `scorerHasCheck`. */
@@ -193,7 +209,7 @@ function missingSteps(steps: readonly Walked[], scorerHasCheck: boolean): Proble
 function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefinition; shipped: WorkflowDefinition; file: string; scorerHasCheck: boolean }): WorkflowDiagnostic[] {
   const verbs = verbsOf(shipped);
   const steps = walk(team);
-  const found = [...headerProblems(team, shipped), ...steps.flatMap((walked) => stepProblems(walked, verbs)), ...missingSteps(steps, scorerHasCheck)];
+  const found = [...contractProblems(team, shipped), ...runProblems(team, shipped), ...steps.flatMap((walked) => stepProblems(walked, verbs)), ...missingSteps(steps, scorerHasCheck)];
 
   return found.map((problem) => ({ file, line: 1, column: 1, ...problem }));
 }
