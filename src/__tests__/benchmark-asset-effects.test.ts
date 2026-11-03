@@ -240,6 +240,30 @@ describe('asset effects', () => {
     expect(text).toContain('tasks that cover it   +50 pp   1/2 -> 2/2');
   });
 
+  it('prints every routing count a row has, the loaded value first and then the others in one order', () => {
+    const arms = [
+      { name: 'pulled', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM } },
+    ];
+    const runs = (task: string, values: Array<'fit' | 'idle' | 'extra' | 'missed'>): TrialSpec[] => values.map((value) => ({ task, arm: 'pulled', routing: { migrations: value } }));
+    const text = formatBenchmarkTable(benchmarkTable(migrationsRecord([
+      ...runs('add-column', ['fit', 'missed', 'fit']),
+      ...runs('drop-index', ['missed', 'idle', 'idle']),
+      ...runs('login-copy', ['idle', 'extra', 'idle']),
+    ], arms)));
+
+    expect(text).toContain('add-column   yes   -   100% (3/3)   2/3 fit, 1 missed');
+    expect(text).toContain('drop-index   yes   -   100% (3/3)   0/3 2 idle, 1 missed');
+    expect(text).toContain('login-copy   no   -   100% (3/3)   1/3 extra, 2 idle');
+  });
+
+  it('names the routing question of a covered skill, with its namespace when a namespace delivers it', () => {
+    const record = migrationsRecord(paired({ 'no-migrations': ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] }));
+    const [migrations, rule] = assetEffects(record);
+
+    expect(migrations.routingScorer).toBe('teamai:routing:db:migrations');
+    expect(rule.routingScorer).toBeUndefined();
+  });
+
   it('matches the arm that leaves nothing out only when tool, model, workflow and role agree', () => {
     const arms = [
       { name: 'pulled-claude', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM } },

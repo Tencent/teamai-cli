@@ -4,6 +4,7 @@
  * published record after the suite left the cache.
  */
 import type { AgentObservation } from '../agent-observation.js';
+import { routingScorerName } from '../scorers/skill-routing.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { compareAgent } from './agent-match.js';
 import { TRIAL_RESULTS, type Baseline, type BenchmarkRecord, type TrialResult } from './result.js';
@@ -254,14 +255,14 @@ export function formatAssetEffect(effect: AssetEffect): string {
   return [title, ...lines.filter((line) => line !== undefined && line !== '')].join('\n\n');
 }
 
-/** `2/3 fit, 1 missed`-style: the loads over the trials; the loaded trials only by their routing value, the unloaded ones counted. */
+/**
+ * `2/3 fit, 1 missed`-style: the loads over the trials, then every routing value the trials have. The loaded value
+ * (`fit` or `extra`, which the loads count) comes first, then the others counted, in `ROUTING_VALUES` order.
+ */
 function formatLoads({ loaded, planned, byValue }: NonNullable<AssetEffectRow['loaded']>): string {
-
-  const parts = ROUTING_VALUES.flatMap((value) => {
-    if (value === 'unknown' || (byValue[value] ?? 0) === 0 || loaded > 0 !== (value === 'fit' || value === 'extra')) return [];
-
-    return [value === 'fit' || value === 'extra' ? value : `${byValue[value]} ${value}`];
-  });
+  const isLoaded = (value: RoutingValue): boolean => value === 'fit' || value === 'extra';
+  const present = ROUTING_VALUES.filter((value) => value !== 'unknown' && (byValue[value] ?? 0) > 0);
+  const parts = [...present.filter(isLoaded), ...present.flatMap((value) => (isLoaded(value) ? [] : [`${byValue[value]} ${value}`]))];
 
   return `${loaded}/${planned} ${parts.length > 0 ? parts.join(', ') : 'unknown'}`;
 }
@@ -449,6 +450,8 @@ export interface AssetEffect {
   tool: string;
   /** The skill's bare name, when the path is under `skills/`: the key of a trial's `used` and `routing`. */
   skill?: string;
+  /** For a skill, the name of its routing question on real sessions: `teamai:routing:[<namespace>:]<skill>`. */
+  routingScorer?: string;
   /** One row per task, in the record's task order. */
   rows: AssetEffectRow[];
   /** The difference over the tasks that cover the path, and over the others; absent when no arm leaves it out. */
@@ -552,7 +555,7 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
       };
 
       const effect = definedFields<AssetEffect>({
-        path, without: without?.name, has: has?.name, tool: (without ?? has)?.tool ?? '', skill,
+        path, without: without?.name, has: has?.name, tool: (without ?? has)?.tool ?? '', skill, routingScorer: skill === undefined ? undefined : routingScorerName({ name: skill, ...skillNamespaceOf(path) }),
         rows, coversDifference: split(true), othersDifference: split(false),
         passedWhenLoaded: whenLoaded(true), passedWhenNotLoaded: whenLoaded(false),
       });
@@ -562,6 +565,13 @@ export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
   });
 
   return effects;
+}
+
+/** The skills namespace of a covered skill directory: none for `skills/<name>`, `<namespace>` for `skills/<namespace>/<name>`. */
+function skillNamespaceOf(covered: string): { namespace?: string } {
+  const parent = covered.split('/').slice(1, -1);
+
+  return parent.length === 1 ? { namespace: parent[0] } : {};
 }
 
 /** How the `with` arm's trials of one task loaded `skill`, each counted under its routing value. */

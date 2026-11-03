@@ -163,6 +163,25 @@ describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
     expect(html).toContain('teamai:routing:auth-tokens');
   });
 
+  it('shows a covered asset\'s rows on Compare when no two arms compare, with every routing count and the namespaced routing link', async () => {
+    const run = coveredRun();
+    const values = ['fit', 'missed', 'fit'] as const;
+
+    run.benchmark.repetitions = 3;
+    run.benchmark.scorers = [{ name: 'teamai:routing:dev:auth-tokens', rubric: { sourceHash: 'r1' } }];
+    run.benchmark.tasks = run.benchmark.tasks.map((task) => (task.covers ? { ...task, covers: ['skills/dev/auth-tokens'], coversSkills: ['auth-tokens'] } : task));
+    run.benchmark.arms = run.benchmark.arms.filter(({ name }) => name === 'pulled');
+    run.benchmark.trials = values.map((value, index) => ({
+      task: 'expired-token', arm: 'pulled', repetition: index + 1, order: index + 1, step: `trials.r${index + 1}.expired-token.pulled.prompt`, result: 'passed' as const,
+      ...(value === 'fit' ? { used: { 'auth-tokens': 'loaded' as const } } : {}), routing: { 'auth-tokens': value },
+    }));
+    const html = await renderPage([run], { view: 'compare' });
+
+    expect(text(html)).toContain('skills/dev/auth-tokens · pulled · claude');
+    expect(text(html)).toContain('expired-token yes - 3/3 2/3 fit, 1 missed');
+    expect(html).toContain('teamai:routing:dev:auth-tokens');
+  });
+
   it('keeps every asset label in zh-CN too', async () => {
     const zh = text(await renderPage([coveredRun()], { view: 'compare', language: 'zh-CN' }));
 

@@ -7,12 +7,14 @@
  * `openScorers`. Another page opens this one on an arm with `openBenchmarks`.
  */
 import { BENCHMARK_WINDOWS } from '../benchmark/history.js';
+import { ROUTING_VALUES } from '../benchmark/table.js';
 
 export const benchmarksClient = `
 let benchData=null, benchError='', benchLoading=false, benchHtml='', benchRequest=0, benchAxis='tokens', benchDimension='', benchComparison='', benchConfig='', benchRevision='', benchArm='', benchShouldRevealArm=false, benchProduction=null;
 const savedBenchView=read('teamai-dashboard-benchmark-view','arms');
 let benchView=['arms','compare','team'].includes(savedBenchView)?savedBenchView:'arms';
 const benchWindows=${JSON.stringify(BENCHMARK_WINDOWS.map(String))};
+const routingValues=${JSON.stringify(ROUTING_VALUES)};
 const savedBenchWindow=read('teamai-dashboard-benchmark-window','90');
 let benchQuery={window:benchWindows.includes(savedBenchWindow)?savedBenchWindow:'90',suite:''};
 function resetSelection(){benchComparison='';benchConfig='';benchRevision='';benchArm='';}
@@ -240,7 +242,7 @@ function emptyView(title,text,example,after){
  return '<section class="panel"><div class="empty bench-empty"><h2>'+label(title)+'</h2><p>'+label(text)+'</p><pre class="command" data-verbatim>'+e(example)+'</pre>'+(after?'<p class="label">'+label(after)+'</p>':'')+'</div></section>';
 }
 function comparePanel(sel){
- if(!sel.comparisons.length)return emptyView('No two arms of this suite differ in one thing only','Compare puts two arms side by side, trial by trial, when they differ only in the team assets, the tool or the model. Cross them with a matrix, such as each tool with and without the team\\'s assets:','matrix:\\n  tool: [claude, codex]\\n  team: [pulled, none]','Each arm of a matrix differs from its neighbours in one value, so every difference here has one cause.');
+ if(!sel.comparisons.length)return emptyView('No two arms of this suite differ in one thing only','Compare puts two arms side by side, trial by trial, when they differ only in the team assets, the tool or the model. Cross them with a matrix, such as each tool with and without the team\\'s assets:','matrix:\\n  tool: [claude, codex]\\n  team: [pulled, none]','Each arm of a matrix differs from its neighbours in one value, so every difference here has one cause.')+assetPanel(sel,null);
  const dims=DIMENSIONS.filter(([key])=>sel.comparisons.some(c=>c.dimension===key));
  const dim=dims.some(([key])=>key===benchDimension)?benchDimension:dims[0][0];
  const list=sel.comparisons.filter(c=>c.dimension===dim);
@@ -307,9 +309,9 @@ function assetPanel(sel,chosen){
  const names=pair&&pair[0]&&pair[1]?pair.map(a=>a.arm):null;
  const shown=assets.filter(a=>a.path&&(!names||a.without==null||a.has==null||names.includes(a.without)&&names.includes(a.has)));
  if(!shown.length)return '';
- const name=a=>a.skill?'teamai:routing:'+(a.path.split('/').length>2?a.path.split('/')[1]+':'+a.skill:a.skill):'';
  const rate=r=>r==null?'-':number(r.passed)+'/'+number(r.planned);
- const loads=r=>r==null?'not observed':number(r.loaded)+'/'+number(r.planned)+' '+(['fit','extra','missed','idle'].filter(v=>r.byValue[v]&&((r.loaded>0)===(v==='fit'||v==='extra'))).map(v=>v==='fit'||v==='extra'?v:number(r.byValue[v])+' '+v).join(', ')||'unknown');
+ // As the CLI's formatLoads: the loaded value first, then every other count in routingValues order.
+ const loads=r=>{if(r==null)return 'not observed'; const shown=routingValues.filter(v=>v!=='unknown'&&r.byValue[v]), isLoaded=v=>v==='fit'||v==='extra'; return number(r.loaded)+'/'+number(r.planned)+' '+([...shown.filter(isLoaded),...shown.filter(v=>!isLoaded(v)).map(v=>number(r.byValue[v])+' '+v)].join(', ')||'unknown');};
  const split=(t,l)=>l==null?'':t+'   '+(l.difference.value>=0?'+':'')+Math.round(l.difference.value*100)+' pp   '+rate(l.from)+' → '+rate(l.to)+'   '+(l.separated?'95% '+(l.difference.low>=0?'+':'')+Math.round(l.difference.low*100)+' to '+(l.difference.high>=0?'+':'')+Math.round(l.difference.high*100)+' pp':label('not separated'));
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Asset effect')+'</h2><span class="label">'+label('Per covered team asset: the arm that runs without it against the arm that leaves nothing out, split by the tasks that cover it. A skill that did not load is missed, one that loaded where it was not needed is extra.')+'</span></div>'
   +shown.map(a=>'<div class="asset-effect"><h3 data-verbatim>'+e(a.path)+' · '+e(a.without!=null?a.without+' → '+a.has:a.has)+' · '+e(a.tool)+'</h3>'
@@ -317,7 +319,7 @@ function assetPanel(sel,chosen){
    +(a.coversDifference||a.othersDifference?'\\n'+e([split(label('tasks that cover it'),a.coversDifference),split(label('other tasks'),a.othersDifference)].filter(Boolean).join('\\n')):'')
    +(a.passedWhenLoaded||a.passedWhenNotLoaded?'\\n'+e(label('passed when loaded')+' '+rate(a.passedWhenLoaded)+' · '+label('passed when not loaded')+' '+rate(a.passedWhenNotLoaded)):'')
    +'</pre>'
-   +(a.skill&&sel.latest&&sel.latest.table&&sel.latest.table.routing?'<p class="scorer-hint">'+e(a.path)+' <a href="#scorers">'+e(name(a))+'</a> · '+label('its routing question\\'s counts on real sessions, over the same window')+'</p>':'')
+   +(a.routingScorer&&sel.latest&&sel.latest.table&&sel.latest.table.routing?'<p class="scorer-hint">'+e(a.path)+' <a href="#scorers">'+e(a.routingScorer)+'</a> · '+label('its routing question\\'s counts on real sessions, over the same window')+'</p>':'')
    +'</div>').join('')+'</section>';
 }
 const configName=c=>c.tool+(c.model?' · '+c.model:'')+(c.effort?' · '+c.effort:'')+(c.workflow?' · '+c.workflow:'')+(c.role?' · '+roleText(c):'');

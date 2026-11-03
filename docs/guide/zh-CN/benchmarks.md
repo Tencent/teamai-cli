@@ -725,7 +725,7 @@ passed when loaded 6/6 · passed when not loaded 2/3
 - 在 `refresh-race` 上它加载了两次、任务通过了两次；没加载的那一次也没通过，`missed` 计数点名了它。一个覆盖该 skill、每次都加载、却没有变化的任务说的是相反的事：description 触达了任务，正文没有帮助。
 - `login-copy` 没有变差，尽管 skill 在不需要它的地方加载了一次。
 
-`loaded with` 用的是[路由](scorers.md#skill-路由)打分器在已结束会话上读的值，只是改由任务而非评判器判定：`fit` 加载了且任务覆盖它，`missed` 没加载但任务覆盖它，`extra` 加载了但任务不覆盖它，`idle` 没加载也不覆盖，`unknown` 是工具不报告 skill 加载——`unknown` 的 trial 仍计入通过率，但不计入"加载时"或"未加载时"。只有 skill 有这一列：teamai 只观察 skill 加载，规则、`claudemd/` 文件、文档或整个命名空间目录都读作 `not observed`。在 dashboard 的[基准测试页面](dashboard.md#基准测试benchmarks)，Compare 页签在配对之下显示这些表，skill 还会链接到它在真实会话上的 `teamai:routing:...` 计数。
+`loaded with` 用的是[路由](scorers.md#skill-路由)打分器在已结束会话上读的值，只是改由任务而非评判器判定：`fit` 加载了且任务覆盖它，`missed` 没加载但任务覆盖它，`extra` 加载了但任务不覆盖它，`idle` 没加载也不覆盖，`unknown` 是工具不报告 skill 加载——`unknown` 的 trial 仍计入通过率，但不计入"加载时"或"未加载时"。只有 skill 有这一列：teamai 只观察 skill 加载，规则、`claudemd/` 文件、文档或整个命名空间目录都读作 `not observed`。在 dashboard 的[基准测试页面](dashboard.md#基准测试benchmarks)，Compare 页签在配对之下显示这些表（没有可比的两个 arm 时单独显示），skill 还会链接到它在真实会话上的 `teamai:routing:...` 计数。
 
 `not separated` 是一个答案，不是失败：配对差异的 95% 区间穿过零，这些 trial 无法把差异与偶然区分开。一条规则通常只影响少数任务——增加覆盖它的任务或重复次数，直到区间离开零。去掉多个路径的 arm 没有单资产表：它的差异属于整个集合，Compare 已经显示。`plan` 会拒绝向任何 arm 都交付不出任何东西的覆盖路径，以及两个同名的覆盖 skill 路径，因为 trial 的加载记录只有裸名。
 
