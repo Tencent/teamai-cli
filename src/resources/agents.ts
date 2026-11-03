@@ -6,10 +6,10 @@ import { z } from 'zod';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
-import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
+import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, fileContentEqualToBuffer, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
-import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam } from '../builtin-agents.js';
+import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
 import { isAgentToolId, isToolId, TOOLS } from '../tools.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
@@ -399,8 +399,15 @@ export class AgentsHandler extends ResourceHandler {
 
         // A built-in's copy is teamai's: only one pull delivered from a team
         // agent that replaces it here, on record, can be the team's.
-        if (BUILTIN_AGENT_NAMES.has(stem)
-          && !(replacedBuiltins.get(stem)?.has(path.join(agentsDir, file)) && delivered?.[path.join(agentsDir, file)] !== undefined)) continue;
+        if (BUILTIN_AGENT_NAMES.has(stem)) {
+          const copy = path.join(agentsDir, file);
+
+          if (!replacedBuiltins.get(stem)?.has(copy) || delivered?.[copy] === undefined) continue;
+          const shipped = isAgentToolId(tool) ? shippedAgentRender(stem, tool, localConfig.scope) : undefined;
+
+          // The built-in written while the team's copy was missing, over its record.
+          if (shipped && await fileContentEqualToBuffer(copy, Buffer.from(shipped.content))) continue;
+        }
 
         if (directStems.has(stem)) continue; // canonical direct-pickup wins (self mode)
 
@@ -2180,7 +2187,12 @@ export function agentOrigin(repoPath: string, stem: string, tool: ToolName, alia
     ],
   };
 
-  if (BUILTIN_AGENT_NAMES.has(stem)) origin.builtin = true;
+  if (BUILTIN_AGENT_NAMES.has(stem)) {
+    origin.builtin = true;
+    const shipped = shippedAgentRender(stem, tool, scope);
+
+    if (shipped) origin.shipped = shipped.content;
+  }
 
   return origin;
 }

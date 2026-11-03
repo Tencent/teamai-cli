@@ -140,6 +140,17 @@ describe('deployBuiltinAgents', () => {
     expect(await fse.readFile(localPath, 'utf8')).toBe('# the team copy pull delivered');
   });
 
+  it('deploys the built-in where the team agent replaces it but its copy is missing, which the next full sync replaces', async () => {
+    // A pull that keeps its revision (recall turned back on by an environment variable, an inherited scope)
+    // does not deliver the team copy again: the member still gets a recall agent.
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'agents', 'teamai-recall.md'), '---\nname: teamai-recall\ndescription: Team recall\n---\n');
+    const copy = path.join(homeDir, '.claude/agents/teamai-recall.md');
+
+    await deployBuiltinAgents(recallOn({ claude: { agents: '.claude/agents' } }), localConfig, { record: { kind: 'fast-path', delivered: {} } });
+
+    expect(await fse.readFile(copy, 'utf8')).toContain('knowledge retrieval agent');
+  });
+
   it('leaves the team copy alone when an agents/<namespace> of the team repo ships the built-in name', async () => {
     await fse.outputFile(
       path.join(localConfig.repo.localPath, 'agents', 'fe', 'teamai-recall.yaml'),

@@ -300,8 +300,12 @@ export async function deployBuiltinAgents(
 
         if (rendered === undefined) throw new Error(`cannot read ${src}`);
 
-        // The team's agent of this name is delivered at this destination instead.
-        if (replaced.get(stem)?.has(path.join(targetAgentsDir, `${stem}${rendered.ext}`))) continue;
+        // The team's agent of this name is delivered at this destination instead. While
+        // its copy is missing (a pull that kept its revision did not deliver it again),
+        // the member gets teamai's, which the next full sync replaces with the team's.
+        const teamDest = path.join(targetAgentsDir, `${stem}${rendered.ext}`);
+
+        if (replaced.get(stem)?.has(teamDest) && await pathExists(teamDest)) continue;
 
         if (options?.dryRun) {
           options.recorder?.report('builtin', path.join(targetAgentsDir, `${stem}${rendered.ext}`));

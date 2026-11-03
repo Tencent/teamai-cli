@@ -32,6 +32,7 @@ vi.mock('../utils/git.js', async () => ({
 
 import { AgentsHandler } from '../resources/agents.js';
 import { recordDelivery } from './helpers/delivered-checkout.js';
+import { shippedAgentRender } from '../builtin-agents.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import { getDataHome, type TeamaiConfig, type LocalConfig } from '../types.js';
 
@@ -250,6 +251,19 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     const item = { name: 'teamai-recall', type: 'agents' as const, sourcePath: srcPath, relativePath: 'agents/teamai-recall.yaml' };
 
     await handler.pullItem(item, teamConfig, localConfig, openLedger({}));
+
+    expect(await fse.readFile(copy, 'utf8')).toContain('Search docs/adr first.');
+  });
+
+  it('pullItem replaces teamai\'s built-in written over a team copy\'s record with the team agent', async () => {
+    // A pull that kept its revision wrote the built-in where the team copy had gone; the record still names the team copy.
+    const srcPath = path.join(repoPath, 'agents', 'teamai-recall.yaml');
+    await fse.outputFile(srcPath, 'name: teamai-recall\ndescription: Our recall\ninstructions: Search docs/adr first.\n');
+    const copy = path.join(homeDir, '.claude/agents/teamai-recall.md');
+    await fse.outputFile(copy, shippedAgentRender('teamai-recall', 'claude', 'user')?.content ?? '');
+    const item = { name: 'teamai-recall', type: 'agents' as const, sourcePath: srcPath, relativePath: 'agents/teamai-recall.yaml' };
+
+    await handler.pullItem(item, teamConfig, localConfig, openLedger({ [copy]: crypto.createHash('sha256').update('# the team copy').digest('hex') }));
 
     expect(await fse.readFile(copy, 'utf8')).toContain('Search docs/adr first.');
   });
@@ -1010,6 +1024,18 @@ projects:
   it('scanLocalForPush leaves out teamai\'s own teamai-recall, of any version, even when the team replaces it', async () => {
     await fse.outputFile(path.join(repoPath, 'agents', 'teamai-recall.md'), '# team recall\n');
     await fse.writeFile(path.join(homeDir, '.claude/agents', 'teamai-recall.md'), '---\nname: teamai-recall\ndescription: An older teamai release wrote this\n---\n');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.find((i) => i.name === 'teamai-recall')).toBeUndefined();
+  });
+
+  it('scanLocalForPush leaves out teamai\'s built-in written over a team copy\'s record', async () => {
+    await fse.outputFile(path.join(repoPath, 'agents', 'teamai-recall.md'), '# team recall\n');
+    const copy = path.join(homeDir, '.claude/agents', 'teamai-recall.md');
+    await fse.writeFile(copy, '# team recall\n');
+    await recordDelivery(localConfig, { rev: 'abc123', targets: ['claude'], files: [copy] });
+    await fse.writeFile(copy, shippedAgentRender('teamai-recall', 'claude', 'user')?.content ?? '');
 
     const items = await handler.scanLocalForPush(teamConfig, localConfig);
 

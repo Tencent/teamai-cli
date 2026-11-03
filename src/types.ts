@@ -1555,6 +1555,8 @@ export interface CopyOrigin {
    * delivery record is teamai's, whichever teamai version wrote it.
    */
   builtin?: true;
+  /** What this teamai writes there for that built-in: a copy holding it is teamai's, even on record as a team delivery. */
+  shipped?: string;
 }
 
 // ─── Hook definitions (unified model, issue #19) ─────────

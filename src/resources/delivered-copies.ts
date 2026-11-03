@@ -594,6 +594,9 @@ export async function judgeCopy(previous: DeliveredHashes | undefined, item: Res
   if (await isMembersCopy(previous, item, target)) return { kind: 'member' };
 
   if (previous === undefined) return { kind: 'write' };
+
+  // The built-in a pull that kept its revision wrote while the team's copy was missing (#1691).
+  if (target.origin?.shipped !== undefined && await fileHash(target.dest) === contentHash(target.origin.shipped)) return { kind: 'write' };
   const verdict = classifyCopy(await withDisk(previous, await nextHashes(previous, item, target)));
 
   // A recorded skill the member added a file to, at a path the team now delivers too, is kept
