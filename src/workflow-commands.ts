@@ -14,7 +14,7 @@ import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retryStep } from './workflow/run-controls.js';
-import { isIsolated } from './workflow/workspace.js';
+import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -66,9 +66,9 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
   const failed = FailedDoneSchema.safeParse(envelope.data.done);
 
   if (failed.success) await explainFailedSteps(config, failed.data.run, secrets);
-  const copy = RunCopyDoneSchema.safeParse(envelope.data.done);
+  const succeeded = SucceededDoneSchema.safeParse(envelope.data.done);
 
-  if (copy.success) log.info(`Run ${copy.data.run} left its changes on branch ${copy.data.branch}. Bring them in with: git merge ${copy.data.branch}`);
+  if (succeeded.success) await nameRunCopy(config, succeeded.data.run);
 
   if (resolveRunMode(process.env) !== 'unattended') return;
   const { Drain } = await import('./score-drain.js');
@@ -84,8 +84,15 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
 
 const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed') });
 
-/** A `done` that names the copy a succeeded run left its changes on, as its workflow's header says `workspace: new`. */
-const RunCopyDoneSchema = z.object({ run: z.string(), branch: z.string() });
+const SucceededDoneSchema = z.object({ run: z.string(), outcome: z.literal('succeeded') });
+
+/** On stderr, the branch a succeeded run whose workflow's header says `workspace: new` left its changes on, and how to bring them in. */
+async function nameRunCopy(config: LocalConfig, runId: string): Promise<void> {
+  const run = await readRun(config, runId);
+  const branch = run === 'missing' || run === 'corrupt' ? undefined : runCopyToMerge(run);
+
+  if (branch !== undefined) log.info(`Run ${runId} left its changes on branch ${branch}. Bring them in with: git merge ${branch}`);
+}
 
 /**
  * On stderr, why each step of a failed run failed and the commands that retry it, since the `done` envelope carries

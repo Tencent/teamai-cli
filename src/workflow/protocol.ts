@@ -30,7 +30,7 @@ import { StepModelSchema } from './step-model.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
-import { cloneBranchOf, deliveryProblem, stepRoleOf } from './workspace.js';
+import { cloneBranchOf, deliveryProblem, runCopyToMerge, stepRoleOf } from './workspace.js';
 import { headCommit } from './worktree.js';
 
 /**
@@ -43,14 +43,15 @@ export type RespondVia =
 
 /**
  * What an engine `done` answers from: a run file's status; its revision, which each settled report and each retry bumps;
- * how many pull request receipts it lists, which a delivery adds without a bump; and whether a create it started is
- * still unresolved, which only an engine `next` looks up.
+ * how many pull request receipts it lists, which a delivery adds without a bump; whether a create it started is still
+ * unresolved, which only an engine `next` looks up; and `branch`, the run's own copy a person merges (`runCopyToMerge`).
  */
 export interface RunVersion {
   status: RunState['status'];
   revision: number;
   receipts: number;
   creating: boolean;
+  branch?: string;
 }
 
 /**
@@ -580,7 +581,13 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     runVersion: async (runId) => {
       const run = await readRun(config, runId);
 
-      return run === 'missing' || run === 'corrupt' ? undefined : { status: run.status, revision: run.revision, receipts: run.deliveries?.length ?? 0, creating: (run.creating?.length ?? 0) > 0 };
+      if (run === 'missing' || run === 'corrupt') return undefined;
+      const version: RunVersion = { status: run.status, revision: run.revision, receipts: run.deliveries?.length ?? 0, creating: (run.creating?.length ?? 0) > 0 };
+      const branch = runCopyToMerge(run);
+
+      if (branch !== undefined) version.branch = branch;
+
+      return version;
     },
     next: async (runId, body, options) => {
       const parsed = parseNextPayload(body);

@@ -38,8 +38,11 @@ export interface GitConformanceScenario {
    * records these copies and no other.
    */
   expectCopies?: Record<string, Record<string, string>>;
-  /** The branch, with `<run>` for the run id, the driver's `done` names as the one the run left its changes on. */
-  expectDoneBranch?: string;
+  /**
+   * The branch, with `<run>` for the run id, the run left its changes on: `workflow start` and `resume` with the local
+   * driver name it on stderr with the `git merge` that brings it in. Only the CLI runner reads it.
+   */
+  expectMergeBranch?: string;
   /**
    * By step id: the branch the step reported is gone from origin and from the checkout the driver under test ran in,
    * since the run succeeded and a branch that stays holds its tip.
@@ -272,7 +275,7 @@ export const workflowGitConformanceScenarios: GitConformanceScenario[] = [
     base: 'origin',
     expectState: { status: 'succeeded', steps: [{ id: 'review', status: 'succeeded', pass: 2, outputs: { verdict: 'pass' } }, { id: 'fix', status: 'skipped' }] },
     expectCopies: { 'teamai/<run>/_run': { 'fixed.txt': 'F' } },
-    expectDoneBranch: 'teamai/<run>/_run',
+    expectMergeBranch: 'teamai/<run>/_run',
   },
   {
     name: 'a workflow whose header says workspace: new continues the copy of the step it runs in, and opens none',

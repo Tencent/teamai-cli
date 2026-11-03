@@ -371,9 +371,12 @@ export function runCopyBranch(runId: string): string {
   return `teamai/${runId}/_run`;
 }
 
-/** The branch of the copy the run opened, as its workflow's header says `workspace: new`, when the run left commits on it. */
-export function changedRunCopy(run: Pick<RunState, 'id' | 'definition' | 'copies' | 'base'>): string | undefined {
-  if (run.definition.workspace !== 'new') return undefined;
+/**
+ * The branch a person brings a succeeded run's changes in from: the copy the run opened, as its workflow's header says
+ * `workspace: new`, when the run left commits on it. A driver names it as the run ends.
+ */
+export function runCopyToMerge(run: Pick<RunState, 'id' | 'status' | 'definition' | 'copies' | 'base'>): string | undefined {
+  if (run.status !== 'succeeded' || run.definition.workspace !== 'new') return undefined;
   const branch = runCopyBranch(run.id);
   const commit = run.copies?.[branch]?.commit;
 

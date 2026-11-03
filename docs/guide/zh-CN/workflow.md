@@ -294,7 +294,7 @@ steps:
 ```text
 $ teamai workflow start review-and-fix --driver local --tools default=claude
 ℹ Run r3f9a1c27d4e8b605 started. If it stops before it ends, continue it with: teamai workflow resume r3f9a1c27d4e8b605
-{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded","branch":"teamai/r3f9a1c27d4e8b605/_run","record":"published"},"cancelled":[]}}
+{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded","record":"published"},"cancelled":[]}}
 ℹ Run r3f9a1c27d4e8b605 left its changes on branch teamai/r3f9a1c27d4e8b605/_run. Bring them in with: git merge teamai/r3f9a1c27d4e8b605/_run
 ```
 

@@ -76,7 +76,7 @@ const HostRequestSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('adopt'), dir: z.string() }),
 ]) satisfies z.ZodType<HostPlaceRequest>;
 
-const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int(), receipts: z.number().int(), creating: z.boolean() });
+const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int(), receipts: z.number().int(), creating: z.boolean(), branch: z.string().optional() });
 const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
 
 /**
@@ -195,7 +195,7 @@ const SkillStateSchema = z.object({
   settled: z.array(AttemptIdSchema),
   /**
    * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. `branch`: the branch the
-   * run left its changes on, when the engine's `done` named one. `version`: what the run file said when the end was
+   * run left its changes on, from the run file read as the end came. `version`: what the run file said when the end was
    * kept, so a tick asks the engine again only once it moved.
    */
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), branch: z.string().optional(), version: RunVersionSchema.optional() }).optional(),
