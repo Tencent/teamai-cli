@@ -23,7 +23,7 @@ import type { ScorerDefinition } from '../scorers/definition.js';
 import {
   ENTRY_WINDOW_MS, LEASE_TTL_MS, entryIdOf, entryState, hasLapsed, leaseRefOf, liveSessionLease, parseLeaseRef, type EntryState,
 } from '../scorers/entry.js';
-import { observedEffort, observedModel, sameHarness, type AgentObservation } from '../agent-observation.js';
+import { observedEffort, observedModel } from '../agent-observation.js';
 import {
   JudgeUsageSchema, sumUsage, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel, type SessionSubject, type Decider,
 } from '../scorers/label.js';
@@ -39,11 +39,9 @@ import { scoringUnavailable } from '../scorers/home.js';
 import { requiredIsolation, scorerIsolationSource, unknownIsolationText, type IsolationSetting } from '../scorers/isolation.js';
 import { scopeScoring } from '../scorers/settings.js';
 import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../scorers/evidence.js';
-import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
-import { buildEvidence, evidenceHash, evidencePlan, missingEvidence } from '../scorers/scoring-evidence.js';
+import { buildEvidence, evidenceHash, evidencePlan, judgedFacts, missingEvidence } from '../scorers/scoring-evidence.js';
 import { decideBeforeJudge, failingLabel, judgedAlone } from '../scorers/scoring-stages.js';
-import type { RunPass } from './loop.js';
 import { judgeablePasses, scoredPasses } from './judge-work.js';
 import { isUnsettled, sameSubject, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
@@ -1244,15 +1242,6 @@ function toSucceeded(attempt: LeasedAttempt, settled: { settledAt: string; usage
  * recorded one and all agree by value on tool, model, effort, definition and team, else none. A command pass runs no
  * agent, so it is left out. The judge never reads it.
  */
-function judgedAgent(run: RunState, judged: readonly RunPass[]): AgentObservation | undefined {
-  const definitionOf = stepDefinitions(run);
-  const [first, ...rest] = judged.flatMap((pass) => (definitionOf(pass.step)?.prompt === undefined ? [] : [pass.agent]));
-
-  if (!first) return undefined;
-
-  return rest.every((agent) => agent !== undefined && sameHarness(agent, first)) ? first : undefined;
-}
-
 /**
  * A success must name a label of each scorer it judges, else nothing is written and the lease stays open; TeamAI
  * computes the score and whether it passed. `local` is the local judge that ran, at the isolation it measured. A driver's
@@ -1269,27 +1258,11 @@ async function labelJudgeLease(
         const hash = await evidenceHash(evidenceDir(config, lease.members[0].attempt.attempt));
 
         return labelMembers({ config, submission, now, local, members: lease.members, labelOf: (attempt, { scorer, rubric, label, score, passed, judge, scoredAt }) => {
-          const judged = evidencePlan(lease.run, attempt.subject).passes;
-          const reported = judged.flatMap((pass) => pass.used ?? []);
-          const used = reported.length > 0 ? { skills: [...new Set(reported.flatMap((each) => each.skills))].sort() } : undefined;
-          // The pass's mode, or the one every pass a workflow step ran agrees on: never the judge's.
-          const runMode = agreedRunMode(judged.map((pass) => pass.runMode));
-          const agent = judgedAgent(lease.run, judged);
-
-          const observed: Pick<WorkflowLabel, 'agent'> = {};
-
-          if (agent) observed.agent = agent;
-          const reportedUse: Pick<WorkflowLabel, 'used'> = {};
-
-          if (used) reportedUse.used = used;
-          const mode: Pick<WorkflowLabel, 'runMode'> = {};
-
-          if (runMode) mode.runMode = runMode;
           const hashed: Pick<WorkflowLabel, 'evidenceHash'> = {};
 
           if (hash) hashed.evidenceHash = hash;
 
-          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...observed, ...reportedUse, judge, ...mode, decidedBy, ...hashed, scoredAt } };
+          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...judgedFacts(lease.run, attempt.subject), judge, decidedBy, ...hashed, scoredAt } };
         } });
       }
 

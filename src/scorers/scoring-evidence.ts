@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { sameHarness } from '../agent-observation.js';
+import { agreedRunMode } from '../launch-context.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { judgedTranscript } from '../session-flow/session-work.js';
 import { knownSecrets } from '../env-resolution.js';
@@ -14,7 +16,7 @@ import { scoresDir } from './home.js';
 import {
   fencedEvidence, isEvidenceReady, rubricPrompt, subjectEvidenceDirOf, writeEvidence, SESSION_MAX_CHARS, SUBAGENT_MAX_CHARS, type EvidenceGap, type Rubrics,
 } from './evidence.js';
-import type { RunSubject } from './label.js';
+import type { RunSubject, ScoreLabel } from './label.js';
 import { firstSettled, isUnder, passRange, passesWithin, runPasses, type RunPass } from '../workflow/loop.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { agentPassOf, type StepPass } from '../workflow/step-state.js';
@@ -84,6 +86,29 @@ export function evidencePlan(run: RunState, subject: RunSubject, settling?: RunP
 /** Whether `subject` is a pass of a `deliver: pr` step: what its judge reads, and what decides it first (#1247). */
 export function isDelivered(run: RunState, subject: RunSubject): boolean {
   return stepDefinitions(run)(subject.step)?.deliver === 'pr';
+}
+
+export type JudgedFacts = Pick<Extract<ScoreLabel, { source: 'workflow' }>, 'used' | 'runMode' | 'agent'>;
+
+/**
+ * What a label of `subject` records of the work: the team skills its passes used, the run mode they agree on, never the
+ * judge's, and the agent its prompt passes ran as when they agree on one.
+ */
+export function judgedFacts(run: RunState, subject: RunSubject): JudgedFacts {
+  const judged = evidencePlan(run, subject).passes;
+  const reported = judged.flatMap((pass) => pass.used ?? []);
+  const runMode = agreedRunMode(judged.map((pass) => pass.runMode));
+  const definitionOf = stepDefinitions(run);
+  const [first, ...rest] = judged.flatMap((pass) => (definitionOf(pass.step)?.prompt === undefined ? [] : [pass.agent]));
+  const facts: JudgedFacts = {};
+
+  if (reported.length > 0) facts.used = { skills: [...new Set(reported.flatMap((each) => each.skills))].sort() };
+
+  if (runMode) facts.runMode = runMode;
+
+  if (first && rest.every((agent) => agent !== undefined && sameHarness(agent, first))) facts.agent = first;
+
+  return facts;
 }
 
 /**
