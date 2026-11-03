@@ -11,6 +11,7 @@ import type { RunMode } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { runPasses, type RunPass } from '../workflow/loop.js';
 import { localRuns } from '../workflow/scoring.js';
+import { privateSteps } from '../workflow/scope.js';
 import { settledHere } from '../workflow/scoring-entries.js';
 import { installOwner } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
@@ -155,9 +156,11 @@ async function unrecordedSteps(config: LocalConfig, mode: RunMode): Promise<Arra
 
   for (const run of ended) {
     const passes: UnrecordedPass[] = [];
+    // A private workflow's steps stay on this machine, and so do their sessions.
+    const isPrivate = privateSteps(run);
 
     for (const pass of runPasses(run)) {
-      if (pass.tool === undefined || pass.session === undefined || !settledHere(run, pass, install)) continue;
+      if (pass.tool === undefined || pass.session === undefined || !settledHere(run, pass, install) || isPrivate(pass.step)) continue;
       const platform = AgentSession.platformForTool(pass.tool);
       const key: PublishedKey = platform ? { kind: 'platform', platform, sessionId: pass.session } : { kind: 'tool', tool: pass.tool, sessionId: pass.session };
 

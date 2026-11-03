@@ -607,6 +607,25 @@ describe('teamai score --drain', () => {
     expect(again).toEqual({ code: 0, lines: ['✔ Nothing left to do here'] });
   });
 
+  it('archives no session of a step of a private sub-workflow, and still archives the other step sessions of its run', async () => {
+    const judge = 'schemaVersion: v1alpha1\nname: judge\ndescription: Judge the review on this machine only.\nprivate: true\nsteps:\n  - id: label\n    prompt: Judge it.\n';
+    const review = WORKFLOW.replace('    scorers: [quality]\n', '  - id: judge\n    needs: [review]\n    workflow: judge\n');
+    const { origin, config } = await team({ 'workflows/review.yaml': review, 'workflows/judge.yaml': judge });
+    const judgeSession = '7c1e0000-0000-4000-8000-000000000031';
+    claudeSession(STEP_SESSION, 'Reviewed it.');
+    claudeSession(judgeSession, 'Judged it good.');
+    const reviewed = await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION }, { tool: 'claude', session: judgeSession });
+    vi.stubEnv('CI', 'true');
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain(`✔ Archived 1 step session of ${reviewed} to teamai-reports (scrubbed)`);
+    const archived = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
+    expect(archived).toHaveLength(1);
+    expect(archived.map((file) => readOnReports(origin, file)).join('\n')).not.toContain('Judged it good.');
+  });
+
   it('lists once, with why, a step session it cannot read here, and still archives the readable step sessions of its run', async () => {
     const { origin, config } = await team({ 'workflows/review.yaml': `${WORKFLOW.replace('    scorers: [quality]\n', '')}  - id: check\n    needs: [review]\n    prompt: Check the change.\n` });
     const unreadable = '7c1e0000-0000-4000-8000-000000000023';
