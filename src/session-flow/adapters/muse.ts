@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { z } from 'zod';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef } from './base.js';
 import { toolArgumentsFrom, type ContentBlock, type Message, type Session } from '../ir.js';
+import { resolveRealCwd } from '../fs.js';
 import { JsonValueSchema } from '../../types.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -175,14 +176,16 @@ export class MuseAdapter extends AgentAdapter {
   }
 
   private parsed(sessionId?: string, projectPath?: string): ParsedMuse[] {
-    const wanted = projectPath ? path.resolve(projectPath) : undefined;
+    // Muse records the physical workspace path. Match aliases such as macOS
+    // `/tmp` -> `/private/tmp` and user-provided symlinked --cwd values.
+    const wanted = projectPath ? resolveRealCwd(projectPath) : undefined;
 
     return this.files().flatMap((file) => {
       const parsed = parseMuseFile(file);
 
       if (!parsed || (sessionId && parsed.sessionId !== sessionId)) return [];
 
-      if (wanted && (!parsed.cwd || path.resolve(parsed.cwd) !== wanted)) return [];
+      if (wanted && (!parsed.cwd || resolveRealCwd(parsed.cwd) !== wanted)) return [];
 
       return [parsed];
     });

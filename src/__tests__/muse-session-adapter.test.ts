@@ -19,6 +19,7 @@ function fixture(): { adapter: MuseAdapter; file: string; cwd: string; id: strin
   const dir = path.join(root, '2026', '11', '03', id);
   const file = path.join(dir, 'session.jsonl');
   fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(cwd, { recursive: true });
   let sequence = 0;
   const record = (payloadType: string, payload: object, stream = id): object => ({
     schema_version: 1, id: `record-${++sequence}`, stream: { kind: 'session', id: stream }, sequence,
@@ -68,6 +69,15 @@ describe('MuseAdapter', () => {
     expect(await adapter.existingSessionId(id, cwd)).toBe(id);
     expect(await adapter.listConversations(path.join(cwd, 'other'))).toEqual([]);
     expect(await adapter.existingSessionId('../session')).toBeUndefined();
+  });
+
+  it('matches a symlinked project path to the recorded physical workspace', async () => {
+    const { adapter, cwd, id } = fixture();
+    const linked = path.join(path.dirname(cwd), 'linked-app');
+    fs.symlinkSync(cwd, linked, process.platform === 'win32' ? 'junction' : 'dir');
+
+    expect(await adapter.existingSessionId(id, linked)).toBe(id);
+    expect(await adapter.listConversations(linked)).toHaveLength(1);
   });
 
   it('does not enumerate subagent logs', async () => {
