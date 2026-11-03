@@ -10,7 +10,7 @@ import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { readFileSafe } from '../utils/fs.js';
 import { scoresDir } from './home.js';
-import { JUDGE_FAILURES, RunSubjectSchema, SessionSubjectSchema, type JudgeFailureCode } from './label.js';
+import { JUDGE_FAILURES, RunSubjectSchema, SessionSubjectSchema, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
 import type { MarkKey } from './marks.js';
 import { Subject } from './subject.js';
@@ -56,10 +56,11 @@ async function readJson<T>(file: string, schema: z.ZodType<T>): Promise<T | unde
   }
 }
 
-function keyOf(attempt: Attempt): MarkKey {
-  return attempt.source === 'session'
-    ? { scorer: attempt.scorer, sourceHash: attempt.rubric.sourceHash, subject: { kind: 'session', subject: attempt.subject } }
-    : { scorer: attempt.scorer, subject: { kind: 'run', subject: attempt.subject } };
+/** The key an attempt or a label was written for. */
+function keyOf(judged: Attempt | ScoreLabel): MarkKey {
+  return judged.source === 'session'
+    ? { scorer: judged.scorer, sourceHash: judged.rubric.sourceHash, subject: { kind: 'session', subject: judged.subject } }
+    : { scorer: judged.scorer, subject: { kind: 'run', subject: judged.subject } };
 }
 
 /** Each entry's facts by key: its attempts, its request, and the times of the model labels written for it. */
@@ -88,38 +89,41 @@ async function factsByKey(config: LocalConfig): Promise<Map<string, Facts>> {
   }
 
   for (const label of await LabelStore.local(config)) {
-    if (label.judge.kind !== 'model') continue;
-
-    const key: MarkKey = label.source === 'session'
-      ? { scorer: label.scorer, sourceHash: label.rubric.sourceHash, subject: { kind: 'session', subject: label.subject } }
-      : { scorer: label.scorer, subject: { kind: 'run', subject: label.subject } };
-
-    factsOf(key).modelLabels.push(label.scoredAt);
+    if (label.judge.kind === 'model') factsOf(keyOf(label)).modelLabels.push(label.scoredAt);
   }
 
   return byKey;
 }
 
+function isLive(attempt: Attempt, now: string): boolean {
+  return attempt.status === 'leased' && attempt.expiresAt > now;
+}
+
+/** Why main gave up on an entry that has no label and no live lease: a failed attempt, a tried session, or a fourth lapse. */
+function givenUp(key: MarkKey, attempts: readonly Attempt[], lapses: number): JudgeFailureCode | undefined {
+  const failed = attempts.find((attempt) => attempt.status === 'failed')?.code;
+
+  if (failed) return failed;
+  const isGivenUp = key.subject.kind === 'run' ? lapses >= LEASES_LAPSING : attempts.length > 0;
+
+  return isGivenUp ? 'lease_expired' : undefined;
+}
+
 /** What one entry leaves, by main's rules: a pass's attempts and labels count only from its latest request on. */
 function carried({ key, attempts: all, modelLabels, requestedAt }: Facts, now: string): CarriedMark {
-  const since = key.subject.kind === 'run' ? requestedAt ?? '' : '';
-  const isLive = (attempt: Attempt) => attempt.status === 'leased' && attempt.expiresAt > now;
-  const attempts = all.filter((attempt) => attempt.leasedAt >= since || isLive(attempt));
-  const lapses = attempts.filter((attempt) => attempt.status === 'leased' && !isLive(attempt)).length;
+  const since = requestedAt ?? '';
+  const attempts = all.filter((attempt) => attempt.leasedAt >= since || isLive(attempt, now));
+
+  if (modelLabels.some((at) => at >= since) || attempts.some((attempt) => attempt.status === 'succeeded')) return { kind: 'labelled' };
+  const lapses = attempts.filter((attempt) => attempt.status === 'leased' && !isLive(attempt, now)).length;
+  const code = attempts.some((attempt) => isLive(attempt, now)) ? undefined : givenUp(key, attempts, lapses);
+
+  if (code) return { kind: 'failed', code };
   const open: CarriedMark = { kind: 'open', lapses };
 
   if (requestedAt !== undefined) open.requestedAt = requestedAt;
 
-  if (modelLabels.some((at) => at >= since) || attempts.some((attempt) => attempt.status === 'succeeded')) return { kind: 'labelled' };
-
-  if (attempts.some(isLive)) return open;
-  const failed = attempts.find((attempt) => attempt.status === 'failed')?.code;
-
-  if (failed) return { kind: 'failed', code: failed };
-
-  if (key.subject.kind !== 'run' && attempts.length > 0) return { kind: 'failed', code: 'lease_expired' };
-
-  return lapses >= LEASES_LAPSING ? { kind: 'failed', code: 'lease_expired' } : open;
+  return open;
 }
 
 /** The mark each entry of this data home's attempts, and each model label written without one, leaves at `now`. */

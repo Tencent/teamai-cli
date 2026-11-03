@@ -274,7 +274,7 @@ describe('Marks carried over from the judge attempts of an earlier teamai', () =
   let entries = 0;
 
   /** One entry's attempts as an earlier teamai wrote them, under an entry id of its own. */
-  function plant(config: LocalConfig, attempts: Array<Record<string, unknown>>, request?: { scorer: string; pass: number; requestedAt: string }): void {
+  function plant(config: LocalConfig, attempts: Array<Record<string, unknown>>, request?: { scorer: string; pass: number; requestedAt: string }): string {
     entries += 1;
     const entry = `s${entries.toString(16).padStart(13, '0')}`;
     const dir = path.join(config.dataHome ?? '', 'scores', 'attempts', entry);
@@ -290,6 +290,8 @@ describe('Marks carried over from the judge attempts of an earlier teamai', () =
       const pin = { sourceHash: 'h1', content: 'Judge.' };
       fs.writeFileSync(path.join(dir, 'request.json'), JSON.stringify({ entry, scorer: request.scorer, subject: { runId: JUDGED, step: 'fix', pass: request.pass }, pin, requestedAt: request.requestedAt }));
     }
+
+    return dir;
   }
 
   const ofPass = (scorer: string, number: number) => ({ scorer, subject: { runId: JUDGED, step: 'fix', pass: number } });
@@ -363,6 +365,31 @@ describe('Marks carried over from the judge attempts of an earlier teamai', () =
     reader.end('score-1');
     expect(await Marks.states(config, [pass('lapsed'), pass('fresh')], { now: later(1), readRun: reader.readRun })).toEqual([{ kind: 'lapsed', lapses: 3 }, { kind: 'unmarked' }]);
     expect(await Marks.carriedOver(config, { now: NOW })).toEqual({ passes: 3, sessions: 1 });
+  });
+
+  it('counts what a pass was asked again for only from that request on, and skips an attempt file it cannot read', async () => {
+    const config = scope();
+    const reader = runs();
+    reader.set(JUDGED, { ended: true, changedAt: later(-10) });
+    const asked = (scorer: string) => ({ scorer, pass: 1, requestedAt: later(-2) });
+    const since = { status: 'leased', leasedAt: later(-1.5), expiresAt: later(-1.4) };
+    plant(config, [{ ...ofPass('asked', 1), leasedAt: later(-3), expiresAt: later(-2.9), status: 'failed', code: 'judge_failed' }], asked('asked'));
+    plant(config, [{ ...ofPass('held', 1), ...liveLease, leasedAt: later(-3) }, ...[1, 2, 3, 4].map(() => ({ ...ofPass('held', 1), ...since }))], asked('held'));
+    plant(config, [], asked('relabelled'));
+    const torn = plant(config, [{ ...ofPass('torn', 1), ...settled, status: 'failed', code: 'judge_failed' }]);
+    fs.writeFileSync(path.join(torn, 'a0000ffff.json'), '{"attempt":');
+    const judged = { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' };
+    const runLabel = (scorer: string, scoredAt: string) => `${JSON.stringify({
+      scorer, rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true, source: 'workflow', subject: { runId: JUDGED, step: 'fix', pass: 1 }, judge: judged, scoredAt,
+    })}\n`;
+    fs.writeFileSync(path.join(config.dataHome ?? '', 'scores', 'labels.jsonl'), runLabel('asked', later(-2.5)) + runLabel('relabelled', later(-1)));
+
+    expect(await Marks.states(config, ['asked', 'held', 'relabelled', 'torn'].map((scorer) => pass(scorer)), { now: NOW, readRun: reader.readRun })).toEqual([
+      { kind: 'lapsed', lapses: 0 },
+      { kind: 'lapsed', lapses: 3 },
+      { kind: 'labelled' },
+      { kind: 'failed', code: 'judge_failed' },
+    ]);
   });
 
   it('carries nothing and writes nothing where nothing was ever scored', async () => {
