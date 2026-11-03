@@ -61,6 +61,9 @@ describe('a team teamai-score.yaml', () => {
     ['runs a verb with other arguments', shippedWith('--wait 2h', '--wait 0s'), 'score_override_command'],
     ['gives a verb other env', shippedWith('env: { DIR: "{{ steps.evidence.outputs.dir }}" }\n          output: { decided: boolean }\n        - id: ci', 'env: { DIR: "{{ steps.evidence.outputs.dir }}", EXTRA: "1" }\n          output: { decided: boolean }\n        - id: ci'), 'score_override_command'],
     ['drops settle', SHIPPED.slice(0, SHIPPED.indexOf('        - id: settle')) + 'outputs: { labels: steps.score.results }\n', 'score_override_step_missing'],
+    ['drops publish', shippedWith('        - id: publish\n          needs: [write]\n          workspace: { team: { branch: teamai-reports } }\n          command: teamai score publish\n          deliver: publish\n', ''), 'score_override_step_missing'],
+    ['publishes to another data branch', shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }'), 'score_override_publish'],
+    ['publishes the labels without deliver: publish', shippedWith('          command: teamai score publish\n          deliver: publish\n', '          command: teamai score publish\n'), 'score_override_publish'],
     ['lets the judge read the checkout', shippedWith('          workspace: { confined: "{{ steps.evidence.outputs.dir }}" }\n', ''), 'score_override_prompt'],
     ['has a judge prompt that does not read the schema', shippedWith('the schema in {{ steps.evidence.outputs.schema }}', 'the schema'), 'score_override_judge_prompt'],
     ['confines the judge to a directory no step before it wrote', shippedWith('workspace: { confined: "{{ steps.evidence.outputs.dir }}" }', 'workspace: { confined: evidence }'), 'score_override_confined_dir'],
@@ -81,6 +84,12 @@ describe('a team teamai-score.yaml', () => {
     ]);
     expect((await pulled({ 'teamai-score': dropped })).refused).toEqual([
       'workflows/teamai-score.yaml:1: field "steps": drops step score.settle, which every label of teamai\'s default teamai-score goes through. Keep it',
+    ]);
+  });
+
+  it('says where the publish step must publish', async () => {
+    expect((await pulled({ 'teamai-score': shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }') })).refused).toEqual([
+      'workflows/teamai-score.yaml:1: field "steps.score.publish": step "score.publish" runs teamai score publish without deliver: publish in workspace: { team: { branch: teamai-reports } }, where every member\'s labels are. Give it both, as teamai\'s default teamai-score does',
     ]);
   });
 

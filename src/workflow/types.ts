@@ -394,7 +394,7 @@ export interface WorkflowDiagnostic {
 }
 
 /** Why pull refuses a team teamai-score.yaml, one code per part of its contract (`src/scorers/score-override.ts`). */
-export type ScoreOverrideCode = 'score_override_contract' | 'score_override_command' | 'score_override_workflow_step' | 'score_override_prompt' | 'score_override_confined_dir' | 'score_override_judge_prompt' | 'score_override_step_missing';
+export type ScoreOverrideCode = 'score_override_contract' | 'score_override_command' | 'score_override_workflow_step' | 'score_override_prompt' | 'score_override_confined_dir' | 'score_override_judge_prompt' | 'score_override_step_missing' | 'score_override_publish';
 
 export type StepOutcome = 'success' | 'failed' | 'released';
 

@@ -5,12 +5,15 @@
  * or let a prompt read anything but the evidence an earlier step wrote. A refusal is a coded diagnostic, so no older
  * version of the file keeps running: the default does.
  */
+import { REPORTS_BRANCH } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { stepWorkflow, type ScoreOverrideCode, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
 import { confinedOf } from '../workflow/workspace.js';
 
 /** The steps of the inline `score` workflow a team file must keep; `check` too while a scorer here has a check. */
-const KEPT = ['evidence', 'label', 'write', 'settle'] as const;
+const KEPT = ['evidence', 'label', 'write', 'publish', 'settle'] as const;
+
+const PUBLISH = 'teamai score publish';
 
 /** One refusal, before pull locates it in the file. */
 type Problem = Pick<WorkflowDiagnostic, 'field' | 'message'> & { code: ScoreOverrideCode };
@@ -66,6 +69,13 @@ function promptProblems({ path, step }: Walked): Problem[] {
   return refusals;
 }
 
+/** Whether `step` publishes the labels as the default does: `teamai score publish`, delivered to teamai-reports. */
+function publishesLabels(step: WorkflowStep): boolean {
+  const branch = step.workspace instanceof Object && 'team' in step.workspace ? step.workspace.team.branch : undefined;
+
+  return step.command === PUBLISH && step.deliver === 'publish' && branch === REPORTS_BRANCH;
+}
+
 /**
  * Why `team`, a team file named like teamai's default `shipped`, is refused at pull, one diagnostic each, located at
  * `file`; none when it may replace the default. `scorerHasCheck`: a scorer cached here has a `check`, so the override
@@ -106,6 +116,10 @@ function problems({ team, shipped, file, scorerHasCheck }: { team: WorkflowDefin
     }
 
     if (step.prompt !== undefined || step.promptFile !== undefined) found.push(...promptProblems(walked));
+
+    if ((step.command === PUBLISH || step.deliver === 'publish') && !publishesLabels(step)) {
+      found.push({ code: 'score_override_publish', field: `steps.${path}`, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` });
+    }
   }
 
   const kept = new Set(steps.map(({ path }) => path));
