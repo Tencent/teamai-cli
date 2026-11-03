@@ -41,28 +41,40 @@ interface Item {
   end: ItemEnd;
 }
 
-type Outcome = { scorer: string } & ({ kind: 'labelled'; label: ScoreLabel } | { kind: 'unlabelled'; code: string; message: string } | { kind: 'pending' });
+type Unlabelled = { scorer: string; kind: 'unlabelled'; code: string; message: string };
+
+type Outcome = Unlabelled | { scorer: string } & ({ kind: 'labelled'; label: ScoreLabel } | { kind: 'pending' });
 
 /** What a step that failed or was cancelled says of why; undefined for any other step. */
 function reasonOf(step: StepState | undefined): string | undefined {
   return step?.status === 'failed' || step?.status === 'cancelled' ? step.failure?.message : undefined;
 }
 
-/** The item of plan group `index` in `run`. */
-function itemOf(run: RunState, index: number): Item {
-  const steps = run.steps.filter((step) => step.id.startsWith(`score[${index}].`));
+/** What the label step of plan group `index` gave each scorer, by scorer, with why its judge failed when it did. */
+function entriesOf(steps: readonly StepState[], index: number): Map<string, Entry> {
   const labelled = steps.find((step) => step.id === `score[${index}].label`);
   const why = reasonOf(steps.find((step) => step.id === `score[${index}].judge`));
   const listed = LabelEntriesSchema.safeParse(labelled?.status === 'succeeded' ? labelled.outputs : undefined).data?.labels ?? [];
-  const entries = new Map(listed.map((entry): [string, Entry] => [entry.scorer, entry.code === 'judge_failed' && why !== undefined ? { ...entry, why } : entry]));
+
+  return new Map(listed.map((entry): [string, Entry] => [entry.scorer, entry.code === 'judge_failed' && why !== undefined ? { ...entry, why } : entry]));
+}
+
+/** How `steps`, the steps of one item, stand. */
+function endOf(steps: readonly StepState[]): ItemEnd {
+  if (steps.some((step) => OPEN.has(step.status))) return { kind: 'open' };
   const broke = steps.find((step) => step.status === 'failed' || step.status === 'cancelled');
 
-  if (steps.some((step) => OPEN.has(step.status))) return { entries, end: { kind: 'open' } };
-
-  if (!broke) return { entries, end: { kind: 'done' } };
+  if (!broke) return { kind: 'done' };
   const reason = reasonOf(broke);
 
-  return { entries, end: { kind: 'broke', why: `step ${broke.id} ${broke.status}${reason === undefined ? '' : `: ${reason}`}` } };
+  return { kind: 'broke', why: `step ${broke.id} ${broke.status}${reason === undefined ? '' : `: ${reason}`}` };
+}
+
+/** The item of plan group `index` in `run`. */
+function itemOf(run: RunState, index: number): Item {
+  const steps = run.steps.filter((step) => step.id.startsWith(`score[${index}].`));
+
+  return { entries: entriesOf(steps, index), end: endOf(steps) };
 }
 
 /** What a scorer the run gave no label, and no code, gets from how its item stands. */
@@ -82,12 +94,19 @@ function unwritten(scorer: string, end: ItemEnd): Outcome {
   }
 }
 
+/** What `scorer` gets from the code its label step gave it. */
+function coded(scorer: string, entry: Entry): Outcome {
+  const why = entry.why === undefined ? '' : `: ${entry.why}`;
+
+  return { scorer, kind: 'unlabelled', code: entry.code, message: `${UNLABELLED.get(entry.code) ?? entry.code}${why}` };
+}
+
 /** What `scorer` got from `item`, its group's item, of which `written` holds the labels written since the run started. */
 function outcomeOf(scorer: string, item: Item | undefined, written: readonly ScoreLabel[]): Outcome {
   if (item === undefined) return { scorer, kind: 'unlabelled', code: 'not_planned', message: NOT_PLANNED };
   const entry = item.entries.get(scorer);
 
-  if (entry && entry.code !== '') return { scorer, kind: 'unlabelled', code: entry.code, message: `${UNLABELLED.get(entry.code) ?? entry.code}${entry.why === undefined ? '' : `: ${entry.why}`}` };
+  if (entry && entry.code !== '') return coded(scorer, entry);
   const [label] = written.filter((one) => one.scorer === scorer).sort((left, right) => (left.scoredAt < right.scoredAt ? 1 : -1));
 
   return entry && label ? { scorer, kind: 'labelled', label } : unwritten(scorer, item.end);
@@ -110,6 +129,12 @@ type LabelAnswer = Pick<ScoreLabel, 'scorer' | 'subject' | 'label' | 'score' | '
   decidedBy?: string;
   reasoning?: string;
 };
+
+/** The labels the run kept, as the answer carries them and as its message names them. */
+interface Kept {
+  labels: LabelAnswer[];
+  text: string;
+}
 
 /** What the person reads of one label, and what the answer carries of it. */
 function answerOf(config: LocalConfig, label: ScoreLabel): LabelAnswer {
@@ -134,29 +159,38 @@ function answerOf(config: LocalConfig, label: ScoreLabel): LabelAnswer {
   return answer;
 }
 
+/** The answer while the judge of `pending` waits for a driver; `held`: why the local driver left a confined step open. */
+function pendingAnswer(runId: string, pending: readonly string[], held: string | undefined, kept: Kept): WorkflowEnvelope {
+  const which = pending.length > 0 ? pending.join(', ') : 'a scorer';
+
+  return { error: { code: 'judge_pending', message: `Run ${runId} left the judge of ${which} open for a driver that can run it: ${held ?? 'its judge step is still open'} The run waits for one until its timeout, and teamai score --drain lists it.${kept.text}`, labels: kept.labels } };
+}
+
+/** The answer of a run with no judge left open: the code of each scorer that got no label, else the labels. */
+function settledAnswer(runId: string, unlabelled: readonly Unlabelled[], kept: Kept): WorkflowEnvelope {
+  const [first] = unlabelled;
+
+  if (first === undefined) {
+    const [only, ...more] = kept.labels;
+
+    return { data: only && more.length === 0 ? { run: runId, label: only } : { run: runId, labels: kept.labels } };
+  }
+
+  for (const one of unlabelled) log.warn(`${one.scorer}: no label, ${one.message}`);
+
+  return { error: { code: first.code, message: `Run ${runId}: ${unlabelled.map((one) => `${one.scorer} got no label (${one.code}): ${one.message}.`).join(' ')}${kept.text}`, labels: kept.labels } };
+}
+
 /** The answer for `outcomes` of run `runId`; `held`: why the local driver left a confined step open, when it did. */
 function envelopeOf(config: LocalConfig, runId: string, outcomes: readonly Outcome[], held: string | undefined): WorkflowEnvelope {
   const written = outcomes.flatMap((outcome) => (outcome.kind === 'labelled' ? [outcome.label] : []));
-  const labels = written.map((label) => answerOf(config, label));
-  const keeping = written.length > 0 ? ` Kept the label of ${written.map((label) => `${label.scorer}: ${label.label}`).join(', ')}.` : '';
+  const text = written.length > 0 ? ` Kept the label of ${written.map((label) => `${label.scorer}: ${label.label}`).join(', ')}.` : '';
+  const kept: Kept = { labels: written.map((label) => answerOf(config, label)), text };
   const pending = outcomes.flatMap((outcome) => (outcome.kind === 'pending' ? [outcome.scorer] : []));
 
-  if (held !== undefined || pending.length > 0) {
-    return { error: { code: 'judge_pending', message: `Run ${runId} left the judge of ${pending.join(', ') || 'a scorer'} open for a driver that can run it: ${held ?? 'its judge step is still open'} The run waits for one until its timeout, and teamai score --drain lists it.${keeping}`, labels } };
-  }
+  if (held !== undefined || pending.length > 0) return pendingAnswer(runId, pending, held, kept);
 
-  const unlabelled = outcomes.flatMap((outcome) => (outcome.kind === 'unlabelled' ? [outcome] : []));
-  const [first] = unlabelled;
-
-  if (first) {
-    for (const one of unlabelled) log.warn(`${one.scorer}: no label, ${one.message}`);
-
-    return { error: { code: first.code, message: `Run ${runId}: ${unlabelled.map((one) => `${one.scorer} got no label (${one.code}): ${one.message}.`).join(' ')}${keeping}`, labels } };
-  }
-
-  const [only, ...more] = labels;
-
-  return { data: only && more.length === 0 ? { run: runId, label: only } : { run: runId, labels } };
+  return settledAnswer(runId, outcomes.flatMap((outcome) => (outcome.kind === 'unlabelled' ? [outcome] : [])), kept);
 }
 
 /**
