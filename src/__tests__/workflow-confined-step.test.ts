@@ -52,6 +52,33 @@ describe('runConfinedStep', () => {
     expect(ended).toEqual({ kind: 'unresolved', reason: expect.stringMatching(/^Step "judge" runs confined on copilot, pi, claude, and none of them resolves its model here\. copilot is not a tool teamai runs confined\. pi takes no model teamai resolves\. Step "judge" asks for model alias "confined-judge", which has no model for claude/) });
   });
 
+  it('resolves a default model too, and runs nothing when no tool resolves it', async () => {
+    await fs.writeFile(path.join(root, 'team', 'models', 'aliases.yaml'), 'aliases:\n  confined-judge:\n    codex: gpt-6-astra\n');
+    const dir = await dirWith(root, 'evidence', {});
+
+    const ended = await runConfinedStep({ config, run, lease: leaseIn(dir, { defaultModel: 'confined-judge' }), resolveTool: await fakeClaude('') });
+
+    expect(ended).toMatchObject({ kind: 'unresolved', reason: expect.stringContaining('gets model alias "confined-judge" from defaults, which has no model for claude') });
+  });
+
+  it('stops a tool still running at the lease deadline', async () => {
+    const dir = await dirWith(root, 'evidence', {});
+    const resolveTool = await fakeClaude(`setTimeout(() => console.log(JSON.stringify({ type: 'result', structured_output: { verdict: 'pass' } })), 3000);`);
+
+    const ended = await runConfinedStep({ config, run, lease: leaseIn(dir, { expiresAt: new Date(Date.now() + 300).toISOString() }), resolveTool });
+
+    expect(ended).toMatchObject({ kind: 'ran', report: { outcome: 'failed', failure: { code: 'confined_failed' } } });
+  });
+
+  it('stops at once a tool whose lease deadline already passed', async () => {
+    const dir = await dirWith(root, 'evidence', {});
+    const resolveTool = await fakeClaude(`setTimeout(() => console.log(JSON.stringify({ type: 'result', structured_output: { verdict: 'pass' } })), 2000);`);
+
+    const ended = await runConfinedStep({ config, run, lease: leaseIn(dir, { expiresAt: new Date(Date.now() - 60_000).toISOString() }), resolveTool });
+
+    expect(ended).toMatchObject({ kind: 'ran', report: { outcome: 'failed', failure: { code: 'confined_failed' } } });
+  });
+
   it('fails the step confined_invalid when its reply schema is no longer JSON', async () => {
     const dir = await dirWith(root, 'evidence', { 'reply.json': '{' });
 
@@ -71,6 +98,15 @@ describe('runConfinedStep', () => {
     expect(JSON.parse(await fs.readFile(file, 'utf8'))).toEqual({ raw: expect.stringContaining('rate limited') });
   });
 
+  it('runs with a reply schema that is JSON, and counts the tokens the tool reported of either kind', async () => {
+    const dir = await dirWith(root, 'evidence', { 'reply.json': '{"type":"object"}' });
+    const resolveTool = await fakeClaude(`console.log(JSON.stringify({ type: 'result', structured_output: { verdict: 'fail' }, usage: { input_tokens: 7 } }));`);
+
+    const ended = await runConfinedStep({ config, run, lease: leaseIn(dir, { confined: { dir, level: 'verified', tools: ['claude'], schema: path.join(dir, 'reply.json') } }), resolveTool });
+
+    expect(ended).toMatchObject({ kind: 'ran', report: { outcome: 'success', outputs: { verdict: 'fail' }, tokens: { input: 7 } } });
+  });
+
   it('reports the reply as outputs, with the model, tokens and run the tool reported', async () => {
     const dir = await dirWith(root, 'evidence', { 'diff.txt': 'retries 3' });
     const resolveTool = await fakeClaude(`console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-fixture' }));
@@ -79,7 +115,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { verdict: 'pass
     const ended = await runConfinedStep({ config, run, lease: leaseIn(dir), resolveTool });
 
     expect(ended).toEqual({ kind: 'ran', report: {
-      outcome: 'success', tool: 'claude', outputs: { verdict: 'pass' }, model: 'claude-fixture', tokens: { input: 12, output: 3 }, durationMs: expect.any(Number),
+      outcome: 'success', tool: 'claude', outputs: { verdict: 'pass' }, model: 'claude-fixture', tokens: { input: 12, output: 3 }, durationMs: expect.toSatisfy((ms: number) => ms >= 0 && ms < 60_000),
       confined: { tool: 'claude', model: { reported: 'claude-fixture' }, isolation: 'verified', access: 'read', usage: { inputTokens: 12, outputTokens: 3 } },
     } });
   });
