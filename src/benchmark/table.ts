@@ -74,6 +74,8 @@ export interface BenchmarkTable {
   skills: Array<{ arm: string; skill: string; change: SkillChanges['skills'][number]['change']; here: SkillLoads; defaults?: SkillLoads }>;
   /** A table per covered team asset an arm leaves out; absent when no task covers a path. */
   assets: AssetEffect[];
+  /** Whether a team scorer of the run judges skill routing, #1469's `teamai:routing:`. */
+  routing: boolean;
 }
 
 /** Of the trials whose work ran: how many were seen to load a skill, how many were seen and did not, and how many went unseen. */
@@ -176,7 +178,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
       arm, skill: name, change, here: skillLoadsOf(trials, arm, name), defaults: defaults ? skillLoadsOf(trials, defaults, name) : undefined,
     }))),
-    assets: assetEffects(record),
+    assets: assetEffects(record), routing: record.benchmark.scorers.some(({ name }) => name.startsWith('teamai:routing:')),
   };
 }
 
@@ -233,7 +235,7 @@ export function formatAssetEffect(effect: AssetEffect): string {
 
   const rows = effect.rows.map((row) => [
     row.task, row.covers ? 'yes' : 'no', formatPassRate(row.without), formatPassRate(row.with),
-    row.loaded === undefined ? 'not observed' : formatLoads(row.loaded, row.covers),
+    row.loaded === undefined ? 'not observed' : formatLoads(row.loaded),
   ]);
 
   const split = (label: string, line: AssetSplit | undefined): string | undefined => (line === undefined ? undefined : [
@@ -252,11 +254,16 @@ export function formatAssetEffect(effect: AssetEffect): string {
   return [title, ...lines.filter((line) => line !== undefined && line !== '')].join('\n\n');
 }
 
-/** `1/3 fit`-style: the loads over the trials, with the routing value the loaded trials have, or the missed or idle ones when none loaded. */
-function formatLoads({ loaded, planned, byValue }: NonNullable<AssetEffectRow['loaded']>, covers: boolean): string {
-  const value = loaded > 0 ? (covers ? 'fit' : 'extra') : planned > 0 && (byValue.missed ?? 0) + (byValue.idle ?? 0) > 0 ? (covers ? 'missed' : 'idle') : 'unknown';
+/** `2/3 fit, 1 missed`-style: the loads over the trials; the loaded trials only by their routing value, the unloaded ones counted. */
+function formatLoads({ loaded, planned, byValue }: NonNullable<AssetEffectRow['loaded']>): string {
 
-  return `${loaded}/${planned} ${value}`;
+  const parts = ROUTING_VALUES.flatMap((value) => {
+    if (value === 'unknown' || (byValue[value] ?? 0) === 0 || loaded > 0 !== (value === 'fit' || value === 'extra')) return [];
+
+    return [value === 'fit' || value === 'extra' ? value : `${byValue[value]} ${value}`];
+  });
+
+  return `${loaded}/${planned} ${parts.length > 0 ? parts.join(', ') : 'unknown'}`;
 }
 
 /** `+33 pp`, `-8 pp`, `0 pp`: the difference in percentage points. */
@@ -460,89 +467,101 @@ export interface AssetEffect {
 export function assetEffects(record: BenchmarkTableInput): AssetEffect[] {
   const { arms, tasks, trials } = record.benchmark;
   const paths = [...new Map(tasks.flatMap(({ covers }) => (covers ?? []).map((listed) => [listed, listed]))).keys()];
-  const bare = (path: string): string | undefined => (path.startsWith('skills/') ? path.split('/')[2] ?? path.split('/')[1] : undefined);
 
-  return paths.flatMap((path) => {
-    const skill = bare(path);
-    const without = arms.find(({ team }) => team.kind === 'without' && team.paths.length === 1 && team.paths[0] === path);
+  const nameOf = (path: string): string | undefined => {
+    const entry = tasks.flatMap(({ covers, coversSkills }) => (covers ?? []).map((covered, index) => [covered, coversSkills?.[index] ?? null] as const)).find(([covered]) => covered === path);
 
-    // The arm that leaves nothing out: the pulled arm that differs from `without` only by that, or, when no arm leaves
-    // the path out, the first pulled arm, so the rows and loads still show.
-    const has = without === undefined
-      ? arms.find((arm) => arm.team.kind === 'pulled')
-      : arms.find((arm) => arm !== without && arm.tool === without.tool && (arm.model ?? undefined) === (without.model ?? undefined)
-        && (arm.effort ?? undefined) === (without.effort ?? undefined) && (arm.role ?? undefined) === (without.role ?? undefined)
-        && (arm.workflow?.sourceHash ?? undefined) === (without.workflow?.sourceHash ?? undefined) && arm.team.kind === 'pulled');
+    return entry === undefined ? undefined : entry[1] ?? undefined;
+  };
 
-    const own = (arm: string | undefined, task: string): RecordedTrial[] => (arm === undefined ? [] : trials.filter((trial) => trial.arm === arm && trial.task === task));
+  const effects: AssetEffect[] = [];
 
-    // The pair's trials of one task, paired by repetition; a trial whose pair did not run counts in no pair.
-    const paired = (task: string): Array<[RecordedTrial, RecordedTrial]> => {
-      const to = new Map(own(has?.name, task).map((trial) => [trial.repetition, trial]));
+  paths.forEach((path) => {
+    const skill = nameOf(path);
+    // One table per arm that runs without exactly this path; a covered path no arm leaves out still shows its rows.
+    const withoutArms = arms.filter(({ team }) => team.kind === 'without' && team.paths.length === 1 && team.paths[0] === path);
 
-      return own(without?.name, task).flatMap((trial) => {
-        const other = to.get(trial.repetition);
+    for (const without of withoutArms.length > 0 ? withoutArms : [undefined]) {
+      // The arm that leaves nothing out: the pulled arm that differs from `without` only by that, or, when no arm
+      // leaves the path out, the first pulled arm, so the rows and loads still show.
+      const has = without === undefined
+        ? arms.find((arm) => arm.team.kind === 'pulled')
+        : arms.find((arm) => arm !== without && arm.tool === without.tool && (arm.model ?? undefined) === (without.model ?? undefined)
+          && (arm.effort ?? undefined) === (without.effort ?? undefined) && (arm.role ?? undefined) === (without.role ?? undefined)
+          && (arm.workflow?.sourceHash ?? undefined) === (without.workflow?.sourceHash ?? undefined) && arm.team.kind === 'pulled');
 
-        // SAFETY: `other` comes from the same `trials` array, so the pair is two of its entries in repetition order.
-        return other !== undefined ? [[trial, other] as [RecordedTrial, RecordedTrial]] : [];
-      });
-    };
+      const own = (arm: string | undefined, task: string): RecordedTrial[] => (arm === undefined ? [] : trials.filter((trial) => trial.arm === arm && trial.task === task));
 
-    const rows: AssetEffectRow[] = tasks.flatMap(({ id, covers }): AssetEffectRow[] => {
-      const covered = covers?.includes(path) ?? false;
-      const pair = paired(id);
+      // The pair's trials of one task, paired by repetition; a trial whose pair did not run counts in no pair.
+      const paired = (task: string): Array<[RecordedTrial, RecordedTrial]> => {
+        const to = new Map(own(has?.name, task).map((trial) => [trial.repetition, trial]));
 
-      const rates = pair.length > 0 && without !== undefined && has !== undefined
-        ? {
-          without: { passed: pair.filter(([one]) => one.result === 'passed').length, planned: pair.length },
-          with: { passed: pair.filter(([, to]) => to.result === 'passed').length, planned: pair.length },
-        }
-        : { without: undefined, with: passRateOf(own(has?.name, id)).passRate } as const;
+        return own(without?.name, task).flatMap((trial) => {
+          const other = to.get(trial.repetition);
 
-      const row: AssetEffectRow = { task: id, covers: covered, ...rates, loaded: skill === undefined || has === undefined ? undefined : routingLoads(own(has.name, id), skill) };
-
-      return row.without !== undefined || row.with !== undefined ? [row] : [];
-    });
-
-    const split = (covered: boolean): AssetSplit | undefined => {
-      if (without === undefined || has === undefined) return undefined;
-
-      const pairs = tasks.filter(({ covers }) => (covers?.includes(path) ?? false) === covered).flatMap(({ id }) => paired(id));
-
-      if (pairs.length === 0) return undefined;
-
-      const difference = pairedDifference({
-        both: pairs.filter(([one, to]) => one.result === 'passed' && to.result === 'passed').length,
-        toOnly: pairs.filter(([one, to]) => one.result !== 'passed' && to.result === 'passed').length,
-        fromOnly: pairs.filter(([one, to]) => one.result === 'passed' && to.result !== 'passed').length,
-        neither: pairs.filter(([one, to]) => one.result !== 'passed' && to.result !== 'passed').length,
-      });
-
-      return {
-        difference, separated: difference.low > 0 || difference.high < 0,
-        from: { passed: pairs.filter(([one]) => one.result === 'passed').length, planned: pairs.length },
-        to: { passed: pairs.filter(([, to]) => to.result === 'passed').length, planned: pairs.length },
+          // SAFETY: `other` comes from the same `trials` array, so the pair is two of its entries in repetition order.
+          return other !== undefined ? [[trial, other] as [RecordedTrial, RecordedTrial]] : [];
+        });
       };
-    };
 
-    // A skill's pass rates on the arm that has it, over its trials of every task, by whether they loaded it.
-    const whenLoaded = (loaded: boolean): PassRate | undefined => {
-      if (skill === undefined || has === undefined) return undefined;
+      const rows: AssetEffectRow[] = tasks.flatMap(({ id, covers }): AssetEffectRow[] => {
+        const covered = covers?.includes(path) ?? false;
+        const pair = paired(id);
 
-      const ofArm = trials.filter((trial) => trial.arm === has.name && trial.routing?.[skill] !== undefined
-        && (loaded ? ['fit', 'extra'] : ['missed', 'idle']).includes(trial.routing[skill]));
+        const rates = pair.length > 0 && without !== undefined && has !== undefined
+          ? {
+            without: { passed: pair.filter(([one]) => one.result === 'passed').length, planned: pair.length },
+            with: { passed: pair.filter(([, to]) => to.result === 'passed').length, planned: pair.length },
+          }
+          : { without: undefined, with: passRateOf(own(has?.name, id)).passRate } as const;
 
-      return ofArm.length > 0 ? { passed: ofArm.filter((trial) => trial.result === 'passed').length, planned: ofArm.length } : undefined;
-    };
+        const row: AssetEffectRow = { task: id, covers: covered, ...rates, loaded: skill === undefined || has === undefined ? undefined : routingLoads(own(has.name, id), skill) };
 
-    const effect = definedFields<AssetEffect>({
-      path, without: without?.name, has: has?.name, tool: (without ?? has)?.tool ?? '', skill,
-      rows, coversDifference: split(true), othersDifference: split(false),
-      passedWhenLoaded: whenLoaded(true), passedWhenNotLoaded: whenLoaded(false),
-    });
+        return row.without !== undefined || row.with !== undefined ? [row] : [];
+      });
 
-    return effect.rows.length > 0 ? [effect] : [];
+      const split = (covered: boolean): AssetSplit | undefined => {
+        if (without === undefined || has === undefined) return undefined;
+
+        const pairs = tasks.filter(({ covers }) => (covers?.includes(path) ?? false) === covered).flatMap(({ id }) => paired(id));
+
+        if (pairs.length === 0) return undefined;
+
+        const difference = pairedDifference({
+          both: pairs.filter(([one, to]) => one.result === 'passed' && to.result === 'passed').length,
+          toOnly: pairs.filter(([one, to]) => one.result !== 'passed' && to.result === 'passed').length,
+          fromOnly: pairs.filter(([one, to]) => one.result === 'passed' && to.result !== 'passed').length,
+          neither: pairs.filter(([one, to]) => one.result !== 'passed' && to.result !== 'passed').length,
+        });
+
+        return {
+          difference, separated: difference.low > 0 || difference.high < 0,
+          from: { passed: pairs.filter(([one]) => one.result === 'passed').length, planned: pairs.length },
+          to: { passed: pairs.filter(([, to]) => to.result === 'passed').length, planned: pairs.length },
+        };
+      };
+
+      // A skill's pass rates on the arm that has it, over its trials of every task, by whether they loaded it.
+      const whenLoaded = (loaded: boolean): PassRate | undefined => {
+        if (skill === undefined || has === undefined) return undefined;
+
+        const ofArm = trials.filter((trial) => trial.arm === has.name && trial.routing?.[skill] !== undefined
+          && (loaded ? ['fit', 'extra'] : ['missed', 'idle']).includes(trial.routing[skill]));
+
+        return ofArm.length > 0 ? { passed: ofArm.filter((trial) => trial.result === 'passed').length, planned: ofArm.length } : undefined;
+      };
+
+      const effect = definedFields<AssetEffect>({
+        path, without: without?.name, has: has?.name, tool: (without ?? has)?.tool ?? '', skill,
+        rows, coversDifference: split(true), othersDifference: split(false),
+        passedWhenLoaded: whenLoaded(true), passedWhenNotLoaded: whenLoaded(false),
+      });
+
+      effects.push(...effect.rows.length > 0 ? [effect] : []);
+    }
   });
+
+  return effects;
 }
 
 /** How the `with` arm's trials of one task loaded `skill`, each counted under its routing value. */

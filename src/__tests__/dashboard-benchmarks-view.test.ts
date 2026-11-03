@@ -133,15 +133,16 @@ describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
     return {
       run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded',
       benchmark: {
-        suite: { name: 'fix-auth', sourceHash: 'v1' }, repetitions: 1, baselineTeamRevision: TEAM, scorers: [],
+        suite: { name: 'fix-auth', sourceHash: 'v1' }, repetitions: 1, baselineTeamRevision: TEAM, scorers: [{ name: 'teamai:routing:auth-tokens', rubric: { sourceHash: 'r1' } }],
         tasks: [
-          { id: 'expired-token', startingCommit: 'a'.repeat(40), sourceHash: 't1', baseline: 'valid', covers: ['rules/auth.md', 'skills/auth-tokens'] },
+          { id: 'expired-token', startingCommit: 'a'.repeat(40), sourceHash: 't1', baseline: 'valid', covers: ['rules/auth.md', 'skills/auth-tokens'], coversSkills: [null, 'auth-tokens'] },
           { id: 'login-copy', startingCommit: 'a'.repeat(40), sourceHash: 't2', baseline: 'valid' },
         ],
         arms,
         trials: [
           trial('expired-token', 'pulled', 1, 'passed', { 'auth-tokens': 'loaded' }, { 'auth-tokens': 'fit' }),
           trial('login-copy', 'pulled', 2, 'failed'),
+          // The without-arm reports no routing: the asset is absent by design, not misrouted.
           trial('expired-token', 'no-tokens', 3, 'failed'),
           trial('login-copy', 'no-tokens', 4, 'failed'),
         ],

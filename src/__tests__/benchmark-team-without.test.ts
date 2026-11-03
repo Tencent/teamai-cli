@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { coveredRefusal, withoutRefusal } from '../benchmark/team-without.js';
+import { coveredRefusal, coveredSkillName, withoutRefusal } from '../benchmark/team-without.js';
 import type { LocalConfig } from '../types.js';
 import type { TeamSelection } from '../workflow/clone.js';
 
@@ -33,7 +33,7 @@ function git(cwd: string, ...args: string[]): string {
  * them; `additional`, the member's other roles; without `tags`, the team has no tags.yaml; `subscribed`, the tags the
  * member subscribes; `excluded`, the skills the member excludes.
  */
-function team({ role = 'dev' as string | null, additional = [] as string[], tags = true, subscribed = ['quality'], excluded = [] as string[] } = {}): { config: LocalConfig; revision: string; selection: TeamSelection } {
+function team({ role = 'dev' as string | null, additional = [] as string[], tags = true, subscribed = ['quality'], excluded = [] as string[] } = {}): { config: LocalConfig; revision: string; selection: TeamSelection; files: string[] } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-team-without-'));
   dirs.push(root);
   const repo = path.join(root, 'team');
@@ -87,6 +87,7 @@ function team({ role = 'dev' as string | null, additional = [] as string[], tags
     },
     revision: git(repo, 'rev-parse', 'HEAD'),
     selection: { ...(role !== null ? { primaryRole: role } : {}), additionalRoles: additional, projects: [], ...(subscribed.length > 0 ? { subscribedTags: subscribed } : {}), excludedSkills: excluded },
+    files: Object.keys(files),
   };
 }
 
@@ -223,11 +224,23 @@ describe('withoutRefusal', () => {
   });
 });
 
+describe('coveredSkillName (#1605)', () => {
+  it('names a covered path the revision delivers as a skill, and only that', () => {
+    const { files } = team();
+
+    expect(coveredSkillName('skills/lint', files)).toBe('lint');
+    expect(coveredSkillName('skills/dev/deploy', files)).toBe('deploy');
+    expect(coveredSkillName('skills/dev', files)).toBeUndefined();
+    expect(coveredSkillName('skills/lint/README.md', files)).toBeUndefined();
+    expect(coveredSkillName('rules/commits.md', files)).toBeUndefined();
+  });
+});
+
 describe('coveredRefusal', () => {
   it('accepts the paths a task covers that an arm could run without', async () => {
-    const { config, revision, selection } = team();
+    const { config, revision, selection, files } = team();
 
-    expect(await coveredRefusal(config, { paths: ['rules/commits.md', 'skills/lint'], revision, selection })).toBeUndefined();
+    expect(await coveredRefusal(config, { paths: ['rules/commits.md', 'skills/lint'], revision, selections: [selection], files })).toBeUndefined();
   });
 
   it.each([
@@ -240,8 +253,8 @@ describe('coveredRefusal', () => {
     ['a skill in a namespace the member does not receive', ['skills/ops/runbook'], 'arm_team_unresolved',
       'A task covers skills/ops/runbook, which is in namespace ops, and the arm\'s roles or projects don\'t receive ops, so leaving it out changes nothing. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
   ])('refuses %s', async (_case, paths, code, message) => {
-    const { config, revision, selection } = team();
-    const refusal = await coveredRefusal(config, { paths, revision, selection });
+    const { config, revision, selection, files } = team();
+    const refusal = await coveredRefusal(config, { paths, revision, selections: [selection], files });
 
     expect(refusal?.code).toBe(code);
     expect(refusal?.message).toBe(message.replaceAll('{r}', revision.slice(0, 7)));

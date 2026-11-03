@@ -709,20 +709,15 @@ covers: [skills/auth-tokens, rules/auth.md]
 ```text
 Asset effect · skills/auth-tokens · no-auth-tokens -> pulled · claude
 
-task   covers   passed without   passed with   loaded with
-expired-token   yes   1/3   3/3   3/3 fit
-refresh-race   yes   2/3   2/3   0/3 missed
-login-copy   no   3/3   3/3   1/3 extra
-
-tasks that cover it   +33 pp   3/6 -> 5/6   95% +4 to +89 pp
-other tasks   0 pp   3/3 -> 3/3   not separated
-passed when loaded 4/4 · passed when not loaded 4/5
+- The skill helps on `expired-token`, and loaded every time there: it works there.
+- On `refresh-race` it loaded twice and the task passed twice; the one repetition that did not load it also did not pass, which the `missed` count names. A task that covers the skill, loaded it every time and did not change says the opposite: the description reaches the task and the body does not help.
+- `login-copy` did not get worse, though the skill loaded once where it was not needed.
 ```
 
 这样读：
 
 - skill 在 `expired-token` 上有用，而且每次都加载了：它在那里有效。
-- skill 没有改变 `refresh-race`，而且从未在那里加载：它的 description 没有触达这个任务。改写 description，不是正文。一个覆盖该 skill、每次都加载、却没有变化的任务说的是相反的事：它触达了任务但没有帮助。
+- 在 `refresh-race` 上它加载了两次、任务通过了两次；没加载的那一次也没通过，`missed` 计数点名了它。一个覆盖该 skill、每次都加载、却没有变化的任务说的是相反的事：description 触达了任务，正文没有帮助。
 - `login-copy` 没有变差，尽管 skill 在不需要它的地方加载了一次。
 
 `loaded with` 用的是[路由](scorers.md#skill-路由)打分器在已结束会话上读的值，只是改由任务而非评判器判定：`fit` 加载了且任务覆盖它，`missed` 没加载但任务覆盖它，`extra` 加载了但任务不覆盖它，`idle` 没加载也不覆盖，`unknown` 是工具不报告 skill 加载——`unknown` 的 trial 仍计入通过率，但不计入"加载时"或"未加载时"。只有 skill 有这一列：teamai 只观察 skill 加载，规则、`claudemd/` 文件、文档或整个命名空间目录都读作 `not observed`。在 dashboard 的[基准测试页面](dashboard.md#基准测试benchmarks)，Compare 页签在配对之下显示这些表，skill 还会链接到它在真实会话上的 `teamai:routing:...` 计数。

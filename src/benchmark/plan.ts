@@ -60,6 +60,8 @@ const PlannedTaskSchema = z.object({
   ]),
   /** The team repo paths the task covers, each listed once, sorted, as plan checked them deliverable at the pulled revision. Absent: the task covers none. */
   covers: z.array(z.string().min(1)).nonempty().optional(),
+  /** Aligned with `covers`: the bare skill name a trial's load record shows for that path, or null when the revision delivers it as no skill, such as a namespace directory. */
+  coversSkills: z.array(z.string().min(1).nullable()).nonempty().optional(),
 }).strict();
 
 export type PlannedTask = z.infer<typeof PlannedTaskSchema>;
@@ -163,11 +165,14 @@ export function freezePlan(input: {
   arms: [PlannedArm, ...PlannedArm[]];
   /** The team scorers the suite lists, as start pinned them. */
   scorers: Record<string, PinnedScorer>;
+  /** Each covered path's bare skill name as plan checked it at the pulled revision, or null when it delivers no skill. */
+  coveredSkills: Record<string, string | null>;
   skillChanges?: SkillChanges[];
 }): BenchmarkPlan {
   const { suite, files } = input.committed;
+  const { coveredSkills } = input;
   const [first, ...rest] = suite.tasks;
-  const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)), covers: task.covers ? [...task.covers] : undefined });
+  const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.covers ? task.covers.map((path) => coveredSkills[path] ?? null) : undefined });
 
   return definedFields<BenchmarkPlan>({
     schemaVersion: BENCHMARK_PLAN_SCHEMA_VERSION,

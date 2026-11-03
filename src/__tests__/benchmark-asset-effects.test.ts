@@ -25,8 +25,8 @@ function migrationsRecord(trials: TrialSpec[], arms?: BenchmarkRecord['arms']): 
     benchmark: {
       suite: { name: 'migrations', sourceHash: 'h' }, repetitions: 3, baselineTeamRevision: RUN_TEAM, scorers: [],
       tasks: [
-        { id: 'add-column', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const, covers },
-        { id: 'drop-index', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const, covers },
+        { id: 'add-column', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const, covers, coversSkills: ['migrations', null] },
+        { id: 'drop-index', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const, covers, coversSkills: ['migrations', null] },
         { id: 'login-copy', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const },
       ],
       arms: armList,
@@ -112,7 +112,7 @@ describe('asset effects', () => {
       benchmark: {
         ...migrationsRecord(paired({ ablated: ['f', 'p', 'p'], pulled: ['p', 'p', 'p'] })).benchmark,
         arms,
-        tasks: (['add-column', 'drop-index'] as const).map((id) => ({ id, startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const, covers: ['claudemd/team.md', 'docs/api', 'rules/db.md'] })),
+        tasks: (['add-column', 'drop-index'] as const).map((id) => ({ id, startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid' as const, covers: ['claudemd/team.md', 'docs/api', 'rules/db.md'], coversSkills: [null, null, null] })),
         trials: [
           { task: 'add-column', arm: 'ablated', repetition: 1, order: 1, step: 'r1', result: 'failed' },
           { task: 'add-column', arm: 'pulled', repetition: 1, order: 2, step: 'r2', result: 'passed' },
@@ -148,6 +148,54 @@ describe('asset effects', () => {
       { path: 'skills/db/migrations', without: undefined },
       { path: 'rules/db.md', without: undefined },
     ]);
+  });
+
+  it('gives each arm that runs without a covered path its own table, against its own has-arm (#1684 review)', () => {
+    const arms = [
+      { name: 'claude', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM } },
+      { name: 'claude-no', tool: 'claude', source: 'team' as const, team: { kind: 'without' as const, paths: ['skills/db/migrations'] as [string, ...string[]], revision: RUN_TEAM } },
+      { name: 'codex', tool: 'codex', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM } },
+      { name: 'codex-no', tool: 'codex', source: 'team' as const, team: { kind: 'without' as const, paths: ['skills/db/migrations'] as [string, ...string[]], revision: RUN_TEAM } },
+    ];
+    const record = migrationsRecord([
+      { task: 'add-column', arm: 'claude', result: 'passed', routing: { migrations: 'fit' } },
+      { task: 'add-column', arm: 'claude-no', result: 'failed' },
+      { task: 'add-column', arm: 'codex', result: 'failed' },
+      { task: 'add-column', arm: 'codex-no', result: 'failed' },
+    ], arms);
+
+    const tables = assetEffects(record);
+
+    expect(tables.filter(({ path }) => path === 'skills/db/migrations').map(({ without, has, tool }) => ({ without, has, tool }))).toEqual([
+      { without: 'claude-no', has: 'claude', tool: 'claude' },
+      { without: 'codex-no', has: 'codex', tool: 'codex' },
+    ]);
+    expect(formatBenchmarkTable(benchmarkTable(record))).toContain('Asset effect · skills/db/migrations · claude-no -> claude · claude');
+    expect(formatBenchmarkTable(benchmarkTable(record))).toContain('Asset effect · skills/db/migrations · codex-no -> codex · codex');
+  });
+
+  it('reads a covered namespace directory as no skill even when skills live under it (#1684 review)', () => {
+    const record: Parameters<typeof assetEffects>[0] = {
+      benchmark: {
+        suite: { name: 'migrations', sourceHash: 'h' }, repetitions: 1, baselineTeamRevision: RUN_TEAM, scorers: [],
+        tasks: [{ id: 'add-column', startingCommit: RUN_START, sourceHash: 'h', baseline: 'valid', covers: ['skills/db'], coversSkills: [null] }],
+        arms: [
+          { name: 'pulled', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: RUN_TEAM } },
+          { name: 'no-db', tool: 'claude', source: 'team' as const, team: { kind: 'without' as const, paths: ['skills/db'] as [string, ...string[]], revision: RUN_TEAM } },
+        ],
+        trials: [
+          { task: 'add-column', arm: 'pulled', repetition: 1, order: 1, step: 's1', result: 'passed' as TrialResult, routing: { migrations: 'fit' } },
+          { task: 'add-column', arm: 'no-db', repetition: 1, order: 2, step: 's2', result: 'failed' as TrialResult },
+        ],
+      },
+    };
+
+    const [table] = assetEffects(record);
+
+    expect(table).toMatchObject({ path: 'skills/db', without: 'no-db', has: 'pulled' });
+    expect(table?.skill).toBeUndefined();
+    expect(table?.rows[0].loaded).toBeUndefined();
+    expect(formatBenchmarkTable(benchmarkTable(record))).toContain('add-column   yes   0% (0/1)   100% (1/1)   not observed');
   });
 
   it('gives a covered path no arm leaves out its rows, with pass rate and loads, and no difference', () => {

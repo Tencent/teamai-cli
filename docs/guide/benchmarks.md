@@ -711,18 +711,18 @@ Asset effect · skills/auth-tokens · no-auth-tokens -> pulled · claude
 
 task   covers   passed without   passed with   loaded with
 expired-token   yes   1/3   3/3   3/3 fit
-refresh-race   yes   2/3   2/3   0/3 missed
+refresh-race   yes   0/3   2/3   2/3 fit, 1 missed
 login-copy   no   3/3   3/3   1/3 extra
 
-tasks that cover it   +33 pp   3/6 -> 5/6   95% +4 to +89 pp
+tasks that cover it   +67 pp   1/6 -> 5/6   95% +11 to +86 pp
 other tasks   0 pp   3/3 -> 3/3   not separated
-passed when loaded 4/4 · passed when not loaded 4/5
+passed when loaded 6/6 · passed when not loaded 0/1
 ```
 
 Read it as:
 
 - The skill helps on `expired-token`, and loaded every time there: it works there.
-- The skill did not change `refresh-race`, and never loaded there: its description does not reach the task. Rewrite the description, not the body. A task that covers the skill, loaded it every time and did not change says the opposite: it reaches the task and does not help.
+- On `refresh-race` it loaded twice and the task passed twice; the one repetition that did not load it also did not pass, which the `missed` count names. A task that covers the skill, loaded it every time and did not change says the opposite: the description reaches the task and the body does not help.
 - `login-copy` did not get worse, though the skill loaded once where it was not needed.
 
 `loaded with` uses the [routing](scorers.md#skill-routing) values a finished session's scorer reads, from the task instead of a judge: `fit` loaded and the task covers it, `missed` not loaded and it does, `extra` loaded and it does not, `idle` not loaded and it does not, and `unknown` when the tool reports no skill loads — an `unknown` trial still counts in the pass rates, in neither "when loaded" nor "when not loaded". Only skills have the column: teamai observes skill loads and nothing else, so a rule, a `claudemd/` file, a doc or a namespace directory reads `not observed`. On the dashboard's [Benchmarks page](dashboard.md#benchmarks), the Compare tab shows the tables under the pair, and a skill links to its `teamai:routing:...` counts on real sessions.

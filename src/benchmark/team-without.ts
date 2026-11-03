@@ -82,18 +82,38 @@ export async function withoutRefusal(
  * revision, and leaving it out changes what teamai pull delivers, so an arm can run without it and the asset-effect
  * tables can compare. Undefined when every covered path can be left out. The same resolvers as `withoutRefusal`.
  */
-export async function coveredRefusal(
+/** Every file a team revision holds, listed once for the checks on paths the run names. */
+export async function teamFilesAt(
   config: LocalConfig,
-  { paths, revision, selection }: { paths: readonly string[]; revision: string; selection: TeamSelection },
-): Promise<Refusal | undefined> {
+  { paths, revision }: { paths: readonly string[]; revision: string },
+): Promise<{ files: string[] } | { failed: Refusal }> {
   const short = revision.slice(0, 7);
   const listed = await git(config.repo.localPath, ['ls-tree', '-r', '-z', '--name-only', revision]);
 
   if (listed.code !== 0) {
-    return { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and git could not list team revision ${short} at ${config.repo.localPath}: ${listed.stderr.trim()}. Repair the team repo, or run teamai pull, and start again.` };
+    return { failed: { code: 'arm_team_unreadable', message: `${paths.join(', ')}, and git could not list team revision ${short} at ${config.repo.localPath}: ${listed.stderr.trim()}. Repair the team repo, or run teamai pull, and start again.` } };
   }
 
-  const files = listed.stdout.split('\0').filter((file) => file !== '');
+  return { files: listed.stdout.split('\0').filter((file) => file !== '') };
+}
+
+/**
+ * The bare name a trial's load record would show for a covered team repo path: the last segment of a `skills/` path
+ * whose directory the revision delivers as a skill, that is, holds a SKILL.md directly. Undefined for a namespace
+ * directory, a single skill file, a rule, a doc or anything else: only skill loads are observed, and a namespace
+ * directory is not one.
+ */
+export function coveredSkillName(listed: string, files: readonly string[]): string | undefined {
+  if (!listed.startsWith('skills/')) return undefined;
+
+  return files.includes(`${listed}/SKILL.md`) ? listed.split('/').at(-1) : undefined;
+}
+
+export async function coveredRefusal(
+  config: LocalConfig,
+  { paths, revision, selections, files }: { paths: readonly string[]; revision: string; selections: readonly TeamSelection[]; files: readonly string[] },
+): Promise<Refusal | undefined> {
+  const short = revision.slice(0, 7);
   const missing = paths.find((one) => !files.some((file) => leavesOut([one], file)));
 
   if (missing !== undefined) {
@@ -104,15 +124,37 @@ export async function coveredRefusal(
     return { code: 'arm_team_unresolved', message: `A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. ${TASK_FIX}` };
   }
 
-  // The member as the clone's own pull reads it: the run's selection, on a scope with no state of its own.
-  const member: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
-  const read = await withTeamRevision(member, revision, async (at) => ({ unchanged: await firstUnchanged(at, { subject: 'A task covers', advice: TASK_FIX, paths, files, short, excluded: selection.excludedSkills }) }));
+  // Every selection the run's arms pull under, so a path only a role arm receives is not refused. A path refuses
+  // only when every selection's delivery leaves it unchanged: each read is the member as the clone's own pull reads
+  // it, on a scope with no state of its own.
+  // Each path once, however many tasks cover it: one delivery read per path and selection.
+  const unique = [...new Set(paths)];
 
-  if ('failed' in read) {
-    return { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${read.failed}. Repair the team repo, or run teamai pull, and start again.` };
+  const reads = await Promise.all(selections.map(async (selection) => {
+    const member: LocalConfig = { repo: config.repo, username: config.username, scope: 'project', projectRoot: config.projectRoot, ...selection };
+
+    return withTeamRevision(member, revision, async (at) => ({ selection, unchangedByPath: await Promise.all(unique.map(async (covered) => [
+      covered,
+      await firstUnchanged(at, { subject: 'A task covers', advice: TASK_FIX, paths: [covered], files, short, excluded: selection.excludedSkills }),
+    ] as const)) }));
+  }));
+
+  const failed = reads.find((read) => 'failed' in read);
+
+  if (failed && 'failed' in failed) {
+    return { code: 'arm_team_unreadable', message: `A task covers ${paths.join(', ')}, and what teamai pull delivers at team revision ${short} could not be read: ${failed.failed}. Repair the team repo, or run teamai pull, and start again.` };
   }
 
-  return read.unchanged === undefined ? undefined : { code: 'arm_team_unresolved', message: read.unchanged };
+  // A path refuses only when every selection's delivery leaves it unchanged; one role arm that receives it is enough.
+  const refused = unique
+    .flatMap((covered) => {
+      const ones = reads.flatMap((read) => 'failed' in read ? [] : read.unchangedByPath.filter(([one]) => one === covered).map(([, unchanged]) => unchanged).filter((unchanged): unchanged is string => unchanged !== undefined));
+
+      return ones.length === reads.length ? [ones.find((one) => one !== undefined) ?? ''] : [];
+    })
+    .find((ones) => ones.length > 0);
+
+  return refused === undefined ? undefined : { code: 'arm_team_unresolved', message: refused };
 }
 
 /**

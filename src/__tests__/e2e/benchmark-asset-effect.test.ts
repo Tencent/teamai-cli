@@ -66,9 +66,11 @@ describe('asset effect tables on the local driver', () => {
     expect(record.trials).toEqual(expect.arrayContaining([
       expect.objectContaining({ task: 'fix', arm: 'pulled', result: 'passed', routing: { 'auth-tokens': 'fit' } }),
       expect.objectContaining({ task: 'copy', arm: 'pulled', result: 'passed', routing: { 'auth-tokens': 'extra' } }),
-      expect.objectContaining({ task: 'fix', arm: 'no-tokens', result: 'passed', routing: { 'auth-tokens': 'missed' } }),
-      expect.objectContaining({ task: 'copy', arm: 'no-tokens', result: 'passed', routing: { 'auth-tokens': 'idle' } }),
+      expect.objectContaining({ task: 'fix', arm: 'no-tokens', result: 'passed' }),
+      expect.objectContaining({ task: 'copy', arm: 'no-tokens', result: 'passed' }),
     ]));
+    // The arm that runs without the skill by design reports no routing for it: the asset is absent, not misrouted.
+    expect(record.trials.filter(({ arm }) => arm === 'no-tokens').every(({ routing }) => routing === undefined)).toBe(true);
     // Criterion 2: the two splits add up, in trials, to the pair's paired trials: one paired trial per task.
     expect(text).toContain('tasks that cover it');
     expect(text).toContain('other tasks');
@@ -93,7 +95,10 @@ describe('asset effect tables on the local driver', () => {
     const record = RecordSchema.parse(fixture.benchmarkRecord(done.data.run));
     const text = done.data.outputs.text;
 
-    expect(record.trials.every(({ result, routing }) => result === 'passed' && routing?.['auth-tokens'] === 'unknown')).toBe(true);
+    expect(record.trials.filter(({ arm }) => arm === 'pulled').every(({ result, routing }) => result === 'passed' && routing?.['auth-tokens'] === 'unknown')).toBe(true);
+
+    // The without-arm carries no routing at all: its trials never even watched the skill it runs without.
+    expect(record.trials.filter(({ arm }) => arm === 'no-tokens').every(({ routing }) => routing === undefined)).toBe(true);
 
     expect(text).toContain('0/1 unknown');
     expect(text).toContain('tasks that cover it');
@@ -117,6 +122,47 @@ describe('asset effect tables on the local driver', () => {
     } });
     expect(fixture.runIds()).toEqual([]);
   }, 120_000);
+
+  it('prints a separated difference from a run where the skill matters, with numbers the interval backs (#1684 review)', async () => {
+    const fixture = await benchmarkFixture({
+      tool: 'fixes-only-with-the-skill', sandbox: true, tools: ['claude'], loadsSkill: 'auth-tokens',
+      suite: SUITE('arms:\n  - name: pulled\n  - name: no-tokens\n    team: { without: [skills/auth-tokens] }\n').replace('repetitions: 1', 'repetitions: 2'),
+      tasks: { fix: COVERS_TASK(['skills/auth-tokens']) },
+      team: { 'skills/auth-tokens/SKILL.md': SKILL('auth-tokens') },
+    });
+    fixtures.push(fixture);
+    expect((await fixture.teamai(['pull'])).code).toBe(0);
+    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
+    const done = DoneSchema.safeParse(envelope(started).data?.done);
+
+    if (!done.success) throw new Error(`the run did not end: ${said(started)}`);
+
+    const text = done.data.outputs.text;
+
+    expect(text).toContain('fix   yes   0% (0/2)   100% (2/2)   2/2 fit');
+    expect(text).toContain('tasks that cover it   +100 pp   0/2 -> 2/2   95% +7 to +100 pp');
+    expect(text).toContain('passed when loaded 2/2 · passed when not loaded -');
+  }, 300_000);
+
+  it('accepts two tasks that cover the same path, which is one cover, not an ambiguity (#1684 review)', async () => {
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], loadsSkill: 'auth-tokens',
+      suite: SUITE('arms:\n  - name: pulled\n  - name: no-tokens\n    team: { without: [skills/auth-tokens] }\n'),
+      tasks: { fix: COVERS_TASK(['skills/auth-tokens']), copy: COVERS_TASK(['skills/auth-tokens']) },
+      team: { 'skills/auth-tokens/SKILL.md': SKILL('auth-tokens') },
+    });
+    fixtures.push(fixture);
+    expect((await fixture.teamai(['pull'])).code).toBe(0);
+    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
+    const done = DoneSchema.safeParse(envelope(started).data?.done);
+
+    if (!done.success) throw new Error(`the run did not end: ${said(started)}`);
+
+    const record = RecordSchema.parse(fixture.benchmarkRecord(done.data.run));
+
+    expect(record.trials).toHaveLength(4);
+    expect(done.data.outputs.text).toContain('Asset effect · skills/auth-tokens · no-tokens -> pulled · claude');
+  }, 300_000);
 
   it('refuses two covered skill paths of the same skill name, whose loads a trial could not tell apart', async () => {
     const fixture = await benchmarkFixture({

@@ -4,6 +4,7 @@
  */
 import fs from 'node:fs/promises';
 import os from 'node:os';
+
 import path from 'node:path';
 import { isRecordableLabel, isRecordableName, observeCheckout } from '../agent-observation.js';
 import { loadLocalConfigForScope } from '../config.js';
@@ -26,7 +27,7 @@ import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
 import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PlannedArm } from './plan.js';
 import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskJudge } from './suite.js';
-import { coveredRefusal } from './team-without.js';
+import { coveredRefusal, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import type { ArmTeam, SkillChanges } from './terms.js';
@@ -195,10 +196,11 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
   const skillChanges = await skillChangesOf(config, arms, { baseline: revision, defaults: defaultsArmOf(found)?.name });
 
   if ('refused' in skillChanges) return refuse(skillChanges.refused);
-  const coveredRefused = await coveredTaskRefusal(config, found.tasks, revision, selectionOf(config));
+  const coveredSelections = coveredSelectionsOf(found.arms, selectionOf(config));
+  const covered = await coveredTaskRefusal(config, found.tasks, revision, coveredSelections);
 
-  if (coveredRefused !== undefined) return refuse(coveredRefused);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, skillChanges: skillChanges.changes });
+  if ('refusal' in covered) return refuse(covered.refusal);
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, coveredSkills: covered.skills, skillChanges: skillChanges.changes });
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
@@ -214,44 +216,51 @@ async function freezeSuite(config: LocalConfig, name: string, options: Benchmark
 type ArmResolution = { ok: true; arm: PlannedArm } | { ok: false; message: string };
 
 /**
- * The bare name a trial's load record would show for a covered path: `skills/<name>` is `name`, a namespaced
- * `skills/<namespace>/<name>` is `name`. Undefined for a path under no other root: only skill loads are observed.
- */
-function skillNameOfCovered(listed: string): string | undefined {
-  if (!listed.startsWith('skills/')) return undefined;
-  const [, second, third] = listed.split('/');
-
-  return third ?? second;
-}
-
-/**
  * Why start refuses the paths the suite's tasks cover, or undefined when every one can be compared: a path the pulled
  * team revision does not have or that delivers nothing (`coveredRefusal`, the same resolvers as an arm's `without`), and
  * two covered skill paths of the same bare name, which a trial's load record could not tell apart.
  */
-async function coveredTaskRefusal(config: LocalConfig, tasks: readonly Task[], pulled: string, selection: TeamSelection): Promise<Refusal | undefined> {
+/** Every selection the run's arms pull under: the member's own, then each arm's role, so a path only one role receives is not refused. */
+function coveredSelectionsOf(arms: readonly Arm[], member: TeamSelection): TeamSelection[] {
+
+  const roles = [...new Set(arms.flatMap(({ role }) => (role !== undefined ? [role] : [])))];
+
+  return [member, ...roles.map((role) => ({ ...member, primaryRole: role }))]
+    .filter((one, index, all) => all.findIndex((other) => other.primaryRole === one.primaryRole) === index);
+}
+
+async function coveredTaskRefusal(config: LocalConfig, tasks: readonly Task[], pulled: string, selections: readonly TeamSelection[]): Promise<{ refusal: Refusal } | { skills: Record<string, string | null> }> {
   const covers = tasks.flatMap((task) => task.covers ?? []);
 
-  if (covers.length === 0) return undefined;
+  if (covers.length === 0) return { skills: {} };
+
+  const listed = await teamFilesAt(config, { paths: covers, revision: pulled });
+
+  // SAFETY: teamFilesAt fails only with `arm_team_unresolved`, reworded for the plan step that reads the team once.
+  if ('failed' in listed) return { refusal: error('arm_team_unresolved', `A task covers ${listed.failed.message}`) };
+
+  // Two different paths may share one bare skill name, which a trial's load record cannot tell apart; the same path twice is one.
   const byName = new Map<string, string>();
 
-  for (const listed of covers) {
-    const bare = skillNameOfCovered(listed);
+  for (const covered of [...new Set(covers)]) {
+    const bare = coveredSkillName(covered, listed.files);
 
-    if (bare !== undefined) {
-      const other = byName.get(bare);
+    if (bare === undefined) continue;
 
-      if (other !== undefined) {
-        return error('task_covers_ambiguous', `Tasks cover ${other} and ${listed}, two skills of the same name ${bare}, which a trial's load record cannot tell apart. Cover one of them, fix the team's tasks, push them, run teamai pull, and start again.`);
-      }
+    const other = byName.get(bare);
 
-      byName.set(bare, listed);
+    if (other !== undefined) {
+      return { refusal: error('task_covers_ambiguous', `Tasks cover ${other} and ${covered}, two skills of the same name ${bare}, which a trial's load record cannot tell apart. Cover one of them, fix the team's tasks, push them, run teamai pull, and start again.`) };
     }
+
+    byName.set(bare, covered);
   }
 
-  const refusal = await coveredRefusal(config, { paths: covers, revision: pulled, selection });
+  const refusal = await coveredRefusal(config, { paths: [...new Set(covers)], revision: pulled, selections, files: listed.files });
 
-  return refusal && error('arm_team_unresolved', refusal.message);
+  if (refusal !== undefined) return { refusal: error('arm_team_unresolved', refusal.message) };
+
+  return { skills: Object.fromEntries([...new Set(covers)].map((path) => [path, coveredSkillName(path, listed.files) ?? null])) };
 }
 
 

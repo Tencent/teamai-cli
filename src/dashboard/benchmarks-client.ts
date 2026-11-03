@@ -313,11 +313,11 @@ function assetPanel(sel,chosen){
  const split=(t,l)=>l==null?'':t+'   '+(l.difference.value>=0?'+':'')+Math.round(l.difference.value*100)+' pp   '+rate(l.from)+' → '+rate(l.to)+'   '+(l.separated?'95% '+(l.difference.low>=0?'+':'')+Math.round(l.difference.low*100)+' to '+(l.difference.high>=0?'+':'')+Math.round(l.difference.high*100)+' pp':label('not separated'));
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Asset effect')+'</h2><span class="label">'+label('Per covered team asset: the arm that runs without it against the arm that leaves nothing out, split by the tasks that cover it. A skill that did not load is missed, one that loaded where it was not needed is extra.')+'</span></div>'
   +shown.map(a=>'<div class="asset-effect"><h3 data-verbatim>'+e(a.path)+' · '+e(a.without!=null?a.without+' → '+a.has:a.has)+' · '+e(a.tool)+'</h3>'
-   +'<pre class="asset-table" data-verbatim>'+e(['task   covers   passed without   passed with   loaded with',...a.rows.map(r=>[r.task,r.covers?'yes':'no',rate(r.without),rate(r.with),r.loaded===undefined?label('not observed'):loads(r.loaded)].join('   '))].join('\\n'))
-   +(a.coversDifference||a.othersDifference?'\\n'+e([split('tasks that cover it',a.coversDifference),split('other tasks',a.othersDifference)].filter(Boolean).join('\\n')):'')
+   +'<pre class="asset-table" data-verbatim>'+e([[label('task'),label('covers'),label('passed without'),label('passed with'),label('loaded with')].join('   '),...a.rows.map(r=>[r.task,r.covers?label('yes'):label('no'),rate(r.without),rate(r.with),r.loaded===undefined?label('not observed'):loads(r.loaded)].join('   '))].join('\\n'))
+   +(a.coversDifference||a.othersDifference?'\\n'+e([split(label('tasks that cover it'),a.coversDifference),split(label('other tasks'),a.othersDifference)].filter(Boolean).join('\\n')):'')
    +(a.passedWhenLoaded||a.passedWhenNotLoaded?'\\n'+e(label('passed when loaded')+' '+rate(a.passedWhenLoaded)+' · '+label('passed when not loaded')+' '+rate(a.passedWhenNotLoaded)):'')
    +'</pre>'
-   +(a.skill?'<p class="scorer-hint">'+e(a.path)+' <a href="#scorers">'+e(name(a))+'</a> · '+label('its routing question\\'s counts on real sessions, over the same window')+'</p>':'')
+   +(a.skill&&sel.latest&&sel.latest.table&&sel.latest.table.routing?'<p class="scorer-hint">'+e(a.path)+' <a href="#scorers">'+e(name(a))+'</a> · '+label('its routing question\\'s counts on real sessions, over the same window')+'</p>':'')
    +'</div>').join('')+'</section>';
 }
 const configName=c=>c.tool+(c.model?' · '+c.model:'')+(c.effort?' · '+c.effort:'')+(c.workflow?' · '+c.workflow:'')+(c.role?' · '+roleText(c):'');

@@ -6,6 +6,7 @@
  * Results are never failure codes, and no value here enters record `status` or `steps[].outcome`: an older dashboard
  * drops a whole record on an enum value it does not know.
  */
+
 import path from 'node:path';
 import { z } from 'zod';
 import { AgentObservationSchema } from '../agent-observation.js';
@@ -51,6 +52,7 @@ export const BenchmarkRecordSchema = z.object({
     id: z.string(), startingCommit: z.string(), sourceHash: z.string(), baseline: z.enum(BASELINES),
     /** The team repo paths the task covers, each listed once, sorted; absent when it covers none. */
     covers: z.array(z.string().min(1)).nonempty().optional(),
+    coversSkills: z.array(z.string().min(1).nullable()).nonempty().optional(),
   })),
   arms: z.array(z.object({
     name: z.string(), tool: z.string(), model: z.string().optional(), alias: z.string().optional(), effort: z.string().optional(),
@@ -130,11 +132,13 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     return (run.verdicts ?? []).filter((verdict) => verdict.step === `${prefix}${trial.step}` && verdict.pass === pass);
   };
 
-  const coveredSkills = [...new Set(plan.tasks.flatMap(({ covers }) => (covers ?? []).flatMap((listed) => {
-        const name = skillNameOfCovered(listed);
+  const namesOf = ({ covers, coversSkills }: PlannedTask): string[] => (covers ?? []).flatMap((path, index) => {
+    const name = coversSkills?.[index];
 
-        return name !== undefined ? [name] : [];
-      })))];
+    return name !== undefined && name !== null ? [name] : [];
+  });
+
+  const coveredSkills = [...new Set(plan.tasks.flatMap(namesOf))];
 
   const watched = [...new Set([...(plan.skillChanges ?? []).flatMap(({ skills }) => skills.map(({ name }) => name)), ...coveredSkills])];
 
@@ -144,7 +148,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     limits: plan.limits,
     baselineTeamRevision: plan.baselineTeamRevision,
     scorers: plan.scorers,
-    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined })),
+    tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined })),
     arms: plan.arms,
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
@@ -154,15 +158,23 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
       const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check: stateOf(checkStepOf(trial)), verdicts }, plan, trial);
       const arm = plan.arms.find(({ name }) => name === trial.arm);
 
-      const covers = (plan.tasks.find(({ id }) => id === trial.task)?.covers ?? []).flatMap((listed) => {
-        const name = skillNameOfCovered(listed);
+      const task = plan.tasks.find(({ id }) => id === trial.task);
+      const covers = task === undefined ? [] : namesOf(task);
+      // An arm that runs without a covered skill by design reports no routing for it: the asset is absent, not misrouted.
 
-        return name !== undefined ? [name] : [];
-      });
+      const absent = arm?.team.kind === 'without'
+
+        ? arm.team.paths.flatMap((path) => {
+          const name = plan.tasks.flatMap((one) => one.covers?.map((covered, index) => [covered, one.coversSkills?.[index] ?? null] as const) ?? [])
+            .find(([covered]) => covered === path)?.[1];
+
+          return name !== undefined && name !== null ? [name] : [];
+        })
+        : [];
 
       const entry = arm?.workflow
-        ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, routingSkills: coveredSkills, covers, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
-        : projectionOf(settledPass(work), { arm, watched, routingSkills: coveredSkills, covers, unenforced: [] });
+        ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.includes(name)), covers, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
+        : projectionOf(settledPass(work), { arm, watched, routingSkills: coveredSkills.filter((name) => !absent.includes(name)), covers, unenforced: [] });
 
       const recorded: BenchmarkRecord['trials'][number] = { ...trial, step: `${prefix}${trial.step}`, result, ...entry };
 
@@ -192,16 +204,6 @@ type PromptPass = Pick<StepPass, 'limit' | 'unenforced' | 'durationMs' | 'tokens
 
 type TrialEntry = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used' | 'routing'>;
 
-/**
- * The bare name a trial's load record shows for a team repo path: `skills/<name>` is `name`, a namespaced
- * `skills/<namespace>/<name>` is `name`. Undefined for a path under no other root: only skill loads are observed.
- */
-function skillNameOfCovered(listed: string): string | undefined {
-  if (!listed.startsWith('skills/')) return undefined;
-  const [, second, third] = listed.split('/');
-
-  return third ?? second;
-}
 
 /** What `state` reported of its current pass, or nothing when that pass settled no report. */
 function settledPass(state: StepState | undefined): PromptPass[] {
