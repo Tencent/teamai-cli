@@ -16,7 +16,7 @@ import {
   type Expression, type ExpressionPath,
 } from './expression.js';
 import { outputMismatch } from './output.js';
-import { publishRunRecords, queueRunRecord, runRecordState } from './records.js';
+import { publishPendingRecords, publishRunRecords, queueRunRecord, runRecordState, type RecordState } from './records.js';
 import { freezeVerdicts, isUnsettled, verdictEntries } from './scoring-entries.js';
 import {
   parseTemplate, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
@@ -2051,7 +2051,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
   const record = queued
     ? await publishRunRecords(config)
-    : alreadySettled && await runRecordState(config, alreadySettled);
+    : alreadySettled && await settledRecordState(config, alreadySettled);
 
   // A run another install owns had its record dropped, not published.
   if (done && record && notPublished?.code !== 'not_owner') done.record = record;
@@ -2059,6 +2059,19 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   if (done && notPublished) done.notPublished = notPublished;
 
   return envelope;
+}
+
+/**
+ * The record state of `run`, which settled before this `next`. A record still queued is published first: the run
+ * control that ended the run, such as a cancel, may be publishing it at this moment, and the queue says so once it did.
+ */
+async function settledRecordState(config: LocalConfig, run: RunState): Promise<RecordState | undefined> {
+  const state = await runRecordState(config, run);
+
+  if (state !== 'pending') return state;
+  await publishPendingRecords(config, { run: run.id }).catch(() => undefined);
+
+  return runRecordState(config, run);
 }
 
 /** A payload's `driver`: a kind, machine, and workspace, none of them empty. */

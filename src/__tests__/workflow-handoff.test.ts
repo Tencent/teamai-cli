@@ -1337,6 +1337,23 @@ describe('workflow handoff through teamai-reports', () => {
     expect(originRef(acme.business, `refs/heads/teamai/${runId}/base`)).toBeUndefined();
   });
 
+  it('answers a next after a cancel with the end record published, though the cancel was still publishing it when the run ended', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runId = await start(alice);
+    const lock = path.join(path.dirname(alice.config.repo.localPath), '.reports-lock');
+    expect(await acquireLock(lock)).toBe(true);
+    try {
+      expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config))).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    } finally {
+      await releaseLock(lock);
+    }
+    expect((await pendingRecords(alice.config)).map((record) => record.run)).toContain(runId);
+
+    expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { done: { run: runId, outcome: 'cancelled', record: 'published' } } });
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}.json`) ?? '{}')).toMatchObject({ phase: 'end' });
+  });
+
   it('publishes the end a cancel settles, though the cancel answers with an error', async () => {
     const acme = team();
     const alice = await acme.member('alice');
