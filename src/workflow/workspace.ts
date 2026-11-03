@@ -7,7 +7,7 @@ import { sameDriver } from '../driver-identity.js';
 import type { JsonValue } from '../types.js';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
-import { passesWithin, runPasses } from './loop.js';
+import { isUnder, passesWithin, runPasses } from './loop.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
@@ -424,11 +424,14 @@ function headsWritten(run: RunState, state: StepState): Array<{ branch: string; 
 
 /**
  * Branches a step merges, `after` items first, then its other needs, each where that need left it. An omitted `needs`
- * uses the parent step's needs.
+ * uses the parent step's needs. Only steps under a need write a branch it or a step under it opened, and they have all
+ * settled, so the run's recorded tip of that branch is where they left it; when it is not, the run's records disagree
+ * and the step fails rather than start without commits the branch may hold.
  */
-function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): Array<{ branch: string; commit: string }> {
+function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): Array<{ branch: string; commit: string }> | WorkflowFailure {
   const ordered: Array<{ branch: string; commit: string; settledAt: number }> = [];
   const visited = new Set<string>();
+  let disagreement: WorkflowFailure | undefined;
 
   const push = (step: StepState | undefined): void => {
     if (!step || visited.has(step.id)) return;
@@ -458,8 +461,19 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     }
 
     const settledAt = 'settledAt' in step ? step.settledAt : 0;
+    const under = isUnder(step.id);
+    const opened = new Set(run.steps.filter((item) => item.id === step.id || under(item.id)).map((item) => branchName(run.id, item.id, item.pass ?? 1)));
 
     for (const head of heads) {
+      const tip = run.copies?.[head.branch]?.commit;
+
+      if (opened.has(head.branch) && tip !== undefined && tip !== head.commit) {
+        disagreement ??= {
+          code: 'workspace_base',
+          message: `step "${state.id}" would start from branch ${head.branch} at ${head.commit}, where the steps of "${step.id}" left it, but the run recorded ${tip} as the tip of ${head.branch}. The run's records of that branch disagree, for a reason teamai does not know, so the step stops instead of leaving out commits the branch may hold. Check which commit ${head.branch} should hold, then report it with the run file.`,
+        };
+      }
+
       const earlier = ordered.find((item) => item.branch === head.branch);
 
       if (!earlier) ordered.push({ ...head, settledAt });
@@ -478,7 +492,7 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     for (const id of definition.needs ?? []) push(states.find((item) => localId(scope, item) === id));
   }
 
-  return ordered.map(({ branch, commit }) => ({ branch, commit }));
+  return disagreement ?? ordered.map(({ branch, commit }) => ({ branch, commit }));
 }
 
 /**
@@ -779,6 +793,8 @@ export function planWorkspace(
   }
 
   const changes = mergeChanges(run, scope, state, definition);
+
+  if (!Array.isArray(changes)) return { mode, fail: changes };
   const [first, ...rest] = mode === 'new' ? changes : [];
 
   return {
