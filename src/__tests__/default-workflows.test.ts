@@ -77,8 +77,9 @@ describe('default workflows', () => {
       definition: {
         invoke: 'ask',
         steps: [
-          { id: 'draft', interactive: true, output: { type: 'object', fields: { verdict: { type: 'enum', values: ['draft', 'skip'] }, file: { type: 'string' }, path: { type: 'string' } } } },
-          { id: 'propose', if: "steps.draft.outputs.verdict == 'draft'", hitl: { kind: 'approve', required: false } },
+          { id: 'draft', interactive: true, output: { type: 'object', fields: { verdict: { type: 'enum', values: ['draft', 'skip'] }, file: { type: 'string' }, id: { type: 'string' } } } },
+          { id: 'check', if: "steps.draft.outputs.verdict == 'draft'" },
+          { id: 'propose', if: "steps.draft.outputs.verdict == 'draft'", hitl: { kind: 'approve', required: false }, workspace: { team: { branch: 'teamai/session-to-task/{{ inputs.suite }}/{{ steps.draft.outputs.id }}' } }, deliver: 'pr' },
         ],
       },
     });

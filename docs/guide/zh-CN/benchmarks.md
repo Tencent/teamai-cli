@@ -391,8 +391,8 @@ agent:  teamai workflow start --describe teamai-session-to-task --driver skill
 agent:  和你一起起草任务：你最初描述的 bug、检查、解决方案带来的测试
 agent:  Propose benchmarks/fix-auth/tasks/refresh-race.yaml to the team as a pull request?
 你：     是
-step:   teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
-        ✔ Pull Request created: https://github.com/acme/team/pull/77
+step:   copies the file to benchmarks/fix-auth/tasks/refresh-race.yaml in a fresh clone of the team repo
+        pull request https://github.com/acme/team/pull/77 from teamai/session-to-task/benchmarks/fix-auth/refresh-race
 ```
 
 拉取请求只新增一个文件：
@@ -454,6 +454,16 @@ start     HEAD         proposal
 | “Same, but answer optional approvals automatically” | teamai 回答 yes |
 
 这个审批是可选的，因为拉取请求无论如何都会被评审：错误的任务只多花一次评审，不会弄坏套件。没有任何东西会主动提供这个工作流；你可以直接要求，或由生成的 `teamai-session-to-task` skill 把 agent 指向它。团队文件 `workflows/teamai-session-to-task.yaml` 会取代它，describe 仍按名称为它保留的字符串输入填值。
+
+任务在自己的分支上提议，分支名取自它的套件和 id，所以再次提出时会接着第一次运行继续：
+
+```text
+draft id       on the team repo
+refresh-race   pull request 77, from teamai/session-to-task/benchmarks/fix-auth/refresh-race
+refresh-race   drafted again, by you or a teammate: the same branch, and pull request 77 updated
+refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no pull request
+../escape      not a task file name: the check step fails before any approval or clone
+```
 
 ### 在团队仓库的 CI 中检查任务
 

@@ -391,8 +391,8 @@ you:    ok, but ask me at optional approvals
 agent:  drafts the task with you: the bug as you first described it, the check, the test the solution brought
 agent:  Propose benchmarks/fix-auth/tasks/refresh-race.yaml to the team as a pull request?
 you:    yes
-step:   teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
-        ✔ Pull Request created: https://github.com/acme/team/pull/77
+step:   copies the file to benchmarks/fix-auth/tasks/refresh-race.yaml in a fresh clone of the team repo
+        pull request https://github.com/acme/team/pull/77 from teamai/session-to-task/benchmarks/fix-auth/refresh-race
 ```
 
 The pull request adds one file:
@@ -454,6 +454,16 @@ start     HEAD         proposal
 | "Same, but answer optional approvals automatically" | teamai answers yes |
 
 The approval is optional because the pull request is reviewed anyway: a wrong task costs a review, not a broken suite. Nothing offers this workflow on its own; ask for it, or let the generated `teamai-session-to-task` skill point your agent at it. A team file `workflows/teamai-session-to-task.yaml` replaces it, and describe still fills the inputs it keeps by name, as strings.
+
+A task is proposed on a branch of its own, named for its suite and id, so asking again goes on where the first run left off:
+
+```text
+draft id       on the team repo
+refresh-race   pull request 77, from teamai/session-to-task/benchmarks/fix-auth/refresh-race
+refresh-race   drafted again, by you or a teammate: the same branch, and pull request 77 updated
+refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no pull request
+../escape      not a task file name: the check step fails before any approval or clone
+```
 
 ### Check tasks in the team repo's CI
 

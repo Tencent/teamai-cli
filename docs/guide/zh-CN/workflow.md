@@ -716,7 +716,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
 | `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
-| `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，用 `teamai push --file --path` 提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
+| `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
 
 团队写一个同名文件就会取代默认工作流：
 
@@ -866,9 +866,11 @@ agent   proposes teamai-share-session: publish and score, no learnings
 
 ```text
 teamai-session-to-task {"session":"7c1e…","source":"claude-code","suite":"benchmarks/fix-auth","start":"3f2c9a7…","solution":"9a1d4e7…"}
-├─ draft     interactive, worked by this session with the person. Returns {verdict: draft | skip, file, path}
-└─ propose   only on verdict draft. Optional approval: Propose benchmarks/fix-auth/tasks/<task>.yaml to the team as a pull request?
-             teamai push --file "$FILE" --path "$TASK_PATH"
+├─ draft     interactive, worked by this session with the person. Returns {verdict: draft | skip, file, id}
+├─ check     only on verdict draft. Fails on an id that is no task file name, or a suite that is no suite directory
+└─ propose   Optional approval: Propose benchmarks/fix-auth/tasks/<id>.yaml to the team as a pull request?
+             in the team workspace, on teamai/session-to-task/benchmarks/fix-auth/<id>, with deliver: pr
+             mkdir -p "$(dirname "$TASK_PATH")" && cp "$FILE" "$TASK_PATH"
 ```
 
 describe 为调用它的会话提议每个输入并附 `why`：会话第一次启动时记录的提交、作为完成任务的提交（`solution`）的 `HEAD`，以及 `repo` 是 checkout `origin` 的那唯一一个套件。规则和它起草的任务文件见 [Benchmarks](benchmarks.md#describe-提议什么)。文件是已安装包中的 `workflows/teamai-session-to-task.yaml`。
