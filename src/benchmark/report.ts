@@ -18,7 +18,7 @@ import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { regressionOf, runComparisons, type ArmComparison, type BenchmarkRunInput, type Regression } from './history.js';
 import { benchmarkRecord, benchmarkRecordFile, unlaunchedTrial, type BenchmarkRunRecord } from './result.js';
 import { planOfRun, trialsUnattended, type RunPlan } from './run-plan.js';
-import { benchmarkTable, formatBenchmarkTable, type BenchmarkTable } from './table.js';
+import { benchmarkTable, formatBenchmarkTable, type AssetEffect, type BenchmarkTable } from './table.js';
 import { toolUnavailableNotice } from './trial.js';
 import { TrialVerdicts, type EntryVerdict } from './verdicts.js';
 
@@ -30,7 +30,7 @@ import { TrialVerdicts, type EntryVerdict } from './verdicts.js';
  */
 export interface BenchmarkReport {
   text: string;
-  table: BenchmarkTable & { pairs: ArmComparison[]; verdicts: EntryVerdict[] };
+  table: BenchmarkTable & { pairs: ArmComparison[]; verdicts: EntryVerdict[]; assets: AssetEffect[] };
   /** Against the newest earlier comparable record on teamai-reports; `off` when `COMPARE` did not ask for the comparison. */
   regression: Regression['kind'] | 'off';
 }

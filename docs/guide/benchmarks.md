@@ -238,6 +238,7 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | `check` | `run`, a command that exits 0 once the task is done, and `protect`, the paths the agent must not supply. |
 | `check.add` | Optional: files written before the check that the agent never has: a file as `solutionCommit` has it, such as the solution's test, or `{ from, to }`, a file or directory of the suite directory. A directory adds every file under it except its dot entries, such as `.DS_Store`; name a dotfile in `from` to add it. See [Tests the solution brought](#tests-the-solution-brought) and [Tests in the suite directory](#tests-in-the-suite-directory). |
 | `successCriteria` | Instead of `check`: a judge decides from these. |
+| `covers` | Optional: the team repo paths the task's work is expected to need, as [`without`](#leave-team-assets-out) takes them. The [asset effect](#asset-effect) tables split an arm that runs without one of them by the tasks that cover it. |
 | `source` | Optional: where the task came from: a session's `platform` and `sessionId`, or a workflow pass's `runId`, `step` and `pass`. Nothing runs from it; [`digest --json`](self-improvement.md#what-teamai-reads) marks the failure it names as covered. |
 
 `teamai pull` and `teamai review --branch` check every file and report each problem with its file and line. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
@@ -554,7 +555,7 @@ A matrix entry whose suite the pull request does not touch tries nothing and pas
 
 ```console
 $ teamai benchmark run fix-auth --sandbox
-ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377 --sandbox
+ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
 `benchmark run` plans the suite first, so a suite that cannot run leaves no run. It then starts the workflow `teamai-benchmark` with the suite's `timeout` and drives it with the local driver.
@@ -563,7 +564,7 @@ Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#una
 
 | Flag or setting | Effect |
 | --- | --- |
-| `--sandbox` | Declares this machine a sandbox for this process. Only on a machine you can throw away. |
+| `--sandbox` | Declares this machine a sandbox for this run, which `workflow resume` on this machine keeps. Only on a machine you can throw away. |
 | `workflows.sandbox: true` in config | Declares it for every process, as [Requirements and limits](workflow-advanced.md#requirements-and-limits) describes. |
 | neither | The run is refused at start with `requirement_unmet`: the trials require a strict sandbox. |
 | `--member-aliases` | Your own `~/.teamai/models/aliases.yaml` wins over the team's `models/aliases.yaml`, and the table shows `member` as the source of each model your file decided. |
@@ -595,7 +596,7 @@ The local driver runs each trial as fresh clone, team assets, setup, the arm's t
 | A hung trial | Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`. |
 | Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`. Start refuses a suite that needs a judge on a machine with no judge tool that runs its scorers' model at the isolation they ask for. |
 | Control commands | A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`. |
-| Stopped | `teamai workflow resume <run> --sandbox` continues it. |
+| Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. |
 
 A start that cannot run refuses with a message that says what to do, and makes no run. When your user-scope teamai install also reaches the team, or the team is served over HTTP, the run cannot pin the team a trial gets, and refuses with `team_ref_blocked`, saying what to change.
 
@@ -737,6 +738,7 @@ These results hold for these tasks, this run and this machine.
 | Tasks | Each task's pass rate on each arm. |
 | Baselines | The tasks that did not run, and why. |
 | Skills | Only when an arm changes team skills: each skill it adds, removes or changes, and how many of the arm's trials loaded it, beside the arm that changes nothing. |
+| Asset effects | Only when a task covers a team repo path: a table per covered asset, under [Asset effect](#asset-effect). |
 
 ```text
 | Arm | Skill | Change | Loaded in this arm | Loaded in the defaults arm |
@@ -745,6 +747,48 @@ These results hold for these tasks, this run and this machine.
 ```
 
 A load is counted only where teamai could see it: `unknown` is a trial whose tool reports no skill loads, never a trial that did not load the skill.
+
+### Asset effect
+
+A task's `covers` names the team repo paths its work is expected to need, and the results answer, per covered path, whether an arm that runs [`without`](#leave-team-assets-out) exactly that path passes less on the tasks that cover it — and no less on the others. With a skill `auth-tokens`, a rule `rules/auth.md`, two tasks that cover both and one that covers neither:
+
+```yaml
+# benchmarks/fix-auth/tasks/refresh-race.yaml
+schemaVersion: v1alpha1
+title: Close the refresh token race
+prompt: |
+  Two refreshes of one token can race; the loser revokes the winner's session. Fix it.
+startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/refresh.test.ts
+  protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
+covers: [skills/auth-tokens, rules/auth.md]
+```
+
+The run's results then hold one table per covered asset an arm leaves out:
+
+```text
+Asset effect · skills/auth-tokens · no-auth-tokens -> pulled · claude
+
+task   covers   passed without   passed with   loaded with
+expired-token   yes   1/3   3/3   3/3 fit
+refresh-race   yes   0/3   2/3   2/3 fit, 1 missed
+login-copy   no   3/3   3/3   1/3 extra, 2 idle
+
+tasks that cover it   +67 pp   1/6 -> 5/6   95% +11 to +86 pp
+other tasks   0 pp   3/3 -> 3/3   not separated
+passed when loaded 6/6 · passed when not loaded 2/3
+```
+
+Read it as:
+
+- The skill helps on `expired-token`, and loaded every time there: it works there.
+- On `refresh-race` it loaded twice and the task passed twice; the one repetition that did not load it also did not pass, which the `missed` count names. A task that covers the skill, loaded it every time and did not change says the opposite: the description reaches the task and the body does not help.
+- `login-copy` did not get worse, though the skill loaded once where it was not needed.
+
+`loaded with` uses the [routing](scorers.md#skill-routing) values a finished session's scorer reads, from the task instead of a judge: `fit` loaded and the task covers it, `missed` not loaded and it does, `extra` loaded and it does not, `idle` not loaded and it does not, and `unknown` when the tool reports no skill loads — an `unknown` trial still counts in the pass rates, in neither "when loaded" nor "when not loaded". Only skills have the column: teamai observes skill loads and nothing else, so a rule, a `claudemd/` file, a doc or a namespace directory reads `not observed`. On the dashboard's [Benchmarks page](dashboard.md#benchmarks), the Compare tab shows the tables under the pair, or on their own when no two arms compare, and a skill links to its `teamai:routing:...` counts on real sessions.
+
+`not separated` is an answer, not a failure: the 95% interval of the paired difference crosses zero, so these trials cannot tell the difference from chance. A single rule usually moves a few tasks — add tasks that cover it, or repetitions, until the interval leaves zero. An arm that leaves out more than one path gets no per-asset table: its difference belongs to the set, which Compare already shows. `plan` refuses a covered path no arm receives, each arm read at its team revision, with its role and without the paths it leaves out, and two covered skill paths of the same skill name, since a trial's loads are bare names.
 
 The results are not the run's status: a run whose trials all failed still succeeds. The run fails when it times out or is cancelled.
 

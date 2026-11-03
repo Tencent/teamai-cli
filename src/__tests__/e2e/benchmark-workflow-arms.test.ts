@@ -178,6 +178,8 @@ describe('benchmark arm workflow', () => {
     expect(RecordSchema.parse(fixture.benchmarkRecord(runId)).trials.map(({ arm, result }) => ({ arm, result }))).toEqual([{ arm: 'flow', result: 'error' }]);
   }, 240_000);
 
+  // The one refusal through the CLI: exit 1, the error envelope, and no run. benchmark-arm-workflow.test.ts holds every
+  // refusal pinArmWorkflow makes.
   it('refuses before any run a workflow arm whose workflow asks a person, naming the arm, the workflow and the step', async () => {
     const asks = `schemaVersion: v1alpha1
 name: fixer
@@ -267,35 +269,6 @@ successCriteria: answer.js exports 42.
     expect(fixture.judgeLaunches().map(({ diff }) => diff?.includes('module.exports = 42;'))).toEqual([true, true]);
   }, 240_000);
 
-  it.each([
-    { why: 'delivers a pull request', step: '    prompt: Ship it.\n    deliver: pr\n    workspace: new\n' },
-    { why: 'opens a workspace other than continue', step: '    command: teamai score publish\n    workspace: { team: { branch: teamai-reports } }\n    deliver: publish\n' },
-    { why: 'opens a workspace other than continue', step: '    command: echo more\n    workspace: new\n' },
-    { why: 'runs a command in the member\'s checkout; give it workspace: continue', step: '    command: echo more\n' },
-    {
-      why: 'runs its workflow per item, each in a copy of its own, which a trial cannot open',
-      step: '    for_each: "[]"\n    workspace: continue\n    workflow:\n      steps:\n        - id: item\n          prompt: Fix {{ item }}.\n',
-    },
-  ])('refuses before any run a workflow arm whose step $why', async ({ why, step }) => {
-    const unrunnable = `schemaVersion: v1alpha1
-name: fixer
-description: Fix, then do more.
-inputs: { task: string }
-steps:
-  - id: fix
-    prompt: "{{ inputs.task }}"
-  - id: more
-    needs: [fix]
-${step}`;
-    const fixture = await fixtureWith(SUITE, { fixer: unrunnable });
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ran.code, said(ran)).toBe(1);
-    expect(ErrorSchema.parse(envelope(ran)).error.message).toContain(`Arm "flow" runs workflow "fixer", whose step "more" ${why}.`);
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
   it('runs a workflow arm\'s workflow and sub-workflow from the namespace the member\'s role receives', async () => {
     const fixture = await fixtureWith(SUITE, {
       'ops/fixer': FIXER, 'ops/fix-once': FIX_ONCE,
@@ -322,70 +295,6 @@ ${step}`;
     const { error } = ErrorSchema.parse(envelope(ran));
     expect(error.code).toBe('workflow_namespace_conflict');
     expect(error.message).toMatch(/^Arm "flow" runs workflow "fixer", which this member receives from more than one namespace: .*workflows\/(dev)?ops\/fixer\.yaml and workflows\/(dev)?ops\/fixer\.yaml/);
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses before any run a workflow arm whose workflow runs a workflow another of its steps makes', async () => {
-    const made = `schemaVersion: v1alpha1
-name: fixer
-description: Make a workflow, then run it.
-inputs: { task: string }
-steps:
-  - id: make
-    command: node -e "0"
-    workspace: continue
-    output: { definition: workflow }
-  - id: run
-    needs: [make]
-    workflow: { from: make }
-`;
-    const fixture = await fixtureWith(SUITE, { fixer: made });
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ran.code, said(ran)).toBe(1);
-    expect(ErrorSchema.parse(envelope(ran)).error.message).toContain('Arm "flow" runs workflow "fixer", whose step "run" runs a workflow step "make" makes');
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses before any run a workflow arm whose workflow takes no input task', async () => {
-    const fixture = await fixtureWith(SUITE, { fixer: FIX_ONCE.replace('name: fix-once', 'name: fixer') });
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ran.code, said(ran)).toBe(1);
-    expect(ErrorSchema.parse(envelope(ran)).error.message).toContain('Arm "flow" runs workflow "fixer", which takes no input task');
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses before any run a workflow arm whose workflow requires an input besides task', async () => {
-    const fixture = await fixtureWith(SUITE, { fixer: FIXER.replace('inputs: { task: string }', 'inputs: { task: string, context: string }'), 'fix-once': FIX_ONCE });
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ran.code, said(ran)).toBe(1);
-    expect(ErrorSchema.parse(envelope(ran)).error.message).toContain('Arm "flow" runs workflow "fixer", which also requires inputs context, and a trial passes only task');
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses before any run a workflow arm whose workflow has finally steps', async () => {
-    const fixture = await fixtureWith(SUITE, { fixer: `${FIXER}finally:\n  - id: tidy\n    command: node -e "0"\n`, 'fix-once': FIX_ONCE });
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ran.code, said(ran)).toBe(1);
-    expect(ErrorSchema.parse(envelope(ran)).error.message).toContain('Arm "flow" runs workflow "fixer", which has finally steps');
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
-
-  it('refuses before any run a workflow arm with no model whose workflow runs an agent', async () => {
-    const fixture = await fixtureWith(SUITE, { fixer: FIXER.replace('    tool: codex\n', '    tool: codex\n    agent: planner\n'), 'fix-once': FIX_ONCE });
-
-    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(ran.code, said(ran)).toBe(1);
-    expect(ErrorSchema.parse(envelope(ran)).error.message).toContain('Arm "flow" runs workflow "fixer", whose step "plan" runs agent "planner", and the arm sets no model');
-    expect(ErrorSchema.parse(envelope(ran)).error.message).toContain("Set model in the suite's defaults, which the arm inherits");
     expect(fixture.runIds()).toEqual([]);
   }, 120_000);
 });

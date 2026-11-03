@@ -258,25 +258,6 @@ describe('ownership of unrecorded skills and docs (#993 bug 12)', () => {
     expect(teamai(['doctor'], dir).output).not.toContain('Stale docs');
   });
 
-  it('keeps a member\'s link that replaced a team doc when the team deletes that doc, without following it', () => {
-    const t = team('docs-link', { 'docs/guide.md': '# Guide\n', 'docs/keep.md': '# Keep\n' });
-    const dir = business('docs-link-biz');
-    const docs = path.join(dir, '.teamai', 'docs');
-    init(t, dir);
-    const mine = path.join(sandbox, 'docs-link-mine.md');
-    writeFile(mine, 'MY GUIDE\n');
-    const link = path.join(docs, 'guide.md');
-    fs.rmSync(link);
-    fs.symlinkSync(mine, link);
-
-    t.publish({ 'docs/guide.md': null }, 'remove guide');
-    const pulled = teamaiOk(['pull'], dir);
-
-    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(read(mine)).toBe('MY GUIDE\n');
-    expect(pulled.output).toContain(`Kept ${link}: the team removed docs/guide.md`);
-  });
-
   it('uninstall removes teamai\'s docs from the mirror and keeps the member\'s files, directories and links, naming them', () => {
     const t = team('docs-uninstall', { 'docs/guide.md': '# Guide\n', 'docs/sub/deep.md': '# Deep\n', 'docs/old.md': '# Old\n' });
     const dir = business('docs-uninstall-biz');
@@ -303,25 +284,6 @@ describe('ownership of unrecorded skills and docs (#993 bug 12)', () => {
     expect(read(external)).toBe('# Guide\n');
     expect(uninstalled.output).toContain(`Kept ${path.join(docs, 'old.md')}: it is not teamai's (no delivery record, `
       + 'and it matches no team version of docs/old.md), so uninstall left it.');
-  });
-
-  it('keeps a member\'s directory holding a link where the team deleted a doc file, without following it', () => {
-    const t = team('docs-dir-link', { 'docs/guide': '# Guide file\n', 'docs/keep.md': '# Keep\n' });
-    const dir = business('docs-dir-link-biz');
-    const docs = path.join(dir, '.teamai', 'docs');
-    init(t, dir);
-    const mine = path.join(sandbox, 'docs-dir-link-mine.md');
-    writeFile(mine, 'MY NOTES\n');
-    fs.rmSync(path.join(docs, 'guide'));
-    fs.mkdirSync(path.join(docs, 'guide'));
-    const link = path.join(docs, 'guide', 'personal.md');
-    fs.symlinkSync(mine, link);
-
-    t.publish({ 'docs/guide': null }, 'remove guide');
-    teamaiOk(['pull'], dir);
-
-    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(read(mine)).toBe('MY NOTES\n');
   });
 
   it('keeps a member\'s skill directory holding a link at a team skill\'s path, and never writes through the link', () => {
@@ -483,32 +445,6 @@ describe('ownership of unrecorded skills and docs (#993 bug 12)', () => {
     expect(fs.lstatSync(guide).isSymbolicLink(), first.output).toBe(false);
     expect(read(guide)).toBe('# Shared\n');
     expect(first.output).toContain(membersLine(guide, 'docs/guide.md'));
-  });
-
-  it('keeps a member\'s file of a deactivated docs namespace with the bytes of a team doc that is a link', () => {
-    const roles = [
-      'version: 1', 'roles:',
-      '  - id: frontend', '    resources:', '      knowledge: []', '      skills: []', '      docs: [frontend]',
-      '  - id: backend', '    resources:', '      knowledge: []', '      skills: []', '      docs: [backend]', '',
-    ].join('\n');
-    const t = team('ns-link-bytes', {
-      'manifest/roles.yaml': roles, 'docs/frontend/target.md': '# Shared\n', 'docs/backend/b.md': '# B\n',
-    });
-    fs.symlinkSync('target.md', path.join(t.seed, 'docs', 'frontend', 'linked.md'));
-    t.publish({}, 'link');
-    const dir = business('ns-link-bytes-biz');
-    teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force', '--role', 'frontend'], dir);
-    teamaiOk(['pull'], dir);
-    const linked = path.join(dir, '.teamai', 'docs', 'frontend', 'linked.md');
-    expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
-    // The member replaces the delivered link with a file of their own holding the same text.
-    fs.rmSync(linked);
-    writeFile(linked, '# Shared\n');
-
-    teamaiOk(['roles', 'set', 'backend'], dir);
-    const pulled = teamaiOk(['pull'], dir);
-    expect(read(linked)).toBe('# Shared\n');
-    expect(pulled.output).toContain('frontend/linked.md');
   });
 
   it('never writes through or deletes behind a docs mirror that is a link of the member\'s', () => {

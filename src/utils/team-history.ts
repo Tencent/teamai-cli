@@ -1,6 +1,5 @@
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createGit } from './git.js';
+import { createGit, readBlobs } from './git.js';
 import { log } from './logger.js';
 
 // ─── History proof (#993) ────────────────────────────────────
@@ -162,56 +161,16 @@ export async function historicalContents(
   const versions = await historicalVersions(repoPath, pathspec);
 
   if (versions === null) return null;
-  const blobs = await readBlobs(repoPath, [...new Set(versions.map((version) => version.blob))]);
+  const blobs = [...new Set(versions.map((version) => version.blob))];
+  const objects = await readBlobs(repoPath, blobs);
+  const byBlob = new Map(blobs.map((blob, index) => [blob, objects[index]]));
   const contents: Array<HistoricalVersion & { content: Buffer }> = [];
 
   for (const version of versions) {
-    const content = blobs.get(version.blob);
+    const content = byBlob.get(version.blob);
 
-    if (content !== undefined) contents.push({ ...version, content });
+    if (content) contents.push({ ...version, content });
   }
 
   return contents;
-}
-
-/**
- * The bytes of each of `blobs` in `repoPath`, read by one `git cat-file --batch`
- * rather than a git process per blob. A blob git does not have is left out.
- */
-async function readBlobs(repoPath: string, blobs: readonly string[]): Promise<Map<string, Buffer>> {
-  const found = new Map<string, Buffer>();
-
-  if (blobs.length === 0) return found;
-
-  const out = await new Promise<Buffer | null>((resolve) => {
-    const child = execFile('git', ['-C', repoPath, 'cat-file', '--batch'], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 },
-      (error, stdout) => resolve(error ? null : stdout));
-
-    child.stdin?.end(`${blobs.join('\n')}\n`);
-  });
-
-  if (out === null) {
-    log.debug(`Could not read ${blobs.length} historical blob(s) in ${repoPath}`);
-
-    return found;
-  }
-
-  // Each answer: `<id> <type> <size>\n<bytes>\n`, or `<id> missing\n`.
-  let at = 0;
-
-  while (at < out.length) {
-    const eol = out.indexOf(0x0a, at);
-
-    if (eol === -1) break;
-    const [id, type, size] = out.subarray(at, eol).toString('utf8').split(' ');
-    at = eol + 1;
-
-    if (type === 'missing' || size === undefined) continue;
-    const length = Number(size);
-
-    if (type === 'blob') found.set(id, Buffer.from(out.subarray(at, at + length)));
-    at += length + 1;
-  }
-
-  return found;
 }

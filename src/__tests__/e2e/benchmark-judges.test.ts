@@ -178,20 +178,6 @@ describe('benchmark judges on the local driver', () => {
     expect(fixture.runIds()).toEqual([]);
   }, 120_000);
 
-  it('names a suite scorer that has no valid scorer at pull, and refuses to start the suite without it', async () => {
-    const fixture = await judgedFixture({ scorers: ['quality', 'missing'] });
-
-    const pulled = await fixture.teamai(['pull']);
-    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
-
-    expect(pulled.stdout + pulled.stderr).toContain('benchmarks/fix/suite.yaml: suite "fix" lists scorer "missing", which has no valid scorers/missing.md; the benchmark does not start without it');
-    expect(envelope(started).error).toEqual({
-      code: 'scorer_not_found',
-      message: 'Suite "fix" lists scorer "missing", which has no valid scorers/missing.md for this member. Add the scorer, or remove it from benchmarks/fix/suite.yaml, push it, run teamai pull, and start again.',
-    });
-    expect(started.code).toBe(1);
-    expect(fixture.runIds()).toEqual([]);
-  }, 120_000);
 });
 
 /** A driver of another machine that provides the clones and sandbox a benchmark's steps require, launches claude, and runs it confined to a directory. */

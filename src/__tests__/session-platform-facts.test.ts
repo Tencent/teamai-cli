@@ -49,7 +49,8 @@ describe('session platform facts (#1140)', () => {
   });
 
   it('reads no session platform for a tool whose sessions are none or unknown', () => {
-    for (const tool of ['copilot', 'muse', 'kiro', 'openclaw']) expect(AgentSession.platformForTool(tool)).toBeUndefined();
+    for (const tool of ['copilot', 'kiro', 'openclaw']) expect(AgentSession.platformForTool(tool)).toBeUndefined();
+    expect(AgentSession.platformForTool('muse')).toBe('muse');
     expect(AgentSession.platformForTool('pi')).toBe('pi');
     expect(AgentSession.platformForTool('omp')).toBe('omp');
     expect(AgentSession.platformForTool('qoder')).toBe('qoder');

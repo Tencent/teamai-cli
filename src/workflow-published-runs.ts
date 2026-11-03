@@ -29,7 +29,7 @@ import type { RunState, RunStatus, WorkflowFailure } from './workflow/types.js';
  * them, as its driver finds out, and the driver it would drive the run with: the local driver with `--tools` `tools`, or
  * the skill driver, whose session runs the prompt steps.
  */
-export type Taker = { caller: InvokeCaller; hasPerson: boolean } & ({ driver: 'local'; tools: Record<string, string> } | { driver: 'skill' });
+export type Taker = { caller: InvokeCaller; hasPerson: boolean } & ({ driver: 'local'; tools: Record<string, string>; sandbox: boolean } | { driver: 'skill' });
 
 /** Something the steps an offered run has left need that this machine lacks: why, as a clause, and what gives it. */
 export interface Lack {
@@ -151,7 +151,9 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
 
   const uses = { env: [...new Set(left.flatMap((run) => run.env))], prompts: left.flatMap((run) => (run.executor === 'prompt' ? [run.step] : [])) };
 
-  const offer: Offer = { at, needs, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left)] };
+  const isSandbox = taker.driver === 'local' && (taker.sandbox || config.workflows?.sandbox === true);
+  const sealed = taker.driver === 'local' && !isSandbox ? sandboxLacks(description.facts.held.filter((held) => isLeft(held.step, settled))) : [];
+  const offer: Offer = { at, needs, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left), ...sealed] };
 
   if (refusal) offer.refusal = refusal;
 
@@ -194,8 +196,11 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
       byChoice.set(key, { ...group, prompts: [...group.prompts, run] });
     }
 
-    return [...byChoice.values()].flatMap(({ agent, tool, prompts }): Lack[] => {
-      const steps = `the prompt step${prompts.length > 1 ? 's' : ''} ${listOf(prompts.map((run) => run.step))}`;
+    // A step with no tool configured for its agent falls back to --tools default, so one default covers them all.
+    const unconfigured: StepRun[] = [];
+
+    const lacks = [...byChoice.values()].flatMap(({ agent, tool, prompts }): Lack[] => {
+      const steps = promptSteps(prompts);
       const flag = agent === undefined ? 'default' : agent;
       const choice = launchToolFor({ agent, tool }, config, flags, members);
 
@@ -207,7 +212,9 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
       }
 
       if (choice.failure.code === 'tool_unconfigured') {
-        return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
+        unconfigured.push(...prompts);
+
+        return [];
       }
 
       const fix = tool === undefined
@@ -216,7 +223,28 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
 
       return [{ reason: `${steps} ${prompts.length > 1 ? 'have' : 'has'} no tool teamai launches here (${choice.failure.message.replace(/\.$/, '')})`, fix }];
     });
+
+    if (unconfigured.length === 0) return lacks;
+
+    return [{ reason: `no tool is configured here for ${promptSteps(unconfigured)}`, fix: 'pass --tools default=<tool>, or set workflows.tools.default' }, ...lacks];
   };
+}
+
+/** `runs` as a clause: "the prompt step a" or "the prompt steps a and b". */
+function promptSteps(runs: readonly StepRun[]): string {
+  return `the prompt step${runs.length > 1 ? 's' : ''} ${listOf(runs.map((run) => run.step))}`;
+}
+
+/** What the steps among `held` that need strict isolation lack on a machine the local driver does not declare a sandbox. */
+function sandboxLacks(held: WorkflowDescription['facts']['held']): Lack[] {
+  const steps = held.filter(({ missing }) => missing.includes('isolation')).map(({ step }) => step);
+
+  if (steps.length === 0) return [];
+
+  return [{
+    reason: `${listOf(steps)} need${steps.length > 1 ? '' : 's'} a sandbox, which this machine does not declare`,
+    fix: 'pass --sandbox on a disposable host, such as a CI runner or a container, or set workflows.sandbox: true',
+  }];
 }
 
 /** What `runs` require of env that `env` cannot give here: a key with no value, or any key while the team env is unreadable. */

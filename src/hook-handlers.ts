@@ -150,7 +150,7 @@ const pullHandler: HookHandler = {
     const before = config && await SessionCaptures.checkoutDelivery(config, tool);
 
     if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, 'session-start');
-    else await pull({ silent: true });
+    else await pull({ silent: true, sessionStart: true });
 
     if (config && before) await SessionCaptures.markTeamChanged(config, tool, stdin, before);
     await packageHints.stashPackageHintAfterPull(
@@ -204,7 +204,7 @@ const sessionCaptureHandler: HookHandler = {
  */
 const PREPARING_PULL = {
   'post-checkout': { inline: true, gitHook: 'post-checkout' },
-  'session-start': {},
+  'session-start': { sessionStart: true },
   'tool-use': { inline: true, localOnly: true },
 } as const satisfies Record<string, GlobalOptions>;
 

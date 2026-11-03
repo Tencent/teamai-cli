@@ -543,15 +543,18 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
   const benchmarks = (await pendingBenchmarks(config)).filter(({ record }) => options.run === undefined || record.run === options.run);
 
   if (queued.length === 0 && benchmarks.length === 0) return { state: 'published' };
-  const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
+  const { updateReports, readReportsOriginFiles } = await import('../utils/reports-branch.js');
   const install = (await installOwner(config)).id;
 
   const outcome = await updateReports(config, async (worktree) => {
     const files: string[] = [];
     const byRun = new Map<string, WorkflowRunRecord[]>();
+    // A queue that origin keeps refusing grows with every run, so its files are read by one git process, not two per run.
+    const runIds = [...new Set(queued.map((record) => record.run))];
+    const originFiles = await readReportsOriginFiles(worktree, runIds.flatMap((runId) => [snapshotPath(runId), recordPath(runId)]));
 
     for (const record of queued) {
-      if (ownedElsewhere(await readReportsOriginFile(worktree, snapshotPath(record.run)), install)) continue;
+      if (ownedElsewhere(originFiles.get(snapshotPath(record.run)) ?? null, install)) continue;
       const list = byRun.get(record.run) ?? [];
       list.push(record);
       byRun.set(record.run, list);
@@ -564,7 +567,7 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
       // Upsert per run id: the merge base is what origin holds, so a retry
       // never duplicates the logical record and an end phase stays terminal.
       const rel = recordPath(runId);
-      const originRaw = await readReportsOriginFile(worktree, rel);
+      const originRaw = originFiles.get(rel) ?? null;
       let origin: WorkflowRunRecord | null = null;
 
       try {
@@ -605,9 +608,11 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
       return origin?.phase === 'end' ? [record.username, origin.username] : [record.username];
     }));
 
+    const originStats = await readReportsOriginFiles(worktree, [...usernames].map((username) => `stats/${username}.yaml`));
+
     for (const username of usernames) {
       const statsRel = `stats/${username}.yaml`;
-      const existingStatsRaw = await readReportsOriginFile(worktree, statsRel);
+      const existingStatsRaw = originStats.get(statsRel) ?? null;
       let existingStats: MemberStats = {};
 
       if (existingStatsRaw !== null && existingStatsRaw.trim() !== '') {

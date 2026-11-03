@@ -655,6 +655,234 @@ steps:
     expect(other).toMatchObject({ data: { wait: { reason: expect.stringContaining('another driver') } } });
   });
 
+  it('continues the copy of its for_each item for a prompt with no workspace', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Each item implements a change and fixes it on its own branch.
+inputs:
+  names: [string]
+steps:
+  - id: build
+    for_each:
+      items: inputs.names
+    workspace: new
+    workflow:
+      steps:
+        - id: implement
+          prompt: Implement it.
+        - id: fix
+          needs: [implement]
+          prompt: Fix it.
+`, { names: ['a'] });
+    const owner = driver(workspace);
+    const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
+    const can = { workspace: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
+    const branches: Record<string, string | undefined> = {};
+
+    for (let turn = 0; turn < 2; turn += 1) {
+      const leased = await leaseNext(config, runId, owner, { base, can });
+      const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number; step: string; workspace?: { mode: string; branch: string; start: { commit: string } } } : undefined;
+      if (!lease?.workspace) throw new Error(JSON.stringify(leased));
+      branches[lease.step] = lease.workspace.branch;
+      expect(lease.workspace.mode, lease.step).toBe('continue');
+      await reportAttempt(config, runId, {
+        attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: owner,
+        changes: { branch: lease.workspace.branch, base: base.commit, from: lease.workspace.start.commit, to: lease.workspace.start.commit, commits: [] },
+      });
+    }
+
+    expect(branches).toEqual({ 'build[0].implement': branchName(runId, 'build[0]', 1), 'build[0].fix': branchName(runId, 'build[0]', 1) });
+  });
+
+  describe('where a need left its copy', () => {
+    type Leased = { attempt: string; revision: number; step: string; workspace?: { branch: string; start: { commit: string }; merge: unknown[] } };
+    const sha = (text: string): string => createHash('sha1').update(text).digest('hex');
+    const can = { workspace: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
+
+    async function driven(yaml: string) {
+      const { config, workspace, runId } = await fixture(yaml);
+      const owner = driver(workspace);
+      const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
+      const lease = async (...running: Leased[]): Promise<Leased> => {
+        const leased = await leaseNext(config, runId, owner, { base, can, running: running.map((open) => open.attempt) });
+        const found = 'data' in leased ? leased.data.lease as Leased | undefined : undefined;
+        if (!found?.workspace) throw new Error(JSON.stringify(leased));
+        return found;
+      };
+      const write = async (leased: Leased, to: string, outcome: 'success' | 'released' = 'success'): Promise<void> => {
+        const branch = leased.workspace?.branch ?? '';
+        const from = leased.workspace?.start.commit ?? '';
+        expect(await reportAttempt(config, runId, { attempt: leased.attempt, revision: leased.revision, outcome, driver: owner, changes: { branch, base: base.commit, from, to, commits: [to] } }))
+          .toMatchObject({ data: { accepted: true } });
+      };
+      const read = async (leased: Leased): Promise<void> => {
+        const branch = leased.workspace?.branch ?? '';
+        await reportAttempt(config, runId, { attempt: leased.attempt, revision: leased.revision, outcome: 'success', driver: owner, read: { branch, base: base.commit, commit: leased.workspace?.start.commit ?? '' } });
+      };
+      return { lease, write, read };
+    }
+
+    it('joins two steps that wrote one copy at its newest commit, whichever settled last', async () => {
+      const { lease, write, read } = await driven(`schemaVersion: v1alpha1
+name: build
+description: Two steps change one copy, and a third joins them.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: left
+          workflow:
+            steps:
+              - id: write
+                workspace: continue
+                command: echo write
+              - id: check
+                needs: [write]
+                command: echo check
+        - id: right
+          needs: []
+          workspace: continue
+          command: echo right
+        - id: join
+          needs: [left, right]
+          workspace: new
+          command: echo join
+`);
+      const first = await lease();
+      expect(first.step).toBe('change.left.write');
+      await write(first, sha('left'));
+      const held = await lease();
+      const ready = [held, await lease(held)];
+      const right = ready.find((leased) => leased.step === 'change.right');
+      const check = ready.find((leased) => leased.step === 'change.left.check');
+      if (!right || !check) throw new Error(JSON.stringify(ready));
+      await write(right, sha('right'));
+      await read(check);
+
+      expect(await lease()).toMatchObject({ step: 'change.join', workspace: { start: { commit: sha('right') }, merge: [] } });
+    });
+
+    it('starts from the commit a need left after an attempt of it was released with commits', async () => {
+      const { lease, write } = await driven(`schemaVersion: v1alpha1
+name: build
+description: A step released with commits is run again, and the step that needs the copy starts after it.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: second
+          needs: [first]
+          workspace: continue
+          command: echo second
+        - id: first
+          needs: []
+          workspace: continue
+          command: echo first
+  - id: after
+    needs: [change]
+    workspace: new
+    command: echo after
+`);
+      const first = await lease();
+      expect(first.step).toBe('change.first');
+      await write(first, sha('first'));
+      const released = await lease();
+      expect(released.step).toBe('change.second');
+      await write(released, sha('released'), 'released');
+      const again = await lease();
+      expect(again).toMatchObject({ step: 'change.second', workspace: { start: { commit: sha('released') } } });
+      await write(again, sha('second'));
+
+      expect(await lease()).toMatchObject({ step: 'after', workspace: { start: { commit: sha('second') }, merge: [] } });
+    });
+  });
+
+  it('starts from the retried pass of a need, not the branch of its failed one', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A step that failed is retried, and the step that needs it starts from the retry.
+steps:
+  - id: impl
+    workspace: new
+    command: echo impl
+  - id: after
+    needs: [impl]
+    workspace: new
+    command: echo after
+`);
+    const owner = driver(workspace);
+    const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
+    const can = { workspace: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
+    const sha = (text: string): string => createHash('sha1').update(text).digest('hex');
+    type Leased = { attempt: string; revision: number; step: string; workspace?: { branch: string; start: { commit: string }; merge: unknown[] } };
+    const lease = async (): Promise<Leased> => {
+      const leased = await leaseNext(config, runId, owner, { base, can });
+      const found = 'data' in leased ? leased.data.lease as Leased | undefined : undefined;
+      if (!found?.workspace) throw new Error(JSON.stringify(leased));
+      return found;
+    };
+    const report = async (leased: Leased, outcome: 'success' | 'failed', to: string): Promise<void> => {
+      const branch = leased.workspace?.branch ?? '';
+      await reportAttempt(config, runId, {
+        attempt: leased.attempt, revision: leased.revision, outcome, driver: owner, ...(outcome === 'failed' ? { exitCode: 1 } : {}),
+        changes: { branch, base: base.commit, from: base.commit, to, commits: [to] },
+      });
+    };
+    await report(await lease(), 'failed', sha('failed'));
+    expect(await retryStep(config, runId, await knownSecrets(config), 'impl')).toMatchObject({ data: { retried: { pass: 2 } } });
+    await report(await lease(), 'success', sha('retried'));
+
+    const after = await lease();
+
+    expect(after).toMatchObject({ step: 'after', workspace: { start: { commit: sha('retried') }, merge: [] } });
+  });
+
+  it('fails workspace_base, naming both commits, when a need left its own branch elsewhere than the run recorded', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A step starts from the copy of the step it needs.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          workspace: continue
+          command: echo write
+  - id: after
+    needs: [change]
+    workspace: new
+    command: echo after
+`);
+    const owner = driver(workspace);
+    const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
+    const can = { workspace: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
+    const sha = (text: string): string => createHash('sha1').update(text).digest('hex');
+    const wrote = sha('write');
+    const leased = await leaseNext(config, runId, owner, { base, can });
+    const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number; workspace?: { branch: string } } : undefined;
+    if (!lease?.workspace) throw new Error(JSON.stringify(leased));
+    await reportAttempt(config, runId, {
+      attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: owner,
+      changes: { branch: lease.workspace.branch, base: base.commit, from: base.commit, to: wrote, commits: [wrote] },
+    });
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error('run was not stored');
+    const tip = sha('elsewhere');
+    const branch = lease.workspace.branch;
+    await saveRun(config, { ...run, copies: { ...run.copies, [branch]: { ...run.copies?.[branch], commit: tip } } });
+
+    const next = await leaseNext(config, runId, owner, { base, can });
+
+    expect(next).not.toMatchObject({ data: { lease: { step: 'after' } } });
+    const after = (await readRun(config, runId) as RunState).steps.find((step) => step.id === 'after');
+    expect(after).toMatchObject({ status: 'failed', failure: { code: 'workspace_base' } });
+    const message = after && 'message' in after ? after.message ?? '' : '';
+    for (const named of [branch, wrote, tip]) expect(message).toContain(named);
+  });
+
   it('runs a workspace step from a detached HEAD in its own worktree', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
@@ -2846,8 +3074,9 @@ steps:
     }
 
     for (const item of ['fan[0]', 'fan[1]']) {
-      expect(ran.get(`${item}.test`), item).toBe(branchName(runId, `${item}.implement`, 1));
-      expect(ran.get(`${item}.review`), item).toBe(branchName(runId, `${item}.implement`, 1));
+      expect(ran.get(`${item}.implement`), item).toBe(branchName(runId, item, 1));
+      expect(ran.get(`${item}.test`), item).toBe(branchName(runId, item, 1));
+      expect(ran.get(`${item}.review`), item).toBe(branchName(runId, item, 1));
     }
     const run = await readRun(config, runId);
     const fan = typeof run === 'object' ? run.steps.find((step) => step.id === 'fan') : undefined;

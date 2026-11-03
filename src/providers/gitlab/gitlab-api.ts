@@ -150,6 +150,7 @@ export async function gitlabWhoami(): Promise<string | null> {
     const resp = await fetch(url, {
       headers: authHeaders(token),
       redirect: 'manual',
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!resp.ok) return null;

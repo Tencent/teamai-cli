@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { agentHarnessOf, type AgentHarness, type AgentObservation, type RecordedAgent } from '../agent-observation.js';
-import { wilson } from '../benchmark/history.js';
+import { wilson } from '../benchmark/table.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import type { FailureLinks } from './failure-links.js';

@@ -537,12 +537,11 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(shell.stdout.trim()).toBe(output);
   });
 
-  // The same command on another Copilot event or matcher is no replacement for the Claude hook.
+  // The same command on another Copilot event or matcher is no replacement for the Claude hook. One replaced and one
+  // kept row through the real inject; hook-dispatch-cli.test.ts checks the whole event and matcher table.
   it.each([
     ['Stop', '', 'Stop', '', ''],
     ['Stop', '', 'SessionStart', '', 'team-hook'],
-    ['PostToolUse', 'Bash', 'PostToolUse', 'Bash', ''],
-    ['PostToolUse', 'Bash', 'PostToolUse', 'Edit', 'team-hook'],
   ])('runs a Claude %s(%s) team hook when Copilot delivers it for %s(%s) -> %j', (claudeEvent, claudeMatcher, copilotEvent, copilotMatcher, output) => {
     const dir = project('claude-project');
     const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');

@@ -1549,6 +1549,14 @@ export interface CopyOrigin {
   pathspec: string;
   /** teamai's renders of one version; null when that version renders nothing here. */
   renders?: ReadonlyArray<(content: Buffer, version: { path: string; blob: string }) => string | Uint8Array | null>;
+  /**
+   * The path holds an agent teamai ships under that name, which every pull
+   * wrote over before a team agent could replace it: a file there with no
+   * delivery record is teamai's, whichever teamai version wrote it.
+   */
+  builtin?: true;
+  /** What this teamai writes there for that built-in: a copy holding it is teamai's, even on record as a team delivery. */
+  shipped?: string;
 }
 
 // ─── Hook definitions (unified model, issue #19) ─────────
@@ -1781,6 +1789,12 @@ export interface GlobalOptions {
    * the confirmation prompt (`remove`).
    */
   force?: boolean;
+  /**
+   * Internal (SessionStart, `pull` only): wait for the scope's sync lock and
+   * reuse a successful team-repo refresh for 60 seconds. Local delivery still
+   * runs; manual pulls, force and explicit team refs bypass the cooldown.
+   */
+  sessionStart?: boolean;
   /**
    * Internal (git hooks and checkout preparation, `pull` only): deliver what
    * the next session reads, without network when the team clone was fetched within

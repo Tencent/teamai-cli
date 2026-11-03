@@ -164,6 +164,13 @@ function member(name: string, sharing = ON): Member {
       return real;
     },
     sessionStart: async (dir) => {
+      // The fixture's pulls just fetched; start after the 60-second session-start cooldown.
+      const data = path.join(home, '.teamai');
+      for (const rel of fs.readdirSync(data, { recursive: true, encoding: 'utf8' })) {
+        if (path.basename(rel) === 'last-fetch.json') {
+          write(path.join(data, rel), JSON.stringify({ lastFetch: new Date(Date.now() - 61_000).toISOString() }));
+        }
+      }
       const r = run(process.execPath, [CLI, 'hook-dispatch', 'session-start', '--tool', 'claude'], dir, undefined,
         JSON.stringify({ cwd: dir, session_id: `${path.basename(base)}-session`, hook_event_name: 'SessionStart', source: 'startup' }));
       await waitForDetachedChildren();

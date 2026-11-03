@@ -121,6 +121,76 @@ async function renderPage(runs: BenchmarkRunInput[], options: Parameters<typeof 
 
 const text = (html: string): string => html.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ');
 
+describe('the Benchmarks page of a suite with covered assets (#1605)', () => {
+  /** A suite whose fix task covers skill auth-tokens and rule rules/auth.md: a pulled arm, and one without exactly the skill. */
+  function coveredRun(): BenchmarkRunInput {
+    const arms = [
+      { name: 'pulled', tool: 'claude', source: 'team' as const, team: { kind: 'pulled' as const, revision: TEAM } },
+      { name: 'no-tokens', tool: 'claude', source: 'team' as const, team: { kind: 'without' as const, paths: ['skills/auth-tokens'] as [string, ...string[]], revision: TEAM } },
+    ];
+    const trial = (task: string, arm: string, order: number, result: TrialResult, used?: Record<string, 'loaded' | 'unknown'>, routing?: Record<string, 'fit' | 'idle' | 'extra' | 'missed' | 'unknown'>) => ({ task, arm, repetition: 1, order, step: `trials.r1.${task}.${arm}.prompt`, result, ...(used ? { used } : {}), ...(routing ? { routing } : {}) });
+
+    return {
+      run: 'r1', source: 'reported', username: 'lead', startedAt: '2026-10-20T09:00:00Z', outcome: 'succeeded',
+      benchmark: {
+        suite: { name: 'fix-auth', sourceHash: 'v1' }, repetitions: 1, baselineTeamRevision: TEAM, scorers: [{ name: 'teamai:routing:auth-tokens', rubric: { sourceHash: 'r1' } }],
+        tasks: [
+          { id: 'expired-token', startingCommit: 'a'.repeat(40), sourceHash: 't1', baseline: 'valid', covers: ['rules/auth.md', 'skills/auth-tokens'], coversSkills: [null, 'auth-tokens'] },
+          { id: 'login-copy', startingCommit: 'a'.repeat(40), sourceHash: 't2', baseline: 'valid' },
+        ],
+        arms,
+        trials: [
+          trial('expired-token', 'pulled', 1, 'passed', { 'auth-tokens': 'loaded' }, { 'auth-tokens': 'fit' }),
+          trial('login-copy', 'pulled', 2, 'failed'),
+          // The without-arm reports no routing: the asset is absent by design, not misrouted.
+          trial('expired-token', 'no-tokens', 3, 'failed'),
+          trial('login-copy', 'no-tokens', 4, 'failed'),
+        ],
+      },
+    };
+  }
+
+  it('shows the asset effect tables under the pair, and links the skill to its routing scorer', async () => {
+    const html = await renderPage([coveredRun()], { view: 'compare' });
+
+    expect(html).toContain('asset-effect');
+    expect(text(html)).toContain('skills/auth-tokens · no-tokens → pulled · claude');
+    expect(text(html)).toContain('expired-token yes 0/1 1/1 1/1 fit');
+    expect(text(html)).toContain('rules/auth.md · pulled · claude');
+    expect(text(html)).toContain('tasks that cover it');
+    expect(text(html)).toContain('passed when loaded 1/1 · passed when not loaded -');
+    expect(html).toContain('href="#scorers"');
+    expect(html).toContain('teamai:routing:auth-tokens');
+  });
+
+  it('shows a covered asset\'s rows on Compare when no two arms compare, with every routing count and the namespaced routing link', async () => {
+    const run = coveredRun();
+    const values = ['fit', 'missed', 'fit'] as const;
+
+    run.benchmark.repetitions = 3;
+    run.benchmark.scorers = [{ name: 'teamai:routing:dev:auth-tokens', rubric: { sourceHash: 'r1' } }];
+    run.benchmark.tasks = run.benchmark.tasks.map((task) => (task.covers ? { ...task, covers: ['skills/dev/auth-tokens'], coversSkills: ['auth-tokens'] } : task));
+    run.benchmark.arms = run.benchmark.arms.filter(({ name }) => name === 'pulled');
+    run.benchmark.trials = values.map((value, index) => ({
+      task: 'expired-token', arm: 'pulled', repetition: index + 1, order: index + 1, step: `trials.r${index + 1}.expired-token.pulled.prompt`, result: 'passed' as const,
+      ...(value === 'fit' ? { used: { 'auth-tokens': 'loaded' as const } } : {}), routing: { 'auth-tokens': value },
+    }));
+    const html = await renderPage([run], { view: 'compare' });
+
+    expect(text(html)).toContain('skills/dev/auth-tokens · pulled · claude');
+    expect(text(html)).toContain('expired-token yes - 3/3 2/3 fit, 1 missed');
+    expect(html).toContain('teamai:routing:dev:auth-tokens');
+  });
+
+  it('keeps every asset label in zh-CN too', async () => {
+    const zh = text(await renderPage([coveredRun()], { view: 'compare', language: 'zh-CN' }));
+
+    expect(zh).toContain('资产效果');
+    expect(zh).toContain('未观察');
+    expect(zh).toContain('加载时通过 1/1 · 未加载时通过 -');
+  });
+});
+
 describe('the Benchmarks page of a suite that compares roles', () => {
   const runs = [roleRun({ 'claude-frontend': 'failed', 'claude-review': 'passed', 'codex-frontend': 'failed', 'codex-review': 'passed' })];
 

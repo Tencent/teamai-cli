@@ -94,6 +94,24 @@ const TeamValueSchema = z.union([
 });
 
 /**
+ * The team repo paths a task's work is expected to need, each listed once and none inside another. The asset-effect
+ * tables compare, per covered path, the arm that runs without exactly that path against the arm that differs from it
+ * only by leaving nothing out.
+ */
+const CoversSchema = z.array(TeamPathSchema).nonempty('lists the team repo paths the task covers, at least one').superRefine((paths, ctx) => {
+  const twice = paths.find((one, index) => paths.indexOf(one) !== index);
+
+  if (twice !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `lists ${twice} twice; list each path once` });
+  const [nested] = paths.flatMap((inner) => paths.filter((outer) => inner.startsWith(`${outer}/`)).map((outer) => ({ inner, outer })));
+
+  if (nested !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `lists ${nested.inner}, which is inside ${nested.outer}; list only ${nested.outer}` });
+}).transform((paths): [string, ...string[]] => {
+  const [first, ...rest] = [...paths].sort();
+
+  return [first, ...rest];
+});
+
+/**
  * The keys a suite's `defaults` sets and an arm or the matrix may change. Arm validation reads the key list from this
  * schema, so a new key is added here and in `MatrixSchema`. Not a workflow's `defaults`.
  */
@@ -350,6 +368,8 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     solutionCommit: CommitSchema.optional(),
     check: CheckFileSchema.optional(),
     successCriteria: z.string().trim().min(1).optional(),
+    /** The team repo paths the task's work is expected to need, as `without` takes them. Provenance for the asset-effect tables; nothing runs from it. */
+    covers: CoversSchema.optional(),
     /** Where the task came from: the session or the workflow pass it was made from. Provenance only; nothing runs from it. */
     source: TaskSourceSchema.optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
@@ -472,6 +492,8 @@ export interface Task {
   /** The commit with the reference solution, which `benchmark try` checks the check passes at. */
   solutionCommit?: string;
   judge: TaskJudge;
+  /** The team repo paths the task's work is expected to need, each listed once, sorted. Absent: the task covers none. */
+  covers?: [string, ...string[]];
   /** The session or workflow pass the task was made from, as provenance. */
   source?: TaskSource;
   /** sha256 of the file bytes. */
@@ -569,10 +591,10 @@ export function parseSuite(input: { suite: SourceFile; tasks: readonly SourceFil
       continue;
     }
 
-    const { title, prompt, startingCommit, solutionCommit, judge, source: origin } = task.value;
+    const { title, prompt, startingCommit, solutionCommit, judge, covers, source: origin } = task.value;
     tasks.push(definedFields<Task>({
       id, relativePath: source.relativePath, title, prompt, startingCommit, solutionCommit: solutionCommit || undefined, judge,
-      source: origin, sourceHash: taskHash(source.content, judge),
+      covers, source: origin, sourceHash: taskHash(source.content, judge),
     }));
   }
 

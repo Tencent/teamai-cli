@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { BenchmarkHistory, pairedDifference, regressionOf, runComparisons, type BenchmarkRunInput } from '../benchmark/history.js';
+import { BenchmarkHistory, regressionOf, runComparisons, type BenchmarkRunInput } from '../benchmark/history.js';
+import { pairedDifference } from '../benchmark/table.js';
 import { runSourceHash } from '../benchmark/plan.js';
 import type { Baseline, TrialResult } from '../benchmark/result.js';
 import type { ArmTeam } from '../benchmark/terms.js';

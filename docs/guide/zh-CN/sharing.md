@@ -105,6 +105,41 @@ teamai push --role frontend
 teamai remove agents code-reviewer
 ```
 
+### 替换 recall agent
+
+[recall](knowledge.md#开启--关闭-recall) 开着时，teamai 会装上自己的 `teamai-recall` agent。团队同名的 agent 会替换它，就像团队工作流替换[默认工作流](workflow.md#默认工作流)。放在 `agents/` 下给所有人，放在 `agents/<namespace>/` 下只给一个角色：
+
+```yaml
+# agents/frontend/teamai-recall.yaml
+name: teamai-recall
+description: Search the team knowledge base for a frontend task and return doc_ids
+tools: [Bash, Read, Grep, Glob]
+instructions: |
+  Run `teamai recall --caller teamai-recall "<task>"` and read the top three hits.
+  For each component the task names, grep src/design-system/ and its Storybook stories.
+  Return at most ten lines: doc_ids, file paths, and the one rule that applies.
+```
+
+每次调用 `teamai recall` 都带上 `--caller teamai-recall`，和 teamai 自带的 agent 一样：这样 agent 打开的文档才会记到 recall 上。
+
+```console
+# frontend 角色的成员
+$ teamai pull
+✔ [workspace] Synced 1 agents
+$ head -3 .claude/agents/teamai-recall.md
+---
+name: teamai-recall
+description: Search the team knowledge base for a frontend task and return doc_ids
+
+# backend 角色的成员仍是 teamai 自带的
+$ head -3 .claude/agents/teamai-recall.md
+---
+name: teamai-recall
+description: >-
+```
+
+团队文件存在之后，在工具里改副本再 `teamai push`，和其他团队 agent 一样。对 teamai 自带副本的修改永远不会被推送，所以第一个版本要以 commit 的形式进团队仓库。删掉这个文件，下一次 `pull` 会装回 teamai 自带的 agent。recall 关着时，两者 pull 都不装。
+
 `pull` 按工具自己的格式写入它的 agents 目录：Codex 系列是 `<name>.toml`，Copilot 是 `<name>.agent.md`，Kiro 是 `<name>.json`，其余是 `<name>.md`。Trae 和 Trae CN 只在 Beta 设置“启用 Subagents 目录”打开时加载 `.trae/agents`，且只接受自己的模型 id，所以它们的副本不写 agent 的 `model`。Trae CN 在 `~/.trae-cn/agents` 的用户副本会写别名或 `tool_extras.trae-cn` 给出的模型。项目的 `.trae/agents` 两个版本都会读，所以从不写 `model`，其他键则同时取自 `tool_extras.trae` 和 `tool_extras.trae-cn`；两个版本给同一个键不同的值时，该 agent 在那里会被跳过，并给出点名该键的警告。`push` 会拒绝在该文件里修改或删除另一个版本给出的键。
 
 Antigravity 的副本不带团队的 `model`（agy 会跳过它不认识模型的 agent），只写别名为 agy 映射的模型；工具名换成 agy 自己的：`tools: [Bash, Read]` 变成 `run_command`、`view_file` 和 `read_file`。没有这些，agy 的 subagent 就没有 shell。项目里的 `.agents/agents` 归 agy，所以装了 agy 时 Muse Code 不在那里写副本。CLI 和 Antigravity 2.0 把 agent 当作 subagent 运行；Antigravity IDE 没有 subagent，装了 CLI 时它的模型只能把活交给 `agy --agent <name>`。

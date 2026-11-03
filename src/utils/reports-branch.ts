@@ -11,7 +11,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { assertAttachedTeamRepo, createGit, getDefaultBranch, getHeadCommit, hasCommits } from './git.js';
+import { assertAttachedTeamRepo, createGit, getDefaultBranch, getHeadCommit, hasCommits, readBlobs } from './git.js';
 import { pathExists } from './fs.js';
 import { log } from './logger.js';
 import {
@@ -171,6 +171,13 @@ export async function readReportsOriginFile(
   }
 }
 
+/** {@link readReportsOriginFile} for each of `relPaths`, read by one git process: a writer that merges many files. */
+export async function readReportsOriginFiles(worktree: string, relPaths: readonly string[]): Promise<Map<string, string | null>> {
+  const objects = await readBlobs(worktree, relPaths.map((relPath) => `origin/${REPORTS_BRANCH}:${relPath}`));
+
+  return new Map(relPaths.map((relPath, index) => [relPath, objects[index]?.toString('utf8') ?? null]));
+}
+
 /** A reports file as origin holds it now. */
 export type ReportsOriginRead =
   | { status: 'found'; text: string }
@@ -180,17 +187,22 @@ export type ReportsOriginRead =
 /**
  * A file on origin's reports branch, fetched first so a failed fetch reads as `unreachable`, never as a missing file the
  * way {@link readReportsOriginFile} would. `dir` is a checkout of the repository the branch lives in.
+ *
+ * Inside an {@link updateReports} write, pass its context: once that update reached origin, the file is read from the
+ * ref it fetched, without asking origin again.
  */
-export async function fetchReportsOriginFile(dir: string, relPath: string): Promise<ReportsOriginRead> {
-  const git = createGit(dir);
+export async function fetchReportsOriginFile(dir: string, relPath: string, update?: ReportsWriteContext): Promise<ReportsOriginRead> {
+  if (update?.isOriginFresh !== true) {
+    const git = createGit(dir);
 
-  try {
-    const heads = await git.listRemote(['--heads', 'origin', REPORTS_BRANCH]);
+    try {
+      const heads = await git.listRemote(['--heads', 'origin', REPORTS_BRANCH]);
 
-    if (heads.trim() === '') return { status: 'absent' };
-    await fetchTrackingRef(git, REPORTS_BRANCH);
-  } catch (e) {
-    return { status: 'unreachable', reason: failureReason(e) };
+      if (heads.trim() === '') return { status: 'absent' };
+      await fetchTrackingRef(git, REPORTS_BRANCH);
+    } catch (e) {
+      return { status: 'unreachable', reason: failureReason(e) };
+    }
   }
 
   const text = await readReportsOriginFile(dir, relPath);

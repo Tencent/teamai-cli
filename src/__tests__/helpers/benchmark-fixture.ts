@@ -68,7 +68,7 @@ export const PRODUCT_URL = 'https://github.com/fixture/app.git';
  * them with partial messages, and then works on with no result; as codex, in the one turn.completed Codex prints as it
  * ends.
  */
-export type FakeTool = 'fixes' | 'does-nothing' | 'fails-first' | 'skips-the-check' | 'adds-a-helper' | 'adds-a-helper-repository' | 'writes-a-passing-test' | 'hangs'
+export type FakeTool = 'fixes' | 'does-nothing' | 'fails-first' | 'skips-the-check' | 'adds-a-helper' | 'adds-a-helper-repository' | 'writes-a-passing-test' | 'fixes-only-with-the-skill' | 'hangs'
   | 'fixes-and-hangs' | 'corrupts-git-and-hangs' | 'fixes-behind-a-hanging-filter' | 'fixes-behind-a-hanging-smudge' | 'fixes-and-runs-out-of-turns'
   | 'fixes-and-spends' | 'fixes-slowly' | 'fixes-when-unattended';
 
@@ -246,6 +246,7 @@ const at = process.argv.indexOf(mode[0]);
 if (at !== -1 && mode.every((flag, index) => process.argv[at + index] === flag)) { ${FIX} }
 else process.stderr.write('Permission to write answer.js was not granted.\\n');`,
   'does-nothing': '',
+  'fixes-only-with-the-skill': `if (fs.existsSync(path.join('.claude', 'skills', '__SKILL__', 'SKILL.md'))) { ${FIX} }`,
   hangs: 'setInterval(() => {}, 60_000);',
   'fixes-and-hangs': `${FIX} const ref = fs.readFileSync('.git/HEAD', 'utf8').match(/^ref: (.+)$/m);
 for (const name of ['index', 'HEAD', ...(ref ? [ref[1]] : [])]) {
@@ -470,7 +471,7 @@ if (fs.existsSync(${JSON.stringify(probeRun)})) {
   const run = fs.readFileSync(${JSON.stringify(probeRun)}, 'utf8');
   fs.appendFileSync(${JSON.stringify(probeLog)}, spawnSync(process.execPath, [${JSON.stringify(CLI)}, 'workflow', 'cancel', run], { encoding: 'utf8' }).stdout);
 }
-${FAKE_TOOLS[options.tool]}
+${FAKE_TOOLS[options.tool].replaceAll('__SKILL__', options.loadsSkill ?? 'none')}
 process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: launchedWith ?? 'fake-${tool}', session_id: 'fake-session' }) + '\\n');
 process.stdout.write(JSON.stringify({ type: 'result', session_id: 'fake-session', usage: { input_tokens: 4, output_tokens: 2 }, total_cost_usd: 0.25 }) + '\\n');
 `);
@@ -635,7 +636,7 @@ export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuite
   const [first, ...rest] = suite.arms.map((arm) => ({ name: arm.name, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), source: 'team' as const, team: resolved(arm.team), ...(arm.role ? { role: arm.role } : {}) }));
   const committed = await commitCheckFiles(commitCacheOf(config, suite.repo), suite);
   if (!committed.ok) return error('check_files_unwritable', committed.failed);
-  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: RUN_TEAM, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, arms: [first, ...rest], scorers: {} });
+  const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: RUN_TEAM, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, arms: [first, ...rest], scorers: {}, coveredSkills: {} });
   return { plan, committed: committed.suite };
 }
 

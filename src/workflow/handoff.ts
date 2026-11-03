@@ -11,7 +11,7 @@ import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js
 import { gitRoot } from '../utils/branch-worktree.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
-import { fetchReportsOriginFile, readReportsOriginFile, updateReports, type ReportsChange } from '../utils/reports-branch.js';
+import { fetchReportsOriginFile, readReportsOriginFile, updateReports, type ReportsChange, type ReportsWriteContext } from '../utils/reports-branch.js';
 import { loadWorkflowBundle, loadWorkflowBundleAt, loadWorkflowTree, type WorkflowBundle } from './cache.js';
 import { stepLoops } from './loop.js';
 import { pendingRecords, publishPendingRecords, type RecordDelivery } from './records.js';
@@ -199,8 +199,8 @@ function stateConflict(runId: string, publishedRevision: number, seen: number): 
 
 type OriginSnapshot = Result<RunSnapshot | 'absent'>;
 
-async function readOrigin(dir: string, runId: string): Promise<OriginSnapshot> {
-  const read = await fetchReportsOriginFile(dir, snapshotPath(runId));
+async function readOrigin(dir: string, runId: string, update?: ReportsWriteContext): Promise<OriginSnapshot> {
+  const read = await fetchReportsOriginFile(dir, snapshotPath(runId), update);
 
   switch (read.status) {
     case 'absent':
@@ -303,8 +303,8 @@ export async function publishRun(
   if (shared && !shared.ok) return shared;
   const sessions = shared?.value;
 
-  const result = await updateReports(config, async (worktree): Promise<ReportsChange<Result<PublishVerdict>>> => {
-    const origin = await readOrigin(worktree, runId);
+  const result = await updateReports(config, async (worktree, update): Promise<ReportsChange<Result<PublishVerdict>>> => {
+    const origin = await readOrigin(worktree, runId, update);
     const verdict = origin.ok ? await decideLocked(config, runId, { origin: origin.value, checked, sessions: options.sessions, owner, secrets, repository }) : origin;
 
     if (!verdict.ok) return { value: verdict, write: null };
@@ -1000,7 +1000,7 @@ async function acquire(
 async function readPublished(config: LocalConfig, runId: string): Promise<OriginSnapshot> {
   const result = await updateReports(
     config,
-    async (worktree) => ({ value: await readOrigin(worktree, runId), write: null }),
+    async (worktree, update) => ({ value: await readOrigin(worktree, runId, update), write: null }),
     { pushIfCreated: false },
   );
 
@@ -1028,8 +1028,8 @@ async function withdrawOffer(config: LocalConfig, runId: string, snapshot: RunSn
 
 /** Writes `snapshot` to teamai-reports, committed as `message`, only while origin still holds the write `replaces`. */
 async function replaceSnapshot(config: LocalConfig, runId: string, replaces: string, snapshot: RunSnapshot, message: string): Promise<Result<void>> {
-  const result = await updateReports(config, async (worktree): Promise<ReportsChange<Result<void>>> => {
-    const origin = await readOrigin(worktree, runId);
+  const result = await updateReports(config, async (worktree, update): Promise<ReportsChange<Result<void>>> => {
+    const origin = await readOrigin(worktree, runId, update);
 
     if (!origin.ok) return { value: origin, write: null };
 
@@ -1273,7 +1273,8 @@ async function install(
   const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
 
-    return { value: ok(undefined), write: run };
+    // The flags this install drove the run with stay its own, so a run it takes back resumes as it did here.
+    return { value: ok(undefined), write: local !== 'missing' && local.driveOptions ? { ...run, driveOptions: local.driveOptions } : run };
   });
 
   if (installed.status === 'busy') return refused(runBusy(runId));

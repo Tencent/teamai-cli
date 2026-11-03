@@ -146,6 +146,19 @@ async function explainFailedSteps(config: LocalConfig, runId: string, secrets: R
     if (!isolated) log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
   }
 
+  // The run's own failure, such as its timeout or token budget, fails no step: it stops the steps still running, a step
+  // that recovers from a failed one too, so it is said whatever steps failed before it.
+  const { failure } = run;
+
+  if (failure) {
+    log.error(redact(`Run ${runId} failed with ${failure.code}: ${failure.message}`, { envSecrets: secrets, patterns: false }));
+    const stopped = isolated ? [] : run.steps.filter((step) => step.status === 'cancelled' && step.failure?.code === failure.code).map((step) => step.id);
+    // The limit stops a workflow step with the steps under it: retrying the one under it reopens the one around it.
+    const stoppedUnder = (id: string): boolean => stopped.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
+
+    for (const step of stopped.filter((id) => !stoppedUnder(id))) log.info(`Retry it with ${retryCommand(runId, step)}, then continue the run with teamai workflow resume ${runId}`);
+  }
+
   // An isolated run refuses a retry: what it admitted or measured would change.
   if (isolated) log.info(`Run ${runId} is isolated, so its steps do not run again. Start a new run: ${restartCommand(run)}`);
 }
@@ -478,7 +491,7 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
 
   const runId = startedRun.data;
 
-  log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}`);
+  log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
   const local = { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox };
   const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => runLocalDriver(config, runId, process.cwd(), scored));
   const answered = await shortcut.answer?.(config, runId, driven);
@@ -949,7 +962,7 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
 
   if (isSkill && evidence.kind === 'none') caller.evidence = { kind: 'skill-driver' };
   // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
-  const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, hasPerson: personAnswers(caller.mode) };
+  const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, sandbox: options.sandbox === true, hasPerson: personAnswers(caller.mode) };
 
   if (options.next) await takeNext(loaded, taker, options);
   else await listResumable(loaded, taker);

@@ -52,7 +52,7 @@ teamai list
 
 ### Auto-sync
 
-A session start runs `teamai pull`. Run it yourself when the tool has no such hook.
+A session start runs a background pull. For git teams, it reuses a successful refresh for 60 seconds. Overlapping starts wait for the same scope's sync lock, then check local delivery from the refreshed clone. New checkouts and tool targets still receive their resources. A failed fetch or submodule update is not recorded as a refresh, so the first start after those 60 seconds retries it. Run `teamai pull` to fetch immediately, or when the tool has no session-start hook.
 
 `pull` leaves a skill, rule, or agent you changed.
 

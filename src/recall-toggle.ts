@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { autoDetectInit, markMemberSettingsWritten, saveLocalConfigForScope } from './config.js';
+import { autoDetectInit, loadStateForScope, markMemberSettingsWritten, saveLocalConfigForScope, saveStateForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { remove, pathExists } from './utils/fs.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
@@ -118,11 +118,20 @@ async function writeRecallBlock(
 
 async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   const { deployBuiltinRules } = await import('./builtin-rules.js');
-  const { deployBuiltinAgents } = await import('./builtin-agents.js');
+  const { RECALL_AGENT, builtinAgentsReplacedByTeam, deployBuiltinAgents } = await import('./builtin-agents.js');
   const { deployBuiltinSkills } = await import('./builtin-skills.js');
 
+  const { deliveredHashes } = await import('./pull.js');
+
   await deployBuiltinRules(teamConfig, localConfig, { skipRecall: false });
-  await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: false });
+  // A team copy on record, such as one the member edited, is pull's to judge.
+  await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: false, record: { kind: 'fast-path', delivered: await deliveredHashes(localConfig) } });
+
+  // The next pull, a full sync, delivers the team's copy, which recall disable removed.
+  if (((await builtinAgentsReplacedByTeam(teamConfig, localConfig)).get(RECALL_AGENT)?.size ?? 0) > 0) {
+    log.info("Your team replaces the teamai-recall agent: run `teamai pull` to get the team's copy back.");
+  }
+
   await deployBuiltinSkills(teamConfig, localConfig);
 
   const { compileDirectRecallRulesBlock, compileRecallRulesBlock } = await import('./pull.js');
@@ -140,10 +149,26 @@ export async function recallDisable(opts: GlobalOptions): Promise<void> {
 
   const updated = markMemberSettingsWritten(localConfig, { recallEnabled: false });
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
+  await awaitFullSync(localConfig);
 
   await removeRecallArtifacts(teamConfig, localConfig);
   await redeployWorkflowSkills(teamConfig, updated);
   log.success('Recall disabled. AI tools will no longer auto-search the knowledge base.');
+}
+
+/**
+ * Recall decides which agents pull delivers, so a toggle bypasses pull's
+ * unchanged-revision fast path, as a changed exclude list does: the next pull
+ * removes or restores what recall gates, the team's own recall agent included.
+ */
+async function awaitFullSync(localConfig: LocalConfig): Promise<void> {
+  try {
+    const state = await loadStateForScope(localConfig);
+    state.lastPullRev = null;
+    await saveStateForScope(state, localConfig);
+  } catch {
+    // Missing or corrupt state is non-critical: the next pull performs a full sync.
+  }
 }
 
 /** teamai-share-learnings runs `share`, which recall gates, so its skill follows the setting. */
@@ -163,6 +188,7 @@ export async function recallEnable(opts: GlobalOptions): Promise<void> {
 
   const updated = markMemberSettingsWritten(localConfig, { recallEnabled: true });
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
+  await awaitFullSync(localConfig);
 
   await deployRecallArtifacts(teamConfig, localConfig);
   await redeployWorkflowSkills(teamConfig, updated);
