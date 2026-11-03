@@ -268,9 +268,11 @@ describe('coveredRefusal', () => {
 
     const alone = await check([shared]);
 
-    expect(alone?.message).toContain(`A task covers ${shared}, but its namespace dev delivers ${namespaced} in its place`);
+    expect(alone?.message).toContain(`A task covers ${shared}, but its namespace dev delivers ${namespaced} in its place, so leaving it out changes nothing; cover ${namespaced} instead.`);
     expect(await check([namespaced, shared])).toEqual(alone);
     expect(await check([shared, namespaced])).toEqual(alone);
+    // The advice works: the namespaced path covered on its own plans.
+    expect(await check([namespaced])).toBeUndefined();
   });
 
   it('still refuses a skill inside a covered namespace directory when no arm receives it', async () => {
@@ -286,7 +288,7 @@ describe('coveredRefusal', () => {
     ['teamai.yaml', ['teamai.yaml'], 'arm_team_unresolved',
       'A task covers teamai.yaml, which teamai pull reads to install the team, so no trial could run. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
     ['a shared skill a namespace the member receives delivers in its place', ['skills/release'], 'arm_team_unresolved',
-      'A task covers skills/release, but its namespace dev delivers skills/dev/release in its place; list skills/dev/release too.'],
+      'A task covers skills/release, but its namespace dev delivers skills/dev/release in its place, so leaving it out changes nothing; cover skills/dev/release instead. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
     ['a skill in a namespace the member does not receive', ['skills/ops/runbook'], 'arm_team_unresolved',
       'A task covers skills/ops/runbook, which is in namespace ops, and the arm\'s roles or projects don\'t receive ops, so leaving it out changes nothing. Fix the team\'s tasks, push them, run teamai pull, and start again.'],
   ])('refuses %s', async (_case, paths, code, message) => {

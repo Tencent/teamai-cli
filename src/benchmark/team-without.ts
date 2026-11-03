@@ -270,7 +270,7 @@ function skillReason(item: ResourceItem, { delivered, excluded, active, advice }
   if (item.namespace !== undefined && active && !active.includes(item.namespace)) return inactive(item.namespace, advice);
   const standIn = delivered.find((one) => one.name === item.name);
 
-  if (standIn) return inPlace(standIn.relativePath, standIn.namespace);
+  if (standIn) return inPlace(standIn.relativePath, standIn.namespace, advice);
 
   return item.namespace === undefined && active ? `, a shared skill, which the arm's roles or projects receive only through a subscribed tag, and none brings it, so leaving it out changes nothing. ${advice}` : undefined;
 }
@@ -282,20 +282,20 @@ function rulesReason({ listed, files, advice, withIt, without }: Unchanged): str
 
   if (withIt.rules.skippedByTags > without.rules.skippedByTags) return `, a rule tagged only with tags the member does not subscribe, so pull leaves it out already and leaving it out changes nothing. ${advice}`;
 
-  return replacing(listed, withIt.rules.overrides);
+  return replacing(listed, withIt.rules.overrides, advice);
 }
 
 function agentsReason({ listed, short, files, advice, withIt }: Unchanged): string | undefined {
   if (withIt.agents.kind === 'conflict') return noneOf(withIt.agents, short);
   const namespace = notReceived(listed, files, withIt.context?.activeNamespaces.agents);
 
-  return namespace !== undefined ? inactive(namespace, advice) : replacing(listed, withIt.agents.overrides);
+  return namespace !== undefined ? inactive(namespace, advice) : replacing(listed, withIt.agents.overrides, advice);
 }
 
 function claudemdReason({ listed, files, advice, withIt }: Unchanged): string | undefined {
   const namespace = notReceived(listed, files, withIt.context?.activeNamespaces.knowledge);
 
-  return namespace !== undefined ? inactive(namespace, advice) : replacing(listed, withIt.claudemd.overrides);
+  return namespace !== undefined ? inactive(namespace, advice) : replacing(listed, withIt.claudemd.overrides, advice);
 }
 
 function docsReason({ listed, advice, withIt }: Unchanged): string | undefined {
@@ -318,14 +318,22 @@ function notReceived(listed: string, files: readonly string[], active: readonly 
 }
 
 /** That the item of `overrides` that stands in for `listed` is delivered in its place. */
-function replacing(listed: string, overrides: ReadonlyArray<{ source: string; replaces: string }>): string | undefined {
+function replacing(listed: string, overrides: ReadonlyArray<{ source: string; replaces: string }>, advice: string): string | undefined {
   const override = overrides.find((one) => covers(listed, one.replaces));
 
-  return override && inPlace(override.source, override.source.split('/')[1]);
+  return override && inPlace(override.source, override.source.split('/')[1], advice);
 }
 
-function inPlace(source: string, namespace: string | undefined): string {
-  return `, but ${namespace === undefined ? 'the team root' : `its namespace ${namespace}`} delivers ${source} in its place; list ${source} too.`;
+/**
+ * That `source` is delivered in place of the listed path. An arm leaves both out together, so it lists `source` too;
+ * a cover is checked on its own, so listing `source` as well changes nothing, and the task covers `source` instead.
+ */
+function inPlace(source: string, namespace: string | undefined, advice: string): string {
+  const by = namespace === undefined ? 'the team root' : `its namespace ${namespace}`;
+
+  return advice === TASK_FIX
+    ? `, but ${by} delivers ${source} in its place, so leaving it out changes nothing; cover ${source} instead. ${TASK_FIX}`
+    : `, but ${by} delivers ${source} in its place; list ${source} too.`;
 }
 
 function inactive(namespace: string, advice: string): string {
