@@ -241,7 +241,7 @@ export function inProcessConformanceClient(
     start: (name, { env, confirmed, checkout } = {}) => {
       const caller = { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true, mode: resolveRunMode({ ...process.env, ...env }) };
 
-      return client.start(name, checkout !== undefined ? { checkout, caller } : { caller });
+      return client.start(name, checkout !== undefined ? { checkout, caller, startedBy: 'person' } : { caller, startedBy: 'person' });
     },
     next: (runId, body, options) => client.next(runId, body, options),
     report: (runId, body, options) => client.report(runId, body, options),

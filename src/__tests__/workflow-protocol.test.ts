@@ -77,7 +77,7 @@ const LeaseSchema = z.object({ attempt: z.string(), revision: z.number() }).pass
 
 async function leased(config: LocalConfig, checkout: string): Promise<{ run: RunLock['run']; attempt: string; revision: number; lease: z.infer<typeof LeaseSchema> }> {
   const client = await protocol(config);
-  const started = await client.start('check', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+  const started = await client.start('check', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
   if (!('data' in started)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.run);
   const next = await client.next(run, { driver });
@@ -132,7 +132,7 @@ describe('workflow protocol in process', () => {
     const client = await protocol(config);
     const nested = { code: 'nested_workflow', message: "This process runs inside workflow attempt r0123456789abcdef/a0000000a (TEAMAI_WORKFLOW_ATTEMPT is set), so it cannot start or drive a workflow run. Do the step's own work here; to run another workflow as part of a run, add it to the definition as a workflow step." };
     const caller = { evidence: { kind: 'attempt', attempt: 'r0123456789abcdef/a0000000a' }, confirmed: true, mode: 'attended' } as const;
-    expect(await client.start('missing', { caller })).toEqual({ error: nested });
+    expect(await client.start('missing', { caller, startedBy: 'person' })).toEqual({ error: nested });
     expect(await client.respond('r0123456789abcdef', 'lint', 'yes', { via: { kind: 'process', caller: { tty: true, evidence: caller.evidence } } })).toEqual({ error: nested });
   });
 
@@ -177,7 +177,7 @@ describe('workflow protocol in process', () => {
     const judged = 'schemaVersion: v1alpha1\nname: judged\ndescription: Judge the evidence.\nsteps:\n  - id: evidence\n    command: node -e "process.exit(0)"\n  - id: judge\n    needs: [evidence]\n    workspace: { confined: evidence }\n    prompt: Judge diff.txt.\n    output:\n      verdict: pass | fail\n';
     const { config, checkout } = await fixture({ judged });
     const client = await protocol(config);
-    const started = await client.start('judged', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('judged', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const confining = { ...driver, can: { ...driver.can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }] } } as const;
@@ -255,7 +255,7 @@ describe('finally steps', () => {
 
   async function startReported(config: LocalConfig, checkout: string): Promise<{ client: WorkflowClient; run: string }> {
     const client = await protocol(config);
-    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     return { client, run: RunIdSchema.parse(started.data.run) };
   }
@@ -363,7 +363,7 @@ describe('finally steps', () => {
     const ended = REPORTED.replace('name: reported', 'name: ended').replace('steps:\n  - id: work\n', 'ends: { blocked: failed }\nsteps:\n  - id: work\n    end: blocked\n');
     const { config, checkout } = await fixture({ ended });
     const client = await protocol(config);
-    const started = await client.start('ended', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('ended', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const work = await lease(client, run);
@@ -395,7 +395,7 @@ outputs:
 `;
     const { config, checkout } = await fixture({ nulled });
     const client = await protocol(config);
-    const started = await client.start('nulled', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('nulled', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const emit = await lease(client, run);
@@ -476,7 +476,7 @@ describe('a finally step in the checkout', () => {
   it('fails a finally step that changed the checkout, as any read-only command', async () => {
     const { config, checkout } = await fixture({ reported: REPORTED });
     const client = await protocol(config);
-    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const leaseOf = async (): Promise<z.infer<typeof LeaseSchema>> => {
@@ -505,7 +505,7 @@ describe('the run timeout a start gives', () => {
       const client = await protocol(config);
       const caller = { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } as const;
       const deadlineOf = async (name: string, timeout: number): Promise<unknown> => {
-        const started = await client.start(name, { checkout, caller, timeout });
+        const started = await client.start(name, { checkout, caller, timeout, startedBy: 'person' });
         if (!('data' in started)) throw new Error(JSON.stringify(started));
         const next = await client.next(RunIdSchema.parse(started.data.run), { driver });
         return 'data' in next && 'lease' in next.data ? LeaseSchema.parse(next.data.lease).expiresAt : next;

@@ -408,11 +408,11 @@ describe('skill driver', () => {
     expect(await harness.call({ kind: 'start', name: 'check', answers: { confirmed: true }, inputs: undefined }, session))
       .toEqual({ error: { code: 'unattended_denied', message: reason, next: null } });
     // The local driver's start, from the same session, is refused alike.
-    expect(await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: session.evidence, confirmed: true, mode: 'unattended' } }))
+    expect(await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: session.evidence, confirmed: true, mode: 'unattended' }, startedBy: 'person' }))
       .toEqual({ error: { code: 'unattended_denied', message: reason } });
     expect(fs.existsSync(path.join(getDataHome(harness.config), 'workflows', 'runs'))).toBe(false);
     // A person's terminal or a CI job without an agent starts it.
-    expect(await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'unattended' } }))
+    expect(await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'unattended' }, startedBy: 'person' }))
       .toMatchObject({ data: { run: expect.any(String) } });
   });
 
@@ -993,7 +993,7 @@ steps:
   it('gives a session whose host names no tool a resume of a run it does not drive with a {tool} slot to fill', async () => {
     const harness = await skillHarness({ check: CHECK }, { tool: null });
     roots.push(harness.root);
-    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
     const run = RunIdSchema.parse(other.data.run);
     expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: `teamai workflow resume ${run} --driver skill --tools default='{tool}'` } });
@@ -1197,7 +1197,7 @@ steps:
   it('points at the skill resume and the person\'s resume for a run it does not drive, and at the person\'s for one whose state it cannot read', async () => {
     const harness = await skillHarness({ check: CHECK });
     roots.push(harness.root);
-    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const other = await harness.context.client.start('check', { checkout: harness.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
     const run = RunIdSchema.parse(other.data.run);
     expect(await harness.call({ kind: 'next', run, wait: false })).toEqual({ error: {

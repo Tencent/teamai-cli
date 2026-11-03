@@ -501,7 +501,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
 
   const started = await context.client.start(description.name, {
     inputs: call.inputs, checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
-    timeout: call.timeoutMs,
+    timeout: call.timeoutMs, startedBy: 'person',
   });
 
   if ('error' in started) {

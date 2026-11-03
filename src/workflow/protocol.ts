@@ -97,10 +97,11 @@ export interface WorkflowClient {
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
    * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`. `alone`: what the local driver,
    * the run's only driver, gives strict requirements; a step it could never take refuses the start, `requirement_unmet`.
-   * The run records an agent as its starter when `caller` has agent evidence, else `startedBy: 'cli'` for one of the
-   * CLI's own automatic starts, else a person. `driver`: the driver the run is recorded for from its start.
+   * The run records an agent as its starter when `caller` has agent evidence, else `startedBy`: `cli` for one of the
+   * CLI's own automatic starts, `person` for a start a person asked for. `driver`: the driver the run is recorded for
+   * from its start.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy?: 'cli'; driver?: DriverIdentity; instead?: string }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy: 'person' | 'cli'; driver?: DriverIdentity; instead?: string }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -851,7 +852,7 @@ async function startNamed({ config, secrets }: { config: LocalConfig; secrets: R
   const base = checkout === undefined ? undefined : await headCommit(checkout);
 
   return startRun(config, name, inputs ?? {}, {
-    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy ?? 'person' : 'agent', driver, checkout, base, timeout, alone,
+    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', driver, checkout, base, timeout, alone,
   });
 }
 

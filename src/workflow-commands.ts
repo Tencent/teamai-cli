@@ -459,7 +459,7 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
   const alone = options.driver === 'local' ? localStrictCan(config, options) : undefined;
-  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead });
+  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person' });
 
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);

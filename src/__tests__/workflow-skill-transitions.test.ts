@@ -524,7 +524,7 @@ async function polledFor(made: Awaited<ReturnType<typeof harness>>, turn: Awaite
  */
 async function publishedMidStep(install: { config: LocalConfig; checkout: string }, name: string) {
   const client = inProcessClient({ config: install.config, env: await resolveWorkflowEnv(install.config) });
-  const startAnswer = await client.start(name, { checkout: install.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+  const startAnswer = await client.start(name, { checkout: install.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
   if (!('data' in startAnswer) || typeof startAnswer.data.run !== 'string') throw new Error(JSON.stringify(startAnswer));
   const run = RunIdSchema.parse(startAnswer.data.run);
   const leased = await client.next(run, { driver: { kind: 'local', machine: 'ci', workspace: install.checkout, can: { workspace: [...WORKSPACE_MODES] } } });
@@ -1080,7 +1080,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['R11'],
     run: async () => {
       const made = await harness({ check: CHECK });
-      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       expect(await made.call({ kind: 'next', run: RunIdSchema.parse(other.data.run), wait: false })).toMatchObject({ error: { code: 'not_skill_run', next: `teamai workflow resume ${other.data.run} --driver skill` } });
       return made.rows;
@@ -1091,7 +1091,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     rows: ['R28', 'R19'],
     run: async () => {
       const made = await harness({ review: REVIEW }, { scorers: SCORERS, tool: null });
-      const other = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      const other = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       const run = RunIdSchema.parse(other.data.run);
       const refused = { error: {
@@ -1177,7 +1177,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ locked: LOCKED, gated: GATED, check: CHECK });
       const runOf = async (name: string): Promise<RunId> => {
-        const startAnswer = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        const startAnswer = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
         if (!('data' in startAnswer)) throw new Error(JSON.stringify(startAnswer));
         return RunIdSchema.parse(startAnswer.data.run);
       };
@@ -1210,7 +1210,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ release: RELEASE, approved: APPROVED }, { mode: 'unattended' });
       const runOf = async (name: string): Promise<RunId> => {
-        const created = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        const created = await made.context.client.start(name, { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
         if (!('data' in created)) throw new Error(JSON.stringify(created));
         return RunIdSchema.parse(created.data.run);
       };
@@ -1239,7 +1239,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ released: RELEASE.replace('name: release', 'name: released') + announce }, { mode: 'unattended' });
       const { client, env } = made.context;
-      const created = await client.start('released', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      const created = await client.start('released', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
       if (!('data' in created)) throw new Error(JSON.stringify(created));
       const run = RunIdSchema.parse(created.data.run);
       // CI's local driver runs the run up to announce; the person answers both approvals from their terminal.
@@ -1377,7 +1377,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const ci = await team.install('ci');
       const env = await resolveWorkflowEnv(ci.config);
       const client = inProcessClient({ config: ci.config, env });
-      const created = await client.start('released', { checkout: ci.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      const created = await client.start('released', { checkout: ci.checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
       if (!('data' in created)) throw new Error(JSON.stringify(created));
       const run = RunIdSchema.parse(created.data.run);
       // CI's local driver runs the run until it leases go-live, the person answering both approvals, then publishes it
@@ -1410,7 +1410,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ skipping: SKIPPED_REVIEW }, { mode: 'unattended' });
       const { client } = made.context;
-      const created = await client.start('skipping', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      const created = await client.start('skipping', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
       if (!('data' in created)) throw new Error(JSON.stringify(created));
       const run = RunIdSchema.parse(created.data.run);
       // CI's local driver runs `prep` and gives `ship` back, so the run waits with `review` skipped and its approval never asked.
@@ -1462,7 +1462,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ check: CHECK });
       // What the killed local driver left: its command, still running in a process group of its own, recorded where its attempt keeps it.
       const stopped = async (): Promise<{ run: RunId; left: Promise<NodeJS.Signals | null> }> => {
-        const startAnswer = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+        const startAnswer = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
         if (!('data' in startAnswer)) throw new Error(JSON.stringify(startAnswer));
         const run = RunIdSchema.parse(startAnswer.data.run);
         const leased = await made.context.client.next(run, { driver: { ...driverIdentity('local', made.work), can: { workspace: [...WORKSPACE_MODES] } } });
@@ -1520,7 +1520,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(await made.call({ kind: 'takeover', run: lacking, confirmed: false })).toEqual({
         error: { code: 'run_not_found', message: expect.any(String), next: `teamai workflow resume ${lacking} --driver skill --claim` },
       });
-      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      const other = await made.context.client.start('check', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
       if (!('data' in other) || typeof other.data.run !== 'string') throw new Error(JSON.stringify(other));
       const run = RunIdSchema.parse(other.data.run);
       expect(await turnOf(await made.call({ kind: 'takeover', run, confirmed: false }))).toMatchObject({ run, status: 'driving' });
@@ -2101,7 +2101,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const made = await harness({ review: REVIEW }, { scorers: SCORERS });
       // The team files as a commit of the repository they live in, which the run's team pin records.
       for (const args of [['init', '-q', '-b', 'main'], ['add', 'knowledge'], ['-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'team']]) execFileSync('git', args, { cwd: made.root });
-      const created = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+      const created = await made.context.client.start('review', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
       if (!('data' in created)) throw new Error(JSON.stringify(created));
       const run = RunIdSchema.parse(created.data.run);
       // The team now asks for verified isolation; the run keeps the best-effort scorer of the team revision it started from.
