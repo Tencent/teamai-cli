@@ -1217,10 +1217,6 @@ The driver runs `lease.prompt` on the first of `tools` that resolves `lease.mode
 
 ## Judge work in your own driver
 
-```text
-teamai score --next --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"judge":{"isolation":"best-effort","tools":["claude"]}}},"running":[]}'
-```
-
-Judge work comes from `teamai score --next`, never from `workflow next`. See [Scorers](scorers.md#any-driver).
+Judge work is a run like any other: the driver drives each teamai-score run an answer lists in `started`, its judge step a [confined step](#confined-steps-in-your-own-driver). See [Scorers](scorers.md#any-driver).
 
 An unattended driver ends with `teamai score --drain`. It judges what can be judged here, publishes run records, labels and sessions, and prints what is left for other drivers. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`, after the run's `done` envelope on stdout, and prints its lines on stderr. The exit status stays the run's outcome, also when the drain fails. See [Drain before an unattended job ends](scorers.md#drain-before-an-unattended-job-ends).
