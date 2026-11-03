@@ -27,11 +27,11 @@ beforeAll(() => {
 
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
-function cli(args: string[], env: Record<string, string> = {}): { status: number | null; stdout: string } {
+function cli(args: string[], env: Record<string, string> = {}): { status: number | null; stdout: string; stderr: string } {
   const { CLAUDE_CODE_SESSION_ID: _session, TEAMAI_WORKFLOW_ATTEMPT: _attempt, TEAMAI_RUN_DIR: _dir, ...inherited } = process.env;
   const ran = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...inherited, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', ...env }, encoding: 'utf8' });
 
-  return { status: ran.status, stdout: ran.stdout };
+  return { status: ran.status, stdout: ran.stdout, stderr: ran.stderr };
 }
 
 describe('teamai score label and write outside a teamai-score attempt', () => {
@@ -40,10 +40,13 @@ describe('teamai score label and write outside a teamai-score attempt', () => {
     ['a made-up attempt marker', { TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a01234567', TEAMAI_RUN_DIR: path.join(os.tmpdir(), 'made-up') }, 'run r0123456789abcdef is not on this machine'],
   ])('refuse with %s and write no label', (_case, env, why) => {
     for (const args of [['score', 'label', '--evidence', dir, '--answer', '{"label":"good","reasoning":"x"}', '--judge', 'success'], ['score', 'write', '--evidence', dir]]) {
-      const { status, stdout } = cli(args, env);
+      const { status, stdout, stderr } = cli(args, env);
 
       expect(status).toBe(1);
       expect(JSON.parse(stdout)).toEqual({ error: { code: 'score_attempt_required', message: expect.stringContaining(why) } });
+      // A failed step keeps its command's stderr, so the run that called the verb says why it refused.
+      expect(stderr).toContain(`score_attempt_required: `);
+      expect(stderr).toContain(why);
     }
 
     expect(fs.readdirSync(home)).toEqual([]);

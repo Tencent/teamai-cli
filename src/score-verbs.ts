@@ -222,5 +222,7 @@ export async function scoreVerbCommand(verb: (ctx: ScoreVerbContext) => Promise<
   }
 
   process.stdout.write(`${JSON.stringify({ error: { code: answer.code, message: answer.message } })}\n`);
+  // A failed step keeps its command's stderr and drops its stdout, so the run that called the verb says why it refused.
+  process.stderr.write(`${answer.code}: ${answer.message}\n`);
   process.exitCode = 1;
 }
