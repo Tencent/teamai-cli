@@ -9,7 +9,7 @@ import { FailureSchema } from '../../step-state.js';
 import { AttemptIdSchema, type AttemptId, type RunId } from '../../store.js';
 import type { WorkflowEnvelope } from '../../types.js';
 import { ScoredLabelSchema } from './skill-state.js';
-import type { AskedGate, EngineReply, ReadLease, ReportReply, RespondReply, ScoreReply } from './transitions.js';
+import type { AskedGate, EngineReply, ReadLease, ReportReply, RespondReply } from './transitions.js';
 
 /** The lease `raw` the engine sent, as this driver runs it. Undefined when this teamai cannot run it. */
 // oxlint-disable-next-line teamai/no-unknown-parameters -- the parse boundary: the engine's answer and a runner's job file carry the lease unread
@@ -153,28 +153,6 @@ export function reportReply(answer: WorkflowEnvelope): ReportReply {
   if (failure) reply.failure = failure;
 
   return reply;
-}
-
-const ScoreDataSchema = z.object({
-  lease: z.object({ ref: z.string(), subject: z.object({ step: z.string() }), scorer: z.string().optional(), scorers: z.array(z.string()).optional() }).optional(),
-});
-
-/** What `score --next` answered, with the lease read as the judge it opens. */
-export function scoreReply(answer: WorkflowEnvelope): ScoreReply {
-  if ('error' in answer) return { kind: 'error', error: { code: answer.error.code, message: answer.error.message } };
-  const data = ScoreDataSchema.safeParse(answer.data);
-
-  if (!data.success) return { kind: 'error', error: { code: 'run_unreadable', message: `score --next answered with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } };
-  const { lease } = data.data;
-
-  if (!lease) return { kind: 'idle' };
-  // A lease ref is `<entry>/<attempt>`: its attempt keys the judge's runner as a step's attempt keys its own.
-  const attempt = AttemptIdSchema.safeParse(lease.ref.slice(lease.ref.indexOf('/') + 1));
-  const scorers = lease.scorers ?? (lease.scorer !== undefined ? [lease.scorer] : []);
-
-  if (!attempt.success || scorers.length === 0) return { kind: 'error', error: { code: 'run_unreadable', message: `score --next answered with judge lease ${lease.ref}, which this teamai cannot read. Update teamai.` } };
-
-  return { kind: 'lease', judge: { ref: lease.ref, attempt: attempt.data, step: lease.subject.step, scorers } };
 }
 
 const StartedDataSchema = z.object({ started: z.array(StartedRunSchema) });

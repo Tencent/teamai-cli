@@ -110,11 +110,6 @@ const AttemptStateSchema = z.discriminatedUnion('phase', [
 
 export type AttemptState = z.infer<typeof AttemptStateSchema>;
 
-/** The judge running now: lease `ref`, its runner keyed by the attempt in that ref, on the pass of `step` that `scorers` judge. */
-const JudgeSchema = z.object({ ref: z.string(), attempt: AttemptIdSchema, step: z.string(), scorers: z.array(z.string()), spawnedAt: z.string() });
-
-export type Judge = z.infer<typeof JudgeSchema>;
-
 /** What a run that scores a pass gave one scorer, as its `done` outputs list it: its label, or, with `label` empty, the code of why it gave none. */
 export const ScoredLabelSchema = z.object({ scorer: z.string(), label: z.string(), code: z.string() });
 
@@ -196,7 +191,7 @@ const SkillStateSchema = z.object({
   orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine(isToolId).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
   /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
-  judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),
+  judging: z.object({ tool: z.string() }).optional(),
   /**
    * Present when the session itself judges the run's scored steps once the run is done, as no verified judge of `tool`,
    * the session's tool at the start, is here. The session judges with the run's tool, `orchestrator.tool`, else `tool`.

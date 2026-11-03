@@ -6,7 +6,6 @@ import { DriverSchema } from '../driver-identity.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { redactJson } from '../utils/redact.js';
 import { getDataHome, type JsonValue, type LocalConfig } from '../types.js';
-import { EntryVerdictSchema } from '../scorers/entry.js';
 import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ArchivedPassSchema, FailureSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';
@@ -250,7 +249,6 @@ const RunProgressSchema = z.object({
   releasedTokens: z.array(ReleasedTokensSchema).optional(),
   stoppedAttempts: z.array(StoppedAttemptSchema).optional(),
   scorers: z.record(z.string(), PinnedScorerSchema).optional(),
-  verdicts: z.array(EntryVerdictSchema).optional(),
   finalizing: z.object({
     outcome: z.enum(['succeeded', 'failed', 'cancelled']), end: z.string().optional(), failure: FailureSchema.optional(), since: z.string(), until: z.string(),
   }).optional(),

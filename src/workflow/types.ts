@@ -2,7 +2,6 @@
 
 import type { RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
-import type { EntryVerdict } from '../scorers/entry.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
 import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
@@ -294,10 +293,7 @@ export interface WorkflowDefaults {
 export interface StepScorers {
   names: string[];
   batch?: boolean;
-  /**
-   * `all`: every pass is judged whatever the scorers sample, the run waits for the judges before its `finally` steps,
-   * and an entry still open when its steps end is frozen unscored in `run.verdicts`.
-   */
+  /** `all`: every pass is judged, whatever the scorers sample. */
   sampling?: 'all';
   /** Who starts the scoring of the step's passes: teamai after each pass (`auto`), or the workflow's own steps (`workflow`). */
   start?: ScoringStart;
@@ -478,8 +474,6 @@ export interface RunState {
    * and frozen for the run's life. The named workflows and generated scorers each brought are in `workflows` and `scorers`.
    */
   admitted?: Record<string, AdmittedWorkflow>;
-  /** How each entry of the run's `sampling: all` scorers stood when its steps ended, before `finally`, frozen by `finishRun`. */
-  verdicts?: EntryVerdict[];
   /**
    * Step instances in declaration order; a sub-workflow's steps follow the step that runs it. Never changed in place:
    * adding or removing an instance assigns a new array, so an index the engine keeps per array never goes stale.

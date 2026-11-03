@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, JUDGE_PROFILES, runConformanceScenario, speaksAsDriverUnderTest, type ConformanceClient } from '../workflow/conformance-interpreter.js';
+import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, runConformanceScenario, speaksAsDriverUnderTest, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { benchmarkConformanceScenarios } from '../benchmark/conformance.js';
 import { workflowConformanceScenarios } from '../workflow/conformance/run.js';
 import { RunIdSchema } from '../workflow/store.js';
@@ -90,15 +90,13 @@ Judge the work.
 `;
 
 describe('the skill conformance profiles', () => {
-  it('declare on next and score --next what the skill driver declares', async () => {
+  it('declare on next what the skill driver declares', async () => {
     const nexts: unknown[] = [];
-    const scores: unknown[] = [];
     const harness = await skillHarness({ review: SCORED }, {
       scorers: { quality: QUALITY },
       client: (client) => ({
         ...client,
         next: async (run, body, options) => { nexts.push(body); return client.next(run, body, options); },
-        scoreNext: async (body) => { scores.push(body); return client.scoreNext(body); },
       }),
     });
     dirs.push(harness.root);
@@ -125,8 +123,5 @@ describe('the skill conformance profiles', () => {
     const skill = DRIVER_PROFILES.skill;
     expect(nexts.length).toBeGreaterThan(0);
     expect(declared(nexts)).toEqual(nexts.map(() => ({ kind: skill.kind, can: skill.can, run: undefined })));
-    const judging = JUDGE_PROFILES.skill;
-    expect(scores.length).toBeGreaterThan(0);
-    expect(declared(scores)).toEqual(scores.map(() => ({ kind: DRIVER_PROFILES[judging.as].kind, can: { judge: judging.judge }, run: judging.ownRun ? run : undefined })));
   });
 });

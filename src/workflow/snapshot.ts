@@ -247,7 +247,7 @@ type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : n
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
   end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', runMode: 'publish', origin: 'publish',
-  startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', verdicts: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
+  startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
   stoppedAttempts: 'drop', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish',

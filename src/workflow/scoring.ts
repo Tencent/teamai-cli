@@ -1,9 +1,7 @@
 /**
  * Judge work for workflow passes (#1085). Nothing is queued: open work is computed from the run files, the scorers each
  * run pinned, the label store and the attempt store on every `teamai score --next`. The engine never calls this module,
- * and this module never writes a run file, so scoring cannot move a run's counts, tokens, failure or end time. A run whose
- * steps require their scorers waits for their entries to settle before it ends (scoring-entries.ts), and the local
- * driver judges its own run's entries through `judgeRunEntries`.
+ * and this module never writes a run file, so scoring cannot move a run's counts, tokens, failure or end time.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -13,7 +11,7 @@ import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import {
-  AttemptStore, isRunAttempt, JUDGE_FAILURES, newAttemptId, rawOutputPath, scoresDir, type AttemptRecord, type JudgeDriver, type JudgeFailureCode, type LeasedAttempt, type LeasedRunAttempt,
+  AttemptStore, isRunAttempt, newAttemptId, rawOutputPath, scoresDir, type AttemptRecord, type JudgeDriver, type JudgeFailureCode, type LeasedAttempt, type LeasedRunAttempt,
   type LeasedSessionAttempt, type RunAttempt, type ScoreRequest, type SessionAttempt, type SucceededAttempt,
 } from '../scorers/attempts.js';
 import { batchesScorers, JudgeAnswerSchema, verdictsOf, type JudgeAnswer } from '../scorers/batch.js';
@@ -44,7 +42,7 @@ import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, ty
 import { buildEvidence, evidenceHash, evidencePlan, judgedFacts, missingEvidence } from '../scorers/scoring-evidence.js';
 import { decideBeforeJudge, failingLabel, judgedAlone } from '../scorers/scoring-stages.js';
 import { judgeablePasses, scoredPasses } from './judge-work.js';
-import { isUnsettled, sameSubject, verdictEntries, verdictsFrozen } from './scoring-entries.js';
+import { sameSubject, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
 import { stepDefinitions, workflowBatch } from './scope.js';
 import { parseStepPath } from './step-path.js';
@@ -1655,82 +1653,6 @@ export async function judgeUnavailable(config: LocalConfig, scorers: Record<stri
   }
 
   return undefined;
-}
-
-/** What one round of the local judge loop did. */
-export type RunJudging =
-  | { kind: 'settled'; count: number }
-  /** Entries stay open that no judge on this machine can settle; the message says why and what to do. */
-  | { kind: 'skipped'; message: string }
-  /** Another process holds the attempts lock. */
-  | { kind: 'busy' }
-  /** `signal` stopped the judge: its lease and the entries left open settle when the run's timeout passes. */
-  | { kind: 'stopped' };
-
-/**
- * The local driver's judge loop: judges the open entries of `runId`'s `sampling: all` scorers with this machine's judge
- * tools, leasing only those entries, as `scoreOnDemand` judges a pass. A judge that fails is submitted failed at once, so
- * its entry settles now instead of when its lease lapses. Any other driver may still judge them with
- * `teamai score --next`.
- */
-export async function judgeRunEntries(config: LocalConfig, runId: string, cwd: string, signal?: AbortSignal): Promise<RunJudging> {
-  const run = await readRun(config, runId);
-
-  if (run === 'missing' || run === 'corrupt') return { kind: 'settled', count: 0 };
-  const open = (await verdictEntries(config, run, new Date().toISOString())).filter(isUnsettled);
-
-  if (open.length === 0) return { kind: 'settled', count: 0 };
-
-  const skipped = (reason: string): RunJudging => ({
-    kind: 'skipped',
-    message: `${open.length} judge entries of run ${runId} need a judge this machine cannot run (${reason}). Judge them with teamai score --next on an install that can, or they settle unscored when the run's timeout passes.`,
-  });
-
-  const off = await scoringOff(config);
-
-  if (off) return skipped(off);
-  const [tool, ...tools] = installedConfinedTools(open.flatMap(({ subject }) => evidencePlan(run, subject).passes.flatMap((judged) => judged.tool ?? [])));
-
-  if (!tool) return skipped('no judge tool is on PATH');
-  const driver = driverIdentity('local', cwd);
-  const entries = open.map(({ scorer, subject }) => entryIdOf(scorer, subject));
-  let count = 0;
-
-  for (;;) {
-    if (signal?.aborted) return { kind: 'stopped' };
-    const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'verified', tools: [tool, ...tools] }, running: [], entries: { source: 'workflow', ids: entries } }, new Date().toISOString());
-
-    if (taken.kind === 'busy') return taken;
-    count += taken.closed.length + taken.decided.length;
-
-    if (taken.kind === 'idle') {
-      if (count > 0) return { kind: 'settled', count };
-
-      return skipped(taken.skipped.map((entry) => entry.message).join(' ') || (taken.leased > 0 ? 'another driver holds their judge leases' : 'no judge here meets the isolation they need'));
-    }
-
-    const judged = await judgeLease(config, taken.lease.ref, driver, signal ? { signal } : {});
-
-    // A judge stopped by the signal did not fail: its lease is left for the timeout.
-    if (signal?.aborted) return { kind: 'stopped' };
-
-    if (!('error' in judged)) {
-      count += judged.attempts.length;
-      continue;
-    }
-
-    if (judged.error.code === 'busy') return { kind: 'busy' };
-    const { subject } = taken.lease;
-    log.warn(`The judge of ${'step' in subject ? subject.step : subject.sessionId} failed, so its entry settles unscored: ${judged.error.message}`);
-    const code = JUDGE_FAILURES.find((failure) => failure === judged.error.code);
-    const failure: Extract<JudgeSubmission, { outcome: 'failed' }> = { driver, outcome: 'failed' };
-
-    if (code) failure.code = code;
-    const failed = await submitJudgeLease(config, taken.lease.ref, failure);
-
-    if ('error' in failed) return failed.error.code === 'busy' ? { kind: 'busy' } : skipped(failed.error.message);
-    count += 1;
-  }
 }
 
 /** What `teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name>… [--queue] [--batch]` asks for. */

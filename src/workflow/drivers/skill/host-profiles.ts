@@ -77,11 +77,3 @@ export interface JudgeOffer {
   access: ConfinedAccess;
   tools: [string];
 }
-
-/**
- * What the skill driver declares on `score --next`: the confined judge of the session tool, which describe found
- * verified, and what that judge can do. A tool with no judge profile declares `full`, as a judge that does not say counts.
- */
-export function judgeCan(tool: string): JudgeOffer {
-  return { isolation: 'verified', access: isConfinedTool(tool) ? confinedAccess(tool) : 'full', tools: [tool] };
-}

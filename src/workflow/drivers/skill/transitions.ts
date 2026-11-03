@@ -15,7 +15,7 @@ import type { WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, Gate, Judge, PlaceAsk, ReportBody, ScoredLabel, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
+import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, ScoredLabel, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
 
 export interface TransitionRow {
@@ -123,17 +123,11 @@ export const TRANSITIONS = [
   { id: 'H3', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers `agent_in_path`: a required approval', effects: 'none', next: 'drive', action: 'error `agent_in_path`, next: the poll literal' },
   { id: 'H4', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers another error', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'H5', state: 'drive', input: 'reply, before its row', guard: 'a gate is journalled, and the reply is done, a wait that holds nothing, or another gate: the person answered it in their terminal or the dashboard', effects: 'clear the gate', next: 'drive', action: '' },
-  { id: 'J1', state: 'drive, done', input: 'tick', guard: 'judging is on, and the run scores no other run\'s pass (`scores`)', effects: '`score --next {driver: identity + can.judge of the session tool, run, running: the open judge ref, canTakeLease: no judge open; false in a runner\'s check}`', next: 'unchanged', action: '' },
-  { id: 'J2', state: 'drive, done', input: 'score reply: a lease', guard: 'judging is on, and no judge is open', effects: 'the judge is open; spawn its runner, keyed by the attempt in its ref', next: 'unchanged', action: 'event `judging`' },
-  { id: 'J3', state: 'drive, done', input: 'judge runner: labelled', guard: 'its judge is open', effects: 'drop the judge', next: 'unchanged', action: 'event `judged` per scorer' },
-  { id: 'J4', state: 'drive, done', input: 'judge runner: failed', guard: 'its judge is open', effects: 'judging := off; its lease lapses back to the queue', next: 'unchanged', action: 'event `judging-off` with the failure' },
-  { id: 'J5', state: 'drive, done', input: 'tick: the open judge\'s `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its judge left; judging := off; its lease lapses back to the queue', next: 'unchanged', action: 'event `judging-off` `judge_runner_gone`' },
-  { id: 'J6', state: 'drive, done', input: 'score reply: an error', guard: 'the error is not `busy`', effects: 'judging := off', next: 'unchanged', action: 'event `judging-off` with the error' },
   { id: 'J7', state: 'drive, done', input: 'a `next` or report answer that lists `started`', guard: 'judging is on, or the session judges', effects: 'add to `scoring` each run it lists that `scoring` lacks', next: 'unchanged', action: 'event `judging` per run added' },
   { id: 'J8', state: 'drive, done', input: 'a call\'s tick', guard: '`scoring` lists a run', effects: 'tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, host, session and judging, with `scores` naming this run, so its turns lead back here', next: 'unchanged', action: 'the dispatches and stops of those runs join this run\'s turn, and a poll wakes for them' },
   { id: 'J9', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that run is done, and no attempt of it is open', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judged` per scorer its `done` outputs list, with the label or the code; event `judging-off` with its failure when it did not succeed' },
   { id: 'J10', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that tick answered an error', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judging-off` with the error' },
-  { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and a judge is, or `scoring` lists a run', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
+  { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and `scoring` lists a run', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
   { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open, and `scoring` lists no run', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
   { id: 'X5', state: 'done', input: 'tick', guard: 'the run file shows a version other than the one kept with the end, or a create still unresolved, or none was kept', effects: 'keep the run file\'s version with the end; engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
@@ -170,17 +164,11 @@ export type EngineReply =
   | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; labels?: ScoredLabel[]; out: boolean }
   | { kind: 'error'; error: WorkflowFailure };
 
-/** What `score --next` answered: a lease, read as the judge it opens; nothing to take; or an error. */
-export type ScoreReply = { kind: 'lease'; judge: Omit<Judge, 'spawnedAt'> } | { kind: 'idle' } | { kind: 'error'; error: WorkflowFailure };
-
 /** What the engine answered the agent's answer to a gate: the answer it recorded, or an error. */
 export type RespondReply = { kind: 'answered'; step: string; pass: number; choice: string; channel: string; agent: boolean } | { kind: 'error'; error: WorkflowFailure };
 
 /** What the engine answered a sent report: the step it settled, with the failure it recorded, or an error. */
 export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome']; failure?: WorkflowFailure } | { kind: 'error'; error: WorkflowFailure };
-
-/** What the open judge's runner learned: the label of each scorer, or why the judge gave none. */
-export type JudgeAnswer = { kind: 'judged'; labels: Array<{ scorer: string; label: string }> } | { kind: 'failed'; failure: WorkflowFailure };
 
 /**
  * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
@@ -558,11 +546,11 @@ export function reportCallRow(state: SkillState, attempt: AttemptId): { row: 'S6
   return { row: 'S6' };
 }
 
-/** The row of `next` once the engine answered `done`: X4 while an attempt is open, else X1 while a judge or a scoring run is, else X2. */
+/** The row of `next` once the engine answered `done`: X4 while an attempt is open, else X1 while a scoring run is, else X2. */
 export function doneRow(state: SkillState): { row: 'X1' | 'X2' | 'X4' } | undefined {
   if (!state.done) return undefined;
 
-  return { row: state.attempts.length > 0 ? 'X4' : state.judging?.open || state.scoring.length > 0 ? 'X1' : 'X2' };
+  return { row: state.attempts.length > 0 ? 'X4' : state.scoring.length > 0 ? 'X1' : 'X2' };
 }
 
 /** The most attempts `state` keeps open at once: `--parallel`, and one under a serial host. */
@@ -623,69 +611,6 @@ export function reopenedRow(state: SkillState, input: { reply: EngineReply; same
   const { done: _done, ...rest } = state;
 
   return { row: 'X6', state: rest };
-}
-
-/** J1: the `score --next` of a tick while judging is on and the host is chosen. A runner's check takes no judge work. */
-export function judgeTickRow(state: SkillState, role: 'call' | 'runner'): { row: 'J1'; request: { tool: string; running: string[]; canTakeLease: boolean } } | undefined {
-  // A run that scores another's pass is never judged itself.
-  if (!state.judging || state.host.kind === 'pending' || state.scores !== undefined) return undefined;
-  const { tool, open } = state.judging;
-
-  return { row: 'J1', request: { tool, running: open ? [open.ref] : [], canTakeLease: role === 'call' && !open } };
-}
-
-/** J2 and J6: what `score --next` answered while judging is on. */
-export function scoreReplyRow(state: SkillState, input: { reply: ScoreReply; at: string }): MovedWithEffects<'J2' | 'J6'> | undefined {
-  const { judging } = state;
-  const { reply, at } = input;
-
-  if (!judging) return undefined;
-
-  switch (reply.kind) {
-    case 'lease': {
-      if (judging.open) return undefined;
-      const open: Judge = { ...reply.judge, spawnedAt: at };
-      const opened: SkillState = { ...state, judging: { ...judging, open } };
-
-      return {
-        row: 'J2', state: withEvent(opened, { kind: 'judging', step: open.step, scorers: open.scorers, ref: open.ref }), effects: [{ kind: 'spawn', attempt: open.attempt }],
-      };
-    }
-
-    case 'idle':
-      return undefined;
-    case 'error':
-      return reply.error.code === 'busy' ? undefined : { row: 'J6', state: judgingOff(state, reply.error), effects: [] };
-    default: {
-      const unhandled: never = reply;
-
-      return unhandled;
-    }
-  }
-}
-
-/** J5: the open judge's `runner.lock` is free, and it was spawned more than `graceMs` before `at`. */
-export function judgeFreeRow(state: SkillState, input: { at: string; graceMs: number }): MovedWithEffects<'J5'> | undefined {
-  const open = state.judging?.open;
-
-  if (!open || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
-  const failure = { code: 'judge_runner_gone', message: `The judge of step ${open.step} stopped before it answered, so this run judges nothing more here. Its lease lapses back to the queue for another driver.` };
-
-  return { row: 'J5', state: judgingOff(state, failure), effects: [{ kind: 'stop-left', attempt: open.attempt }] };
-}
-
-/** J3 and J4: what the runner of the open judge, keyed by `attempt`, learned. */
-export function judgeAnsweredRow(state: SkillState, input: { attempt: AttemptId; answer: JudgeAnswer }): Moved<'J3' | 'J4'> | undefined {
-  const { judging } = state;
-  const open = judging?.open;
-
-  if (!judging || open?.attempt !== input.attempt) return undefined;
-  const { answer } = input;
-
-  if (answer.kind === 'failed') return { row: 'J4', state: judgingOff(state, answer.failure) };
-  const dropped: SkillState = { ...state, judging: { tool: judging.tool } };
-
-  return { row: 'J3', state: answer.labels.reduce((shown, { scorer, label }) => withEvent(shown, { kind: 'judged', step: open.step, scorer, label }), dropped) };
 }
 
 /** J7: `started` lists runs this run's passes started, which this driver drives while it judges here or the session does. */
@@ -1210,13 +1135,6 @@ function takenOver(state: SkillState, { session, tool, at }: { session: string |
   if (from !== undefined) event.from = from;
 
   return withEvent({ ...state, attempts, orchestrator, seen: { ...state.seen, [seenBy(session)]: told } }, event);
-}
-
-/** `state` with judging off for `failure`: nothing more is judged here, and an open judge's lease lapses. */
-function judgingOff(state: SkillState, failure: WorkflowFailure): SkillState {
-  const { judging: _judging, ...rest } = state;
-
-  return withEvent(rest, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } });
 }
 
 /**

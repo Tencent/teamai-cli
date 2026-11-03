@@ -6,9 +6,7 @@
  * judge's runner is the same call, keyed by the attempt in its lease ref: it runs the judge and renews its lease.
  */
 import { spawn } from 'node:child_process';
-import fs from 'node:fs/promises';
 import path from 'node:path';
-import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import { stepEnvironment, withRunningCli } from '../../../env-exec.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit } from '../../../tool-launch/process-stop.js';
@@ -20,16 +18,15 @@ import { attemptEnv } from '../../attempt-marker.js';
 import { runConfinedStep, type ConfinedStepEnd, type ConfinedStepLease } from '../../confined-step.js';
 import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
-import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
-import { judgeCan } from './host-profiles.js';
-import { writeSkillState, readSkillState, type AttemptState, type Dispatch, type Judge, type ReportBody, type SkillState } from './skill-state.js';
+import type { WorkflowFailure } from '../../types.js';
+import { writeSkillState, readSkillState, type AttemptState, type Dispatch, type ReportBody, type SkillState } from './skill-state.js';
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral, runnerArgs } from './literals.js';
 import { readJob, type Job } from './job.js';
 import { applyEffects, RUNNER_POLL_MS, runTick, traced, WAIT_BOUND_MS } from './tick.js';
 import {
-  confinedEndedRow, exitedRow, judgeAnsweredRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type JudgeAnswer, type MovedWithEffects, type RowId,
+  confinedEndedRow, exitedRow, offerRow, openAttempt, placeBusyRow, placingRow, preparedRow, prepareFailedRow, resendRow, runnerCallRow, runnerStopRow, type MovedWithEffects, type RowId,
 } from './transitions.js';
 import type { Runners, SkillContext } from './skill-driver.js';
 import type { SkillAnswer } from './turn.js';
@@ -88,68 +85,11 @@ type Stage =
    */
   | { kind: 'gone'; status: 'reported' | 'offered' | 'queued' | 'placing' | 'gone' };
 
-/** How often the judge's runner renews its lease while the judge runs: three times inside the lease's 30 minutes. */
-const JUDGE_RENEW_MS = 10 * 60_000;
-
-/** Runs attempt `attempt` of `run` to its report, or the open judge it keys, unless another live runner of it holds its lock. */
+/** Runs attempt `attempt` of `run` to its report, unless another live runner of it holds its lock. */
 export async function runRunner(context: SkillContext, run: RunId, attempt: AttemptId): Promise<SkillAnswer> {
-  const result = await withRunnerLock(context.config, run, attempt, async () => {
-    const { state } = await locked(context, run, async (lock) => ({ state: await readState(context, lock) }));
-    const judging = state?.judging;
-
-    return state && judging?.open?.attempt === attempt ? runJudge(context, state, { tool: judging.tool, open: judging.open }) : runAttempt(context, run, attempt);
-  });
+  const result = await withRunnerLock(context.config, run, attempt, () => runAttempt(context, run, attempt));
 
   return result === 'held' ? { data: { runner: { attempt, status: 'held' } } } : result;
-}
-
-const LabelSchema = z.object({ scorer: z.string(), label: z.string() });
-const JudgedSchema = z.union([z.object({ label: LabelSchema }), z.object({ labels: z.array(LabelSchema) })]);
-
-/** What the judge answered: the label of each scorer, or why it gave none. */
-function judgedOf(answer: WorkflowEnvelope): JudgeAnswer {
-  if ('error' in answer) return { kind: 'failed', failure: { code: answer.error.code, message: answer.error.message } };
-  const judged = JudgedSchema.safeParse(answer.data);
-
-  if (!judged.success) return { kind: 'failed', failure: { code: 'run_unreadable', message: 'The judge answered with a reply this teamai cannot read. Update teamai.' } };
-
-  return { kind: 'judged', labels: ('label' in judged.data ? [judged.data.label] : judged.data.labels).map(({ scorer, label }) => ({ scorer, label })) };
-}
-
-/**
- * Runs the open judge outside the run lock, with its tool's process group recorded in the judge's attempt directory,
- * renewing its lease every `JUDGE_RENEW_MS` until it answers, then takes J3 or J4 under the lock.
- */
-async function runJudge(context: SkillContext, state: SkillState, judging: { tool: string; open: Judge }): Promise<SkillAnswer> {
-  const { run, driver } = state;
-  const { open } = judging;
-  const group = attemptDir(context.config, run, open.attempt);
-  await fs.mkdir(group, { recursive: true });
-  const answered = new AbortController();
-
-  const renewing = (async () => {
-    for (;;) {
-      await context.runners.sleep(JUDGE_RENEW_MS, answered.signal);
-
-      if (answered.signal.aborted) return;
-      // A renewal that fails, by its answer or by throwing, is tried again at the next one: the lease outlasts two that fail.
-      await context.client.scoreNext({ driver: { ...driver, can: { judge: judgeCan(judging.tool) } }, run, running: [open.ref], canTakeLease: false }).catch(() => undefined);
-    }
-  })();
-
-  const judged = judgedOf(await context.client.judge(open.ref, { driver }, { group }));
-  answered.abort();
-  await renewing;
-
-  return locked(context, run, async (lock): Promise<SkillAnswer> => {
-    const current = await readState(context, lock);
-    const taken = current && traced(context, judgeAnsweredRow(current, { attempt: open.attempt, answer: judged }));
-
-    if (!taken) return { data: { runner: { attempt: open.attempt, status: 'gone' } } };
-    await writeSkillState(context.config, lock, taken.state, context.env.secrets);
-
-    return { data: { runner: { attempt: open.attempt, status: 'reported' } } };
-  });
 }
 
 async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId): Promise<SkillAnswer> {

@@ -299,10 +299,6 @@ steps:
     scorers: { names: [review-quality], start: workflow }
 `;
 
-// Judged before the run ends, through a judge lease of the run (J1 to J6).
-
-const REVIEW_ALL = REVIEW.replace('start: workflow', 'sampling: all');
-
 const RELEASE = `schemaVersion: v1alpha1
 name: release
 description: Write the notes, review them, then deploy
@@ -2209,44 +2205,6 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'a pass of a scorer that samples all is judged through a judge lease of its run, which waits for it before it ends',
-    rows: ['J1', 'J2', 'J3'],
-    run: async () => {
-      const made = await harness({ review: REVIEW_ALL }, { scorers: SCORERS });
-      fakeJudge(made.root, 'thorough');
-      const driving = await reviewed(made);
-      expect(driving).toMatchObject({ status: 'driving' });
-      const done = await polledToDone(made, driving.run);
-      expect([...driving.events, ...done.events]).toContainEqual(expect.objectContaining({ kind: 'judging', step: 'review', scorers: ['review-quality'], ref: expect.any(String) }));
-      expect(await polledFor(made, done, 'judged')).toContainEqual({ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' });
-      return made.rows;
-    },
-  },
-  {
-    name: 'a judge that fails turns judging off',
-    rows: ['J4'],
-    run: async () => {
-      const made = await harness({ review: REVIEW_ALL }, { scorers: SCORERS });
-      fakeJudge(made.root, 'thorough', 1);
-      const driving = await reviewed(made);
-      expect(await polledFor(made, driving, 'judging-off')).toContainEqual({ kind: 'judging-off', failure: { code: 'judge_failed', message: expect.stringContaining('claude exited with code 1') } });
-      return made.rows;
-    },
-  },
-  {
-    name: 'a judge whose runner died turns judging off once the grace passed',
-    rows: ['J5'],
-    run: async () => {
-      // The first runner is the review step's; the judge's never starts, as one killed at once.
-      let spawns = 0;
-      const made = await harness({ review: REVIEW_ALL }, { scorers: SCORERS, runners: (runners) => ({ ...runners, spawn: async (job) => { spawns += 1; if (spawns === 1) await runners.spawn(job); } }) });
-      fakeJudge(made.root, 'thorough');
-      const driving = await reviewed(made);
-      expect(await polledFor(made, driving, 'judging-off')).toContainEqual({ kind: 'judging-off', failure: { code: 'judge_runner_gone', message: expect.stringContaining('step review') } });
-      return made.rows;
-    },
-  },
-  {
     name: 'a run that a pass started is driven as this run\'s own, its judge confined here, and next shows it until it labelled the pass',
     rows: ['J7', 'J8', 'X1', 'J9'],
     run: async () => {
@@ -2304,17 +2262,6 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'score --next refusing the judge turns judging off',
-    rows: ['J6'],
-    run: async () => {
-      const refusal = { code: 'scoring_settings_invalid', message: 'scoring.isolation in config.yaml is not a known level.' };
-      const made = await harness({ review: REVIEW }, { scorers: SCORERS, client: (client) => ({ ...client, scoreNext: async () => ({ error: refusal }) }) });
-      fakeJudge(made.root, 'thorough');
-      expect((await chosen(made, 'review', 1)).events).toContainEqual({ kind: 'judging-off', failure: refusal });
-      return made.rows;
-    },
-  },
-  {
     name: 'a step confined to a directory runs on the confined tool of this machine, in the runner, as the local driver runs it',
     rows: ['D28', 'C12', 'C13'],
     run: async () => {
@@ -2344,32 +2291,6 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(polls.flatMap(dispatches)).toEqual([]);
       const engine = await readRun(made.config, run);
       expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judge')).toMatchObject({ status: 'pending' });
-      return made.rows;
-    },
-  },
-  {
-    name: 'a confined step D28 leased runs on the confined tool even when judging turns off before its runner begins',
-    rows: ['D28', 'J6', 'C12'],
-    run: async () => {
-      let leased = false;
-      const refusal = { code: 'scoring_settings_invalid', message: 'scoring.isolation in config.yaml is not a known level.' };
-      const made = await harness({ judged: JUDGED }, { client: (client) => ({
-        ...client,
-        next: async (...args) => {
-          const answer = await client.next(...args);
-          if ('data' in answer && JSON.stringify(answer.data.lease ?? {}).includes('"step":"judge"')) leased = true;
-          return answer;
-        },
-        scoreNext: async (...args) => (leased ? { error: refusal } : client.scoreNext(...args)),
-      }) });
-      fakeConfinedClaude(made.root, { verdict: 'pass' });
-      const turn = await chosen(made, 'judged', 1);
-      expect(dispatches(turn)).toEqual([]);
-      const done = await polledToDone(made, turn.run);
-      expect([...turn.events, ...done.events]).toContainEqual({ kind: 'judging-off', failure: refusal });
-      expect(dispatches(done)).toEqual([]);
-      const engine = await readRun(made.config, turn.run);
-      expect(typeof engine === 'object' && engine.steps.find((step) => step.id === 'judge')).toMatchObject({ status: 'succeeded', confined: { tool: 'claude' } });
       return made.rows;
     },
   },

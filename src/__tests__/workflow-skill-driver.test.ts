@@ -4,15 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { LabelStore } from '../scorers/label-store.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { RunMode } from '../launch-context.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome } from '../types.js';
 import type { ToolId } from '../tools.js';
 import { skillContext } from '../workflow/drivers/skill/skill-driver.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
-import { takeJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
 import { AttemptIdSchema, deliveryLockPath, readRun, RunIdSchema, skillStatePath, type RunId } from '../workflow/store.js';
 import { Crash, fakeConfinedClaude, fakeJudge, githubOrigin, LABEL_PASS, scoringStarted, skillHarness, untilStopped } from './helpers/skill-harness.js';
 
@@ -97,9 +94,6 @@ steps:
     scorers: { names: [review-quality], start: workflow }
 `;
 
-// Judged before the run ends, through a judge lease of the run.
-const REVIEW_ALL = REVIEW.replace('start: workflow', 'sampling: all');
-
 const REVIEW_QUALITY = `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -108,17 +102,6 @@ passingScore: 0.5
 samplingRate: 100
 ---
 Judge the review.
-`;
-
-const SESSION_QUALITY = `---
-labels:
-  - { value: good, score: 1, description: Did the work }
-  - { value: bad, score: 0, description: Did not }
-passingScore: 0.5
-samplingRate: 100
-sessions: true
----
-Judge the session.
 `;
 
 const IMPLEMENT = `schemaVersion: v1alpha1
@@ -255,26 +238,6 @@ function unverifiedClaude(harness: Harness): void {
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}\nconsole.log('0.0.1 (Claude Code)');\n`, { mode: 0o755 });
   vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
-}
-
-/** A Claude Code session of the harness's checkout, captured and idle for 7 hours: finished, for session scoring to judge. */
-function idleSession(harness: Harness): void {
-  const sessionId = '7c1e0000-0000-4000-8000-000000000021';
-  const project = path.join(harness.root, 'home', '.claude', 'projects', encodeCwdClaude(harness.work));
-  fs.mkdirSync(project, { recursive: true });
-  const file = path.join(project, `${sessionId}.jsonl`);
-  const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
-  fs.writeFileSync(file,
-    line({ type: 'user', uuid: 'u1', parentUuid: null, cwd: harness.work, sessionId, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: 'Add retries to the client' } })
-    + line({ type: 'assistant', uuid: 'u2', parentUuid: 'u1', cwd: harness.work, sessionId, timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: 'Added the retries.' }] } }));
-  const idleSince = new Date(Date.now() - 7 * 60 * 60 * 1000);
-  fs.utimesSync(file, idleSince, idleSince);
-  const captures = path.join(harness.config.dataHome ?? '', 'sessions', 'captures', 'claude-code', sessionId);
-  fs.mkdirSync(captures, { recursive: true });
-  const captureId = '0b6f2a52-5d7e-4c7e-9a43-000000000021';
-  fs.writeFileSync(path.join(captures, `${captureId}.json`), JSON.stringify({
-    captureId, platform: 'claude-code', sessionId, capturedAt: idleSince.toISOString(), agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file,
-  }));
 }
 
 const roots: string[] = [];
@@ -1187,59 +1150,6 @@ steps:
     const { turn: done } = await reviewed(harness, 'attended', { judge: false });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
     expect(done).not.toHaveProperty(['data', 'turn', 'actions', 0, 'score']);
-  });
-
-  it('a skill run judges only its own passes: never a finished session, never another run\'s pass', async () => {
-    const leases: unknown[] = [];
-    const harness = await skillHarness({ review: REVIEW_ALL }, {
-      scorers: { 'review-quality': REVIEW_QUALITY, 'session-quality': SESSION_QUALITY }, scoring: { sessions: true },
-      client: (client) => ({ ...client, scoreNext: async (body) => {
-        const answer = await client.scoreNext(body);
-        if ('data' in answer && answer.data.lease !== undefined) leases.push(answer.data.lease);
-        return answer;
-      } }),
-    });
-    roots.push(harness.root);
-    fakeJudge(harness.root, 'thorough');
-    idleSession(harness);
-    // An older run whose pass another driver settled: it is open for judging, and a driver of any run would take it first.
-    const external = { kind: 'external', machine: 'm2', workspace: '/w' };
-    const engine = inProcessClient({ config: harness.config, env: harness.context.env });
-    const started = await engine.start('review', { caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
-    const other = 'data' in started ? String(started.data.run) : '';
-    const next = await engine.next(other, { driver: external });
-    const work = z.object({ attempt: z.string(), revision: z.number() }).parse('data' in next ? next.data.lease : undefined);
-    expect(await engine.report(other, { ...work, driver: external, outcome: 'success', outputs: 'Reviewed.' })).toMatchObject({ data: {} });
-
-    const { run } = await reviewed(harness);
-    expect(await eventsUntil(harness, run, 'judged')).toContainEqual(expect.objectContaining({ kind: 'judged', step: 'review' }));
-    // A tick after its own pass is judged: a driver that took any judge work would take the other run's pass now.
-    await harness.call({ kind: 'next', run, wait: false });
-
-    expect(leases).toEqual([expect.objectContaining({ source: 'workflow', subject: { runId: run, step: 'review', pass: 1 } })]);
-    const judge = { isolation: 'verified', tools: ['claude'] } satisfies JudgeRequest['judge'];
-    const now = new Date().toISOString();
-    expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], run: other }, now)).toMatchObject({ kind: 'lease', lease: { subject: { runId: other } } });
-    expect(await takeJudgeLease(harness.config, { driver: external, judge, running: [], only: 'session' }, now)).toMatchObject({ kind: 'lease', lease: { source: 'session' } });
-  });
-
-  it('declares what its session tool\'s judge can do, so the judge lease and the label record that it only reads', async () => {
-    const leases: unknown[] = [];
-    const harness = await skillHarness({ review: REVIEW_ALL }, {
-      scorers: { 'review-quality': REVIEW_QUALITY },
-      client: (client) => ({ ...client, scoreNext: async (body) => {
-        const answer = await client.scoreNext(body);
-        if ('data' in answer && answer.data.lease !== undefined) leases.push(answer.data.lease);
-        return answer;
-      } }),
-    });
-    roots.push(harness.root);
-    fakeJudge(harness.root, 'thorough');
-    const { run } = await reviewed(harness);
-    expect(await eventsUntil(harness, run, 'judged')).toContainEqual(expect.objectContaining({ kind: 'judged', step: 'review' }));
-
-    expect(leases).toEqual([expect.objectContaining({ judge: expect.objectContaining({ tool: 'claude', access: 'read' }) })]);
-    expect(await LabelStore.local(harness.config)).toEqual([expect.objectContaining({ judge: expect.objectContaining({ tool: 'claude', access: 'read' }) })]);
   });
 
   it('a deliver: pr step shows waiting delivering, and the poll returns done with the PR', async () => {

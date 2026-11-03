@@ -429,6 +429,17 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
     ],
   },
   {
+    name: 'a step whose scorers judge every pass gets its own teamai-score run for each, and the run ends without waiting for a judge',
+    workflowName: 'review',
+    yaml: SCORED_PASS.replace('scorers: [quality]', 'scorers: { names: [quality], sampling: all }'),
+    teamFiles: { 'scorers/quality.md': QUALITY_SCORER.replace('samplingRate: 100', 'samplingRate: 0') },
+    operations: [
+      { kind: 'next', saveAs: 'review', expect: { data: { lease: { step: 'review' } } } },
+      { kind: 'report', lease: 'review', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' }, started: [{ step: 'review', pass: 1, scorers: ['quality'] }] } } },
+      { kind: 'next', saveAs: 'end', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+  },
+  {
     name: 'the next that settles a scored workflow step answers the run it started for the pass, as the run ends',
     workflowName: 'ship',
     yaml: SCORED_WORKFLOW_STEP,

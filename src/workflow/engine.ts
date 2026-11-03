@@ -18,7 +18,6 @@ import {
 } from './expression.js';
 import { outputMismatch } from './output.js';
 import { publishRunRecords, queueRunRecord, runRecordState } from './records.js';
-import { freezeVerdicts, isUnsettled, verdictEntries } from './scoring-entries.js';
 import {
   parseTemplate, renderLeaseText, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
   type StepExpression, type TemplateError,
@@ -51,9 +50,7 @@ import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutc
 import { withFileLock } from '../update.js';
 import { admitWorkflow, heldSecret, type Admitted } from './admission.js';
 import { workflowField } from './parse.js';
-import { scoresDir } from '../scorers/attempts.js';
 import { isLeaseRef } from '../scorers/entry.js';
-import { removeSubjectEvidence } from '../scorers/evidence.js';
 import { JudgeUsageSchema, type JudgeUsage } from '../scorers/label.js';
 import type {
   DriverIdentity,
@@ -590,10 +587,8 @@ function settleRun(run: RunState, now: string, result: WorkflowResult): void {
 export type Finished = { kind: 'finalizing' } | { kind: 'settled'; queued: boolean };
 
 /**
- * Finishes a run whose steps ended, after any judges it waits for, in one order: the entries of its `sampling: all`
- * scorers freeze as they stand, in `run.verdicts`, and the evidence collected for their passes goes; then its `finally`
- * steps run; then, once they settle, it settles and queues its end record in the same locked operation. So nothing a
- * `finally` step does changes a verdict, and its record holds every verdict.
+ * Finishes a run whose steps ended, in one order: its `finally` steps run; then, once they settle, it settles and queues
+ * its end record in the same locked operation.
  */
 export async function finishRun(
   config: LocalConfig,
@@ -603,17 +598,6 @@ export async function finishRun(
   secrets: Record<string, string>,
   driver?: DriverIdentity,
 ): Promise<Finished> {
-  if (!run.finalizing) {
-    // The run changes now, so an entry is read as of now, as every judge read it.
-    run.updatedAt = now;
-    const verdicts = await freezeVerdicts(config, run, now);
-
-    if (verdicts.length > 0) {
-      run.verdicts = verdicts;
-      await removeSubjectEvidence(scoresDir(config), verdicts.map(({ step, pass }) => ({ runId: run.id, step, pass })));
-    }
-  }
-
   if (enterFinalizing(run, result, now)) return { kind: 'finalizing' };
   settleRun(run, now, result);
   await fs.rm(runScratchDir(config, run.id), { recursive: true, force: true });
@@ -1775,13 +1759,6 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
     // Undefined once the run's `finally` steps start, so the loop hands them out.
     const done = async (result: WorkflowResult): Promise<{ save: boolean; envelope: WorkflowEnvelope } | undefined> => {
-      // A run that reached its end waits for the judges its steps require; a timeout, a limit or a cancel does not.
-      const judging = result.outcome === 'succeeded' && !run.finalizing ? (await verdictEntries(config, run, now)).filter(isUnsettled).length : 0;
-
-      if (judging > 0) {
-        return answer({ wait: { reason: `${judging} judge entries of run ${run.id} are not settled: judge them with teamai score --next`, judging } });
-      }
-
       const finished = await finishRun(config, run, now, result, env.secrets, driver);
 
       if (finished.kind === 'finalizing') return undefined;

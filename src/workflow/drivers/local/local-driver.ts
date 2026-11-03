@@ -23,9 +23,7 @@ import { LeaseWireSchema, type LeaseWire } from '../../lease-wire.js';
 import { setsLimit, type DriverCan } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl, type ResponseInput } from '../../run-controls.js';
 import { isRecord } from '../../expression.js';
-import { MAX_TIMER_DELAY } from '../../shell-command.js';
-import { judgeRunEntries } from '../../scoring.js';
-import { budgeted, runDeadline } from '../../limits.js';
+import { budgeted } from '../../limits.js';
 import { resolveCliPath } from '../../../utils/cli-path.js';
 import {
   createLocalToolAdapter,
@@ -119,7 +117,6 @@ const HitlRequestSchema = z.object({
 /** What the engine's `next` says the driver waits for. */
 const WaitReplySchema = z.object({
   delivering: z.array(z.unknown()).optional().catch(undefined),
-  judging: z.number().optional().catch(undefined),
   reason: z.string().optional().catch(undefined),
   held: z.array(z.object({ reason: z.string(), missing: z.array(z.string()) })).optional().catch(undefined),
 }).catch({});
@@ -741,13 +738,6 @@ function isSandbox(config: LocalConfig, options: Pick<LocalDriverOptions, 'sandb
   return options.sandbox === true || config.workflows?.sandbox === true;
 }
 
-/** A signal that aborts at `expiresAt`. A deadline further away than a timer can wait never aborts it. */
-function deadlineSignal(expiresAt: string | undefined): AbortSignal {
-  const remaining = expiresAt === undefined ? undefined : Math.max(0, Date.parse(expiresAt) - Date.now());
-
-  return remaining === undefined || remaining > MAX_TIMER_DELAY ? new AbortController().signal : AbortSignal.timeout(remaining);
-}
-
 /**
  * Whether a person answers the HITL requests the local driver puts to them in run mode `mode`: an attended run at a
  * terminal. A terminal alone is not a person: an unattended run under a pseudo-terminal asks nobody.
@@ -859,8 +849,6 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
     void running.command.stop();
   };
 
-  // Work the loop does itself between leases: the run's judges.
-  let working: AbortController | undefined;
   let interactiveIgnores: readonly NodeJS.Signals[] = [];
   let signalled: NodeJS.Signals | undefined;
   let wake = (): void => {};
@@ -885,27 +873,11 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
   const onSignal = (signal: NodeJS.Signals): void => {
     if (interactiveRuns() && interactiveIgnores.includes(signal)) return;
 
-    if (busy() === 0 && !working) return exitOn(signal);
+    if (busy() === 0) return exitOn(signal);
     signalled ??= signal;
 
     for (const { controller } of prompts.values()) controller.abort(signal);
-    working?.abort(signal);
     wake();
-  };
-
-  // Runs `work` as that work: the driver handles every stop signal meanwhile, and one stops it.
-  const runHere = async <T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> => {
-    const before = handled;
-    const controller = new AbortController();
-    working = controller;
-    handle(STOP_SIGNALS);
-
-    try {
-      return await work(controller.signal);
-    } finally {
-      working = undefined;
-      handle(before);
-    }
   };
 
   if (maxParallel > 1) handle(STOP_SIGNALS);
@@ -1107,20 +1079,6 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
 
         // A wait for a call that could not take a lease says nothing about what is left; ask again with room.
         if (!canTakeLease) continue;
-
-        // The run waits for the judges of its `sampling: all` entries: this driver judges them itself, up to the run's
-        // deadline, so the next `next` ends a run out of time as timed out.
-        if (wait.judging !== undefined) {
-          const run = await readRun(config, runId);
-          const ends = deadlineSignal(run !== 'missing' && run !== 'corrupt' ? runDeadline(run) : undefined);
-          const judging = await runHere((signal) => judgeRunEntries(config, runId, cwd, AbortSignal.any([signal, ends])));
-
-          if (signalled) return { error: { code: 'interrupted', message: `Stopped while the judges of run ${runId} ran. Continue with teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}.` } };
-
-          if (judging.kind === 'settled' || judging.kind === 'stopped') continue;
-
-          if (judging.kind === 'skipped') log.info(judging.message);
-        }
 
         const confinedWait = handedBack ?? (heldForConfined(wait.held) ? wait.held.map((item) => item.reason.replace(/\.$/u, '')).join('; ') : undefined);
 

@@ -75,16 +75,11 @@ async function startedRun(file: string): Promise<RunId | undefined> {
   }
 }
 
-/** The passes of `run` the scoring module starts: those its step does not leave to the workflow or to the engine's own wait. */
+/** The passes of `run` the scoring module starts: those its step does not leave to the workflow's own steps. */
 async function startable(config: LocalConfig, run: RunState): Promise<ScorablePass[]> {
   const definitionOf = stepDefinitions(run);
 
-  return scoredPasses(run, (await installOwner(config)).id).filter(({ subject }) => {
-    const scorers = definitionOf(subject.step)?.scorers;
-
-    // `sampling: all` passes are still judged before the run ends, through the engine's judge entries.
-    return scorers?.start !== 'workflow' && scorers?.sampling !== 'all';
-  });
+  return scoredPasses(run, (await installOwner(config)).id).filter(({ subject }) => definitionOf(subject.step)?.scorers?.start !== 'workflow');
 }
 
 /** Whether `run` ended and last changed longer ago than a mark lasts, so none of its passes is scored again. */

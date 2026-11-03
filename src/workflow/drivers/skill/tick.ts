@@ -9,8 +9,8 @@ import type { ResumeClaim, RunReadied } from '../../protocol.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
-import { engineReply, reportReply, respondReply, scoreReply, startedOf } from './engine-replies.js';
-import { canFor, confinedCan, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
+import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
+import { canFor, confinedCan, HOST_PROFILES, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
@@ -19,8 +19,8 @@ import {
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
 import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
-  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoreReplyRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
+  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
 import { errorOf, scoringWaits, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
@@ -117,32 +117,6 @@ async function sendReport(context: SkillContext, lock: RunLock, state: SkillStat
 }
 
 /**
- * The judge work of a tick: gives judging up when the open judge's runner is gone (J5), then renews its lease, or,
- * with no judge open, takes the next pass of this run to judge and spawns its runner (J1, J2).
- */
-async function judgeTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<SkillState> {
-  let state = start;
-  const open = state.judging?.open;
-
-  if (open && !(await context.runners.alive(state.run, open.attempt))) {
-    const freed = traced(context, judgeFreeRow(state, { at: context.now().toISOString(), graceMs: WAIT_GRACE_MS }));
-
-    if (freed) state = (await applyEffects(context, lock, freed.state, freed.effects)).state;
-  }
-
-  const ticked = traced(context, judgeTickRow(state, role));
-
-  if (!ticked) return state;
-  const { tool, running, canTakeLease } = ticked.request;
-  const answer = await context.client.scoreNext({ driver: { ...state.driver, can: { judge: judgeCan(tool) } }, run: state.run, running, canTakeLease });
-  const replied = traced(context, scoreReplyRow(state, { reply: scoreReply(answer), at: context.now().toISOString() }));
-
-  if (!replied) return state;
-
-  return (await applyEffects(context, lock, replied.state, replied.effects)).state;
-}
-
-/**
  * What a tick leaves: the state, whether it spawned runners, why the run leases nothing more, the turn a row of the tick
  * decided, and the error the engine answered.
  */
@@ -152,15 +126,11 @@ interface Ticked extends TickTurn {
   error?: SkillError;
 }
 
-/**
- * One tick under `lock`: the steps' tick, then the judge work's, then, for a call, each run `scoring` lists. Judge
- * runners count as no spawn: a turn waits for nothing of theirs.
- */
+/** One tick under `lock`: the steps' tick, then, for a call, each run `scoring` lists. */
 export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<Ticked> {
   const stepped = await stepTick(context, lock, start, role);
-  const judged = await judgeTick(context, lock, stepped.state, role);
 
-  return { ...stepped, state: role === 'call' ? await scoringTick(context, judged) : judged };
+  return { ...stepped, state: role === 'call' ? await scoringTick(context, stepped.state) : stepped.state };
 }
 
 /**

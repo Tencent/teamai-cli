@@ -429,7 +429,7 @@ function actionsOf(state: SkillState, scoring: readonly SkillState[]): Action[] 
     return [place];
   });
 
-  const judge = state.judging?.open ?? state.scoring[0];
+  const [judge] = state.scoring;
 
   const end: Action[] = [];
 
@@ -491,7 +491,7 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
 
   // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
   // oxlint-disable-next-line unicorn/no-thenable
-  if (input.after && (!state.done || state.attempts.length > 0 || state.judging?.open || state.scoring.length > 0)) turn.then = input.after;
+  if (input.after && (!state.done || state.attempts.length > 0 || state.scoring.length > 0)) turn.then = input.after;
 
   return turn;
 }
