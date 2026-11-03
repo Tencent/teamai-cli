@@ -65,6 +65,11 @@ export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.
 
 export const WorkspaceContractSchema = z.discriminatedUnion('mode', [...CopyContractOptions, TeamContractSchema]) satisfies z.ZodType<WorkspaceContract>;
 
+/** Whether `contract` publishes what its step stages to a data branch, so it makes no copy a driver works in. */
+export function isPublishContract(contract: WorkspaceContract): boolean {
+  return contract.mode === 'team' && contract.publish === true;
+}
+
 export interface SessionRef {
   tool: string;
   id: string;

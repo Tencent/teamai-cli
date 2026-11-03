@@ -34,7 +34,7 @@ import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, lease
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { contractClone, deliverableOf, deliveryTarget, isIsolated, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { contractClone, deliverableOf, deliveryTarget, isIsolated, isPublishContract, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
   deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
@@ -475,7 +475,7 @@ function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity
   const { contract } = plan;
 
   // A step that publishes to a data branch makes no copy: what it staged is on origin, or pending, once it finished.
-  if (!contract || (contract.mode === 'team' && contract.publish)) return;
+  if (!contract || isPublishContract(contract)) return;
   const { branch } = contract;
   const copy = (run.copies ??= {})[branch];
 
@@ -2790,7 +2790,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     }
 
     // The step itself ran in the copy, not only its staging or setup.
-    if (contract && !(contract.mode === 'team' && contract.publish) && (report.outcome === 'success' || report.exitCode !== undefined || report.changes || report.read)) {
+    if (contract && !isPublishContract(contract) && (report.outcome === 'success' || report.exitCode !== undefined || report.changes || report.read)) {
       ((run.copies ??= {})[contract.branch] ??= { owner: report.driver }).used = true;
     }
 
