@@ -460,6 +460,14 @@ export function unreadablePlace(run: RunId): WorkflowFailure {
   return { code: 'workspace_base', message: `Run ${run} leased a place this teamai cannot read. Update teamai.` };
 }
 
+/** The directory a confined lease reads alone, where it is prepared: no place of the checkout is made, set up or snapshotted for it. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the skill driver passes the lease of an envelope it has not parsed; ConfinedLeaseSchema parses it here
+function confinedDirOf(raw: unknown): string | undefined {
+  const lease = z.object({ confined: ConfinedLeaseSchema }).safeParse(raw);
+
+  return lease.success ? lease.data.confined.dir : undefined;
+}
+
 /** The lease `raw` names, as the run leases it now. */
 // oxlint-disable-next-line teamai/no-unknown-parameters -- the skill driver passes the lease of an envelope it has not parsed; LeaseWireSchema parses it here
 async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Promise<Leased | { kind: 'failed'; failure: WorkflowFailure }> {
@@ -549,6 +557,9 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return described;
     },
     prepare: async (lock, raw) => {
+      const dir = confinedDirOf(raw);
+
+      if (dir !== undefined) return { kind: 'prepared', dir };
       const leased = await leasedPlace(config, lock, raw);
 
       return leased.kind === 'leased' ? placeLeased(config, lock, leased) : leased;
@@ -815,10 +826,9 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
     return { error: failure };
   };
 
-  const confined = ConfinedLeaseSchema.safeParse(named.data.confined);
+  const confined = confinedDirOf(named.data);
 
-  // A confined step reads its directory alone, so no place of the checkout is made, set up or snapshotted for it.
-  if (confined.success) return { data: { ...answer.data, lease: { ...named.data, cwd: confined.data.dir } } };
+  if (confined !== undefined) return { data: { ...answer.data, lease: { ...named.data, cwd: confined } } };
   const leased = await leasedPlace(config, lock, answer.data.lease);
   const placed = leased.kind === 'leased' ? await placeLeased(config, lock, leased, adopt) : leased;
 

@@ -9,7 +9,7 @@ import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import type { AgentEvidence } from '../workflow/attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
-import { readRun, RunIdSchema, withRunLock, type RunLock } from '../workflow/store.js';
+import { readRun, RunIdSchema, runScratchDir, withRunLock, type RunLock } from '../workflow/store.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -171,6 +171,34 @@ describe('workflow protocol in process', () => {
     }, { waitMs: 0 });
     const stored = await readRun(config, run);
     expect(typeof stored === 'object' && stored.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'command_failed' } });
+  });
+
+  it('prepares a confined step in its directory alone, so a change to the checkout while it runs does not fail it', async () => {
+    const judged = 'schemaVersion: v1alpha1\nname: judged\ndescription: Judge the evidence.\nsteps:\n  - id: evidence\n    command: node -e "process.exit(0)"\n  - id: judge\n    needs: [evidence]\n    workspace: { confined: evidence }\n    prompt: Judge diff.txt.\n    output:\n      verdict: pass | fail\n';
+    const { config, checkout } = await fixture({ judged });
+    const client = await protocol(config);
+    const started = await client.start('judged', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    if (!('data' in started)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.run);
+    const confining = { ...driver, can: { ...driver.can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }] } } as const;
+    const first = await client.next(run, { driver: confining });
+    if (!('data' in first) || !('lease' in first.data)) throw new Error(JSON.stringify(first));
+    const evidence = LeaseSchema.parse(first.data.lease);
+    const dir = path.join(runScratchDir(config, run), 'evidence');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'confined.json'), '{"level":"verified"}');
+    await client.report(run, { attempt: evidence.attempt, revision: evidence.revision, outcome: 'success', driver: confining });
+    const next = await client.next(run, { driver: confining });
+    if (!('data' in next) || !('lease' in next.data)) throw new Error(JSON.stringify(next));
+    const judge = LeaseSchema.parse(next.data.lease);
+    const confinedDir = z.object({ confined: z.object({ dir: z.string() }) }).parse(judge).confined.dir;
+
+    const answer = await withRunLock(config, run, async (lock) => {
+      expect(await client.prepare(lock, judge)).toEqual({ kind: 'prepared', dir: confinedDir });
+      fs.writeFileSync(path.join(checkout, 'README.md'), 'changed\n');
+      return client.report(run, { attempt: judge.attempt, revision: judge.revision, outcome: 'success', driver: confining, outputs: { verdict: 'pass' }, confined: { tool: 'claude', isolation: 'verified', access: 'read' } }, { lock });
+    }, { waitMs: 0 });
+    expect(answer).toMatchObject({ data: { accepted: true, step: { id: 'judge', status: 'succeeded' } } });
   });
 
   it('refuses to prepare an attempt the run has not leased', async () => {
