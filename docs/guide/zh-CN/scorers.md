@@ -401,7 +401,7 @@ $ teamai score --session 7c1e… --scorer review-quality --label flaky
 
 ```console
 $ teamai score --session 7c1e… --scorer review-quality --label good       # 在 agent 的 shell 里
-{"error":{"code":"invoke_denied","message":"Workflow \"teamai-score\" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). …"}}
+{"error":{"code":"invoke_denied","message":"Workflow \"teamai-score\" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person runs teamai score --session 7c1e… --source claude-code --scorer review-quality --label good in their own terminal, and the agent judges this session with /teamai-share-session."}}
 ```
 
 `--label` 只接受一个 `--scorer`，且必须是 `teamai pull` 缓存的评分器名，在任何运行开始前检查。之后 `teamai-score` 跳过各阶段和评审者。标签的 `score` 和是否通过来自评分器，与评审者的标签相同，没有推理文件。它与评审者的标签一样存储和发布，`judge` 为 `{ kind: "human" }`。同一会话的手动标签和评审者标签并存：用评审者重新评分不会替换手动标签。多个成员手动标注同一会话时，只计入最新的那个手动标签。

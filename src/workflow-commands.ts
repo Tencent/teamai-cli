@@ -361,6 +361,8 @@ export async function workflowStart(name: string, options: StartOptions): Promis
  */
 export interface ShortcutStart {
   scope?: LocalConfig;
+  /** What the person and the agent run in place of the shortcut, when an agent session's start is refused. */
+  instead?: string;
   answer?: (config: LocalConfig, runId: string, driven: WorkflowEnvelope) => Promise<WorkflowEnvelope | undefined>;
 }
 
@@ -452,7 +454,7 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
   const alone = options.driver === 'local' ? localStrictCan(config, options) : undefined;
-  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout });
+  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead });
 
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);

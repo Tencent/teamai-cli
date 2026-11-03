@@ -140,7 +140,9 @@ console.log(JSON.stringify({ type: 'result', structured_output: { answer: { labe
     expect(envelope(unknown.stdout).error).toEqual({ code: 'label_invalid', message: '"flaky" is not a label of scorer review-quality. Use one of: good, missed-bug.' });
     const fromSession = await runCLI(['score', '--scorer', 'review-quality', '--label', 'missed-bug'], app, inside);
     expect(fromSession.code).toBe(1);
-    expect(envelope(fromSession.stdout).error).toMatchObject({ code: 'invoke_denied' });
+    expect(envelope(fromSession.stdout).error).toMatchObject({
+      code: 'invoke_denied', message: expect.stringContaining(`The person runs teamai score --session ${SESSION} --source claude-code --scorer review-quality --label missed-bug in their own terminal`),
+    });
     expect(fs.existsSync(path.join(home, '.teamai', 'scores'))).toBe(false);
 
     const byHand = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--label', 'missed-bug', '--push'], app, env);

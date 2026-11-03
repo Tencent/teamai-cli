@@ -151,7 +151,11 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     // A session is judged from the person's terminal: from inside it, teamai-score refuses the agent, and nothing is written.
     const inside = await runCLI(['score', '--scorer', 'review-quality'], app, { ...env, CLAUDE_CODE_SESSION_ID: SESSION });
     expect(inside.code, inside.stdout + inside.stderr).toBe(1);
-    expect(envelope(inside.stdout).error).toMatchObject({ code: 'invoke_denied' });
+    expect(envelope(inside.stdout).error).toEqual({
+      code: 'invoke_denied',
+      message: 'Workflow "teamai-score" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). '
+        + `The person runs teamai score --session ${SESSION} --source claude-code --scorer review-quality in their own terminal, and the agent judges this session with /teamai-share-session.`,
+    });
     expect(fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n')).toHaveLength(1);
   });
 

@@ -93,7 +93,7 @@ export interface WorkflowClient {
    * The run records an agent as its starter when `caller` has agent evidence, else `startedBy: 'cli'` for one of the
    * CLI's own automatic starts, else a person. `driver`: the driver the run is recorded for from its start.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy?: 'cli'; driver?: DriverIdentity }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy?: 'cli'; driver?: DriverIdentity; instead?: string }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -192,9 +192,10 @@ export interface InvokeCaller {
 
 /**
  * What a caller asks of a workflow: to start a run; to continue run `run`, by `workflow resume` or a takeover; or to
- * claim it with a `next` payload, which has no field for the person's yes.
+ * claim it with a `next` payload, which has no field for the person's yes. A start a shortcut command makes may say, in
+ * `instead`, what the person and the agent run in its place, for an `invoke: deny` refusal.
  */
-export type InvokeAct = { kind: 'start' } | { kind: 'continue'; run: RunId } | { kind: 'claim'; run: RunId };
+export type InvokeAct = { kind: 'start'; instead?: string } | { kind: 'continue'; run: RunId } | { kind: 'claim'; run: RunId };
 
 /** What shows an agent runs the calling process, as the clause the `invoke` refusals end their first sentence with. */
 function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
@@ -217,7 +218,8 @@ function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string
 export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidence, { kind: 'none' }>, act: InvokeAct): string {
   switch (act.kind) {
     case 'start':
-      return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
+      return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. ${act.instead
+        ?? `The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`}`;
     case 'continue':
     case 'claim':
       return `Workflow "${name}" has invoke: deny, so no coding agent continues it, with any driver, and ${agentClause(evidence)}. The person can continue it from their own terminal with teamai workflow resume ${act.run}. To let agents continue it, the team sets invoke: allow, or invoke: ask for a resume after the person agrees, in workflows/${name}.yaml.`;
@@ -592,9 +594,9 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
     setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, env, signal }),
-    start: async (name, { inputs, checkout, caller, timeout, alone, startedBy, driver }) => {
+    start: async (name, { inputs, checkout, caller, timeout, alone, startedBy, driver, instead }) => {
       const cached = await loadCachedWorkflow(config, name);
-      const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
+      const refused = invokeRefusal(cached?.definition, caller, { kind: 'start', instead });
 
       if (refused) return { error: refused };
       const base = checkout === undefined ? undefined : await headCommit(checkout);

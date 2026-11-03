@@ -11,6 +11,7 @@ import { scoreSession, type OwnJudge, type SessionDemand, type TeamSession } fro
 import type { JsonValue, LocalConfig } from './types.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from './scorers/label-store.js';
 import { log, setStderrOnly } from './utils/logger.js';
+import { shellQuoteValue } from './utils/shell-profile.js';
 import { findRunConfig, partitionConfig, projectPartitions } from './workflow/run-location.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, submitJudgeLease } from './workflow/scoring.js';
 import { readRun } from './workflow/store.js';
@@ -338,6 +339,43 @@ export async function scoreCommand(options: ScoreOptions): Promise<void> {
 
 export const SCORE_WORKFLOW = 'teamai-score';
 
+/** `value` as one shell word: as it is when the shell reads nothing special in it, else single-quoted. */
+function shellWord(value: string): string {
+  return /^[\w.:/@%+=-]+$/u.test(value) ? value : shellQuoteValue(value);
+}
+
+/**
+ * What an agent session runs in place of `start`, which it may not make: the person runs the same `teamai score` in
+ * their own terminal, naming the subject in full, and the agent judges its own session with /teamai-share-session.
+ */
+function insteadOf(start: ScoreStart, driver: string | undefined): string {
+  const { subject } = start.named;
+  const words = ['teamai', 'score'];
+
+  switch (subject.kind) {
+    case 'run':
+      words.push('--run', subject.subject.runId, '--step', subject.subject.step, '--pass', String(subject.subject.pass));
+      break;
+    case 'session':
+      words.push('--session', subject.subject.sessionId, '--source', subject.subject.platform);
+      break;
+    case 'team-session':
+      words.push('--team-session', subject.subject.name, '--author', subject.subject.author);
+      break;
+    default: {
+      const unhandled: never = subject;
+
+      return unhandled;
+    }
+  }
+
+  words.push(...start.scorers.flatMap((scorer) => ['--scorer', scorer]), ...(start.label === undefined ? [] : ['--label', start.label]));
+  words.push(...(start.batch ? ['--batch'] : []), ...(driver === undefined ? [] : ['--driver', driver]), ...(start.push ? ['--push'] : []));
+  const person = `The person runs ${words.map(shellWord).join(' ')} in their own terminal`;
+
+  return subject.kind === 'session' ? `${person}, and the agent judges this session with /teamai-share-session.` : `${person}.`;
+}
+
 /**
  * Starts teamai-score for the subject a person named, with `demand: named`, on the local driver unless `driver` names
  * another; `none` leaves the run to any driver's `workflow next`. The local driver drives it to its end, or until only a
@@ -350,6 +388,7 @@ async function startScore(start: ScoreStart, driver: string | undefined): Promis
 
   await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
     scope: named.config,
+    instead: insteadOf(start, driver),
     answer: async (config, runId, driven) => {
       const answered = await scoredAnswer(config, runId, driven, start);
 

@@ -401,7 +401,7 @@ A hand label is the person's. Run by an agent, the command answers `invoke_denie
 
 ```console
 $ teamai score --session 7c1e… --scorer review-quality --label good       # in the agent's shell
-{"error":{"code":"invoke_denied","message":"Workflow \"teamai-score\" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). …"}}
+{"error":{"code":"invoke_denied","message":"Workflow \"teamai-score\" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person runs teamai score --session 7c1e… --source claude-code --scorer review-quality --label good in their own terminal, and the agent judges this session with /teamai-share-session."}}
 ```
 
 `--label` takes one `--scorer`, a name `teamai pull` cached, and is checked before any run starts. `teamai-score` then skips the stages and the judge. The label's `score` and pass come from the scorer, as for a judge's label, and it has no reasoning file. It is stored and published as a judge's label is, with `judge: { kind: "human" }`. A hand label and a judge's label of the same session are kept side by side: rescoring with the judge never replaces a hand label. When several members label one session by hand, the newest hand label is the one counted.
