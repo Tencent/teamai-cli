@@ -455,7 +455,7 @@ description: Review and fix in one copy.
     ]);
   });
 
-  it('refuses a role on a step continuing the copy the header opens with another, naming defaults.role as where the copy gets its role', () => {
+  it('refuses a role on a step continuing the copy the run opens with another, naming defaults.role as where the copy gets its role', () => {
     expect(rejected(`${HEADER}workspace: new
 defaults: { role: review }
 steps:
@@ -463,7 +463,7 @@ steps:
     role: spec
     prompt: Fix it.
 `)).toEqual([
-      { code: 'bad_role', message: `${FILE}:8: field "steps[0].role": step "fix" has role spec but continues the copy this workflow's header opens with role review, which every step there runs with; remove role from step "fix", or set it as defaults.role` },
+      { code: 'bad_role', message: `${FILE}:8: field "steps[0].role": step "fix" has role spec but continues the copy the run opens with role review, which every step there runs with; remove role from step "fix", or set it as defaults.role` },
     ]);
   });
 

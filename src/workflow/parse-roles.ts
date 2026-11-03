@@ -264,7 +264,7 @@ export function roleDiagnostics(root: Node, workflow: Pick<WorkflowDefinition, '
       namer: resolved.from === 'defaults' ? { kind: 'defaults' } : named && named !== last ? { kind: 'enclosing', label: named.label } : { kind: 'itself', inClone: cloneOf(opener.step) !== undefined },
       role: writtenRole(resolved.role), step: last.label,
       // The copy the run opens gets its role from this file's defaults.role, as a step's gets it from the step.
-      opener: isRunLevel(opener.step) ? { label: "this workflow's header", on: 'as defaults.role' } : { label: `step "${opener.step.id}"`, on: `on step "${opener.step.id}"` },
+      opener: isRunLevel(opener.step) ? { label: 'the run', on: 'as defaults.role' } : { label: `step "${opener.step.id}"`, on: `on step "${opener.step.id}"` },
       copyRole: copy.runsWith.kind === 'role' ? writtenRole(copy.runsWith.role) : undefined,
     };
 
