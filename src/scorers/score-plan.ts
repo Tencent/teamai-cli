@@ -17,7 +17,7 @@ import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
 import { batchesScorers } from './batch.js';
 import { pinScorers } from './cache.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
-import { chooseJudgeModel } from './judge-model.js';
+import { chooseJudgeModel, type JudgeModelChoice } from './judge-model.js';
 import type { RunSubject } from './label.js';
 import { Marks, type Demand, type Launch, type MarkFacts, type MarkKey } from './marks.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
@@ -181,6 +181,17 @@ function handGroup(request: PlanRequest, judged: Judged): { ok: true; groups: Pl
 }
 
 /**
+ * What `candidate` shares with the scorers one judge call takes with it: the tool and model `chosen` for it, and its
+ * stages. A model no judge here runs gets a group of its own, whose judge step waits for a driver that can run it.
+ */
+function batchKey(candidate: Candidate, judged: Judged, chosen: JudgeModelChoice): string {
+  if (!chosen.ok) return `${candidate.name}\n`;
+  const { tool, model, by, noModel } = chosen.choice;
+
+  return canonicalJson({ tool, model: model ?? null, by, noModel: noModel ?? null, stages: judged.stagesOf(candidate) });
+}
+
+/**
  * The sampled scorers, every one on a named demand, grouped: a scorer with a check alone, else those that resolve to one
  * judge and take the same stages.
  */
@@ -191,11 +202,7 @@ async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[
   const batch = request.batch || judged.batch === true;
 
   for (const candidate of judged.candidates.filter((one) => request.demand === 'named' || judged.sampled(one))) {
-    const chosen = chooseJudgeModel(aliases, candidate.definition, tools);
-    // A model no judge here runs gets a group of its own, whose judge step waits for a driver that can run it.
-    const key = chosen.ok && batch && !judged.alone(candidate)
-      ? canonicalJson({ tool: chosen.choice.tool, model: chosen.choice.model ?? null, by: chosen.choice.by, noModel: chosen.choice.noModel ?? null, stages: judged.stagesOf(candidate) })
-      : `${candidate.name}\n`;
+    const key = batch && !judged.alone(candidate) ? batchKey(candidate, judged, chooseJudgeModel(aliases, candidate.definition, tools)) : `${candidate.name}\n`;
     groups.set(key, [...groups.get(key) ?? [], candidate]);
   }
 
