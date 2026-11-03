@@ -33,6 +33,17 @@ function evidence(confined: string): ConformanceOperation[] {
 
 export const confinedConformanceScenarios: ConformanceScenario[] = [
   {
+    name: 'workspace confined: a prepared lease runs in its directory, and no place of the checkout is made for it',
+    workflowName: 'judge',
+    yaml: JUDGE.replace('    model: confined-judge\n', ''),
+    operations: [
+      ...evidence('{"level":"verified"}'),
+      { kind: 'next', saveAs: 'judge', prepare: true, can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'judge', confined: { level: 'verified' } } } } },
+      { kind: 'files', lease: 'judge', expect: { 'diff.txt': '- retries: 0\n+ retries: 3\n', 'confined.json': '{"level":"verified"}' } },
+    ],
+    expectState: { status: 'running', steps: [{ id: 'evidence', status: 'succeeded' }, { id: 'judge', status: 'leased' }] },
+  },
+  {
     name: 'workspace confined: a directory outside the run\'s $TEAMAI_RUN_DIR fails the step confined_invalid',
     workflowName: 'judge',
     yaml: JUDGE.replace('{ confined: evidence }', '{ confined: .. }'),

@@ -1199,7 +1199,7 @@ TeamAI 为准备 attempt 记录的内容只保存在本机：路径和文件指�
 teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"end_turn":true}},"running":[]}'
 ```
 
-带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。以团队角色运行的克隆还需要 `can.role`。
+带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。以团队角色运行的克隆还需要 `can.role`。[限定在一个目录里](#在自己的驱动里运行受限步骤)的步骤不需要位置：`--prepare` 返回带 `cwd`（即它的 `confined.dir`）的租约，不为它在 checkout 中创建、设置或快照任何东西。
 
 对每个租约，驱动：
 

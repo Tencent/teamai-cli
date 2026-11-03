@@ -325,16 +325,17 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
 
   const placeOf = (name: string | undefined): string => {
-    const place = runner.place;
+    if (name !== undefined) {
+      const cwd = leases.get(name)?.cwd;
 
-    if (!place) throw new Error('A scenario that checks places needs a runner with a place');
+      if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
 
-    if (name === undefined) return place.checkout;
-    const cwd = leases.get(name)?.cwd;
+      return cwd;
+    }
 
-    if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
+    if (!runner.place) throw new Error('A scenario that checks the checkout needs a runner with a place');
 
-    return cwd;
+    return runner.place.checkout;
   };
 
   const refusal = scenario.refusedBy?.[profile];

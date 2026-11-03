@@ -15,7 +15,7 @@ import type { JsonValue, LocalConfig } from '../types.js';
 import { attemptEnv, nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
-import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
+import { ConfinedLeaseSchema, LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
 import { carriedRun, claimOffered, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type ReportInput } from './engine.js';
 import {
@@ -815,6 +815,10 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
     return { error: failure };
   };
 
+  const confined = ConfinedLeaseSchema.safeParse(named.data.confined);
+
+  // A confined step reads its directory alone, so no place of the checkout is made, set up or snapshotted for it.
+  if (confined.success) return { data: { ...answer.data, lease: { ...named.data, cwd: confined.data.dir } } };
   const leased = await leasedPlace(config, lock, answer.data.lease);
   const placed = leased.kind === 'leased' ? await placeLeased(config, lock, leased, adopt) : leased;
 
