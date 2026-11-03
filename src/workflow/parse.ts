@@ -2,7 +2,7 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  findTemplate, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
+  findTemplate, modelTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
@@ -727,9 +727,12 @@ function parseBody(
         }));
       }
 
-      const templates = templatedTexts({ prompt, env, with: withValues, hitl }).map(({ what, text }) => {
+      // A model on another step is already reported, so its template is not checked.
+      const promptModel = commandPair || workflowPair ? undefined : model;
+
+      const templates = templatedTexts({ prompt, env, with: withValues, hitl, model: promptModel }).map(({ what, text }) => {
         const name = what.slice(what.indexOf('.') + 1);
-        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
+        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : what === 'model' ? modelPair?.value : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
 
         return { what, field: `${field}.${what}`, node, text };
       });
@@ -743,6 +746,12 @@ function parseBody(
               ...locate(file, lineCounter, template.node, template.field, `${stepLabel} ${template.what} template ${problem.source}: ${problem.message}`),
               code: 'bad_template',
             });
+          }
+        }
+
+        if (parsed.ok && template.what === 'model') {
+          for (const problem of modelTemplateErrors(template.text, parsed.template)) {
+            diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} model template ${problem.source}: ${problem.message}`), code: 'bad_template' });
           }
         }
 
@@ -1389,10 +1398,15 @@ function parseModel(node: Node | null | undefined, field: string, ctx: ParseCont
 }
 
 /**
- * A step's `model`: an alias or a model name, as `parseModel` reads it, or the exact model, `{ name, effort? }`, which
- * the lease carries as written and no driver resolves through models/aliases.yaml.
+ * A step's `model`: an alias or a model name, as `parseModel` reads it, a template the lease renders to one, which the
+ * step's other templates check, or the exact model, `{ name, effort? }`, which the lease carries as written and no
+ * driver resolves through models/aliases.yaml.
  */
 function parseStepModel(node: Node | null | undefined, field: string, ctx: ParseContext): string | StepModel | undefined {
+  const text = scalarString(node);
+
+  if (text?.includes('{{')) return text;
+
   if (!isMap(node)) return parseModel(node, field, ctx);
   const name = scalarString(valueNode(node, 'name'));
   const effortNode = valueNode(node, 'effort');

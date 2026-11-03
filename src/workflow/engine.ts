@@ -21,7 +21,7 @@ import { publishRunRecords, queueRunRecord, runRecordState } from './records.js'
 import { freezeVerdicts, isUnsettled, verdictEntries } from './scoring-entries.js';
 import {
   parseTemplate, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
-  type StepExpression, type TemplateError,
+  type StepExpression, type TemplateContext, type TemplateError,
 } from './template.js';
 import { stageSettledEvidence } from './place/place.js';
 import { parseStepPath } from './step-path.js';
@@ -195,6 +195,8 @@ export async function withRun(
 interface RenderedLease {
   prompt?: string;
   env?: Record<string, string>;
+  /** The step's `model` as its template rendered; an empty one means the tool's default. */
+  model?: string;
   /** The `defaults.model` in effect for a prompt step, as written. */
   defaultModel?: string;
 }
@@ -270,31 +272,46 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
 
   const rendered = new Map<string, string>();
 
-  for (const { what, text } of templatedTexts(definition)) {
-    if (what.startsWith('with.')) continue;
-    const parsed = parseTemplate(text, Object.hasOwn(context, 'item'));
+  for (const templated of templatedTexts(definition)) {
+    if (templated.what.startsWith('with.')) continue;
+    const value = renderLeaseText(context, state, templated);
 
-    if (!parsed.ok) {
-      const [problem] = parsed.errors;
-
-      return { code: 'invalid_template', message: `step "${state.id}" ${what} template ${problem?.source}: ${problem?.message}` };
-    }
-
-    rendered.set(what, renderText(parsed.template, context));
+    if (!isMessage(value)) return value;
+    rendered.set(templated.what, value);
   }
 
   const env = Object.keys(definition.env ?? {}).map((name) => [name, rendered.get(`env.${name}`) ?? ''] as const);
 
   const texts: RenderedLease = {};
   const prompt = rendered.get('prompt');
+  const model = rendered.get('model');
 
   if (prompt !== undefined) texts.prompt = prompt;
 
   if (definition.env) texts.env = Object.fromEntries(env);
 
-  if (definition.prompt !== undefined && scope.defaultModel !== undefined) texts.defaultModel = scope.defaultModel;
+  if (model !== undefined) texts.model = model;
+
+  // A model that rendered empty asks for the tool's default, so the defaults' model does not stand in for it.
+  if (definition.prompt !== undefined && scope.defaultModel !== undefined && model !== '') texts.defaultModel = scope.defaultModel;
 
   return texts;
+}
+
+/**
+ * `text`, the template at `what` of the step `state` is leased for, rendered from `context`, what the step reads when
+ * it is leased. Pull rejects a template that does not parse, so a failure here means the run file was changed.
+ */
+function renderLeaseText(context: TemplateContext, state: StepState, { what, text }: { what: string; text: string }): string | WorkflowFailure {
+  const parsed = parseTemplate(text, Object.hasOwn(context, 'item'));
+
+  if (!parsed.ok) {
+    const [problem] = parsed.errors;
+
+    return { code: 'invalid_template', message: `step "${state.id}" ${what} template ${problem?.source}: ${problem?.message}` };
+  }
+
+  return renderText(parsed.template, context);
 }
 
 function hitlMessage(scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep): string | WorkflowFailure {
@@ -424,7 +441,9 @@ function leaseData(
 
   if (definition.permissions !== undefined) wire.permissions = definition.permissions;
 
-  if (definition.model !== undefined) wire.model = definition.model;
+  const model = definition.model instanceof Object ? definition.model : rendered.model;
+
+  if (model) wire.model = model;
 
   if (rendered.defaultModel !== undefined) wire.defaultModel = rendered.defaultModel;
 

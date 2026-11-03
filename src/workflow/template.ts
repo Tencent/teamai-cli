@@ -245,15 +245,35 @@ export function stringsIn(value: unknown): string[] {
 }
 
 /**
- * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, and `env.<NAME>`.
- * Pull and the engine share this one list, so they agree on which fields are templates.
+ * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, `model` when it is not the
+ * exact model, and `env.<NAME>`. Pull and the engine share this one list, so they agree on which fields are templates.
  */
-export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'env' | 'with' | 'hitl'>): Array<{ what: string; text: string }> {
+export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'env' | 'with' | 'hitl' | 'model'>): Array<{ what: string; text: string }> {
   return [
     ...(step.hitl ? [{ what: `${step.hitl.kind}.message`, text: step.hitl.message }] : []),
     ...Object.entries(step.with ?? {}).flatMap(([name, value]) => stringsIn(value).map((text) => ({ what: `with.${name}`, text }))),
     ...(step.prompt !== undefined ? [{ what: 'prompt', text: step.prompt }] : []),
+    ...(step.model !== undefined && !(step.model instanceof Object) ? [{ what: 'model', text: step.model }] : []),
     ...Object.entries(step.env ?? {}).map(([name, text]) => ({ what: `env.${name}`, text })),
+  ];
+}
+
+/** What a step `model` template may read; pull checks that each step it reads is one the step needs. */
+function isModelRead(path: ExpressionPath): boolean {
+  return path.root === 'inputs' || path.root === 'item' || (path.root === 'steps' && path.field === 'outputs');
+}
+
+/**
+ * Why a step's `model`, parsed as `template`, cannot render an alias or a model name: a read of anything but an input,
+ * the item, or a step's outputs, or literal text a model cannot hold. A `with` read is `withReadProblems`' to report.
+ */
+export function modelTemplateErrors(text: string, template: Template): TemplateError[] {
+  const literal = template.filter((part) => !isRead(part)).join('');
+  const reads = template.flatMap((part) => (isRead(part) && 'expression' in part && !expressionPaths(part.expression).every(isModelRead) ? [part.source] : []));
+
+  return [
+    ...(/\s|\{\{/.test(literal) ? [{ source: text, message: 'text outside a template cannot hold a space or {{, and {{ item }} is a template only where for_each binds an item' }] : []),
+    ...reads.map((source) => ({ source, message: 'a model template reads only inputs, item and the outputs of steps the step needs' })),
   ];
 }
 

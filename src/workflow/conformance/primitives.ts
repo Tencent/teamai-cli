@@ -32,6 +32,23 @@ const JUDGE_EACH_TIMED = JUDGE_EACH.replace('    continue_on_failure: true\n', '
 /** What a for_each step that kept the results of its items returns: the first item judged, the second stopped while leased. */
 const KEPT_VERDICTS: ScenarioJson[] = [{ item: 'a', outcome: 'success', outputs: { label: 'good' } }, { item: 'b', outcome: 'cancelled' }];
 
+const MODEL_EACH = `schemaVersion: v1alpha1
+name: build
+description: Label each group with the model its scorer names.
+defaults:
+  model: fast
+steps:
+  - id: plan
+    command: echo plan
+    output:
+      groups: [{ name: string, model: string }]
+  - id: label
+    needs: [plan]
+    for_each: steps.plan.outputs.groups
+    prompt: Label {{ item.name }}.
+    model: "{{ item.model }}"
+`;
+
 export const primitiveConformanceScenarios: ConformanceScenario[] = [
   {
     name: 'continue_on_failure: a for_each step whose item failed reads failed, its dependents follow the usual rules, and the run succeeds with its results',
@@ -89,6 +106,20 @@ export const primitiveConformanceScenarios: ConformanceScenario[] = [
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded', outputs: { verdicts: KEPT_VERDICTS } } } } },
     ],
     expectState: { status: 'succeeded', steps: [{ id: 'plan' }, { id: 'judge', status: 'cancelled', results: KEPT_VERDICTS }, { id: 'judge[0]' }, { id: 'judge[1]' }, { id: 'ship', status: 'skipped' }, { id: 'note', status: 'succeeded' }] },
+  },
+  {
+    name: 'model template: each item\'s lease carries the model its template rendered, and an empty one carries no model, so the tool runs its default',
+    workflowName: 'build',
+    yaml: MODEL_EACH,
+    operations: [
+      { kind: 'next', saveAs: 'plan', expect: { data: { lease: { step: 'plan' } } } },
+      {
+        kind: 'report', lease: 'plan', body: { outcome: 'success', outputs: { groups: [{ name: 'tests', model: 'strong' }, { name: 'docs', model: '' }] } },
+        expect: { data: { accepted: true } },
+      },
+      { kind: 'next', saveAs: 'tests', expect: { data: { lease: { step: 'label[0]', prompt: 'Label tests.', model: 'strong', defaultModel: 'fast' } } } },
+      { kind: 'next', saveAs: 'docs', running: ['tests'], absent: ['model', 'defaultModel'], expect: { data: { lease: { step: 'label[1]', prompt: 'Label docs.' } } } },
+    ],
   },
   {
     name: 'startedBy: a run started from a process without agent evidence records that a person started it',

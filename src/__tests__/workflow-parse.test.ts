@@ -981,7 +981,7 @@ steps:
     expect(result.diagnostics.every((diagnostic) => diagnostic.code === undefined)).toBe(true);
   });
 
-  it('reports a templated model on a step and in defaults as a validation error', () => {
+  it('reports a templated defaults.model as a validation error', () => {
     for (const template of ['${{ inputs.m }}', '{{ inputs.m }}']) {
       const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -993,15 +993,95 @@ defaults:
 steps:
   - id: plan
     prompt: Plan it.
-    model: "${template}"
 `);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.diagnostics.map(formatDiagnostic)).toEqual([
         'workflows/build.yaml:7: field "defaults.model": model cannot contain a template; write an alias or a model name as is',
-        'workflows/build.yaml:11: field "steps[0].model": model cannot contain a template; write an alias or a model name as is',
       ]);
     }
+  });
+
+  it('keeps a step model template that reads an input, the item, or the outputs of a step it needs, as written', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+inputs:
+  judge: string
+steps:
+  - id: plan
+    command: echo plan
+    output:
+      model: string
+      groups: [{ model: string }]
+  - id: label
+    needs: [plan]
+    for_each: steps.plan.outputs.groups
+    prompt: Label it.
+    model: "{{ item.model }}"
+  - id: sum
+    needs: [plan]
+    prompt: Sum it.
+    model: "claude-{{ steps.plan.outputs.model }}"
+  - id: pick
+    needs: []
+    prompt: Pick one.
+    model: "{{ inputs.judge }}"
+`);
+    expect(result.ok ? [] : result.diagnostics.map(formatDiagnostic)).toEqual([]);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.model)).toEqual([undefined, '{{ item.model }}', 'claude-{{ steps.plan.outputs.model }}', '{{ inputs.judge }}']);
+  });
+
+  it('refuses a step model template that reads anything but an input, the item, or the outputs of a step the step needs', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+inputs:
+  m: string
+steps:
+  - id: plan
+    command: echo plan
+    output:
+      model: string
+  - id: other
+    needs: []
+    command: echo other
+    output:
+      model: string
+  - id: a
+    needs: [plan]
+    prompt: Run it.
+    model: "{{ run.id }}"
+  - id: b
+    needs: [plan]
+    prompt: Run it.
+    model: "{{ steps.plan.outcome }}"
+  - id: c
+    needs: [plan]
+    prompt: Run it.
+    model: "{{ steps.other.outputs.model }}"
+  - id: d
+    needs: []
+    prompt: Run it.
+    model: "{{ item.model }}"
+  - id: e
+    needs: []
+    prompt: Run it.
+    model: "\${{ inputs.m }}"
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const READS = 'a model template reads only inputs, item and the outputs of steps the step needs';
+    const LITERAL = 'text outside a template cannot hold a space or {{, and {{ item }} is a template only where for_each binds an item';
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      `workflows/build.yaml:19: field "steps[2].model": step "a" model template {{ run.id }}: ${READS}`,
+      `workflows/build.yaml:23: field "steps[3].model": step "b" model template {{ steps.plan.outcome }}: ${READS}`,
+      `workflows/build.yaml:31: field "steps[5].model": step "d" model template {{ item.model }}: ${LITERAL}`,
+      `workflows/build.yaml:35: field "steps[6].model": step "e" model template \${{ inputs.m }}: ${LITERAL}`,
+      'workflows/build.yaml:27: field "steps[4].model": step "c" model reads steps.other, which is not a step it needs, directly or through its needs',
+    ]);
+    expect(result.diagnostics.every((diagnostic) => diagnostic.code === 'bad_template')).toBe(true);
   });
 
   it('keeps a prompt step model and defaults.model as written', () => {
