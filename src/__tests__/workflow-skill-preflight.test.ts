@@ -268,6 +268,26 @@ describe('skill driver preflight', () => {
     expect(runCount(made)).toBe(0);
   });
 
+  it('routes a run whose workflow header opens its copy, and whose step there needs env, to the local driver', async () => {
+    const made = await harness({ 'release-docs': `schemaVersion: v1alpha1
+name: release-docs
+description: Draft the release notes, then sign them, in one copy
+invoke: allow
+workspace: new
+steps:
+  - id: draft
+    prompt: Draft the release notes.
+  - id: sign
+    needs: [draft]
+    prompt: Sign the notes.
+    requires: { env: [SIGNING_KEY] }
+` });
+    const described = await made.call({ kind: 'describe', name: 'release-docs' });
+    expect(described).toMatchObject({ data: { describe: { ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local --tools default=claude' } } } });
+    expect(described).toMatchObject({ data: { describe: { workflow: { facts: { localRoute: { held: 'sign', missing: 'env' } } } } } });
+    expect(JSON.stringify(described)).not.toContain('"opener"');
+  });
+
   it("routes a run whose steps run as a team role to a driver that delivers it, before any step runs on this one", async () => {
     const made = await harness({ 'review-docs': `schemaVersion: v1alpha1
 name: review-docs

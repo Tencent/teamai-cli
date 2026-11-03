@@ -9,7 +9,7 @@ import { isSeq } from 'yaml';
 import { isYamlNode, locate, valueNode, type ParseContext, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import type { StepRoleSpec } from './template.js';
-import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, roleLevelOf, runLevels, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
+import { cloneOf, copyOf, copyRoleConflict, isRunLevel, placedStep, resolveMode, resolvedRoleOf, roleLevelOf, runLevels, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
 
 /** A step on the way to a step: its label, and, in this file, its field and YAML mapping. */
 interface Level extends RoleLevel {
@@ -119,7 +119,8 @@ interface RoleConflict {
   namer: { kind: 'defaults' } | { kind: 'enclosing'; label: string } | { kind: 'itself'; inClone: boolean };
   role: string;
   step: string;
-  opener: string;
+  /** Who opens the copy, as the message names it, and where the role is set on it instead. */
+  opener: { label: string; on: string };
   copyRole: string | undefined;
 }
 
@@ -135,23 +136,23 @@ function roleConflictMessage(conflict: RoleConflict, caller?: Caller): string {
     case 'defaults':
       if (caller) {
         return copyRole === undefined
-          ? `${caller.step} runs workflow ${via}, whose defaults.role ${role} is the role of ${step}, but it continues the copy step "${opener}" opens without a role, which every step there runs with; remove defaults.role, or set role ${role} on step "${opener}"`
-          : `${caller.step} runs workflow ${via}, whose defaults.role ${role} is the role of ${step}, but it continues the copy step "${opener}" opens with role ${copyRole}, which every step there runs with; remove defaults.role, or set role ${role} on step "${opener}"`;
+          ? `${caller.step} runs workflow ${via}, whose defaults.role ${role} is the role of ${step}, but it continues the copy ${opener.label} opens without a role, which every step there runs with; remove defaults.role, or set role ${role} ${opener.on}`
+          : `${caller.step} runs workflow ${via}, whose defaults.role ${role} is the role of ${step}, but it continues the copy ${opener.label} opens with role ${copyRole}, which every step there runs with; remove defaults.role, or set role ${role} ${opener.on}`;
       }
 
       return copyRole === undefined
-        ? `defaults.role ${role} is the role of ${step}, but it continues the copy step "${opener}" opens without a role, which every step there runs with; remove defaults.role, or set role ${role} on step "${opener}"`
-        : `defaults.role ${role} is the role of ${step}, but it continues the copy step "${opener}" opens with role ${copyRole}, which every step there runs with; remove defaults.role, or set role ${role} on step "${opener}"`;
+        ? `defaults.role ${role} is the role of ${step}, but it continues the copy ${opener.label} opens without a role, which every step there runs with; remove defaults.role, or set role ${role} ${opener.on}`
+        : `defaults.role ${role} is the role of ${step}, but it continues the copy ${opener.label} opens with role ${copyRole}, which every step there runs with; remove defaults.role, or set role ${role} ${opener.on}`;
     case 'enclosing':
       if (caller) {
         return copyRole === undefined
-          ? `${caller.step} runs workflow ${via}, whose ${namer.label} has role ${role}, but ${step} in it continues the copy step "${opener}" opens without a role, which every step there runs with; remove role from ${namer.label}, or set it on step "${opener}"`
-          : `${caller.step} runs workflow ${via}, whose ${namer.label} has role ${role}, but ${step} in it continues the copy step "${opener}" opens with role ${copyRole}, which every step there runs with; remove role from ${namer.label}, or set it on step "${opener}"`;
+          ? `${caller.step} runs workflow ${via}, whose ${namer.label} has role ${role}, but ${step} in it continues the copy ${opener.label} opens without a role, which every step there runs with; remove role from ${namer.label}, or set it ${opener.on}`
+          : `${caller.step} runs workflow ${via}, whose ${namer.label} has role ${role}, but ${step} in it continues the copy ${opener.label} opens with role ${copyRole}, which every step there runs with; remove role from ${namer.label}, or set it ${opener.on}`;
       }
 
       return copyRole === undefined
-        ? `${namer.label} has role ${role}, but ${step} in it continues the copy step "${opener}" opens without a role, which every step there runs with; remove role from ${namer.label}, or set it on step "${opener}"`
-        : `${namer.label} has role ${role}, but ${step} in it continues the copy step "${opener}" opens with role ${copyRole}, which every step there runs with; remove role from ${namer.label}, or set it on step "${opener}"`;
+        ? `${namer.label} has role ${role}, but ${step} in it continues the copy ${opener.label} opens without a role, which every step there runs with; remove role from ${namer.label}, or set it ${opener.on}`
+        : `${namer.label} has role ${role}, but ${step} in it continues the copy ${opener.label} opens with role ${copyRole}, which every step there runs with; remove role from ${namer.label}, or set it ${opener.on}`;
     case 'itself':
       if (namer.inClone) {
         return caller
@@ -161,13 +162,13 @@ function roleConflictMessage(conflict: RoleConflict, caller?: Caller): string {
 
       if (caller) {
         return copyRole === undefined
-          ? `${caller.step} runs workflow ${via}, whose ${step} has role ${role} but continues the copy step "${opener}" opens without a role, which every step there runs with; remove role from ${step}, or set it on step "${opener}"`
-          : `${caller.step} runs workflow ${via}, whose ${step} has role ${role} but continues the copy step "${opener}" opens with role ${copyRole}, which every step there runs with; remove role from ${step}, or set it on step "${opener}"`;
+          ? `${caller.step} runs workflow ${via}, whose ${step} has role ${role} but continues the copy ${opener.label} opens without a role, which every step there runs with; remove role from ${step}, or set it ${opener.on}`
+          : `${caller.step} runs workflow ${via}, whose ${step} has role ${role} but continues the copy ${opener.label} opens with role ${copyRole}, which every step there runs with; remove role from ${step}, or set it ${opener.on}`;
       }
 
       return copyRole === undefined
-        ? `${step} has role ${role} but continues the copy step "${opener}" opens without a role, which every step there runs with; remove role from ${step}, or set it on step "${opener}"`
-        : `${step} has role ${role} but continues the copy step "${opener}" opens with role ${copyRole}, which every step there runs with; remove role from ${step}, or set it on step "${opener}"`;
+        ? `${step} has role ${role} but continues the copy ${opener.label} opens without a role, which every step there runs with; remove role from ${step}, or set it ${opener.on}`
+        : `${step} has role ${role} but continues the copy ${opener.label} opens with role ${copyRole}, which every step there runs with; remove role from ${step}, or set it ${opener.on}`;
     default: {
       const unhandled: never = namer;
 
@@ -261,7 +262,9 @@ export function roleDiagnostics(root: Node, workflow: Pick<WorkflowDefinition, '
 
     const conflict: RoleConflict = {
       namer: resolved.from === 'defaults' ? { kind: 'defaults' } : named && named !== last ? { kind: 'enclosing', label: named.label } : { kind: 'itself', inClone: cloneOf(opener.step) !== undefined },
-      role: writtenRole(resolved.role), step: last.label, opener: opener.step.id,
+      role: writtenRole(resolved.role), step: last.label,
+      // The copy the run opens gets its role from this file's defaults.role, as a step's gets it from the step.
+      opener: isRunLevel(opener.step) ? { label: "this workflow's header", on: 'as defaults.role' } : { label: `step "${opener.step.id}"`, on: `on step "${opener.step.id}"` },
       copyRole: copy.runsWith.kind === 'role' ? writtenRole(copy.runsWith.role) : undefined,
     };
 
@@ -398,7 +401,7 @@ export function roleDiagnostics(root: Node, workflow: Pick<WorkflowDefinition, '
           if (!child) consume(levels, 'current_team');
           else {
             walk(child.steps, {
-              node: undefined, at: '', outer: levels, defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, isOwn: false } : defaults,
+              node: undefined, at: '', outer: [...outer, { ...level, step: placedStep(step, child, outer.map((around) => around.step)) }], defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, isOwn: false } : defaults,
               caller: {
                 step: caller?.step ?? level.label, node: caller?.node ?? valueNode(level.written?.item, 'workflow'),
                 field: caller?.field ?? `${level.written?.field ?? at}.workflow`, runs: [...caller?.runs ?? [], runs.name],

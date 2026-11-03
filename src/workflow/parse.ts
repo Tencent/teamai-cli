@@ -37,7 +37,7 @@ export const INVOKE_ALIAS_SINCE = '0.28.0';
  */
 export const STEP_ROLE_SINCE = '0.29.0';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'workspace', 'steps', 'finally', 'invoke', 'alias']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
 const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
@@ -245,7 +245,9 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   for (const pair of root.items) {
     const key = scalarString(pair.key);
 
-    if (!key || !HEADER_KEYS.has(key)) {
+    if (key === 'deliver') {
+      diagnostics.push({ ...locate(file, lineCounter, pair.key ?? root, 'deliver', 'a workflow header takes no deliver; delivery belongs to a step, so run this workflow from a step with deliver: pr'), code: 'bad_delivery' });
+    } else if (!key || !HEADER_KEYS.has(key)) {
       diagnostics.push(unknownKey(file, lineCounter, pair.key ?? root, key ?? '(root)', key ?? '(root)'));
     }
   }
@@ -303,6 +305,12 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, 'budget', ctx) : undefined;
   const setupPair = root.items.find((pair) => scalarString(pair.key) === 'setup');
   const setup = setupPair ? parseSetup(setupPair.value ?? setupPair.key, ctx) : undefined;
+  const workspaceNode = valueNode(root, 'workspace');
+  const workspace = workspaceNode && scalarString(workspaceNode) === 'new' ? 'new' : undefined;
+
+  if (workspaceNode && !workspace) {
+    diagnostics.push({ ...locate(file, lineCounter, workspaceNode, 'workspace', 'workspace in a workflow header must be new, so its steps work in one copy; set workspace on a step for any other mode'), code: 'bad_workspace' });
+  }
 
   // A malformed inputs header is already reported; checking reads against it would only add noise.
   const readInputs = inputsPair && !inputs ? undefined : inputs ?? {};
@@ -320,7 +328,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
 
-  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, steps }, ctx));
+  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, workspace, steps }, ctx));
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   const header: Omit<WorkflowDefinition, 'schemaVersion' | 'name' | 'description' | 'steps' | 'finally'> = {};
@@ -344,6 +352,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (budget) header.budget = budget;
 
   if (setup) header.setup = setup;
+
+  if (workspace) header.workspace = workspace;
   const definition: WorkflowDefinition = { schemaVersion: 'v1alpha1', name, description, ...header, steps };
 
   if (finallySteps) definition.finally = finallySteps;
@@ -817,6 +827,13 @@ function parseBody(
       if (workspacePair && !workspace) {
         diagnostics.push({
           ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
+          code: 'bad_workspace',
+        });
+      }
+
+      if (workspace === 'read-only' && workflow && TOKEN.test(workflow) && files && !files.cycle(workflow) && files.runnable(workflow)?.workspace === 'new') {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair?.value ?? item, `${field}.workspace`, `${stepLabel} has workspace: read-only but runs workflow "${workflow}", whose header says workspace: new, so its steps work in a copy; remove workspace from ${stepLabel} so it opens or continues one`),
           code: 'bad_workspace',
         });
       }

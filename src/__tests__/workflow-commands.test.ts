@@ -366,6 +366,41 @@ steps:
     expect(fs.existsSync(path.join(work, 'ran.marker'))).toBe(true);
   });
 
+  it('ends a run whose workflow header says workspace: new by naming the copy branch and how to bring it in', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'tidy.yaml'), `schemaVersion: v1alpha1
+name: tidy
+description: Tidy the repository in one copy.
+workspace: new
+steps:
+  - id: write
+    workspace: continue
+    command: node -e "require('fs').writeFileSync('tidy.txt', 'T')"
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    const git = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@t', ...args], { cwd: work, encoding: 'utf8' }).trim();
+    git('init', '-q', '-b', 'main');
+    git('commit', '-q', '--allow-empty', '-m', 'start');
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('tidy', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    const branch = `teamai/${runId}/_run`;
+    expect(printed.at(-1)).toContain(`Run ${runId} left its changes on branch ${branch}. Bring them in with: git merge ${branch}`);
+    expect(git('show', `${branch}:tidy.txt`)).toBe('T');
+    expect(fs.existsSync(path.join(work, 'tidy.txt'))).toBe(false);
+  });
+
   it('prints why each step failed and how to retry it on stderr when the run fails, and only the envelope on stdout', async () => {
     const config = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1

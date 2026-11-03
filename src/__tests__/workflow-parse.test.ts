@@ -428,6 +428,64 @@ steps:
     loop: { back_to: review, max_iterations: 3 }
 `;
 
+describe('a workflow header workspace', () => {
+  const HEADER = `schemaVersion: v1alpha1
+name: build
+description: Review and fix in one copy.
+`;
+  const STEPS = `steps:
+  - id: review
+    command: node review.js
+`;
+
+  it('accepts workspace: new, which the definition keeps', () => {
+    const result = parse(`${HEADER}workspace: new\n${STEPS}`);
+    expect(result.ok && result.definition.workspace).toBe('new');
+  });
+
+  it('rejects any other header workspace', () => {
+    expect(rejected(`${HEADER}workspace: continue\n${STEPS}`)).toEqual([
+      { message: `${FILE}:4: field "workspace": workspace in a workflow header must be new, so its steps work in one copy; set workspace on a step for any other mode`, code: 'bad_workspace' },
+    ]);
+  });
+
+  it('rejects deliver in the header, pointing at the step that runs the workflow', () => {
+    expect(rejected(`${HEADER}workspace: new\ndeliver: pr\n${STEPS}`)).toEqual([
+      { message: `${FILE}:5: field "deliver": a workflow header takes no deliver; delivery belongs to a step, so run this workflow from a step with deliver: pr`, code: 'bad_delivery' },
+    ]);
+  });
+
+  it('refuses a role on a step continuing the copy the header opens with another, naming defaults.role as where the copy gets its role', () => {
+    expect(rejected(`${HEADER}workspace: new
+defaults: { role: review }
+steps:
+  - id: fix
+    role: spec
+    prompt: Fix it.
+`)).toEqual([
+      { code: 'bad_role', message: `${FILE}:8: field "steps[0].role": step "fix" has role spec but continues the copy this workflow's header opens with role review, which every step there runs with; remove role from step "fix", or set it as defaults.role` },
+    ]);
+  });
+
+  it('rejects a read-only step that runs a workflow whose header says workspace: new, naming both', () => {
+    const child = parse(`schemaVersion: v1alpha1
+name: review-and-fix
+description: Review and fix in one copy.
+workspace: new
+${STEPS}`, 'workflows/review-and-fix.yaml');
+    if (!child.ok) throw new Error(child.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'review-and-fix' ? child.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `${HEADER}steps:
+  - id: check
+    workspace: read-only
+    workflow: review-and-fix
+`, files);
+    expect(result.ok ? [] : result.diagnostics.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { message: `${FILE}:6: field "steps[0].workspace": step "check" has workspace: read-only but runs workflow "review-and-fix", whose header says workspace: new, so its steps work in a copy; remove workspace from step "check" so it opens or continues one`, code: 'bad_workspace' },
+    ]);
+  });
+});
+
 describe('deliver', () => {
   const FIX = `schemaVersion: v1alpha1
 name: build

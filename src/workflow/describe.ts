@@ -2,14 +2,15 @@ import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
-import { copyOf, opensCopy, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
+import { copyOf, opensCopy, placedStep, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
- * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, and a
- * later step it is held from for `missing` works in that copy too, which only the driver that took it may continue.
+ * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, or the
+ * run opened when it is absent, and a later step it is held from for `missing` works in that copy too, which only the
+ * driver that took it may continue.
  */
 export interface LocalRoute {
-  opener: string;
+  opener?: string;
   held: string;
   missing: 'env' | 'tokens';
 }
@@ -114,7 +115,7 @@ interface Scope {
   requires: InEffect;
   budgeted: boolean;
   setup?: Setup;
-  /** The step that opened the copy its steps work in, by path. */
+  /** The step that opened the copy its steps work in, by path, or '' for the copy the run opens. */
   copy?: string;
   /** The `defaults.model` in effect, as the engine's scope keeps it. */
   defaultModel?: string;
@@ -164,7 +165,7 @@ export function describeWorkflow(input: {
   /** By the step that opened each copy: whether the driver takes a step in it, and the first step in it the driver is held from. */
   const copies = new Map<string, { taken: boolean; held?: { step: string; missing: LocalRoute['missing'] } }>();
   // Before a run, a `from` step's workflow does not exist yet.
-  const childOf = (step: WorkflowStep): { steps: WorkflowStep[] } | undefined => workflowRunBy({ workflows }, step, '');
+  const childOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
 
   /** As the engine's `offerTerms` asks `negotiate`, so describe holds exactly what `next` would hold. */
   const offer = (step: WorkflowStep, path: string, scope: Scope): void => {
@@ -277,14 +278,15 @@ export function describeWorkflow(input: {
         const limits = [step.forEach ? undefined : step.budget, named?.budget].flatMap((budget) => (budget ? [budget.tokens] : []));
 
         if (limits.length > 0) facts.budgets.push({ step: path, tokens: Math.min(...limits) });
+        const placed = placedStep(step, child, stepsAround(scope));
         own = visit(child.steps, {
           prefix: `${path}.`,
           requires: mergeRequirements(scope.requires, step.requires, named?.defaults?.requires),
           budgeted: scope.budgeted || step.budget !== undefined || named?.budget !== undefined,
           setup,
-          copy: opensCopy(step) ? path : scope.copy,
+          copy: opensCopy(placed) ? path : scope.copy,
           defaultModel,
-          roleLevels: [...scope.roleLevels, roleLevelOf(step, scope.defaultRole)],
+          roleLevels: [...scope.roleLevels, roleLevelOf(placed, scope.defaultRole)],
           defaultRole,
         });
       } else if (step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined) {
@@ -319,11 +321,19 @@ export function describeWorkflow(input: {
     defaultRole: definition.defaults?.role,
   };
 
+  if (definition.workspace === 'new') top.copy = '';
+
   // The finally steps run under the same scope once the steps settled, never beside them.
   facts.width = Math.min(ceiling, Math.max(visit(definition.steps, top), visit(definition.finally ?? [], top)));
   const route = [...copies].find(([, copy]) => copy.taken && copy.held);
 
-  if (route?.[1].held) facts.localRoute = { opener: route[0], held: route[1].held.step, missing: route[1].held.missing };
+  if (route?.[1].held) {
+    const localRoute: LocalRoute = { held: route[1].held.step, missing: route[1].held.missing };
+
+    if (route[0] !== '') localRoute.opener = route[0];
+    facts.localRoute = localRoute;
+  }
+
   const { name, description, alias, invoke, inputs } = definition;
 
   const aliased: Pick<WorkflowDescription, 'alias'> = {};

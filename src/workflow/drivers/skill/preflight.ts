@@ -69,7 +69,9 @@ export function localReason(description: WorkflowDescription): string | undefine
   const keys = facts.held.find((held) => held.step === route.held)?.env ?? [];
   const lacks = missingReason(route.missing, keys);
 
-  return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
+  return route.opener === undefined
+    ? `Step ${route.held} works in the workspace the run opens, as the header of ${name} says workspace: new, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`
+    : `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
 }
 
 /**

@@ -137,6 +137,32 @@ steps:
     } });
   });
 
+  it('fails a step continuing the copy the run opened with a role other than the copy\'s, at its lease', async () => {
+    const { config, runId } = await started(`schemaVersion: v1alpha1
+name: review
+description: Review each part in the one copy the run works in.
+workspace: new
+defaults: { role: review }
+inputs:
+  parts: [{ path: string, role: string }]
+steps:
+  - id: review
+    for_each: inputs.parts
+    role: "{{ item.role }}"
+    workflow:
+      steps:
+        - id: look
+          prompt: Review the change to {{ item.path }}.
+`, PARTS);
+
+    await runAll(config, runId);
+
+    expect(await failures(config, runId)).toMatchObject({ 'review[0].look': {
+      code: 'role_unavailable',
+      message: 'step "review[0].look" gets role frontend from step "review[0]" but continues the copy the run opened with role review, which every step there runs with; remove role from step "review[0]", or set it as defaults.role',
+    } });
+  });
+
   it('fails a step resuming the session of a step that ran with the role its item gave, when that is another, at its lease', async () => {
     const { config, runId } = await started(`schemaVersion: v1alpha1
 name: review
