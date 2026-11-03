@@ -1304,6 +1304,21 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'an agent start of an invoke: deny workflow is refused before any start answer it lacks, and no run is created',
+    rows: ['R29'],
+    run: async () => {
+      const made = await harness({ locked: `${LOCKED}  - id: test\n    needs: []\n    command: node -e "process.exit(0)"\n` }, { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' } });
+      expect(await made.call({ kind: 'start', name: 'locked', answers: { confirmed: false }, inputs: undefined })).toEqual({ error: {
+        code: 'invoke_denied',
+        message: expect.stringContaining('Workflow "locked" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set).'),
+        next: null,
+      } });
+      const runs = runsDir(made.config);
+      expect(fs.existsSync(runs) ? fs.readdirSync(runs) : []).toEqual([]);
+      return made.rows;
+    },
+  },
+  {
     name: 'an unattended start of a workflow that needs a person is refused as describe denies it, and no run is created',
     rows: ['R25'],
     run: async () => {

@@ -469,9 +469,9 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const { description, judging, undeliverable } = described;
   const local = localReason(description);
   const why = local !== undefined ? { local } : {};
+  const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence, { kind: 'start' }) } : {};
 
   if (call.kind === 'describe') {
-    const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence, { kind: 'start' }) } : {};
     const attended = attendedReason(description, 'start');
 
     const { row, verdict } = describeRow({
@@ -490,10 +490,10 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling, tool: context.tool });
   const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;
   const attended = context.mode === 'unattended' ? attendedReason(description, 'start') : undefined;
-  const taken = startRow({ name: description.name, check, ...why, attended, prompts: description.facts.prompts.length > 0, judge });
+  const taken = startRow({ name: description.name, check, ...denied, ...why, attended, prompts: description.facts.prompts.length > 0, judge });
   context.trace?.(taken.row);
 
-  if (taken.row === 'R25') return { error: { ...taken.error, next: null } };
+  if ('error' in taken) return { error: { ...taken.error, next: null } };
   const same = describeLiteral(context.invocation, description.name, { tool: call.tool });
 
   if (taken.row !== 'R10') return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context) }) };
