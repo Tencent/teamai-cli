@@ -117,9 +117,12 @@ export function editJsonText(original: string, next: JsonValue): string {
 
     if (Array.isArray(before) && Array.isArray(after)) {
       const kept = keptElements(before, after);
+      const changed = changedElements(before.length, after.length, kept);
 
-      for (let index = before.length - 1; index >= 0; index--) if (!kept.has(index)) text = withoutNode(text, [...path, index]);
-      const matched = new Set(kept.values());
+      for (const [from, to] of changed) edit([...path, from], before[from], after[to]);
+
+      for (let index = before.length - 1; index >= 0; index--) if (!kept.has(index) && !changed.has(index)) text = withoutNode(text, [...path, index]);
+      const matched = new Set([...kept.values(), ...changed.values()]);
 
       after.forEach((value, index) => {
         if (matched.has(index)) return;
@@ -155,6 +158,26 @@ function keptElements(before: readonly JsonValue[], after: readonly JsonValue[])
   });
 
   return kept;
+}
+
+/**
+ * Each element of `before` that changed in place, by its index, paired with
+ * the element at the same place in `after` between the same kept neighbours,
+ * so an edit inside it keeps the comments it holds.
+ */
+function changedElements(beforeLength: number, afterLength: number, kept: ReadonlyMap<number, number>): Map<number, number> {
+  const changed = new Map<number, number>();
+  const anchors: Array<[number, number]> = [...kept, [beforeLength, afterLength]];
+  let from = 0;
+  let to = 0;
+
+  for (const [keptFrom, keptTo] of anchors) {
+    for (; from < keptFrom && to < keptTo; from++, to++) changed.set(from, to);
+    from = keptFrom + 1;
+    to = keptTo + 1;
+  }
+
+  return changed;
 }
 
 /** A comment that ends on its line, after optional blanks: `// …` or a one-line `/* … *\/`. */

@@ -163,6 +163,12 @@ describe('editJsonText', () => {
     expect(parseJsonAs(editJsonText('{\n  "a": 1 /* note */,\n}\n', { a: 1, b: 2 }), 'jsonc')).toEqual({ a: 1, b: 2 });
   });
 
+  it('edits a changed array element in place and keeps the comments inside it', () => {
+    const hooks = '{"Stop": [{ "command": "old", /* keep */ "timeout": 30 }]}';
+
+    expect(editJsonText(hooks, { Stop: [{ command: 'new', timeout: 30 }] })).toBe('{"Stop": [{ "command": "new", /* keep */ "timeout": 30 }]}');
+  });
+
   it('leaves the text as it is when the value has not changed', () => {
     expect(editJsonText(settings, parseJsonAs(settings, 'jsonc'))).toBe(settings);
   });
