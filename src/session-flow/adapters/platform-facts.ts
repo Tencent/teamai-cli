@@ -228,6 +228,20 @@ export const SESSION_PLATFORM_FACTS = {
     idFormat: 'uuid',
     readOnly: true,
   },
+  muse: {
+    // Muse 1.4.x: ${XDG_DATA_HOME:-~/.local/share}/muse/sessions/YYYY/MM/DD/<id>/session.jsonl.
+    store: { in: 'xdg-data', child: 'muse/sessions' },
+    resume: (id) => `muse resume ${id}`,
+    thinking: true, images: false,
+    nativeTools: new Set([
+      'bash', 'read_file', 'write_file', 'edit_file', 'search', 'web_search',
+      'read_memory', 'add_memory', 'edit_memory', 'todo_write', 'task',
+    ]),
+    legacyIdWithoutWorkspace: false,
+    sqliteRegistrationOnWindows: false,
+    idFormat: 'uuid',
+    readOnly: true,
+  },
 } satisfies Record<string, SessionPlatformFacts>;
 
 /** A platform teamai has a session adapter for. */
