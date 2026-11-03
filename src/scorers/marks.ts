@@ -222,7 +222,15 @@ async function isExpired(key: MarkKey, requestedAt: string | undefined, { now, r
   return since + MARK_WINDOW_MS <= Date.parse(now);
 }
 
-/** The mark `line` leaves, before its window: an open mark whose run ended or is gone is one more lapse. */
+/** An open mark while its run goes on; once the run ended or is gone, one more lapse. */
+async function openOrLapsed(line: Extract<Line, { state: 'open' }>, readRun: ReadRun): Promise<Derived> {
+  if ((await readRun(line.run))?.ended === false) return { state: { kind: 'open', at: line.at, run: line.run, group: line.group, demand: line.demand }, restart: restartOf(line) };
+  const lapses = line.lapses + 1;
+
+  return { state: { kind: 'lapsed', lapses }, restart: { ...restartOf(line), lapses } };
+}
+
+/** The mark `line` leaves, before its window. */
 async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<Derived> {
   switch (line?.state) {
     case undefined:
@@ -235,12 +243,8 @@ async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<D
       return { state: { kind: 'waiting' }, restart: restartOf(line) };
     case 'carried':
       return { state: { kind: 'lapsed', lapses: line.lapses }, restart: restartOf(line) };
-    case 'open': {
-      if ((await readRun(line.run))?.ended === false) return { state: { kind: 'open', at: line.at, run: line.run, group: line.group, demand: line.demand }, restart: restartOf(line) };
-      const lapses = line.lapses + 1;
-
-      return { state: { kind: 'lapsed', lapses }, restart: { ...restartOf(line), lapses } };
-    }
+    case 'open':
+      return openOrLapsed(line, readRun);
 
     default: {
       const unhandled: never = line;
@@ -279,18 +283,14 @@ function openLine(key: MarkKey, derived: Derived, launch: Launch, group: string,
   return lineOf(key, now, { state: 'open', run: launch.run, group, demand: launch.demand, ...restart });
 }
 
-function closeLine(key: MarkKey, current: Line | undefined, outcome: MarkOutcome, now: string): Line | undefined {
+function closeLine(key: MarkKey, current: Line | undefined, outcome: MarkOutcome, now: string): Line {
   switch (outcome.kind) {
     case 'labelled':
-      return current?.state === 'labelled' ? undefined : lineOf(key, now, { state: 'labelled' });
+      return lineOf(key, now, { state: 'labelled' });
     case 'failed':
-      return current?.state === 'failed' && current.code === outcome.code ? undefined : lineOf(key, now, { state: 'failed', code: outcome.code });
-    case 'waiting': {
-      if (current?.state === 'waiting') return undefined;
-
+      return lineOf(key, now, { state: 'failed', code: outcome.code });
+    case 'waiting':
       return lineOf(key, now, { state: 'waiting', ...current && 'lapses' in current ? restartOf(current) : { lapses: 0 } });
-    }
-
     default: {
       const unhandled: never = outcome;
 
@@ -359,11 +359,11 @@ export const Marks = {
     return done.status === 'busy' ? done : done.value;
   },
 
-  /** Records what a write or a settle of the launch says of each key. Writing the same outcome again changes nothing. */
+  /** Records what a write or a settle of the launch says of each key; recording it again leaves the same mark. */
   async close(config: LocalConfig, keys: readonly MarkKey[], outcome: MarkOutcome, { now }: Pick<MarkFacts, 'now'>): Promise<{ status: 'done' } | { status: 'busy' }> {
     const done = await scoresLocked(config, 'marks', async () => {
       const ledger = await readLedger(config, now);
-      await append(config, ledger, keys.flatMap((key) => closeLine(key, ledger.newest.get(idOf(key))?.line, outcome, now) ?? []));
+      await append(config, ledger, keys.map((key) => closeLine(key, ledger.newest.get(idOf(key))?.line, outcome, now)));
     });
 
     return done.status === 'busy' ? done : { status: 'done' };
