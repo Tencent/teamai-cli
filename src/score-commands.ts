@@ -6,7 +6,7 @@ import { parseLeaseRef } from './scorers/entry.js';
 import { NamedSubject, type NamedPass } from './scorers/named-subject.js';
 import { ScoreAnswer } from './scorers/score-answer.js';
 import { Subject } from './scorers/subject.js';
-import { scoreSession, type OwnJudge, type SessionDemand, type TeamSession } from './session-flow/scoring.js';
+import { scoreSession, type OwnJudge, type SessionDemand } from './session-flow/scoring.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
 import { setStderrOnly } from './utils/logger.js';
@@ -70,9 +70,24 @@ async function payloadOf(options: ScoreOptions): Promise<{ ok: true; value: Json
   }
 }
 
+/** Whether `options` take or settle judge work, which a named subject does not. */
+function asksForWork(options: ScoreOptions): boolean {
+  return options.next === true || options.lease !== undefined;
+}
+
+/** `named` at the pass `--pass` names, or the failure that says it is not a positive whole number. */
+function atPass(named: NamedPass, text: string | undefined): NamedPass | WorkflowEnvelope {
+  if (text === undefined) return named;
+  const pass = Number(text);
+
+  if (!/^\d+$/u.test(text) || !Number.isSafeInteger(pass) || pass < 1) return failure('invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge');
+
+  return { ...named, pass };
+}
+
 /** The pass `--run` names, or the failure that says what is missing. */
 function passOf(options: ScoreOptions): NamedPass | WorkflowEnvelope {
-  if (options.next || options.lease !== undefined || options.json !== undefined || options.stdin) {
+  if (asksForWork(options) || options.json !== undefined || options.stdin) {
     return failure('invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--batch] [--driver <driver>]');
   }
 
@@ -82,62 +97,36 @@ function passOf(options: ScoreOptions): NamedPass | WorkflowEnvelope {
     return failure('invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded');
   }
 
-  const pass = options.pass === undefined ? undefined : Number(options.pass);
+  return atPass({ run: options.run, step: options.step, scorers: [scorer, ...scorers] }, options.pass);
+}
 
-  if (pass !== undefined && (!/^\d+$/.test(options.pass ?? '') || !Number.isSafeInteger(pass) || pass < 1)) {
-    return failure('invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge');
+/** Why `options` name no one session: a pushed one and one on this machine at once, or an author of neither. */
+function placeMisuseOf(options: ScoreOptions): WorkflowEnvelope | undefined {
+  if (options.teamSession === undefined) {
+    return options.author === undefined ? undefined : failure('invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.');
   }
 
-  const named: NamedPass = { run: options.run, scorers: [scorer, ...scorers] };
-
-  if (options.step !== undefined) named.step = options.step;
-
-  if (pass !== undefined) named.pass = pass;
-
-  return named;
+  return options.session === undefined && options.source === undefined ? undefined : failure('invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.');
 }
 
 /** The session `--session` asks for, or the failure that says what is missing. */
 function sessionDemandOf(options: ScoreOptions): SessionDemand | WorkflowEnvelope {
-  if (options.next || options.lease !== undefined) {
-    return failure('invalid_arguments', '--session takes no --next or --lease: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch] [--json <driver>]');
-  }
-
+  if (asksForWork(options)) return failure('invalid_arguments', '--session takes no --next or --lease: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch] [--json <driver>]');
   const [scorer, ...scorers] = options.scorer ?? [];
 
-  if (scorer === undefined && options.label !== undefined) return failure('invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.');
-
-  if (scorer === undefined) return failure('invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]');
-
-  if (options.teamSession !== undefined && (options.session !== undefined || options.source !== undefined)) {
-    return failure('invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.');
+  if (scorer === undefined) {
+    return options.label === undefined
+      ? failure('invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]')
+      : failure('invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.');
   }
 
-  if (options.author !== undefined && options.teamSession === undefined) return failure('invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.');
+  const misuse = placeMisuseOf(options);
 
-  let demand: SessionDemand;
+  if (misuse !== undefined) return misuse;
+  const { teamSession: name, author, session, source } = options;
+  const flags = { scorers: [scorer, ...scorers] as const, label: options.label, batch: options.batch === true, push: options.push === true };
 
-  if (options.teamSession !== undefined) {
-    const teamSession: TeamSession = { name: options.teamSession };
-
-    if (options.author !== undefined) teamSession.author = options.author;
-    demand = { scorers: [scorer, ...scorers], teamSession };
-  } else {
-    const local: SessionDemand & { teamSession?: never } = { scorers: [scorer, ...scorers] };
-
-    if (options.session !== undefined) local.session = options.session;
-
-    if (options.source !== undefined) local.source = options.source;
-    demand = local;
-  }
-
-  if (options.label !== undefined) demand.label = options.label;
-
-  if (options.batch) demand.batch = true;
-
-  if (options.push) demand.push = true;
-
-  return demand;
+  return name === undefined ? { ...flags, session, source } : { ...flags, teamSession: { name, author } };
 }
 
 async function localConfig(): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
@@ -342,33 +331,32 @@ function shellWord(value: string): string {
   return /^[\w.:/@%+=-]+$/u.test(value) ? value : shellQuoteValue(value);
 }
 
-/**
- * What an agent session runs in place of `start`, which it may not make: the person runs the same `teamai score` in
- * their own terminal, naming the subject in full, and the agent judges its own session with /teamai-share-session.
- */
-function insteadOf(start: ScoreStart, driver: string | undefined): string {
-  const { subject } = start.named;
-  const words = ['teamai', 'score'];
-
+/** The flags of `teamai score` that name `subject`. */
+function subjectWords(subject: Subject): string[] {
   switch (subject.kind) {
     case 'run':
-      words.push('--run', subject.subject.runId, '--step', subject.subject.step, '--pass', String(subject.subject.pass));
-      break;
+      return ['--run', subject.subject.runId, '--step', subject.subject.step, '--pass', String(subject.subject.pass)];
     case 'session':
-      words.push('--session', subject.subject.sessionId, '--source', subject.subject.platform);
-      break;
+      return ['--session', subject.subject.sessionId, '--source', subject.subject.platform];
     case 'team-session':
-      words.push('--team-session', subject.subject.name, '--author', subject.subject.author);
-      break;
+      return ['--team-session', subject.subject.name, '--author', subject.subject.author];
     default: {
       const unhandled: never = subject;
 
       return unhandled;
     }
   }
+}
 
-  words.push(...start.scorers.flatMap((scorer) => ['--scorer', scorer]), ...(start.label === undefined ? [] : ['--label', start.label]));
-  words.push(...(start.batch ? ['--batch'] : []), ...(driver === undefined ? [] : ['--driver', driver]), ...(start.push ? ['--push'] : []));
+/**
+ * What an agent session runs in place of `start`, which it may not make: the person runs the same `teamai score` in
+ * their own terminal, naming the subject in full, and the agent judges its own session with /teamai-share-session.
+ */
+function insteadOf(start: ScoreStart, driver: string | undefined): string {
+  const { subject } = start.named;
+  const words = ['teamai', 'score', ...subjectWords(subject), ...start.scorers.flatMap((scorer) => ['--scorer', scorer])];
+
+  words.push(...(start.label === undefined ? [] : ['--label', start.label]), ...(start.batch ? ['--batch'] : []), ...(driver === undefined ? [] : ['--driver', driver]), ...(start.push ? ['--push'] : []));
   const person = `The person runs ${words.map(shellWord).join(' ')} in their own terminal`;
 
   return subject.kind === 'session' ? `${person}, and the agent judges this session with /teamai-share-session.` : `${person}.`;

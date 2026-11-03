@@ -907,3 +907,67 @@ describe('the background pass a session start begins (teamai score-sessions)', (
     expect(await LabelStore.local(config)).toEqual([]);
   });
 });
+
+/** Runs `teamai score` with `options` from `<root>/app` and returns the envelope it printed and its exit code. */
+async function scored(options: ScoreOptions): Promise<{ envelope: unknown; code: number }> {
+  const work = path.join(root, 'app');
+  fs.mkdirSync(work, { recursive: true });
+  vi.spyOn(process, 'cwd').mockReturnValue(work);
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  let out = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    out += String(chunk);
+    return true;
+  });
+  process.exitCode = 0;
+  try {
+    await scoreCommand(options);
+    return { envelope: JSON.parse(out), code: Number(process.exitCode ?? 0) };
+  } finally {
+    vi.mocked(process.stdout.write).mockRestore();
+    process.exitCode = 0;
+  }
+}
+
+describe('teamai score of a subject the person names', () => {
+  it.each<[string, ScoreOptions, string, string]>([
+    ['a run with --next', { run: 'r1', scorer: ['quality'], next: true }, 'invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--batch] [--driver <driver>]'],
+    ['a run with a payload', { run: 'r1', scorer: ['quality'], json: '{}' }, 'invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--batch] [--driver <driver>]'],
+    ['a run with no scorer', { run: 'r1' }, 'invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded'],
+    ['a step with no run', { step: 'review', scorer: ['quality'] }, 'invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded'],
+    ['pass 0', { run: 'r1', scorer: ['quality'], pass: '0' }, 'invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge'],
+    ['pass 1.5', { run: 'r1', scorer: ['quality'], pass: '1.5' }, 'invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge'],
+    ['a pass past the safe integers', { run: 'r1', scorer: ['quality'], pass: '9007199254740993' }, 'invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge'],
+    ['a session with --lease', { session: SESSION, scorer: ['quality'], lease: 'l1' }, 'invalid_arguments', '--session takes no --next or --lease: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch] [--json <driver>]'],
+    ['a session with no scorer', { session: SESSION }, 'invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]'],
+    ['a label with no scorer', { label: 'good' }, 'invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.'],
+    ['a pushed session and a session here', { teamSession: 'retries', session: SESSION, scorer: ['quality'] }, 'invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.'],
+    ['a pushed session and a source', { teamSession: 'retries', source: 'claude-code', scorer: ['quality'] }, 'invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.'],
+    ['an author with no pushed session', { author: 'alice', scorer: ['quality'] }, 'invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.'],
+  ])('refuses %s, and says what to pass', async (_case, options, code, message) => {
+    expect(await scored(options)).toEqual({ envelope: { error: { code, message } }, code: 1 });
+  });
+
+  it('names, in an agent session, the teamai score of a session the person runs and what the agent runs', async () => {
+    await team();
+    claudeSession(SESSION, 'Added the retries.');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'agent-session');
+
+    expect(await scored({ session: SESSION, source: 'claude-code', scorer: ['quality'], label: 'good', driver: 'none' })).toEqual({ envelope: { error: {
+      code: 'invoke_denied',
+      message: expect.stringMatching(new RegExp(`\\. The person runs teamai score --session ${SESSION} --source claude-code --scorer quality --label good --driver none in their own terminal, and the agent judges this session with /teamai-share-session\\.$`, 'u')),
+    } }, code: 1 });
+  });
+
+  it('names, in an agent session, the teamai score of a pass the person runs, with the pass in full', async () => {
+    const { config } = await team({ 'workflows/review.yaml': WORKFLOW });
+    claudeSession(STEP_SESSION, 'Reviewed it.');
+    const runId = await settledRun(config, 'attended', { tool: 'claude', session: STEP_SESSION });
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'agent-session');
+
+    expect(await scored({ run: runId, scorer: ['quality'], batch: true, push: true })).toEqual({ envelope: { error: {
+      code: 'invoke_denied',
+      message: expect.stringMatching(new RegExp(`\\. The person runs teamai score --run ${runId} --step review --pass 1 --scorer quality --batch --push in their own terminal\\.$`, 'u')),
+    } }, code: 1 });
+  });
+});
