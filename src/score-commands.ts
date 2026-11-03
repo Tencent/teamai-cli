@@ -370,7 +370,7 @@ const LabelEntriesSchema = z.object({ labels: z.array(z.object({ scorer: z.strin
 
 const GroupsSchema = z.object({ groups: z.array(z.object({ scorers: z.string() })) });
 
-const NOT_PLANNED = 'it was not planned: another run holds its judge work, or no judge tool here runs its model';
+const NOT_PLANNED = 'it was not planned: another teamai-score run holds its judge work';
 
 /** Why a scorer of the run got no label, as the member reads it. */
 const UNLABELLED = new Map([

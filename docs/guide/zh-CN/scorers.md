@@ -252,13 +252,12 @@ $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --dr
 有评分器没有得到标签时，命令以退出码 1 结束并给出它的代码，`labels` 列出其他评分器得到的标签：
 
 ```console
-$ teamai score --session 5e55… --source claude-code --scorer review-quality --scorer style
-ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/c9f3….md
-⚠ style: no label, it was not planned: another run holds its judge work, or no judge tool here runs its model
-{"error":{"code":"not_planned","message":"Run r39f…: style got no label (not_planned): … Kept the label of review-quality: good.","labels":[…]}}
+$ teamai score --run r2907… --scorer review-quality --scorer style   # style 要求模型别名 fast，它只映射了 codex
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/c6cb….md
+{"error":{"code":"judge_pending","message":"Run rffc… left the judge of style open for a driver that can run it: … The run waits for one until its timeout, and teamai score --drain lists it. Kept the label of review-quality: good.","labels":[…]}}
 ```
 
-只剩本机没有工具能接手的评审步骤时，例如要求 `verified` 而本机没有已验证评审者的评分器，代码为 `judge_pending`，运行保持打开，等待能接手它的 driver。
+只剩本机没有工具能接手的评审步骤时，例如本机没有工具能运行其模型的评审步骤，或要求 `verified` 而本机没有已验证评审者的评分器，代码为 `judge_pending`，运行保持打开，等待能接手它的 driver。另一个 `teamai-score` 运行仍在评审的评分器得到 `not_planned`。
 
 某轮执行的提交或记录的会话已不在本机时，评审前就会失败，不写入任何标签：
 

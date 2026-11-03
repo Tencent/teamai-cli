@@ -312,4 +312,27 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     expect(evidence.gaps).not.toContain('skills_unknown');
   });
 
+  it('leaves open the judge of a scorer whose model no tool here runs, and exits judge_pending with the label the other scorer got', async () => {
+    fs.mkdirSync(path.join(knowledge, 'models'), { recursive: true });
+    fs.writeFileSync(path.join(knowledge, 'models', 'aliases.yaml'), 'aliases:\n  fast:\n    codex: gpt-6-mini\n');
+    fs.writeFileSync(path.join(knowledge, 'scorers', 'style.md'), SCORER.replace('samplingRate: 0', 'samplingRate: 0\nmodel: fast'));
+    git(knowledge, 'add', '-A');
+    git(knowledge, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'style on a codex model');
+    git(knowledge, 'push', '-q', team, 'main');
+    expect((await runCLI(['pull'], app, env)).code).toBe(0);
+    // Only the fake Claude judges here, so no tool here runs style's model.
+    const claudeOnly = { ...env, PATH: [path.join(root, 'bin'), '/usr/bin', '/bin'].join(path.delimiter) };
+
+    const scored = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--scorer', 'style'], app, claudeOnly);
+
+    expect(scored.code, scored.stdout + scored.stderr).toBe(1);
+    const { error } = z.object({ error: z.object({ code: z.string(), message: z.string(), labels: z.array(z.record(z.string(), z.unknown())) }) }).parse(JSON.parse(scored.stdout.trim().split('\n').at(-1) ?? 'null'));
+    expect(error).toMatchObject({ code: 'judge_pending', labels: [expect.objectContaining({ scorer: 'review-quality', label: 'shallow' })] });
+    expect(error.message).toMatch(/^Run (r\w+) left the judge of style open for a driver that can run it: .*Kept the label of review-quality: shallow\.$/);
+    const run = /^Run (r\w+)/.exec(error.message)?.[1] ?? '';
+    const dataHome = path.resolve(z.object({ reasoning: z.string() }).parse(error.labels[0]).reasoning, '..', '..', '..');
+    const { steps } = z.object({ steps: z.array(z.object({ id: z.string(), status: z.string() })) })
+      .parse(JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${run}.json`), 'utf8')));
+    expect(steps.filter((step) => step.id.endsWith('.judge'))).toEqual([{ id: 'score[0].judge', status: 'succeeded' }, { id: 'score[1].judge', status: 'pending' }]);
+  });
 });

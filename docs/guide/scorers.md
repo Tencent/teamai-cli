@@ -252,13 +252,12 @@ $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --dr
 A scorer left without a label makes the command exit 1 with its code, and `labels` lists what the others got:
 
 ```console
-$ teamai score --session 5e55… --source claude-code --scorer review-quality --scorer style
-ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/c9f3….md
-⚠ style: no label, it was not planned: another run holds its judge work, or no judge tool here runs its model
-{"error":{"code":"not_planned","message":"Run r39f…: style got no label (not_planned): … Kept the label of review-quality: good.","labels":[…]}}
+$ teamai score --run r2907… --scorer review-quality --scorer style   # style asks for model alias fast, which maps only codex
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/c6cb….md
+{"error":{"code":"judge_pending","message":"Run rffc… left the judge of style open for a driver that can run it: … The run waits for one until its timeout, and teamai score --drain lists it. Kept the label of review-quality: good.","labels":[…]}}
 ```
 
-When only a judge step no tool here can take is left, such as a `verified` scorer with no verified judge here, the code is `judge_pending`, and the run stays open for a driver that can take it.
+When only a judge step no tool here can take is left, such as one whose model no tool here runs, or a `verified` scorer with no verified judge here, the code is `judge_pending`, and the run stays open for a driver that can take it. A scorer another `teamai-score` run is still judging gets `not_planned`.
 
 A pass whose commits or recorded session are gone from this machine fails before any judge, and no label is written:
 

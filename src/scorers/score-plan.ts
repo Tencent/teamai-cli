@@ -7,7 +7,6 @@ import { loadModelAliases } from '../models/aliases.js';
 import { installedConfinedTools } from '../tool-launch/confined.js';
 import type { LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import { log } from '../utils/logger.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import { judgeablePasses } from '../workflow/judge-work.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -193,15 +192,10 @@ async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[
 
   for (const candidate of judged.candidates.filter((one) => request.demand === 'named' || judged.sampled(one))) {
     const chosen = chooseJudgeModel(aliases, candidate.definition, tools);
-
-    if (!chosen.ok) {
-      log.warn(`${chosen.message} Scorer ${candidate.name} is left for a machine whose judge can run it.`);
-      continue;
-    }
-
-    const { tool, model, by, noModel } = chosen.choice;
-    const shared = batch && !judged.alone(candidate);
-    const key = shared ? canonicalJson({ tool, model: model ?? null, by, noModel: noModel ?? null, stages: judged.stagesOf(candidate) }) : `${candidate.name}\n`;
+    // A model no judge here runs gets a group of its own, whose judge step waits for a driver that can run it.
+    const key = chosen.ok && batch && !judged.alone(candidate)
+      ? canonicalJson({ tool: chosen.choice.tool, model: chosen.choice.model ?? null, by: chosen.choice.by, noModel: chosen.choice.noModel ?? null, stages: judged.stagesOf(candidate) })
+      : `${candidate.name}\n`;
     groups.set(key, [...groups.get(key) ?? [], candidate]);
   }
 

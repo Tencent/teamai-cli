@@ -301,6 +301,23 @@ describe('score plan', () => {
     expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality', model: 'gpt-5.4' }] } });
   });
 
+  it('plans a scorer whose model no judge tool here runs, in a group of its own, so its judge step waits for a driver that can', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer({ extra: 'model: fast\n' }), coverage: scorer() });
+    fs.mkdirSync(path.join(config.repo.localPath, 'models'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'models', 'aliases.yaml'), 'aliases:\n  fast:\n    codex: gpt-6-mini\n');
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\n', { mode: 0o755 });
+    vi.stubEnv('PATH', [bin, '/usr/bin', '/bin'].join(path.delimiter));
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject, batch: true })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', batch: 'true' }, ctx)).toMatchObject({ ok: true, output: { groups: [
+      { scorers: 'quality', model: 'fast' },
+      { scorers: 'coverage', model: '' },
+    ] } });
+  });
+
   it('takes a hand label only from the label input of a run a person started, as one group with no stage', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const subject = 'session:claude-code:one';
