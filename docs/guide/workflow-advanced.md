@@ -317,6 +317,55 @@ When `e2e` still fails after three fixes, `fix` fails `loop_exhausted` instead o
 {"data":{"done":{"run":"r3319969c","outcome":"failed","end":"stuck"},"cancelled":[]}}
 ```
 
+A loop inside a copy keeps every commit it made there, even when its last pass is skipped. Each item below implements a task and fixes it on the item's branch. `open-pr` starts from both items with their fixes:
+
+```yaml
+schemaVersion: v1alpha1
+name: loop-fix-each-task
+description: Implement each task on its own branch, fix it until its tests pass, then join the tasks.
+inputs:
+  tasks: [{ id: string, title: string, after: [string] }]
+steps:
+  - id: tasks
+    for_each:
+      items: inputs.tasks
+    workspace: new
+    workflow:
+      steps:
+        - id: implement
+          prompt: "Implement {{ item.title }}."
+        - id: test
+          needs: [implement]
+          command: npm test
+        - id: fix
+          needs: [test]
+          if: steps.test.outcome == 'failed'
+          prompt: Make npm test pass.
+          loop: { back_to: test, max_iterations: 3 }
+  - id: open-pr
+    needs: [tasks]
+    workspace: new
+    deliver: pr
+    command: npm run build
+```
+
+```sh
+teamai workflow start loop-fix-each-task --driver local --inputs '{"tasks":[{"id":"api","title":"the /orders endpoint","after":[]},{"id":"ui","title":"the orders page","after":["api"]}]}'
+```
+
+When the first test of `api` fails, the run goes like this:
+
+```text
+tasks[0].implement   teamai/<run>/tasks-0/p1   writes 1a2b3c4
+tasks[0].test        reads 1a2b3c4             fails
+tasks[0].fix         teamai/<run>/tasks-0/p1   writes 5d6e7f8
+tasks[0].test        reads 5d6e7f8             passes, so fix is skipped and the loop ends
+tasks[1].implement   teamai/<run>/tasks-1/p1   starts from 5d6e7f8, the fixed api
+open-pr              teamai/<run>/open-pr/p1   starts from 5d6e7f8 and merges tasks-1
+```
+
+`implement` and `fix` set no `workspace`, so they continue the item's branch, and `test` reads that same branch.
+
 ### Read every pass
 
 Each run of a step is a pass, numbered from 1. A lease carries its `pass`. In a run of `loop-implement-task`, the second lease of `e2e` is:
