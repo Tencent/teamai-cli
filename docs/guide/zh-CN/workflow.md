@@ -781,7 +781,7 @@ $ teamai list workflows
 
 例外是你接收的两个命名空间都定义了的名字：它没有可运行版本，启动它会以 `workflow_namespace_conflict` 拒绝，并指出两个文件。
 
-`teamai-share-learnings` 用它的五个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session`（或别名为 `teamai-share-session` 的团队工作流）要声明同样的五个输入，类型也相同，用不到的也要声明：
+`teamai-share-learnings` 用它的六个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session`（或别名为 `teamai-share-session` 的团队工作流）要声明同样的六个输入，类型也相同，用不到的也要声明：
 
 ```yaml
 schemaVersion: v1alpha1
@@ -789,7 +789,7 @@ name: teamai-share-session
 alias: wrap-up
 description: Publish this session our way.
 invoke: ask
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, demand: auto | named }
 steps:
   - id: archive
     command: ./scripts/archive-session.sh "$SESSION"
@@ -807,7 +807,13 @@ steps:
 
 枚举值的顺序不限：`judge: driver | here` 与 `here | driver` 是同一类型。
 
-保留这五个输入，或者同时替换 `teamai-share-learnings`。
+保留这六个输入，或者同时替换 `teamai-share-learnings`。
+
+把 `teamai-share-session` 作为步骤运行的团队工作流要传 `demand`：本人或 agent 点名要评这个会话时传 `named`，每个评分器都评它；后台评分传 `auto`，按抽样评。没传的，pull 拒绝：
+
+```text
+⚠ [workflows] workflows/wrap-up.yaml:8: field "steps[0].with": step "share" with does not pass input "demand", which workflow "teamai-share-session" declares as auto | named
+```
 
 `workflow start --describe` 用 `source`（`team` 或 `default`）说明启动的是哪一个。运行把它作为 `origin` 保存在状态和[运行记录](#运行记录)中：`{"source":"team"}` 与 `teamRevision` 并列，或 `{"source":"default","teamaiVersion":"0.29.0"}`。[仪表盘](dashboard.md#工作流运行workflow-runs)显示 `团队 7a6134a25e74` 或 `teamai 默认 0.29.0`。默认工作流的运行只能在 teamai 自带同一文件的机器上继续；否则以 `definition_mismatch` 拒绝，并说明两个版本。
 
@@ -823,7 +829,7 @@ learning         interactive：会话的 agent 和本人一起运行 `teamai ski
                  → { learnings: [{ title, file, namespace }, …] }，没什么可分享时为 []
 └─ approve       有一条或更多经验时运行。可选审批：Share these N learnings with the team? [每条的标题、文件和命名空间]
    └─ contribute 每条经验一次 → teamai contribute --file … --title … --namespace … --session-id <session>
-share-session    用相同输入运行 teamai-share-session：
+share-session    用相同输入和 demand: named 运行 teamai-share-session：
   publish        只在 publish: true 时运行
                  → teamai session push --scrub --session <session> --source <source>
   score          scorers 不为空时运行 → 对该会话运行 teamai-score，最多 30 分钟
@@ -841,6 +847,7 @@ agent 运行 describe，它为调用它的会话给每个输入提议一个 `val
 | `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing. |
 | `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
 | `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
+| `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as a background pass does. |
 
 带 `--confirmed` 启动运行的 agent 可以替本人保留 `publish: true`，teamai 无法核实本人是否选过。
 

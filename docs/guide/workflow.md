@@ -781,7 +781,7 @@ For one name, the first runnable version wins: the project's team file, then the
 
 The exception is a name that two namespaces you receive both define: it has no runnable version, and a start of it is refused with `workflow_namespace_conflict`, naming both files.
 
-`teamai-share-learnings` runs `teamai-share-session` with its five inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same five with the same types, even the ones it ignores:
+`teamai-share-learnings` runs `teamai-share-session` with its six inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same six with the same types, even the ones it ignores:
 
 ```yaml
 schemaVersion: v1alpha1
@@ -789,7 +789,7 @@ name: teamai-share-session
 alias: wrap-up
 description: Publish this session our way.
 invoke: ask
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, demand: auto | named }
 steps:
   - id: archive
     command: ./scripts/archive-session.sh "$SESSION"
@@ -807,7 +807,13 @@ With other inputs, such as only `session` and `source`, or one of another type, 
 
 An enum's values may come in any order: `judge: driver | here` is the same type as `here | driver`.
 
-Keep the five inputs, or replace `teamai-share-learnings` too.
+Keep the six inputs, or replace `teamai-share-learnings` too.
+
+A team workflow that runs `teamai-share-session` as a step passes `demand`: `named` when a person or an agent asks for the session, so every scorer judges it, `auto` from a background pass, which samples it. Pull refuses one that does not:
+
+```text
+⚠ [workflows] workflows/wrap-up.yaml:8: field "steps[0].with": step "share" with does not pass input "demand", which workflow "teamai-share-session" declares as auto | named
+```
 
 `workflow start --describe` reports which one starts, as `source` (`team` or `default`). A run keeps it as `origin` in its state and its [run records](#run-records): `{"source":"team"}` beside `teamRevision`, or `{"source":"default","teamaiVersion":"0.29.0"}`. The [dashboard](dashboard.md#workflow-runs) shows `Team 7a6134a25e74` or `teamai default 0.29.0`. Another machine can continue a run of a default only when its teamai ships the same file; otherwise it refuses with `definition_mismatch` and names both versions.
 
@@ -823,7 +829,7 @@ learning         interactive: the session's agent runs `teamai skill get share` 
                  → { learnings: [{ title, file, namespace }, …] }, [] when nothing is worth sharing
 └─ approve       when there is one learning or more. Optional approval: Share these N learnings with the team? [each title, file and namespace]
    └─ contribute once per learning → teamai contribute --file … --title … --namespace … --session-id <session>
-share-session    runs teamai-share-session with the same inputs:
+share-session    runs teamai-share-session with the same inputs and demand: named:
   publish        on publish: true only
                  → teamai session push --scrub --session <session> --source <source>
   score          when scorers is not empty → runs teamai-score on the session, for at most 30 minutes
@@ -841,6 +847,7 @@ The agent runs describe, which proposes a `value` and a `why` for each input, fo
 | `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing. |
 | `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
 | `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
+| `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as a background pass does. |
 
 An agent that starts the run with `--confirmed` can keep `publish: true` for you, and teamai cannot check that you chose it.
 

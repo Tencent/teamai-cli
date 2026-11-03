@@ -134,7 +134,7 @@ describe('dashboard workflow runs', () => {
 
     const config = scope('self');
     fs.mkdirSync(config.repo.localPath, { recursive: true });
-    const started = await startRun(config, 'teamai-share-session', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here' }, { secrets: {} });
+    const started = await startRun(config, 'teamai-share-session', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here', demand: 'named' }, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
     const [row] = await listLocalRuns(config);
     expect(row).toMatchObject({ workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });

@@ -40,12 +40,12 @@ function turnOf(envelope: WorkflowEnvelope): z.infer<typeof TurnSchema> {
  * from their terminal, and every command succeeds. What each lease ran, by step, the env of each command, and how the run
  * ended.
  */
-async function shareLearnings(inputs: Record<string, unknown>, learning: Record<string, unknown>): Promise<{ ran: string[]; prompts: string[]; asked: string[]; contributed: Record<string, string>[]; envs: Map<string, Record<string, string>>; outcome: string | undefined; config: LocalConfig; run: string }> {
+async function shareLearnings(inputs: Record<string, unknown>, learning: Record<string, unknown>, workflow = 'teamai-share-learnings'): Promise<{ ran: string[]; prompts: string[]; asked: string[]; contributed: Record<string, string>[]; envs: Map<string, Record<string, string>>; outcome: string | undefined; config: LocalConfig; run: string }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-share-learnings-run-'));
   roots.push(root);
   const config: LocalConfig = { repo: { localPath: path.join(root, 'repo'), remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
   fs.mkdirSync(config.repo.localPath, { recursive: true });
-  const started = await startRun(config, 'teamai-share-learnings', { session: SESSION, source: 'claude-code', publish: false, scorers: [], judge: 'here', ...inputs }, { secrets: {} });
+  const started = await startRun(config, workflow, { session: SESSION, source: 'claude-code', publish: false, scorers: [], judge: 'here', ...inputs }, { secrets: {} });
   if ('error' in started) throw new Error(started.error.message);
   const run = String(started.data.run);
   const ran: string[] = [];
@@ -118,6 +118,13 @@ describe('a teamai-share-learnings run', () => {
       expect(shared.prompts.join('\n')).not.toContain('judge work');
       expect(shared.outcome).toBe('succeeded');
     }
+  });
+
+  it('passes teamai-score the demand teamai-share-session was started with', async () => {
+    const shared = await shareLearnings({ scorers: ['review-quality'], demand: 'auto' }, SKIP, 'teamai-share-session');
+
+    expect(shared.envs.get('score.plan')).toMatchObject({ SUBJECT: `session:claude-code:${SESSION}`, DEMAND: 'auto' });
+    expect(shared.outcome).toBe('succeeded');
   });
 
   it('runs no judge when started with no scorers', async () => {

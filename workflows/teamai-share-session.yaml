@@ -3,7 +3,8 @@ name: teamai-share-session
 description: Share this session with the team - publish its transcript, scrubbed, and score it with the team's scorers. Use when the person asks to publish or archive the session, or to score or judge it.
 invoke: ask
 # judge is accepted and ignored for one release: teamai-share-learnings and team files still pass it.
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+# demand: named when a person or an agent asks for this session, auto from a background pass, which samples it.
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, demand: auto | named }
 steps:
   - id: publish
     if: inputs.publish
@@ -13,8 +14,7 @@ steps:
     needs: []
     if: length(inputs.scorers) > 0
     workflow: teamai-score
-    # Whoever starts this run asks for this session by name, so every scorer it passes judges it, sampled or not.
-    with: { subject: "session:{{ inputs.source }}:{{ inputs.session }}", scorers: "{{ inputs.scorers }}", label: "", batch: false, demand: named }
+    with: { subject: "session:{{ inputs.source }}:{{ inputs.session }}", scorers: "{{ inputs.scorers }}", label: "", batch: false, demand: "{{ inputs.demand }}" }
     # A judge no driver here can take holds the step this long; the session stays published, and --drain starts the
     # lapse again as a teamai-score run of its own.
     timeout: 30m

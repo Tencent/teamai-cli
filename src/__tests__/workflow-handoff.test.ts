@@ -1832,7 +1832,7 @@ steps:
     const acme = team();
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
-    const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' };
+    const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here', demand: 'named' };
     const startClose = async (): Promise<string> => {
       const started = await startRun(alice.config, 'teamai-share-session', inputs, { secrets: await knownSecrets(alice.config) });
       if ('error' in started) throw new Error(started.error.message);

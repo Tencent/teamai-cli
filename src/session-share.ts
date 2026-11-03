@@ -43,11 +43,13 @@ interface SessionShareOffer {
   publish: Proposal<boolean>;
   scorers: Proposal<string[]>;
   judge: Proposal<Judge>;
+  demand: Proposal<'named'>;
 }
 
 const PUBLISH_WHY = 'Archive this session\'s transcript, scrubbed, for the team.';
 const SCORERS_WHY = 'Scorers that judge this session now.';
 const NAME_ANY = 'Name any scorer to judge with it.';
+const DEMAND = { value: 'named', why: 'This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as a background pass does.' } as const;
 
 /** `items` as an English list: `a`, `a and b`, `a, b and c`. */
 function listOf(items: readonly string[]): string {
@@ -141,7 +143,7 @@ async function propose(
   config: LocalConfig,
   { tool, sessionId }: { tool: string; sessionId: string },
   { now = new Date().toISOString(), judgeTools = () => installedConfinedTools([]) }: OfferOptions,
-): Promise<Omit<SessionShareOffer, 'judge'> & { judge: () => Proposal<Judge> }> {
+): Promise<Omit<SessionShareOffer, 'judge' | 'demand'> & { judge: () => Proposal<Judge> }> {
   let found: Proposal<Judge> | undefined;
 
   const judge = (): Proposal<Judge> => {
@@ -195,7 +197,7 @@ async function propose(
 async function offer(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<SessionShareOffer> {
   const proposed = await propose(config, session, options);
 
-  return { ...proposed, judge: proposed.judge() };
+  return { ...proposed, judge: proposed.judge(), demand: DEMAND };
 }
 
 /**
@@ -241,6 +243,7 @@ const CONTRACT = {
   publish: { type: 'boolean' },
   scorers: { type: 'array', items: { type: 'string' } },
   judge: { type: 'enum', values: ['here', 'driver'] },
+  demand: { type: 'enum', values: ['auto', 'named'] },
 } as const satisfies Record<keyof SessionShareOffer, OutputSchema>;
 
 function isContractInput(name: string): name is keyof SessionShareOffer {
