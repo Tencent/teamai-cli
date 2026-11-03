@@ -36,7 +36,8 @@ const RESCORED: ReadonlyArray<Unlabelled['kind']> = ['lapsed', 'failed', 'not_sa
 /**
  * How judging stands on a pass, as browser code: `passJudgingHtml(step, run)` renders a pass's labels, each scorer
  * without one and why, the command that judges it again, and the pass's score runs. The dashboard client embeds it, and
- * so supplies `e`, `label`, `number`, `when`, `runStatus`, `deciderText` and the handoff view's `command`.
+ * so supplies `e`, `label`, `number`, `when`, `runStatus`, `deciderText` and the handoff view's `command`. For Workflow Runs,
+ * `judgingHealthPanel(health)` renders `judging` of `/api/workflows`; it also needs `language`, `pct` and `kpiCard`.
  */
 export const judgingView = `
 const JUDGE_FAILED=${JSON.stringify(FAILED)}, JUDGING_STATE=${JSON.stringify(STATE)}, JUDGING_MEANS=${JSON.stringify(MEANS)}, RESCORED=${JSON.stringify(RESCORED)}, MARK_LAPSES=${MARK_LAPSES};
@@ -50,11 +51,43 @@ function judgingState(state) {
  return line;
 }
 function judgingMeans(state) { const means=state.kind==='failed'?JUDGE_FAILED[state.code]:JUDGING_MEANS[state.kind]; return means?'<small>'+label(means)+'</small>':''; }
+function judgingWhy(state, run, step, pass, scorer) { return judgingState(state)+judgingMeans(state)+(RESCORED.includes(state.kind)?command('teamai score --run '+run+' --step '+step+' --pass '+pass+' --scorer '+scorer):''); }
 function passJudgingHtml(s, run) {
  const labelled=(s.scores||[]).map(x=>'<li><span class="'+(x.passed?'good':'amber')+'" data-verbatim>'+e(x.scorer)+': '+e(x.label)+'</span> · '+label('score')+' '+number(x.score)+(x.decidedBy?' '+deciderText(x.decidedBy):'')+'</li>');
- const missing=(s.unlabelled||[]).map(u=>'<li class="judging-missing"><span data-verbatim>'+e(u.scorer)+':</span> '+judgingState(u.state)+judgingMeans(u.state)+(RESCORED.includes(u.state.kind)?command('teamai score --run '+run+' --step '+s.step+' --pass '+s.pass+' --scorer '+u.scorer):'')+'</li>');
+ const missing=(s.unlabelled||[]).map(u=>'<li class="judging-missing"><span data-verbatim>'+e(u.scorer)+':</span> '+judgingWhy(u.state,run,s.step,s.pass,u.scorer)+'</li>');
  if(!labelled.length&&!missing.length)return '—';
  const runs=s.scoreRuns?.length?'<small class="score-runs">'+label('Score runs')+': '+s.scoreRuns.map(r=>runLink(r.run)+' '+runStatus(r.status)).join(' · ')+'</small>':'';
  return '<ul class="pass-judging">'+labelled.join('')+missing.join('')+'</ul>'+runs;
+}
+const JUDGING_DECIDERS=['judge','check','ci','protected','hand'];
+const MISSING_HEADS=['RUN','PASS','SCORER','WHY'];
+function launchDays(sessions) {
+ const limit=sessions.dailyLimit, most=Math.max(1,...sessions.days.map(d=>d.launches));
+ const days=sessions.days.map(d=>{ const full=limit===undefined?d.launches/most:limit?Math.min(1,d.launches/limit):0, day=new Date(d.day+'T12:00:00').toLocaleDateString(language,{month:'numeric',day:'numeric'}); return '<div class="launch-day'+(limit!==undefined&&d.launches>=limit?' at-limit':'')+'" title="'+e(d.day)+'"><span class="launch-bar" aria-hidden="true"><span style="height:'+Math.round(full*100)+'%"></span></span><b>'+number(d.launches)+'</b><small>'+e(day)+'</small></div>'; });
+ return '<section class="launches"><h3>'+label('Session launches per day')+(limit===undefined?'':' <span class="tag" data-verbatim>daily_limit '+number(limit)+'</span>')+'</h3><div class="launch-days">'+days.join('')+'</div></section>';
+}
+function missingTable(missing) {
+ if(!missing.length)return '<div class="empty"><p>'+label('Every scored pass of the runs listed here has its labels.')+'</p></div>';
+ return '<div class="table-scroll card-table"><table class="judging-missing-labels"><thead><tr>'+MISSING_HEADS.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +missing.map(m=>'<tr>'+['<button class="link" data-run="'+e(m.run)+'" data-run-source="local"><span data-verbatim>'+e(m.alias||m.workflow)+'</span></button><small data-verbatim>'+e(m.run)+'</small>','<span data-verbatim>'+e(m.step)+'</span> #'+number(m.pass),'<span data-verbatim>'+e(m.scorer)+'</span>',judgingWhy(m.state,m.run,m.step,m.pass,m.scorer)].map((cell,i)=>'<td data-label="'+label(MISSING_HEADS[i])+'">'+cell+'</td>').join('')+'</tr>').join('')
+  +'</tbody></table></div>';
+}
+function judgingHealthPanel(h) {
+ const l=h.labels, s=h.states, amber=n=>'<span class="'+(n?'amber':'')+'">'+number(n)+'</span>';
+ const deciders=JUDGING_DECIDERS.filter(by=>l.byDecider[by]).map(by=>deciderText(by)+' '+number(l.byDecider[by])).join(' ');
+ const failures=h.failures.length?'<ul class="judging-failures">'+h.failures.map(f=>'<li><span class="amber" data-verbatim>'+e(f.code)+'</span> '+number(f.count)+'<small>'+label(JUDGE_FAILED[f.code])+'</small></li>').join('')+'</ul>':'';
+ return '<section class="panel judging-health"><div class="panelhead"><h2>'+label('Judging on this machine')+'</h2><span class="tag">'+label('Local · last 7 days')+'</span></div>'
+  +'<div class="kpis judging-kpis">'
+  +kpiCard(label('Labels this week'),number(l.total),pct(l.total?l.passed/l.total:null)+' '+label('passed'))
+  +kpiCard(label('Judge tokens this week'),number(l.inputTokens+l.outputTokens),number(l.inputTokens)+' '+label('input')+' · '+number(l.outputTokens)+' '+label('output'))
+  +kpiCard(label('Judging now'),number(s.judging),number(s.queued)+' '+label('Not judged yet'))
+  +kpiCard(label('Waiting for CI'),number(s.waiting_ci))
+  +kpiCard(label('Lapsed'),amber(s.lapsed),number(s.expired)+' '+label('Expired'))
+  +kpiCard(label('Failed'),amber(s.failed),h.failures.map(f=>'<span data-verbatim>'+e(f.code)+'</span> '+number(f.count)).join(' · '))
+  +'</div><div class="judging-detail">'
+  +(deciders?'<p class="judging-deciders">'+label('Decided by')+' '+deciders+'</p>':'')
+  +failures+launchDays(h.sessions)+'</div>'
+  +'<h3 class="judging-missing-title">'+label('Missing labels')+'</h3>'+missingTable(h.missing)
+  +'</section>';
 }
 `;

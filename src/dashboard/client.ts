@@ -272,6 +272,7 @@ function workflowRuns() {
  return (workflowsError?errorPanel('Could not refresh workflow runs. Any displayed runs are the last successful result.','workflows'):'')
   +'<div class="statusline"><span>'+number(workflows.local.filter(r=>r.status==='running').length)+' '+label('Running here')+'</span><span class="'+(waiting?'amber':'')+'">'+number(waiting)+' '+label('Waiting for an answer')+'</span>'+(reported.state==='ok'?'<span>'+number(offered.length)+' '+label('Offered on teamai-reports')+'</span>'+(person?'<span class="amber">'+number(person)+' '+label('Need a person')+'</span>':'')+'<span>'+number(reported.runs.length)+' '+label('Reported by the team')+'</span>':'')+'</div>'
   +runPanel('Local runs','Local live · this machine',workflows.local,true,'No workflow runs on this machine in this workspace. Start one with teamai workflow start.')
+  +(workflows.judging?judgingHealthPanel(workflows.judging):'')
   +(reported.state==='ok'?handoffPanel(handoffsOf(), new Set(workflows.local.map(r=>r.run))):'')
   +(reported.state==='ok'?runPanel('Team-reported history','Team reports · teamai-reports branch',reported.runs,false,'No run records published yet.'):errorPanel('Could not read the team run records. Local runs are unaffected.','workflows'));
 }
