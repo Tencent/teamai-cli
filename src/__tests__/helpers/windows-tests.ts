@@ -11,6 +11,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/builtin-hooks.test.ts',
   'src/__tests__/codex-hook-rules.test.ts',
   'src/__tests__/codex-team-hooks.test.ts',
+  'src/__tests__/command-shell.test.ts',
   'src/__tests__/cursor-tool-roots.test.ts',
   'src/__tests__/dsh-hooks.test.ts',
   'src/__tests__/hermes-config.test.ts',
