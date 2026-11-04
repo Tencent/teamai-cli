@@ -7,7 +7,8 @@ import { scoredLabels } from '../../../scorers/engine-hooks.js';
 import type { ToolId } from '../../../tools.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { PersonHandoff, ResumeClaim, RunReadied } from '../../protocol.js';
-import type { AttemptId, RunId, RunLock } from '../../store.js';
+import { AttemptResult } from '../../attempt-result.js';
+import { attemptResultPath, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
@@ -672,6 +673,7 @@ export async function agentReport(context: SkillContext, run: RunId, call: { att
     if ('answer' in read) return read.answer;
     const { state } = read;
     const result = await readChildResult({ config: context.config, run, attempt });
+    await AttemptResult.mask(attemptResultPath(context.config, run, attempt), context.env.secrets);
     const taken = traced(context, reportRow(state, { attempt, modelUnavailable: call.modelUnavailable, result }));
 
     if (!taken) return { data: { runner: { attempt, status: 'gone' } } };

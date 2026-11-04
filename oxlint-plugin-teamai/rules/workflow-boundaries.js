@@ -29,6 +29,8 @@ const SKILL_IMPORTS = {
   'src/workflow/step-state.ts': { names: ['FailureSchema', 'ConfinedRunReportSchema', 'TokenUsageSchema'] },
   // A step confined to a directory, which the background runner runs as the local driver does.
   'src/workflow/confined-step.ts': { names: ['runConfinedStep', 'ConfinedStepEnd', 'ConfinedStepLease'] },
+  // An attempt's result file, which the driver masks once a child wrote it, as the local driver does once a tool did.
+  'src/workflow/attempt-result.ts': { names: ['AttemptResult'] },
   // What a prompt step's output must be, as every driver's result instruction says it.
   'src/workflow/output.ts': { names: ['expectedOutput'] },
   'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'runsDir', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },

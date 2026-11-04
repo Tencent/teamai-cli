@@ -214,8 +214,8 @@ async function eventsUntil(harness: Harness, run: RunId, kind: string, mode: Run
   return events;
 }
 
-async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: ToolId } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown }> {
-  const { host = 'h1', tool, ...judge } = options;
+async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: ToolId; output?: string } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown; result: string }> {
+  const { host = 'h1', tool, output = 'Reviewed the change.', ...judge } = options;
   const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...judge };
   const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined, ...(tool !== undefined ? { tool } : {}) }, { mode });
   if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
@@ -227,9 +227,9 @@ async function reviewed(harness: Harness, mode: RunMode = 'attended', options: {
   await harness.call({ kind: 'ack', run, attempt: dispatch.attempt }, { mode });
   const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(dispatch.brief, 'utf8'))?.[1];
   if (!file) throw new Error(`${dispatch.brief} names no result file`);
-  fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
+  fs.writeFileSync(file, JSON.stringify({ kind: 'output', output }));
   expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
-  return { run, chosen, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
+  return { run, chosen, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }), result: file };
 }
 
 /** A claude on PATH without a verified judge profile, so no confined judge of it runs here. */
@@ -929,6 +929,18 @@ steps:
     expect(reports).toEqual(['released']);
     const stored = await readRun(harness.config, run);
     expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'build')).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('masks the run\'s secrets in the result a child wrote once it reports', async () => {
+    vi.stubEnv('ACME_API_TOKEN', 'tm-child-credential-5810');
+    const harness = await skillHarness({ review: REVIEW });
+    roots.push(harness.root);
+
+    const { result } = await reviewed(harness, 'attended', { judge: false, output: 'Reviewed it with tm-child-credential-5810.' });
+
+    const kept = fs.readFileSync(result, 'utf8');
+    expect(kept).toContain('Reviewed it with');
+    expect(kept).not.toContain('tm-child-credential-5810');
   });
 
   it.each(['attended', 'unattended'] as const)('an %s run settles a scored step with judging open, asks nothing, and a poll returns judged once the run its pass started labelled it', async (mode) => {
