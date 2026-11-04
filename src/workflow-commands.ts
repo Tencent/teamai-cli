@@ -19,7 +19,7 @@ import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartC
 import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
 import { driveRun, unsupportedDriver } from './workflow-drive.js';
-import { awaitsLine, awaitsOf, leftOpenLine, type DefaultDrive } from './default-driver.js';
+import { awaitsLine, awaitsOf, driveByDefault, leftOpenLine, type DefaultDrive } from './default-driver.js';
 import { LOCAL_DRIVER, parseDriver, type Driver } from './workflow/driver-name.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -73,7 +73,14 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
   const succeeded = SucceededDoneSchema.safeParse(envelope.data.done);
 
   if (succeeded.success) await nameRunCopy(config, succeeded.data.run);
+  await drainUnattended(config, envelope);
+}
 
+/**
+ * Once an unattended run is done, drains the run's scope as `teamai score --drain` does unless its unattended
+ * publishing and session scoring are both `off`. What the drain could not do is printed.
+ */
+async function drainUnattended(config: LocalConfig, envelope: WorkflowEnvelope): Promise<void> {
   if (resolveRunMode(process.env) !== 'unattended') return;
 
   // A drain drives a teamai-finished-sessions run itself, so the end of one starts no drain.
@@ -418,6 +425,10 @@ export interface ShortcutStart {
    * starts unassigned awaiting, or `none`, which leaves it to any driver. Either is said with the run's id.
    */
   byDefault?: DefaultDrive;
+  /** Shown each line a step says as it runs on the local driver, as a shortcut shows its run's progress. */
+  progress?: (line: string) => void;
+  /** Says how the run the local driver drove went, or why it did not start, in place of printing the envelope. */
+  present?: (config: LocalConfig, driven: WorkflowEnvelope, secrets: Record<string, string>) => Promise<void>;
 }
 
 /** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
@@ -516,6 +527,12 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const awaits = byDefault && awaitsOf(byDefault);
   const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person', awaits });
 
+  if ('error' in started && shortcut.present) {
+    await shortcut.present(config, started, secrets);
+
+    return;
+  }
+
   if ('error' in started || !asks(asked, 'local')) {
     if (byDefault && 'data' in started) {
       const run = String(started.data.run);
@@ -540,14 +557,127 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const runId = startedRun.data;
 
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
-  const local = { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox };
+  const local = { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox, progress: shortcut.progress };
   const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => driveRun(config, runId, LOCAL_DRIVER, { cwd: process.cwd(), options: scored }));
+
+  if (shortcut.present) {
+    await shortcut.present(config, driven, secrets);
+
+    return driven;
+  }
+
   const answered = await shortcut.answer?.(config, runId, driven);
 
   if (answered) writeEnvelope(answered, secrets);
   else await writeDriven(config, driven, secrets);
 
   return driven;
+}
+
+/** A command that is a workflow's shortcut: the run it starts, and how it says what the run did. */
+export interface ShortcutRun {
+  /** The workflow it starts: teamai's default, or the team's file of the same name. */
+  workflow: string;
+  /** What the command gives the run. A team file that replaces the default takes each of them. */
+  inputs: Record<string, JsonValue>;
+  /** The command a person runs, as a refusal names it. */
+  command: string;
+  /** Print the run's envelope in place of its text, and the lines its steps say on stderr. */
+  json: boolean;
+}
+
+/** What a shortcut reads of its run's end: `outputs.text` it prints, and `outputs.exit_code` it exits with. */
+const ShortcutDoneSchema = z.object({
+  run: z.string(),
+  outcome: z.string(),
+  outputs: z.object({ text: z.string().optional(), exit_code: z.number().int().optional() }).optional(),
+});
+
+/**
+ * Starts `workflow` as the shortcut `command` does, on the driver `workflows.driver` names, else local: it shows the
+ * lines its steps say as they run, then prints the run's `outputs.text` and exits with its `outputs.exit_code`, 1 when
+ * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
+ * text. A private run starts no drain.
+ */
+export async function runShortcut({ workflow, inputs, command, json }: ShortcutRun): Promise<void> {
+  setStderrOnly(true);
+
+  const refused = (failure: WorkflowFailure): void => {
+    if (json) {
+      writeEnvelope({ error: failure }, collectEnvSecrets());
+
+      return;
+    }
+
+    log.error(redact(failure.message, { envSecrets: collectEnvSecrets(), patterns: false }));
+    process.exitCode = 1;
+  };
+
+  const loaded = await readyStartConfig(workflow);
+
+  if (!('config' in loaded)) {
+    if ('error' in loaded) refused(loaded.error);
+
+    return;
+  }
+
+  const { config } = loaded;
+  const cached = await loadCachedWorkflow(config, workflow);
+
+  if (!cached) {
+    const conflict = await namespaceConflictOf(config, workflow);
+    refused(conflict === undefined ? workflowNotFound(workflow) : { code: 'workflow_namespace_conflict', message: conflict });
+
+    return;
+  }
+
+  // A team file of the default's name replaces it, so it must take what the command gives.
+  if (cached.source === 'team') {
+    const missing = Object.keys(inputs).filter((input) => cached.definition.inputs?.[input] === undefined);
+
+    if (missing.length > 0) {
+      refused({ code: 'invalid_inputs', message: `The team's ${cached.relativePath} replaces teamai's ${workflow} and takes no input ${missing.join(' or ')}, which ${command} gives it. Add ${missing.join(' and ')} to its inputs, or remove it to run teamai's default.` });
+
+      return;
+    }
+
+    log.info(`Running the team's ${cached.relativePath}, which replaces teamai's ${workflow}.`);
+  }
+
+  const isPrivate = cached.definition.private === true;
+  const decided = await driveByDefault(config);
+  const driver = decided.kind === 'drive' ? decided.driver : undefined;
+  const say = (line: string): void => { (json ? process.stderr : process.stdout).write(`${line}\n`); };
+
+  await startWorkflow(workflow, { driver, inputs: JSON.stringify(inputs) }, {
+    scope: config,
+    byDefault: decided,
+    instead: `The person runs ${command} in their own terminal.`,
+    progress: say,
+    present: async (scope, driven, secrets) => {
+      if ('error' in driven && !json) {
+        refused(driven.error);
+
+        return;
+      }
+
+      const done = ShortcutDoneSchema.safeParse('data' in driven ? driven.data.done : undefined);
+      const text = done.data?.outputs?.text;
+
+      if (json || !done.success) writeEnvelope(driven, secrets);
+      else if (text !== undefined && text !== '') process.stdout.write(`${redact(text, { envSecrets: secrets, patterns: false })}\n`);
+
+      if (!done.success) return;
+      const exitCode = done.data.outcome === 'succeeded' ? done.data.outputs?.exit_code ?? 0 : 1;
+
+      if (exitCode !== 0) await explainFailedSteps(scope, done.data.run, secrets);
+      else await nameRunCopy(scope, done.data.run);
+      process.exitCode = exitCode;
+
+      // A private run's sessions and outputs stay on this machine, so there is nothing of it to drain.
+      if (!isPrivate) await drainUnattended(scope, driven);
+    },
+  });
 }
 
 /** Aborts on the first SIGINT or SIGTERM, so `teamai benchmark try` stops the setup or check it runs. A second one ends the process. */
