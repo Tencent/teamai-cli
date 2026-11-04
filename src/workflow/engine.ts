@@ -1853,6 +1853,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   const envelope = await withRun(config, runId, env.secrets, async (run, now) => {
     const before = JSON.stringify(run);
 
+    // A driver that takes leases drives the run, whichever driver workflows.driver started it for.
+    if (options.canTakeLease !== false) delete run.awaits;
+
     const context: OfferContext = {
       // The HITL of a driver nobody attends is its agent's, which works in no interactive step: only a person does.
       can: can.hitl === true && options.handoff !== undefined ? { ...can, hitl: false } : can, allow: config.workflows?.allow ?? {}, facts: env.facts, prepare: options.prepare === true,
