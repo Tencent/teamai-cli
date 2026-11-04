@@ -710,3 +710,37 @@ describe('a run that settled longer ago than workflows.retention', () => {
     expect(branches(origin, runId)).toEqual(['join/p1', 'join/p2', 'left/p1']);
   });
 });
+
+const CHOOSES = `schemaVersion: v1alpha1
+name: ship
+description: A branch, a choice, and a branch after it.
+steps:
+  - id: change
+    workspace: new
+    command: node -e "require('fs').writeFileSync('change.txt', 'C')"
+  - id: decide
+    needs: [change]
+    choose: { message: Continue?, options: [yes, no], default: yes }
+  - id: join
+    needs: [decide]
+    workspace: new
+    command: node -e "require('fs').writeFileSync('join.txt', 'J')"
+`;
+
+describe('a retry of a run that succeeded', () => {
+  it('does not reopen the run while it deletes its branches', async () => {
+    const { config, cwd, root, runId } = await fixture(CHOOSES);
+    vi.spyOn(log, 'warn');
+    const release = pausesOn(root, 'push .*--delete');
+
+    const driving = runLocalDriver(config, runId, cwd, { autoApprove: true });
+    await release.reached();
+
+    expect(await retryStep(config, runId, {}, 'decide')).toEqual({ error: {
+      code: 'busy', message: `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry ${runId} decide`,
+    } });
+    release.go();
+    expect(await driving).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await state(config, runId)).toMatchObject({ status: 'succeeded', leftovers: { by: 'success', failed: [] } });
+  });
+});

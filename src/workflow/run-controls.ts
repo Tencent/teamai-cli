@@ -26,12 +26,13 @@ async function controlRun(
   runId: string,
   secrets: Record<string, string>,
   operation: (run: RunState, now: string, finish: (result: WorkflowResult) => Promise<void>) => Promise<WorkflowEnvelope>,
+  { cleanupBusy }: { cleanupBusy?: WorkflowEnvelope } = {},
 ): Promise<WorkflowEnvelope> {
   let queued = false;
   let runSettled = false;
   let checkout = process.cwd();
 
-  const envelope = await withRun(config, runId, secrets, async (run, now) => {
+  const change = () => withRun(config, runId, secrets, async (run, now) => {
     const before = JSON.stringify(run);
     checkout = run.driver?.workspace ?? checkout;
 
@@ -47,6 +48,17 @@ async function controlRun(
 
     return { envelope: opEnvelope, save: JSON.stringify(run) !== before };
   });
+
+  // A reopen holds the run's cleanup lock while it changes the run, so no cleanup deletes a branch the reopened run needs.
+  let envelope: WorkflowEnvelope;
+
+  if (cleanupBusy === undefined) envelope = await change();
+  else {
+    const locked = await withCleanupLock(config, runId, change);
+
+    if (locked.kind === 'busy') return cleanupBusy;
+    envelope = locked.value;
+  }
 
   // Not on a control that only found a run already ended: its answer is an error, and the end was published before.
   // A control that settled the run answers with an error too, and still publishes its end.
@@ -441,16 +453,10 @@ export function restartCommand(run: RunState): string {
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
-  if (!isRunId(runId)) return retryUnlocked(config, runId, secrets, step);
-  const locked = await withCleanupLock(config, runId, () => retryUnlocked(config, runId, secrets, step));
+  const cleanupBusy = isRunId(runId)
+    ? error('busy', `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: ${retryCommand(runId, step)}`)
+    : undefined;
 
-  return locked.kind === 'held'
-    ? locked.value
-    : error('busy', `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: ${retryCommand(runId, step)}`);
-}
-
-/** `retryStep` once doctor --fix cannot remove what the run left until it is done. */
-async function retryUnlocked(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
   const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
 
   return controlRun(config, runId, secrets, async (run, now, finish) => {
@@ -549,5 +555,5 @@ async function retryUnlocked(config: LocalConfig, runId: string, secrets: Record
     const retried = { retried: { step: target.id, pass: target.pass ?? 1 }, reopened, run: runData(run) };
 
     return ok(reopened && run.status === 'running' ? { ...retried, resume: `teamai workflow resume ${run.id}` } : retried);
-  });
+  }, { cleanupBusy });
 }

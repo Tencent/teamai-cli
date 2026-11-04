@@ -227,34 +227,37 @@ async function settleSucceeded(run: RunState, { checkout, now }: { checkout: str
  * that a branch that stays holds, and records what it did on the run. The publish goes first because it checks the
  * run's branches on origin. `notPublished` is why the end was not published: then nothing is deleted, and the run's
  * owner is warned, unless another install owns the run now. A deletion that fails is a warning naming the branch. Runs
- * once per settled revision, and again while a deletion failed.
+ * once per settled revision, and again while a deletion failed, under the run's cleanup lock, which a retry holds while it
+ * reopens the run: the run is read under it, and while another holds it nothing is deleted until `doctor --fix`.
  */
 export async function cleanUpSucceededRun(
   config: LocalConfig,
   { runId, checkout, secrets, notPublished }: { runId: string; checkout: string; secrets: Record<string, string>; notPublished: HandoffError | undefined },
 ): Promise<void> {
-  const run = await readRun(config, runId);
+  await withCleanupLock(config, runId, async () => {
+    const run = await readRun(config, runId);
 
-  // A run with no base and no copy never wrote a branch.
-  if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded' || (run.base === undefined && run.copies === undefined)) return;
+    // A run with no base and no copy never wrote a branch.
+    if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded' || (run.base === undefined && run.copies === undefined)) return;
 
-  if (run.leftovers?.revision === run.revision && run.leftovers.failed.length === 0) return;
+    if (run.leftovers?.revision === run.revision && run.leftovers.failed.length === 0) return;
 
-  if (notPublished) {
-    if (notPublished.code !== 'not_owner') warnNotCleanedUp(runId, 'its end did not reach teamai-reports');
+    if (notPublished) {
+      if (notPublished.code !== 'not_owner') warnNotCleanedUp(runId, 'its end did not reach teamai-reports');
 
-    return;
-  }
+      return;
+    }
 
-  const leftovers = await settleSucceeded(run, { checkout, now: new Date().toISOString() });
+    const leftovers = await settleSucceeded(run, { checkout, now: new Date().toISOString() });
 
-  if (!leftovers) return;
+    if (!leftovers) return;
 
-  warnNotDeleted(runId, leftovers.failed);
+    warnNotDeleted(runId, leftovers.failed);
 
-  await updateRun(config, runId, secrets, async (stored) => (
-    stored === 'missing' || stored.status !== 'succeeded' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
-  ));
+    await updateRun(config, runId, secrets, async (stored) => (
+      stored === 'missing' || stored.status !== 'succeeded' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
+    ));
+  });
 }
 
 /**
@@ -586,7 +589,7 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
 
     if (!due(ownRunSweptAt(run, retention))) {
       if (run.status === 'succeeded' && !cleaned(run, 'success')) {
-        await withCleanupLock(config, run.id, async () => cleanUpSucceededRun(config, { runId: run.id, checkout: at, secrets, notPublished: await publishRunEnd(config, run.id, at) }));
+        await cleanUpSucceededRun(config, { runId: run.id, checkout: at, secrets, notPublished: await publishRunEnd(config, run.id, at) });
       }
 
       continue;
