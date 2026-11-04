@@ -76,10 +76,9 @@ type Stuck = { file: string; error: string };
  * when it is `own`'s file. A committed patch is removed: that commit is what the checkout pushes, now or later. One
  * already on the branch is removed too, and one that does not apply stays, with what git said.
  */
-async function commitKept(input: { worktree: string; branch: DataBranch; files: readonly string[]; own?: OwnPatch }): Promise<{ committed: boolean; stuck: Stuck[] }> {
+async function commitKept(input: { worktree: string; branch: DataBranch; files: readonly string[]; own?: OwnPatch }): Promise<Stuck[]> {
   const { worktree, branch, files, own } = input;
   const repo = createGit(worktree);
-  let committed = false;
   const stuck: Stuck[] = [];
 
   for (const file of files) {
@@ -94,10 +93,9 @@ async function commitKept(input: { worktree: string; branch: DataBranch; files: 
     const paths = (await repo.raw(['apply', '--numstat', '-z', file])).split('\0').flatMap((entry) => entry.split('\t').slice(2));
     await commitSkippingHooks(repo, file === own?.file ? own.message : `[teamai] Publish pending ${branch} data`, paths, { identityFallback: true });
     await fs.rm(file, { force: true });
-    committed = true;
   }
 
-  return { committed, stuck };
+  return stuck;
 }
 
 /** A patch a step kept a moment ago, and the message its commit takes. */
@@ -111,13 +109,20 @@ async function sendKept(config: LocalConfig, branch: DataBranch, own?: OwnPatch)
   let stuck: Stuck[] = [];
 
   const result = await CHECKOUTS[branch].update(config, async (worktree) => {
-    const sent = await commitKept({ worktree, branch, files: await keptFiles(config, branch), own });
-    stuck = sent.stuck;
+    stuck = await commitKept({ worktree, branch, files: await keptFiles(config, branch), own });
 
-    return sent.committed ? { files: [], message: `[teamai] Publish pending ${branch} data` } : null;
+    // No files: commitAndPushAt then pushes whatever commits the checkout holds that origin lacks, these or older ones.
+    return { files: [], message: `[teamai] Publish pending ${branch} data` };
   });
 
   return { result, stuck };
+}
+
+/** What a send came to: failed while a kept patch does not apply, though the rest landed. */
+function sentResult(config: LocalConfig, branch: DataBranch, { result, stuck }: { result: PublishResult; stuck: Stuck[] }): PublishResult {
+  if (stuck.length === 0 || !isDelivered(result)) return result;
+
+  return { status: 'failed', reason: `${branch} on origin changed what ${stuck.length === 1 ? 'a step' : `${stuck.length} steps`} staged, so it no longer applies; it is kept in ${keptDir(config, branch)}` };
 }
 
 export const DataBranches = {
@@ -140,7 +145,7 @@ export const DataBranches = {
   send: sendKept,
 
   /**
-   * Sends what each data branch holds here and origin does not: the patches kept for it, then the commits its checkout
+   * Sends what each data branch holds here and origin does not: the patches kept for it and the commits its checkout
    * holds that origin lacks, each with what came of it.
    */
   async pushPending(config: LocalConfig): Promise<Array<{ branch: DataBranch; result: PublishResult }>> {
@@ -148,19 +153,9 @@ export const DataBranches = {
     const results: Array<{ branch: DataBranch; result: PublishResult }> = [];
 
     for (const branch of DATA_BRANCHES) {
-      if ((await keptFiles(config, branch)).length > 0) {
-        const { result, stuck } = await sendKept(config, branch);
-
-        const kept: PublishResult = stuck.length > 0 && isDelivered(result)
-          ? { status: 'failed', reason: `${branch} on origin changed what ${stuck.length === 1 ? 'a step' : `${stuck.length} steps`} staged, so it no longer applies; it is kept in ${keptDir(config, branch)}` }
-          : result;
-
-        results.push({ branch, result: kept });
-
-        if (!isDelivered(kept)) continue;
-      }
-
-      if (await isGitRepo(CHECKOUTS[branch].dir(config)) && await CHECKOUTS[branch].hasUnpushed(config)) results.push({ branch, result: await CHECKOUTS[branch].commitAndPush(config, `[teamai] Publish pending ${branch} data`, []) });
+      // A send's update pushes the checkout's own commits too, or did not happen, and a push now would meet the same.
+      if ((await keptFiles(config, branch)).length > 0) results.push({ branch, result: sentResult(config, branch, await sendKept(config, branch)) });
+      else if (await isGitRepo(CHECKOUTS[branch].dir(config)) && await CHECKOUTS[branch].hasUnpushed(config)) results.push({ branch, result: await CHECKOUTS[branch].commitAndPush(config, `[teamai] Publish pending ${branch} data`, []) });
     }
 
     return results;

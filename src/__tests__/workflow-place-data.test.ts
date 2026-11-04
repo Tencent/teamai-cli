@@ -300,6 +300,24 @@ describe('DataBranches.pushPending', () => {
     expect(onOrigin(NOTES)).toBe('NOTE-ONE\nNOTE-TWO\nNOTE-THREE\n');
   });
 
+  it('sends the commits a publish left on this machine while a kept patch does not apply', async () => {
+    config = { ...config, username: 'bob' };
+    await publish({ 'scores/bob/2026-11.jsonl': '{"bob":2}\n' }, () => {
+      const other = path.join(sandbox, 'other');
+      git(sandbox, 'clone', '-q', '--branch', 'teamai-reports', remote, other);
+      fs.writeFileSync(path.join(other, 'scores', 'bob', '2026-11.jsonl'), '{"bob":3}\n');
+      git(other, 'commit', '-qam', 'teammate');
+      git(other, 'push', '-q', 'origin', 'teamai-reports');
+    });
+    const away = `${remote}.away`;
+    await publish({ 'votes/bob.yaml': 'up: 1\n' }, () => fs.renameSync(remote, away));
+    fs.renameSync(away, remote);
+
+    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.any(String) }]);
+    expect(onOrigin('votes/bob.yaml')).toBe('up: 1\n');
+    expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":3}\n');
+  });
+
   it('pushes nothing for an http team repo', async () => {
     expect(await DataBranches.pushPending({ ...config, repo: { ...config.repo, kind: 'http' } })).toEqual([]);
   });
