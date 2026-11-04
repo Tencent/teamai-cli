@@ -9,4 +9,5 @@ describe('Windows test list', () => {
     expect(new Set(WINDOWS_TESTS).size).toBe(WINDOWS_TESTS.length);
     expect(WINDOWS_TESTS).toContain('src/__tests__/locate-matrix.test.ts');
   });
+
 });

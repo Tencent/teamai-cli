@@ -51,11 +51,17 @@ jobs:
       - name: Unit tests
         run: npx vitest run
 
-  # The full suite runs on Linux. This job names the files whose result
-  # depends on Darwin. The provider PATH file lives under e2e/, which the
-  # default config excludes even when the file is named.
+  # The full suite. A git repo under os.tmpdir() resolves /var through
+  # /private/var here and not on Linux (branch-worktree-retire, run
+  # 39965490386). Outside build.needs, as coverage is: a red shard is a
+  # failed check on the PR, and Build does not wait. The provider PATH
+  # file is under e2e/, which the unit run excludes, so one shard runs it.
   macos:
-    name: Lint & Test (Node 22 on macos-latest)
+    name: Unit tests (Node 22 on macos-latest, shard ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/2', '2/2']
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -70,10 +76,11 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Tests that depend on the machine
-        run: npx vitest run src/__tests__/session-target-id.test.ts src/__tests__/migrate-image-and-cursor-id.test.ts src/__tests__/git-exclude-platform.test.ts
+      - name: Unit tests
+        run: npx vitest run --shard=${{ matrix.shard }}
 
       - name: Provider CLI path
+        if: matrix.shard == '1/2'
         run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/providers-cli-path.test.ts
 
   # Coverage made the Node 20 leg the slowest unit job (17 min against 10).
@@ -139,7 +146,7 @@ jobs:
   # consume the prepared artifact as soon as it is available.
   build:
     name: Build
-    needs: [lint-and-test, macos, prepare-build]
+    needs: [lint-and-test, prepare-build]
     runs-on: ubuntu-latest
     steps:
       - name: Confirm build and unit matrix passed
