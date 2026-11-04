@@ -68,6 +68,38 @@ afterEach(async () => {
 });
 
 describe('local tool adapter', () => {
+  it.each([
+    ['leaves failure out', {}, undefined],
+    ['writes failure as null', { failure: null }, undefined],
+    ['writes a failure', { failure: { code: 'blocked', message: 'No access.' } }, { code: 'blocked', message: 'No access.' }],
+  ])('reads the result file a tool wrote when it %s', async (_case, written, failure) => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-failure-${Date.now()}-${Math.random()}.json`);
+    files.push(resultPath);
+    const output = { summary: 'Done.' };
+    await fs.writeFile(resultPath, JSON.stringify({ output, ...written }));
+    const adapter = createLocalToolAdapter(() => child(claudeStream('claude-sonnet', { result: 'Wrote the result file.' })) as ReturnType<ToolSpawn>, () => 'claude');
+
+    const result = await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath });
+
+    expect(result).toMatchObject({ started: true, exitCode: 0, output });
+    expect(result.failure).toEqual(failure);
+  });
+
+  it('asks the tool to leave failure out of the result file unless the step failed', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-instruction-${Date.now()}.json`);
+    files.push(resultPath);
+    let prompt = '';
+    const adapter = createLocalToolAdapter((_command, args) => {
+      prompt = args.join(' ');
+      return child(claudeStream('claude-sonnet', { result: '{}' })) as ReturnType<ToolSpawn>;
+    }, () => 'claude');
+
+    await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath });
+
+    expect(prompt).toContain('Leave failure out unless the step failed');
+    expect(prompt).not.toContain('"code":"optional"');
+  });
+
   it('preserves UTF-8 split across stdout chunks in the result and persisted fallback', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-utf8-${Date.now()}.json`);
     files.push(resultPath);

@@ -87,7 +87,8 @@ type ResultFile = ToolReport & { failure?: WorkflowFailure };
 
 function resultInstruction(input: LocalToolRun, prompt: string): string {
   return `${prompt}\n\nWrite the workflow result as JSON to ${input.resultPath}. `
-    + `Use this shape: {"output":...,"failure":{"code":"optional","message":"optional"}}, where output is ${expectedOutput(input.output)}.`;
+    + `Use this shape: {"output":...}, where output is ${expectedOutput(input.output)}. `
+    + 'Leave failure out unless the step failed; then add "failure":{"code":"...","message":"..."}.';
 }
 
 /** Codex, and OpenCode 1 for a subagent, which `opencode run --agent` does not start, get the definition's instructions in the prompt. */
@@ -162,8 +163,11 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
   }
 }
 
-/** The result file a tool writes: its output, when it wrote one, and a failure with a code and a message. */
-const ResultFileSchema = z.object({ output: z.unknown().optional(), failure: z.object({ code: z.string(), message: z.string() }).optional() });
+/** The result file a tool writes: its output, when it wrote one, and a failure with a code and a message. A null failure is none. */
+const ResultFileSchema = z.object({
+  output: z.unknown().optional(),
+  failure: z.object({ code: z.string(), message: z.string() }).nullish().transform((failure) => failure ?? undefined),
+});
 
 async function readResultFile(resultPath: string): Promise<ResultFile | null> {
   try {
