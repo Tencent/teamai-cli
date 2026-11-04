@@ -9,7 +9,7 @@ import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
-import { readRun, runFilePath } from '../workflow/store.js';
+import { readRun, runFilePath, runScratchDir } from '../workflow/store.js';
 import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 
@@ -415,6 +415,37 @@ describe('workflow retry', () => {
     await retryStep(f.config, f.id, await knownSecrets(f.config), 'work');
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['pending', 'pending', 'pending', 'pending']);
     expect(await f.report(parallel)).toMatchObject({ error: { code: 'lease_cancelled' } });
+  });
+});
+
+describe('retry after the run dir was removed', () => {
+  /** Runs `evidence`, which reports `dir` from the run dir path, then fails `label` and lets the run end. */
+  async function endedAfterLabel(label: string, dir: (runDir: string, root: string) => string) {
+    const f = await fixture(`  - id: evidence\n    command: echo evidence\n    output: { dir: string }\n  - id: label\n    needs: [evidence]\n    command: echo label\n${label}`);
+    const evidence = data(await f.next()).lease;
+    const outputs = { dir: dir(runScratchDir(f.config, f.id), f.config.projectRoot ?? '') };
+    data(await reportAttempt(f.config, f.id, { attempt: evidence.attempt, revision: evidence.revision, driver, outcome: 'success', outputs }));
+    await f.report(data(await f.next()).lease, 'failed');
+    expect(data(await f.next()).done.outcome).toBe('failed');
+    return f;
+  }
+
+  it('runs again the step whose output a retried step reads in a template when it holds a path inside the run dir', async () => {
+    const f = await endedAfterLabel('    env: { DIR: "{{ steps.evidence.outputs.dir }}" }', (runDir) => path.join(runDir, 'group'));
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'label'))).toMatchObject({ retried: { step: 'label', pass: 2, runsAgain: ['evidence'] }, reopened: true });
+    expect((await f.state()).steps).toMatchObject([{ id: 'evidence', status: 'pending', pass: 2 }, { id: 'label', status: 'pending', pass: 2 }]);
+    expect(data(await f.next()).lease).toMatchObject({ step: 'evidence' });
+  });
+
+  it.each([
+    ['reads that path only in if', '    if: steps.evidence.outputs.dir != \'\'', (runDir: string) => path.join(runDir, 'group')],
+    ['reads a path outside the run dir', '    env: { DIR: "{{ steps.evidence.outputs.dir }}" }', (_runDir: string, root: string) => path.join(root, 'group')],
+    ['reads a path beside the run dir that shares its prefix', '    env: { DIR: "{{ steps.evidence.outputs.dir }}" }', (runDir: string) => `${runDir}-old${path.sep}group`],
+  ])('runs again only the retried step when it %s', async (_case, label, dir) => {
+    const f = await endedAfterLabel(label, dir);
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'label'))).toMatchObject({ retried: { step: 'label', pass: 2, runsAgain: [] }, reopened: true });
+    expect((await f.state()).steps).toMatchObject([{ id: 'evidence', status: 'succeeded' }, { id: 'label', status: 'pending', pass: 2 }]);
+    expect(data(await f.next()).lease).toMatchObject({ step: 'label' });
   });
 });
 

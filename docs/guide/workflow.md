@@ -133,7 +133,7 @@ The command gets these variables on top of its usual environment, so a value suc
 
 A command runs in `sh` on Linux and macOS, and in Git Bash on Windows, so `"$NAME"` works on both. Without Git for Windows, teamai warns and runs it in cmd.exe, where `"$NAME"` stays literal.
 
-Every process a step of the run starts, in a workflow it runs too, gets `TEAMAI_RUN_DIR`: one directory for the whole run, under the TeamAI data directory and outside the checkout. It exists while the run runs and is removed when the run ends, however it ends, so steps can hand each other files there. A retry that reopens the run makes it again, empty, and a `workspace: { confined }` step it runs again takes the steps it `needs`, and the steps those need, with it, so they write its directory again.
+Every process a step of the run starts, in a workflow it runs too, gets `TEAMAI_RUN_DIR`: one directory for the whole run, under the TeamAI data directory and outside the checkout. It exists while the run runs and is removed when the run ends, however it ends, so steps can hand each other files there. A retry that reopens the run makes it again, empty, and a `workspace: { confined }` step it runs again takes the steps it `needs`, and the steps those need, with it, so they write its directory again. A step it runs again that reads, in a template and not only in `if`, another step's output holding a path inside that directory takes that step with it too. `workflow retry` prints every other step it runs again.
 
 ```yaml
 schemaVersion: v1alpha1

@@ -1077,6 +1077,12 @@ steps:
     expect(fs.existsSync(path.join(process.cwd(), 'shipped'))).toBe(false);
   });
 
+  it('prints the steps a retry runs again besides the one it names', async () => {
+    const { runId, printed } = await started('ship', ship, {});
+    await capture(() => workflowRetry(runId, 'build'));
+    expect(printed).toContainEqual(expect.stringContaining('Retrying build runs again: ship'));
+  });
+
   const sealed = `schemaVersion: v1alpha1
 name: sealed
 description: A build that runs only on a sandbox.

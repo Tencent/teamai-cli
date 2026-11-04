@@ -830,9 +830,16 @@ export async function workflowRespond(runId: string, step: string, choice: strin
   }), driverAnswer?.ignored ?? []));
 }
 
-/** Retries a step without starting another local driver. */
+/** Retries a step without starting another local driver, and says on stderr which other steps run again with it. */
 export async function workflowRetry(runId: string, step: string): Promise<void> {
-  await workflowControl(runId, (config, secrets) => retryStep(config, runId, secrets, step));
+  await workflowControl(runId, async (config, secrets) => {
+    const retried = await retryStep(config, runId, secrets, step);
+    const runsAgain = 'data' in retried ? z.object({ runsAgain: z.array(z.string()) }).safeParse(retried.data.retried).data?.runsAgain ?? [] : [];
+
+    if (runsAgain.length > 0) log.info(`Retrying ${step} runs again: ${runsAgain.join(', ')}`);
+
+    return retried;
+  });
 }
 
 /** Cancels a run or step through the shared control operation. */
