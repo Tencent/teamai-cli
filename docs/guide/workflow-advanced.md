@@ -273,7 +273,20 @@ steps:
 
 When the tool times out or exits with an error, `keep` runs and the run succeeds. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, `stop` ends the run `failed`, so the member sees the setting to fix. `continue_on_failure` alone would let the run succeed with nothing done. `failure` reads only the step's current pass. A template that a lease renders, such as `model` or a confined directory, and a `writes` template cannot read it, as they cannot read `outcome`.
 
-A command step that exits 65 (`EX_DATAERR`) fails `input_rejected`: it rejected the input it was given. teamai offers no retry for it, since the same input fails the same way.
+A command step that exits 65 (`EX_DATAERR`) fails `input_rejected`: it rejected the input it was given. teamai offers no retry for it, since the same input fails the same way. Any other non-zero status fails `command_failed`, whose message names the status and starts with the command's stderr:
+
+```yaml fragment
+  - id: test
+    command: npm test
+    continue_on_failure: true
+  - id: report
+    needs: [test]
+    if: steps.test.failure.code == 'command_failed'
+    command: 'echo "Tests failed: $WHY" >&2'
+    env: { WHY: "{{ steps.test.failure.message }}" }
+```
+
+When `npm test` exits 1 and prints `2 tests failed`, `report` prints `Tests failed: command exited with status 1: 2 tests failed`.
 
 ## The end reached first wins
 

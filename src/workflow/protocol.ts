@@ -1006,7 +1006,8 @@ export interface CommandEnd {
 
 /**
  * What a command step reports once it exited: `success` on status 0, else `failed` with its status and the start of
- * its stderr, `input_rejected` on {@link INPUT_REJECTED_EXIT}; and its whole stdout as its outputs, when that is JSON.
+ * its stderr, as `input_rejected` on {@link INPUT_REJECTED_EXIT} and `command_failed` on any other status; and its whole
+ * stdout as its outputs, when that is JSON.
  */
 export function commandEnd(result: { exitCode: number; stdout: string; stderr: string }): CommandEnd {
   const { exitCode } = result;
@@ -1018,7 +1019,7 @@ export function commandEnd(result: { exitCode: number; stdout: string; stderr: s
     const message = snippet === '' ? commandExitMessage(exitCode) : `${commandExitMessage(exitCode)}: ${snippet}`;
     end.message = message;
 
-    if (exitCode === INPUT_REJECTED_EXIT) end.failure = { code: 'input_rejected', message };
+    end.failure = { code: exitCode === INPUT_REJECTED_EXIT ? 'input_rejected' : 'command_failed', message };
   }
 
   if (outputs !== undefined) end.outputs = outputs;

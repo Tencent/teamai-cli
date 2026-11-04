@@ -8,7 +8,7 @@ import { resolveWorkflowEnv } from '../env-resolution.js';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { formatDiagnostic, parseWorkflow } from '../workflow/parse.js';
-import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
+import { commandEnd, inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
 import { RunIdSchema, withRunLock, type RunId } from '../workflow/store.js';
 
 const dirs: string[] = [];
@@ -298,6 +298,27 @@ describe('steps.<id>.failure', () => {
 
     const unconfigured = await failWith({ code: 'tool_unconfigured', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.' });
     expect(await client.next(unconfigured, { driver })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('gives a command step that exits non-zero, with any status but 65, the code command_failed', async () => {
+    const { checkout, client } = await fixture({ checked: `schemaVersion: v1alpha1
+name: checked
+description: Check, and say why the check failed.
+steps:
+  - id: check
+    command: npm test
+    continue_on_failure: true
+  - id: explain
+    needs: [check]
+    if: steps.check.failure.code == 'command_failed'
+    command: echo "$WHY"
+    env: { WHY: "{{ steps.check.failure.message }}" }
+` });
+    const run = await started(client, 'checked', checkout);
+    const lease = await nextLease(client, run);
+    await client.report(run, { attempt: lease.attempt, revision: lease.revision, driver, ...commandEnd({ exitCode: 1, stdout: '', stderr: '2 tests failed' }) });
+
+    expect(await nextLease(client, run)).toMatchObject({ step: 'explain', env: { WHY: 'command exited with status 1: 2 tests failed' } });
   });
 });
 

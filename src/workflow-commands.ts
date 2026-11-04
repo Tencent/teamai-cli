@@ -184,7 +184,9 @@ async function explainFailedSteps(
   for (const step of run.steps) {
     if (step.status !== 'failed' || (!step.failure && failedUnder(step.id))) continue;
     const message = isProgressShown && step.exitCode !== undefined && step.progress?.length ? commandExitMessage(step.exitCode) : step.failure?.message ?? step.message;
-    const why = step.failure ? ` with ${step.failure.code}: ${message}` : message ? `: ${message}` : '';
+    // command_failed says no more than its message, which names the exit status.
+    const code = step.failure?.code === 'command_failed' ? undefined : step.failure?.code;
+    const why = code ? ` with ${code}: ${message}` : message ? `: ${message}` : '';
     log.error(redact(`Step "${step.id}" failed${why}`, { envSecrets: secrets, patterns: false }));
 
     if (!isolated && step.failure?.code !== 'input_rejected') log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);

@@ -273,7 +273,20 @@ steps:
 
 工具超时或出错退出时，`keep` 运行，运行成功。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具无法运行时，`stop` 让运行以 `failed` 结束，成员会看到需要修改的设置。只用 `continue_on_failure` 的话，运行会在什么都没做的情况下成功。`failure` 只读取步骤当前的 pass。租约渲染的模板（如 `model` 或受限目录）和 `writes` 模板不能读取它，就像它们不能读取 `outcome` 一样。
 
-退出码为 65（`EX_DATAERR`）的命令步骤以 `input_rejected` 失败：它拒绝了收到的输入。teamai 不提示重试它，因为同样的输入会以同样的方式失败。
+退出码为 65（`EX_DATAERR`）的命令步骤以 `input_rejected` 失败：它拒绝了收到的输入。teamai 不提示重试它，因为同样的输入会以同样的方式失败。其他非零退出码以 `command_failed` 失败，其 message 写明退出码，后面接命令 stderr 的开头：
+
+```yaml fragment
+  - id: test
+    command: npm test
+    continue_on_failure: true
+  - id: report
+    needs: [test]
+    if: steps.test.failure.code == 'command_failed'
+    command: 'echo "Tests failed: $WHY" >&2'
+    env: { WHY: "{{ steps.test.failure.message }}" }
+```
+
+`npm test` 以 1 退出并输出 `2 tests failed` 时，`report` 输出 `Tests failed: command exited with status 1: 2 tests failed`。
 
 ## 先到达的结局生效
 
