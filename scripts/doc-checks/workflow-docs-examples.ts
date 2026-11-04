@@ -296,7 +296,7 @@ for (const page of [...PAGES, ...SCORER_PAGES, ...OTHER_PAGES]) {
 
       // The scorers a workflow example lists are the ones the scorer pages show.
       for (const example of SCORER_PAGES.flatMap(scorerExamplesOf)) {
-        fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+        fs.mkdirSync(path.dirname(path.join(config.repo.localPath, example.file)), { recursive: true });
         fs.writeFileSync(path.join(config.repo.localPath, example.file), example.source);
       }
 
@@ -579,7 +579,7 @@ for (const page of SCORER_PAGES) {
       assert.ok((examples.length ?? 0) > 0, `${page} has no scorer example`);
 
       for (const example of examples) {
-        fs.mkdirSync(path.join(config.repo.localPath, 'scorers'), { recursive: true });
+        fs.mkdirSync(path.dirname(path.join(config.repo.localPath, example.file)), { recursive: true });
         fs.writeFileSync(path.join(config.repo.localPath, example.file), example.source);
       }
 
