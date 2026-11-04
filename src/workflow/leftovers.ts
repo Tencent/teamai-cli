@@ -541,14 +541,9 @@ async function publishedRun({ config, install }: { config: LocalConfig; install:
  */
 const OTHER_INSTALL_GRACE_MS = 7 * 86_400_000;
 
-/**
- * When `doctor --fix` here may remove what a run of another install left: a grace period past the `retainedUntil` it
- * published, or past `later` when a later settle published one there. Never without the first.
- */
-function otherInstallSweepsAt(retainedUntil: string | undefined, later?: string): number | undefined {
-  if (retainedUntil === undefined) return undefined;
-
-  return Math.max(Date.parse(retainedUntil), later === undefined ? -Infinity : Date.parse(later)) + OTHER_INSTALL_GRACE_MS;
+/** When `doctor --fix` here may remove what a run of another install left: a grace period past the `retainedUntil` it published. Never without one. */
+function otherInstallSweepsAt(retainedUntil: string | undefined): number | undefined {
+  return retainedUntil === undefined ? undefined : Date.parse(retainedUntil) + OTHER_INSTALL_GRACE_MS;
 }
 
 function warnNotRemoved(runId: string, reason: string): undefined {
@@ -712,7 +707,8 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
 
     if (published.kind === 'unsettled') continue;
 
-    if (published.kind === 'settled' && !due(otherInstallSweepsAt(record.retainedUntil, published.retainedUntil))) continue;
+    // A settled snapshot is the run's last word: one with no retainedUntil, settled under never or by an older teamai, stays.
+    if (published.kind === 'settled' && !due(otherInstallSweepsAt(published.retainedUntil))) continue;
     const keep = new Set([...record.prBranches ?? [], ...published.kind === 'settled' ? published.prBranches : []]);
 
     // A claim here since the runs were read makes the run this machine's, which the next sweep goes by.

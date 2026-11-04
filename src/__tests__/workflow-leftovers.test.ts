@@ -722,6 +722,28 @@ describe('a run that settled longer ago than workflows.retention', () => {
     expect(branches(origin, ran)).toEqual(['left/p1']);
   });
 
+  it('is never swept from another machine when its settled snapshot says nothing of until when it is kept, though its record does', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const until = Date.parse((await state(config, runId)).retainedUntil ?? '');
+    // A snapshot an older teamai wrote as it settled the run again, which publishes no retainedUntil.
+    const reports = path.join(root, 'older-writer');
+    git(root, ['clone', '-q', '-b', 'teamai-reports', config.repo.remote, reports]);
+    const snapshot = path.join(reports, 'workflows', 'runs', runId, 'state.json');
+    const { retainedUntil: _dropped, ...older } = JSON.parse(fs.readFileSync(snapshot, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(snapshot, JSON.stringify(older, null, 2));
+    git(reports, ['commit', '-qam', 'older settle']);
+    git(reports, ['push', '-q', 'origin', 'teamai-reports']);
+    const other = await otherInstall(config, root, origin);
+    const before = branches(origin, runId);
+    expect(before).toContain('left/p1');
+
+    expect((await sweepLeftovers(other.config, null, { now: until + 7 * DAY, checkout: other.cwd })).swept).toEqual([]);
+    expect(branches(origin, runId)).toEqual(before);
+  });
+
   it('is swept from another machine by the record origin holds, though an interrupted write left an older one in its checkout', async () => {
     const ready = path.join(os.tmpdir(), `teamai-leftovers-ready-${process.pid}-${Date.now()}`);
     const { config, cwd, root, origin, runId } = await fixture(deliversOnce(ready));
