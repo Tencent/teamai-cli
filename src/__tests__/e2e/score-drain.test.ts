@@ -8,7 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { encodeCwdClaude } from '../../session-flow/fs.js';
 
@@ -83,7 +83,7 @@ async function job({ files = {}, config = '', fails = false, sessions = 1, skill
 
   const home = path.join(root, 'home');
   fs.mkdirSync(home);
-  fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = tester\n\temail = tester@example.com\n[url "file://${team}"]\n\tinsteadOf = ${TEAM_URL}\n`);
+  fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = tester\n\temail = tester@example.com\n[url "${pathToFileURL(team).href}"]\n\tinsteadOf = ${TEAM_URL}\n`);
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
@@ -97,6 +97,7 @@ process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
 console.log(JSON.stringify({ type: 'result', structured_output: { answer } }));
 });\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'claude.cmd'), `@"${process.execPath}" "${path.join(bin, 'claude')}" %*\r\n`);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, TEAMAI_MODE: 'unattended' };
   for (const name of ['CI', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEBUDDY_SESSION_ID', 'COPILOT_AGENT_SESSION_ID', 'CURSOR_CONVERSATION_ID', 'CLAUDE_SESSION_ID', 'OPENCODE_SESSION_ID', 'TEAMAI_AGENT_SESSION_ID', 'PI_SESSION_ID', 'MUSE_SESSION_ID', 'TEAMAI_LAUNCHED_BY', 'TEAMAI_WORKFLOW_ATTEMPT']) delete env[name];
   for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'], ['pull']]) {
@@ -226,12 +227,62 @@ describe('routing questions, through the real CLI', () => {
     expect(labels(dataHome)).toEqual([expect.objectContaining({ scorer: 'review-quality' })]);
   }, 180_000);
 
-  it('teamai score --session --scorer teamai:routing:<namespace>:<skill> labels it through a teamai-score run, with skill_routing off', async () => {
-    const { app, env, dataHome } = await job({ skills });
+  it.each([true, undefined])('keeps ten routing questions together with batch=%s', async (batch) => {
+    const tenSkills = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`skill-${index}`, {}]));
+    const { root, dataHome, drain } = await job({
+      files: { 'scorers/scoring.yaml': `sessions: true\nskill_routing: true\n${batch ? 'batch: true\n' : ''}` },
+      skills: tenSkills,
+    });
 
-    const scored = await runCLI(['score', '--session', SESSIONS[0], '--source', 'claude-code', '--scorer', 'teamai:routing:ops:release'], app, { ...env, TEAMAI_MODE: 'attended' });
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(routed(dataHome)).toHaveLength(10);
+    expect(labels(dataHome)).toHaveLength(11);
+    expect(routed(dataHome)).toEqual(expect.arrayContaining(Object.keys(tenSkills).map((skill) =>
+      expect.objectContaining({ scorer: `teamai:routing:${skill}`, subject: { platform: 'claude-code', sessionId: SESSIONS[0] } }))));
+    expect(launches(root)).toBe(batch ? 1 : 2);
+  }, 180_000);
+
+  it.each([undefined, {}])('asks no routing question when captured skill information is %j', async (capturedSkills) => {
+    const { root, dataHome, drain } = await job({ files: { 'scorers/scoring.yaml': 'skill_routing: true\n' }, skills: capturedSkills });
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(routed(dataHome)).toEqual([]);
+    expect(labels(dataHome)).toEqual([expect.objectContaining({ scorer: 'review-quality' })]);
+    expect(launches(root)).toBe(1);
+  }, 180_000);
+
+  it('lets an active scorers namespace turn routing off under an enabled root', async () => {
+    const { root, dataHome, drain } = await job({
+      files: {
+        'scorers/scoring.yaml': 'sessions: true\nskill_routing: true\n',
+        'scorers/ops/scoring.yaml': 'skill_routing: false\n',
+      },
+      skills,
+    });
+
+    const drained = await drain();
+
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(routed(dataHome)).toEqual([]);
+    expect(labels(dataHome), drained.lines.join('\n')).toEqual([expect.objectContaining({ scorer: 'review-quality' })]);
+    expect(launches(root)).toBe(1);
+  }, 180_000);
+
+  it('teamai score --session --scorer teamai:routing:<namespace>:<skill> labels it through a teamai-score run, with skill_routing off', async () => {
+    const { app, env, root, dataHome } = await job({ skills });
+
+    const scored = await runCLI(['score', '--session', SESSIONS[0], '--source', 'claude-code', '--scorer', 'teamai:routing:ops:release', '--scorer', 'teamai:routing:review-notes'], app, { ...env, TEAMAI_MODE: 'attended' });
 
     expect(scored.code, `${scored.stdout}\n${scored.stderr}`).toBe(0);
-    expect(routed(dataHome)).toEqual([expect.objectContaining({ scorer: 'teamai:routing:ops:release', label: 'fit', subject: { platform: 'claude-code', sessionId: SESSIONS[0] } })]);
+    expect(routed(dataHome)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scorer: 'teamai:routing:ops:release', label: 'fit', subject: { platform: 'claude-code', sessionId: SESSIONS[0] } }),
+      expect.objectContaining({ scorer: 'teamai:routing:review-notes', label: 'fit', subject: { platform: 'claude-code', sessionId: SESSIONS[0] } }),
+    ]));
+    expect(routed(dataHome)).toHaveLength(2);
+    expect(launches(root)).toBe(1);
   }, 180_000);
 });
