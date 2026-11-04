@@ -68,6 +68,13 @@ export interface WorkflowStep {
   prompt?: string;
   /** Original team-repo-relative source path for a cached prompt. */
   promptFile?: string;
+  /**
+   * A prompt the member's AI tool answers with text, or with JSON that matches `output`, in no workspace: the tool the
+   * member's `ai.tool` names, else the first installed one, on its one-shot call launch.
+   */
+  answer?: string;
+  /** On a command step: the paths, relative to the checkout, under which a change the command makes is kept, not `read_only_dirty`. */
+  writes?: string[];
   /** A person works in the prompt tool; only a driver with HITL can take the lease. */
   interactive?: true;
   /** The question answered before this step's action or end. */
@@ -215,7 +222,7 @@ export interface ConfinedPlace {
 export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone' | 'team'> | { clone: ClonePlace } | { team: TeamPlace } | ConfinedPlace;
 
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
-export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
+export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', answer: 'answer', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
 
 /** Whether a step runs work rather than only a HITL request or end. */
 export function hasAction(step: WorkflowStep): boolean {

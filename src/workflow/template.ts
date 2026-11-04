@@ -262,19 +262,21 @@ export function stringsIn(value: unknown): string[] {
 }
 
 /**
- * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, `model` when it is not the
- * exact model, and `env.<NAME>`. Pull and the engine share this one list, so they agree on which fields are templates.
+ * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, `answer`, `model` when it is not the
+ * exact model, `env.<NAME>`, and `writes[<n>]`. Pull and the engine share this one list, so they agree on which fields are templates.
  */
-export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'env' | 'with' | 'hitl' | 'model' | 'workspace'>): Array<{ what: string; text: string }> {
+export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'answer' | 'env' | 'with' | 'hitl' | 'model' | 'workspace' | 'writes'>): Array<{ what: string; text: string }> {
   const confined = step.workspace instanceof Object && 'confined' in step.workspace ? step.workspace.confined : undefined;
 
   return [
     ...(step.hitl ? [{ what: `${step.hitl.kind}.message`, text: step.hitl.message }] : []),
     ...Object.entries(step.with ?? {}).flatMap(([name, value]) => stringsIn(value).map((text) => ({ what: `with.${name}`, text }))),
     ...(step.prompt !== undefined ? [{ what: 'prompt', text: step.prompt }] : []),
+    ...(step.answer !== undefined ? [{ what: 'answer', text: step.answer }] : []),
     ...(step.model !== undefined && !(step.model instanceof Object) ? [{ what: 'model', text: step.model }] : []),
     ...(confined !== undefined ? [{ what: 'workspace.confined', text: confined }] : []),
     ...Object.entries(step.env ?? {}).map(([name, text]) => ({ what: `env.${name}`, text })),
+    ...(step.writes ?? []).map((text, index) => ({ what: `writes[${index}]`, text })),
   ];
 }
 
@@ -304,6 +306,15 @@ export function modelTemplateErrors(text: string, template: Template): TemplateE
     ...(/\s|\{\{/.test(literal) ? [{ source: text, message: 'text outside a template cannot hold a space or {{, and {{ item }} is a template only where for_each binds an item' }] : []),
     ...unleasedReads(template).map((source) => ({ source, message: 'a model template reads only inputs, item and the outputs of steps the step needs' })),
   ];
+}
+
+/**
+ * Why a `writes` path, parsed as `template`, cannot render: a read of anything but an input, so every attempt of the
+ * step keeps the same paths, which pull and the person reading the file can see.
+ */
+export function writesTemplateErrors(template: Template): TemplateError[] {
+  return template.flatMap((part) => (isRead(part) && 'expression' in part && !expressionPaths(part.expression).every((read) => read.root === 'inputs')
+    ? [{ source: part.source, message: 'a writes template reads only inputs' }] : []));
 }
 
 /** One expression a step evaluates, named by the field YAML writes it at. */

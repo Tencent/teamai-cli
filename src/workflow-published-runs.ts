@@ -216,7 +216,8 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
     const byChoice = new Map<string, { agent: string | undefined; tool: string | undefined; prompts: StepRun[] }>();
 
     for (const run of runs) {
-      if (run.executor !== 'prompt') continue;
+      // An answer runs on the member's AI tool, whatever the workflow tools say.
+      if (run.executor !== 'prompt' || run.answer) continue;
       const key = JSON.stringify([run.agent, run.tool]);
       const group = byChoice.get(key) ?? { agent: run.agent, tool: run.tool, prompts: [] };
       byChoice.set(key, { ...group, prompts: [...group.prompts, run] });

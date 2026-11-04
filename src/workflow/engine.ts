@@ -72,6 +72,7 @@ import type {
   WorkflowStep,
 } from './types.js';
 import { hasAction, onlyPersonAnswers, stepWorkflow } from './types.js';
+import { Writes } from './writes.js';
 import { describeWorkflow } from './describe.js';
 import { CONFINED_LEVELS, CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
@@ -116,7 +117,12 @@ export interface ReportInput {
   limit?: Limit;
   /** What the run of a step leased with `confined` measured. */
   confined?: ConfinedRunReport;
+  /** The lines the step said as it ran, such as a command's stderr, which a shortcut of the run shows. */
+  progress?: string[];
 }
+
+/** The most progress lines a pass keeps: its last ones, which say how it ended. */
+const PROGRESS_LINES = 200;
 
 /** A protocol rejection that retains its actionable code and message. */
 export function error(code: string, message: string): Extract<WorkflowEnvelope, { error: unknown }> {
@@ -198,8 +204,11 @@ export async function withRun(
 }
 
 interface RenderedLease {
+  /** A prompt step's prompt, or an answer step's `answer`, as its template rendered. */
   prompt?: string;
   env?: Record<string, string>;
+  /** A command step's `writes`, as each template rendered. */
+  writes?: string[];
   /** The step's `model` as its template rendered; an empty one means the tool's default. */
   model?: string;
   /** The `defaults.model` in effect for a prompt step, as written. */
@@ -290,7 +299,13 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   const env = Object.keys(definition.env ?? {}).map((name) => [name, rendered.get(`env.${name}`) ?? ''] as const);
 
   const texts: RenderedLease = {};
-  const prompt = rendered.get('prompt');
+  const prompt = rendered.get('prompt') ?? rendered.get('answer');
+  const writes = (definition.writes ?? []).map((_, index) => rendered.get(`writes[${index}]`) ?? '');
+  const outside = writes.find((written) => !Writes.isCheckoutPath(written));
+
+  if (outside !== undefined) return { code: 'invalid_template', message: `step "${state.id}" writes ${JSON.stringify(outside)}, which is not a path inside the checkout; give writes a path relative to it, such as docs/` };
+
+  if (definition.writes) texts.writes = writes;
   const model = rendered.get('model');
   const confined = rendered.get('workspace.confined');
 
@@ -506,6 +521,10 @@ function leaseData(
 
   if (rendered.prompt !== undefined) wire.prompt = rendered.prompt;
 
+  if (definition.answer !== undefined) wire.answer = true;
+
+  if (rendered.writes) wire.writes = rendered.writes;
+
   if (definition.agent !== undefined) wire.agent = definition.agent;
 
   if (definition.tool !== undefined) wire.tool = definition.tool;
@@ -715,8 +734,14 @@ export function runData(run: RunState): RunData {
 
 /** The end `next` answers once the run has settled. */
 type DoneData = {
-  done: { run: string; outcome: RunStatus; end?: string; failure?: WorkflowFailure; prs?: string[]; outputs?: Record<string, JsonValue>; finally?: FinallyStopped[] };
+  done: {
+    run: string; outcome: RunStatus; end?: string; failure?: WorkflowFailure; prs?: string[]; outputs?: Record<string, JsonValue>; finally?: FinallyStopped[];
+    progress?: StepProgress[];
+  };
 };
+
+/** The progress lines a step's latest pass reported. */
+type StepProgress = { step: string; lines: string[] };
 
 function doneData(run: RunState): DoneData {
   const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
@@ -733,6 +758,9 @@ function doneData(run: RunState): DoneData {
   if (outputs) done.outputs = outputs;
 
   if (unfinished.length > 0) done.finally = unfinished;
+  const progress = run.steps.flatMap((step): StepProgress[] => ('progress' in step && step.progress ? [{ step: step.id, lines: step.progress }] : []));
+
+  if (progress.length > 0) done.progress = progress;
 
   return { done };
 }
@@ -2207,7 +2235,7 @@ const REPORT_FIELD_SOURCES = {
   attempt: 'payload', revision: 'payload', outcome: 'payload', driver: 'payload', outputs: 'payload', exitCode: 'payload', message: 'payload',
   tool: 'payload', model: 'payload', session: 'payload', resumed: 'payload', tokens: 'payload', durationMs: 'payload', cost: 'payload',
   failure: 'payload', changes: 'payload', read: 'payload', agent: 'payload', used: 'payload', unenforced: 'payload', limit: 'payload',
-  confined: 'payload', prUrl: 'changes.pr_url',
+  confined: 'payload', progress: 'payload', prUrl: 'changes.pr_url',
 } as const satisfies Record<keyof ReportInput, 'payload' | 'changes.pr_url' | 'process'>;
 
 /** The top-level payload fields `parseReport` reads. */
@@ -2301,6 +2329,13 @@ export function parseReport(value: unknown): ParsedReport | string {
 
     if (!message.success) return 'message must be a string';
     report.message = message.data;
+  }
+
+  if (record.progress !== undefined) {
+    const progress = z.array(z.string()).safeParse(record.progress);
+
+    if (!progress.success) return 'progress must be a list of lines';
+    report.progress = progress.data.slice(-PROGRESS_LINES);
   }
 
   for (const field of ['tool', 'model', 'session'] as const) {
@@ -2946,6 +2981,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       outcomes: outcomes.length > 0 ? outcomes : undefined,
       limit: report.limit,
       confined: report.confined,
+      progress: report.progress,
       installId: install.id,
     };
 

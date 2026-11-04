@@ -124,6 +124,8 @@ const report = {
   limit: LimitSchema.optional(),
   /** What the run of a step confined to a directory measured. */
   confined: ConfinedRunReportSchema.optional(),
+  /** The lines the step said as it ran, the last ones its report kept, which a shortcut of the run shows. */
+  progress: z.array(z.string()).optional(),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 'cancelled']);

@@ -7,6 +7,7 @@ import type { WorkflowFailure } from '../types.js';
 import { git, keptSentence, putBackCopy, type KeptChanges } from '../worktree.js';
 import { restoreOverlay } from './overlay.js';
 import { changedPaths, snapshotWorktree, type WorktreeSnapshot } from './worktree-snapshot.js';
+import { Writes } from '../writes.js';
 
 const SnapshotSchema = z.object({
   ok: z.boolean(),
@@ -38,7 +39,8 @@ function unreadableSnapshot(dir: string, file: string): string {
 /**
  * Why a reader step that ran in `dir` fails: it changed what `stageReader` saved in `file`. A command is checked only
  * when it succeeded, so a failing command keeps its own failure; a prompt is checked whatever its tool reported. An
- * interactive prompt that does not set `workspace: read-only` may write, so it is never checked.
+ * interactive prompt that does not set `workspace: read-only` may write, so it is never checked. A change under one of
+ * `writes`, the paths a command writes, is kept; a moved HEAD never is.
  */
 export async function finishReader(input: {
   dir: string;
@@ -47,6 +49,7 @@ export async function finishReader(input: {
   outcome: 'success' | 'failed';
   interactive?: true;
   readOnly?: true;
+  writes?: string[];
 }): Promise<WorkflowFailure | undefined> {
   if (input.interactive && !input.readOnly) return undefined;
 
@@ -54,7 +57,8 @@ export async function finishReader(input: {
   const saved = await readSnapshot(input.file);
 
   if (!saved) return { code: 'read_only_dirty', message: unreadableSnapshot(input.dir, input.file) };
-  const paths = changedPaths(saved, await snapshotWorktree(input.dir));
+  // A commit or a switch moves HEAD, which no path names, so `writes` never keeps it.
+  const paths = changedPaths(saved, await snapshotWorktree(input.dir)).filter((changed) => changed === 'HEAD' || !Writes.keeps(input.writes ?? [], changed));
 
   if (paths.length === 0) return undefined;
 
