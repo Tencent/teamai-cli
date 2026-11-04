@@ -30,6 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | A label passes when its score is at or above this. |
 | `samplingRate`, `model`, `isolation` | Optional. Percent of passes judged, 0 to 100, default 25. The judge's model: a team [model alias](sharing.md#model-aliases), resolved per judge tool, or a model name, which goes unchanged to the first judge tool; default the tool's. `verified` or `best-effort`. |
 | `sessions` | Optional. `true`: the scorer also judges [finished sessions](#finished-sessions). |
+| `tool` | Optional. The judge tool to prefer, such as `codex`. When the driver that leases the judge offers it, it judges; else the tool the judged work ran in, else the driver's first tool. A name teamai does not know is warned about, not refused. |
 | `stages` | Optional. Which [stages](#score-what-a-run-delivered) may decide the scorer before its judge: some of `check`, `ci` and `protected`. Default all three. |
 
 The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
@@ -754,7 +755,7 @@ passingScore: 1
 Judge whether the tests in the diff cover what the change does.
 ```
 
-The scorers of one pass that ask for the same `model` and take the same stages share one judge step, one evidence directory and one prompt, and the answer has one label per scorer. The judge tool is chosen when the driver leases the step, not by what this machine has installed:
+The scorers of one pass that ask for the same `model` and `tool` and take the same stages share one judge step, one evidence directory and one prompt, and the answer has one label per scorer. The judge tool is chosen when the driver leases the step, not by what this machine has installed:
 
 ```json
 {"answer":{"review-quality":{"label":"good","reasoning":"…"},"test-coverage":{"label":"thin","reasoning":"…"}}}

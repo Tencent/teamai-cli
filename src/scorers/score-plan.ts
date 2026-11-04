@@ -272,15 +272,15 @@ function handGroup(request: PlanRequest, judged: Judged): { ok: true; groups: Pl
 }
 
 /**
- * What `candidate` shares with the scorers one judge call takes with it: the model it asks for, and its stages. The judge
- * tool is chosen when the judge step is leased, from what the driver that leases it offers.
+ * What `candidate` shares with the scorers one judge call takes with it: the model it asks for, the judge tool it
+ * prefers, and its stages. The judge tool is chosen when the judge step is leased, from what the driver offers.
  */
 function batchKey(candidate: Candidate, judged: Judged): string {
-  return canonicalJson({ model: candidate.definition.model ?? null, stages: judged.stagesOf(candidate) });
+  return canonicalJson({ model: candidate.definition.model ?? null, tool: candidate.definition.tool ?? null, stages: judged.stagesOf(candidate) });
 }
 
 /**
- * The group `candidate` joins: its own; under `batch`, that of the scorers sharing its model and stages; and for a
+ * The group `candidate` joins: its own; under `batch`, that of the scorers sharing its model, tool and stages; and for a
  * routing question, that of the session's other routing questions sharing its judge, which only `batch` lets team
  * scorers join.
  */
@@ -295,8 +295,8 @@ function groupKey(candidate: Candidate, judged: Judged, batch: boolean): string 
 
 /**
  * The sampled scorers, every one on a named demand, grouped: a scorer with a check alone, else those that ask for one
- * model and take the same stages. A session's routing questions share a group whatever `batch` says, and its team
- * scorers join them only under `batch`.
+ * model, prefer one judge tool and take the same stages. A session's routing questions share a group whatever `batch`
+ * says, and its team scorers join them only under `batch`.
  */
 function grouped(request: PlanRequest, judged: Judged, restarts: (key: MarkKey) => boolean): Candidate[][] {
   const groups = new Map<string, Candidate[]>();

@@ -16,10 +16,13 @@ import type { WorkflowFailure } from './types.js';
 
 export const CONFINED_FILE = 'confined.json';
 
-/** `confined.json`: the level the step runs at, the tool to try first, and the reply's JSON Schema, a file in the directory. */
+/**
+ * `confined.json`: the level the step runs at, the tool to try first, or the tools in the order to try them, and the
+ * reply's JSON Schema, a file in the directory.
+ */
 export const ConfinedFileSchema = z.object({
   level: ConfinedLevelSchema,
-  prefer: z.string().min(1).optional(),
+  prefer: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
   schema: z.string().min(1).optional(),
 }).strict();
 
@@ -99,7 +102,7 @@ async function realDir(target: string, runDir: string): Promise<{ ok: true; real
 function unreadConfinedFile(input: { step: string; file: string; issues: z.core.$ZodIssue[] }): ConfinedDirCheck {
   const issues = input.issues.map((issue) => (issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message)).join('; ');
 
-  return invalid(`Step "${input.step}" reads ${input.file}, which is not a ${CONFINED_FILE} teamai reads (${issues}). Write {"level": "verified" or "best-effort", "prefer": <tool>, "schema": <a JSON Schema file in the directory>}, prefer and schema optional.`);
+  return invalid(`Step "${input.step}" reads ${input.file}, which is not a ${CONFINED_FILE} teamai reads (${issues}). Write {"level": "verified" or "best-effort", "prefer": <tool, or tools in order>, "schema": <a JSON Schema file in the directory>}, prefer and schema optional.`);
 }
 
 /**
@@ -131,12 +134,12 @@ export async function checkConfinedDir({ step, runDir, dir }: { step: string; ru
 
 /**
  * The tools a confined step at `level` may run on, from a driver's `can.confined`: the tools of each offer at that level
- * or stricter, in the order the driver lists them, each once, with `prefer` first when it is among them.
+ * or stricter, in the order the driver lists them, each once, after those of `prefer` that are among them, in its order.
  */
 export function confinedCandidates(offers: Offers, { level, prefer }: Pick<ConfinedFile, 'level' | 'prefer'>): string[] {
   const tools = new Set(offers.filter((offer) => offer.level === 'verified' || level === 'best-effort').flatMap((offer) => offer.tools));
 
-  return prefer !== undefined && tools.has(prefer) ? [prefer, ...[...tools].filter((tool) => tool !== prefer)] : [...tools];
+  return [...new Set([...[prefer ?? []].flat().filter((tool) => tools.has(tool)), ...tools])];
 }
 
 /** What `next` does with a confined step for the driver asking: lease it with these terms, hold it, or fail it. */

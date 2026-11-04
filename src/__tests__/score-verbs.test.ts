@@ -388,6 +388,17 @@ describe('score plan', () => {
     ] } });
   });
 
+  it('keeps batched scorers that prefer another judge tool apart, so each judge call can run in the tool its scorers prefer', async () => {
+    const config = await team({ review: REVIEW.replace('[quality, coverage]', '[quality, coverage, tests]') }, { quality: scorer({ extra: 'tool: codex\n' }), coverage: scorer(), tests: scorer({ extra: 'tool: codex\n' }) });
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject, batch: true })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality","coverage","tests"]', batch: 'true' }, ctx)).toMatchObject({ ok: true, output: { groups: [
+      { scorers: 'quality,tests' },
+      { scorers: 'coverage' },
+    ] } });
+  });
+
   it('takes a hand label only from the label input of a run a person started, as one group with no stage', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const subject = 'session:claude-code:one';
@@ -608,6 +619,17 @@ describe('score evidence', () => {
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'reply.schema.json'), 'utf8'))).toEqual({
       type: 'object', properties: { answer: JSON.parse(fs.readFileSync(path.join(dir, 'answer.schema.json'), 'utf8')) }, required: ['answer'], additionalProperties: false,
     });
+  });
+
+  it('asks the judge for the tool its scorer prefers, then the tool the pass ran in', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer({ extra: 'tool: codex\n' }), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['quality'] });
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+
+    expect(await checkConfinedDir({ step: 'judge', runDir: runScratchDir(config, run.runId), dir })).toMatchObject({ ok: true, place: { prefer: ['codex', 'claude'] } });
   });
 
   it('refuses with evidence_missing when a session the pass recorded is gone, and writes no evidence', async () => {

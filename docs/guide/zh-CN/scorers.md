@@ -30,6 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | 标签分数不低于它即为通过。 |
 | `samplingRate`、`model`、`isolation` | 可选。被评判的步骤执行比例，0 到 100，默认 25。评审者的模型：团队[模型别名](sharing.md#模型别名)，按评审工具分别解析；或模型名，原样交给第一个评审工具。默认用工具自己的模型。`verified` 或 `best-effort`。 |
 | `sessions` | 可选。`true`：评分器也评判[已结束的会话](#已结束的会话)。 |
+| `tool` | 可选。优先使用的评审工具，例如 `codex`。租用评审步骤的驱动提供它时由它评审；否则用被评判工作所用的工具，再否则用驱动的第一个工具。teamai 不认识的名称只给出警告，不会被拒绝。 |
 | `stages` | 可选。哪些[阶段](#为交付的工作评分)可以在评审者之前为该评分器做出判定：`check`、`ci`、`protected` 中的若干个。默认三个都用。 |
 
 frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
@@ -754,7 +755,7 @@ passingScore: 1
 Judge whether the tests in the diff cover what the change does.
 ```
 
-同一轮中请求相同 `model` 且经过相同阶段的评分器共用一个评审步骤、一个证据目录和一个提示，答案为每个评分器给出一个标签。评审工具在驱动程序租用该步骤时选定，而不取决于本机安装了什么：
+同一轮中请求相同 `model` 和 `tool` 且经过相同阶段的评分器共用一个评审步骤、一个证据目录和一个提示，答案为每个评分器给出一个标签。评审工具在驱动程序租用该步骤时选定，而不取决于本机安装了什么：
 
 ```json
 {"answer":{"review-quality":{"label":"good","reasoning":"…"},"test-coverage":{"label":"thin","reasoning":"…"}}}
