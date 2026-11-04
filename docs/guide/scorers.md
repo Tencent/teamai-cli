@@ -527,15 +527,6 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 | `ask` | When the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
 | `auto` | A session is judged once nothing has happened in it for six hours, by the [`teamai-finished-sessions`](#teamai-finished-sessions) run a session start begins. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
 
-`skill_routing` turns on the routing questions of `#1469` for the sessions `sessions` already judges, off by default:
-
-```yaml
-# scorers/scoring.yaml, or scorers/<namespace>/scoring.yaml
-skill_routing: true
-```
-
-Each finished session then gets one generated question per team skill its own captures delivered — `teamai:routing:<skill>` for a root skill, `teamai:routing:<namespace>:<skill>` for a namespaced one — judged by the same rubric whatever the skill's description says: fit (loaded, and the session needed it) and idle (not loaded, and it did not) pass, extra (loaded where it was not needed) and missed (not loaded where it was) fail. A skill whose delivery record cannot tell its namespace gets no question: judging it could judge another skill of the same name. The questions are never sampled, always share one judge launch however many there are, and count toward the same `daily_limit`; with `batch` a session still costs one launch. The names resolve on demand too, whatever `skill_routing` says — `teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>` — but only for a skill in that session's `skills.available`, else `scorer_not_found`. `teamai-finished-sessions` lists them for each finished session, and `teamai-score`'s `plan` step puts them in one group, which the team scorers join only under `batch`.
-
 Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:
 
 ```yaml
@@ -580,6 +571,97 @@ With `attended: auto`, you do not have to run a driver. After the pull at a sess
 The detached run uses the tool's home that `teamai init` recorded, such as a moved `CLAUDE_CONFIG_DIR`. It does not see a credential or base URL that only your shell sets, notably on Windows. Keep those in the tool's sign-in, your user environment, or the tool's `settings.json` `env`.
 
 A teamai older than this one rejects a scorer with `sessions: true`, so update teamai on every member's machine before the team adds one. An older teamai that takes judge work on your machine, such as a driver's own copy, removes the rubrics of session leases, so update every copy there before you turn on `scoring.sessions`.
+
+#### Skill routing
+
+Routing questions ask whether each team skill loaded where it should, and only there. Turn them on for the sessions `sessions` already judges. They are off by default:
+
+```yaml
+# scorers/scoring.yaml
+sessions: true
+skill_routing: true
+```
+
+Suppose a session asked for a review. It was delivered the root skill `review-notes` and the skill `release` from the `ops` skills namespace, and it loaded `review-notes`. Its `evidence.json` lists both skills:
+
+```json
+{
+  "subject": { "platform": "claude-code", "sessionId": "7c1e…" },
+  "kind": "session",
+  "gaps": [],
+  "skills": {
+    "available": [
+      { "name": "release", "namespace": "ops", "description": "Cut an npm release: bump, changelog, tag, publish. Use when asked to release or publish a version." },
+      { "name": "review-notes", "description": "Write review notes for a PR. Use when asked to review a branch or a PR." }
+    ],
+    "used": ["review-notes"]
+  }
+}
+```
+
+The session gets one generated question per skill in `skills.available`: `teamai:routing:<skill>` for a root skill and `teamai:routing:<namespace>:<skill>` for a namespaced one. A skill marked `namespaceUnknown` gets no question, because it could be confused with another skill of the same name. The questions are never sampled. They share one judge launch however many there are, and count toward `daily_limit`. Under `batch: true`, the team's session scorers that ask for the same model and tool join that launch too. The names also resolve on demand, whatever `skill_routing` says, but only for a skill in that session's `skills.available`; any other name gives `scorer_not_found`:
+
+```console
+$ teamai score --session 7c1e… --scorer teamai:routing:ops:release --scorer teamai:routing:review-notes
+ℹ teamai:routing:ops:release: idle (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/4b1d….md
+ℹ teamai:routing:review-notes: fit (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/8e07….md
+```
+
+After a few weeks, the [dashboard](dashboard.md)'s labels by value count each skill:
+
+```text
+teamai:routing:ops:release · session · 30 days
+label    score   labels
+fit      1       31
+idle     1       112
+extra    0       6
+missed   0       9
+```
+
+Precision and recall come from those counts:
+
+```text
+precision(ops:release) ≈ 31 / (31 + 6) = 84%   loaded where it was not needed 6 times
+recall(ops:release)    ≈ 31 / (31 + 9) = 78%   not loaded where it was needed 9 times
+```
+
+Every skill gets the same rubric, with only the skill's name, and its namespace, filled in. Rewriting a skill's description leaves the scorer's measurement unchanged, so the counts from before and after the change can be compared:
+
+```text
+fit     1  <skill> is in skills.used, and the session needed what its description says.
+idle    1  <skill> is not in skills.used, and the session did not need what its description says, or another skill or the agent's own steps did it.
+extra   0  <skill> is in skills.used, and the session did not need what its description says.
+missed  0  The session needed what the description of <skill> says, <skill> is not in skills.used, and nothing else did it.
+Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
+```
+
+An active scorers namespace's `scoring.yaml` overrides the root file's `skill_routing`, and one that sets `false` turns routing off for its members:
+
+```yaml
+# scorers/ops/scoring.yaml
+skill_routing: false
+```
+
+To use your own rubric instead, leave `skill_routing` off and write one scorer per skill. This one adds an `unavailable` value for sessions that were not delivered `release`:
+
+`scorers/ops/routing-release.md`:
+
+```markdown
+---
+labels:
+  - { value: fit, score: 1, description: "release is in skills.used, and the session needed it." }
+  - { value: idle, score: 1, description: "release is in skills.available, is not in skills.used, and the session did not need it, or another skill or the agent's own steps did it." }
+  - { value: unavailable, score: 1, description: "release is not in skills.available." }
+  - { value: extra, score: 0, description: "release is in skills.used, and the session did not need it." }
+  - { value: missed, score: 0, description: "The session needed what the description of release says, release is not in skills.used, and nothing else did it." }
+passingScore: 1
+samplingRate: 100
+sessions: true
+---
+Judge only the team skill `release`, against its entry in `skills.available` in `evidence.json`.
+```
+
+With [`batch: true`](#batching), one judge launch answers all of a session's scorers that ask for the same model and tool. Each scorer samples sessions on its own, so ten per-skill scorers at 25% still reach about 94% of sessions while getting about a quarter of the answers. At 100%, the same launches answer every scorer. To spend less, lower `daily_limit` instead of `samplingRate`.
 
 ### teamai-finished-sessions
 

@@ -527,15 +527,6 @@ daily_limit: 10                                  # 按数据目录计数：在�
 | `ask` | 摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
 | `auto` | 会话六小时没有任何活动后，由会话启动时开始的 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
-`skill_routing` 为 `sessions` 已经在评判的会话开启 #1469 的路由问题，默认关闭：
-
-```yaml
-# scorers/scoring.yaml，或 scorers/<namespace>/scoring.yaml
-skill_routing: true
-```
-
-每个完结的会话随后按它自己的 captures 交付过的团队技能各生成一个问题——根技能是 `teamai:routing:<skill>`，带命名空间的是 `teamai:routing:<namespace>:<skill>`——无论技能描述写什么，都由同一份评分规则评判：fit（加载了，且会话需要它）和 idle（没加载，且会话不需要）通过，extra（加载了但不需要）和 missed（需要但没加载）不通过。交付记录说不出命名空间的技能没有问题：评判它可能评到同名的另一个技能。这些问题从不抽样，无论多少个都共用一次评审调用，计入同一个 `daily_limit`；开着 `batch` 时一个会话仍只花一次调用。这些名字也可以按需解析，不受 `skill_routing` 影响——`teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>`——但只对出现在该会话 `skills.available` 里的技能有效，否则 `scorer_not_found`。`teamai-finished-sessions` 会为每个完结的会话列出这些问题，`teamai-score` 的 `plan` 步骤把它们放进同一组，只有开着 `batch` 时团队评分器才加入这一组。
-
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：
 
 ```yaml
@@ -580,6 +571,97 @@ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended
 分离的运行使用 `teamai init` 记录的工具主目录，例如移动过的 `CLAUDE_CONFIG_DIR`。它看不到只在你的 shell 中设置的凭据或 base URL，在 Windows 上尤其如此。请把它们放在工具的登录状态、用户环境变量或工具 `settings.json` 的 `env` 中。
 
 比当前版本更旧的 teamai 会拒绝带有 `sessions: true` 的评分器，因此团队添加这样的评分器之前，请先在每位成员的机器上更新 teamai。在你的机器上领取评审工作的旧版 teamai（例如某个驱动自带的副本）会删除会话租约的评分标准，因此开启 `scoring.sessions` 之前，请先更新机器上的每一份 teamai。
+
+#### 技能路由
+
+路由问题判断每个团队技能是否在该加载时加载、且只在那时加载。它默认关闭，为 `sessions` 已经在评判的会话开启：
+
+```yaml
+# scorers/scoring.yaml
+sessions: true
+skill_routing: true
+```
+
+例如一个要求做评审的会话，它得到了根技能 `review-notes` 和 `ops` 技能命名空间中的 `release`，加载了 `review-notes`。它的 `evidence.json` 列出这两个技能：
+
+```json
+{
+  "subject": { "platform": "claude-code", "sessionId": "7c1e…" },
+  "kind": "session",
+  "gaps": [],
+  "skills": {
+    "available": [
+      { "name": "release", "namespace": "ops", "description": "Cut an npm release: bump, changelog, tag, publish. Use when asked to release or publish a version." },
+      { "name": "review-notes", "description": "Write review notes for a PR. Use when asked to review a branch or a PR." }
+    ],
+    "used": ["review-notes"]
+  }
+}
+```
+
+会话为 `skills.available` 中的每个技能各生成一个问题：根技能是 `teamai:routing:<skill>`，带命名空间的是 `teamai:routing:<namespace>:<skill>`。标记为 `namespaceUnknown` 的技能没有问题，因为它可能和同名的另一个技能混淆。这些问题从不抽样，无论多少个都共用一次评审调用，并计入 `daily_limit`。设置 `batch: true` 时，团队中要求同一模型和工具的会话评分器也加入这次调用。这些名字也可以按需解析，不受 `skill_routing` 影响，但只对该会话 `skills.available` 中的技能有效；其他名字会得到 `scorer_not_found`：
+
+```console
+$ teamai score --session 7c1e… --scorer teamai:routing:ops:release --scorer teamai:routing:review-notes
+ℹ teamai:routing:ops:release: idle (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/4b1d….md
+ℹ teamai:routing:review-notes: fit (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/8e07….md
+```
+
+几周后，[看板](dashboard.md)按取值统计标签，得出每个技能的计数：
+
+```text
+teamai:routing:ops:release · session · 30 days
+label    score   labels
+fit      1       31
+idle     1       112
+extra    0       6
+missed   0       9
+```
+
+由这些计数可以算出精确率和召回率：
+
+```text
+precision(ops:release) ≈ 31 / (31 + 6) = 84%   不需要时加载了 6 次
+recall(ops:release)    ≈ 31 / (31 + 9) = 78%   需要时没有加载 9 次
+```
+
+每个技能都用同一份评分标准，只填入技能名和它的命名空间。改写技能描述不会改变评分器的度量，所以改写前后的计数可以直接比较：
+
+```text
+fit     1  <skill> is in skills.used, and the session needed what its description says.
+idle    1  <skill> is not in skills.used, and the session did not need what its description says, or another skill or the agent's own steps did it.
+extra   0  <skill> is in skills.used, and the session did not need what its description says.
+missed  0  The session needed what the description of <skill> says, <skill> is not in skills.used, and nothing else did it.
+Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
+```
+
+生效的评分器命名空间的 `scoring.yaml` 会覆盖根文件的 `skill_routing`，设为 `false` 时为它的成员关闭路由问题：
+
+```yaml
+# scorers/ops/scoring.yaml
+skill_routing: false
+```
+
+想用自己的评分标准，就保持 `skill_routing` 关闭，为每个技能写一个评分器。下面这个评分器为没有得到 `release` 的会话加了一个 `unavailable` 取值：
+
+`scorers/ops/routing-release.md`：
+
+```markdown
+---
+labels:
+  - { value: fit, score: 1, description: "release is in skills.used, and the session needed it." }
+  - { value: idle, score: 1, description: "release is in skills.available, is not in skills.used, and the session did not need it, or another skill or the agent's own steps did it." }
+  - { value: unavailable, score: 1, description: "release is not in skills.available." }
+  - { value: extra, score: 0, description: "release is in skills.used, and the session did not need it." }
+  - { value: missed, score: 0, description: "The session needed what the description of release says, release is not in skills.used, and nothing else did it." }
+passingScore: 1
+samplingRate: 100
+sessions: true
+---
+Judge only the team skill `release`, against its entry in `skills.available` in `evidence.json`.
+```
+
+设置 [`batch: true`](#批量评审) 后，一次评审调用回答一个会话中要求同一模型和工具的所有评分器。每个评分器各自抽样会话，所以十个按技能、抽样率 25% 的评分器仍会覆盖约 94% 的会话，而只得到约四分之一的回答。抽样率为 100% 时，同样的调用会回答每个评分器。想少花一些，就调低 `daily_limit`，而不是 `samplingRate`。
 
 ### teamai-finished-sessions
 
