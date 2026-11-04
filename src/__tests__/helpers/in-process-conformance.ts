@@ -3,14 +3,14 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { LocalConfig } from '../../types.js';
 import { redactJson } from '../../utils/redact.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessConformanceClient, type ConformanceClient, type ConformanceRunner, type ConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { inProcessClient } from '../../workflow/protocol.js';
 import { pendingRecords } from '../../workflow/records.js';
-import { readRun } from '../../workflow/store.js';
+import { readRun, runScratchDir } from '../../workflow/store.js';
 import type { WorkflowEnvelope } from '../../workflow/types.js';
 import { benchmarkRunConfig, startBenchmarkRun } from './benchmark-fixture.js';
 
@@ -58,7 +58,11 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
     for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) {
       fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
     }
-    await syncWorkflowDefinitions(config);
+    for (const [file, text] of Object.entries(scenario.teamFiles ?? {})) {
+      fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
+      fs.writeFileSync(path.join(knowledge, file), text);
+    }
+    await syncScorersThenWorkflows(config);
   }
   const env = await resolveWorkflowEnv(config);
   const client = inProcessConformanceClient(inProcessClient({ config, env }), async (name) => ('benchmark' in scenario && scenario.benchmark.name === name
@@ -73,6 +77,7 @@ export async function inProcessConformanceRunner(scenario: ConformanceScenario, 
         return stored;
       },
       readEndRecord: async (runId) => (await pendingRecords(config)).find((record) => record.run === runId && record.phase === 'end'),
+      runDir: async (runId) => runScratchDir(config, runId),
       // Only Date is faked, so the run lock's retry timers still run.
       advance: async (ms) => {
         vi.useFakeTimers({ toFake: ['Date'] });

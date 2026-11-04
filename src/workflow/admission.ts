@@ -1,27 +1,24 @@
 /**
  * Admission: what a run takes in before it runs a workflow. `startRun` admits a workflow from the cache; a `from` step's
- * producer gets its workflow output admitted when it reports. Either way the run gets the definitions it runs, the
- * scorers their steps list pinned, and no secret value, and its delivery is checked.
+ * producer gets its workflow output admitted when it reports. Either way the run gets the definitions it runs and no
+ * secret value, and its delivery is checked.
  */
 import { stringify } from 'yaml';
 import { z } from 'zod';
 import { secretKey } from '../env-resolution.js';
-import { pinScorers, syncScorerDefinitions } from '../scorers/cache.js';
-import { PinnedScorerSchema, type PinnedScorer } from '../scorers/pin.js';
 import type { LocalConfig } from '../types.js';
 import { redactJson } from '../utils/redact.js';
-import { withTeamRevision, workflowsRunBy } from './cache.js';
+import { workflowsRunBy } from './cache.js';
 import { formatDiagnostic, parseWorkflow } from './parse.js';
 import type { WorkflowFiles } from './parse-context.js';
 import { mergeRequirements, type InEffect } from './requirements.js';
 import { stepWorkflow, type AdmittedWorkflow, type RunState, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep } from './types.js';
 import { deliveryProblem } from './workspace.js';
 
-/** A workflow admitted for a run: its definition, the workflows it runs by name, and the scorers their steps list, pinned. */
+/** A workflow admitted for a run: its definition, and the workflows it runs by name. */
 export interface Admitted {
   definition: WorkflowDefinition;
   workflows: Record<string, WorkflowDefinition>;
-  scorers: Record<string, PinnedScorer>;
 }
 
 /**
@@ -32,15 +29,10 @@ export type Candidate =
   | { kind: 'cached'; definition: WorkflowDefinition; workflows: Record<string, WorkflowDefinition> }
   | { kind: 'output'; step: string; field: string; output: AdmittedWorkflow['output']; runsUnder: readonly InEffect[] };
 
-/**
- * A workflow bundle as a step prints it: the definition, the workflows it runs by name under the keys it names them by,
- * the scorers generated for it, whose names hold a colon, and the team commit its team scorers are pinned at.
- */
+/** A workflow bundle as a step prints it: the definition, and the workflows it runs by name under the keys it names them by. */
 const BundleSchema = z.object({
   definition: z.record(z.string(), z.unknown()),
   workflows: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
-  scorers: z.record(z.string().regex(/:/), PinnedScorerSchema.extend({ generated: z.literal(true) }), { error: (issue) => issue.code === 'invalid_key' ? 'a generated scorer name holds a colon, such as teamai:correctness:<task>' : undefined }).optional(),
-  teamRevision: z.string().min(1).optional(),
 }).strict();
 
 type Bundle = z.infer<typeof BundleSchema>;
@@ -49,22 +41,16 @@ type Bundle = z.infer<typeof BundleSchema>;
 type Refusal = { failure: WorkflowFailure };
 
 /**
- * Admits `candidate` for a run whose workspaces start from `base`. The team scorers its steps list are pinned as the
- * member's cache holds them, or, for a bundle with `teamRevision`, as that team commit stores them; a name without a
- * valid version is left out. Refused when a bundle does not parse as workflow files, when it cannot deliver what its
- * steps declare, or when what it pins holds one of `secrets`, which a run never stores.
+ * Admits `candidate` for a run whose workspaces start from `base`. Refused when a bundle does not parse as workflow
+ * files, when it cannot deliver what its steps declare, or when what it pins holds one of `secrets`, which a run never
+ * stores.
  */
 export async function admitWorkflow(
   config: LocalConfig, candidate: Candidate, { secrets, base }: { secrets: Record<string, string>; base?: RunState['base'] },
 ): Promise<{ admitted: Admitted } | Refusal> {
   if (candidate.kind === 'cached') {
     const { definition, workflows } = candidate;
-    const scorers = await pinScorers(config, listedScorers([definition, ...Object.values(workflows)]));
-
-    const pinned = Object.fromEntries([
-      ...[definition, ...Object.values(workflows)].map((pinnedDefinition) => [`workflows/${pinnedDefinition.name}.yaml`, pinnedDefinition]),
-      ...Object.entries(scorers).map(([scorerName, scorer]) => [`scorer ${scorerName}`, scorer]),
-    ]);
+    const pinned = Object.fromEntries([definition, ...Object.values(workflows)].map((pinnedDefinition) => [`workflows/${pinnedDefinition.name}.yaml`, pinnedDefinition]));
 
     const secret = pinnedSecret(pinned, secrets);
 
@@ -76,7 +62,7 @@ export async function admitWorkflow(
 
     if (unsandboxed !== undefined) return { failure: { code: 'unattended_unsandboxed', message: `Step "${unsandboxed}" ${UNATTENDED_NEEDS}` } };
 
-    return checked({ definition, workflows, scorers }, base);
+    return checked({ definition, workflows }, base);
   }
 
   const { step, field, output, runsUnder } = candidate;
@@ -93,7 +79,7 @@ export async function admitWorkflow(
   if (!bundle.success) {
     const issues = bundle.error.issues.map((issue) => `${issue.path.length > 0 ? `${issue.path.join('.')}: ` : ''}${issue.message}`);
 
-    return refuse(`${issues.join('; ')}; a bundle is { definition, workflows?, scorers?, teamRevision? }`);
+    return refuse(`${issues.join('; ')}; a bundle is { definition, workflows? }`);
   }
 
   const parsed = parseBundle(bundle.data.definition, bundle.data.workflows ?? {});
@@ -103,22 +89,8 @@ export async function admitWorkflow(
   const unsandboxed = (runsUnder.length > 0 ? runsUnder : [{}]).map((outer) => unattendedUnsandboxed(parsed.definition, parsed.workflows, outer)).find((path) => path !== undefined);
 
   if (unsandboxed !== undefined) return refuse(`step "${unsandboxed}" ${UNATTENDED_NEEDS}`);
-  const listed = listedScorers([parsed.definition, ...Object.values(parsed.workflows)]);
-  const { teamRevision } = bundle.data;
 
-  const team = teamRevision === undefined ? { pins: await pinScorers(config, listed) } : await withTeamRevision(config, teamRevision, async (at) => {
-    await syncScorerDefinitions(at, { scopeLabel: `team commit ${teamRevision.slice(0, 7)}` });
-
-    return { pins: await pinScorers(at, listed) };
-  });
-
-  if ('failed' in team) return refuse(`its team scorers could not be read at team commit ${teamRevision}: ${team.failed}`);
-  // The output was checked, not the team scorers it names, which the run stores as they are.
-  const pinnedTeamSecret = pinnedSecret(Object.fromEntries(Object.entries(team.pins).map(([scorerName, scorer]) => [`scorer ${scorerName}`, scorer])), secrets);
-
-  if (pinnedTeamSecret) return refuse(`${pinnedTeamSecret.label} holds the value of ${pinnedTeamSecret.name}, a secret on this machine, which a run never stores. Take the value out of that team scorer, then pull again.`);
-
-  return checked({ ...parsed, scorers: { ...team.pins, ...bundle.data.scorers } }, base);
+  return checked(parsed, base);
 }
 
 /** `admitted`, unless it cannot deliver what its steps declare from `base`. */
@@ -260,13 +232,4 @@ export function heldSecret<TValue>(value: TValue, secrets: Record<string, string
   const text = JSON.stringify(value);
 
   return Object.entries(secrets).find(([name, secret]) => JSON.stringify(redactJson(value, { [name]: secret })) !== text)?.[0];
-}
-
-/** Every scorer name a step of `definitions` lists, inline workflows included. */
-function listedScorers(definitions: ReadonlyArray<{ steps: WorkflowStep[] }>): string[] {
-  return definitions.flatMap((definition) => definition.steps.flatMap((step) => {
-    const child = stepWorkflow(step);
-
-    return [...step.scorers?.names ?? [], ...(child?.kind === 'inline' ? listedScorers([child.workflow]) : [])];
-  }));
 }

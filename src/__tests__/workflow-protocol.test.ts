@@ -4,11 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import type { AgentEvidence } from '../workflow/attempt-marker.js';
 import { inProcessClient, type WorkflowClient } from '../workflow/protocol.js';
-import { readRun, RunIdSchema, withRunLock, type RunLock } from '../workflow/store.js';
+import { readRun, RunIdSchema, runScratchDir, withRunLock, type RunLock } from '../workflow/store.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -26,7 +27,7 @@ async function fixture(workflows: Record<string, string>): Promise<{ config: Loc
   fs.mkdirSync(path.join(root, 'knowledge', 'workflows'), { recursive: true });
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(root, 'knowledge', 'workflows', `${name}.yaml`), yaml);
   const config: LocalConfig = { repo: { kind: 'self', localPath: path.join(root, 'knowledge'), remote: 'local' }, username: 'test', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data') };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   return { config, checkout };
 }
 
@@ -76,7 +77,7 @@ const LeaseSchema = z.object({ attempt: z.string(), revision: z.number() }).pass
 
 async function leased(config: LocalConfig, checkout: string): Promise<{ run: RunLock['run']; attempt: string; revision: number; lease: z.infer<typeof LeaseSchema> }> {
   const client = await protocol(config);
-  const started = await client.start('check', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+  const started = await client.start('check', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
   if (!('data' in started)) throw new Error(JSON.stringify(started));
   const run = RunIdSchema.parse(started.data.run);
   const next = await client.next(run, { driver });
@@ -90,7 +91,7 @@ describe('workflow protocol in process', () => {
     const { config } = await fixture({ wide: WIDE });
     expect(await (await protocol(config)).describe('fan', { ceiling: 3, can: {} })).toEqual({ description: {
       name: 'wide', description: 'Fan out, review, ship.', alias: 'fan', invoke: 'ask', source: 'team', inputs: { targets: { type: 'array', items: { type: 'string' } } },
-      facts: { prompts: ['review'], interactive: [], modeled: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, guards: { kind: 'prompt' } }], inWorkspace: ['ship'], scored: [],
+      facts: { prompts: ['review'], interactive: [], modeled: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, guards: { kind: 'prompt' } }], inWorkspace: ['ship'], scored: [], confined: [],
         deliver: [], requiresEnv: { keys: [], missingHere: [], declaredHere: [] }, budgets: [], held: [],
         runs: [
           { step: 'a', executor: 'command', env: [] }, { step: 'b', executor: 'command', env: [] }, { step: 'c', executor: 'command', env: [] },
@@ -112,12 +113,26 @@ describe('workflow protocol in process', () => {
     expect(await (await protocol(config)).describe('missing', { ceiling: 3, can: {} })).toEqual({ error: { code: 'workflow_not_found', message: 'Workflow or alias missing has no unambiguous runnable version' } });
   });
 
+  it('records a cli start only when the start passes no agent evidence', async () => {
+    const { config } = await fixture({ check: CHECK.replace('steps:\n', 'invoke: allow\nsteps:\n') });
+    const client = await protocol(config);
+    const startedBy = async (evidence: AgentEvidence): Promise<unknown> => {
+      const started = await client.start('check', { caller: { evidence, confirmed: false, mode: 'attended' }, startedBy: 'cli' });
+      if (!('data' in started)) throw new Error(JSON.stringify(started));
+      const run = await readRun(config, String(started.data.run));
+      return run === 'missing' || run === 'corrupt' ? run : run.startedBy;
+    };
+
+    expect(await startedBy({ kind: 'none' })).toBe('cli');
+    expect(await startedBy({ kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' })).toBe('agent');
+  });
+
   it('refuses a start inside a workflow attempt before it looks the workflow up, and an answer from it', async () => {
     const { config } = await fixture({ check: CHECK });
     const client = await protocol(config);
     const nested = { code: 'nested_workflow', message: "This process runs inside workflow attempt r0123456789abcdef/a0000000a (TEAMAI_WORKFLOW_ATTEMPT is set), so it cannot start or drive a workflow run. Do the step's own work here; to run another workflow as part of a run, add it to the definition as a workflow step." };
     const caller = { evidence: { kind: 'attempt', attempt: 'r0123456789abcdef/a0000000a' }, confirmed: true, mode: 'attended' } as const;
-    expect(await client.start('missing', { caller })).toEqual({ error: nested });
+    expect(await client.start('missing', { caller, startedBy: 'person' })).toEqual({ error: nested });
     expect(await client.respond('r0123456789abcdef', 'lint', 'yes', { via: { kind: 'process', caller: { tty: true, evidence: caller.evidence } } })).toEqual({ error: nested });
   });
 
@@ -156,6 +171,34 @@ describe('workflow protocol in process', () => {
     }, { waitMs: 0 });
     const stored = await readRun(config, run);
     expect(typeof stored === 'object' && stored.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'command_failed' } });
+  });
+
+  it('prepares a confined step in its directory alone, so a change to the checkout while it runs does not fail it', async () => {
+    const judged = 'schemaVersion: v1alpha1\nname: judged\ndescription: Judge the evidence.\nsteps:\n  - id: evidence\n    command: node -e "process.exit(0)"\n  - id: judge\n    needs: [evidence]\n    workspace: { confined: evidence }\n    prompt: Judge diff.txt.\n    output:\n      verdict: pass | fail\n';
+    const { config, checkout } = await fixture({ judged });
+    const client = await protocol(config);
+    const started = await client.start('judged', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
+    if (!('data' in started)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.run);
+    const confining = { ...driver, can: { ...driver.can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }] } } as const;
+    const first = await client.next(run, { driver: confining });
+    if (!('data' in first) || !('lease' in first.data)) throw new Error(JSON.stringify(first));
+    const evidence = LeaseSchema.parse(first.data.lease);
+    const dir = path.join(runScratchDir(config, run), 'evidence');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'confined.json'), '{"level":"verified"}');
+    await client.report(run, { attempt: evidence.attempt, revision: evidence.revision, outcome: 'success', driver: confining });
+    const next = await client.next(run, { driver: confining });
+    if (!('data' in next) || !('lease' in next.data)) throw new Error(JSON.stringify(next));
+    const judge = LeaseSchema.parse(next.data.lease);
+    const confinedDir = z.object({ confined: z.object({ dir: z.string() }) }).parse(judge).confined.dir;
+
+    const answer = await withRunLock(config, run, async (lock) => {
+      expect(await client.prepare(lock, judge)).toEqual({ kind: 'prepared', dir: confinedDir });
+      fs.writeFileSync(path.join(checkout, 'README.md'), 'changed\n');
+      return client.report(run, { attempt: judge.attempt, revision: judge.revision, outcome: 'success', driver: confining, outputs: { verdict: 'pass' }, confined: { tool: 'claude', isolation: 'verified', access: 'read' } }, { lock });
+    }, { waitMs: 0 });
+    expect(answer).toMatchObject({ data: { accepted: true, step: { id: 'judge', status: 'succeeded' } } });
   });
 
   it('refuses to prepare an attempt the run has not leased', async () => {
@@ -212,7 +255,7 @@ describe('finally steps', () => {
 
   async function startReported(config: LocalConfig, checkout: string): Promise<{ client: WorkflowClient; run: string }> {
     const client = await protocol(config);
-    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     return { client, run: RunIdSchema.parse(started.data.run) };
   }
@@ -320,7 +363,7 @@ describe('finally steps', () => {
     const ended = REPORTED.replace('name: reported', 'name: ended').replace('steps:\n  - id: work\n', 'ends: { blocked: failed }\nsteps:\n  - id: work\n    end: blocked\n');
     const { config, checkout } = await fixture({ ended });
     const client = await protocol(config);
-    const started = await client.start('ended', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('ended', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const work = await lease(client, run);
@@ -352,7 +395,7 @@ outputs:
 `;
     const { config, checkout } = await fixture({ nulled });
     const client = await protocol(config);
-    const started = await client.start('nulled', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('nulled', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const emit = await lease(client, run);
@@ -433,7 +476,7 @@ describe('a finally step in the checkout', () => {
   it('fails a finally step that changed the checkout, as any read-only command', async () => {
     const { config, checkout } = await fixture({ reported: REPORTED });
     const client = await protocol(config);
-    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('reported', { checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const leaseOf = async (): Promise<z.infer<typeof LeaseSchema>> => {
@@ -462,7 +505,7 @@ describe('the run timeout a start gives', () => {
       const client = await protocol(config);
       const caller = { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } as const;
       const deadlineOf = async (name: string, timeout: number): Promise<unknown> => {
-        const started = await client.start(name, { checkout, caller, timeout });
+        const started = await client.start(name, { checkout, caller, timeout, startedBy: 'person' });
         if (!('data' in started)) throw new Error(JSON.stringify(started));
         const next = await client.next(RunIdSchema.parse(started.data.run), { driver });
         return 'data' in next && 'lease' in next.data ? LeaseSchema.parse(next.data.lease).expiresAt : next;

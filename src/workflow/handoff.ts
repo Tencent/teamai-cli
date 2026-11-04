@@ -4,7 +4,6 @@ import path from 'node:path';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { knownSecrets } from '../env-resolution.js';
 import { getCurrentVersion } from '../package-info.js';
-import { pinScorers } from '../scorers/cache.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from '../session-flow/archive.js';
 import { getRepoIdentity } from '../session-flow/sync.js';
@@ -20,6 +19,7 @@ import {
   definitionHash, parseSnapshot, projectRun, snapshotBody, snapshotPath, snapshotText,
   type Handoff, type HandoffOwner, type RunSnapshot, type SnapshotBody, type SnapshotError,
 } from './snapshot.js';
+import { openPrivateStep } from './scope.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
 import { workflowRunBy, type RunPublication, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
@@ -51,7 +51,8 @@ export type HandoffError =
   | { code: 'origin_unavailable'; message: string }
   | { code: 'commit_missing'; branch: string; commit: string; message: string }
   | { code: 'branch_diverged'; branch: string; expected: string; actual: string; message: string }
-  | { code: 'isolated_run'; message: string };
+  | { code: 'isolated_run'; message: string }
+  | { code: 'private_open'; step: string; message: string };
 
 /** Why a handoff did not happen. */
 type Refusal = { ok: false; error: HandoffError };
@@ -120,6 +121,35 @@ function isolatedUnpublishable(runId: string): HandoffError {
 
 function isolatedUnclaimable(runId: string): HandoffError {
   return { code: 'isolated_run', message: `Run ${runId} is isolated: it runs only on the machine that started it, so it cannot be claimed. Continue it here with teamai workflow resume ${runId}, or start a new run on the other machine.` };
+}
+
+function privateUnpublishable(run: RunState): HandoffError | undefined {
+  if (run.definition.private) {
+    return { code: 'isolated_run', message: `Run ${run.id} runs private workflow ${run.definition.name}: it runs only on the machine that started it, so it cannot be published.` };
+  }
+
+  const step = openPrivateStep(run);
+
+  return step === undefined ? undefined : {
+    code: 'private_open',
+    step,
+    message: `Run ${run.id} cannot be published while private step ${step} is open: its work stays on this machine. Finish it with teamai workflow resume ${run.id}, or cancel it with teamai workflow cancel ${run.id} ${step}, then publish again.`,
+  };
+}
+
+function privateUnclaimable(run: RunState): HandoffError | undefined {
+  if (run.definition.private) {
+    return { code: 'isolated_run', message: `Run ${run.id} runs private workflow ${run.definition.name}: it runs only on the machine that started it, so it cannot be claimed. Continue it here with teamai workflow resume ${run.id}.` };
+  }
+
+  const step = openPrivateStep(run);
+
+  // A claim installs the published state over this machine's copy, which drops the open step's work.
+  return step === undefined ? undefined : {
+    code: 'private_open',
+    step,
+    message: `Run ${run.id} cannot be claimed while private step ${step} is open on this machine: the claim would drop its work. Finish it with teamai workflow resume ${run.id}, or cancel it with teamai workflow cancel ${run.id} ${step}, then claim again.`,
+  };
 }
 
 function runUnreadable(runId: string): HandoffError {
@@ -230,6 +260,9 @@ export async function publishRun(
   if (stored === 'corrupt') return refused(runUnreadable(runId));
 
   if (isIsolated(stored)) return refused(isolatedUnpublishable(runId));
+  const unpublishable = privateUnpublishable(stored);
+
+  if (unpublishable) return refused(unpublishable);
 
   if (worksInTeam(stored)) {
     return refused({ code: 'isolated_run', message: `Run ${runId} has a step in the team workspace, whose clone is on this machine only, so it cannot be published. Start the workflow again on the other machine.` });
@@ -680,7 +713,12 @@ export interface Definitions {
 export async function claimRun(config: LocalConfig, runId: string, options: { checkout: string }): Promise<Result<ClaimReceipt>> {
   const stored = isRunId(runId) ? await readRun(config, runId) : 'missing';
 
-  if (stored !== 'missing' && stored !== 'corrupt' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+  if (stored !== 'missing' && stored !== 'corrupt') {
+    if (isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+    const unclaimable = privateUnclaimable(stored);
+
+    if (unclaimable) return refused(unclaimable);
+  }
 
   return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
 }
@@ -721,7 +759,12 @@ export async function resumeRun(config: LocalConfig, runId: string, options: { c
 
   if (stored === 'corrupt') return refused(runUnreadable(runId));
 
-  if (options.claim && stored !== 'missing' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+  if (options.claim && stored !== 'missing') {
+    if (isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+    const unclaimable = privateUnclaimable(stored);
+
+    if (unclaimable) return refused(unclaimable);
+  }
 
   if (stored === 'missing' || options.claim) return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
 
@@ -1211,19 +1254,14 @@ async function install(
   secrets: Record<string, string>,
 ): Promise<Result<ClaimReceipt>> {
   // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
-  const { definitionHash: _hash, copies: _copies, steps: _steps, scorers: publishedScorers, ...body } = snapshotBody(snapshot);
-  // A pinned scorer comes back only when this machine caches the same bytes; otherwise its passes are not scored here (D19).
-  const cached = await pinScorers(config, Object.keys(publishedScorers ?? {}));
-  const scorers = Object.fromEntries(Object.entries(cached).filter(([name, pin]) => publishedScorers?.[name]?.sourceHash === pin.sourceHash));
+  const { definitionHash: _hash, copies: _copies, steps: _steps, ...body } = snapshotBody(snapshot);
 
   const publication: RunPublication = { stateRevision: snapshot.stateRevision };
 
   if (Object.values(handed.copies).some((copy) => copy.commit !== undefined)) publication.reconcileCopies = true;
-  const pinned: Pick<RunState, 'workflows' | 'scorers'> = {};
+  const pinned: Pick<RunState, 'workflows'> = {};
 
   if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
-
-  if (Object.keys(scorers).length > 0) pinned.scorers = scorers;
   const copied: Pick<RunState, 'copies'> = {};
 
   if (Object.keys(handed.copies).length > 0) copied.copies = handed.copies;

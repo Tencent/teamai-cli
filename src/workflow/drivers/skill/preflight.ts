@@ -283,6 +283,9 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
   const missing = facts.requiresEnv.missingHere;
   const [one, many] = [missing.length === 1, interactive.length > 1];
   const scored = listOf(facts.scored.map((step) => step.step));
+  const confined = listOf(facts.confined);
+  // A run with both says why judging is not here once, on the scored line.
+  const [isScored, isConfined, oneConfined] = [facts.scored.length > 0, facts.confined.length > 0, facts.confined.length === 1];
 
   return [
     ...(named.length > 0 ? [`${name} needs the input${named.length > 1 ? 's' : ''} ${listOf(named)}.`] : []),
@@ -298,10 +301,13 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
     ...facts.held.map(heldFact),
     ...facts.budgets.map(({ step, tokens }) => (step === undefined ? `It may spend at most ${tokens} tokens.` : `${step} may spend at most ${tokens} tokens each time it starts.`)),
     ...(facts.timeout !== undefined ? [`It stops after ${durationOf(facts.timeout)}.`] : []),
-    ...(judging.kind === 'here' ? [`${judging.tool} judges ${scored} here, with one confined judge call per pass.`] : []),
-    ...(judging.kind === 'session' ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} judged by this session in a subagent once the run is done, at best-effort isolation. ${judging.reason}`] : []),
+    ...(judging.kind === 'here' && isScored ? [`${judging.tool} judges ${scored} here, with one confined judge call per pass.`] : []),
+    ...(judging.kind === 'session' && isScored ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} judged by this session in a subagent once the run is done, at best-effort isolation. ${judging.reason}`] : []),
     ...(judging.kind === 'session' && judging.verified ? [`${listOf(judging.verified)} ${judging.verified.length > 1 ? 'ask' : 'asks'} for verified isolation, so that work stays open for another driver.`] : []),
-    ...(judging.kind === 'elsewhere' ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} not judged on this machine. ${judging.reason}`] : []),
+    ...(judging.kind === 'elsewhere' && isScored ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} not judged on this machine. ${judging.reason}`] : []),
+    ...(judging.kind === 'here' && isConfined ? [`${judging.tool} runs ${confined} here, confined to the directory ${oneConfined ? 'it answers' : 'each answers'} from.`] : []),
+    ...(judging.kind === 'session' && isConfined ? [`A fresh subagent of this session runs ${confined}, reading only ${oneConfined ? 'its' : 'each one\'s'} directory, at best-effort isolation, unless ${oneConfined ? 'it asks' : 'one asks'} for verified isolation, which another driver runs.${isScored ? '' : ` ${judging.reason}`}`] : []),
+    ...(judging.kind === 'elsewhere' && isConfined ? [`${confined} ${oneConfined ? 'does' : 'do'} not run on this machine.${isScored ? '' : ` ${judging.reason}`}`] : []),
     ...(description.invoke === 'ask' ? ['The team asks that you agree before it starts.'] : []),
   ];
 }

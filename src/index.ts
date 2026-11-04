@@ -6,6 +6,7 @@ import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
+import type { EvidenceOptions, LabelOptions, PlanOptions, StageOptions, SubjectsOptions, WriteOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -229,23 +230,17 @@ program
     + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
-  .option('--file <local file>', 'Push exactly this local file, byte for byte, to the team path --path names, as a pull request. '
-    + 'No other change in the team clone joins it; requires --path')
-  .option('--path <team path>', 'Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. '
-    + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried')
   .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
     + 'Use it only after carrying that change into your root copy, with the value the stop printed; '
     + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [])
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
-    // --file and --path name one file and its destination: no scan, no placement.
-    const { isFilePush, pushFile } = await import('./push-file.js');
     const { push } = await import('./push.js');
     // Only notify when a real push actually happened — not on dry-run, cancel,
     // no-change, or a handled failure (#702 follow-up).
     const outcome = { completed: false };
     const options = { ...globalOpts, ...cmdOpts };
-    await reportNotInitialized(() => (isFilePush(options) ? pushFile(options, outcome) : push(options, outcome)));
+    await reportNotInitialized(() => push(options, outcome));
 
     if (outcome.completed) await notifyWebhook('push');
   });
@@ -866,7 +861,7 @@ workflowCmd
 workflowCmd
   .command('next <run>')
   .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
-  .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team assets and runs setup, and answers the lease with cwd, where the driver runs the step. So is a step that runs with a team role (role on its lease): teamai delivers the role into its copy. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true. While a scorer with sampling: all still judges, the run waits for it: wait carries judging, the number of judge entries still open, which teamai score --next on this install judges.')
+  .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team assets and runs setup, and answers the lease with cwd, where the driver runs the step. So is a step that runs with a team role (role on its lease): teamai delivers the role into its copy. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true.')
   .option('--attempt <attempt>', 'With --prepare: prepare this attempt, which an earlier next leased this driver, instead of taking a new lease. wrong_attempt when the run no longer leases it to the driver. With --driver skill: the attempt of a place action, with --adopt')
   .option('--adopt <dir>', 'With --prepare --attempt: prepare the attempt in <dir>, a place the host made: a clean worktree of this repository on the lease\'s workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it')
   .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt\'s turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
@@ -934,7 +929,7 @@ workflowCmd
 
 workflowCmd
   .command('publish <run>')
-  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run published from a checkout of its business repository (origin) is also offered: the first workflow resume --next in a checkout of that repository claims it, and any claim, or the owner's own workflow resume, takes the offer away, so two runners never take one run. Publish once you stop driving the run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses an isolated run, such as a benchmark run, a run with records not yet on teamai-reports, or one with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
+  .description("Publish a run's state to teamai-reports so another member or a runner can continue it with workflow resume. A running run published from a checkout of its business repository (origin) is also offered: the first workflow resume --next in a checkout of that repository claims it, and any claim, or the owner's own workflow resume, takes the offer away, so two runners never take one run. Publish once you stop driving the run. The first publish makes this install the run's owner; publishing an unchanged run writes nothing. Refuses an isolated run, such as a benchmark run, a run of a private workflow, a run with a private step still open (private_open), a run with records not yet on teamai-reports, or one with a value that looks like a secret. Prints one JSON envelope with offered, and listing the leases still in flight.")
   .option('--sessions', "Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine")
   .action(async (run: string, options: { sessions?: boolean }) => {
     const { workflowPublish } = await import('./workflow-commands.js');
@@ -971,12 +966,14 @@ const benchmarkCmd = program
 
 benchmarkCmd
   .command('run <suite>')
-  .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team"} ("member" with --member-aliases) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases only when it declares that input. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or its report failed or was cancelled; a record still pending publication never changes the exit code.')
+  .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false} ("member" with --member-aliases; the ids --task and --arm name; true with --fail-on-regression) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases, tasks, arms and fail_on_regression only when it declares them. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or a finally step, its report or its regression gate, failed or was cancelled; a record still pending publication never changes the exit code.')
   .option('--driver <kind>', 'The driver that runs it: local (default), or skill')
   .option('--sandbox', 'With --driver local, declare this machine a sandbox for this run, where the trials, which need strict sandbox isolation, may run. The run remembers it on this install, so workflow resume keeps it. workflows.sandbox in config declares it for every process.')
   .option('--member-aliases', 'Resolve each arm\'s model alias with your own ~/.teamai/models/aliases.yaml over the team\'s models/aliases.yaml, which alone resolves them otherwise: starts the workflow with input aliases member instead of team. The results table and the record show member as the source of a model your file decided.')
-  .option('--fail-on-regression', 'Also exit 1 when an arm\'s pass rate dropped by more than chance against the newest earlier succeeded run of the suite published on teamai-reports with the same tasks and arms, trials paired by task and repetition as the dashboard\'s Compare pairs them. With no such run, print a notice and leave the exit code alone. Needs --driver local.')
-  .action(async (suite: string, cmdOpts: { driver?: string; sandbox?: boolean; memberAliases?: boolean; failOnRegression?: boolean }) => {
+  .option('--task <id>', 'Run only this task of the suite: one baseline and its trials. Repeatable. Starts the workflow with input tasks, [] without it; a team file that takes no input tasks is refused.', (value: string, previous: string[]) => previous.concat(value), [])
+  .option('--arm <name>', 'Run only this arm of the suite. Repeatable. Starts the workflow with input arms, [] without it; a team file that takes no input arms is refused.', (value: string, previous: string[]) => previous.concat(value), [])
+  .option('--fail-on-regression', 'Also exit 1 when an arm\'s pass rate dropped by more than chance against the newest earlier succeeded run of the suite published on teamai-reports with the same tasks and arms, trials paired by task and repetition as the dashboard\'s Compare pairs them: starts the workflow with input fail_on_regression true, false without it, and its regression step fails. With no such run, print a notice and leave the exit code alone. A team file that takes no input fail_on_regression is refused.')
+  .action(async (suite: string, cmdOpts: { driver?: string; sandbox?: boolean; memberAliases?: boolean; task: string[]; arm: string[]; failOnRegression?: boolean }) => {
     const { benchmarkRun } = await import('./workflow-commands.js');
     await benchmarkRun(suite, cmdOpts);
   });
@@ -991,16 +988,18 @@ benchmarkCmd
 
 benchmarkCmd
   .command('plan <suite>')
-  .description('The first step of a benchmark run: freeze the team revision this checkout last pulled, fetch every commit a trial reads into the commit cache, and print {"definition":{"definition","workflows","scorers","teamRevision"},"plan"}, the workflow the run\'s trials step runs and the plan its check and report steps read. Refuses a run with no timeout, or a longer one than the suite\'s: start it with workflow start --timeout.')
+  .description('The first step of a benchmark run: freeze the team revision this checkout last pulled, fetch every commit a trial reads into the commit cache, and print {"definition":{"definition","workflows"},"plan"}, the workflow the run\'s trials step runs and the plan its check and report steps read, and write the correctness scorers of tasks judged by successCriteria as files of the run, where teamai score plan reads them. Refuses a run with no timeout, or a longer one than the suite\'s: start it with workflow start --timeout.')
   .option('--aliases <whose>', 'Whose aliases resolve the arms\' model aliases: team (default), the team\'s models/aliases.yaml, or member, your ~/.teamai/models/aliases.yaml over the team\'s')
-  .action(async (suite: string, cmdOpts: { aliases?: string }) => {
+  .option('--tasks <json>', 'The task ids to plan, as a JSON array such as ["fix-login"]; [] or absent plans every task. A name the suite does not have is refused, listing the ones it has.')
+  .option('--arms <json>', 'The arm names to plan, as a JSON array such as ["claude"]; [] or absent plans every arm. A name the suite does not have is refused, listing the ones it has.')
+  .action(async (suite: string, cmdOpts: { aliases?: string; tasks?: string; arms?: string }) => {
     const { benchmarkPlan } = await import('./workflow-commands.js');
     await benchmarkPlan(suite, cmdOpts);
   });
 
 benchmarkCmd
   .command('report')
-  .description('The finally step of a benchmark run: classify the trials of the plan the run measured, write the run\'s benchmark record into its run directory and, when usage reporting allows, publish it to teamai-reports, and print {"text","table"}. The text ends with record: pending while the record waits for publication. Refuses a run whose plan this teamai cannot read.')
+  .description('The finally step of a benchmark run: classify the trials of the plan the run measured, write the run\'s benchmark record into its run directory and, when usage reporting allows, publish it to teamai-reports, and print {"text","table","regression"}. The text says record: pending while the record waits for publication. With COMPARE=true in its environment, it compares the record with the newest earlier succeeded one of the suite on teamai-reports with the same tasks and arms, adds what it found to the text, and sets regression to dropped, held or no_comparable; otherwise regression is off. Refuses a run whose plan this teamai cannot read.')
   .action(async () => {
     const { benchmarkReport } = await import('./workflow-commands.js');
     await benchmarkReport();
@@ -1016,30 +1015,109 @@ benchmarkCmd
     await benchmarkCheck(cmdOpts);
   });
 
-program
+const scoreCmd = program
   .command('score')
-  .description('Judge workflow passes with team scorers (scorers/<name>.md). Any driver takes judge work with --next, runs its own judge on the lease prompt with the lease evidence directory as its only readable root and settles it with --lease <ref> --submit, or judges it here with --lease <ref>. --run <id> --scorer <name> judges a pass on demand. A pass of a deliver: pr step is decided before any judge by the scorer\'s check, a failed CI on its pull request, or a protected-path refusal, and its label says which in decidedBy. --scorer <name> [--session <id>] judges a finished agent session here: the one --session names, or, inside a session, the one its agent session variable names; it never guesses. --team-session <name> judges a session a member pushed instead. --label <value> labels the session by hand instead of judging it. With --json, it leases that session to the driver\'s own judge instead. workflow next never hands out judge work, and a driver never lists a judge ref in workflow next running. Prints one JSON envelope; --drain prints lines.')
-  .option('--next', 'Take judge work: workflow passes first, then finished sessions of each run mode whose scoring.sessions policy is auto (config.yaml, else scorers/scoring.yaml, which ~/.teamai/config.yaml can only make stricter; by default off attended, auto unattended). An attended session is finished 6 hours after its last activity, an unattended one once a score --drain reached it. A lease has ref, source (workflow or session), scorer, subject, evidence, prompt, answer.schema, expiresAt, the cwd to submit from and a submit command line; else idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live workflow lease of yours left out is handed back, and a session lease left out lapses: a session is judged once. A lease lapses 30 minutes after it was taken or renewed. Optional: run, a run id, to take only that run\'s workflow passes and never a session, from any directory, since the run\'s scope is found by its id; canTakeLease, false to renew running and take nothing, not even a lease handed back.')
-  .option('--lease <ref>', 'The judge lease, as --next printed it (s<13 hex>/a<8 hex>). Without --submit, judge it here with the tool the lease names, in a confined profile, and settle it through the submit path: --json {"driver":{…same as --next…}}.')
-  .option('--submit', 'Settle --lease <ref> with the payload {"driver":{…same as --next…},"outcome":"success","answer":{"label":"<one of answer.schema>","reasoning":"…"},"judge":{"tool":"claude","model":"…","usage":{"inputTokens":0,"outputTokens":0}}}. For a batch lease, answer is {"<scorer>":{"label":"…","reasoning":"…"},…} with one entry per scorer. outcome is success, failed, or released. A label a scorer does not list is refused, the whole answer with it, and the lease stays open; teamai computes score and passed.')
-  .option('--json <payload>', 'The payload as a JSON string')
-  .option('--stdin', 'Read the payload from stdin')
-  .option('--run <id>', 'Judge a pass of this run on demand, whatever sampling says, with --scorer; this also reopens judge work that failed or expired. It fails with evidence_missing, naming each, when a commit or a session the pass recorded is no longer on this machine, and writes no label. Without --queue, judges it here with the local judge and prints the label.')
+  .description('Label a workflow pass or a finished agent session with team scorers (scorers/<name>.md). --run <id>, --session <id> or --team-session <name>, with --scorer, starts the default workflow teamai-score for that subject with demand named (no sampling; a failed or expired judgment opens again), on the local driver unless --driver names another, and prints the labels it wrote. A person starts it from their own terminal: from an agent session the start answers invoke_denied, and an agent judges its session with /teamai-share-session instead. The pass, session, scorers and --label value are checked before any run starts. When only a judge step no tool here can run is left, it exits 1 with judge_pending and the labels already written; a scorer with no label exits 1 with its code. A scorer file (--scorer ./scorers/x.md) is tried here instead, and its label is never stored. Prints one JSON envelope; --drain prints lines.')
+  .option('--run <id>', 'Label a pass of this run on demand, with --scorer: a scorer a step of the run lists, read at the team revision the run started from. Refused with step_ambiguous, step_not_found or pass_not_found as --step and --pass say, and with evidence_missing, naming each, when a commit or a session the pass recorded is no longer on this machine; no run starts and no label is written.')
   .option('--step <path>', 'With --run: the step path, such as review or check.review; optional when the run lists the scorers on one step only')
   .option('--pass <n>', 'With --run: the pass to judge; default the step\'s latest succeeded pass')
-  .option('--session <id>', 'Judge this finished session of an agent tool on this machine, whatever sampling says, with --scorer. Prints the session\'s first prompt and directory first, then the label; the session and the judge\'s reasoning are never published. With --json {"driver":{…same as --next…}}, prints a lease for your own judge, as --next does, instead of judging here; several --scorer need --batch, except for the session\'s teamai:routing:… questions, which always share one call. The lease is taken whatever sampling, the six idle hours, scoring.sessions, the scorer\'s sessions, an earlier label or daily_limit say, and counts toward the day\'s daily_limit. Nothing is taken when a scorer asks for more isolation than can.judge offers (isolation_unmet), when none of its tools runs a scorer\'s model (judge_model_unavailable), or while a live lease holds the work (busy).')
+  .option('--session <id>', 'Label this finished session of an agent tool on this machine, with --scorer, whatever sampling, scoring.sessions or an earlier label say; it counts toward daily_limit, which never refuses it. Prints the session\'s first prompt and directory first, then the label; the session and the judge\'s reasoning are never published.')
   .option('--source <platform>', 'With --session: the tool that holds it, as session migrate --source names it (claude-code, codex, opencode, …); needed unless the agent session variable names that session, or the captures its session-start hook wrote here name one platform for it')
-  .option('--team-session <name>', 'Judge a session a member pushed with session push instead of one on this machine, by the name session list prints for this directory\'s repository: read from teamai-reports, else from the archive the team kept on its default branch before, and redacted before a judge reads it. Run session pull first for the newest. Its label is about the session where it ran, so it pairs with that session\'s labels from the machine that ran it, and records no agent. Not with --session, --source or --json')
+  .option('--team-session <name>', 'Judge a session a member pushed with session push instead of one on this machine, by the name session list prints for this directory\'s repository: read from teamai-reports, else from the archive the team kept on its default branch before, and redacted before a judge reads it. Run session pull first for the newest. Its label is about the session where it ran, so it pairs with that session\'s labels from the machine that ran it, and records no agent. Not with --session or --source')
   .option('--author <name>', 'With --team-session: who pushed it, when two members pushed a session with that name')
-  .option('--label <value>', 'Label the session by hand with this value of the one --scorer: no judge runs, score and passed come from the scorer, and no reasoning is kept. A value the scorer does not list fails and lists the ones it does. A hand label and a model label of a session are kept side by side, so rescoring with the model never replaces yours; the dashboard Scorers page shows how often the model judge agrees with hand labels. Not with a scorer file, --batch or --json')
-  .option('--scorer <name>', 'With --run: a scorer the run pinned or one teamai pull cached. With --session, or alone inside a session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Repeatable.', (value: string, previous: string[]) => previous.concat(value), [])
-  .option('--queue', 'With --run: leave the work to any driver\'s score --next instead of judging it here')
-  .option('--batch', 'With --run or --session: the scorers share one judge call when they resolve to the same tool and model')
-  .option('--push', 'Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after --session. Labels only: never the session, the prompt or the judge\'s reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push.')
-  .option('--drain', 'What every unattended job runs before it ends, alone, in every scope this directory reaches: in unattended mode, finish each session captured unattended here; judge each pass and session a judge tool here can take, a failed judgment final and never retried; publish pending labels; where sessions.publish is auto for this run mode, archive, scrubbed, its finished sessions and the step sessions of its ended runs on teamai-reports; report usage to stats/<member>.yaml. Prints a line per kind of work and what it left for other drivers; exits 1 only when a judgment or a publish failed, and what stayed pending goes on the next --drain.')
+  .option('--label <value>', 'Label the session by hand with this value of the one --scorer: the teamai-score run skips the stages and the judge, score and passed come from the scorer, and no reasoning is kept. A value the scorer does not list fails before any run starts and lists the ones it does. Honoured only in a run a person started. A hand label and a model label of a session are kept side by side, so rescoring with the model never replaces yours; the dashboard Scorers page shows how often the model judge agrees with hand labels. Not with a scorer file or --batch')
+  .option('--scorer <name>', 'With --run: a scorer a step of the run lists, read at the team revision the run started from. With --session or --team-session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md, judged here with no run. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Files and scorer names go in separate commands. Repeatable.', (value: string, previous: string[]) => previous.concat(value), [])
+  .option('--driver <driver>', 'With --run, --session or --team-session: the driver of the teamai-score run, local (the default) or none, which only starts the run and leaves it to any driver\'s workflow next')
+  .option('--batch', 'With --run or --session: the scorers share one judge launch when they resolve to the same tool and model and take the same stages; a scorer with a check never does')
+  .option('--push', 'Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after the labels of --run or --session. Labels only: never the session, the prompt or the judge\'s reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push. Also pushes what a workflow step with deliver: publish left on this machine while origin could not take it.')
+  .option('--drain', 'What every unattended job runs before it ends, alone, in every scope this directory reaches: in unattended mode, finish each session captured unattended here; start the default workflow teamai-finished-sessions on the local driver, which archives, scrubbed, and judges the finished sessions as sessions.publish and scoring.sessions say, and starts teamai-score again for each pass and session whose judging lapsed (a failed judgment final and never retried); publish pending labels and workflow run records; where sessions.publish is auto for this run mode, archive the step sessions of its ended runs on teamai-reports; report usage to stats/<member>.yaml. Prints a line per kind of work and what it left for other drivers; exits 1 only when a judgment, a publish or that run failed, and what stayed pending goes on the next --drain.')
   .action(async (cmdOpts: ScoreOptions) => {
     const { scoreCommand } = await import('./score-commands.js');
     await scoreCommand(cmdOpts);
+  });
+
+// The verbs a teamai-score run's steps call. `score` has --label, --run and --step too, and takes their values, so a verb
+// reads them with optsWithGlobals.
+scoreCmd
+  .command('plan')
+  .description('A step of a teamai-score run: sample each scorer on the subject, group the sampled ones that share a judge launch and take the same stages, and open their marks for the run. A non-empty label input of the teamai-score run is a hand label of its one scorer, honoured only when a person started the root run. Prints {"groups":[{"subject","hand","scorers","model","ci","protected"}]}: empty when nothing is sampled, every scorer is judged or held, or past daily_limit for an auto demand. Refused outside a leased attempt of a teamai-score step.')
+  .option('--subject <subject>', 'run:<runId>:<step path>:<pass>, session:<source>:<sessionId> or team-session:<author>:<archive name>')
+  .option('--scorers <json>', 'A JSON array of scorer names; [] takes the scorers the pass\'s step lists, or for a session every scorer with sessions: true. On an auto demand, a scorer whose judging of the subject lapsed or waits for CI is taken whatever it samples')
+  .option('--batch <bool>', 'true: the scorers share a judge launch where they can; false: as the step, the workflow\'s defaults.scorers.batch and scoring.yaml say')
+  .option('--demand <demand>', 'auto: sample, and stop at daily_limit; named: someone asked, so every scorer is taken, a closed mark opens again, and daily_limit counts it but never refuses it', 'auto')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.plan(command.optsWithGlobals<PlanOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('evidence')
+  .description('A step of a teamai-score run: write the evidence of one group into $TEAMAI_RUN_DIR/<attempt>/: the redacted transcript and diff, evidence.json, the rubric prompt, the answer schema, and confined.json with the isolation level the team, the scorers and this machine require and the tool that ran the work. Prints {"dir","rubric","schema","delivers"}. A hand label only resolves the subject. Fails evidence_missing when a commit or session the pass recorded is gone, evidence_empty when nothing of it was kept.')
+  .option('--subject <subject>', 'The group\'s subject, as plan printed it')
+  .option('--scorers <names>', 'The group\'s scorers, joined by , as plan printed them')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.evidence(command.optsWithGlobals<EvidenceOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('stage')
+  .description('A step of a teamai-score run: one stage that may decide a delivered pass before its judge, check (the scorer\'s check on the delivered commit, stopped after 30 minutes), ci (a failed CI of its pull request) or protected (a protected-path refusal). Writes its record in the evidence directory and prints {"decided":true} or {"decided":false}; ci also prints "pending", true while CI has not finished, else false. A stage no scorer of the group takes runs nothing and prints {"decided":false}. A check that cannot run prints {"decided":true}, and label gives check_could_not_run.')
+  .argument('<stage>', 'check, ci or protected')
+  .option('--evidence <dir>', 'The evidence directory its evidence step printed')
+  .option('--wait <duration>', 'With ci: past this long since this machine first saw the CI pending, such as 2h, judge as if the pass had no CI')
+  .action(async (stage: string, _cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.stage({ ...command.optsWithGlobals<Omit<StageOptions, 'stage'>>(), stage }, ctx));
+  });
+
+scoreCmd
+  .command('label')
+  .description('A step of a teamai-score run: the labels of one group, from the run\'s hand label when a person started the root run, else the first stage that decided it (check, ci, protected), else the judge\'s --answer, each checked against the answer schema and the pinned scorer, with score and passed computed here. Writes them with reasoning to <dir>/labels.json and prints {"labels":[{"scorer","label","code"}]}, one per scorer and no reasoning; code is check_could_not_run, ci_pending, judge_failed or judge_answer_invalid for a scorer with no label, or judge_tool_unavailable when a stage decided it and no judge tool here runs its model to record the label. Exits 0 with codes. Refused outside a leased attempt of a teamai-score step.')
+  .option('--evidence <dir>', 'The evidence directory its evidence step printed')
+  .option('--answer <json>', 'The judge step\'s answer, as its output rendered it; \'\' when it gave none')
+  .option('--judge <outcome>', 'The judge step\'s outcome: success, failed, timed_out, cancelled, or \'\' when it was skipped')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.label(command.optsWithGlobals<LabelOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('write')
+  .description('A step of a teamai-score run: check the labels label left in <dir>/labels.json again, then write them to scores/labels.jsonl, reasoning/ and the pending outbox, and close each scorer\'s mark: labelled, failed with its code, or waiting for CI. A label of a private or isolated run stays out of the outbox. Writes nothing when a label fails a check. Prints {"written":<n>}. Refused outside a leased attempt of a teamai-score step.')
+  .option('--evidence <dir>', 'The evidence directory its evidence step printed')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.write(command.optsWithGlobals<WriteOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('publish')
+  .description('A step of a teamai-score run, in the team workspace on teamai-reports with deliver: publish: stage this member\'s pending labels, without reasoning, into scores/<username>/<YYYY-MM>.jsonl of that checkout, merged by key with what origin\'s tip holds; the step publishes what it staged. A pending label origin\'s tip already holds, or holds a newer label of, leaves the outbox. Stages nothing with usage reporting off, for an http team repo, or outside a checkout of teamai-reports. Prints {"staged":<n>}. Refused outside a leased attempt of a teamai-score step.')
+  .action(async () => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.publish(ctx));
+  });
+
+scoreCmd
+  .command('settle')
+  .description('A step of a teamai-score run, after a verb of a group broke: record a failed attempt of each scorer whose mark the run holds, so automatic judging does not start the subject again. Works when evidence failed. Prints {"settled":<n>}.')
+  .option('--subject <subject>', 'The group\'s subject, as plan printed it')
+  .option('--scorers <names>', 'The group\'s scorers, joined by , as plan printed them')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.settle(command.optsWithGlobals<EvidenceOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('subjects')
+  .description('List subjects to start teamai-score on. --run <id> [--step <path>]: the judge-work passes of the run, settled on this machine, whose step says scorers.start: workflow, as {"list":["run:<runId>:<step path>:<pass>",…]}; --step is relative to the workflow of the step that runs this, and takes that step and every step inside it. --lapsed: what teamai-finished-sessions scores again on this machine, as {"list":[{"subject":"<subject>","scorers":["<name>",…]},…]}: the passes and sessions whose mark lapsed (until the fourth lapse), those that waited for CI that has since finished, each with the scorers of those marks, named ones included, and the passes of a run inside its 14 days that no teamai-score run planned, with the unmarked scorers that sample them: one whose teamai-score run was started and never driven, and, once the run ended, one of a scorers.start: workflow step no step of its workflow scored.')
+  .option('--run <id>', 'The run whose passes to list')
+  .option('--step <path>', 'With --run: only that step and the steps inside it')
+  .option('--lapsed', 'This machine\'s subjects that automatic judging starts again')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.subjects(command.optsWithGlobals<SubjectsOptions>(), ctx));
   });
 
 // ─── Hooks commands ─────────────────────────────────────
@@ -1347,14 +1425,6 @@ program
       const { dashboardReport } = await import('./dashboard-collector.js');
       await dashboardReport(cmdOpts.tool);
     }
-  });
-
-program
-  .command('score-sessions', { hidden: true })
-  .description('Judge this machine\'s finished sessions with the local judge (started by the session-start hook)')
-  .action(async () => {
-    const { scoreSessionsCommand } = await import('./score-sessions.js');
-    await scoreSessionsCommand();
   });
 
 program

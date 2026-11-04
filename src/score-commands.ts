@@ -1,27 +1,25 @@
-import { autoDetectInit, loadLocalConfigForScope } from './config.js';
+import { autoDetectInit } from './config.js';
 import { resolveRunMode } from './launch-context.js';
-import { AttemptStore, isRunAttempt } from './scorers/attempts.js';
 import { isScorerFile } from './scorers/definition.js';
-import { parseLeaseRef } from './scorers/entry.js';
-import { scoreSession, type OwnJudge, type SessionDemand, type TeamSession } from './session-flow/scoring.js';
-import type { JsonValue, LocalConfig } from './types.js';
+import { NamedSubject, type NamedPass } from './scorers/named-subject.js';
+import { ScoreAnswer } from './scorers/score-answer.js';
+import { Subject } from './scorers/subject.js';
+import { scoreSession, type SessionDemand } from './session-flow/scoring.js';
+import type { LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
-import { setStderrOnly } from './utils/logger.js';
-import { findRunConfig, partitionConfig, projectPartitions } from './workflow/run-location.js';
-import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, submitJudgeLease, type ScoreDemand } from './workflow/scoring.js';
+import { DataBranches } from './utils/data-branches.js';
+import { log, setStderrOnly } from './utils/logger.js';
+import { shellQuoteValue } from './utils/shell-profile.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
+import { startWorkflow } from './workflow-commands.js';
+import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 
 export interface ScoreOptions {
-  next?: boolean;
-  lease?: string;
-  submit?: boolean;
-  json?: string;
-  stdin?: boolean;
   run?: string;
   step?: string;
   pass?: string;
   scorer?: string[];
-  queue?: boolean;
+  driver?: string;
   batch?: boolean;
   session?: string;
   source?: string;
@@ -42,104 +40,53 @@ function failure(code: string, message: string): WorkflowEnvelope {
   return { error: { code, message } };
 }
 
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
+/** `named` at the pass `--pass` names, or the failure that says it is not a positive whole number. */
+function atPass(named: NamedPass, text: string | undefined): NamedPass | WorkflowEnvelope {
+  if (text === undefined) return named;
+  const pass = Number(text);
 
-  for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  if (!/^\d+$/u.test(text) || !Number.isSafeInteger(pass) || pass < 1) return failure('invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge');
 
-  return Buffer.concat(chunks).toString('utf8');
+  return { ...named, pass };
 }
 
-async function payloadOf(options: ScoreOptions): Promise<{ ok: true; value: JsonValue } | { ok: false; envelope: WorkflowEnvelope }> {
-  if (options.json !== undefined && options.stdin) return { ok: false, envelope: failure('invalid_json', 'Pass the payload with --json or --stdin, not both') };
-  const text = options.stdin ? await readStdin() : options.json;
-
-  if (text === undefined || text.trim() === '') return { ok: false, envelope: failure('invalid_json', 'Pass the payload with --json <payload> or --stdin') };
-
-  try {
-    const value: JsonValue = JSON.parse(text);
-
-    return { ok: true, value };
-  } catch {
-    return { ok: false, envelope: failure('invalid_json', 'Could not parse the payload as JSON') };
-  }
-}
-
-/** The on-demand request `--run` asks for, or the failure that says what is missing. */
-function demandOf(options: ScoreOptions): ScoreDemand | WorkflowEnvelope {
-  if (options.next || options.lease !== undefined || options.json !== undefined || options.stdin) {
-    return failure('invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--queue] [--batch]');
-  }
-
+/** The pass `--run` names, or the failure that says what is missing. */
+function passOf(options: ScoreOptions): NamedPass | WorkflowEnvelope {
   const [scorer, ...scorers] = options.scorer ?? [];
-  const file = options.scorer?.find(isScorerFile);
-
-  if (file !== undefined) return failure('invalid_arguments', `--run takes scorer names, not the file ${file}: a run pins its scorers when it starts`);
 
   if (options.run === undefined || scorer === undefined) {
     return failure('invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded');
   }
 
-  const pass = options.pass === undefined ? undefined : Number(options.pass);
+  return atPass({ run: options.run, step: options.step, scorers: [scorer, ...scorers] }, options.pass);
+}
 
-  if (pass !== undefined && (!/^\d+$/.test(options.pass ?? '') || !Number.isSafeInteger(pass) || pass < 1)) {
-    return failure('invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge');
+/** Why `options` name no one session: a pushed one and one on this machine at once, or an author of neither. */
+function placeMisuseOf(options: ScoreOptions): WorkflowEnvelope | undefined {
+  if (options.teamSession === undefined) {
+    return options.author === undefined ? undefined : failure('invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.');
   }
 
-  const demand: ScoreDemand = { run: options.run, scorers: [scorer, ...scorers] };
-
-  if (options.step !== undefined) demand.step = options.step;
-
-  if (pass !== undefined) demand.pass = pass;
-
-  if (options.queue) demand.queue = true;
-
-  if (options.batch) demand.batch = true;
-
-  return demand;
+  return options.session === undefined && options.source === undefined ? undefined : failure('invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.');
 }
 
 /** The session `--session` asks for, or the failure that says what is missing. */
 function sessionDemandOf(options: ScoreOptions): SessionDemand | WorkflowEnvelope {
-  if (options.next || options.lease !== undefined) {
-    return failure('invalid_arguments', '--session takes no --next or --lease: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch] [--json <driver>]');
-  }
-
   const [scorer, ...scorers] = options.scorer ?? [];
 
-  if (scorer === undefined && options.label !== undefined) return failure('invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.');
-
-  if (scorer === undefined) return failure('invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]');
-
-  if (options.teamSession !== undefined && (options.session !== undefined || options.source !== undefined)) {
-    return failure('invalid_arguments', '--team-session names a pushed session, and --session and --source one on this machine. Pass one of them.');
+  if (scorer === undefined) {
+    return options.label === undefined
+      ? failure('invalid_arguments', 'Pass --scorer <name> to judge a session: teamai score [--session <id>] [--source <platform>] --scorer <name> [--batch]')
+      : failure('invalid_arguments', 'Pass --scorer <name> with --label: the scorer the value is a label of.');
   }
 
-  if (options.author !== undefined && options.teamSession === undefined) return failure('invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.');
+  const misuse = placeMisuseOf(options);
 
-  let demand: SessionDemand;
+  if (misuse !== undefined) return misuse;
+  const { teamSession: name, author, session, source } = options;
+  const flags = { scorers: [scorer, ...scorers] as const, label: options.label, batch: options.batch === true, push: options.push === true };
 
-  if (options.teamSession !== undefined) {
-    const teamSession: TeamSession = { name: options.teamSession };
-
-    if (options.author !== undefined) teamSession.author = options.author;
-    demand = { scorers: [scorer, ...scorers], teamSession };
-  } else {
-    const local: SessionDemand & { teamSession?: never } = { scorers: [scorer, ...scorers] };
-
-    if (options.session !== undefined) local.session = options.session;
-
-    if (options.source !== undefined) local.source = options.source;
-    demand = local;
-  }
-
-  if (options.label !== undefined) demand.label = options.label;
-
-  if (options.batch) demand.batch = true;
-
-  if (options.push) demand.push = true;
-
-  return demand;
+  return name === undefined ? { ...flags, session, source } : { ...flags, teamSession: { name, author } };
 }
 
 async function localConfig(): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
@@ -151,150 +98,146 @@ async function localConfig(): Promise<{ ok: true; config: LocalConfig } | { ok: 
   }
 }
 
-/**
- * The config of the scope that holds run `run`, whatever the cwd, as `workflow` calls on a run find it: a driver asks
- * for a run's judge work from the run's place or from outside the checkout it started in.
- */
-async function runConfig(run: string): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
-  const current = await localConfig();
-  const found = await findRunConfig(run, current.ok ? current.config : undefined);
-
-  return 'config' in found ? { ok: true, config: found.config } : { ok: false, envelope: found };
+/** A teamai-score run the command starts: its subject, found here, and the inputs the person gave. */
+interface ScoreStart {
+  named: NamedSubject;
+  scorers: readonly string[];
+  label?: string;
+  batch: boolean;
+  push: boolean;
 }
 
-/**
- * The config of the scope that holds judge lease `ref`, in the scopes `runConfig` searches: this directory's, the user
- * scope's, else a project's, as a run's lease is found from any directory. A run's lease is read in its run's scope.
- */
-async function leaseConfig(ref: string): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
-  const current = await localConfig();
-  const lease = parseLeaseRef(ref);
-
-  if (lease === undefined) return current;
-  const held = (config: LocalConfig) => AttemptStore.get(config, lease.entry, lease.attempt);
-
-  if (current.ok && await held(current.config)) return current;
-  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
-
-  if (user && await held(user)) return { ok: true, config: user };
-
-  for (const partition of await projectPartitions()) {
-    const attempt = await held(partition);
-
-    if (!attempt) continue;
-
-    if (isRunAttempt(attempt)) return runConfig(attempt.subject.runId);
-    const config = await partitionConfig(partition);
-
-    if (config) return { ok: true, config };
-  }
-
-  return current;
+function refusedWith(refusal: { code: string; message: string }): WorkflowEnvelope {
+  // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
+  return failure(refusal.code, refusal.message);
 }
 
-async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
-  if (options.drain) return failure('invalid_arguments', '--drain goes alone and takes no payload: teamai score --drain');
-  const asksForPass = options.run !== undefined || options.step !== undefined || options.pass !== undefined || options.queue;
-  const namesSession = options.session !== undefined || options.source !== undefined || options.teamSession !== undefined || options.author !== undefined || options.label !== undefined;
-  const asksForSession = namesSession || (!asksForPass && (options.scorer?.length || options.batch));
+/** What a `teamai score` call answers: an envelope, or the teamai-score run it starts. */
+type Scored = WorkflowEnvelope | { start: ScoreStart };
 
-  if (asksForPass && namesSession) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
+/** Whether `options` name a pass: `--run`, `--step` or `--pass`. */
+function namesPass(options: ScoreOptions): boolean {
+  return [options.run, options.step, options.pass].some((flag) => flag !== undefined);
+}
 
-  if (options.push && (asksForPass || options.next || options.lease !== undefined)) {
-    return failure('invalid_arguments', '--push goes alone or with a session: teamai score --push, or teamai score [--session <id>] --scorer <name> --push');
-  }
+/** Whether `options` name a session: on this machine, pushed, or labelled by hand. */
+function namesSession(options: ScoreOptions): boolean {
+  return [options.session, options.source, options.teamSession, options.author, options.label].some((flag) => flag !== undefined);
+}
 
+/** The refusal of `--label` beside a pass and no session, with the teamai-score start that labels that pass by hand. */
+function passLabelRefusal(options: ScoreOptions): WorkflowEnvelope | undefined {
+  const { label } = options;
+
+  if (!namesPass(options) || label === undefined || [options.session, options.source, options.teamSession, options.author].some((flag) => flag !== undefined)) return undefined;
+  const run = options.run ?? '<run id>';
+  const step = options.step ?? '<step path>';
+  const pass = options.pass ?? '<pass>';
+  const inputs = { subject: `run:${run}:${step}:${pass}`, scorers: options.scorer ?? ['<scorer>'], label, batch: false, demand: 'named' };
+
+  return failure('invalid_arguments', `--label labels a session. To label pass ${pass} of step ${step} of run ${run} by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs ${shellWord(JSON.stringify(inputs))}`);
+}
+
+/** Why the flags of `options` cannot go together, or undefined. */
+function flagConflict(options: ScoreOptions): WorkflowEnvelope | undefined {
+  if (options.drain) return failure('invalid_arguments', '--drain goes alone: teamai score --drain');
+  const passLabel = passLabelRefusal(options);
+
+  if (passLabel) return passLabel;
+
+  if (namesPass(options) && namesSession(options)) return failure('invalid_arguments', 'Pass --run to judge a workflow pass, or --session, --team-session or --label to score a session, not both');
   const file = options.push ? options.scorer?.find(isScorerFile) : undefined;
 
-  if (file !== undefined) return failure('invalid_arguments', `--push publishes stored labels, and the label of the scorer file ${file} is never stored. Leave out --push to try the file`);
+  return file === undefined ? undefined : failure('invalid_arguments', `--push publishes stored labels, and the label of the scorer file ${file} is never stored. Leave out --push to try the file`);
+}
 
-  if (asksForSession) {
-    const demand = sessionDemandOf(options);
+/** What the flags of `options` ask for: a scorer with no pass flag judges a session, the one the agent session names. */
+function askOf(options: ScoreOptions): 'pass' | 'session' | 'push' | 'none' {
+  if (namesSession(options)) return 'session';
 
-    if (!('scorers' in demand)) return demand;
-    let ownJudge: OwnJudge | undefined;
+  if (namesPass(options)) return 'pass';
 
-    if (options.json !== undefined || options.stdin) {
-      const payload = await payloadOf(options);
+  if ((options.scorer ?? []).length > 0 || options.batch === true) return 'session';
 
-      if (!payload.ok) return payload.envelope;
-      const request = parseJudgeRequest(payload.value);
+  return options.push ? 'push' : 'none';
+}
 
-      // The parser answers a string when the payload is not a request.
-      if (!(request instanceof Object)) return failure('invalid_json', request);
+/** The teamai-score run that judges the session `options` name, or a scorer file judged here. */
+async function sessionScore(options: ScoreOptions): Promise<Scored> {
+  const demand = sessionDemandOf(options);
 
-      if (request.run !== undefined || request.canTakeLease !== undefined) {
-        return failure('invalid_json', 'A --session payload leases the session it names: leave out run and canTakeLease.');
-      }
-
-      ownJudge = { driver: request.driver, judge: request.judge, running: request.running };
-    }
-
-    const loaded = await localConfig();
-
-    if (!loaded.ok) return loaded.envelope;
-
-    return scoreSession(loaded.config, ownJudge ? { ...demand, ownJudge } : demand);
-  }
-
-  if (options.push) {
-    if (options.json !== undefined || options.stdin) return failure('invalid_arguments', '--push takes no payload: teamai score --push');
-    const loaded = await localConfig();
-
-    return loaded.ok ? LabelStore.push(loaded.config) : loaded.envelope;
-  }
-
-  if (asksForPass) {
-    const demand = demandOf(options);
-
-    if (!('run' in demand)) return demand;
-    const loaded = await localConfig();
-
-    return loaded.ok ? scoreOnDemand(loaded.config, demand) : loaded.envelope;
-  }
-
-  if (options.next === (options.lease !== undefined)) {
-    return failure('invalid_arguments', 'Pass --next to take judge work, --lease <ref> to judge it here, --lease <ref> --submit to settle it, --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels');
-  }
-
-  const payload = await payloadOf(options);
-
-  if (!payload.ok) return payload.envelope;
-
-  if (options.next) {
-    const request = parseJudgeRequest(payload.value);
-
-    // The parser answers a string when the payload is not a request.
-    if (!(request instanceof Object)) return failure('invalid_json', request);
-    const scoped = request.run !== undefined ? await runConfig(request.run) : await localConfig();
-
-    return scoped.ok ? nextJudgeLease(scoped.config, request) : scoped.envelope;
-  }
-
-  const loaded = await leaseConfig(options.lease ?? '');
+  if (!('scorers' in demand)) return demand;
+  const loaded = await localConfig();
 
   if (!loaded.ok) return loaded.envelope;
-  const { config } = loaded;
 
-  if (options.lease !== undefined && !options.submit) return runJudgeLease(config, options.lease, payload.value);
-  const submission = parseJudgeSubmission(payload.value);
+  // A scorer file's label is only tried, never stored, so it is judged here and starts no teamai-score run.
+  if (demand.scorers.some(isScorerFile)) {
+    if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives a teamai-score run, and a scorer file is judged here without one. Leave out --driver.');
+    const cached = demand.scorers.find((scorer) => !isScorerFile(scorer));
 
-  // The parser answers a string when the payload is not a submission.
-  if (!(submission instanceof Object)) return failure('invalid_json', submission);
+    if (cached !== undefined) return failure('invalid_arguments', `A scorer file is tried here, and --scorer ${cached} is judged by a teamai-score run. Score them in separate commands.`);
 
-  return submitJudgeLease(config, options.lease ?? '', submission);
+    if (demand.label !== undefined) return failure('invalid_arguments', `--label is stored, and the label of the scorer file ${demand.scorers.find(isScorerFile)} is never stored. Pass the name of a scorer teamai pull cached.`);
+
+    return scoreSession(loaded.config, demand);
+  }
+
+  const named = await NamedSubject.ofSession(loaded.config, demand);
+
+  return named.ok ? { start: { named, scorers: demand.scorers, label: demand.label, batch: demand.batch === true, push: demand.push === true } } : refusedWith(named);
+}
+
+/** The teamai-score run that judges the pass `options` name. */
+async function passScore(options: ScoreOptions): Promise<Scored> {
+  const demand = passOf(options);
+
+  if (!('run' in demand)) return demand;
+  const loaded = await localConfig();
+  const named = await NamedSubject.ofPass(loaded.ok ? loaded.config : undefined, demand);
+
+  return named.ok ? { start: { named, scorers: demand.scorers, batch: options.batch === true, push: options.push === true } } : refusedWith(named);
+}
+
+async function score(options: ScoreOptions): Promise<Scored> {
+  const conflict = flagConflict(options);
+
+  if (conflict !== undefined) return conflict;
+  const ask = askOf(options);
+
+  switch (ask) {
+    case 'session':
+      return sessionScore(options);
+    case 'pass':
+      return passScore(options);
+    case 'push': {
+      const loaded = await localConfig();
+
+      return loaded.ok ? pushPending(loaded.config) : loaded.envelope;
+    }
+
+    case 'none':
+      return options.driver === undefined
+        ? failure('invalid_arguments', 'Pass --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels')
+        : failure('invalid_arguments', '--driver picks who drives the teamai-score run that --run, --session or --team-session starts. Pass one of them.');
+    default: {
+      const unhandled: never = ask;
+
+      return unhandled;
+    }
+  }
 }
 
 /** `teamai score --drain`: drains every scope this directory reaches, in this run mode, and prints what it did. */
 async function drainHere(): Promise<void> {
-  const [{ Drain }, { reachedScopes }] = await Promise.all([import('./score-drain.js'), import('./score-sessions.js')]);
-  const drained = await Drain.run(await reachedScopes(process.cwd()), { mode: resolveRunMode(process.env) });
+  const [{ Drain }, { FinishedSessions }] = await Promise.all([import('./score-drain.js'), import('./session-flow/finished-sessions.js')]);
+  const drained = await Drain.run(await FinishedSessions.reachedScopes(process.cwd()), { mode: resolveRunMode(process.env) });
   Drain.print(drained);
 
   if (Drain.hasFailed(drained)) process.exitCode = 1;
 }
 
-/** `teamai score`: judge work for any driver. Prints one JSON envelope, or with `--drain` the lines of what it did. */
+/** `teamai score`: labels a pass or a session. Prints one JSON envelope, or with `--drain` the lines of what it did. */
 export async function scoreCommand(options: ScoreOptions): Promise<void> {
   const { drain, scorer = [], ...others } = options;
 
@@ -305,5 +248,87 @@ export async function scoreCommand(options: ScoreOptions): Promise<void> {
   }
 
   setStderrOnly(true);
-  writeEnvelope(await score(options));
+  const scored = await score(options);
+
+  if ('start' in scored) await startScore(scored.start, options.driver);
+  else writeEnvelope(scored);
+}
+
+/** `value` as one shell word: as it is when the shell reads nothing special in it, else single-quoted. */
+function shellWord(value: string): string {
+  return /^[\w.:/@%+=-]+$/u.test(value) ? value : shellQuoteValue(value);
+}
+
+/** The flags of `teamai score` that name `subject`. */
+function subjectWords(subject: Subject): string[] {
+  switch (subject.kind) {
+    case 'run':
+      return ['--run', subject.subject.runId, '--step', subject.subject.step, '--pass', String(subject.subject.pass)];
+    case 'session':
+      return ['--session', subject.subject.sessionId, '--source', subject.subject.platform];
+    case 'team-session':
+      return ['--team-session', subject.subject.name, '--author', subject.subject.author];
+    default: {
+      const unhandled: never = subject;
+
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * What an agent session runs in place of `start`, which it may not make: the person runs the same `teamai score` in
+ * their own terminal, naming the subject in full, and the agent judges its own session with /teamai-share-session.
+ */
+function insteadOf(start: ScoreStart, driver: string | undefined): string {
+  const { subject } = start.named;
+  const words = ['teamai', 'score', ...subjectWords(subject), ...start.scorers.flatMap((scorer) => ['--scorer', scorer])];
+
+  words.push(...(start.label === undefined ? [] : ['--label', start.label]), ...(start.batch ? ['--batch'] : []), ...(driver === undefined ? [] : ['--driver', driver]), ...(start.push ? ['--push'] : []));
+  const person = `The person runs ${words.map(shellWord).join(' ')} in their own terminal`;
+
+  return subject.kind === 'session' ? `${person}, and the agent judges this session with /teamai-share-session.` : `${person}.`;
+}
+
+/**
+ * Starts teamai-score for the subject a person named, with `demand: named`, on the local driver unless `driver` names
+ * another; `none` leaves the run to any driver's `workflow next`. The local driver drives it to its end, or until only a
+ * judge step no tool here can run is left, and the answer is the labels the run wrote.
+ */
+async function startScore(start: ScoreStart, driver: string | undefined): Promise<void> {
+  const { named } = start;
+  const inputs = { subject: Subject.format(named.subject), scorers: start.scorers, label: start.label ?? '', batch: start.batch, demand: 'named' };
+  const chosen = driver ?? 'local';
+
+  await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
+    scope: named.config,
+    instead: insteadOf(start, driver),
+    answer: async (config, runId, driven) => {
+      const answered = await ScoreAnswer.of(config, runId, driven, start.scorers);
+
+      return answered && start.push && 'data' in answered ? pushed(config, answered) : answered;
+    },
+  });
+}
+
+/**
+ * `teamai score --push`: publishes the pending labels, then pushes what a `deliver: publish` step left on this machine's
+ * checkout of a data branch while origin could not take it. `published` is false while any of it stays pending.
+ */
+async function pushPending(config: LocalConfig): Promise<{ data: { published: boolean } } | { error: { code: string; message: string } }> {
+  const labels = await LabelStore.push(config);
+
+  if (!('data' in labels)) return labels;
+  // Labels that stay pending leave their commit on teamai-reports, and their own line says so, as the drain's does.
+  const stuck = (await DataBranches.sendPending(config)).filter(({ branch }) => labels.data.published || branch !== 'teamai-reports');
+
+  for (const { message } of stuck) log.warn(message);
+
+  return stuck.length === 0 ? labels : { data: { published: false } };
+}
+
+async function pushed(config: LocalConfig, answered: Extract<WorkflowEnvelope, { data: unknown }>): Promise<WorkflowEnvelope> {
+  const delivery = await pushPending(config);
+
+  return 'data' in delivery ? { data: { ...answered.data, ...delivery.data } } : delivery;
 }

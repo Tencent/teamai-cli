@@ -1,10 +1,11 @@
 import { loadModelAliases } from './models/aliases.js';
 import { cachedScorerNames, loadCachedScorer } from './scorers/cache.js';
 import { formatScorerDiagnostic } from './scorers/definition.js';
-import { installedJudgeTools, judgeToolLevels } from './scorers/judge.js';
-import { JUDGE_TOOLS } from './tool-launch/tools.js';
+import { confinedToolLevels, installedConfinedTools } from './tool-launch/confined.js';
+import { CONFINED_TOOLS } from './tool-launch/tools.js';
 import { chooseJudgeModel } from './scorers/judge-model.js';
 import { scoringUnavailable } from './scorers/home.js';
+import { Marks } from './scorers/marks.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
 import { scopeScoring, type SessionScoring } from './scorers/settings.js';
 import { RUN_MODES } from './launch-context.js';
@@ -12,7 +13,7 @@ import { SessionPolicy, type PolicySource } from './session-flow/session-policy.
 import type { LocalConfig } from './types.js';
 import { isSilent, setSilent } from './utils/logger.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
-import { formatUnknownScorer } from './workflow/cache.js';
+import { formatUnknownScorer } from './scorers/team-sync.js';
 
 /** What scoring in this scope follows: its isolation, what decides session judging, and the problems with its settings. */
 async function scoringNotes(localConfig: LocalConfig, verified: readonly string[]): Promise<string[]> {
@@ -46,9 +47,9 @@ function sessionJudgingNote({ policies, dailyLimit, dailyLimitSource }: SessionS
 }
 
 async function judgeToolsNote(resolveTool: ResolveTool | undefined): Promise<string> {
-  const tools = await judgeToolLevels(resolveTool ? { resolveTool } : {});
+  const tools = await confinedToolLevels(resolveTool ? { resolveTool } : {});
 
-  if (tools.length === 0) return `Judge tools here: none on PATH. Install one of: ${JUDGE_TOOLS.join(', ')} to judge on this machine.`;
+  if (tools.length === 0) return `Judge tools here: none on PATH. Install one of: ${CONFINED_TOOLS.join(', ')} to judge on this machine.`;
 
   return `Judge tools here: ${tools.map(({ tool, version, isolation }) => `${tool} ${version || '(version unknown)'} is ${isolation}`).join(', ')}.`;
 }
@@ -58,7 +59,7 @@ async function judgeToolsNote(resolveTool: ResolveTool | undefined): Promise<str
  * judges in its place. Says nothing when no judge tool is installed.
  */
 async function scorerModelNotes(localConfig: LocalConfig, resolveTool: ResolveTool | undefined): Promise<string[]> {
-  const tools = installedJudgeTools([], resolveTool ? { resolveTool } : {});
+  const tools = installedConfinedTools([], resolveTool ? { resolveTool } : {});
 
   if (tools.length === 0) return [];
   const aliases = await loadModelAliases(localConfig);
@@ -78,6 +79,15 @@ async function scorerModelNotes(localConfig: LocalConfig, resolveTool: ResolveTo
 }
 
 type ResolveTool = (tool: string) => string | null;
+
+/** How much open judge work the upgrade to marks carried over from judge attempts, when it carried any. */
+async function carriedNote(localConfig: LocalConfig): Promise<string[]> {
+  const carried = await Marks.carriedOver(localConfig, { now: new Date().toISOString() });
+  const counted = (count: number, one: string, many: string) => (count === 0 ? [] : [`${count} ${count === 1 ? one : many}`]);
+  const parts = [...counted(carried?.passes ?? 0, 'open workflow pass', 'open workflow passes'), ...counted(carried?.sessions ?? 0, 'open session', 'open sessions')];
+
+  return parts.length === 0 ? [] : [`The upgrade carried ${parts.join(' and ')} over from judge attempts into marks. The next teamai score --drain, or a session start where sessions are judged or archived automatically, starts teamai-score for each, and for a pass only while its run last changed under 14 days ago.`];
+}
 
 /**
  * What a pull says about scorers, for members whose pull ran silently from a hook: each invalid file in `scorers/`, and
@@ -99,6 +109,7 @@ export async function scorerNotes(localConfig: LocalConfig, { resolveTool }: { r
       ...result.scorers.invalid.map((diagnostic) => `Invalid scorer: ${formatScorerDiagnostic(diagnostic)}`),
       ...result.unknownScorers.map((unknown) => `Unknown scorer: ${formatUnknownScorer(unknown)}`),
       ...await scorerModelNotes(localConfig, resolveTool),
+      ...await carriedNote(localConfig),
     ];
   } catch (error) {
     return [`Scorers could not be checked: ${error instanceof Error ? error.message : String(error)}`];

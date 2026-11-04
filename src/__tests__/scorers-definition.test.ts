@@ -57,6 +57,13 @@ describe('parseScorer', () => {
     expect(parsed.ok && parsed.definition.check).toEqual({ run: 'npm test', protect: ['test/**', 'package.json'] });
   });
 
+  it('reads the stages a scorer takes before its judge, and leaves them out when the scorer lists none', () => {
+    const parsed = parseScorer('scorers/q.md', scorerWith(`${LABELS}passingScore: 1\nstages: [protected]\n`));
+    expect(parsed.ok && parsed.definition.stages).toEqual(['protected']);
+    const plain = parseScorer('scorers/q.md', scorerWith(`${LABELS}passingScore: 1\n`));
+    expect(plain.ok && 'stages' in plain.definition).toBe(false);
+  });
+
   it('reports an invalid label list once while preserving other diagnostics', () => {
     expect(problems('scorers/q.md', scorerWith('labels: x\npassingScore: nope\n'))).toEqual([
       `scorers/q.md: labels ${COUNT}`,
@@ -86,6 +93,9 @@ describe('parseScorer', () => {
       'scorers/q.md: check.protect lists every path the check reads and the agent must not supply'],
     ['a check that adds files', scorerWith(`${LABELS}passingScore: 1\ncheck: { run: npm test, protect: [test], add: [test/a.ts] }\n`),
       'scorers/q.md: check uses `add`, which this teamai does not know. Update teamai.'],
+    ['a stage that is not one', scorerWith(`${LABELS}passingScore: 1\nstages: [lint]\n`),
+      'scorers/q.md: stages lists "lint"; a scorer takes some of check, ci and protected'],
+    ['a stage listed twice', scorerWith(`${LABELS}passingScore: 1\nstages: [ci, ci]\n`), 'scorers/q.md: stages lists "ci" twice'],
     ['an unknown key', scorerWith(`${LABELS}passingScore: 1\nthreshold: 2\n`),
       'scorers/q.md: uses `threshold`, which this teamai does not know. Update teamai.'],
   ])('rejects %s', (_case, content, problem) => {

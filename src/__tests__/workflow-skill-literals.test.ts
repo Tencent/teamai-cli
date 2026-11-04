@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { LocalConfig } from '../types.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
 import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
@@ -185,14 +186,18 @@ describe('the adopt of the skill driver', () => {
   });
 });
 
+const CONFIG: LocalConfig = {
+  repo: { localPath: '/team', remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: '/work', dataHome: '/data',
+};
+
 describe('the runner', () => {
   it('reports its own attempt: the runner arguments carry the attempt, and the marker makes it the runner', () => {
     const args = runnerArgs(RUN, ATTEMPT);
     const { sub, operands, options: { driver, ...options } } = parsed(args);
     expect([sub, driver]).toEqual(['report', 'skill']);
-    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, ATTEMPT, 'attended')))
+    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(CONFIG, RUN, ATTEMPT, 'attended')))
       .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'runner' });
-    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, 'a76543210', 'attended')))
+    expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(CONFIG, RUN, 'a76543210', 'attended')))
       .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: false });
   });
 });

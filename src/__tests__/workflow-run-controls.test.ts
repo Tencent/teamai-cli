@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
@@ -38,7 +38,7 @@ async function fixture(steps: string, header = '') {
   const config: LocalConfig = { repo: { localPath: path.join(root, 'repo'), remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
   fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows/build.yaml'), `schemaVersion: v1alpha1\nname: build\ndescription: Run controls.\n${header}steps:\n${steps}\n`);
-  const synced = await syncWorkflowDefinitions(config);
+  const synced = await syncScorersThenWorkflows(config);
   expect(synced.invalid).toEqual([]);
   const started = await startRun(config, 'build', header.includes('after:') ? { items: [{ id: 'one', after: [] }, { id: 'two', after: ['one'] }] } : header.includes('inputs:') ? { items: [{ name: 'one' }] } : {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
@@ -92,7 +92,7 @@ describe('workflow HITL', () => {
     expect(lease.step).toBe('work');
     expect(data(await f.next({ ...hitl, running: [lease.attempt], canTakeLease: false } as NextOptions)).hitl.step).toBe('finish');
     await f.respond('finish', 'no');
-    expect((await f.state()).steps[0]?.status).toBe('skipped');
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'skipped', message: 'Step "finish" was skipped: its approval was answered no.' });
     await f.report(lease);
     expect(data(await f.next()).done).toMatchObject({ run: f.id, outcome: 'succeeded' });
   });
@@ -215,6 +215,7 @@ describe('workflow cancellation', () => {
     const cancelled = data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'nested'));
     expect(cancelled.cancelled.attempts).toEqual([lease.attempt]);
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['cancelled', 'cancelled', 'skipped']);
+    expect((await f.state()).steps[2]).toMatchObject({ message: 'Step "nested.pending" was skipped before it started: Cancelled by teamai workflow cancel' });
     expect(await f.report(lease)).toMatchObject({ error: { code: 'lease_cancelled' } });
   });
 

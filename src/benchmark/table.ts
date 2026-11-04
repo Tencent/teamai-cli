@@ -4,7 +4,7 @@
  * published record after the suite left the cache.
  */
 import type { AgentObservation } from '../agent-observation.js';
-import { routingScorerName } from '../scorers/skill-routing.js';
+import { ROUTING_PREFIX, routingScorerName } from '../scorers/skill-routing.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { compareAgent } from './agent-match.js';
 import { TRIAL_RESULTS, type Baseline, type BenchmarkRecord, type TrialResult } from './result.js';
@@ -179,7 +179,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
     skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
       arm, skill: name, change, here: skillLoadsOf(trials, arm, name), defaults: defaults ? skillLoadsOf(trials, defaults, name) : undefined,
     }))),
-    assets: assetEffects(record), routing: record.benchmark.scorers.some(({ name }) => name.startsWith('teamai:routing:')),
+    assets: assetEffects(record), routing: record.benchmark.scorers.some(({ name }) => name.startsWith(ROUTING_PREFIX)),
   };
 }
 

@@ -422,6 +422,13 @@ export async function hasVcsMetadataRecursive(dir: string): Promise<boolean> {
 /**
  * Check if a path exists
  */
+/** Whether `left` and `right` name the same place once symlinks resolve; a path that does not exist compares as resolved. */
+export async function isSameRealPath(left: string, right: string): Promise<boolean> {
+  const [one, other] = await Promise.all([left, right].map((each) => fse.realpath(each).catch(() => path.resolve(each))));
+
+  return one === other;
+}
+
 export async function pathExists(p: string): Promise<boolean> {
   return fse.pathExists(expandHome(p));
 }

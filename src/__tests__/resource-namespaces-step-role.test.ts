@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { resolveActiveLearningsNamespaces } from '../projects.js';
 import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
 import { resolveEntriesFor, type EntryReader } from '../namespaced-entries.js';
@@ -14,7 +15,7 @@ import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { envEntryReader } from '../resources/env.js';
 import { mcpEntryReader } from '../resources/mcp.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
-import { loadCachedWorkflow, syncWorkflowDefinitions } from '../workflow/cache.js';
+import { loadCachedWorkflow } from '../workflow/cache.js';
 
 const dirs: string[] = [];
 
@@ -111,9 +112,9 @@ describe('the namespaces of a copy that runs with a team role', () => {
     }
     // Not self mode: the workflow cache is the data home's, shared by every checkout of this member.
     const member = memberOf(repo, { primaryRole: undefined, projects: [], projectRoot: repo, dataHome: path.join(repo, '.data') });
-    expect((await syncWorkflowDefinitions(member)).cached.toSorted()).toEqual(['frontend', 'rv-flows']);
+    expect((await syncScorersThenWorkflows(member)).cached.toSorted()).toEqual(['frontend', 'rv-flows']);
 
-    const inCopy = await syncWorkflowDefinitions({ ...member, projectRoot: path.join(repo, 'copy'), stepRole: 'review' });
+    const inCopy = await syncScorersThenWorkflows({ ...member, projectRoot: path.join(repo, 'copy'), stepRole: 'review' });
 
     expect(inCopy.cached.toSorted()).toEqual(['frontend', 'rv-flows']);
     expect((await loadCachedWorkflow(member, 'frontend'))?.source).toBe('team');

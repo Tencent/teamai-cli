@@ -6,8 +6,6 @@ import { DriverSchema } from '../driver-identity.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { redactJson } from '../utils/redact.js';
 import { getDataHome, type JsonValue, type LocalConfig } from '../types.js';
-import { EntryVerdictSchema } from '../scorers/entry.js';
-import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ArchivedPassSchema, FailureSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';
 import type { HandoffOwner } from './snapshot.js';
@@ -60,6 +58,11 @@ export function deliveryLockPath(config: LocalConfig, runId: string): string {
 
 export function driverLockPath(config: LocalConfig, runId: string): string {
   return path.join(runsDir(config), runId, 'driver.lock');
+}
+
+/** `runs/<run>/scratch/`: the directory a run's steps share as `$TEAMAI_RUN_DIR`, from its first lease until it ends. */
+export function runScratchDir(config: LocalConfig, run: string): string {
+  return path.join(runsDir(config), run, 'scratch');
 }
 
 /** `runs/<run>/attempts/`: a directory for each attempt of the run. */
@@ -211,6 +214,12 @@ export async function runnerAlive(config: LocalConfig, run: RunId, attempt: Atte
   return !await acquireLock(runnerLockPath(config, run, attempt), { dryRun: true });
 }
 
+/**
+ * The team revision a run started from (`team-pin.ts`). `patch`: the sha256 of the patch the run keeps beside its file,
+ * absent when the checkout held only `revision`.
+ */
+export const TeamPinSchema = z.object({ revision: z.string().regex(/^[0-9a-f]{40,64}$/), patch: z.string().regex(/^[0-9a-f]{64}$/).optional() }).strict();
+
 /** The fields a run file must hold to be read as a run; every other field passes through as written. */
 const RunFileSchema = z.looseObject({
   schemaVersion: z.literal('v1alpha1'),
@@ -244,8 +253,7 @@ const RunProgressSchema = z.object({
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
   releasedTokens: z.array(ReleasedTokensSchema).optional(),
   stoppedAttempts: z.array(StoppedAttemptSchema).optional(),
-  scorers: z.record(z.string(), PinnedScorerSchema).optional(),
-  verdicts: z.array(EntryVerdictSchema).optional(),
+  teamPin: TeamPinSchema.optional(),
   finalizing: z.object({
     outcome: z.enum(['succeeded', 'failed', 'cancelled']), end: z.string().optional(), failure: FailureSchema.optional(), since: z.string(), until: z.string(),
   }).optional(),
@@ -295,7 +303,7 @@ export type RunUpdate<T> = { status: 'done'; value: T } | { status: 'busy' } | {
  * The definitions a run pins as they were pulled, which the run file keeps byte for byte. An admitted workflow output is
  * frozen with the run, so masking never rewrites it; admission refuses what holds a secret.
  */
-const PINNED: ReadonlySet<string> = new Set(['definition', 'workflows', 'scorers', 'admitted'] satisfies Array<keyof RunState>);
+const PINNED: ReadonlySet<string> = new Set(['definition', 'workflows', 'admitted'] satisfies Array<keyof RunState>);
 
 /** `run` as its file holds it: each of `secrets` masked in every field but the pinned definitions. */
 function maskedRun(run: RunState, secrets: Record<string, string>) {

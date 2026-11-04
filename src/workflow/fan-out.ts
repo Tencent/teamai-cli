@@ -9,7 +9,7 @@ import { isRecord, jsonType } from './expression.js';
 import { firstCycle, firstPass } from './loop.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, stopped, type ItemResult, type StepState } from './step-state.js';
-import type { RunState, WorkflowFailure } from './types.js';
+import type { RunState, WorkflowFailure, WorkflowStep } from './types.js';
 
 /** Whether an instance is one item of a `for_each` step, such as `build[2]`. */
 export function isItem(state: StepState): boolean {
@@ -148,9 +148,26 @@ export interface SettledItems {
 export function itemsSettled(
   items: StepState[], settledAt: number, run?: RunState,
 ): SettledItems {
+  return {
+    outcome: items.some(stopped) ? 'failed' : 'succeeded',
+    settledAt,
+    results: itemResults(items, run),
+  };
+}
+
+/**
+ * The results a `for_each` step under `continue_on_failure` keeps when a timeout or a cancel stops it, read once its
+ * items were stopped. Any other step keeps none.
+ */
+export function keptResults(run: RunState, state: StepState, definition: WorkflowStep | undefined): ItemResult[] | undefined {
+  return definition?.continueOnFailure && definition.forEach && !isItem(state) ? itemResults(itemsOf(run, state), run) : undefined;
+}
+
+/** How each item went, with the change branch its latest child kept when `run` is given. */
+function itemResults(items: StepState[], run: RunState | undefined): ItemResult[] {
   const fromChildren = run ? branchesFromChildren(run) : undefined;
 
-  const results = items.map((state): ItemResult => {
+  return items.map((state): ItemResult => {
     const pass = passOf(state);
     const branch = pass?.changes?.branch ?? fromChildren?.get(state.id);
 
@@ -162,12 +179,6 @@ export function itemsSettled(
 
     return result;
   });
-
-  return {
-    outcome: items.some(stopped) ? 'failed' : 'succeeded',
-    settledAt,
-    results,
-  };
 }
 
 /** One pass over the run: the change branch each item's latest child kept. */

@@ -9,6 +9,7 @@ const LOCAL = 'src/workflow/drivers/local/';
 const PLACE = 'src/workflow/place/';
 const DISCOVERY = 'src/workflow/discovery/';
 const BENCHMARK = 'src/benchmark/';
+const SCORERS = 'src/scorers/';
 const FLAT = 'src/workflow/';
 
 /** Rule 1: what a module under `drivers/skill/` may import, besides its siblings, `zod` and `node:*`. */
@@ -21,8 +22,10 @@ const SKILL_IMPORTS = {
   'src/workflow/describe.ts': { typeOnly: true },
   'src/workflow/attempt-marker.ts': {},
   // The wire shapes the engine answers with, which every driver parses with the same schema.
-  'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema'] },
-  'src/workflow/step-state.ts': { names: ['FailureSchema'] },
+  'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema', 'ConfinedLease'] },
+  'src/workflow/step-state.ts': { names: ['FailureSchema', 'ConfinedRunReportSchema', 'TokenUsageSchema'] },
+  // A step confined to a directory, which the background runner runs as the local driver does.
+  'src/workflow/confined-step.ts': { names: ['runConfinedStep', 'ConfinedStepEnd', 'ConfinedStepLease'] },
   // What a prompt step's output must be, as every driver's result instruction says it.
   'src/workflow/output.ts': { names: ['expectedOutput'] },
   'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'runsDir', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
@@ -42,13 +45,16 @@ const SKILL_IMPORTS = {
   // skill-data root the host question's reference is under.
   'src/tools.ts': { names: ['isToolId', 'TOOLS', 'isAgentToolId', 'ToolId'] },
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
-  // What the confined judge of the session tool can do, which the driver declares on `score --next`.
-  'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },
-  'src/scorers/label.ts': { typeOnly: true },
+  // The confined tools of this machine, what each can do there, and the confined run the background runner starts.
+  'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess'] },
+  // The level a confined run reaches and what its tool can do there.
+  'src/tool-launch/confined-level.ts': { typeOnly: true },
   // What describe proposes for the inputs of teamai's default share workflows, for the calling session.
   'src/session-share.ts': { names: ['SessionShare'] },
   // What describe proposes for the inputs of teamai's default teamai-session-to-task, for the calling session.
   'src/session-to-task.ts': { names: ['SessionToTask'] },
+  // What a teamai-score run the session drives gave each scorer, read from its outputs by the module that owns their shape.
+  'src/scorers/engine-hooks.ts': { names: ['scoredLabels', 'ScoredLabels'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.
@@ -66,8 +72,8 @@ const ENTRIES = [
     // engine.ts stages, before it saves a run, the evidence a step that settled there left in its clone.
     // index.ts moves the home of a command a step started in its clone to that clone's own install.
     // check-run.ts clones and sets up the commit a check runs on, for a benchmark and a scorer alike.
-    entries: { 'place.ts': ['src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`, 'src/workflow/check-run.ts'], 'setup.ts': ['src/workflow/check-run.ts'] },
-    testEntries: ['place.ts', 'team-without.ts', 'role-copy.ts'],
+    entries: { 'place.ts': ['src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`, 'src/scorers/check-run.ts'], 'setup.ts': ['src/scorers/check-run.ts'] },
+    testEntries: ['place.ts', 'team-without.ts', 'role-copy.ts', 'data.ts'],
   },
   // workflow-published-runs.ts judges an offered run by the tool the local driver would launch for its prompt steps.
   { folder: LOCAL, entries: { 'local-driver.ts': ['src/workflow-commands.ts', 'src/workflow-published-runs.ts'], 'local-tool-adapter.ts': [] }, testEntries: ['local-driver.ts', 'local-tool-adapter.ts'] },
@@ -81,7 +87,7 @@ const ENTRIES = [
       'start.ts': ['src/workflow-commands.ts'],
       'report.ts': ['src/workflow-commands.ts'],
     },
-    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts'],
+    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts', 'verdicts.ts'],
   },
 ];
 
@@ -130,6 +136,9 @@ export default defineRule({
 
       // The engine, the protocol and the drivers never import a feature built on them, such as benchmarks.
       if (from.startsWith(FLAT) && to.startsWith(BENCHMARK)) violation = true;
+
+      // They reach scoring only through its hooks, so the engine never learns how a pass is scored.
+      if (from.startsWith(FLAT) && to.startsWith(SCORERS) && to !== SCORERS + 'engine-hooks.ts') violation = true;
 
       if (from === 'src/workflow/pr-delivery.ts' && to === 'src/workflow/engine.ts') violation = true;
 

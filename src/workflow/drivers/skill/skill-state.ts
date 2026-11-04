@@ -9,7 +9,7 @@ import type { ToolId } from '../../../tools.js';
 import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '../../../utils/redact.js';
 import type { HostPlaceRequest, RunVersion } from '../../protocol.js';
-import { FailureSchema } from '../../step-state.js';
+import { ConfinedRunReportSchema, FailureSchema, TokenUsageSchema } from '../../step-state.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
 import { HOST_CHOICES } from './host-profiles.js';
 import { INVOCATIONS } from './literals.js';
@@ -28,6 +28,13 @@ const ReportBodySchema = z.object({
   outputs: z.unknown().optional(),
   message: z.string().optional(),
   failure: FailureSchema.optional(),
+  /** What a confined run the runner started measured: its tool, model, tokens, time and cost, and the run itself. */
+  tool: z.string().optional(),
+  model: z.string().optional(),
+  tokens: TokenUsageSchema.optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  cost: ConfinedRunReportSchema.shape.usage.unwrap().shape.cost,
+  confined: ConfinedRunReportSchema.optional(),
 });
 
 export type ReportBody = z.infer<typeof ReportBodySchema>;
@@ -52,6 +59,8 @@ const DispatchSchema = z.object({
   place: z.enum(['workspace', 'checkout']),
   person: z.literal(true).optional(),
   isolation: z.literal('sandbox').optional(),
+  /** The step is confined to `dir`: a fresh child that reads that directory and its brief, and nothing more, works it. */
+  confined: z.literal(true).optional(),
   dir: z.string(),
   brief: z.string(),
   agent: z.string().optional(),
@@ -85,11 +94,12 @@ const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.nu
  * stopped, by its runner or by the agent that started its child; or it has a report to send.
  */
 const AttemptStateSchema = z.discriminatedUnion('phase', [
-  z.object({ ...AttemptBase, phase: z.literal('preparing'), request: HostRequestSchema.optional() }),
+  // runs: D28 leased the step to this machine's confined tool, so its runner runs it and offers it to no child.
+  z.object({ ...AttemptBase, phase: z.literal('preparing'), request: HostRequestSchema.optional(), runs: z.literal('here').optional() }),
   z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema, request: HostRequestSchema.optional() }),
   /** `refused`: why the place the agent adopted last was not prepared. */
   z.object({ ...AttemptBase, phase: z.literal('placing'), ask: PlaceAskSchema, refused: z.string().optional() }),
-  z.object({ ...AttemptBase, phase: z.literal('running') }),
+  z.object({ ...AttemptBase, phase: z.literal('running'), runs: z.literal('here').optional() }),
   /** `reissued`: an earlier session was shown this dispatch, and a child it started may still run. */
   z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema, reissued: z.literal(true).optional() }),
   z.object({ ...AttemptBase, phase: z.literal('dispatched'), dispatch: DispatchSchema }),
@@ -100,11 +110,6 @@ const AttemptStateSchema = z.discriminatedUnion('phase', [
 
 export type AttemptState = z.infer<typeof AttemptStateSchema>;
 
-/** The judge running now: lease `ref`, its runner keyed by the attempt in that ref, on the pass of `step` that `scorers` judge. */
-const JudgeSchema = z.object({ ref: z.string(), attempt: AttemptIdSchema, step: z.string(), scorers: z.array(z.string()), spawnedAt: z.string() });
-
-export type Judge = z.infer<typeof JudgeSchema>;
-
 const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('started'), step: z.string(), attempt: AttemptIdSchema }),
   z.object({ kind: z.literal('restarted'), step: z.string(), attempt: AttemptIdSchema }),
@@ -112,10 +117,11 @@ const TurnEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('takeover'), from: z.string().optional() }),
   /** The engine cancelled the attempt's lease, or its deadline passed, so its report was not recorded. */
   z.object({ kind: z.literal('stopped'), step: z.string(), attempt: AttemptIdSchema, why: z.enum(STOP_REASONS) }),
-  /** The judge of lease `ref` started on the pass of `step` that `scorers` judge. */
-  z.object({ kind: z.literal('judging'), step: z.string(), scorers: z.array(z.string()), ref: z.string() }),
-  z.object({ kind: z.literal('judged'), step: z.string(), scorer: z.string(), label: z.string() }),
-  /** This driver judges no more of the run, for `failure`; the open judge lease lapses back to the queue. */
+  /** The judging of the pass of `step` that `scorers` judge started: run `run`, which scores the pass. */
+  z.object({ kind: z.literal('judging'), step: z.string(), scorers: z.array(z.string()), run: RunIdSchema }),
+  /** `scorer` labelled the pass of `step` with `label`, or gave it none for `code`, with `label` empty. */
+  z.object({ kind: z.literal('judged'), step: z.string(), scorer: z.string(), label: z.string(), code: z.string().optional() }),
+  /** This driver judges no more of the run, for `failure`; its open judge steps stay for another driver. */
   z.object({ kind: z.literal('judging-off'), failure: FailureSchema }),
   /** The agent's answer to an optional gate, as the engine recorded it. */
   z.object({ kind: z.literal('answered'), step: z.string(), choice: z.string(), channel: z.string(), agent: z.boolean() }),
@@ -180,12 +186,19 @@ const SkillStateSchema = z.object({
   orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine(isToolId).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
   /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
-  judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),
+  judging: z.object({ tool: z.string() }).optional(),
   /**
    * Present when the session itself judges the run's scored steps once the run is done, as no verified judge of `tool`,
    * the session's tool at the start, is here. The session judges with the run's tool, `orchestrator.tool`, else `tool`.
    */
   sessionJudge: z.object({ tool: z.string() }).optional(),
+  /**
+   * The runs the passes of this run started, as its `next` and report answers listed them (`started`), which this driver
+   * drives as their own runs until each ends, while it judges here or the session does: the pass of `step` that `scorers` judge.
+   */
+  scoring: z.array(z.object({ run: RunIdSchema, step: z.string(), scorers: z.array(z.string()) })).default([]),
+  /** The run whose pass this run scores, which drives it: its turns lead back to that run. */
+  scores: RunIdSchema.optional(),
   /** The sequence number of the last event. */
   seq: z.number().int(),
   events: z.array(z.object({ seq: z.number().int(), event: TurnEventSchema })),
@@ -194,10 +207,10 @@ const SkillStateSchema = z.object({
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
   /**
-   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them. `version`: what the run
+   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them, and `outputs` the run's declared outputs, as its `done` gave them. `version`: what the run
    * file said when the end was kept, so a tick asks the engine again only once it moved.
    */
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), version: RunVersionSchema.optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), outputs: z.record(z.string(), z.json()).optional(), version: RunVersionSchema.optional() }).optional(),
 });
 
 export type SkillState = z.infer<typeof SkillStateSchema>;
@@ -222,8 +235,26 @@ export function newSkillState(input: {
 
   return {
     version: 1, run, driver, invocation, options, host, orchestrator,
-    attempts: [], ...judgingState(judge), seq: 0, events: [], seen: {}, settled: [],
+    attempts: [], ...judgingState(judge), scoring: [], seq: 0, events: [], seen: {}, settled: [],
   };
+}
+
+/**
+ * The skill state of `run`, which scores a pass of `scored`'s run, as the first tick that drives it makes it: that run's
+ * identity, invocation, options, host, session and judging, with nothing open yet.
+ */
+export function scoringSkillState(scored: SkillState, run: RunId, at: string): SkillState {
+  const { driver, invocation, options, host, orchestrator, judging, sessionJudge } = scored;
+
+  const state: SkillState = {
+    version: 1, run, driver, invocation, options, host, orchestrator: { ...orchestrator, lastCallAt: at }, attempts: [], scoring: [], scores: scored.run, seq: 0, events: [], seen: {}, settled: [],
+  };
+
+  if (judging) state.judging = { tool: judging.tool };
+
+  if (sessionJudge) state.sessionJudge = sessionJudge;
+
+  return state;
 }
 
 /** The skill state field of who judges the run on this machine: `judging` for the confined judge, `sessionJudge` for the session. */

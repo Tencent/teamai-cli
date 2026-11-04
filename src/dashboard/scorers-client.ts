@@ -23,12 +23,13 @@ const DIMENSION_NAMES: Record<Dimension, string> = {
   decidedBy: 'Decided by',
 };
 
-/** The name the page gives each stage that decides a workflow label (#1247), in English; `label` translates it. */
-const DECIDER_NAMES: Record<Decider | 'not recorded', string> = {
+/** The name the page gives each stage that decides a workflow label (#1247), and a hand label, in English; `label` translates it. */
+const DECIDER_NAMES: Record<Decider | 'hand' | 'not recorded', string> = {
   check: 'Scorer check',
   ci: 'Pull request CI',
   protected: 'Protected paths',
   judge: 'Judge',
+  hand: 'Hand label',
   'not recorded': 'Not recorded',
 };
 

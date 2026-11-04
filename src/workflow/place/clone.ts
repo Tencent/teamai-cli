@@ -25,8 +25,6 @@ import { loadTeamConfig, refreshRoleAssignment, saveLocalConfigForScope } from '
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
 import { createProjectToolRoots } from '../../project-agent-root.js';
-import { scoresDir } from '../../scorers/attempts.js';
-import { removeSubjectEvidence } from '../../scorers/evidence.js';
 import { homeVariables, isToolId, TOOLS } from '../../tools.js';
 import { roleDeclaration } from '../../roles.js';
 import { getDataHome, LocalConfigSchema, type LocalConfig } from '../../types.js';
@@ -40,7 +38,7 @@ import { CommitSchema, type ClonePlace, type InstalledTeam, type TeamSelection }
 import { runDeadline } from '../limits.js';
 import { runPasses } from '../loop.js';
 import { stepDefinitions } from '../scope.js';
-import { stageEvidence } from '../scoring-evidence.js';
+import { removeStagedEvidence, stageEvidence } from '../../scorers/engine-hooks.js';
 import { settled } from '../step-state.js';
 import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';
@@ -400,8 +398,8 @@ export async function sweepClones(config: LocalConfig, runId?: string): Promise<
 /**
  * Stages, from its clone, the evidence the judges of each workflow step in `succeeded` read, when it runs in a clone:
  * `succeeded` holds the steps the operation about to save `run` settled `success`. Such a step settles once its last
- * step does, under the run lock, so its evidence exists before that save makes its judge entry or a dependent visible.
- * A prompt's evidence is staged by its report. Evidence already staged is kept, so a later step in the clone never
+ * step does, under the run lock, so its evidence exists before that save makes a dependent visible, or the run that
+ * judges it can start. A prompt's evidence is staged by its report. Evidence already staged is kept, so a later step in the clone never
  * overwrites it. Reading the clone stops at the run's deadline, so a large checkout never holds the run lock past it.
  */
 export async function stageSettledEvidence(config: LocalConfig, run: RunState, succeeded: readonly string[]): Promise<void> {
@@ -433,7 +431,7 @@ async function removeUnjudgedEvidence(config: LocalConfig, run: RunState, inClon
     ...run.steps.filter((state) => inClone(state.id)).map((state) => ({ step: state.id, pass: state.pass ?? 1 })),
   ];
 
-  await removeSubjectEvidence(scoresDir(config), staged.flatMap((subject) => (succeeded.has(`${subject.step}#${subject.pass}`) ? [] : [{ runId: run.id, ...subject }])));
+  await removeStagedEvidence(config, staged.flatMap((subject) => (succeeded.has(`${subject.step}#${subject.pass}`) ? [] : [{ runId: run.id, ...subject }])));
 }
 
 /**

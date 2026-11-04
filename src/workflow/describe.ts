@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
-import { copyOf, opensCopy, resolveMode, roleLevelOf, runsInCheckout, writtenRole, type RoleLevel } from './workspace.js';
+import { confinedOf, copyOf, opensCopy, resolveMode, roleLevelOf, runsInCheckout, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
  * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, and a
@@ -80,6 +80,8 @@ export interface WorkflowDescription {
     inWorkspace: string[];
     /** Steps whose succeeded passes a scorer judges, by path, with the scorers it lists. */
     scored: Array<{ step: string; scorers: string[] }>;
+    /** Prompt steps confined to a directory, by path, which only a confined tool or a fresh child answers. */
+    confined: string[];
     /**
      * Steps that open a pull request once they succeed, by path. `onto`: the delivering step whose branch the step's
      * own starts from, whose pull request it targets; without it, the pull request targets `base`.
@@ -152,7 +154,7 @@ export function describeWorkflow(input: {
   if (definition.timeout !== undefined) limit.timeout = definition.timeout;
 
   const facts: Facts = {
-    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...branch,
+    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], confined: [], deliver: [], ...branch,
     requiresEnv: {
       keys: [...runEnvKeys],
       missingHere: [...runEnvKeys].filter((key) => sameEnvName(env.present, key) === undefined),
@@ -257,6 +259,8 @@ export function describeWorkflow(input: {
       if ((step.prompt !== undefined || step.promptFile !== undefined) && (z.string().safeParse(step.model).success || (step.model === undefined && step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
 
       if (step.scorers && step.scorers.names.length > 0) facts.scored.push({ step: path, scorers: step.scorers.names });
+
+      if (confinedOf(step) !== undefined) facts.confined.push(path);
 
       if (step.deliver === 'pr') {
         const seen = new Set<string>();

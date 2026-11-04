@@ -3,7 +3,7 @@
  * (`config.yaml` `scoring.isolation`) and this machine (~/.teamai/config.yaml `scoring.isolation`) may each ask; the
  * strictest wins, and nobody asking means `best-effort`.
  */
-import { ISOLATIONS, type Isolation } from './label.js';
+import { CONFINED_LEVELS, type ConfinedLevel } from '../tool-launch/confined-level.js';
 
 export function scorerIsolationSource(scorer: string, relativePath = `scorers/${scorer}.md`): string {
   return `${relativePath} isolation`;
@@ -16,25 +16,25 @@ export interface IsolationSetting {
 }
 
 export interface RequiredIsolation {
-  level: Isolation;
+  level: ConfinedLevel;
   /** The sources that ask for `level`; none when it is the default. */
   setBy: string[];
   /** Settings whose value is not an isolation teamai knows. Each counts as `verified`. */
   unknown: Array<{ source: string; value: string }>;
 }
 
-function levelOf(value: string): Isolation {
-  return ISOLATIONS.find((isolation) => isolation === value) ?? 'verified';
+function levelOf(value: string): ConfinedLevel {
+  return CONFINED_LEVELS.find((isolation) => isolation === value) ?? 'verified';
 }
 
 export function requiredIsolation(settings: readonly IsolationSetting[]): RequiredIsolation {
   const given = settings.flatMap(({ source, value }) => (value === undefined ? [] : [{ source, value, level: levelOf(value) }]));
-  const level: Isolation = given.some((setting) => setting.level === 'verified') ? 'verified' : 'best-effort';
+  const level: ConfinedLevel = given.some((setting) => setting.level === 'verified') ? 'verified' : 'best-effort';
 
   return {
     level,
     setBy: given.flatMap((setting) => (setting.level === level ? [setting.source] : [])),
-    unknown: given.flatMap(({ source, value }) => (ISOLATIONS.some((isolation) => isolation === value) ? [] : [{ source, value }])),
+    unknown: given.flatMap(({ source, value }) => (CONFINED_LEVELS.some((isolation) => isolation === value) ? [] : [{ source, value }])),
   };
 }
 

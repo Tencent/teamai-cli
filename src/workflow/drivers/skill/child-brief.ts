@@ -31,9 +31,10 @@ export async function writeChildBrief(input: {
   dir: string;
   /**
    * What becomes of what the step changes in `dir`: `commit`, TeamAI commits it; `keep`, an interactive step in the
-   * checkout, it stays there and TeamAI commits nothing; `none`, the step only reads, and must change nothing.
+   * checkout, it stays there and TeamAI commits nothing; `none`, the step only reads, and must change nothing;
+   * `confined`, the step is answered from `dir` alone, and the child reads nothing else.
    */
-  changes: 'commit' | 'keep' | 'none';
+  changes: 'commit' | 'keep' | 'none' | 'confined';
   prompt: string;
   /**
    * Who works the step: a `child` agent the orchestrator started; the orchestrator, with the `person`, in an interactive
@@ -67,6 +68,7 @@ export async function writeChildBrief(input: {
       commit: [`- Work in \`${dir}\`: every file the step reads or changes is there.`, '- Leave git to TeamAI. It commits and pushes that directory after you report.'],
       keep: [`- Work in \`${dir}\`, the person's checkout: every file the step reads or changes is there. What you change stays there; TeamAI commits nothing.`, '- Leave git to the person.'],
       none: [`- Work in \`${dir}\`: every file the step reads is there. Do not change files here: the step only reads them, and TeamAI fails a step that leaves a change.`, '- Leave git to TeamAI.'],
+      confined: [`- Read only the files in \`${dir}\`. Read nothing outside it, not the repository, nor anything from the session that started you: the step is answered from that directory alone.`, '- Change nothing there.'],
     }[changes],
     '- Run one teamai command, the report below, once, at the end.',
     '',

@@ -50,6 +50,7 @@ const RECORDED_FAILURES = [
   ...LIMIT_FAILURES,
   'delivery_failed', 'protected_path',
   'trial_prepare_failed', 'clone_prepare_failed', 'role_unavailable',
+  'confined_invalid', 'confined_tool_unavailable', 'confined_failed', 'confined_reply_invalid',
 ] as const;
 
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
@@ -327,9 +328,10 @@ async function isRecordingEnabled(config: LocalConfig): Promise<boolean> {
 
 /**
  * Build and queue a run's phase record (#1083). True once the record is in
- * the queue; false with usage reporting off, or when it could not be queued,
- * which logs a warning and never fails the run operation that produced it.
- * Queueing writes only local files, so it may run under the run lock.
+ * the queue; false with usage reporting off, for a run of a private workflow,
+ * which stays on this machine, or when it could not be queued, which logs a
+ * warning and never fails the run operation that produced it. Queueing writes
+ * only local files, so it may run under the run lock.
  */
 export async function queueRunRecord(
   config: LocalConfig,
@@ -339,7 +341,7 @@ export async function queueRunRecord(
   secrets: Record<string, string>,
 ): Promise<boolean> {
   try {
-    if (!await isRecordingEnabled(config)) return false;
+    if (run.definition.private || !await isRecordingEnabled(config)) return false;
     const username = config.username ?? 'unknown';
 
     const record = phase === 'start'

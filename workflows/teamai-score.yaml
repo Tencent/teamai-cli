@@ -1,0 +1,99 @@
+schemaVersion: v1alpha1
+name: teamai-score
+description: Label one subject with the scorers that apply to it.
+invoke: deny
+private: true
+# 14 days, the judge-work window. It binds a root run; a workflow that runs this as a step bounds it with that step's timeout.
+timeout: 336h
+inputs:
+  # run:<runId>:<step path>:<pass>, session:<source>:<sessionId> or team-session:<author>:<archive name>
+  subject: string
+  # []: for a pass, the scorers its step pinned; for a session, every scorer with sessions: true
+  scorers: [string]
+  # '' for none. A hand label skips the stages and the judge, and counts only when a person started the root run.
+  label: string
+  batch: boolean
+  # named: someone asked for this subject, so no sampling, a failed or expired mark reopens, and daily_limit counts it but never refuses it
+  demand: auto | named
+steps:
+  - id: plan
+    command: teamai score plan --subject "$SUBJECT" --scorers "$SCORERS" --batch="$BATCH" --demand "$DEMAND"
+    env: { SUBJECT: "{{ inputs.subject }}", SCORERS: "{{ inputs.scorers }}", BATCH: "{{ inputs.batch }}", DEMAND: "{{ inputs.demand }}" }
+    output:
+      groups: [{ subject: string, hand: string, scorers: string, model: string, ci: boolean, protected: boolean }]
+  - id: score
+    needs: [plan]
+    if: length(steps.plan.outputs.groups) > 0
+    for_each: steps.plan.outputs.groups
+    continue_on_failure: true
+    workflow:
+      # written: the version of each label write stored; null when it did not succeed, so the labels were not stored.
+      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels }
+      steps:
+        - id: evidence
+          command: teamai score evidence --subject "$SUBJECT" --scorers "$GROUP"
+          env: { SUBJECT: "{{ item.subject }}", GROUP: "{{ item.scorers }}" }
+          output: { dir: string, rubric: string, schema: string, delivers: boolean }
+        - id: check
+          needs: [evidence]
+          if: item.hand == '' && steps.evidence.outputs.delivers
+          command: teamai score stage check --evidence "$DIR"
+          env: { DIR: "{{ steps.evidence.outputs.dir }}" }
+          output: { decided: boolean }
+        - id: ci
+          needs: [evidence, check]
+          if: item.hand == '' && item.ci && steps.evidence.outputs.delivers && steps.check.outputs.decided != true
+          # Past 2h of a CI run that has not finished, judge without it.
+          command: teamai score stage ci --evidence "$DIR" --wait 2h
+          env: { DIR: "{{ steps.evidence.outputs.dir }}" }
+          output: { decided: boolean, pending: boolean }
+        - id: protected
+          needs: [evidence, ci]
+          if: item.hand == '' && item.protected && steps.evidence.outputs.delivers && steps.check.outputs.decided != true && steps.ci.outputs.decided != true && steps.ci.outputs.pending != true
+          command: teamai score stage protected --evidence "$DIR"
+          env: { DIR: "{{ steps.evidence.outputs.dir }}" }
+          output: { decided: boolean }
+        - id: judge
+          needs: [evidence, protected]
+          if: >-
+            item.hand == '' && (steps.check.outcome == 'success' || steps.check.outcome == 'skipped') && (steps.ci.outcome == 'success' || steps.ci.outcome == 'skipped') && (steps.protected.outcome == 'success' || steps.protected.outcome == 'skipped')
+            && steps.check.outputs.decided != true && steps.ci.outputs.decided != true && steps.ci.outputs.pending != true && steps.protected.outputs.decided != true
+          prompt: |
+            Judge one piece of work against a scorer's rubric. Read only the files under {{ steps.evidence.outputs.dir }}:
+            the transcript, the diff, and evidence.json with the skills it used.
+
+            {{ steps.evidence.outputs.rubric }}
+
+            Reply with JSON that matches the schema in {{ steps.evidence.outputs.schema }}, and nothing else.
+          # Rendered when the step is leased; '' is the tool's default.
+          model: "{{ item.model }}"
+          # The only readable root. The level comes from confined.json there, which evidence wrote.
+          workspace: { confined: "{{ steps.evidence.outputs.dir }}" }
+          output: { answer: json }
+        - id: label
+          needs: [evidence, judge]
+          # Reading judge keeps a failed judge from skipping label.
+          if: steps.evidence.outcome == 'success' && steps.judge.outcome != 'cancelled'
+          command: teamai score label --evidence "$DIR" --answer "$ANSWER" --judge "$JUDGE"
+          env: { DIR: "{{ steps.evidence.outputs.dir }}", ANSWER: "{{ steps.judge.outputs.answer }}", JUDGE: "{{ steps.judge.outcome }}" }
+          output: { labels: [{ scorer: string, label: string, code: string }] }
+        - id: write
+          needs: [label]
+          command: teamai score write --evidence "$DIR"
+          env: { DIR: "{{ steps.evidence.outputs.dir }}" }
+          output: { written: number, labels: [string] }   # labels: the version of each label written, which teamai score answers with
+        # Publishes this member's pending labels to teamai-reports. Offline, or with an http team repo, they stay pending.
+        - id: publish
+          needs: [write]
+          workspace: { team: { branch: teamai-reports } }
+          command: teamai score publish
+          deliver: publish
+        - id: settle
+          needs: [evidence, write]
+          # After a verb that broke: records the failed attempt. Reading the outcomes keeps it from being skipped.
+          if: >-
+            !(steps.evidence.outcome == 'success' || steps.evidence.outcome == 'skipped') || !(steps.check.outcome == 'success' || steps.check.outcome == 'skipped') || !(steps.ci.outcome == 'success' || steps.ci.outcome == 'skipped')
+            || !(steps.protected.outcome == 'success' || steps.protected.outcome == 'skipped') || !(steps.label.outcome == 'success' || steps.label.outcome == 'skipped') || !(steps.write.outcome == 'success' || steps.write.outcome == 'skipped')
+          command: teamai score settle --subject "$SUBJECT" --scorers "$GROUP"
+          env: { SUBJECT: "{{ item.subject }}", GROUP: "{{ item.scorers }}" }
+outputs: { labels: steps.score.results }

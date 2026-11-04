@@ -1,7 +1,8 @@
 /**
- * Real CLI against a local bare team repo with two members. Alice labels her own session by hand from inside it and the
- * model scores it again; bob labels and judges the copy she pushed without --scrub, by the name `session list` prints,
- * and a session the team archived on its default branch before teamai-reports.
+ * Real CLI against a local bare team repo with two members. Each `teamai score` starts a teamai-score run on the local
+ * driver. Alice cannot label her session from inside it, labels it by hand from her terminal, and the model scores it
+ * again; bob labels and judges the copy she pushed without --scrub, by the name `session list` prints, and a session the
+ * team archived on its default branch before teamai-reports.
  */
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -106,7 +107,7 @@ if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); 
 fs.writeFileSync(${JSON.stringify(judged)}, fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8'));
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good', reasoning: 'It added a test.' } }));
+console.log(JSON.stringify({ type: 'result', structured_output: { answer: { label: 'good', reasoning: 'It added a test.' } } }));
 });\n`, { mode: 0o755 });
 
     for (const who of ['alice', 'bob'] as const) {
@@ -127,27 +128,33 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('labels the current session by hand, publishes it, and keeps it beside the model label of the same session', async () => {
-    const { app, env } = member('alice');
+  it('refuses to label a session from inside it, labels it by hand from the person\'s terminal, and keeps it beside the model label', async () => {
+    const { app, env, home } = member('alice');
     const inside = { ...env, CLAUDE_CODE_SESSION_ID: SESSION };
 
     const unnamed = await runCLI(['score', '--label', 'missed-bug'], app, inside);
     expect(unnamed.code).toBe(1);
     expect(envelope(unnamed.stdout).error).toEqual({ code: 'invalid_arguments', message: 'Pass --scorer <name> with --label: the scorer the value is a label of.' });
-    const unknown = await runCLI(['score', '--scorer', 'review-quality', '--label', 'flaky'], app, inside);
+    const unknown = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--label', 'flaky'], app, env);
     expect(unknown.code).toBe(1);
     expect(envelope(unknown.stdout).error).toEqual({ code: 'label_invalid', message: '"flaky" is not a label of scorer review-quality. Use one of: good, missed-bug.' });
-    expect(fs.existsSync(path.join(member('alice').home, '.teamai', 'scores'))).toBe(false);
+    const fromSession = await runCLI(['score', '--scorer', 'review-quality', '--label', 'missed-bug'], app, inside);
+    expect(fromSession.code).toBe(1);
+    expect(envelope(fromSession.stdout).error).toMatchObject({
+      code: 'invoke_denied', message: expect.stringContaining(`The person runs teamai score --session ${SESSION} --source claude-code --scorer review-quality --label missed-bug in their own terminal`),
+    });
+    expect(fs.existsSync(path.join(home, '.teamai', 'scores'))).toBe(false);
 
-    const byHand = await runCLI(['score', '--scorer', 'review-quality', '--label', 'missed-bug', '--push'], app, inside);
+    const byHand = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--label', 'missed-bug', '--push'], app, env);
     expect(byHand.code, byHand.stdout + byHand.stderr).toBe(0);
     expect(envelope(byHand.stdout).data).toMatchObject({
+      run: expect.stringMatching(/^r[0-9a-f]{16}$/),
       label: { scorer: 'review-quality', subject: { platform: 'claude-code', sessionId: SESSION }, label: 'missed-bug', score: 0, passed: false, judge: { kind: 'human' } },
       published: true,
     });
     expect(byHand.stderr).toContain('review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.');
     expect(fs.existsSync(judged)).toBe(false);
-    expect(fs.existsSync(path.join(member('alice').home, '.teamai', 'scores', 'reasoning'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.teamai', 'scores', 'reasoning'))).toBe(false);
 
     const byModel = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--push'], app, env);
     expect(byModel.code, byModel.stdout + byModel.stderr).toBe(0);

@@ -20,13 +20,36 @@ steps:
       Every add path must be a file at commit {{ inputs.solution }}; if one is not, tell the person to commit it and start teamai-session-to-task again, and return skip.
       When an add file calls a function, file, option or export that commit {{ inputs.start }} lacks, name it and its signature in prompt,
       so the task can be solved without seeing the test.
-      If the person decides the session is not a good task, return {"verdict":"skip","file":"","path":""}.
-      Otherwise return verdict draft, the file's path, and {{ inputs.suite }}/tasks/<task id>.yaml as path,
-      where the task id is letters, digits, "-" or "_".
-    output: { verdict: draft | skip, file: string, path: string }
-  - id: propose
+      If the person decides the session is not a good task, return {"verdict":"skip","file":"","id":""}.
+      Otherwise return verdict draft, the file's path, and the task id as id: letters, digits, "-" or "_", starting with a letter or digit.
+      The task is proposed as {{ inputs.suite }}/tasks/<id>.yaml.
+    output: { verdict: draft | skip, file: string, id: string }
+  - id: check
     needs: [draft]
     if: steps.draft.outputs.verdict == 'draft'
-    approve: Propose {{ steps.draft.outputs.path }} to the team as a pull request?
-    command: teamai push --file "$FILE" --path "$TASK_PATH"
-    env: { FILE: "{{ steps.draft.outputs.file }}", TASK_PATH: "{{ steps.draft.outputs.path }}" }
+    command: |
+      named() { case "$1" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_-]*) return 1;; esac; }
+      if ! named "$ID"; then
+        echo "Task id \"$ID\" is not a task file name: use letters, digits, - and _, starting with a letter or digit. Start teamai-session-to-task again and name the task that way." >&2
+        exit 1
+      fi
+      suite=${SUITE#benchmarks/}
+      case "$suite" in
+        "$SUITE"|*/*/*) ok=false ;;
+        */*) named "${suite%/*}" && named "${suite#*/}" && ok=true || ok=false ;;
+        *) named "$suite" && ok=true || ok=false ;;
+      esac
+      if [ "$ok" = false ]; then
+        echo "Suite \"$SUITE\" is not a suite directory: give benchmarks/<suite> or benchmarks/<namespace>/<suite>, as teamai workflow start --describe teamai-session-to-task proposes." >&2
+        exit 1
+      fi
+    env: { ID: "{{ steps.draft.outputs.id }}", SUITE: "{{ inputs.suite }}" }
+  - id: propose
+    needs: [check]
+    if: steps.draft.outputs.verdict == 'draft'
+    approve: Propose {{ inputs.suite }}/tasks/{{ steps.draft.outputs.id }}.yaml to the team as a pull request?
+    # A task id is unique only in its suite. Two members who draft the same task share its branch and pull request.
+    workspace: { team: { branch: "teamai/session-to-task/{{ inputs.suite }}/{{ steps.draft.outputs.id }}" } }
+    deliver: pr
+    command: mkdir -p "$(dirname "$TASK_PATH")" && cp "$FILE" "$TASK_PATH"
+    env: { FILE: "{{ steps.draft.outputs.file }}", TASK_PATH: "{{ inputs.suite }}/tasks/{{ steps.draft.outputs.id }}.yaml" }

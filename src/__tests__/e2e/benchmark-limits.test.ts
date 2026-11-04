@@ -209,7 +209,7 @@ describe('trial limit reports', () => {
   it('refuses a report whose limit is none of the trial limits', async () => {
     const fixture = await benchmarkFixture({ tool: 'does-nothing', sandbox: false, suite: limitedSuite('{ timeout: 3s }') });
     fixtures.push(fixture);
-    const started = envelope(await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', '10m']));
+    const started = envelope(await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}', '--timeout', '10m']));
     const run = String(started.data?.run);
     const lease = await leaseFirstPrompt(fixture, run);
     const report = (limit: string) => ['workflow', 'report', run, '--json', JSON.stringify({

@@ -55,13 +55,14 @@ import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.j
 import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
-import { formatUnknownScorer, loadCachedWorkflow, loadWorkflowTree, type UnknownScorer } from './workflow/cache.js';
+import { loadCachedWorkflow, loadWorkflowTree } from './workflow/cache.js';
 import { formatDiagnostic, INVOKE_ALIAS_SINCE, parseWorkflow, STEP_ROLE_SINCE } from './workflow/parse.js';
 import { stepModelUnavailableText } from './workflow/step-model.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './workflow/types.js';
 import { formatScorerDiagnostic } from './scorers/definition.js';
 import { scorerModelUnavailableText } from './scorers/judge-model.js';
 import { loadCachedScorer, SCORING_FILE, syncScorerDefinitions, type CachedScorer } from './scorers/cache.js';
+import { formatUnknownScorer, type UnknownScorer } from './scorers/team-sync.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
 import { parseScoringFile } from './scorers/settings.js';
 import { SessionPolicy } from './session-flow/session-policy.js';

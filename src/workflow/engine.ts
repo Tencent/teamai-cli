@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
@@ -17,23 +18,23 @@ import {
 } from './expression.js';
 import { outputMismatch } from './output.js';
 import { publishRunRecords, queueRunRecord, runRecordState } from './records.js';
-import { freezeVerdicts, isUnsettled, verdictEntries } from './scoring-entries.js';
 import {
-  parseTemplate, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
+  parseTemplate, renderLeaseText, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
   type StepExpression, type TemplateError,
 } from './template.js';
 import { stageSettledEvidence } from './place/place.js';
 import { parseStepPath } from './step-path.js';
-import type { LeaseWire } from './lease-wire.js';
+import type { ConfinedLease, LeaseWire } from './lease-wire.js';
+import { decideConfined, type ConfinedDecision } from './confined-place.js';
 import {
-  ReadSchema, answerHitl, fail, inProgress, lease, release, settled, skip, start, startDelivery, stopAttempt, stopWhere, stopped,
-  succeed, waitForAnswer, type ItemResult, type LeasedStep, type StepRead, type StepState,
+  ConfinedRunReportSchema, ReadSchema, answerHitl, fail, inProgress, lease, release, settled, skip, start, startDelivery, stopAttempt, stopWhere, stopped,
+  succeed, waitForAnswer, type ConfinedRunReport, type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, leaseDeadline, ownDeadline, spendAllowances, spentAllowances, startLimits, turnLimits } from './limits.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { contractClone, deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { contractClone, deliverableOf, deliveryTarget, isIsolated, isPublishContract, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
   deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
@@ -45,19 +46,17 @@ import {
   type Allow, type DriverCan, type EnvFacts, type Held, type InEffect, type Limit, type Negotiation, type ReportedUnenforced, type Terms, type TurnLimits,
 } from './requirements.js';
 import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
-import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutcomes, readRun, updateRun } from './store.js';
+import { TeamPin } from './team-pin.js';
+import { deliveryLockPath, generateRunId, installOwner, isRunId, readAttemptOutcomes, readRun, runScratchDir, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
 import { admitWorkflow, heldSecret, type Admitted } from './admission.js';
 import { workflowField } from './parse.js';
-import { scoresDir } from '../scorers/attempts.js';
-import { isLeaseRef } from '../scorers/entry.js';
-import { removeSubjectEvidence } from '../scorers/evidence.js';
-import { JudgeUsageSchema, type JudgeUsage } from '../scorers/label.js';
 import type {
   DriverIdentity,
   OutputSchema,
   RunState,
   RunStatus,
+  StartedBy,
   StepLease,
   StepOutcome,
   WorkflowDefinition,
@@ -69,6 +68,7 @@ import type {
 } from './types.js';
 import { hasAction, stepWorkflow } from './types.js';
 import { describeWorkflow } from './describe.js';
+import { CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 
 /**
@@ -94,7 +94,7 @@ export interface ReportInput {
   /** Milliseconds around the tool launch only, as the driver measured it. */
   durationMs?: number;
   /** What the tool stated the attempt cost, in its own unit. Never estimated. */
-  cost?: NonNullable<JudgeUsage['cost']>;
+  cost?: z.infer<typeof CostSchema>;
   failure?: WorkflowFailure;
   /** The branch this attempt committed, when it ran in a workspace. */
   changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
@@ -109,6 +109,8 @@ export interface ReportInput {
   unenforced?: ReportedUnenforced;
   /** The lease limit that ended the prompt's turn, which then succeeded. */
   limit?: Limit;
+  /** What the run of a step leased with `confined` measured. */
+  confined?: ConfinedRunReport;
 }
 
 /** A protocol rejection that retains its actionable code and message. */
@@ -193,8 +195,12 @@ export async function withRun(
 interface RenderedLease {
   prompt?: string;
   env?: Record<string, string>;
+  /** The step's `model` as its template rendered; an empty one means the tool's default. */
+  model?: string;
   /** The `defaults.model` in effect for a prompt step, as written. */
   defaultModel?: string;
+  /** The directory of a step with `workspace: { confined }`, as its template rendered. */
+  confined?: string;
 }
 
 /** Whether a result that is a plain object or a message is the message. Not for arrays, which are not plain objects. */
@@ -268,29 +274,31 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
 
   const rendered = new Map<string, string>();
 
-  for (const { what, text } of templatedTexts(definition)) {
-    if (what.startsWith('with.')) continue;
-    const parsed = parseTemplate(text, Object.hasOwn(context, 'item'));
+  for (const templated of templatedTexts(definition)) {
+    if (templated.what.startsWith('with.')) continue;
+    const value = renderLeaseText(context, state, templated);
 
-    if (!parsed.ok) {
-      const [problem] = parsed.errors;
-
-      return { code: 'invalid_template', message: `step "${state.id}" ${what} template ${problem?.source}: ${problem?.message}` };
-    }
-
-    rendered.set(what, renderText(parsed.template, context));
+    if (!isMessage(value)) return value;
+    rendered.set(templated.what, value);
   }
 
   const env = Object.keys(definition.env ?? {}).map((name) => [name, rendered.get(`env.${name}`) ?? ''] as const);
 
   const texts: RenderedLease = {};
   const prompt = rendered.get('prompt');
+  const model = rendered.get('model');
+  const confined = rendered.get('workspace.confined');
 
   if (prompt !== undefined) texts.prompt = prompt;
 
+  if (confined !== undefined) texts.confined = confined;
+
   if (definition.env) texts.env = Object.fromEntries(env);
 
-  if (definition.prompt !== undefined && scope.defaultModel !== undefined) texts.defaultModel = scope.defaultModel;
+  if (model !== undefined) texts.model = model;
+
+  // A model that rendered empty asks for the tool's default, so the defaults' model does not stand in for it.
+  if (definition.prompt !== undefined && scope.defaultModel !== undefined && model !== '') texts.defaultModel = scope.defaultModel;
 
   return texts;
 }
@@ -398,7 +406,7 @@ type LeaseAnswer = { lease: LeaseData };
 
 function leaseData(
   run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease,
-  { requires, envScope, maxTurns, setup, role }: Omit<GrantedTerms, 'unenforced' | 'limits'>, plan?: WorkspacePlan,
+  { requires, envScope, maxTurns, setup, role }: Omit<GrantedTerms, 'unenforced' | 'limits'>, plan?: WorkspacePlan, confined?: ConfinedLease,
 ): LeaseAnswer {
   const expiresAt = leaseDeadline(run, state);
 
@@ -422,13 +430,17 @@ function leaseData(
 
   if (definition.permissions !== undefined) wire.permissions = definition.permissions;
 
-  if (definition.model !== undefined) wire.model = definition.model;
+  const model = definition.model instanceof Object ? definition.model : rendered.model;
+
+  if (model) wire.model = model;
 
   if (rendered.defaultModel !== undefined) wire.defaultModel = rendered.defaultModel;
 
   if (definition.output) wire.output = definition.output;
 
   if (plan?.contract) wire.workspace = plan.contract;
+
+  if (confined) wire.confined = confined;
 
   if (role !== undefined) wire.role = role;
 
@@ -462,7 +474,8 @@ function leaseData(
 function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity): void {
   const { contract } = plan;
 
-  if (!contract) return;
+  // A step that publishes to a data branch makes no copy: what it staged is on origin, or pending, once it finished.
+  if (!contract || isPublishContract(contract)) return;
   const { branch } = contract;
   const copy = (run.copies ??= {})[branch];
 
@@ -574,10 +587,8 @@ function settleRun(run: RunState, now: string, result: WorkflowResult): void {
 export type Finished = { kind: 'finalizing' } | { kind: 'settled'; queued: boolean };
 
 /**
- * Finishes a run whose steps ended, after any judges it waits for, in one order: the entries of its `sampling: all`
- * scorers freeze as they stand, in `run.verdicts`, and the evidence collected for their passes goes; then its `finally`
- * steps run; then, once they settle, it settles and queues its end record in the same locked operation. So nothing a
- * `finally` step does changes a verdict, and its record holds every verdict.
+ * Finishes a run whose steps ended, in one order: its `finally` steps run; then, once they settle, it settles and queues
+ * its end record in the same locked operation.
  */
 export async function finishRun(
   config: LocalConfig,
@@ -587,19 +598,9 @@ export async function finishRun(
   secrets: Record<string, string>,
   driver?: DriverIdentity,
 ): Promise<Finished> {
-  if (!run.finalizing) {
-    // The run changes now, so an entry is read as of now, as every judge read it.
-    run.updatedAt = now;
-    const verdicts = await freezeVerdicts(config, run, now);
-
-    if (verdicts.length > 0) {
-      run.verdicts = verdicts;
-      await removeSubjectEvidence(scoresDir(config), verdicts.map(({ step, pass }) => ({ runId: run.id, step, pass })));
-    }
-  }
-
   if (enterFinalizing(run, result, now)) return { kind: 'finalizing' };
   settleRun(run, now, result);
+  await fs.rm(runScratchDir(config, run.id), { recursive: true, force: true });
   const queued = await queueRunRecord(config, run, driver, 'end', secrets);
   run.endRecordQueued = queued;
 
@@ -794,25 +795,49 @@ export function parseReads(run: RunState, scope: Scope): RunReads | string {
   return parsedReads;
 }
 
+/** How a settled step that stops what comes after it ended, as a skip message says it. */
+function endedAs(step: StepState): string {
+  return step.status === 'skipped' ? 'was skipped' : step.status === 'cancelled' ? 'was cancelled' : 'failed';
+}
+
 /**
  * Marks every pending step of a workflow that can no longer run as `skipped`, until nothing changes:
- * a stopped need its `if` does not read, all needs skipped, or a ready step whose `if` is false. A step that waits for a loop is neither skipped
- * nor ready until that loop is settled.
+ * a stopped need its `if` does not read, all needs skipped, or a ready step whose `if` is false, each with that reason. A step that waits for
+ * a loop is neither skipped nor ready until that loop is settled. A ready `deliver: publish` step of an isolated run is skipped too, so no
+ * driver needs the team workspace for what the run keeps off the team's data anyway.
  * Returns whether a step is ready: everything it needs and everything its `if` and templates read has settled.
  */
 function skipUnreachable(run: RunState, scope: Scope, states: StepState[], { conditions, reads, waits }: RunReads): (step: StepState) => boolean {
   const byId = new Map(states.map((step) => [localId(scope, step), step]));
   const declared = new Map(scope.definition.steps.map((step) => [step.id, step.needs ?? []]));
+  const publishes = new Set(isIsolated(run) ? scope.definition.steps.filter((step) => step.deliver === 'publish').map((step) => step.id) : []);
   const needs = (step: StepState): Array<StepState | undefined> => (declared.get(localId(scope, step)) ?? []).map((id) => byId.get(id));
   const waiting = (step: StepState): boolean => (waits.get(localId(scope, step)) ?? []).some((owner) => !loopSettled(byId.get(owner)));
 
   const ready = (step: StepState): boolean => !waiting(step) && needs(step).every(settled)
     && [...reads.get(localId(scope, step)) ?? []].every((id) => settled(byId.get(id)));
 
-  const conditionHolds = (step: StepState): boolean => {
-    const condition = conditions.get(localId(scope, step));
+  const ifOf = new Map(scope.definition.steps.map((step) => [step.id, step.if]));
 
-    return !condition || isTruthy(evaluateExpression(condition, contextOf(scope, states, step)));
+  const skipReason = (step: StepState): string | undefined => {
+    const id = localId(scope, step);
+    const condition = conditions.get(id);
+    const read = stepsRead(condition ? expressionPaths(condition) : []);
+    const stepNeeds = needs(step);
+    const stoppedNeed = stepNeeds.find((need) => need && stopped(need) && !read.has(localId(scope, need)));
+
+    if (stoppedNeed) return `Step "${step.id}" was skipped: it needs "${stoppedNeed.id}", which ${endedAs(stoppedNeed)}.`;
+    const skippedNeeds = stepNeeds.filter((need) => need?.status === 'skipped');
+
+    if (stepNeeds.length > 0 && skippedNeeds.length === stepNeeds.length) {
+      return `Step "${step.id}" was skipped: every step it needs was skipped: ${skippedNeeds.map((need) => `"${need?.id}"`).join(', ')}.`;
+    }
+
+    if (!ready(step)) return undefined;
+
+    if (condition && !isTruthy(evaluateExpression(condition, contextOf(scope, states, step)))) return `Step "${step.id}" was skipped: its if is false: ${ifOf.get(id)}`;
+
+    return publishes.has(id) ? `Step "${step.id}" was skipped: this run is isolated, so it publishes nothing to a data branch.` : undefined;
   };
 
   for (let changed = true; changed;) {
@@ -820,14 +845,10 @@ function skipUnreachable(run: RunState, scope: Scope, states: StepState[], { con
 
     for (const step of states) {
       if (step.status !== 'pending' || waiting(step)) continue;
-      const condition = conditions.get(localId(scope, step));
-      const read = stepsRead(condition ? expressionPaths(condition) : []);
-      const stoppedNeed = needs(step).some((need) => need && stopped(need) && !read.has(localId(scope, need)));
-      const allSkipped = needs(step).length > 0 && needs(step).every((need) => need?.status === 'skipped');
-      const conditionFalse = ready(step) && !conditionHolds(step);
+      const reason = skipReason(step);
 
-      if (!stoppedNeed && !allSkipped && !conditionFalse) continue;
-      skip(step, run.revision);
+      if (reason === undefined) continue;
+      skip(step, run.revision, reason);
       changed = true;
     }
   }
@@ -1037,7 +1058,8 @@ function settleItems(
 
         for (const next of skippable) {
           if (items[next]!.status !== 'pending' || standing(next) !== 'skip') continue;
-          skip(items[next]!, run.revision);
+          const before = dependencies(next).find((other) => stopped(other) || other.status === 'skipped');
+          skip(items[next]!, run.revision, `Step "${items[next]!.id}" was skipped: it runs after ${before ? `"${before.id}", which ${endedAs(before)}` : 'an item that did not succeed'}.`);
           skippable.push(...dependents[next]!);
         }
 
@@ -1099,7 +1121,9 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
   // A workflow step whose allowance is spent starts nothing more: what is still pending under it is skipped, and what
   // runs finishes its turn.
   for (const owner of spentAllowances(run, scope)) {
-    for (const state of run.steps) if (state.status === 'pending' && isUnder(owner)(state.id)) skip(state, run.revision);
+    for (const state of run.steps) {
+      if (state.status === 'pending' && isUnder(owner)(state.id)) skip(state, run.revision, `Step "${state.id}" was skipped: step "${owner}" spent the timeout or budget it gives the steps under it.`);
+    }
   }
 
   const states = statesIn(run, scope);
@@ -1133,7 +1157,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
         }
 
         if (definition.hitl.kind === 'approve' && state.answer.choice === 'no') {
-          skip(state, run.revision);
+          skip(state, run.revision, `Step "${state.id}" was skipped: its approval was answered no.`);
           changed = true;
           break;
         }
@@ -1205,7 +1229,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
 
     if (states.every(settled)) {
       const result: WorkflowResult = {
-        outcome: states.some(stopped) ? 'failed' : 'succeeded',
+        outcome: states.some((state) => stopped(state) && !definitionOf(state)?.continueOnFailure) ? 'failed' : 'succeeded',
         outputs: workflowOutputs(scope, states, reads.outputs),
         settledAt: run.revision,
       };
@@ -1275,7 +1299,7 @@ export async function startRun(
   name: string,
   // oxlint-disable-next-line teamai/no-unknown-parameters -- the parse boundary: start's inputs as the CLI or a driver sent them, checked here first
   inputs: unknown,
-  { secrets, ...options }: { secrets: Record<string, string>; runMode?: RunMode; driver?: DriverIdentity; base?: RunState['base']; checkout?: string; timeout?: number; alone?: DriverCan },
+  { secrets, ...options }: { secrets: Record<string, string>; runMode?: RunMode; startedBy?: StartedBy; driver?: DriverIdentity; base?: RunState['base']; checkout?: string; timeout?: number; alone?: DriverCan },
 ): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
 
@@ -1318,22 +1342,23 @@ export async function startRun(
  * Creates a run of a definition the caller already built and checked. The run file is written only when it would keep
  * what it was given unmasked. `secrets` are what the caller resolved for the operation. `alone`: what the run's only
  * driver, the local one, gives strict requirements; a start with a step it could never take for them is refused.
+ * `driver`: the run's driver from its start, so that driver's first `next` takes it as its own.
  */
 export async function createRun(
   config: LocalConfig,
-  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'definition' | 'workflows' | 'scorers' | 'base' | 'checkout' | 'timeout'>
+  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'startedBy' | 'definition' | 'workflows' | 'base' | 'checkout' | 'timeout'>
     & Required<Pick<RunState, 'origin'>> & { secrets: Record<string, string>; driver?: DriverIdentity; alone?: DriverCan },
 ): Promise<WorkflowEnvelope> {
   const workflows = input.workflows ?? {};
   const unmet = alone && strictlyUnmet(input.definition, workflows, alone);
 
   if (unmet) return error('requirement_unmet', unmet);
-  const scorers = input.scorers ?? {};
   const holdsSecret = secretMismatch(input.inputs, secrets);
 
   if (holdsSecret) return error('invalid_inputs', holdsSecret);
   const now = new Date().toISOString();
   const alias = await startingAlias(config, input.definition);
+  const team = await TeamPin.capture(config);
 
   // A field the run does not have stays undefined: the run file is JSON, which leaves it out, so the file keeps its key
   // order, and every reader of the run treats undefined as absent.
@@ -1347,11 +1372,13 @@ export async function createRun(
     inputs: input.inputs,
     sourceHash: input.sourceHash,
     teamRevision: input.teamRevision || undefined,
+    teamPin: team?.pin,
     runMode: input.runMode,
     origin: input.origin,
+    startedBy: input.startedBy,
+    driver,
     definition: input.definition,
     workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
-    scorers: Object.keys(scorers).length > 0 ? scorers : undefined,
     steps: input.definition.steps.map((step) => ({ id: step.id, status: 'pending' })),
     settledAttempts: [],
     base: input.base,
@@ -1361,6 +1388,7 @@ export async function createRun(
     updatedAt: now,
   };
 
+  if (team?.patch !== undefined) await TeamPin.keepPatch(config, run.id, team.patch);
   const written = await updateRun(config, run.id, secrets, async () => ({ value: undefined, write: run }));
 
   switch (written.status) {
@@ -1515,6 +1543,19 @@ function strictlyUnmet(definition: WorkflowDefinition, workflows: Record<string,
   return undefined;
 }
 
+/** What `can` gets of step `state` confined to the directory `rendered` names; undefined for a step not confined. */
+async function confinedFor(
+  config: LocalConfig, run: RunState, state: StepState, definition: WorkflowStep, rendered: RenderedLease, can: DriverCan,
+): Promise<ConfinedDecision | undefined> {
+  if (rendered.confined === undefined) return undefined;
+  // An empty model asks for the tool's default, as `leaseData` leaves it out.
+  const model = definition.model instanceof Object ? definition.model : rendered.model || undefined;
+
+  return decideConfined({
+    step: state.id, dir: rendered.confined, runDir: runScratchDir(config, run.id), offers: can.confined ?? [], model, defaultModel: rendered.defaultModel, config,
+  });
+}
+
 /** Why a step that names `tool` fails in a run whose only driver cannot launch it. */
 function toolUnavailable(step: string, tool: string): WorkflowFailure {
   return { code: 'tool_unavailable', message: `Step "${step}" runs on ${tool}, which the driver of this run cannot launch here. Install ${tool} where the run is driven, or remove tool from the step.` };
@@ -1534,7 +1575,6 @@ type WaitData = { reason: string; delivering?: string[] };
 export interface NextOptions {
   /**
    * The attempts of its open leases the driver is still running. An open lease it does not list is handed back to it.
-   * A judge lease ref answers `judge_lease`: those renew through `teamai score --next`.
    */
   running?: string[];
   /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, `hitl`, or `wait`. */
@@ -1684,12 +1724,6 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
-  const judgeRef = options.running?.find(isLeaseRef);
-
-  if (judgeRef !== undefined) {
-    return error('judge_lease', `running lists judge lease ${judgeRef}. Renew judge leases with teamai score --next and its running list, never with teamai workflow next.`);
-  }
-
   driver = { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
 
   if (options.claim) {
@@ -1742,13 +1776,6 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
     // Undefined once the run's `finally` steps start, so the loop hands them out.
     const done = async (result: WorkflowResult): Promise<{ save: boolean; envelope: WorkflowEnvelope } | undefined> => {
-      // A run that reached its end waits for the judges its steps require; a timeout, a limit or a cancel does not.
-      const judging = result.outcome === 'succeeded' && !run.finalizing ? (await verdictEntries(config, run, now)).filter(isUnsettled).length : 0;
-
-      if (judging > 0) {
-        return answer({ wait: { reason: `${judging} judge entries of run ${run.id} are not settled: judge them with teamai score --next`, judging } });
-      }
-
       const finished = await finishRun(config, run, now, result, env.secrets, driver);
 
       if (finished.kind === 'finalizing') return undefined;
@@ -1782,6 +1809,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     const older = missingNeeds(run);
 
     if (older) return { save: false, envelope: error('run_unreadable', older) };
+    // Made before any step it leases runs; a run a retry reopened gets it again.
+    await fs.mkdir(runScratchDir(config, run.id), { recursive: true });
 
     for (;;) {
       // Ends reached through reports, and deadlines passed, apply before an open lease is handed back, so a restarted
@@ -1864,6 +1893,19 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             break;
           }
 
+          const confined = await confinedFor(config, run, state, definition, rendered, can);
+
+          if (confined?.kind === 'fail') {
+            failStep(state, confined.failure, run.revision);
+            settledOne = true;
+            break;
+          }
+
+          if (confined?.kind === 'hold') {
+            held.push(confined.held);
+            continue;
+          }
+
           const terms = offerTerms(run, state.id, located, plan, context);
 
           if (terms.kind === 'hold' && options.alone && definition.tool !== undefined && terms.missing.includes('tools')) {
@@ -1900,7 +1942,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           const step = lease(state, offering({ ...granted, ...turnTerms(run, state, definition, terms.terms, now, now) }, plan.session));
           rememberCopy(run, plan, driver);
 
-          return answer(leaseData(run, step, definition, rendered, terms.terms, plan));
+          return answer(leaseData(run, step, definition, rendered, terms.terms, plan, confined?.lease));
         }
 
         if (settledOne) continue;
@@ -1919,12 +1961,20 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }, true);
 
         const offered = plan.fail ? undefined : plan;
+        const confined = await confinedFor(config, run, leased, located.step, rendered, can);
+
+        if (confined?.kind === 'fail') {
+          stopAttempt(run, leased, now);
+          failStep(leased, confined.failure, leased.lease.revision);
+          continue;
+        }
+
         const terms = offerTerms(run, leased.id, located, offered, context);
 
         // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
         // No step has run in an unused copy, so the driver gives up the copy too, and another driver may take the step,
         // unless the driver still holds another lease in it.
-        if (terms.kind === 'hold') {
+        if (terms.kind === 'hold' || confined?.kind === 'hold') {
           stopAttempt(run, leased, now);
           release(leased);
           const branch = offered?.contract?.branch;
@@ -1958,7 +2008,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
         if (offered) rememberCopy(run, offered, driver);
 
-        return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered));
+        return answer(leaseData(run, leased, located.step, rendered, terms.terms, offered, confined?.lease));
       }
 
       failStep(leased, rendered, leased.lease.revision);
@@ -2017,7 +2067,7 @@ const REPORT_FIELD_SOURCES = {
   attempt: 'payload', revision: 'payload', outcome: 'payload', driver: 'payload', outputs: 'payload', exitCode: 'payload', message: 'payload',
   tool: 'payload', model: 'payload', session: 'payload', resumed: 'payload', tokens: 'payload', durationMs: 'payload', cost: 'payload',
   failure: 'payload', changes: 'payload', read: 'payload', agent: 'payload', used: 'payload', unenforced: 'payload', limit: 'payload',
-  prUrl: 'changes.pr_url',
+  confined: 'payload', prUrl: 'changes.pr_url',
 } as const satisfies Record<keyof ReportInput, 'payload' | 'changes.pr_url' | 'process'>;
 
 /** The top-level payload fields `parseReport` reads. */
@@ -2060,6 +2110,17 @@ export function parseResponsePayload(value: unknown): ParsedResponsePayload | st
 export interface ParsedReport {
   report: ReportInput;
   ignored: string[];
+}
+
+/** Why a report's confined.model or confined.effort does not parse: each is an observation, never a bare name. */
+const CONFINED_OBSERVED = {
+  model: 'confined.model must be {"reported": "<model>"}, with "requested" and "alias" when known',
+  effort: 'confined.effort must be {"reported": "<effort>"}, with "requested" when known',
+} as const;
+
+/** Why a report's `confined` does not parse, naming `field` when it is one a driver sends as a bare name by mistake. */
+function confinedRefusal(field: PropertyKey | undefined): string {
+  return field === 'model' || field === 'effort' ? CONFINED_OBSERVED[field] : 'confined must be what the confined run measured: its tool, isolation and access, and its model, effort and usage when known';
 }
 
 /** A parsed `next` payload and the fields the CLI did not read from it. */
@@ -2143,9 +2204,9 @@ export function parseReport(value: unknown): ParsedReport | string {
   }
 
   if (record.cost !== undefined) {
-    const cost = JudgeUsageSchema.shape.cost.safeParse(record.cost);
+    const cost = CostSchema.safeParse(record.cost);
 
-    if (!cost.success || !cost.data) return 'cost must be an amount and a unit, as the tool stated it';
+    if (!cost.success) return 'cost must be an amount and a unit, as the tool stated it';
     report.cost = cost.data;
   }
 
@@ -2210,6 +2271,14 @@ export function parseReport(value: unknown): ParsedReport | string {
 
     if (!limit.success) return 'limit must be the lease limit that ended the turn: timeout, budget or max_turns';
     report.limit = limit.data;
+  }
+
+  if (record.confined !== undefined) {
+    const confined = ConfinedRunReportSchema.safeParse(record.confined);
+
+    if (!confined.success) return confinedRefusal(confined.error.issues[0]?.path[0]);
+
+    report.confined = confined.data;
   }
 
   const ignored = unreadFields(record, REPORT_FIELDS);
@@ -2579,8 +2648,8 @@ async function admitReported(
 
 /**
  * Freezes the output of producer `path` with `run`: the whole output, hashed and never rewritten, and the workflow its
- * `field` defines, which a `from` step runs. The workflows it runs by name and its scorers join the run's. Why not, when
- * the producer already gave the run a workflow, or a name it brings is the run's already for something else.
+ * `field` defines, which a `from` step runs. The workflows it runs by name join the run's. Why not, when the producer
+ * already gave the run a workflow, or a name it brings is the run's already for something else.
  */
 function admitInto(run: RunState, path: string, field: string, output: AdmittedWorkflow['output'], admitted: Admitted): WorkflowFailure | undefined {
   if (run.admitted?.[path]) {
@@ -2590,26 +2659,20 @@ function admitInto(run: RunState, path: string, field: string, output: AdmittedW
   const taken = <Pinned>(mine: Record<string, Pinned> | undefined, theirs: Record<string, Pinned>): string | undefined => Object.keys(theirs)
     .find((key) => mine !== undefined && Object.hasOwn(mine, key) && JSON.stringify(mine[key]) !== JSON.stringify(theirs[key]));
 
-  const name = taken(run.workflows, admitted.workflows) ?? taken(run.scorers, admitted.scorers);
+  const name = taken(run.workflows, admitted.workflows);
 
   if (name !== undefined) {
-    return { code: 'invalid_output', message: `Step "${path}" output ${field} brings "${name}", which this run already holds with other content; name each workflow and generated scorer by its content.` };
+    return { code: 'invalid_output', message: `Step "${path}" output ${field} brings "${name}", which this run already holds with other content; name each workflow by its content.` };
   }
 
   run.admitted = { ...run.admitted, [path]: { output, hash: createHash('sha256').update(JSON.stringify(output)).digest('hex'), field, definition: admitted.definition } };
 
   if (Object.keys(admitted.workflows).length > 0) run.workflows = { ...run.workflows, ...admitted.workflows };
 
-  if (Object.keys(admitted.scorers).length > 0) run.scorers = { ...run.scorers, ...admitted.scorers };
-
   return undefined;
 }
 
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput, secrets?: Record<string, string>): Promise<WorkflowEnvelope> {
-  if (isLeaseRef(report.attempt)) {
-    return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
-  }
-
   const install = await installOwner(config);
   const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
   const unmatched = reported?.url ? await reportedPrUnmatched(config, runId, report, reported.url) : undefined;
@@ -2711,6 +2774,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       runMode: step.lease.runMode,
       outcomes: outcomes.length > 0 ? outcomes : undefined,
       limit: report.limit,
+      confined: report.confined,
       installId: install.id,
     };
 
@@ -2726,7 +2790,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     }
 
     // The step itself ran in the copy, not only its staging or setup.
-    if (contract && (report.outcome === 'success' || report.exitCode !== undefined || report.changes || report.read)) {
+    if (contract && !isPublishContract(contract) && (report.outcome === 'success' || report.exitCode !== undefined || report.changes || report.read)) {
       ((run.copies ??= {})[contract.branch] ??= { owner: report.driver }).used = true;
     }
 

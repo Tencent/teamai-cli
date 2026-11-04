@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { getCurrentVersion } from '../../package-info.js';
 import type { LocalConfig, TeamaiConfig } from '../../types.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { startRun } from '../../workflow/engine.js';
 import { runLocalDriver } from '../../workflow/drivers/local/local-driver.js';
 import { driverIdentity } from '../../driver-identity.js';
@@ -100,7 +100,7 @@ describe('#1083 workflow run records reach the reports branch', () => {
     ].map((event) => JSON.stringify(event)).join('\n');
     const claude: ToolSpawn = (_command, _args, options) => spawn(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(stream)})`], options);
 
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), driver: driverIdentity('local', work) });
     expect(started).toMatchObject({ data: { status: 'running', record: 'published' } });
     const runId = String((started as { data: { run: string } }).data.run);

@@ -27,8 +27,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import type { LocalConfig } from '../../types.js';
 import { compileBundle, freezePlan, type BenchmarkPlan } from '../../benchmark/plan.js';
+import { RunScorers } from '../../scorers/run-scorers.js';
 import type { BenchmarkRunRecord, TrialResult } from '../../benchmark/result.js';
 import { planOfRun } from '../../benchmark/run-plan.js';
 import { commitCheckFiles, type CommittedSuite } from '../../benchmark/trial.js';
@@ -36,7 +38,6 @@ import { commitCacheOf } from '../../workflow/place/place.js';
 import { parseSuite, type TeamChoice } from '../../benchmark/suite.js';
 import type { ArmTeam } from '../../benchmark/terms.js';
 import type { BenchmarkSuiteFiles } from '../../workflow/conformance-interpreter.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { error, leaseNext, reportAttempt, startRun } from '../../workflow/engine.js';
 import type { DriverCan } from '../../workflow/requirements.js';
 import { readRun } from '../../workflow/store.js';
@@ -79,7 +80,8 @@ export type FakeTool = 'fixes' | 'does-nothing' | 'fails-first' | 'skips-the-che
 export type FirstLaunch = 'pulls-a-team-change' | 'kills-its-driver';
 
 /** What the fake `claude` judge answers: the first label of its scorer, `incorrect` where its scorer has one, a label its scorer lacks, or exit 1. */
-export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs';
+/** `states-nothing`: answers the first label, and states no usage or cost. */
+export type FakeJudge = 'first-label' | 'incorrect' | 'another-label' | 'fails' | 'hangs' | 'states-nothing';
 
 /** One launch of the fake judge: the labels its answer schema allows, its evidence's diff.patch, and the trial roots left. */
 const JudgeLaunchSchema = z.object({ labels: z.array(z.string()), diff: z.string().nullable(), trialRoots: z.array(z.string()) });
@@ -175,7 +177,7 @@ export function envelope(result: CliResult): Envelope {
 
 /** Starts the benchmark workflow on suite `fix` for an external driver, bounded by `timeout`, and answers its run. */
 export async function startFixBenchmark(fixture: BenchmarkFixture, timeout = '10m'): Promise<string> {
-  const answer = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', timeout]);
+  const answer = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}', '--timeout', timeout]);
   const run = envelope(answer).data?.run;
   if (typeof run !== 'string') throw new Error(`no run: ${said(answer)}`);
   return run;
@@ -579,7 +581,10 @@ function judgeMode(log: string, trialRoots: string, judge: FakeJudge): string {
   process.exit(0);
 }
 if (process.argv.includes('--json-schema')) {
-  const labels = JSON.parse(process.argv[process.argv.indexOf('--json-schema') + 1]).properties.label.enum;
+  const schema = JSON.parse(process.argv[process.argv.indexOf('--json-schema') + 1]);
+  // A confined workflow step's reply wraps the answer schema as {"answer": …}; a judge lease's is the answer itself.
+  const wrapped = schema.properties.answer !== undefined;
+  const labels = (wrapped ? schema.properties.answer : schema).properties.label.enum;
   const diff = fs.existsSync('diff.patch') ? fs.readFileSync('diff.patch', 'utf8') : null;
   fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ labels, diff, trialRoots: fs.existsSync(${JSON.stringify(trialRoots)}) ? fs.readdirSync(${JSON.stringify(trialRoots)}) : [] }) + '\\n');
   process.stdin.resume();
@@ -588,7 +593,9 @@ if (process.argv.includes('--json-schema')) {
     if (${JSON.stringify(judge)} === 'fails') process.exit(1);
     const label = ${JSON.stringify(judge)} === 'another-label' ? 'no-such-label' : ${JSON.stringify(judge)} === 'incorrect' && labels.includes('incorrect') ? 'incorrect' : labels[0];
     console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-judge' }));
-    console.log(JSON.stringify({ type: 'result', structured_output: { label, reasoning: 'The fake judge decided.' }, total_cost_usd: 0.1 }));
+    const answer = { label, reasoning: 'The fake judge decided.' };
+    const usage = ${JSON.stringify(judge)} === 'states-nothing' ? {} : { total_cost_usd: 0.1 };
+    console.log(JSON.stringify({ type: 'result', structured_output: wrapped ? { answer } : answer, ...usage }));
   });
   return;
 }`;
@@ -657,19 +664,21 @@ const PLANNER: DriverIdentity = { kind: 'local', machine: 'planner', workspace: 
  * frozen as `frozenBenchmark` freezes it, with its plan, or what `outputsOf` makes of them. The trials wait for a driver.
  */
 export async function startBenchmarkRun(config: LocalConfig, files: BenchmarkSuiteFiles, { body = PLANNED_BENCHMARK, outputsOf, unattended = false }: {
-  body?: string; outputsOf?: (bundle: ReturnType<typeof compileBundle>, plan: BenchmarkPlan) => unknown; unattended?: boolean;
+  body?: string; outputsOf?: (bundle: Omit<ReturnType<typeof compileBundle>, 'scorers'>, plan: BenchmarkPlan) => unknown; unattended?: boolean;
 } = {}): Promise<WorkflowEnvelope> {
   const frozen = await frozenBenchmark(config, files);
   if (!('plan' in frozen)) return frozen;
   const bundle = compileBundle(frozen.plan, frozen.committed, { unattended });
   fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), body);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'planned', {}, { secrets: {}, timeout: frozen.committed.suite.timeoutMs });
   if ('error' in started) return started;
   const runId = String(started.data.run);
-  // As the step prints them, JSON on its stdout, without the team revision, which this config has no team repo to pin at.
-  const outputs: unknown = JSON.parse(JSON.stringify(outputsOf ? outputsOf(bundle, frozen.plan) : { definition: { ...bundle, workflows: {} }, plan: frozen.plan }));
+  // As the step does: its generated scorers written as files of the run, and the rest printed as JSON on its stdout.
+  const { scorers: generated, ...printed } = bundle;
+  await RunScorers.writeGenerated(config, runId, generated);
+  const outputs: unknown = JSON.parse(JSON.stringify(outputsOf ? outputsOf(printed, frozen.plan) : { definition: { ...printed, workflows: {} }, plan: frozen.plan }));
   for (let leased = PlanLeaseSchema.safeParse(await leaseNext(config, runId, PLANNER)); leased.success; leased = PlanLeaseSchema.safeParse(await leaseNext(config, runId, PLANNER))) {
     const { attempt, revision } = leased.data.data.lease;
     await reportAttempt(config, runId, { attempt, revision, outcome: 'success', driver: PLANNER, outputs });

@@ -1,7 +1,8 @@
 /**
  * Real CLI against a local bare team repo: a member who turns session scoring on starts a session, and the session
- * start's pull judges an earlier finished session in the background with a fake Claude judge. The label stays pending
- * until the next pull publishes it, never with the transcript.
+ * start's pull starts one detached teamai-finished-sessions run, which judges an earlier finished session with a fake
+ * Claude judge and publishes its label, never with the transcript. The label leaves the outbox once the next pull
+ * finds it on teamai-reports.
  */
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -85,7 +86,7 @@ describe('background session scoring', () => {
 if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorough', reasoning: 'It ran the tests.' } }));
+console.log(JSON.stringify({ type: 'result', structured_output: { answer: { label: 'thorough', reasoning: 'It ran the tests.' } } }));
 });\n`, { mode: 0o755 });
     env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
     for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEBUDDY_SESSION_ID', 'COPILOT_AGENT_SESSION_ID', 'CURSOR_CONVERSATION_ID', 'CLAUDE_SESSION_ID', 'OPENCODE_SESSION_ID', 'TEAMAI_AGENT_SESSION_ID', 'PI_SESSION_ID', 'MUSE_SESSION_ID', 'TEAMAI_LAUNCHED_BY']) delete env[name];
@@ -113,14 +114,23 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorou
       capturedAt: ended.toISOString(), agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
   });
 
+  /** The teamai-finished-sessions runs of the member's data home. */
+  const finishedRuns = (): Array<{ status: string; startedBy?: string; inputs?: unknown }> => {
+    const runs = path.join(dataHome, 'workflows', 'runs');
+    if (!fs.existsSync(runs)) return [];
+    return fs.readdirSync(runs).filter((name) => name.endsWith('.json'))
+      .map((name) => JSON.parse(fs.readFileSync(path.join(runs, name), 'utf8')) as { name: string; status: string; startedBy?: string; inputs?: unknown })
+      .filter((run) => run.name === 'teamai-finished-sessions');
+  };
+
   afterAll(async () => {
     if (!root) return;
-    // The detached judge may still be releasing its lock.
-    await until(() => !fs.existsSync(path.join(dataHome, 'scores', 'score-sessions.lock')), 'the background judge to exit').catch(() => undefined);
+    // The detached driver may still be ending its run.
+    await until(() => finishedRuns().every((run) => run.status !== 'running'), 'the background run to end').catch(() => undefined);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('judges a finished session after a session start\'s pull, keeps the label pending, and the next pull publishes it', async () => {
+  it('starts teamai-finished-sessions after a session start\'s pull, which judges a finished session and publishes its label; the next pull clears it from the outbox', async () => {
     const pending = () => (fs.existsSync(path.join(dataHome, 'scores', 'pending')) ? fs.readdirSync(path.join(dataHome, 'scores', 'pending')) : []);
     const published = () => {
       const refs = git(team, 'for-each-ref', '--format=%(refname)', 'refs/heads/teamai-reports');
@@ -129,18 +139,21 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorou
 
     const start = await runCLI(['hook-dispatch', 'session-start', '--tool', 'claude', '--stdin', '--bg-only'], app, env, JSON.stringify({ cwd: app, session_id: STARTING }));
     expect(start.code, start.stdout + start.stderr).toBe(0);
-    await until(() => pending().length === 1 && !fs.existsSync(path.join(dataHome, 'scores', 'score-sessions.lock')), 'the background judge to label the finished session');
+    await until(() => finishedRuns().length === 1 && finishedRuns().every((run) => run.status !== 'running'), 'the background run to end');
+
+    expect(finishedRuns()).toEqual([expect.objectContaining({ status: 'succeeded', startedBy: 'cli', inputs: { publish: 'policy', scorers: [] } })]);
+    expect(pending()).toHaveLength(1);
 
     const labels = fs.readFileSync(path.join(dataHome, 'scores', 'labels.jsonl'), 'utf8').trim().split('\n').map((text) => JSON.parse(text) as unknown);
     expect(labels).toEqual([expect.objectContaining({ source: 'session', subject: { platform: 'claude-code', sessionId: FINISHED }, label: 'thorough', judge: expect.objectContaining({ tool: 'claude' }) })]);
-    expect(published()).toEqual([]);
-
-    const pull = await runCLI(['pull'], app, env);
-    expect(pull.code, pull.stdout + pull.stderr).toBe(0);
-    expect(pending()).toEqual([]);
     const [file, ...more] = published();
     expect(more).toEqual([]);
     expect(git(team, 'show', `teamai-reports:${file}`)).toContain(FINISHED);
     expect(() => git(team, 'grep', '-q', PHRASE, 'teamai-reports')).toThrow();
+
+    const pull = await runCLI(['pull'], app, env);
+    expect(pull.code, pull.stdout + pull.stderr).toBe(0);
+    expect(pending()).toEqual([]);
+    expect(published()).toEqual([file]);
   });
 });

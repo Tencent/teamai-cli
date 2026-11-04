@@ -156,6 +156,8 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
         continue;
       }
 
+      if (path.root === 'run') continue;
+
       if (path.root === 'item') {
         if (!site.item && !scope.item && !itemReported) {
           diagnostics.push(at(`${subject} ${site.what} reads item, which is bound only in the templates of a for_each step and in the workflow each item runs`));
@@ -229,6 +231,8 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
 
 function declaredSchema(scope: ReadScope, readable: Set<string>, path: ExpressionPath): DeclaredType | undefined {
   if (path.root === 'inputs') return scope.inputs && schemaAt(scope.inputs, path.fields);
+
+  if (path.root === 'run') return { type: 'string' };
 
   if (path.root === 'item' || !readable.has(path.step)) return undefined;
   const schema = stepFieldSchema(path.field, scope.outputs.get(path.step), scope.forEach.has(path.step), scope.hitl.get(path.step));

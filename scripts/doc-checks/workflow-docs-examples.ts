@@ -8,10 +8,10 @@ import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { LeaseWireSchema } from '../../src/workflow/lease-wire.js';
 import { syncScorerDefinitions } from '../../src/scorers/cache.js';
+import { formatUnknownScorer, syncScorersThenWorkflows } from '../../src/scorers/team-sync.js';
 import { ciRecipesOf, runCommandsOf } from '../ci-recipe.js';
 import { formatScorerDiagnostic } from '../../src/scorers/definition.js';
 import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig, JsonObjectSchema } from '../../src/types.js';
-import { formatUnknownScorer, syncWorkflowDefinitions } from '../../src/workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../../src/workflow/engine.js';
 import { formatDiagnostic } from '../../src/workflow/parse.js';
 import { WORKSPACE_MODES, type DriverIdentity, type WorkflowEnvelope } from '../../src/workflow/types.js';
@@ -41,16 +41,20 @@ const OTHER_PAGES = [...guidePages(/\.md$/), ...docPages('designs', /\.md$/)].fi
 interface Example {
   label: string;
   source: string;
+  /** The name an example that names no workflow is pulled under: its page and line, so each is checked and unique. */
+  unnamed: string;
+  /** Fenced as ```yaml fragment: a part of a file another example on the page shows whole, parsed and never pulled. */
+  isFragment: boolean;
 }
 
 function examplesOf(page: string): Example[] {
   const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
 
-  return [...text.matchAll(/^```yaml\n([\s\S]*?)^```/gm)].map((match) => {
+  return [...text.matchAll(/^```yaml( fragment)?\n([\s\S]*?)^```/gm)].map((match) => {
     const line = text.slice(0, match.index).split('\n').length + 1;
-    const source = match[1] ?? '';
+    const source = match[2] ?? '';
 
-    return { label: `${page}:${line} (${source.split('\n')[0]?.trim()})`, source };
+    return { label: `${page}:${line} (${source.split('\n')[0]?.trim()})`, source, unnamed: `docs-${page.replace(/^docs\//, '').replace(/\.md$/, '').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase()}-${line}`, isFragment: match[1] !== undefined };
   });
 }
 
@@ -160,17 +164,15 @@ function writeExamples(page: string, config: LocalConfig) {
 
     const value: JsonValue = document.toJS();
 
-    if (!isWorkflow(value)) continue;
+    if (!isWorkflow(value) || example.isFragment) continue;
 
-    // Beside the workflow pages, a page may show the `steps:` of a workflow, unnamed, to show where a key goes; only
-    // whole files are pulled.
-    if (!PAGES.includes(page) && value.name === undefined) continue;
-    const file = `workflows/${String(value.name)}.yaml`;
+    // An example that names no workflow is pulled under the name of its page and line, so a new one is checked too.
+    const file = `workflows/${value.name === undefined ? example.unnamed : String(value.name)}.yaml`;
     const twin = byFile.get(file);
 
     if (twin) failures.push(`${example.label}: ${file} is also ${twin}`);
     byFile.set(file, example.label);
-    fs.writeFileSync(path.join(config.repo.localPath, file), example.source);
+    fs.writeFileSync(path.join(config.repo.localPath, file), value.name === undefined ? `name: ${example.unnamed}\n${example.source}` : example.source);
 
     for (const prompt of promptFiles(value).filter((promptFile) => promptFile.startsWith('prompts/'))) {
       fs.mkdirSync(path.dirname(path.join(config.repo.localPath, prompt)), { recursive: true });
@@ -224,7 +226,7 @@ async function startExample(
 ): Promise<{ config: LocalConfig; runId: string }> {
   const config = teamRepo();
   writeExamples(page, config);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, name, inputs, { secrets: await knownSecrets(config) });
 
   if ('error' in started) throw new Error(`${page}: ${started.error.message}`);
@@ -298,7 +300,7 @@ for (const page of [...PAGES, ...SCORER_PAGES, ...OTHER_PAGES]) {
         fs.writeFileSync(path.join(config.repo.localPath, example.file), example.source);
       }
 
-      const result = await syncWorkflowDefinitions(config, { dryRun: true });
+      const result = await syncScorersThenWorkflows(config, { dryRun: true });
 
       for (const unknown of result.unknownScorers)
         failures.push(`${byFile.get(unknown.file) ?? page}: ${formatUnknownScorer(unknown)}`);
@@ -388,7 +390,7 @@ for (const page of PAGES) {
         declared.push(start);
       }
 
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
 
       for (const start of declared) {
         let inputs: unknown;

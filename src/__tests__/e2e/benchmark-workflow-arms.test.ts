@@ -164,7 +164,7 @@ describe('benchmark arm workflow', () => {
 
   it('reads a workflow arm cancelled while its prompt holds a lease as an error', async () => {
     const fixture = await fixtureWith(SUITE.replace('  - name: prompt\n', ''), { fixer: FIXER, 'fix-once': FIX_ONCE }, { sandbox: false });
-    const started = envelope(await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', '10m']));
+    const started = envelope(await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}', '--timeout', '10m']));
     const runId = String(started.data?.run);
     const driver = { kind: 'external', machine: 'arm-driver', workspace: '/fake', can: { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, tools: ['claude'], unattended: true } };
 

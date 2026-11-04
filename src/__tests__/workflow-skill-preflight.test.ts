@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { runsDir } from '../workflow/store.js';
 import { fakeJudge, skillHarness } from './helpers/skill-harness.js';
 
@@ -488,15 +489,19 @@ describe('skill driver preflight of optional gates', () => {
   });
 
   it('names the approval teamai-share-learnings asks before it shares the learnings, and no approval of its teamai-share-session step', async () => {
-    expect(await questionOf({}, 'teamai-share-learnings')).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+    const described = await questionOf({}, 'teamai-share-learnings');
+    const text = z.string().parse(z.object({ data: z.object({ describe: z.object({ ask: z.object({ question: z.object({ text: z.string() }) }) }) }) }).parse(described).data.describe.ask.question.text);
+    expect(text.split('\n')).toEqual([
       '- teamai-share-learnings needs the inputs session (string), source (string), publish (boolean), scorers (list of string) and judge (one of here, driver).',
       '- It can run up to 3 steps at once.',
       '- learning is interactive: you work in it here, with this session\'s agent.',
       '- Optional approval at approve: no action; contribute waits for it.',
       approvalsAnswer,
+      // The judge step of teamai-score, which teamai-share-session runs; what follows names the judge tool found here.
+      expect.stringMatching(/^- A fresh subagent of this session runs share-session\.score\.score\.judge, reading only its directory, at best-effort isolation, unless it asks for verified isolation, which another driver runs\. /),
       '- The team asks that you agree before it starts.',
       'Start it, and if so, how should it run?',
-    ].join('\n') } } } } });
+    ]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { LocalConfig } from '../../types.js';
+import { DATA_BRANCHES, type LocalConfig } from '../../types.js';
 import { readFileSafe, writeJsonAtomic } from '../../utils/fs.js';
 import { LeaseSetupSchema } from '../requirements.js';
 import { ChangesSchema, FailureSchema, ReadSchema } from '../step-state.js';
@@ -53,11 +53,22 @@ const TeamRoleSchema = z.object({
   found: z.string().optional(),
 });
 
+/** Where a `deliver: publish` step runs: a checkout of its data branch at `base`, or nowhere it could publish from, for `reason`. */
+const DataAtSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('checkout'), base: z.string() }),
+  z.object({ kind: z.literal('unavailable'), reason: z.string() }),
+]);
+
+export type DataAt = z.infer<typeof DataAtSchema>;
+
+/** A `deliver: publish` lease on a teamai data branch, in a checkout of origin's tip of it that nothing merged into. */
+const DataRoleSchema = z.object({ role: z.literal('data'), branch: z.enum(DATA_BRANCHES), at: DataAtSchema });
+
 /**
  * How the attempt uses its place. The snapshot a reader is checked against is `before.json` beside the record, and the
  * branch's agent files kept while the base overlay is in place are in `overlay/`.
  */
-const PlaceRoleSchema = z.discriminatedUnion('role', [CheckoutRoleSchema, ReaderRoleSchema, WriterRoleSchema, CloneRoleSchema, TeamRoleSchema]);
+const PlaceRoleSchema = z.discriminatedUnion('role', [CheckoutRoleSchema, ReaderRoleSchema, WriterRoleSchema, CloneRoleSchema, TeamRoleSchema, DataRoleSchema]);
 
 /** What finishing a place made of the step's end, masked: the report the attempt settles with. */
 export const PlaceFinishedSchema = z.object({

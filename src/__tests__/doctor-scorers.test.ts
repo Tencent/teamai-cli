@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { localAliasesPath } from '../models/aliases.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { scorerNotes } from '../doctor-scorers.js';
 import { getUserConfigPath, type LocalConfig } from '../types.js';
 
@@ -80,7 +80,7 @@ describe('scorerNotes', () => {
       'scorers/s.md': SCORER.replace('passingScore: 0.5', 'passingScore: 0.5\nmodel: claude-haiku-4-5'),
       'models/aliases.yaml': 'aliases:\n  fast:\n    codex: gpt-6-mini\n  strong:\n    claude: opus\n',
     });
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     fs.mkdirSync(path.dirname(localAliasesPath()), { recursive: true });
     fs.writeFileSync(localAliasesPath(), 'aliases:\n  strong:\n    claude: ~\n');
 
@@ -127,5 +127,24 @@ describe('scorerNotes', () => {
 
   it('says nothing when every scorer is valid and known', async () => {
     expect(await scorerNotes(teamRepo({}))).toEqual([]);
+  });
+
+  it('says how much open judge work the upgrade carried over from judge attempts', async () => {
+    const config = teamRepo({});
+    const plant = (entry: string, attempt: string, fields: Record<string, unknown>) => {
+      fs.mkdirSync(path.join(config.dataHome ?? '', 'scores', 'attempts', entry), { recursive: true });
+      fs.writeFileSync(path.join(config.dataHome ?? '', 'scores', 'attempts', entry, `${attempt}.json`), JSON.stringify({
+        attempt, entry, scorer: 'review', rubric: { sourceHash: 'h1' }, driver: { kind: 'local', machine: 'm', workspace: '/w' },
+        judge: { tool: 'claude', by: 'scorer', isolation: 'verified', access: 'read' }, status: 'leased', ...fields,
+      }));
+    };
+    plant('s0000000000001', 'a00000001', { subject: { runId: 'r00000000', step: 'fix', pass: 1 }, leasedAt: '2026-10-25T00:00:00.000Z', expiresAt: '2026-10-25T00:30:00.000Z' });
+    plant('s0000000000002', 'a00000002', { subject: { runId: 'r00000000', step: 'fix', pass: 2 }, leasedAt: '2026-10-25T00:00:00.000Z', expiresAt: '2026-10-25T00:30:00.000Z' });
+    plant('s0000000000003', 'a00000003', {
+      source: 'session', subject: { platform: 'claude-code', sessionId: '7c1e' }, session: { used: { skills: [] }, prompt: 'Add retries' },
+      leasedAt: '2026-10-25T00:00:00.000Z', expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+
+    expect(await scorerNotes(config)).toEqual(['The upgrade carried 2 open workflow passes and 1 open session over from judge attempts into marks. The next teamai score --drain, or a session start where sessions are judged or archived automatically, starts teamai-score for each, and for a pass only while its run last changed under 14 days ago.']);
   });
 });

@@ -112,9 +112,26 @@ export async function openTeamClone(input: { config: LocalConfig; run: RunId; st
 }
 
 /**
+ * The symlinks in tree `to` of the clone at `root`, each with the path inside the clone it names. A symlink that names a
+ * path outside the clone is left out: nothing written through it reaches the commit.
+ */
+async function symlinksOf(root: string, to: string, modes: Map<string, string>): Promise<Array<{ link: string; names: string }>> {
+  const links = [...modes].flatMap(([file, mode]) => (mode === '120000' ? [file] : []));
+
+  const named = await Promise.all(links.map(async (link) => {
+    const target = await git(root, ['cat-file', 'blob', `${to}:${link}`]);
+    const names = path.posix.normalize(path.posix.join(path.posix.dirname(link), target.stdout));
+
+    return target.code === 0 && !path.posix.isAbsolute(target.stdout) && names !== '..' && !names.startsWith('../') ? [{ link, names }] : [];
+  }));
+
+  return named.flat();
+}
+
+/**
  * The files the commit `to` changes against `base` in the clone at `root` that `teamai pull` would not place, each as
- * `<file>: <why>`: one outside `dir`, outside a directory pull places, a symlink or a submodule, or a benchmark file in
- * no suite.
+ * `<file>: <why>`: one outside `dir`, outside a directory pull places, a symlink or a submodule, a benchmark file in no
+ * suite, or one a symlink of the clone also reaches, which a step may have written by the symlink's path.
  */
 async function unplacedTeamFiles(input: { root: string; dir: string; base: string; to: string }): Promise<string[]> {
   const { root, dir, base, to } = input;
@@ -132,6 +149,7 @@ async function unplacedTeamFiles(input: { root: string; dir: string; base: strin
   // oxlint-disable-next-line teamai/workflow-boundaries -- a benchmark file goes only into a suite pull reads, which suite discovery owns
   const { suiteDirectories } = await import('../../benchmark/suite-cache.js');
   const suites = await suiteDirectories(LocalConfigSchema.parse({ repo: { localPath: dir, remote: 'local' }, username: 'team-files' }));
+  const links = await symlinksOf(root, to, modes);
   const unplaced: string[] = [];
 
   for (const file of changed.stdout.split('\0').filter(Boolean)) {
@@ -143,8 +161,12 @@ async function unplacedTeamFiles(input: { root: string; dir: string; base: strin
     const teamPath = file.slice(under.length);
     const [top = '', ...below] = teamPath.split('/');
     const mode = modes.get(file);
+    const link = links.find(({ names }) => file === names || file.startsWith(`${names}/`))?.link;
+    const through = link?.startsWith(under) ? link.slice(under.length) : link;
 
-    if (!isPlaceableType(top) || below.length === 0) unplaced.push(`${teamPath}: not in a directory teamai pulls, such as skills/, rules/, scorers/ or benchmarks/`);
+    if (through !== undefined) {
+      unplaced.push(`${teamPath}: also reached through the symlink ${through}, so the step may have changed it there; change it by a path with no symlink on the way, or remove ${through}`);
+    } else if (!isPlaceableType(top) || below.length === 0) unplaced.push(`${teamPath}: not in a directory teamai pulls, such as skills/, rules/, scorers/ or benchmarks/`);
     else if (mode === '120000') unplaced.push(`${teamPath}: a symlink, which teamai pull does not place`);
     else if (mode === '160000') unplaced.push(`${teamPath}: a submodule, which teamai pull does not place`);
     else if (top === 'benchmarks' && mode !== undefined && !suites.some((suite) => teamPath.startsWith(`${suite}/`))) {

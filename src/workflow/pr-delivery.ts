@@ -162,7 +162,8 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
 
   try {
     await provider.createPullRequest({
-      repo, source: job.key.branch, target: job.target, title: `${job.runName}: ${job.key.step}`,
+      // A pull request of one file is named for it, as a proposed task or skill is; any other for the step that made it.
+      repo, source: job.key.branch, target: job.target, title: `${job.runName}: ${changed.files.length === 1 ? changed.files[0] : job.key.step}`,
       description: `Opened by TeamAI for review: workflow ${job.runName}, run ${job.runId}, step ${job.key.step}, pass ${job.key.pass}.\n\nBase commit: ${job.base}\n\nTeamAI never merges this pull request.`,
       // Run outside the member checkout, so the provider's CLI can neither push from it nor read its branch.
       cwd: os.tmpdir(),

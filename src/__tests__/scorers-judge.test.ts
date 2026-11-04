@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { parse as parseToml } from 'smol-toml';
-import { installedJudgeTools, runLocalJudge } from '../scorers/judge.js';
+import { runLocalJudge } from '../scorers/judge.js';
+import { installedConfinedTools } from '../tool-launch/confined.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 
 let root = '';
@@ -42,8 +43,8 @@ console.log(JSON.stringify({type:'result',structured_output:{label:'good',reason
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), settings: z.object({ env: z.record(z.string(), z.string()) }) }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args).toEqual(expect.arrayContaining(['--restricted', '--tools=Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--permission-prompts', 'none', '--append-system-prompt-file']));
   expect(invocation.args.join(' ')).not.toContain('UNTRUSTED-PROMPT-SECRET');
-  expect(invocation.stdin).toContain('rubric');
-  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(invocation.stdin).toContain('Return only the requested JSON answer.');
+  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('confined');
   for (const key of ['GH_TOKEN', 'BASH_ENV', 'CANARY_TOKEN', '__TEAMAI_ENV_KEYS', 'TEAMAI_LAUNCHED_TOOL', 'TEAMAI_LAUNCHED_CHECKOUT', 'ANTHROPIC_API_KEY']) expect(invocation.env).not.toHaveProperty(key);
   expect(invocation.settings.env).toEqual({ ANTHROPIC_BASE_URL: 'https://gateway.test', ANTHROPIC_DEFAULT_SONNET_MODEL: 'gateway-sonnet' });
 });
@@ -96,7 +97,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:7,output_t
   expect(invocation.env.TEAMAI_JUDGE_API_KEY).toBe('gateway-credential');
   expect(invocation.env).not.toHaveProperty('JUDGE_GATEWAY_TOKEN');
   expect(invocation.env).not.toHaveProperty('BASH_ENV');
-  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('confined');
   expect(await fs.access(invocation.env.CODEX_HOME ?? '').then(() => true, () => false)).toBe(false);
 });
 
@@ -255,7 +256,7 @@ it('runs CodeBuddy with its Claude-like flags, the prompt on stdin, at best-effo
   expect(invocation.stdin).toContain('CODEBUDDY-INLINE-PROMPT');
   expect(invocation.cwd).toBe(await fs.realpath(evidence));
   expect(invocation.env.CODEBUDDY_API_KEY).toBe('buddy-key');
-  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('scorer');
+  expect(invocation.env.TEAMAI_LAUNCHED_BY).toBe('confined');
   expect(invocation.env.TEAMAI_MODE).toBe('unattended');
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
@@ -284,6 +285,14 @@ it('runs pi with only its read tools, no context files, extensions, skills or sa
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
 
+it('fails a judge whose evidence has no prompt, and says to run teamai score again', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+
+  const result = await runLocalJudge({ tool: 'claude', evidence: path.join(root, 'missing'), schema: {} }, { resolveTool: () => null });
+
+  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: expect.stringMatching(/^The judge could not run: .*prompt\.md.*\. Fix that, then run teamai score again\.$/) });
+});
+
 it('fails a pi judge with the error pi reports, though pi exits 0', async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');
@@ -294,7 +303,7 @@ it('fails a pi judge with the error pi reports, though pi exits 0', async () => 
 
   const result = await runLocalJudge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then retry or submit the lease through another driver.' });
+  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then run teamai score again.' });
 });
 
 it('runs agy in plan mode with its sandbox on, the prompt as a stream-json user event, with read access', async () => {
@@ -332,7 +341,7 @@ it('reports the error agy gives in its result when it exits non-zero', async () 
   expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
     ok: false,
     code: 'judge_failed',
-    message: 'agy reported an error: invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high. Fix that, then retry or submit the lease through another driver.',
+    message: 'agy reported an error: invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high. Fix that, then run teamai score again.',
   });
 });
 
@@ -348,7 +357,7 @@ it('reports the reason agy prints when it refuses to start', async () => {
   expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
     ok: false,
     code: 'judge_failed',
-    message: `agy reported an error: ${refusal} Fix that, then retry or submit the lease through another driver.`,
+    message: `agy reported an error: ${refusal} Fix that, then run teamai score again.`,
   });
 });
 
@@ -438,7 +447,7 @@ else { fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(JSON.parse(fs.
 it('offers every launch tool on PATH as a judge, the preferred one first', () => {
   const onPath = new Set(['tclaude', 'codex-internal', 'codebuddy']);
 
-  expect(installedJudgeTools(['codebuddy'], { resolveTool: (tool) => onPath.has(tool) ? `/bin/${tool}` : null })).toEqual(['codebuddy', 'tclaude', 'codex-internal']);
+  expect(installedConfinedTools(['codebuddy'], { resolveTool: (tool) => onPath.has(tool) ? `/bin/${tool}` : null })).toEqual(['codebuddy', 'tclaude', 'codex-internal']);
 });
 
 it('judges with WorkBuddy through the CodeBuddy profile, at best-effort and with full access', async () => {
@@ -449,7 +458,7 @@ it('judges with WorkBuddy through the CodeBuddy profile, at best-effort and with
   const record = path.join(root, 'invocation.json');
   const executable = await recordingFake(root, record, "console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));");
 
-  expect(installedJudgeTools([], { resolveTool: (tool) => tool === 'workbuddy' ? executable : null })).toEqual(['workbuddy']);
+  expect(installedConfinedTools([], { resolveTool: (tool) => tool === 'workbuddy' ? executable : null })).toEqual(['workbuddy']);
   const result = await runLocalJudge({ tool: 'workbuddy', evidence, schema: {} }, { resolveTool: () => executable });
 
   expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'workbuddy', access: 'full', isolation: 'best-effort' } });

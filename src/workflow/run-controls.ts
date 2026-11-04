@@ -7,12 +7,12 @@ import {
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isRecord, isTruthy } from './expression.js';
-import { isItem, itemsAfter, itemsOf } from './fan-out.js';
+import { isItem, itemsAfter, itemsOf, keptResults } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
-import { contextOf, localId, statesIn } from './scope.js';
+import { contextOf, localId, statesIn, type Scope } from './scope.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { isIsolated } from './workspace.js';
@@ -237,10 +237,10 @@ export async function respondToHitl(config: LocalConfig, runId: string, secrets:
 }
 
 /** Stops a whole run or one open step and invalidates the attempts it cancelled. */
-export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string): Promise<WorkflowEnvelope> {
+export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string, message = 'Cancelled by teamai workflow cancel'): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
-    const failure = { code: 'cancelled', message: 'Cancelled by teamai workflow cancel' };
+    const failure = { code: 'cancelled', message };
 
     if (step !== undefined) {
       const reconciled = reconcileRun(run, now);
@@ -273,7 +273,7 @@ export async function cancelRun(config: LocalConfig, runId: string, secrets: Rec
       changed.push(state.id);
 
       if (state.status === 'leased') stopAttempt(run, state, now);
-      cancel(state, failure, run.revision);
+      cancel(state, failure, run.revision, keptResults(run, state, located.step));
       const reconciled = reconcileRun(run, now);
 
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
@@ -293,7 +293,25 @@ interface RetryContainer {
   resetStops: boolean;
 }
 
-function retryContainers(run: RunState, target: StepState): RetryContainer[] | WorkflowEnvelope {
+/**
+ * The steps `state` needs when it is confined, or when it is one of those itself (`isWriter`): together they write the
+ * confined directory under `$TEAMAI_RUN_DIR`, from files the earlier ones left there. None for another step.
+ */
+function confinedWriters(input: { scope: Scope; states: StepState[]; state: StepState; isWriter: boolean }): StepState[] {
+  const { scope, states, state, isWriter } = input;
+  const definition = scope.definition.steps.find((step) => step.id === localId(scope, state));
+
+  if (!isWriter && !(definition?.workspace instanceof Object && 'confined' in definition.workspace)) return [];
+  const needs = new Set(definition?.needs);
+
+  return states.filter((other) => needs.has(localId(scope, other)));
+}
+
+/**
+ * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. When the run
+ * settled, its `$TEAMAI_RUN_DIR` is gone, so a confined step that runs again takes the steps it needs, and theirs, with it.
+ */
+function retryContainers(run: RunState, target: StepState, scratchRemoved: boolean): RetryContainer[] | WorkflowEnvelope {
   const containers: RetryContainer[] = [];
   let child = target;
 
@@ -305,6 +323,7 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
     let states: StepState[];
     let runner: StepState | undefined;
     let dependencies: (state: StepState) => StepState[];
+    let writers: (state: StepState, isWriter: boolean) => StepState[] = () => [];
     let reads: RunReads | undefined;
 
     if (isItem(child)) {
@@ -330,15 +349,24 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
 
         return states.filter((other) => ids.has(localId(scope, other)));
       };
+
+      if (scratchRemoved) writers = (state, isWriter) => confinedWriters({ scope, states, state, isWriter });
     }
 
     const cone = new Set([child]);
+    const written = new Set<StepState>();
 
     for (let changed = true; changed;) {
       changed = false;
 
+      for (const writer of [...cone].flatMap((state) => writers(state, written.has(state)))) {
+        if (written.has(writer)) continue;
+        written.add(writer);
+        changed = true;
+      }
+
       for (const state of states) {
-        if (cone.has(state) || !dependencies(state).some((need) => cone.has(need))) continue;
+        if (cone.has(state) || !(written.has(state) || dependencies(state).some((need) => cone.has(need)))) continue;
         cone.add(state);
         changed = true;
       }
@@ -476,10 +504,11 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       return error('not_retryable', `Step "${step}" is ${target.status}; retry a leased or stopped step, or a HITL request to answer it again`);
     }
 
-    const containers = retryContainers(run, target);
+    // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun.
+    const reopened = run.status !== 'running';
+    const containers = retryContainers(run, target, reopened);
 
     if (!Array.isArray(containers)) return containers;
-    const reopened = run.status !== 'running';
 
     for (const container of containers) {
       if (container.child === target) {
