@@ -16,6 +16,7 @@ export async function resolveKeptSetting<T>(
   config: LocalConfig,
   team: Pick<TeamaiConfig, 'workflows'> | null,
   key: 'retention' | 'driver',
+  // oxlint-disable-next-line teamai/no-unknown-parameters -- take is the parse: each level keeps the value as written
   take: (written: unknown, file: string) => KeptValue<T>,
 ): Promise<{ value: T; file: string } | undefined> {
   const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');

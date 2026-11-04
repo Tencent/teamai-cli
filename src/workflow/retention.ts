@@ -4,7 +4,6 @@
  * warning, and the next level decides. The order is that of every member setting: this scope's config, then
  * ~/.teamai/config.yaml, then the team's teamai.yaml, then the default.
  */
-import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import type { RunState } from './types.js';

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveRunMode } from '../launch-context.js';
-import type { JsonValue } from '../types.js';
+import { isJsonObject, type JsonValue } from '../types.js';
 import { agentEvidence } from './attempt-marker.js';
 import { commandOutputs, type NextPrepare, type WorkflowClient } from './protocol.js';
 import type { WorkflowRunRecord } from './records.js';
@@ -40,13 +40,12 @@ const RUN_DIR = '<run-dir>';
 
 /** `value` with `RUN_DIR` in each of its strings replaced by `dir`. */
 function withRunDir(value: JsonValue, dir: string): JsonValue {
-  if (typeof value === 'string') return value.replaceAll(RUN_DIR, dir);
-
   if (Array.isArray(value)) return value.map((entry) => withRunDir(entry, dir));
 
-  if (value === null || typeof value !== 'object') return value;
+  if (isJsonObject(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, withRunDir(entry, dir)]));
+  const text = z.string().safeParse(value);
 
-  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, withRunDir(entry, dir)]));
+  return text.success ? text.data.replaceAll(RUN_DIR, dir) : value;
 }
 
 /**

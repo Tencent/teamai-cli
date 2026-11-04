@@ -15,7 +15,7 @@ import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
-import { sessionJudgeTool, type ConfinedJudge, type HostChoice, type HostProfile } from './host-profiles.js';
+import type { ConfinedJudge, HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
 import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
@@ -675,7 +675,7 @@ export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillS
  * R13: the agent's answer to the host question; R15 when the run asks none now. `judge`: the confined judge of the
  * session's tool on this machine, which judges the run in the background on a host that starts no child agent.
  */
-export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile; judge?: ConfinedJudge }): Moved<'R13'> | Answered<'R15'> {
+export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile; judgeTool?: string; judge?: ConfinedJudge }): Moved<'R13'> | Answered<'R15'> {
   if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run } } };
 
   // A run without a prompt step asked only for its judge, so its commands run as on any host.
@@ -685,7 +685,7 @@ export function chooseRow(state: SkillState, input: { choice: HostChoice; profil
 
   // The session judges in a fresh subagent, which a host that starts no child agent cannot give it: the background
   // runner judges instead, at best-effort, when the session's tool runs confined here.
-  const tool = sessionJudgeTool(chosen);
+  const tool = input.judgeTool;
 
   if (input.profile.startsChildAgent || tool === undefined) return { row: 'R13', state: chosen };
   const { sessionJudge: _judge, ...rest } = chosen;

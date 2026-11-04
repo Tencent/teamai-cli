@@ -516,7 +516,7 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
     case 'resume':
       return undefined;
     case 'choose':
-      return chooseRow(state, { choice: call.choice, profile: HOST_PROFILES[call.choice], judge: await sessionJudgeOn(state, call.choice) });
+      return chooseRow(state, { choice: call.choice, profile: HOST_PROFILES[call.choice], judgeTool: sessionJudgeTool(state), judge: await sessionJudgeOn(state, call.choice) });
     case 'ack':
       return ackRow(state, call.attempt);
     case 'adopt':

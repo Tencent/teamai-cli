@@ -345,13 +345,19 @@ function holdsGonePathIn(value: JsonValue | undefined, dir: string): boolean {
   return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !fs.existsSync(text);
 }
 
+/** The producers of gone run-dir paths a step reads: the steps of its own workflow, and the ids of those around it. */
+interface RunDirProducers {
+  here: StepState[];
+  enclosing: string[];
+}
+
 /**
  * The steps whose outputs `state`'s templates render where they hold a path inside `runDir`, the run's
  * `$TEAMAI_RUN_DIR`, that is gone: its run's end removed it, and a step that ran since a retry reopened the run brought
  * back only its own. A read only in `if` renders nothing, so it brings no step. `here` are those of `state`'s own
  * workflow; `enclosing`, by id, those of the workflows around it.
  */
-function runDirProducers(input: { scope: Scope; states: StepState[]; state: StepState; runDir: string }): { here: StepState[]; enclosing: string[] } {
+function runDirProducers(input: { scope: Scope; states: StepState[]; state: StepState; runDir: string }): RunDirProducers {
   const { scope, states, state, runDir } = input;
   const id = localId(scope, state);
   const definition = scope.definition.steps.find((step) => step.id === id);
