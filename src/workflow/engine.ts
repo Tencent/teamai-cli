@@ -682,12 +682,13 @@ export async function finishRun(
   if (enterFinalizing(run, result, now)) return { kind: 'finalizing' };
   settleRun(run, now, result);
 
-  // Only the first end sets it: a retry reopened the run since (`limitsFrom`), and another install sweeps by the one it published.
+  // The first end only: a run a retry reopened has `limitsFrom`, and another install sweeps by what that end published.
   if (run.limitsFrom === undefined) {
     const retainedUntil = retentionEnds(now, await resolveRetention(config, await loadTeamConfig(config.repo.localPath)));
 
     if (retainedUntil !== undefined) run.retainedUntil = new Date(retainedUntil).toISOString();
   }
+
   const queued = await queueRunRecord(config, run, driver, 'end', secrets);
   run.endRecordQueued = queued;
 
