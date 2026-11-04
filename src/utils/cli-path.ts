@@ -58,12 +58,18 @@ export function pickWindowsCommand(whereOutput: string): string | null {
  * `where` 是 `which` 的 Windows 原生等价物，返回 `C:\...\claude.cmd` 这类
  * Windows API 能识别的路径。
  *
+ * A bare `where <cmd>` searches the current directory before PATH, so the lookup asks for `$PATH:<cmd>`, which
+ * searches only the PATH entries. `where` reads its argument as a pattern (`dir:name`, `*`, `?`), so a name holding
+ * one of those is not a bare command name and resolves to nothing.
+ *
  * @param cmd  候选命令名
  * @returns    存在且可启动的绝对路径；未安装时返回 null
  */
 function whereOnWindows(cmd: string): string | null {
+  if (/[:*?]/.test(cmd)) return null;
+
   try {
-    const out = execFileSync('where', [cmd], {
+    const out = execFileSync('where', [`$PATH:${cmd}`], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       shell: false,
