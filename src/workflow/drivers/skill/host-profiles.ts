@@ -14,6 +14,8 @@ export interface HostProfile {
   children: 'parallel' | 'serial';
   /** `teamai`: TeamAI makes the worktree a step works in. `host`: the host makes it, and TeamAI adopts it. */
   places: 'teamai' | 'host';
+  /** Whether the host starts a child agent: one that works a step, or judges the run in a fresh context. */
+  startsChildAgent: boolean;
   /**
    * What the driver declares on every `next` of a run this host drives. Every `CanSchema` key is decided per profile, so
    * a new key fails to compile until each one is. A person answers gates through the agent or in their own terminal, and
@@ -29,21 +31,21 @@ export interface HostProfile {
 
 export const HOST_PROFILES: Record<HostChoice, HostProfile> = {
   h1: {
-    label: 'Children that work in a directory TeamAI names, several at once', children: 'parallel', places: 'teamai',
+    label: 'Children that work in a directory TeamAI names, several at once', children: 'parallel', places: 'teamai', startsChildAgent: true,
     can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   h2: {
-    label: 'Children that work in a directory TeamAI names, one at a time', children: 'serial', places: 'teamai',
+    label: 'Children that work in a directory TeamAI names, one at a time', children: 'serial', places: 'teamai', startsChildAgent: true,
     can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   h3: {
-    label: 'Children that work in a worktree your host makes for them, several at once', children: 'parallel', places: 'host',
+    label: 'Children that work in a worktree your host makes for them, several at once', children: 'parallel', places: 'host', startsChildAgent: true,
     can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   // The session works each step itself, beside its own checkout, so it takes no step in a worktree: those wait for the
   // person's terminal, where the local driver runs them.
   h4: {
-    label: 'No child agent: you work each step yourself, one at a time', children: 'serial', places: 'teamai',
+    label: 'No child agent: you work each step yourself, one at a time', children: 'serial', places: 'teamai', startsChildAgent: false,
     can: { hitl: true, workspace: ['read-only'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
 };
@@ -53,6 +55,11 @@ export const HOST_QUESTION = 'Pick how your host runs a child agent, the most sp
 /** What the skill driver declares on every `next` of a run whose host answered `host`; a run without prompt steps declares h1's. */
 export function canFor(host: HostChoice | undefined): Required<DriverCan> {
   return HOST_PROFILES[host ?? 'h1'].can;
+}
+
+/** The tool the session judges the run with, while it does: the one it was driven from last, else the one it started in. */
+export function sessionJudgeTool(state: Pick<SkillState, 'sessionJudge' | 'orchestrator'>): string | undefined {
+  return state.sessionJudge && (state.orchestrator.tool ?? state.sessionJudge.tool);
 }
 
 /**
@@ -67,7 +74,9 @@ export function confinedCan(state: Pick<SkillState, 'judging' | 'sessionJudge' |
     return [{ level, access: isConfinedTool(tool) ? confinedAccess(tool) : 'full', tools: [tool] }];
   }
 
-  return state.sessionJudge ? [{ level: 'best-effort', access: 'read', tools: [state.orchestrator.tool ?? state.sessionJudge.tool] }] : [];
+  const tool = sessionJudgeTool(state);
+
+  return tool === undefined ? [] : [{ level: 'best-effort', access: 'read', tools: [tool] }];
 }
 
 /** A tool this machine runs confined, and the level it reaches here. */

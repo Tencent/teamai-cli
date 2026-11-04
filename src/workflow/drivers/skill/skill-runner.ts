@@ -18,6 +18,7 @@ import { runConfinedStep, type ConfinedStepEnd, type ConfinedStepLease } from '.
 import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
+import { HOST_PROFILES } from './host-profiles.js';
 import { writeSkillState, readSkillState, type AttemptState, type Dispatch, type ReportBody, type SkillState } from './skill-state.js';
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
@@ -303,7 +304,7 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   const brief = await writeChildBrief({
     config: context.config, run: lock.run, attempt, step: open.step, dir: workDir, prompt: prepared.prompt ?? lease.prompt,
     changes: confined ? 'confined' : writes ? 'commit' : interactive && place === 'checkout' && !readOnly ? 'keep' : 'none',
-    by: interactive ? 'person' : state.host.kind === 'chosen' && state.host.id === 'h4' ? 'self' : 'child',
+    by: interactive ? 'person' : state.host.kind === 'chosen' && !HOST_PROFILES[state.host.id].startsChildAgent ? 'self' : 'child',
     output, report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
 

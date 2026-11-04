@@ -15,7 +15,7 @@ import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
-import type { ConfinedJudge, HostChoice, HostProfile } from './host-profiles.js';
+import { sessionJudgeTool, type ConfinedJudge, type HostChoice, type HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
 import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
@@ -685,11 +685,12 @@ export function chooseRow(state: SkillState, input: { choice: HostChoice; profil
 
   // The session judges in a fresh subagent, which a host that starts no child agent cannot give it: the background
   // runner judges instead, at best-effort, when the session's tool runs confined here.
-  if (input.choice !== 'h4' || chosen.sessionJudge === undefined) return { row: 'R13', state: chosen };
-  const { sessionJudge, ...rest } = chosen;
+  const tool = sessionJudgeTool(chosen);
+
+  if (input.profile.startsChildAgent || tool === undefined) return { row: 'R13', state: chosen };
+  const { sessionJudge: _judge, ...rest } = chosen;
 
   if (input.judge) return { row: 'R13', state: { ...rest, judging: { tool: input.judge.tool, level: 'best-effort' } } };
-  const tool = chosen.orchestrator.tool ?? sessionJudge.tool;
   const message = `This host starts no child agent, and ${tool} does not run confined on this machine, so this session does not judge the run: a driver that offers a confined judge, such as the local driver where a judge tool is installed, judges its scored steps.`;
 
   return { row: 'R13', state: withEvent(rest, { kind: 'judging-off', failure: { code: 'no_child_agent', message } }) };

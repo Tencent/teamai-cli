@@ -11,7 +11,7 @@ import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
-import { canFor, confinedCan, HOST_PROFILES, sessionOffers, sessionToolJudge, type ConfinedJudge, type HostChoice } from './host-profiles.js';
+import { canFor, confinedCan, HOST_PROFILES, sessionJudgeTool, sessionOffers, sessionToolJudge, type ConfinedJudge, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
@@ -537,7 +537,9 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
 
 /** The confined judge of the session's tool, probed only when `choice` is a host that starts no child agent for a session judge. */
 async function sessionJudgeOn(state: SkillState, choice: HostChoice): Promise<ConfinedJudge | undefined> {
-  return choice === 'h4' && state.sessionJudge ? sessionToolJudge(state.orchestrator.tool ?? state.sessionJudge.tool) : undefined;
+  const tool = sessionJudgeTool(state);
+
+  return HOST_PROFILES[choice].startsChildAgent || tool === undefined ? undefined : sessionToolJudge(tool);
 }
 
 /**
