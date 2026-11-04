@@ -17,7 +17,8 @@ import { sanitizeGitUrl } from '../utils/redact.js';
 import { publishRunEnd, type HandoffError } from './handoff.js';
 import { pullRequestBranches, RECORDS_DIR, RunRecordFieldsSchema } from './records.js';
 import { resolveRetention, retentionEnds, type ResolvedRetention } from './retention.js';
-import { AttemptIdSchema, attemptsDir, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
+import { parseSnapshot, snapshotPath } from './snapshot.js';
+import { AttemptIdSchema, attemptsDir, installOwner, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
 import type { KeptBranchReason, RunLeftovers, RunState } from './types.js';
 import { basePinBranch, runBranchPrefix, runCopyToMerge } from './workspace.js';
 import { fetchMissingCommits, git, removeWorktree, worktreeCheckout } from './worktree.js';
@@ -326,16 +327,20 @@ async function readSweptRecord(file: string): Promise<{ value: SweptRecord } | {
   }
 }
 
-/** The settled run records on teamai-reports, refreshed first when it can be. */
+/** Refreshes teamai-reports from origin, which the run records and snapshots a sweep reads are on; false when it could not. */
+async function refreshReports(config: LocalConfig): Promise<boolean> {
+  if (!usesBranchWorktree(config)) return true;
+  const { readableReportsWorktree } = await import('../utils/reports-branch.js');
+
+  return readableReportsWorktree(config).then(() => true, (cause: unknown) => {
+    log.warn(`teamai-reports was not refreshed (${causeText(cause)}), so runs published there are not swept: what they show may be out of date.`);
+
+    return false;
+  });
+}
+
+/** The settled run records on teamai-reports, as this machine last refreshed it. */
 async function settledRecords(config: LocalConfig): Promise<SweptRecord[]> {
-  if (usesBranchWorktree(config)) {
-    const { readableReportsWorktree } = await import('../utils/reports-branch.js');
-
-    await readableReportsWorktree(config).catch((cause: unknown) => {
-      log.warn(`teamai-reports was not refreshed (${causeText(cause)}), so runs other machines ended since the last pull are not swept.`);
-    });
-  }
-
   const dir = path.join(getReportsDir(config), RECORDS_DIR);
   const listed = await readNames(dir);
 
@@ -359,6 +364,35 @@ async function settledRecords(config: LocalConfig): Promise<SweptRecord[]> {
   }));
 
   return records.flat().filter((record) => record.status !== 'running');
+}
+
+/**
+ * When run `runId` settled, and the branches its pull requests use, as both what this machine knows (`known`) and the
+ * run's snapshot on teamai-reports say, as this machine last fetched it: a stale local copy, or an end record a retry
+ * made old, never outranks the snapshot. Undefined while the run may still need what it left: its snapshot says it runs,
+ * or another install claimed it and has not settled it since, or the snapshot cannot be read.
+ */
+async function currentlySettled(
+  { config, install }: { config: LocalConfig; install: string },
+  runId: string,
+  known: { settledAt: string; prBranches: string[] },
+): Promise<{ settledAt: string; prBranches: string[] } | undefined> {
+  if (!usesBranchWorktree(config)) return known;
+  const { readReportsOriginFile } = await import('../utils/reports-branch.js');
+  const text = await readReportsOriginFile(getReportsDir(config), snapshotPath(runId));
+
+  if (text === null) return known;
+  const parsed = parseSnapshot(text, runId);
+
+  if (!parsed.ok) return warnNotRemoved(runId, `its snapshot on teamai-reports could not be read (${parsed.error.message})`);
+  const snapshot = parsed.value;
+
+  if (snapshot.status === 'running' || (snapshot.owner.id !== install && Date.parse(snapshot.ownedAt) > Date.parse(snapshot.updatedAt))) return undefined;
+
+  return {
+    settledAt: Date.parse(snapshot.updatedAt) > Date.parse(known.settledAt) ? snapshot.updatedAt : known.settledAt,
+    prBranches: [...new Set([...known.prBranches, ...pullRequestBranches({ id: runId, deliveries: snapshot.deliveries })])],
+  };
 }
 
 function warnNotRemoved(runId: string, reason: string): undefined {
@@ -458,6 +492,8 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
 
   const secrets = await knownSecrets(config);
   const swept: SweptRun[] = [];
+  const fresh = await refreshReports(config);
+  const reports = { config, install: (await installOwner(config)).id };
   const runs = await readRuns(config);
 
   for (const run of runs.filter((item) => item.status !== 'running')) {
@@ -471,7 +507,10 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
       continue;
     }
 
-    if (cleaned(run, 'retention')) continue;
+    if (cleaned(run, 'retention') || (run.publication !== undefined && !fresh)) continue;
+    const current = await currentlySettled(reports, run.id, { settledAt: run.updatedAt, prBranches: pullRequestBranches(run) });
+
+    if (current === undefined || !expired(current.settledAt)) continue;
     const attempts = await attemptsOf(config, run.id);
 
     if ('error' in attempts) {
@@ -479,7 +518,11 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
       continue;
     }
 
-    const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(pullRequestBranches(run)), attempts: attempts.names });
+    // A retry or a claim here since the run was read reopens it: what it left is its own again.
+    const stored = await readRun(config, run.id);
+
+    if (stored === 'missing' || stored === 'corrupt' || stored.revision !== run.revision) continue;
+    const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(current.prBranches), attempts: attempts.names });
 
     if (!removed) continue;
     const { kept, complete, ...gone } = removed;
@@ -497,14 +540,17 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
 
   const local = new Set(runs.map((run) => run.id));
 
-  for (const record of await settledRecords(config)) {
+  for (const record of fresh ? await settledRecords(config) : []) {
     const { endedAt } = record;
 
     if (local.has(record.run) || endedAt === undefined || !expired(endedAt)) continue;
 
     // An older teamai did not record which branches its pull requests use, so none of its branches is known to be free.
     if (record.prs?.length && record.prBranches === undefined) continue;
-    const removed = await removeRun({ checkout, runId: record.run, keep: new Set(record.prBranches), attempts: [] });
+    const current = await currentlySettled(reports, record.run, { settledAt: endedAt, prBranches: record.prBranches ?? [] });
+
+    if (current === undefined || !expired(current.settledAt)) continue;
+    const removed = await removeRun({ checkout, runId: record.run, keep: new Set(current.prBranches), attempts: [] });
 
     if (removed && removed.branches.length + removed.failed.length > 0) {
       swept.push({ run: record.run, from: 'teamai-reports', settledAt: endedAt, branches: removed.branches, worktrees: removed.worktrees, refs: [], failed: removed.failed });

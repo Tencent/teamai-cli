@@ -8,6 +8,8 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { readRun } from '../workflow/store.js';
+import { claimRun, publishRun } from '../workflow/handoff.js';
+import { retryStep } from '../workflow/run-controls.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
 import { runCopyToMerge } from '../workflow/workspace.js';
 import { getReportsDir } from '../types.js';
@@ -268,6 +270,39 @@ steps:
 
 const DAY = 86_400_000;
 
+const FAILS_LAST = NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)");
+
+/** Makes the fixture's team repository one with an origin, which teamai-reports and the run records go to. */
+function shareTeam(config: LocalConfig, root: string): void {
+  const team = config.repo.localPath;
+  const remote = path.join(root, 'team.git');
+  git(team, ['init', '-q', '-b', 'main']);
+  git(team, ['config', 'user.name', 'Test']);
+  git(team, ['config', 'user.email', 'test@example.com']);
+  git(team, ['add', '-A']);
+  git(team, ['commit', '-qm', 'team']);
+  git(root, ['clone', '-q', '--bare', team, remote]);
+  git(team, ['remote', 'add', 'origin', remote]);
+  config.repo = { ...config.repo, kind: 'git', remote };
+  config.usageReportEnabled = true;
+}
+
+/** Another install of the same team, with its own data home and its own clone of the product. */
+async function otherInstall(config: LocalConfig, root: string, origin: string): Promise<{ config: LocalConfig; cwd: string }> {
+  const home = path.join(root, 'other');
+  const team = path.join(home, 'team');
+  const cwd = path.join(home, 'product');
+  git(root, ['clone', '-q', config.repo.remote, team]);
+  git(team, ['config', 'user.name', 'Test']);
+  git(team, ['config', 'user.email', 'test@example.com']);
+  git(root, ['clone', '-q', origin, cwd]);
+  git(cwd, ['remote', 'set-url', 'origin', 'https://github.com/fixture/app.git']);
+  git(cwd, ['config', `url.${origin}.insteadOf`, 'https://github.com/fixture/app.git']);
+  const other: LocalConfig = { ...config, projectRoot: cwd, dataHome: path.join(home, 'data'), repo: { ...config.repo, localPath: team } };
+  await syncWorkflowDefinitions(other);
+  return { config: other, cwd };
+}
+
 describe('doctor --fix past workflows.retention', () => {
   it('keeps what a failed run left until the retention passed, then removes it but the pull request branch, once', async () => {
     const { config, cwd, root, origin, runId } = await fixture(FAILS_AFTER_DELIVERY);
@@ -337,6 +372,65 @@ describe('doctor --fix past workflows.retention', () => {
     expect((await sweepLeftovers(config, null, { now: settled + 15 * DAY, checkout: cwd })).swept).toEqual([expect.objectContaining({ run: runId, worktrees: [dir] })]);
     expect(fs.existsSync(dir)).toBe(false);
     expect(branches(cwd, runId)).toEqual(['change/p1']);
+  });
+
+  it('keeps what a run needs that another install claimed and runs again, though it ended here past the retention', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const ended = await state(config, runId);
+    const other = await otherInstall(config, root, origin);
+    expect(await claimRun(other.config, runId, { checkout: other.cwd })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    expect(await retryStep(other.config, runId, {}, 'join')).toMatchObject({ data: { reopened: true } });
+    const before = branches(origin, runId);
+    expect(before).toContain('left/p1');
+
+    await sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: cwd });
+
+    expect(branches(origin, runId)).toEqual(before);
+  });
+
+  it('goes by when the install that claimed a run settled it, and keeps the pull request branch it delivered', async () => {
+    const ready = path.join(os.tmpdir(), `teamai-leftovers-ready-${process.pid}-${Date.now()}`);
+    const { config, cwd, root, origin, runId } = await fixture(`schemaVersion: v1alpha1
+name: ship
+description: A branch, and a step that delivers once it is ready.
+steps:
+  - id: left
+    workspace: new
+    command: node -e "require('fs').writeFileSync('left.txt', 'L')"
+  - id: join
+    needs: [left]
+    workspace: new
+    deliver: pr
+    command: node -e "require('fs').writeFileSync('join.txt', 'J'); require('fs').existsSync('${ready}') || process.exit(1)"
+`);
+    dirs.push(ready);
+    shareTeam(config, root);
+    fakeGh(path.join(root, 'gh'));
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const ended = await state(config, runId);
+    const other = await otherInstall(config, root, origin);
+    expect(await claimRun(other.config, runId, { checkout: other.cwd })).toMatchObject({ ok: true });
+    expect(await retryStep(other.config, runId, {}, 'join')).toMatchObject({ data: { reopened: true } });
+    fs.writeFileSync(ready, '');
+    expect(await runLocalDriver(other.config, runId, other.cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const delivered = (await readRun(other.config, runId) as RunState).deliveries?.map((receipt) => receipt.branch);
+    expect(delivered).toEqual([`teamai/${runId}/join/p2`]);
+    const settled = Date.parse((await readRun(other.config, runId) as RunState).updatedAt);
+    const before = branches(origin, runId);
+
+    expect(Date.parse(ended.updatedAt)).toBeLessThan(settled);
+
+    await sweepLeftovers(config, null, { now: settled + 14 * DAY - 1, checkout: cwd });
+
+    expect(branches(origin, runId)).toEqual(before);
+
+    await sweepLeftovers(config, null, { now: settled + 14 * DAY, checkout: cwd });
+
+    expect(branches(origin, runId)).toEqual(['join/p2']);
   });
 
   it('keeps every run with workflows.retention never', async () => {
