@@ -11,9 +11,9 @@ import { stepDefinitions } from '../workflow/scope.js';
 import { installOwner, readRuns, RunIdSchema } from '../workflow/store.js';
 import { stepWorkflow, type RunState, type WorkflowDefinition, type WorkflowStep } from '../workflow/types.js';
 import type { RunSubject } from './label.js';
-import { removeSubjectEvidence } from './evidence.js';
+import { isEvidenceReady, removeSubjectEvidence, subjectEvidenceDirOf } from './evidence.js';
 import { scoresDir } from './home.js';
-import { MARK_WINDOW_MS, Marks, type MarkFacts } from './marks.js';
+import { MARK_WINDOW_MS, Marks, type MarkFacts, type MarkKey } from './marks.js';
 import { PassScoring } from './pass-scoring.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import { RunScorers, type RunScorerPins } from './run-scorers.js';
@@ -136,6 +136,16 @@ function expiredUnmarked(runs: readonly RunState[], install: string, { now, live
   return aged.flatMap((run) => scoredPasses(run, install)).flatMap(({ subject }) => (live.has(Subject.format({ kind: 'run', subject })) ? [] : [subject]));
 }
 
+/** The marks keys of the scorers `subject`'s step lists, while what was staged for it is there and its run inside its 14 days. */
+async function listedKeys(config: LocalConfig, subject: RunSubject, now: string): Promise<MarkKey[]> {
+  if (!await isEvidenceReady(subjectEvidenceDirOf(scoresDir(config), subject))) return [];
+  const found = await findRunConfig(subject.runId, config);
+
+  if ('error' in found || Date.parse(found.run.updatedAt) + MARK_WINDOW_MS <= Date.parse(now)) return [];
+
+  return (stepDefinitions(found.run)(subject.step)?.scorers?.names ?? []).map((scorer) => ({ scorer, subject: { kind: 'run', subject } }));
+}
+
 /** A subject automatic judging starts again, with the scorers to start it for. */
 // A type, not an interface, so it is a JSON value the verb prints.
 export type LapsedSubject = { subject: string; scorers: string[] };
@@ -154,6 +164,18 @@ export const ScoreSubjects = {
     });
   },
 
+
+  /**
+   * Of `passes`, each of whose marks closed or expired, those whose staged evidence no judge reads again: none whose run
+   * is inside its 14 days still has a scorer its step lists without a mark.
+   */
+  async settled(config: LocalConfig, passes: readonly RunSubject[], facts: MarkFacts): Promise<RunSubject[]> {
+    const keys = (await Promise.all(passes.map((subject) => listedKeys(config, subject, facts.now)))).flat();
+    const states = await Marks.states(config, keys, facts);
+    const awaited = new Set(keys.flatMap((key, at) => (states[at]?.kind === 'unmarked' ? [Subject.format(key.subject)] : [])));
+
+    return passes.filter((subject) => !awaited.has(Subject.format({ kind: 'run', subject })));
+  },
 
   /**
    * The judge-work passes of run `runId` settled on this install whose step says `start: workflow`, oldest first. With
@@ -179,12 +201,12 @@ export const ScoreSubjects = {
    * mark is a lapse, or waits on CI that has since finished or outwaited the ci step's `--wait`, and those of a pass that
    * no teamai-score run planned, of each run inside its 14 days, that sample it. A scorer someone named is among them, and
    * one nobody asked for that the subject's policy would take now is not. The evidence staged for a pass whose marks all
-   * closed or expired, or whose run is past its 14 days unmarked, is removed.
+   * closed or expired and that no scorer its step lists waits for, or whose run is past its 14 days unmarked, is removed.
    */
   async lapsed(config: LocalConfig, now: string): Promise<LapsedSubject[]> {
     const facts = markFacts(config, now);
     const marked = await Marks.passes(config, facts);
-    await removeSubjectEvidence(scoresDir(config), marked.closed);
+    await removeSubjectEvidence(scoresDir(config), await ScoreSubjects.settled(config, marked.closed, facts));
     const marks = await Marks.restartable(config, facts);
     const list = new Map<string, Set<string>>();
     const add = (subject: string, scorers: readonly string[]) => list.set(subject, new Set([...list.get(subject) ?? [], ...scorers]));

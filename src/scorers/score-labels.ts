@@ -28,6 +28,7 @@ import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import type { ScoreAttempt } from './score-attempt.js';
 import { markFacts, plannedSessionPins, scorerStages, type Refusal } from './score-plan.js';
 import { ScoreStage, type StageRecord } from './score-stage.js';
+import { ScoreSubjects } from './score-subjects.js';
 import { evidenceHash, judgedFacts, type JudgedFacts } from './scoring-evidence.js';
 import { failingLabel } from './scoring-stages.js';
 import { Subject } from './subject.js';
@@ -294,7 +295,8 @@ function keysOf(subject: Subject, scorers: ReadonlyArray<{ name: string; pin?: P
 
 /**
  * Closes each key the attempt's root run holds open with its outcome; a key it does not hold, as a hand label's, is left
- * alone. A pass whose every mark is then closed has its evidence staged from a clone removed: no judge reads it again.
+ * alone. A pass whose every mark is then closed, and no scorer its step lists waits for, has its evidence staged from a
+ * clone removed: no judge reads it again.
  */
 async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: MarkKey; outcome: MarkOutcome }>, now: string): Promise<{ ok: true; closed: number } | Refusal> {
   const facts = markFacts(attempt.config, now);
@@ -310,7 +312,7 @@ async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: M
     if ((await Marks.close(attempt.config, [key], outcome, facts)).status === 'busy') return refused('busy', 'Another teamai process is writing the scoring marks of this data home. Run the step again.');
   }
 
-  await removeSubjectEvidence(scoresDir(attempt.config), (await Marks.passes(attempt.config, facts)).closed);
+  await removeSubjectEvidence(scoresDir(attempt.config), await ScoreSubjects.settled(attempt.config, (await Marks.passes(attempt.config, facts)).closed, facts));
 
   return { ok: true, closed: held.length };
 }

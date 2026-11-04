@@ -861,6 +861,42 @@ describe('score label and score write', () => {
     expect(fs.existsSync(copy ?? '')).toBe(false);
   });
 
+  it('keep the evidence staged from a clone while a scorer its step lists has no mark yet, so a later run judges it', async () => {
+    const config = await team({}, { clarity: scorer(), coverage: scorer() });
+    const checkout = config.projectRoot ?? '';
+    const from = git(checkout, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'trial.yaml'), `schemaVersion: v1alpha1
+name: trial
+description: Try a change in a clone.
+steps:
+  - id: work
+    prompt: Paginate /users.
+    workspace: { clone: { commit: ${from}, team: { treatment: none } } }
+    scorers: { names: [clarity, coverage], start: workflow }
+`);
+    await syncScorersThenWorkflows(config);
+    const runId = String(data(await startRun(config, 'trial', {}, { secrets: await knownSecrets(config), checkout })).run);
+    const lease = LeaseSchema.extend({ workspace: z.object({ branch: z.string() }) })
+      .parse(data(await leaseNext(config, runId, external, { can: { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', tools: ['claude'] }, prepare: true })).lease);
+    git(checkout, 'checkout', '-q', '-B', lease.workspace.branch, from);
+    fs.writeFileSync(path.join(checkout, 'users.ts'), 'export const users = (page = 1) => all().slice((page - 1) * 50, page * 50);\n');
+    git(checkout, 'add', '.');
+    git(checkout, 'commit', '-qm', 'paginate');
+    const to = git(checkout, 'rev-parse', 'HEAD');
+    data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, tool: 'claude', changes: { branch: lease.workspace.branch, base: from, from, to, commits: [to] } }));
+    const run = await readRun(config, runId);
+    if (run === 'missing' || run === 'corrupt') throw new Error(run);
+    const copy = await stageEvidence(config, run, { runId, step: 'work', pass: 1 }, { checkout, untrustedEnv: process.env });
+    git(checkout, 'checkout', '-q', 'main');
+    const judged = (scorers: string[]) => ({ judge: { answer: { label: 'good', reasoning: 'ok' } }, inputs: { scorers } });
+
+    expect(copy !== undefined && fs.existsSync(copy)).toBe(true);
+    expect((await walk(config, `run:${runId}:work:1`, judged(['clarity']))).answers.get('score[0].label')).toMatchObject({ ok: true, output: { labels: [{ scorer: 'clarity', label: 'good' }] } });
+    await ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
+    expect((await walk(config, `run:${runId}:work:1`, judged(['coverage']))).answers.get('score[0].label')).toMatchObject({ ok: true, output: { labels: [{ scorer: 'coverage', label: 'good' }] } });
+    expect(fs.existsSync(copy ?? '')).toBe(false);
+  });
+
   it('remove, when the next run lists what lapsed, the evidence staged for a pass whose marks expired', async () => {
     const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
     const runId = await deliveredRun(config);
