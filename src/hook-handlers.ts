@@ -21,6 +21,7 @@ import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { pathExists } from './utils/fs.js';
+import { UPDATE_BUDGET_MS } from './update-policy.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -76,12 +77,6 @@ const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
  * cap. It is a local dedup-cache check that completes in microseconds anyway.
  */
 const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
-
-/**
- * Detached updates can spend 5s checking, 60s installing and 15s refreshing hooks.
- * Dispatch must not exit and sweep the update lock while the installer still runs.
- */
-const UPDATE_TIMEOUT_MS = 90_000;
 
 /**
  * Background (detached) local-agent HTTP report/sync. Detached runs are not
@@ -1459,7 +1454,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // to the npm registry — so they run detached to avoid pushing the Stop hook
     // past the host's hook timeout (CodeBuddy kills hooks at ~10s regardless of
     // the declared timeout).
-    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_BUDGET_MS, background: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     // Optional background LLM-judge (issue #723). Opt-in via TEAMAI_UPVOTE_JUDGE=1;
     // detached so it never delays the Stop. gitOnly (HTTP teams skip upvotes).
