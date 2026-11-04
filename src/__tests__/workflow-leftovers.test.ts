@@ -95,6 +95,33 @@ exec '${real}' "$@"
   return () => fs.readFileSync(marker, 'utf8').trim();
 }
 
+/**
+ * Puts a git first on PATH that holds the first command matching `pattern` until `go`, as a slow network would.
+ * `reached` resolves once that command is held.
+ */
+function pausesOn(root: string, pattern: string): { reached: () => Promise<void>; go: () => void } {
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const bin = path.join(root, 'pausing-bin');
+  const held = path.join(root, 'held');
+  const released = path.join(root, 'released');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+if test ! -f '${held}' && echo " $* " | grep -Eq -- '${pattern}'; then
+  touch '${held}'
+  while test ! -f '${released}'; do sleep 0.05; done
+fi
+exec '${real}' "$@"
+`, { mode: 0o755 });
+  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+
+  return {
+    reached: () => vi.waitFor(() => {
+      if (!fs.existsSync(held)) throw new Error(`no git command matching ${pattern} ran`);
+    }, { timeout: 20_000, interval: 20 }),
+    go: () => fs.writeFileSync(released, ''),
+  };
+}
+
 const SHIP_ISSUE = `schemaVersion: v1alpha1
 name: ship
 description: Build each part on its own branch, then deliver them together.
@@ -524,6 +551,41 @@ steps:
 
     expect(branches(origin, runId)).toEqual(before);
     expect(warn).toHaveBeenCalledWith(`teamai-reports is being written by another teamai process (${lock} is held), so runs published there are not swept this time. teamai doctor --fix tries again.`);
+  });
+
+  it('does not reopen a run while doctor --fix removes its branches', async () => {
+    const { config, cwd, root, runId } = await fixture(FAILS_LAST);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const ended = await state(config, runId);
+    const release = pausesOn(root, '--delete');
+
+    const sweeping = sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: cwd });
+    await release.reached();
+
+    expect(await retryStep(config, runId, {}, 'join')).toEqual({ error: {
+      code: 'busy', message: `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry ${runId} join`,
+    } });
+    release.go();
+    expect((await sweeping).swept).toEqual([expect.objectContaining({ run: runId })]);
+    expect(await state(config, runId)).toMatchObject({ status: 'failed', revision: ended.revision });
+  });
+
+  it('keeps what a run needs that a retry reopens while doctor --fix runs', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const ended = await state(config, runId);
+    const before = branches(origin, runId);
+    const release = pausesOn(root, 'push.*teamai-reports');
+
+    const retrying = retryStep(config, runId, {}, 'join');
+    await release.reached();
+    const swept = await sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: cwd });
+    release.go();
+
+    expect(await retrying).toMatchObject({ data: { reopened: true } });
+    expect(swept.swept).toEqual([]);
+    expect(branches(origin, runId)).toEqual(before);
   });
 
   it('keeps every run with workflows.retention never', async () => {

@@ -14,7 +14,7 @@ import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishReopenMark, publishRunRecords, queueRunRecord, removeQueuedEndRecord, runRecordState } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { isRunId, readRun } from './store.js';
+import { isRunId, readRun, withCleanupLock } from './store.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { isIsolated } from './workspace.js';
@@ -439,6 +439,16 @@ export function restartCommand(run: RunState): string {
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
+  if (!isRunId(runId)) return retryUnlocked(config, runId, secrets, step);
+  const locked = await withCleanupLock(config, runId, () => retryUnlocked(config, runId, secrets, step));
+
+  return locked.kind === 'held'
+    ? locked.value
+    : error('busy', `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: ${retryCommand(runId, step)}`);
+}
+
+/** `retryStep` once doctor --fix cannot remove what the run left until it is done. */
+async function retryUnlocked(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
   const found = isRunId(runId) ? await readRun(config, runId) : 'missing';
   // Published before the run lock, which no network call may hold; under it, the run must still be as it was read here.
   const mark = found === 'missing' || found === 'corrupt' || found.status === 'running' ? undefined : { revision: found.revision, delivery: await publishReopenMark(config, found, secrets) };

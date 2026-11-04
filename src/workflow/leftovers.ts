@@ -18,7 +18,7 @@ import { publishRunEnd, type HandoffError } from './handoff.js';
 import { pullRequestBranches, RECORDS_DIR, RunRecordFieldsSchema } from './records.js';
 import { resolveRetention, retentionEnds, type ResolvedRetention } from './retention.js';
 import { parseSnapshot, snapshotPath } from './snapshot.js';
-import { AttemptIdSchema, attemptsDir, installOwner, readRun, readRuns, RunIdSchema, updateRun } from './store.js';
+import { AttemptIdSchema, attemptsDir, installOwner, readRun, readRuns, RunIdSchema, updateRun, withCleanupLock } from './store.js';
 import type { KeptBranchReason, RunLeftovers, RunState } from './types.js';
 import { basePinBranch, runBranchPrefix, runCopyToMerge } from './workspace.js';
 import { fetchMissingCommits, git, removeWorktree, worktreeCheckout } from './worktree.js';
@@ -531,7 +531,7 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
 
     if (!expired(run.updatedAt)) {
       if (run.status === 'succeeded' && !cleaned(run, 'success')) {
-        await cleanUpSucceededRun(config, { runId: run.id, checkout: at, secrets, notPublished: await publishRunEnd(config, run.id, at) });
+        await withCleanupLock(config, run.id, async () => cleanUpSucceededRun(config, { runId: run.id, checkout: at, secrets, notPublished: await publishRunEnd(config, run.id, at) }));
       }
 
       continue;
@@ -548,22 +548,27 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
       continue;
     }
 
-    // A retry or a claim here since the run was read reopens it: what it left is its own again.
-    const reread = await readRun(config, run.id);
+    // A retry here reopens the run only outside this lock: one since the run was read makes what it left its own again.
+    const locked = await withCleanupLock(config, run.id, async () => {
+      const reread = await readRun(config, run.id);
 
-    if (reread === 'missing' || reread === 'corrupt' || reread.revision !== run.revision) continue;
-    const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(current.prBranches), attempts: attempts.names });
+      if (reread === 'missing' || reread === 'corrupt' || reread.revision !== run.revision) return undefined;
+      const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(current.prBranches), attempts: attempts.names });
 
-    if (!removed) continue;
-    const { kept, complete, ...gone } = removed;
-    const leftovers: RunLeftovers = { by: 'retention', at: new Date(now).toISOString(), revision: run.revision, kept: kept.map((branch) => ({ branch, why: 'pr' })), deleted: gone.branches, failed: gone.failed };
+      // A ref or worktree that stayed leaves the run uncleaned, so the next sweep tries it again.
+      if (removed?.complete) {
+        const leftovers: RunLeftovers = { by: 'retention', at: new Date(now).toISOString(), revision: run.revision, kept: removed.kept.map((branch) => ({ branch, why: 'pr' })), deleted: removed.branches, failed: removed.failed };
 
-    // A ref or worktree that stayed leaves the run uncleaned, so the next sweep tries it again.
-    if (complete) {
-      await updateRun(config, run.id, secrets, async (stored) => (
-        stored === 'missing' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
-      ));
-    }
+        await updateRun(config, run.id, secrets, async (stored) => (
+          stored === 'missing' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }
+        ));
+      }
+
+      return removed;
+    });
+
+    if (locked.kind === 'busy' || locked.value === undefined) continue;
+    const { kept: _kept, complete: _complete, ...gone } = locked.value;
 
     if (gone.branches.length + gone.worktrees.length + gone.refs.length + gone.failed.length > 0) swept.push({ run: run.id, from: 'local', settledAt: run.updatedAt, ...gone });
   }
@@ -580,7 +585,13 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     const current = await currentlySettled(reports, record.run, { settledAt: endedAt, prBranches: record.prBranches ?? [] });
 
     if (current === undefined || !expired(current.settledAt)) continue;
-    const removed = await removeRun({ checkout, runId: record.run, keep: new Set(current.prBranches), attempts: [] });
+
+    // A claim here since the runs were read makes the run this machine's, which the next sweep goes by.
+    const locked = await withCleanupLock(config, record.run, async () => (
+      await readRun(config, record.run) === 'missing' ? removeRun({ checkout, runId: record.run, keep: new Set(current.prBranches), attempts: [] }) : undefined
+    ));
+
+    const removed = locked.kind === 'held' ? locked.value : undefined;
 
     if (removed && removed.branches.length + removed.failed.length > 0) {
       swept.push({ run: record.run, from: 'teamai-reports', settledAt: endedAt, branches: removed.branches, worktrees: removed.worktrees, refs: [], failed: removed.failed });

@@ -53,6 +53,26 @@ export function runLockPath(config: LocalConfig, runId: string): string {
   return path.join(runsDir(config), `${runId}.lock`);
 }
 
+/** What `withCleanupLock` did: ran its action, which answered `value`, or found the lock `busy` and ran nothing. */
+export type CleanupLocked<T> = { kind: 'held'; value: T } | { kind: 'busy' };
+
+/**
+ * Runs `action` holding run `runId`'s cleanup lock, taken without waiting: by `doctor --fix` from its last check of the
+ * run through removing what it left, and by a retry while it reopens the run, so neither runs inside the other. Never
+ * the run lock, which no network call may hold.
+ */
+export async function withCleanupLock<T>(config: LocalConfig, runId: string, action: () => Promise<T>): Promise<CleanupLocked<T>> {
+  const lock = path.join(runsDir(config), `${runId}.cleanup.lock`);
+
+  if (!await acquireLock(lock)) return { kind: 'busy' };
+
+  try {
+    return { kind: 'held', value: await action() };
+  } finally {
+    await releaseLock(lock);
+  }
+}
+
 /** Held while this machine delivers a run's pull requests: never the run lock, which no network call may hold. */
 export function deliveryLockPath(config: LocalConfig, runId: string): string {
   return path.join(runsDir(config), `${runId}.delivery.lock`);
