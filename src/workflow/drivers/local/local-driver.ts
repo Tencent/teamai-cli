@@ -11,6 +11,7 @@ import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env
 import { resolveRunMode, workflowLaunch, type RunMode } from '../../../launch-context.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import { log } from '../../../utils/logger.js';
+import { redact } from '../../../utils/redact.js';
 import { AgentSession } from '../../../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
@@ -167,6 +168,8 @@ export interface LocalDriverOptions {
   resolveTool?: (executable: string) => string | null;
   /** Called with the runs each report the engine took answers its settled passes started, which the caller drives. */
   started?: (runs: readonly StartedRun[]) => void;
+  /** Shown each line a command step writes to stderr as it writes it, masked: what a shortcut of the run shows live. */
+  progress?: (line: string) => void;
 }
 
 /** A lease as this driver runs it: what the engine sent, and what staging it adds. A step staged after `expiresAt` does not start. */
@@ -380,8 +383,32 @@ async function resumeSession(archive: SessionArchive, lease: Lease, tool: Launch
 async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandExit, secrets: Record<string, string>): Promise<ReportBody> {
   const end = commandEnd(result);
   await AttemptResult.write(attemptResultPath(config, lock.run, lease.attempt), end.outputs !== undefined ? { output: end.outputs } : {}, secrets);
+  // What a command says as it runs goes to its stderr, so its stdout stays the step's outputs.
+  const progress = result.stderr.split(/\r?\n/).filter((line) => line.trim() !== '').map((line) => masked(line, secrets));
+  const body: ReportBody = { attempt: lease.attempt, revision: lease.revision, driver, ...end };
 
-  return { attempt: lease.attempt, revision: lease.revision, driver, ...end };
+  if (progress.length > 0) body.progress = progress;
+
+  return body;
+}
+
+function masked(line: string, secrets: Record<string, string>): string {
+  return redact(line, { envSecrets: secrets, patterns: false });
+}
+
+/** Writes that call `show` with each whole line of the chunks given, and with what is left once `end` is called. */
+function lineSplitter(show: (line: string) => void) {
+  let rest = '';
+  const each = (line: string): void => { if (line.trim() !== '') show(line); };
+
+  return {
+    write: (chunk: string): void => {
+      const lines = `${rest}${chunk}`.split(/\r?\n/);
+      rest = lines.pop() ?? '';
+      lines.forEach(each);
+    },
+    end: (): void => { each(rest); rest = ''; },
+  };
 }
 
 /**
@@ -1039,9 +1066,17 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
             if (forwarded) handle(forwarded);
 
             // The lease `env` is set over the step's environment, so its values reach the shell only as variables.
-            return startGroupedCommand({
+            const input: Parameters<typeof startGroupedCommand>[0] = {
               command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, runId, lease.attempt, mode) }, detached, group: attemptDir(config, runId, lease.attempt),
-            });
+            };
+
+            const { progress } = options;
+
+            if (!progress) return startGroupedCommand(input);
+            const shown = lineSplitter((line) => progress(masked(line, turn.secrets)));
+            const grouped = startGroupedCommand({ ...input, onStderr: shown.write });
+
+            return { ...grouped, exit: grouped.exit.finally(shown.end) };
           },
         ) });
       }
