@@ -1796,7 +1796,7 @@ const maintenanceCmd = recallCmd
   .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', parseFloat)
   .option('--archive', 'Move to archive/ instead of deleting')
   .option('--confidence-writeback', 'Update frontmatter confidence scores')
-  .option('--update-quality', 'Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. A person starts it from their own terminal. --dry-run only lists the entries')
+  .option('--update-quality', 'Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. --dry-run only lists the entries')
   .option('--json', 'With --update-quality: print the run\'s JSON envelope instead of its text')
   .option('--dry-run', 'Show what would be done without making changes')
   .action(async (localOpts) => {

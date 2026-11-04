@@ -507,7 +507,7 @@ Generated: do not edit by hand. Regenerate with
     - `--threshold <n>` — Confidence threshold for pruning (default 0.15)
     - `--archive` — Move to archive/ instead of deleting
     - `--confidence-writeback` — Update frontmatter confidence scores
-    - `--update-quality` — Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. A person starts it from their own terminal. --dry-run only lists the entries
+    - `--update-quality` — Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. --dry-run only lists the entries
     - `--json` — With --update-quality: print the run's JSON envelope instead of its text
     - `--dry-run` — Show what would be done without making changes
     - `teamai recall maintenance stale` — A step of a teamai-draft-learning-updates run: list the docs, rules and skills recalled often but rarely adopted, as --update-quality --dry-run does, on stderr. Prints {"entries":[{"doc_id","path","type","recalled_count","upvoted_count","user_count"}]}.

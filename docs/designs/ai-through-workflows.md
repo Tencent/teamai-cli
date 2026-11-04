@@ -47,11 +47,14 @@ Generating AI-powered update drafts...
 Review drafts, then rename .draft.md -> .md to apply updates.
 ```
 
-Behind it, a run of `teamai-draft-learning-updates` on the default driver. `--json` prints the run's envelope instead
-of the text. The same run works from the skill driver:
+Behind it, a run of `teamai-draft-learning-updates` on the driver `workflows.driver` names (local when unset). `--json`
+prints the run's envelope instead of the text. No shortcut grows a `--driver` flag: a member whose agent drives runs
+sets it once, and the same command leaves the run for the agent's `teamai workflow next`:
 
-```text
-$ teamai recall maintenance --update-quality --driver skill
+```yaml
+# ~/.teamai/config.yaml
+workflows:
+  driver: none
 ```
 
 A team changes the prompt, the timeout or the model by committing a file of the same name. It runs the same

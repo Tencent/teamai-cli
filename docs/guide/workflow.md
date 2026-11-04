@@ -989,9 +989,21 @@ steps:
 
 teamai before 0.28.0 drops a workflow that sets `invoke` or `alias`, so members and CI jobs need 0.28.0 or later. `teamai review --branch` warns about each workflow that adds either key.
 
-A process runs inside an agent session when an agent's session variable, such as `CLAUDE_CODE_SESSION_ID`, is set. From there, `workflow start` of a `deny` workflow answers `invoke_denied`. The message names the command the person runs in their own terminal, and the `invoke` setting that lets agents start the workflow. An `ask` workflow answers `confirm_needed` without `--confirmed`, which the session adds once the person agreed. In an unattended run (`TEAMAI_MODE=unattended`, or `CI`), it answers `unattended_denied`, also with `--confirmed`, since no person is there to agree. These hold with every driver, and with no driver. `CI` exempts nothing: a CI job starts any workflow because it sets no session variable. A `workflow start --driver skill` counts as an agent's even when its host sets no such variable, since only a coding agent drives the skill driver.
+A process runs inside an agent session when an agent's session variable, such as `CLAUDE_CODE_SESSION_ID`, is set. From there, `workflow start` of a `deny` workflow answers `invoke_denied`. The message names the command the person runs in their own terminal, and the `invoke` setting that lets agents start the workflow. An `ask` workflow answers `confirm_needed` without `--confirmed`, which the session adds once the person agreed. In an unattended run (`TEAMAI_MODE=unattended`, or `CI`), it answers `unattended_denied`, also with `--confirmed`, since no person is there to agree. These hold with every driver, and with no driver. `CI` exempts nothing: a CI job starts any workflow because it sets no session variable. A `workflow start --driver skill` counts as an agent's even when its host sets no such variable, since only a coding agent drives the skill driver. A command that starts a default workflow for you is not judged, since the session asked for the command: from an agent session, `teamai recall maintenance --update-quality` runs, and `teamai workflow start teamai-draft-learning-updates` answers `invoke_denied`.
 
 No run starts or is driven from inside a step of another run. The process of a step carries `TEAMAI_WORKFLOW_ATTEMPT`: the local driver sets it for the commands it runs and the tools of its prompt steps, the skill driver for its runners and their commands, and every driver for setup. With it set, every `workflow` command that changes a run (`start`, `next`, `report`, `respond`, `retry`, `cancel`, `resume`, and `publish`) answers `nested_workflow`, except a skill driver runner's report of its own attempt. `start` also answers `nested_workflow` in a workflow worktree under `.teamai/workflow-worktrees`, and in a checkout on a `teamai/<run>/...` branch. The other commands still work there, since a step's child reports from its place. To run another workflow as part of a run, add it to the definition as a `workflow` step.
+
+A command that starts a default workflow for you still runs as a step's command. It drives its own run in the step's process, on the local driver whatever `workflows.driver` says, and the step ends when that run does:
+
+```yaml
+# workflows/weekly-quality.yaml in the team repo
+schemaVersion: v1alpha1
+name: weekly-quality
+description: Draft updates of the entries the team recalls often but rarely adopts.
+steps:
+  - id: drafts
+    command: teamai recall maintenance --update-quality
+```
 
 ### Workflow skills
 
@@ -1041,7 +1053,7 @@ In an unattended run, describe asks no question. It answers the start of the rec
 
 Every process TeamAI starts for a step, setup included, gets the run's `TEAMAI_MODE`, with either driver. The skill driver keeps the mode that its start, or a `resume --driver skill`, resolved. The local driver resolves it each time it starts driving, with `start` or `resume`.
 
-The run records who started it in `startedBy`: `agent` when the start came from an agent session or through `--driver skill`, `cli` for teamai's own automatic starts (the `teamai-score` run the scoring module starts after a pass, and the `teamai-finished-sessions` run a session start or `teamai score --drain` starts), else `person`. A published run keeps it.
+The run records who started it in `startedBy`: `agent` when the start came from an agent session or through `--driver skill`, `cli` for teamai's own automatic starts (the `teamai-score` run the scoring module starts after a pass, and the `teamai-finished-sessions` run a session start or `teamai score --drain` starts) and for a command that starts a default workflow, such as `teamai recall maintenance --update-quality`, run from an agent session or a step, else `person`. A published run keeps it.
 
 ### Answers only the person gives
 
@@ -1074,7 +1086,7 @@ teamai ships workflows a team gets without writing them:
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
 | `teamai-score` | labels one workflow pass or session with the team's [scorers](scorers.md#the-teamai-score-workflow). [`teamai score`](scorers.md#on-demand) and `teamai-share-session` start it | never: `invoke: deny`, so no agent session starts it |
-| `teamai-draft-learning-updates` | drafts an update of each doc, rule and skill the team recalls often but rarely adopts, as `<entry>.draft.md` beside it, through [`teamai recall maintenance --update-quality`](knowledge.md#knowledge-base-maintenance). Private | never: `invoke: deny`, so no agent session starts it |
+| `teamai-draft-learning-updates` | drafts an update of each doc, rule and skill the team recalls often but rarely adopts, as `<entry>.draft.md` beside it, through [`teamai recall maintenance --update-quality`](knowledge.md#knowledge-base-maintenance). Private | never by name: `invoke: deny`. The command runs it from an agent session too |
 | `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
 | `teamai-self-improvement` | changes the team's assets from a scorer's repeated failures and adds one regression task per failure, as one pull request the next run updates, through [`teamai self-improvement run`](self-improvement.md). Inputs: `scorer`, `suite` | always |
 | `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team as a pull request from the [team workspace](#the-team-workspace). Inputs: `session`, `source`, `suite`, `start`, `solution` | always |

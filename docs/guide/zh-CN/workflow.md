@@ -989,9 +989,21 @@ steps:
 
 0.28.0 之前的 teamai 会丢弃设置了 `invoke` 或 `alias` 的工作流，所以成员和 CI 任务需要 0.28.0 或更高版本。`teamai review --branch` 会对每个新增这两个键之一的工作流给出警告。
 
-设置了 agent 的会话变量（如 `CLAUDE_CODE_SESSION_ID`）的进程，就算在 agent 会话内运行。在这样的进程中，`workflow start` 启动 `deny` 工作流时返回 `invoke_denied`。消息会给出本人在自己终端运行的命令，以及让 agent 能启动该工作流的 `invoke` 设置。启动 `ask` 工作流时，没有 `--confirmed` 就返回 `confirm_needed`；会话在本人同意后加上它。在无人值守的运行中（`TEAMAI_MODE=unattended` 或 `CI`），即使带 `--confirmed` 也返回 `unattended_denied`，因为没有人能同意。这些规则对所有驱动都成立，不指定驱动时也一样。`CI` 不豁免任何东西：CI 任务能启动任何工作流，是因为它不设置会话变量。`workflow start --driver skill` 即使宿主没有设置这类变量也算 agent 发起，因为只有编码 agent 会驱动 skill 驱动。
+设置了 agent 的会话变量（如 `CLAUDE_CODE_SESSION_ID`）的进程，就算在 agent 会话内运行。在这样的进程中，`workflow start` 启动 `deny` 工作流时返回 `invoke_denied`。消息会给出本人在自己终端运行的命令，以及让 agent 能启动该工作流的 `invoke` 设置。启动 `ask` 工作流时，没有 `--confirmed` 就返回 `confirm_needed`；会话在本人同意后加上它。在无人值守的运行中（`TEAMAI_MODE=unattended` 或 `CI`），即使带 `--confirmed` 也返回 `unattended_denied`，因为没有人能同意。这些规则对所有驱动都成立，不指定驱动时也一样。`CI` 不豁免任何东西：CI 任务能启动任何工作流，是因为它不设置会话变量。`workflow start --driver skill` 即使宿主没有设置这类变量也算 agent 发起，因为只有编码 agent 会驱动 skill 驱动。替你启动默认工作流的命令不受这些判断，因为会话请求的是命令：在 agent 会话中，`teamai recall maintenance --update-quality` 可以运行，而 `teamai workflow start teamai-draft-learning-updates` 返回 `invoke_denied`。
 
 运行的步骤内不能启动或驱动另一次运行。步骤的进程带有 `TEAMAI_WORKFLOW_ATTEMPT`：本地驱动为它运行的命令和提示词步骤的工具设置它，skill 驱动为它的 runner 及其命令设置它，所有驱动都为 setup 设置它。设置了它时，每个会改变运行的 `workflow` 命令（`start`、`next`、`report`、`respond`、`retry`、`cancel`、`resume` 和 `publish`）都返回 `nested_workflow`，只有 skill 驱动的 runner 上报它自己的 attempt 除外。在 `.teamai/workflow-worktrees` 下的工作流 worktree 中，以及在 `teamai/<run>/...` 分支上的检出中，`start` 也返回 `nested_workflow`。其他命令在那里仍然可用，因为步骤的子 agent 从它的位置上报。要让另一个工作流成为运行的一部分，把它作为 `workflow` 步骤加入定义。
+
+替你启动默认工作流的命令仍可作为步骤的命令运行。它在步骤的进程中、用本地驱动驱动自己的运行（不管 `workflows.driver` 如何设置），该运行结束时步骤才结束：
+
+```yaml
+# workflows/weekly-quality.yaml in the team repo
+schemaVersion: v1alpha1
+name: weekly-quality
+description: Draft updates of the entries the team recalls often but rarely adopts.
+steps:
+  - id: drafts
+    command: teamai recall maintenance --update-quality
+```
 
 ### 工作流 skill
 
@@ -1041,7 +1053,7 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 无论用哪种驱动，TeamAI 为步骤启动的每个进程（包括 setup）都会拿到这次运行的 `TEAMAI_MODE`。skill 驱动沿用启动时或 `resume --driver skill` 时解析出的模式；本地驱动在每次开始驱动时（`start` 或 `resume`）重新解析。
 
-运行在 `startedBy` 中记录是谁启动了它：从 agent 会话中或通过 `--driver skill` 启动时为 `agent`；teamai 自己的自动启动（评分模块在每个 pass 之后启动的 `teamai-score` 运行，以及会话开始或 `teamai score --drain` 启动的 `teamai-finished-sessions` 运行）为 `cli`；否则为 `person`。发布的运行会保留它。
+运行在 `startedBy` 中记录是谁启动了它：从 agent 会话中或通过 `--driver skill` 启动时为 `agent`；teamai 自己的自动启动（评分模块在每个 pass 之后启动的 `teamai-score` 运行，以及会话开始或 `teamai score --drain` 启动的 `teamai-finished-sessions` 运行），以及从 agent 会话或步骤中运行的、启动默认工作流的命令（如 `teamai recall maintenance --update-quality`），为 `cli`；否则为 `person`。发布的运行会保留它。
 
 ### 只有本人能给的回答
 
@@ -1074,7 +1086,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
 | `teamai-score` | 用团队的[评分器](scorers.md#teamai-score-工作流)给一个工作流 pass 或会话打标签。由 [`teamai score`](scorers.md#按需评分) 和 `teamai-share-session` 启动 | 从不：`invoke: deny`，任何 agent 会话都不能启动它 |
-| `teamai-draft-learning-updates` | 为团队经常召回却很少采用的每个 doc、rule 和 skill 起草更新，写成它旁边的 `<entry>.draft.md`，由 [`teamai recall maintenance --update-quality`](knowledge.md#知识库维护) 启动。私有 | 从不：`invoke: deny`，任何 agent 会话都不能启动它 |
+| `teamai-draft-learning-updates` | 为团队经常召回却很少采用的每个 doc、rule 和 skill 起草更新，写成它旁边的 `<entry>.draft.md`，由 [`teamai recall maintenance --update-quality`](knowledge.md#知识库维护) 启动。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
 | `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
 | `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
