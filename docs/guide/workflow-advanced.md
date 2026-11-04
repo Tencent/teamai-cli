@@ -273,6 +273,8 @@ steps:
 
 When the tool times out or exits with an error, `keep` runs and the run succeeds. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, `stop` ends the run `failed`, so the member sees the setting to fix. `continue_on_failure` alone would let the run succeed with nothing done. `failure` reads only the step's current pass. A template that a lease renders, such as `model` or a confined directory, and a `writes` template cannot read it, as they cannot read `outcome`.
 
+A command step that exits 65 (`EX_DATAERR`) fails `input_rejected`: it rejected the input it was given. teamai offers no retry for it, since the same input fails the same way.
+
 ## The end reached first wins
 
 Reports can reach two ends before the driver calls `next` again. `next` then applies the end that was reached first, whatever order the steps have in the file.

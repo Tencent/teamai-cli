@@ -24,7 +24,7 @@ import { LOCAL_DRIVER, parseDriver, type Driver } from './workflow/driver-name.j
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type RunId } from './workflow/store.js';
-import { inProcessClient, isRefusal, resumeRefusal, startAsCli, workflowNotFound, type InvokeCaller, type NextPrepare, type StartedRun } from './workflow/protocol.js';
+import { commandExitMessage, inProcessClient, isRefusal, resumeRefusal, startAsCli, workflowNotFound, type InvokeCaller, type NextPrepare, type StartedRun } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow, namespaceConflictOf, resolveStart } from './workflow/cache.js';
 import { durationMs } from './workflow/parse.js';
@@ -69,7 +69,7 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
   if ('error' in envelope || !('done' in envelope.data)) return;
   const failed = FailedDoneSchema.safeParse(envelope.data.done);
 
-  if (failed.success) await explainFailedSteps(config, failed.data.run, secrets);
+  if (failed.success) await explainFailedSteps(config, failed.data.run, { secrets, isProgressShown: false });
   const succeeded = SucceededDoneSchema.safeParse(envelope.data.done);
 
   if (succeeded.success) await nameRunCopy(config, succeeded.data.run);
@@ -164,9 +164,15 @@ async function withPassScoring(
 
 /**
  * On stderr, why each step of a failed run failed and the commands that retry it, since the `done` envelope carries
- * only the outcome. A person who ran the local driver otherwise finds the reason only in the run file.
+ * only the outcome. A person who ran the local driver otherwise finds the reason only in the run file. When the run's
+ * progress was already shown, a command step is named with its exit status only: its stderr was said as it ran. A step
+ * whose command rejected its input gets no retry: the same input fails the same way.
  */
-async function explainFailedSteps(config: LocalConfig, runId: string, secrets: Record<string, string>): Promise<void> {
+async function explainFailedSteps(
+  config: LocalConfig,
+  runId: string,
+  { secrets, isProgressShown }: { secrets: Record<string, string>; isProgressShown: boolean },
+): Promise<void> {
   const run = await readRun(config, runId);
 
   if (run === 'missing' || run === 'corrupt') return;
@@ -177,10 +183,11 @@ async function explainFailedSteps(config: LocalConfig, runId: string, secrets: R
 
   for (const step of run.steps) {
     if (step.status !== 'failed' || (!step.failure && failedUnder(step.id))) continue;
-    const why = step.failure ? ` with ${step.failure.code}: ${step.failure.message}` : step.message ? `: ${step.message}` : '';
+    const message = isProgressShown && step.exitCode !== undefined && step.progress?.length ? commandExitMessage(step.exitCode) : step.failure?.message ?? step.message;
+    const why = step.failure ? ` with ${step.failure.code}: ${message}` : message ? `: ${message}` : '';
     log.error(redact(`Step "${step.id}" failed${why}`, { envSecrets: secrets, patterns: false }));
 
-    if (!isolated) log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
+    if (!isolated && step.failure?.code !== 'input_rejected') log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
   }
 
   // The run's own failure, such as its timeout or token budget, fails no step: it stops the steps still running, a step
@@ -684,7 +691,7 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
       if (!done.success) return;
       const exitCode = done.data.outcome === 'succeeded' ? done.data.outputs?.exit_code ?? 0 : 1;
 
-      if (exitCode !== 0) await explainFailedSteps(scope, done.data.run, secrets);
+      if (exitCode !== 0) await explainFailedSteps(scope, done.data.run, { secrets, isProgressShown: true });
       else await nameRunCopy(scope, done.data.run);
       process.exitCode = exitCode;
 

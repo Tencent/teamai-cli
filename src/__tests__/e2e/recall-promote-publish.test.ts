@@ -293,7 +293,9 @@ process.stdin.on('end', () => {
       const result = cli(args);
 
       expect(result.code, result.output).toBe(1);
-      expect(result.output).toContain('Learning "nope" not found or not eligible for promotion.');
+      expect(result.output.split('Learning "nope" not found or not eligible for promotion.').length - 1, result.output).toBe(1);
+      // Running the step again with the same id fails the same way.
+      expect(result.output).not.toContain('Retry it with');
     }
 
     expect(remotePushBranches()).toBe('');

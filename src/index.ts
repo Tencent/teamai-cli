@@ -2004,18 +2004,28 @@ recallCmd
 // learning id would otherwise be taken for a verb of the same name.
 maintenanceCmd
   .command('promote-candidate')
-  .description('A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Fails when it is not a candidate, or when this workspace cannot publish one.')
+  .description('A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Exits 65, which fails its step as input_rejected, when it is not a candidate; fails when this workspace cannot publish one.')
   .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
   .action(async (cmdOpts: { learning: string }) => {
     setStderrOnly(true);
     const { autoDetectInit } = await import('./config.js');
     const { localConfig } = await autoDetectInit(undefined, { dryRun: false });
-    const { assertCanPromote, promotionCandidate } = await import('./maintenance/promotion-publish.js');
+    const { assertCanPromote } = await import('./maintenance/promotion-publish.js');
     assertCanPromote(localConfig);
     const listed = await promotionListing(localConfig, { dryRun: false });
 
     if (!listed) return;
-    const candidate = promotionCandidate(listed.candidates, cmdOpts.learning);
+    const candidate = listed.candidates.find((entry) => entry.docId === cmdOpts.learning);
+
+    // The learning id is the run's input, so the run fails as one whose input was rejected, which no retry changes.
+    if (!candidate) {
+      const { INPUT_REJECTED_EXIT } = await import('./workflow/protocol.js');
+      log.error(`Learning "${cmdOpts.learning}" not found or not eligible for promotion.`);
+      process.exitCode = INPUT_REJECTED_EXIT;
+
+      return;
+    }
+
     const { readFileSafe } = await import('./utils/fs.js');
     process.stdout.write(`${JSON.stringify({ title: candidate.title, content: await readFileSafe(candidate.path) ?? '', suggested: candidate.suggestedCategory })}\n`);
   });

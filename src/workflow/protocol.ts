@@ -985,24 +985,41 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
 }
 
 /**
- * What a command step reports once it exited: `success` on status 0, else `failed` with its status and the start of
- * its stderr; and its whole stdout as its outputs, when that is JSON.
+ * The status a command exits with when its input is wrong, `EX_DATAERR` of sysexits.h: running it again with the same
+ * input fails the same way, so its step fails `input_rejected`.
  */
+export const INPUT_REJECTED_EXIT = 65;
+
+/** How a command step that exited with `exitCode` failed, before any of its stderr. */
+export function commandExitMessage(exitCode: number): string {
+  return `command exited with status ${exitCode}`;
+}
+
 /** How a command step ended, as its report carries it. */
 export interface CommandEnd {
   outcome: 'success' | 'failed';
   exitCode: number;
   message?: string;
+  failure?: WorkflowFailure;
   outputs?: JsonValue;
 }
 
+/**
+ * What a command step reports once it exited: `success` on status 0, else `failed` with its status and the start of
+ * its stderr, `input_rejected` on {@link INPUT_REJECTED_EXIT}; and its whole stdout as its outputs, when that is JSON.
+ */
 export function commandEnd(result: { exitCode: number; stdout: string; stderr: string }): CommandEnd {
   const { exitCode } = result;
   const outputs = commandOutputs(result.stdout);
   const snippet = result.stderr.trim().slice(0, 400);
   const end: CommandEnd = { outcome: exitCode === 0 ? 'success' : 'failed', exitCode };
 
-  if (exitCode !== 0) end.message = snippet === '' ? `command exited with status ${exitCode}` : `command exited with status ${exitCode}: ${snippet}`;
+  if (exitCode !== 0) {
+    const message = snippet === '' ? commandExitMessage(exitCode) : `${commandExitMessage(exitCode)}: ${snippet}`;
+    end.message = message;
+
+    if (exitCode === INPUT_REJECTED_EXIT) end.failure = { code: 'input_rejected', message };
+  }
 
   if (outputs !== undefined) end.outputs = outputs;
 

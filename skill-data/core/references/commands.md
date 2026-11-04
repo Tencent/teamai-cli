@@ -519,7 +519,7 @@ Generated: do not edit by hand. Regenerate with
       - `--draft <text>` — The draft's content
     - `teamai recall maintenance draft-report` — A step of a teamai-draft-learning-updates run: from the results of its draft step, what --update-quality prints: each entry it could not draft, and how to apply the drafts. Prints {"text","exit_code"}; exit_code is 1 when an entry could not be drafted.
       - `--results <json>` — The draft step's results, as a JSON array
-    - `teamai recall maintenance promote-candidate` — A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Fails when it is not a candidate, or when this workspace cannot publish one.
+    - `teamai recall maintenance promote-candidate` — A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Exits 65, which fails its step as input_rejected, when it is not a candidate; fails when this workspace cannot publish one.
       - `--learning <id>` — The learning id, as recall promote lists it
     - `teamai recall maintenance promote-category` — A step of a teamai-promote-learning run: the category to promote to, and why: --given, else --chosen, else, when the AI could not choose, --suggested. Prints {"category","reason"}.
       - `--given <cat>` — The category recall promote --category gave, or ''
