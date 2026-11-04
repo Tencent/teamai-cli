@@ -28,6 +28,7 @@ import { isDelivered } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
 import { isRoutingScorer } from './skill-routing.js';
 import { Subject } from './subject.js';
+import { ScoreItem } from './judging-workflows.js';
 
 /** One judge launch: the scorers it labels, joined by `,`, and the stages its steps run. */
 export interface PlanGroup {
@@ -146,8 +147,10 @@ function wasLeased(step: StepState): boolean {
  */
 function judgedScorers(run: RunState): Set<string> {
   return new Set(run.steps.flatMap((step) => {
-    if (!step.id.endsWith('.judge') || !wasLeased(step)) return [];
-    const item = ScoreItemSchema.safeParse(run.steps.find((each) => each.id === step.id.slice(0, -'.judge'.length))?.item);
+    const group = ScoreItem.groupOf(step.id, 'judge');
+
+    if (group === undefined || !wasLeased(step)) return [];
+    const item = ScoreItemSchema.safeParse(run.steps.find((each) => each.id === group)?.item);
 
     return item.success ? item.data.scorers.split(',').map((scorer) => `${item.data.subject}\n${scorer}`) : [];
   }));

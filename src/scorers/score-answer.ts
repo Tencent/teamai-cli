@@ -11,6 +11,7 @@ import type { RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { labelId, labelVersion, type ScoreLabel } from './label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from './label-store.js';
 import { LABEL_CODES } from './score-labels.js';
+import { ScoreItem } from './judging-workflows.js';
 
 const DoneSchema = z.object({ outcome: z.string() });
 
@@ -61,8 +62,8 @@ function reasonOf(step: StepState | undefined): string | undefined {
 
 /** What the label step of plan group `index` gave each scorer, by scorer, with why its judge failed when it did. */
 function entriesOf(steps: readonly StepState[], index: number): Map<string, Entry> {
-  const labelled = steps.find((step) => step.id === `score[${index}].label`);
-  const why = reasonOf(steps.find((step) => step.id === `score[${index}].judge`));
+  const labelled = steps.find((step) => step.id === ScoreItem.stepOf(index, 'label'));
+  const why = reasonOf(steps.find((step) => step.id === ScoreItem.stepOf(index, 'judge')));
   const listed = LabelEntriesSchema.safeParse(labelled?.status === 'succeeded' ? labelled.outputs : undefined).data?.labels ?? [];
 
   return new Map(listed.map((entry): [string, Entry] => [entry.scorer, { ...entry, why }]));
@@ -83,7 +84,7 @@ function endOf(steps: readonly StepState[]): ItemEnd {
 function itemOf(run: RunState, index: number): Item {
   const steps = run.steps.filter((step) => step.id.startsWith(`score[${index}].`));
 
-  const write = steps.find((step) => step.id === `score[${index}].write`);
+  const write = steps.find((step) => step.id === ScoreItem.stepOf(index, 'write'));
   const written = new Set(WrittenSchema.safeParse(write?.status === 'succeeded' ? write.outputs : undefined).data?.labels ?? []);
 
   return { entries: entriesOf(steps, index), written, end: endOf(steps) };
