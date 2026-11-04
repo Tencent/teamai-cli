@@ -151,6 +151,46 @@ steps:
   });
 });
 
+describe('steps.<id>.failure at pull', () => {
+  it('reads why a step failed in an if and in a template', () => {
+    expect(diagnostics(`  - id: content
+    answer: Rewrite it.
+    output: { text: string }
+    continue_on_failure: true
+  - id: fallback
+    needs: [content]
+    if: steps.content.outcome == 'failed' && steps.content.failure.code != 'tool_unconfigured'
+    command: echo "$WHY"
+    env: { WHY: "{{ steps.content.failure.message }}" }
+`)).toEqual([]);
+  });
+
+  it('rejects it where outcome is rejected, and a field a failure does not have', () => {
+    expect(diagnostics(`  - id: content
+    answer: Rewrite it.
+    output: { text: string }
+    continue_on_failure: true
+  - id: model
+    needs: [content]
+    prompt: Rewrite it again.
+    model: "{{ steps.content.failure.code }}"
+  - id: write
+    needs: [content]
+    command: echo
+    writes: ["{{ steps.content.failure.code }}/"]
+  - id: reason
+    needs: [content]
+    if: steps.content.failure.reason == 'x' || steps.content.failure[0] == 'x'
+    command: echo
+`)).toEqual([
+      'workflows/ask.yaml:12: field "steps[1].model": step "model" model template {{ steps.content.failure.code }}: a model template reads only inputs, item and the outputs of steps the step needs',
+      'workflows/ask.yaml:16: field "steps[2].writes[0]": step "write" writes template {{ steps.content.failure.code }}: a writes template reads only inputs',
+      'workflows/ask.yaml:19: field "steps[3].if": step "reason" if reads steps.content.failure.reason, which is not in a failure: code, message',
+      'workflows/ask.yaml:19: field "steps[3].if": step "reason" if reads steps.content.failure[0], which is not in a failure: code, message',
+    ]);
+  });
+});
+
 const CATEGORY = `schemaVersion: v1alpha1
 name: category
 description: Pick a category in a copy.
@@ -223,6 +263,41 @@ describe('writes in the checkout', () => {
     const run = await started(client, 'draft', checkout, { area: '../elsewhere' });
 
     expect(await client.next(run, { driver })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+  });
+});
+
+const FALLBACK = `schemaVersion: v1alpha1
+name: fallback
+description: Rewrite a learning, and keep it as written when the tool fails for any reason but a tool the member names.
+steps:
+  - id: content
+    answer: Rewrite it.
+    output: { text: string }
+    timeout: 60s
+    continue_on_failure: true
+  - id: original
+    needs: [content]
+    if: steps.content.outcome == 'failed' && steps.content.failure.code != 'tool_unconfigured'
+    command: echo "$WHY"
+    env: { WHY: "{{ steps.content.failure.code }}: {{ steps.content.failure.message }}" }
+`;
+
+describe('steps.<id>.failure', () => {
+  it('runs a fallback guarded on the code a step failed with, and skips it for the code it excludes', async () => {
+    const { checkout, client } = await fixture({ fallback: FALLBACK });
+    const failWith = async (failure: { code: string; message: string }): Promise<RunId> => {
+      const run = await started(client, 'fallback', checkout);
+      const lease = await nextLease(client, run);
+      await client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver, message: failure.message, failure });
+
+      return run;
+    };
+
+    const failed = await failWith({ code: 'tool_failed', message: 'claude exited 1' });
+    expect(await nextLease(client, failed)).toMatchObject({ step: 'original', env: { WHY: 'tool_failed: claude exited 1' } });
+
+    const unconfigured = await failWith({ code: 'tool_unconfigured', message: 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.' });
+    expect(await client.next(unconfigured, { driver })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
 });
 
