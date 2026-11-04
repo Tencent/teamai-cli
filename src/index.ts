@@ -1945,7 +1945,7 @@ maintenanceCmd
     process.stdout.write(`${JSON.stringify(DraftLearningUpdates.report(DraftLearningUpdates.parseResults(cmdOpts.results)))}\n`);
   });
 
-const promoteCmd = recallCmd
+recallCmd
   .command('promote [learningId]')
   .description('List the learnings ready to promote, high-confidence and adopted by several members, each with the category its keywords suggest; listing makes no AI call. With a learning id: starts the default workflow teamai-promote-learning on the driver workflows.driver names, else local. The AI picks the category, unless --category gives it, and rewrites the learning for it; the result is pushed on a review branch with a pull request that says the category and why, then the learning is marked promoted. Exits 1 when the learning is not a candidate. --dry-run only says where it would go')
   .addOption(new Option('--category <cat>', 'Target category: skills | rules | docs; skills use <learningId>/SKILL.md. Without it, the AI picks one').choices(['skills', 'rules', 'docs']))
@@ -2000,9 +2000,10 @@ const promoteCmd = recallCmd
     log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
   });
 
-// The verbs a teamai-promote-learning run's steps call.
-promoteCmd
-  .command('candidate')
+// The verbs a teamai-promote-learning run's steps call. They sit here rather than under `recall promote`, whose
+// learning id would otherwise be taken for a verb of the same name.
+maintenanceCmd
+  .command('promote-candidate')
   .description('A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Fails when it is not a candidate, or when this workspace cannot publish one.')
   .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
   .action(async (cmdOpts: { learning: string }) => {
@@ -2019,8 +2020,8 @@ promoteCmd
     process.stdout.write(`${JSON.stringify({ title: candidate.title, content: await readFileSafe(candidate.path) ?? '', suggested: candidate.suggestedCategory })}\n`);
   });
 
-promoteCmd
-  .command('category')
+maintenanceCmd
+  .command('promote-category')
   .description('A step of a teamai-promote-learning run: the category to promote to, and why: --given, else --chosen, else, when the AI could not choose, --suggested. Prints {"category","reason"}.')
   .requiredOption('--given <cat>', 'The category recall promote --category gave, or \'\'')
   .requiredOption('--chosen <cat>', 'The category the AI chose, or \'\' when it did not run or could not choose')
@@ -2032,15 +2033,15 @@ promoteCmd
     process.stdout.write(`${JSON.stringify(chooseCategory({ ...cmdOpts, suggested: PromotionCategorySchema.parse(cmdOpts.suggested) }))}\n`);
   });
 
-promoteCmd
-  .command('publish')
+maintenanceCmd
+  .command('promote-publish')
   .description('A step of a teamai-promote-learning run: write the promoted entry, push it on a teamai/push/ review branch, and open a pull request whose body says the category and why. With an empty --content the learning is published as written. Prints {"target","exit_code"}; exit_code is 1 when no pull request could be opened.')
   .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
-  .addOption(new Option('--to <cat>', 'The category to promote to, as the category step chose it').choices(['skills', 'rules', 'docs']).makeOptionMandatory())
+  .addOption(new Option('--category <cat>', 'The category to promote to, as the category step chose it').choices(['skills', 'rules', 'docs']).makeOptionMandatory())
   .requiredOption('--reason <text>', 'Why it is promoted to that category, as the pull request says it')
   .requiredOption('--content <text>', 'The learning rewritten for its category, or \'\' to publish it as written')
   .option('--content-failure <message>', 'Why the AI could not rewrite it, said when --content is empty', '')
-  .action(async (cmdOpts: { learning: string; to: string; reason: string; content: string; contentFailure: string }) => {
+  .action(async (cmdOpts: { learning: string; category: string; reason: string; content: string; contentFailure: string }) => {
     setStderrOnly(true);
     const { autoDetectInit } = await import('./config.js');
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: false });
@@ -2049,7 +2050,7 @@ promoteCmd
     const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
 
     const published = await PromoteLearning.publish(cmdOpts.learning, localConfig, teamConfig, {
-      category: PromotionCategorySchema.parse(cmdOpts.to),
+      category: PromotionCategorySchema.parse(cmdOpts.category),
       reason: cmdOpts.reason,
       content: cmdOpts.content === '' ? { kind: 'as-written', why: cmdOpts.contentFailure } : { kind: 'rewritten', text: cmdOpts.content },
       namespaces: await safeDeliveredLearningsNamespaces(localConfig, 'recall promote'),
@@ -2058,8 +2059,8 @@ promoteCmd
     process.stdout.write(`${JSON.stringify(published)}\n`);
   });
 
-promoteCmd
-  .command('mark')
+maintenanceCmd
+  .command('promote-mark')
   .description('A step of a teamai-promote-learning run: mark the learning as promoted to the entry publish pushed, and publish the mark to the learnings branch. Prints {"exit_code"}; it is 1 when the pull request or the mark could not be published.')
   .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
   .requiredOption('--published <json>', 'What the publish step printed: {"target","exit_code"}')

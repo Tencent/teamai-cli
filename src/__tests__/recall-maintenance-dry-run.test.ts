@@ -108,6 +108,12 @@ describe('recall maintenance and recall promote under --dry-run (#900)', () => {
     expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-promote-learning', inputs: { learning: 'l', category: 'docs' }, command: 'teamai recall promote l', json: false });
   });
 
+  it.each(['candidate', 'category', 'publish', 'mark'])('recall promote %s starts the run of the learning of that name', async (learning) => {
+    await run(['recall', 'promote', learning]);
+    const m = await mocks();
+    expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-promote-learning', inputs: { learning, category: '' }, command: `teamai recall promote ${learning}`, json: false });
+  });
+
   it('recall maintenance --update-quality starts its run without the flag', async () => {
     await run(['recall', 'maintenance', '--update-quality']);
     const m = await mocks();

@@ -128,7 +128,7 @@ Every key is generic: the engine never branches on a feature.
 
 ```yaml
 - id: publish
-  command: teamai recall promote publish --learning "$ID" --to "$CATEGORY" --reason "$REASON" --content "$CONTENT"
+  command: teamai recall maintenance promote-publish --learning "$ID" --category "$CATEGORY" --reason "$REASON" --content "$CONTENT"
   env: { ID: "{{ inputs.learning }}", CATEGORY: "{{ steps.category.outputs.category }}", … }
   # The review branch is written in a disposable worktree, under .teamai/ when the knowledge is this checkout's.
   writes: [.teamai/]
@@ -150,7 +150,7 @@ A change under a listed path is kept. Any other change still fails the step `rea
   needs: [content]
   # Any other failure publishes the learning as written: --content renders empty.
   if: steps.content.outcome == 'success' || steps.content.failure.code != 'tool_unconfigured'
-  command: teamai recall promote publish --learning "$ID" --content "$CONTENT" …
+  command: teamai recall maintenance promote-publish --learning "$ID" --content "$CONTENT" …
 ```
 
 `failure` is `{ code, message }`, `null` for a step that did not fail. An answer step reports a tool the member names

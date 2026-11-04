@@ -7,7 +7,7 @@ inputs: { learning: string, category: string }
 ends: { unconfigured-tool: failed }
 steps:
   - id: learning
-    command: teamai recall promote candidate --learning "$ID"
+    command: teamai recall maintenance promote-candidate --learning "$ID"
     env: { ID: "{{ inputs.learning }}" }
     output: { title: string, content: string, suggested: string }
   - id: ask-category
@@ -31,7 +31,7 @@ steps:
     needs: [learning, ask-category]
     # When the AI could not choose, the keywords' suggestion is used, unless it names a tool that cannot run.
     if: steps.ask-category.failure.code != 'tool_unconfigured'
-    command: teamai recall promote category --given "$GIVEN" --chosen "$CHOSEN" --reason "$REASON" --suggested "$SUGGESTED"
+    command: teamai recall maintenance promote-category --given "$GIVEN" --chosen "$CHOSEN" --reason "$REASON" --suggested "$SUGGESTED"
     env:
       GIVEN: "{{ inputs.category }}"
       CHOSEN: "{{ steps.ask-category.outputs.category }}"
@@ -81,7 +81,7 @@ steps:
     needs: [content]
     # When the AI could not rewrite it, the learning is published as written, unless it names a tool that cannot run.
     if: steps.content.outcome == 'success' || steps.content.failure.code != 'tool_unconfigured'
-    command: teamai recall promote publish --learning "$ID" --to "$CATEGORY" --reason "$REASON" --content "$CONTENT" --content-failure "$WHY"
+    command: teamai recall maintenance promote-publish --learning "$ID" --category "$CATEGORY" --reason "$REASON" --content "$CONTENT" --content-failure "$WHY"
     env:
       ID: "{{ inputs.learning }}"
       CATEGORY: "{{ steps.category.outputs.category }}"
@@ -93,7 +93,7 @@ steps:
     output: { target: string, exit_code: number }
   - id: mark
     needs: [publish]
-    command: teamai recall promote mark --learning "$ID" --published "$PUBLISHED"
+    command: teamai recall maintenance promote-mark --learning "$ID" --published "$PUBLISHED"
     env: { ID: "{{ inputs.learning }}", PUBLISHED: "{{ steps.publish.outputs }}" }
     writes: [.teamai/]
     output: { exit_code: number }

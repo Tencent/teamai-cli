@@ -116,11 +116,11 @@ description: Ask.
 inputs: { category: string }
 steps:
   - id: publish
-    command: teamai recall promote publish
+    command: teamai recall maintenance promote-publish
     writes: ["skills/", "{{ inputs.category }}/"]
 `);
 
-    expect(parsed.ok && parsed.definition.steps).toEqual([{ id: 'publish', command: 'teamai recall promote publish', writes: ['skills/', '{{ inputs.category }}/'] }]);
+    expect(parsed.ok && parsed.definition.steps).toEqual([{ id: 'publish', command: 'teamai recall maintenance promote-publish', writes: ['skills/', '{{ inputs.category }}/'] }]);
   });
 
   it('rejects writes on a step that runs no command, a path outside the checkout, and a template that reads a step', () => {

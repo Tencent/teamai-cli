@@ -72,7 +72,7 @@ A feature that orchestrates AI work ships as a default workflow in `workflows/`,
     - id: publish
       needs: [content]
       if: steps.content.outcome == 'success' || steps.content.failure.code != 'tool_unconfigured'
-      command: teamai recall promote publish --learning "$ID" --to "$CATEGORY" --reason "$REASON" --content "$CONTENT" --content-failure "$WHY"
+      command: teamai recall maintenance promote-publish --learning "$ID" --category "$CATEGORY" --reason "$REASON" --content "$CONTENT" --content-failure "$WHY"
   ```
 - **`private` is decided per step path, by `privateSteps` in `scope.ts`.** A path is private when a workflow file on the way to it has the key. Every reader asks it: `projectRun` in `snapshot.ts` drops the outputs and results of private steps and their passes, and the item and inputs of private steps, `unrecordedSteps` in `session-publish.ts` archives no session of one, and `publishRun`, `claimRun` and `resumeRun` in `handoff.ts` refuse `private_open` while `openPrivateStep` finds one unsettled. A private root is read from `run.definition.private`: `queueRunRecord` in `records.ts` records nothing for it, `handoff.ts` refuses it `isolated_run`, and `listLocalRuns` in `dashboard/workflow-runs.ts` leaves it out.
 - **`$TEAMAI_RUN_DIR` is a path, never a run field.** `runScratchDir` in `store.ts` names it from the run id, `attemptEnv` in `attempt-marker.ts` gives it to every process an attempt starts, with either driver, the protocol client's `next` puts it with the rest of `attemptEnv` on every command lease's `env` (`withAttemptEnv` in `protocol.ts`), so an external driver's commands get it too, `leaseNext` makes it before it leases a step, and `finishRun` removes it after `settleRun`, however the run ended.
