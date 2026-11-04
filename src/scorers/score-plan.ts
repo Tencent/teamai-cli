@@ -140,13 +140,16 @@ function wasLeased(step: StepState): boolean {
   return ('attempt' in step && step.attempt !== undefined) || (step.passes ?? []).some((pass) => pass.attempt !== undefined);
 }
 
-/** The subject and group of each `judge` step of `run` that was leased, as `<subject>\n<group>`. */
-function judgedGroups(run: RunState): Set<string> {
+/**
+ * The subject and each scorer of each `judge` step of `run` that was leased, as `<subject>\n<scorer>`. A scorer, not the
+ * group: a mark keeps the group it was planned in, which a scorer already labelled leaves larger than the one judged.
+ */
+function judgedScorers(run: RunState): Set<string> {
   return new Set(run.steps.flatMap((step) => {
     if (!step.id.endsWith('.judge') || !wasLeased(step)) return [];
     const item = ScoreItemSchema.safeParse(run.steps.find((each) => each.id === step.id.slice(0, -'.judge'.length))?.item);
 
-    return item.success ? [`${item.data.subject}\n${item.data.scorers}`] : [];
+    return item.success ? item.data.scorers.split(',').map((scorer) => `${item.data.subject}\n${scorer}`) : [];
   }));
 }
 
@@ -158,9 +161,9 @@ export function markFacts(config: LocalConfig, now: string): MarkFacts {
       const run = await readRun(config, runId);
 
       if (run === 'missing' || run === 'corrupt') return undefined;
-      const judged = judgedGroups(run);
+      const judged = judgedScorers(run);
 
-      return { ended: run.status !== 'running', changedAt: run.updatedAt, judgeRan: (subject, group) => judged.has(`${subject}\n${group}`) };
+      return { ended: run.status !== 'running', changedAt: run.updatedAt, judgeRan: (subject, scorer) => judged.has(`${subject}\n${scorer}`) };
     },
   };
 }

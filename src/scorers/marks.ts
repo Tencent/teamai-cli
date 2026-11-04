@@ -54,8 +54,8 @@ export type MarkOutcome = { kind: 'labelled' } | { kind: 'failed'; code: JudgeFa
 export interface RunStatus {
   ended: boolean;
   changedAt: string;
-  /** Whether the run leased a judge attempt of `group` on `subject`, the formatted subject, whatever became of it after. */
-  judgeRan: (subject: string, group: string) => boolean;
+  /** Whether the run leased a judge attempt of a group with `scorer` on `subject`, the formatted subject, whatever became of it after. */
+  judgeRan: (subject: string, scorer: string) => boolean;
 }
 
 /** A run of this machine by id, or undefined when it is gone. */
@@ -259,7 +259,7 @@ async function openOrLapsed(line: Extract<Line, { state: 'open' }>, readRun: Rea
   if (run?.ended === false) return { state: { kind: 'open', at: line.at, run: line.run, group: line.group, demand: line.demand }, restart: restartOf(line) };
   const firstOpenedAt = line.firstOpenedAt ?? line.at;
 
-  if (run !== undefined && !run.judgeRan(line.subject, line.group) && Date.parse(run.changedAt) < Date.parse(firstOpenedAt) + MARK_WINDOW_MS) {
+  if (run !== undefined && !run.judgeRan(line.subject, line.scorer) && Date.parse(run.changedAt) < Date.parse(firstOpenedAt) + MARK_WINDOW_MS) {
     return { state: { kind: 'lapsed', lapses: line.lapses }, restart: { ...restartOf(line), firstOpenedAt, uncounted: true } };
   }
 

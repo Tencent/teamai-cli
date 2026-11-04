@@ -599,6 +599,26 @@ describe('marks of a score run that ended', () => {
     data(await cancelRun(config, judged.runId, await knownSecrets(config)));
     expect(await states()).toEqual([{ kind: 'lapsed', lapses: 1 }]);
   });
+
+  it('counts a lapse once a judge attempt ran for a batch that one already labelled scorer left smaller', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const keyOf = (name: string): MarkKey => ({ scorer: name, subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } });
+    await Marks.close(config, [keyOf('quality')], { kind: 'labelled' }, { now: new Date().toISOString() });
+
+    const run = await scoreRun(config, { subject, scorers: ['quality', 'coverage'] });
+    const plan = await run.next('plan');
+    const planned = await ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', batch: 'true', demand: 'auto' }, { ...plan.ctx, now: new Date().toISOString() });
+    expect(planned).toMatchObject({ ok: true, output: { groups: [{ scorers: 'coverage' }] } });
+    await run.report(plan, planned);
+    const evidence = await run.next('score[0].evidence');
+    await run.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'coverage' }, evidence.ctx));
+    await run.next('score[0].judge');
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    expect(await Marks.states(config, [keyOf('coverage')], markFacts(config, new Date().toISOString()))).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
 });
 
 describe('score evidence', () => {
