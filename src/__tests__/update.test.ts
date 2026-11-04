@@ -184,9 +184,12 @@ beforeAll(() => {
   globalPrefix = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-update-prefix-'));
   const installDir = path.join(globalPrefix, 'lib', 'node_modules', getCurrentPackageName());
   fs.mkdirSync(installDir, { recursive: true });
-  // A real npm install always carries its manifest; an empty directory is what a
-  // killed install leaves behind, and restoreInterruptedInstall treats it as such.
+  // A real npm install always carries its manifest and entry point; an empty
+  // directory is what a killed install leaves behind, and that is treated as
+  // missing.
   fs.writeFileSync(path.join(installDir, 'package.json'), JSON.stringify({ name: getCurrentPackageName(), version: '0.22.0' }));
+  fs.mkdirSync(path.join(installDir, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(installDir, 'dist', 'index.js'), '');
 });
 afterAll(() => {
   fs.rmSync(globalPrefix, { recursive: true, force: true });
@@ -1422,12 +1425,28 @@ describe('restoreInterruptedInstall', () => {
   it('leaves an install that is already in place alone', () => {
     const pkgDir = path.join(nodeModules, getCurrentPackageName());
 
-    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.mkdirSync(path.join(pkgDir, 'dist'), { recursive: true });
     fs.writeFileSync(path.join(pkgDir, 'package.json'), '{"version":"0.22.0"}');
+    fs.writeFileSync(path.join(pkgDir, 'dist', 'index.js'), '');
     fs.mkdirSync(staging, { recursive: true });
 
     expect(restoreInterruptedInstall(pkgDir)).toBeNull();
     expect(fs.existsSync(staging)).toBe(true);
+  });
+
+  it('restores over a package that has a manifest but no entry point', () => {
+    // npm writes package.json early; a kill right after it leaves a package
+    // that looks installed and cannot run.
+    const pkgDir = path.join(nodeModules, getCurrentPackageName());
+
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), '{"version":"0.22.0"}');
+    fs.mkdirSync(staging, { recursive: true });
+    fs.mkdirSync(path.join(staging, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(staging, 'dist', 'index.js'), 'old');
+
+    expect(restoreInterruptedInstall(pkgDir)).toBe(staging);
+    expect(fs.readFileSync(path.join(pkgDir, 'dist', 'index.js'), 'utf-8')).toBe('old');
   });
 
   it('restores over the empty directory npm creates before it fetches the tarball', () => {
@@ -1458,15 +1477,16 @@ describe('restoreInterruptedInstall', () => {
 });
 
 describe('restoreInterruptedBins', () => {
-  const posix = process.platform !== 'win32';
   let prefix: string;
   let pkgDir: string;
   let binDir: string;
 
   beforeEach(() => {
+    // The POSIX global layout: <prefix>/lib/node_modules/<pkg>, shims in
+    // <prefix>/bin. The prefix is passed in, not walked back from pkgDir.
     prefix = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-bins-'));
-    pkgDir = path.join(prefix, 'node_modules', getCurrentPackageName());
-    binDir = posix ? path.join(prefix, 'bin') : prefix;
+    pkgDir = path.join(prefix, 'lib', 'node_modules', getCurrentPackageName());
+    binDir = path.join(prefix, 'bin');
 
     fs.mkdirSync(pkgDir, { recursive: true });
     fs.mkdirSync(binDir, { recursive: true });
@@ -1480,36 +1500,44 @@ describe('restoreInterruptedBins', () => {
     fs.rmSync(prefix, { recursive: true, force: true });
   });
 
-  it('puts back the command npm moved aside with the package', () => {
-    const shim = posix ? 'teamai' : 'teamai.cmd';
+  it('puts back the command npm moved aside, in <prefix>/bin', () => {
+    fs.writeFileSync(path.join(binDir, '.teamai-HHJBGUJu'), 'shim');
 
-    fs.writeFileSync(path.join(binDir, `.${shim}-HHJBGUJu`), 'shim');
-
-    expect(restoreInterruptedBins(pkgDir)).toContain(shim);
-    expect(fs.readFileSync(path.join(binDir, shim), 'utf-8')).toBe('shim');
+    expect(restoreInterruptedBins(pkgDir, prefix)).toContain('teamai');
+    expect(fs.readFileSync(path.join(binDir, 'teamai'), 'utf-8')).toBe('shim');
   });
 
   it('keeps the newest of several moved-aside commands', () => {
-    const shim = posix ? 'teamai' : 'teamai.cmd';
-    const older = path.join(binDir, `.${shim}-AAAA`);
-    const newer = path.join(binDir, `.${shim}-BBBB`);
+    const older = path.join(binDir, '.teamai-AAAA');
+    const newer = path.join(binDir, '.teamai-BBBB');
 
     fs.writeFileSync(older, 'old');
     fs.writeFileSync(newer, 'new');
     fs.utimesSync(older, new Date(1_000_000), new Date(1_000_000));
 
-    expect(restoreInterruptedBins(pkgDir)).toContain(shim);
-    expect(fs.readFileSync(path.join(binDir, shim), 'utf-8')).toBe('new');
+    expect(restoreInterruptedBins(pkgDir, prefix)).toContain('teamai');
+    expect(fs.readFileSync(path.join(binDir, 'teamai'), 'utf-8')).toBe('new');
   });
 
   it('does not overwrite a command that is already in place', () => {
-    const shim = posix ? 'teamai' : 'teamai.cmd';
+    fs.writeFileSync(path.join(binDir, 'teamai'), 'working');
+    fs.writeFileSync(path.join(binDir, '.teamai-HHJBGUJu'), 'stale');
 
-    fs.writeFileSync(path.join(binDir, shim), 'working');
-    fs.writeFileSync(path.join(binDir, `.${shim}-HHJBGUJu`), 'stale');
+    expect(restoreInterruptedBins(pkgDir, prefix)).not.toContain('teamai');
+    expect(fs.readFileSync(path.join(binDir, 'teamai'), 'utf-8')).toBe('working');
+  });
 
-    expect(restoreInterruptedBins(pkgDir)).not.toContain(shim);
-    expect(fs.readFileSync(path.join(binDir, shim), 'utf-8')).toBe('working');
+  it('finds the shims npm writes straight into the prefix on Windows', () => {
+    fs.writeFileSync(path.join(prefix, '.teamai.cmd-HHJBGUJu'), '@node');
+
+    expect(restoreInterruptedBins(pkgDir, prefix)).toContain('teamai.cmd');
+    expect(fs.readFileSync(path.join(prefix, 'teamai.cmd'), 'utf-8')).toBe('@node');
+  });
+
+  it('leaves the moved-aside package directory alone', () => {
+    fs.mkdirSync(path.join(prefix, 'lib', 'node_modules', '.teamai-cli-38m3aZH1'));
+
+    expect(restoreInterruptedBins(pkgDir, prefix)).toEqual([]);
   });
 });
 
@@ -1525,6 +1553,8 @@ describe('install that dies after moving the package aside', () => {
     staging = path.join(path.dirname(pkgDir), `.${path.basename(pkgDir)}-LOnt5kfB`);
     fs.mkdirSync(pkgDir, { recursive: true });
     fs.writeFileSync(path.join(pkgDir, 'package.json'), '{"version":"0.21.0"}');
+    fs.mkdirSync(path.join(pkgDir, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'dist', 'index.js'), '');
     fileURLToPathMock.mockReturnValue(path.join(pkgDir, 'dist', 'update.js'));
   });
   afterEach(() => {

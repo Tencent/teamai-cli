@@ -136,6 +136,9 @@ function resolveInstallPrefix(): { prefix: string; global: boolean } | null {
   return prefixFromEntryPath(fileURLToPath(import.meta.url), process.platform !== 'win32');
 }
 
+/** The one file the package cannot work without. */
+const CLI_ENTRY = path.join('dist', 'index.js');
+
 /**
  * npm moves the installed package aside to `.<name>-<hash>` inside
  * node_modules before it unpacks the new copy, and renames it back only once
@@ -157,9 +160,10 @@ function resolveInstallPrefix(): { prefix: string; global: boolean } | null {
  * do.
  */
 export function restoreInterruptedInstall(pkgDir: string): string | null {
-  // A pkgDir holding a package.json means npm finished writing the new copy;
-  // that copy is npm's to judge, not ours.
-  if (fs.existsSync(path.join(pkgDir, 'package.json'))) return null;
+  // npm writes the tarball file by file and package.json tends to land first,
+  // so a manifest proves nothing: a kill after it leaves a "complete" package
+  // with no CLI in it. Only the entry means the copy is usable.
+  if (fs.existsSync(path.join(pkgDir, CLI_ENTRY))) return null;
 
   if (fs.existsSync(pkgDir)) {
     // Empty or half-written: step it aside so the previous copy can take the
@@ -213,57 +217,31 @@ export function restoreInterruptedInstall(pkgDir: string): string | null {
  * the prefix get the same treatment. Restoring the package directory alone
  * leaves the command gone, which is the half of the symptom a user notices.
  *
+ * The prefix comes from the caller: on POSIX the package sits at
+ * `<prefix>/lib/node_modules/<pkg>`, so walking up from `pkgDir` lands on
+ * `<prefix>/lib` and misses `bin/`. Both shim locations are checked, because a
+ * Windows install with Git Bash on PATH gets the extensionless shim too.
+ *
  * Returns the shim names that were put back.
  */
-export function restoreInterruptedBins(pkgDir: string): string[] {
-  const prefix = path.dirname(path.dirname(pkgDir));
-  const posix = process.platform !== 'win32';
-  const binDir = posix ? path.join(prefix, 'bin') : prefix;
-
-  let names: string[] = [];
-
-  try {
-    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
-
-    names = typeof manifest.bin === 'string'
-      ? [manifest.name]
-      : Object.keys(manifest.bin ?? {});
-  } catch {
-    return [];
-  }
-
+export function restoreInterruptedBins(pkgDir: string, prefix: string): string[] {
+  const names = binNames(pkgDir);
   const restored: string[] = [];
-  const shims = posix ? [''] : ['', '.cmd', '.ps1'];
 
-  for (const name of names) {
-    for (const ext of shims) {
-      const target = `${name}${ext}`;
-      const movedAside = `.${target}-`;
-      let newest: { file: string; mtime: number } | null = null;
+  for (const dir of [path.join(prefix, 'bin'), prefix]) {
+    for (const name of names) {
+      for (const ext of ['', '.cmd', '.ps1']) {
+        const target = `${name}${ext}`;
+        const movedAside = newestMovedAside(dir, `.${target}-`);
 
-      try {
-        for (const entry of fs.readdirSync(binDir)) {
-          if (!entry.startsWith(movedAside)) continue;
+        if (!movedAside) continue;
 
-          const file = path.join(binDir, entry);
+        const destination = path.join(dir, target);
 
-          try {
-            const stat = fs.statSync(file);
+        if (fs.existsSync(destination)) continue;
 
-            if (stat.isFile() && (!newest || stat.mtimeMs > newest.mtime)) {
-              newest = { file, mtime: stat.mtimeMs };
-            }
-          } catch { /* gone between readdir and stat */ }
-        }
-      } catch {
-        return restored; // no bin dir in this prefix
-      }
-
-      const destination = path.join(binDir, target);
-
-      if (newest && !fs.existsSync(destination)) {
         try {
-          fs.renameSync(newest.file, destination);
+          fs.renameSync(movedAside, destination);
           restored.push(target);
         } catch { /* held by a surviving process: leave it */ }
       }
@@ -271,6 +249,45 @@ export function restoreInterruptedBins(pkgDir: string): string[] {
   }
 
   return restored;
+}
+
+/** Shims named in the restored manifest; `teamai` when it cannot be read. */
+function binNames(pkgDir: string): string[] {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
+    const names: string[] = typeof manifest.bin === 'string'
+      ? [manifest.name]
+      : Object.keys(manifest.bin ?? {});
+
+    if (names.length > 0) return names;
+  } catch { /* restored copy has no manifest: fall back to the package name */ }
+
+  return ['teamai'];
+}
+
+/** Newest file in `dir` whose name starts with `marker`, else null. */
+function newestMovedAside(dir: string, marker: string): string | null {
+  let newest: { file: string; mtime: number } | null = null;
+
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.startsWith(marker)) continue;
+
+      const file = path.join(dir, entry);
+
+      try {
+        const stat = fs.statSync(file);
+
+        if (stat.isFile() && (!newest || stat.mtimeMs > newest.mtime)) {
+          newest = { file, mtime: stat.mtimeMs };
+        }
+      } catch { /* gone between readdir and stat */ }
+    }
+  } catch {
+    return null; // no such directory in this prefix
+  }
+
+  return newest?.file ?? null;
 }
 
 /** `$VOLTA_HOME/tools/image/packages/<name>`, including the default `~/.volta` and `%LOCALAPPDATA%\\Volta` homes. */
@@ -1174,7 +1191,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     // install that outlived its parent can report success with the old copy
     // still moved aside.
     const restoredOnSuccess = restoreInterruptedInstall(pkgDir);
-    const binsOnSuccess = restoreInterruptedBins(pkgDir);
+    const binsOnSuccess = restoreInterruptedBins(pkgDir, target.prefix);
 
     if (restoredOnSuccess) {
       const message =
@@ -1244,14 +1261,14 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     // renames the package aside first, so a failure in between leaves no
     // `teamai` to run at all.
     const restored = restoreInterruptedInstall(pkgDir);
-    const restoredBins = restoreInterruptedBins(pkgDir);
+    const restoredBins = restoreInterruptedBins(pkgDir, target.prefix);
 
     if (restored) {
       message += ` Put the previous install back from ${path.basename(restored)}`;
       message += restoredBins.length > 0
         ? ` and its command (${restoredBins.join(', ')}).`
         : '.';
-    } else if (!fs.existsSync(path.join(pkgDir, 'package.json'))) {
+    } else if (!fs.existsSync(path.join(pkgDir, CLI_ENTRY))) {
       message += ` ${pkgDir} is missing: reinstall with "npm install -g ${pkgName}".`;
     }
 
