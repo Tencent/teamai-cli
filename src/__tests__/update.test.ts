@@ -117,6 +117,7 @@ import {
   resolveNpmCommand,
   prefixFromEntryPath,
   isVoltaPackageImage,
+  restoreInterruptedInstall,
 } from '../update.js';
 import { resolveTeamaiEntryScript } from '../builtin-hooks.js';
 import type { LocalConfig } from '../types.js';
@@ -1370,3 +1371,138 @@ describe('self-update install-target safety', () => {
     expect(mockedLog.warn).not.toHaveBeenCalledWith(expect.stringContaining('still v'));
   });
 });
+
+// ─── Interrupted install (npm moves the package aside first) ─
+
+describe('restoreInterruptedInstall', () => {
+  let nodeModules: string;
+  let staging: string;
+
+  beforeEach(() => {
+    nodeModules = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-restore-'));
+    staging = path.join(nodeModules, `.${getCurrentPackageName()}-LOnt5kfB`);
+  });
+  afterEach(() => {
+    fs.rmSync(nodeModules, { recursive: true, force: true });
+  });
+
+  it('moves the copy npm set aside back into place', () => {
+    fs.mkdirSync(staging, { recursive: true });
+    fs.writeFileSync(path.join(staging, 'package.json'), '{"version":"0.21.0"}');
+
+    const pkgDir = path.join(nodeModules, getCurrentPackageName());
+
+    expect(restoreInterruptedInstall(pkgDir)).toBe(staging);
+    expect(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')).toContain('0.21.0');
+  });
+
+  it('restores the newest leftover when several were left behind', () => {
+    const older = path.join(nodeModules, `.${getCurrentPackageName()}-AAA`);
+    const newer = path.join(nodeModules, `.${getCurrentPackageName()}-BBB`);
+
+    fs.mkdirSync(older, { recursive: true });
+    fs.mkdirSync(newer, { recursive: true });
+    fs.writeFileSync(path.join(older, 'package.json'), '{"version":"0.19.0"}');
+    fs.writeFileSync(path.join(newer, 'package.json'), '{"version":"0.21.0"}');
+    fs.utimesSync(older, new Date(1_000_000), new Date(1_000_000));
+
+    const pkgDir = path.join(nodeModules, getCurrentPackageName());
+
+    expect(restoreInterruptedInstall(pkgDir)).toBe(newer);
+    expect(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')).toContain('0.21.0');
+    // The older copy is left alone rather than deleted.
+    expect(fs.existsSync(older)).toBe(true);
+  });
+
+  it('leaves an install that is already in place alone', () => {
+    const pkgDir = path.join(nodeModules, getCurrentPackageName());
+
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.mkdirSync(staging, { recursive: true });
+
+    expect(restoreInterruptedInstall(pkgDir)).toBeNull();
+    expect(fs.existsSync(staging)).toBe(true);
+  });
+
+  it('does nothing when npm left nothing behind', () => {
+    const pkgDir = path.join(nodeModules, getCurrentPackageName());
+
+    expect(restoreInterruptedInstall(pkgDir)).toBeNull();
+    expect(fs.existsSync(pkgDir)).toBe(false);
+  });
+
+  it('does nothing when node_modules itself is gone', () => {
+    expect(restoreInterruptedInstall(path.join(nodeModules, 'nope', getCurrentPackageName()))).toBeNull();
+  });
+});
+
+describe('install that dies after moving the package aside', () => {
+  let prefix: string;
+  let pkgDir: string;
+  let staging: string;
+
+  beforeEach(() => {
+    // A real npm-managed global layout, so doUpdate finds an install target.
+    prefix = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-interrupted-'));
+    pkgDir = path.join(prefix, 'lib', 'node_modules', getCurrentPackageName());
+    staging = path.join(path.dirname(pkgDir), `.${path.basename(pkgDir)}-LOnt5kfB`);
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), '{"version":"0.21.0"}');
+    fileURLToPathMock.mockReturnValue(path.join(pkgDir, 'dist', 'update.js'));
+  });
+  afterEach(() => {
+    fs.rmSync(prefix, { recursive: true, force: true });
+    fileURLToPathMock.mockImplementation((p: string | URL) => actualFileURLToPath.fn!(p));
+  });
+
+  it('puts the previous install back when npm is killed mid-rename', async () => {
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockImplementationOnce(() => {
+        // What npm does before unpacking: the old copy leaves its place, and
+        // the timeout lands before the new one is written.
+        fs.renameSync(pkgDir, staging);
+        throw new Error('ETIMEDOUT');
+      });
+
+    await expect(doUpdate(null)).resolves.toBe('failed');
+
+    expect(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')).toContain('0.21.0');
+    expect(fs.existsSync(staging)).toBe(false);
+    expect(mockedLog.persist).toHaveBeenCalledWith(
+      expect.stringContaining(`Put the previous install back from ${path.basename(staging)}`),
+    );
+  });
+
+  it('names the reinstall command when there is nothing left to restore', async () => {
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockImplementationOnce(() => {
+        fs.rmSync(pkgDir, { recursive: true, force: true });
+        throw new Error('npm ERR! code ENOTEMPTY');
+      });
+
+    await expect(doUpdate(null)).resolves.toBe('failed');
+
+    expect(mockedLog.persist).toHaveBeenCalledWith(
+      expect.stringContaining(`reinstall with "npm install -g ${getCurrentPackageName()}"`),
+    );
+  });
+
+  it('warns when npm exits 0 with the package still moved aside', async () => {
+    mockedExecSync.mockImplementation((_cmd: string, args: string[]) => {
+      if (args.includes('view')) return Promise.resolve({ stdout: '99.0.0\n', stderr: '' });
+      if (args.includes('install')) fs.renameSync(pkgDir, staging);
+
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    await doUpdate(null);
+
+    expect(mockedLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining('npm reported success'),
+    );
+    expect(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')).toContain('0.21.0');
+  });
+});
+

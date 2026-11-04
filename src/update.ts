@@ -136,6 +136,59 @@ function resolveInstallPrefix(): { prefix: string; global: boolean } | null {
   return prefixFromEntryPath(fileURLToPath(import.meta.url), process.platform !== 'win32');
 }
 
+/**
+ * npm moves the installed package aside to `.<name>-<hash>` inside
+ * node_modules before it unpacks the new copy, and renames it back only once
+ * that copy is written. An install that dies in between — the 60 s timeout, or
+ * a running `teamai` holding the files on Windows — leaves the moved copy
+ * behind and nothing where the CLI was, which is how the `teamai` command
+ * disappears. The moved directory still holds the last version that worked, so
+ * put it back.
+ *
+ * Never deletes anything: a leftover from an even older npm stays where it is,
+ * and the most recent one is the one restored.
+ *
+ * Returns the directory that was moved back, or null when there was nothing to
+ * do.
+ */
+export function restoreInterruptedInstall(pkgDir: string): string | null {
+  // Anything at pkgDir means npm reached the copy step; that copy is npm's to
+  // judge, not ours.
+  if (fs.existsSync(pkgDir)) return null;
+
+  const parent = path.dirname(pkgDir);
+  const stagingPrefix = `.${path.basename(pkgDir)}-`;
+  const leftovers: { dir: string; mtime: number }[] = [];
+
+  try {
+    for (const name of fs.readdirSync(parent)) {
+      if (!name.startsWith(stagingPrefix)) continue;
+
+      const dir = path.join(parent, name);
+
+      try {
+        const stat = fs.statSync(dir);
+
+        if (stat.isDirectory()) leftovers.push({ dir, mtime: stat.mtimeMs });
+      } catch { /* gone between readdir and stat */ }
+    }
+  } catch {
+    return null; // no parent directory: nothing to restore from
+  }
+
+  leftovers.sort((a, b) => b.mtime - a.mtime);
+
+  for (const { dir } of leftovers) {
+    try {
+      fs.renameSync(dir, pkgDir);
+
+      return dir;
+    } catch { /* locked by a surviving process: an older copy beats none */ }
+  }
+
+  return null;
+}
+
 /** `$VOLTA_HOME/tools/image/packages/<name>`, including the default `~/.volta` and `%LOCALAPPDATA%\\Volta` homes. */
 const VOLTA_PACKAGE_IMAGE = /(?:^|\/)\.?volta\/tools\/image\/packages\//i;
 
@@ -955,6 +1008,9 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   }
 
   const entry = fileURLToPath(import.meta.url);
+  // The directory the running CLI was installed into; npm is about to move it
+  // aside and put a new copy there.
+  const pkgDir = path.dirname(path.dirname(entry));
 
   if (isVoltaPackageImage(entry) || isVoltaPackageImage(target.prefix)) {
     // Volta's image looks like a POSIX global prefix (<image>/lib/node_modules),
@@ -1029,6 +1085,21 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     );
     log.success(`Updated teamai to v${result.latest}`);
 
+    // A zero exit does not prove the copy landed where the CLI runs from: npm
+    // writes the new version aside and renames it in at the end, so a detached
+    // install that outlived its parent can report success with the old copy
+    // still moved aside.
+    const restoredOnSuccess = restoreInterruptedInstall(pkgDir);
+
+    if (restoredOnSuccess) {
+      const message =
+        `npm reported success, but ${pkgDir} was missing: put the previous install back from ` +
+        `${path.basename(restoredOnSuccess)}. Run "teamai update" again to retry.`;
+
+      log.warn(message);
+      log.persist(message);
+    }
+
     const updatedEntry = resolveTeamaiEntryScript();
 
     // Verify the RUNNING install actually changed: a stale success message
@@ -1082,6 +1153,17 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     // Hooks discard stderr: without the file copy, a failed auto-update leaves
     // no trace anywhere — the one failure the reporter cannot hand over.
+    // The install may also have taken the CLI's own directory with it: npm
+    // renames the package aside first, so a failure in between leaves no
+    // `teamai` to run at all.
+    const restored = restoreInterruptedInstall(pkgDir);
+
+    if (restored) {
+      message += ` Put the previous install back from ${path.basename(restored)}.`;
+    } else if (!fs.existsSync(pkgDir)) {
+      message += ` ${pkgDir} is missing: reinstall with "npm install -g ${pkgName}".`;
+    }
+
     log.warn(message);
     log.persist(message);
 
