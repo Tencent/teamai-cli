@@ -15,7 +15,7 @@ import { safeText } from './session-flow/session-cmd-shared.js';
 import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
-import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retryStep } from './workflow/run-controls.js';
+import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retriedRunsAgain, retryStep } from './workflow/run-controls.js';
 import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
 import { awaitsLine } from './default-driver.js';
@@ -860,7 +860,7 @@ export async function workflowRespond(runId: string, step: string, choice: strin
 export async function workflowRetry(runId: string, step: string): Promise<void> {
   await workflowControl(runId, async (config, secrets) => {
     const retried = await retryStep(config, runId, secrets, step);
-    const runsAgain = 'data' in retried ? z.object({ runsAgain: z.array(z.string()) }).safeParse(retried.data.retried).data?.runsAgain ?? [] : [];
+    const runsAgain = retriedRunsAgain(retried);
 
     if (runsAgain.length > 0) log.info(`Retrying ${step} runs again: ${runsAgain.join(', ')}`);
 

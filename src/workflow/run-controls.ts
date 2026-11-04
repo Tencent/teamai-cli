@@ -611,6 +611,14 @@ async function restoreForRetry(config: LocalConfig, runId: string, step: string,
   return error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand(runId, step)}`);
 }
 
+/** What a retry answers under `retried`: the step, the pass it runs again as, and the other steps that run again with it. */
+const RetriedSchema = z.object({ step: z.string(), pass: z.number(), runsAgain: z.array(z.string()) });
+
+/** The other steps that run again with the retried step, by the answer of `retryStep`; none for a refusal. */
+export function retriedRunsAgain(answer: WorkflowEnvelope): string[] {
+  return 'data' in answer ? RetriedSchema.safeParse(answer.data.retried).data?.runsAgain ?? [] : [];
+}
+
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
   const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
@@ -688,7 +696,8 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
     if ('outcome' in reconciled) await finish(reconciled);
 
     const runsAgain = run.steps.filter((state) => again.has(state)).map((state) => state.id);
-    const retried = { retried: { step: target.id, pass: target.pass ?? 1, runsAgain }, reopened, run: runData(run) };
+    const answered: z.infer<typeof RetriedSchema> = { step: target.id, pass: target.pass ?? 1, runsAgain };
+    const retried = { retried: answered, reopened, run: runData(run) };
 
     return ok(reopened && run.status === 'running' ? { ...retried, resume: `teamai workflow resume ${run.id}` } : retried);
   }, { reopen });
