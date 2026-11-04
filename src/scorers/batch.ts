@@ -1,6 +1,6 @@
 /**
- * Batches: the scorers of one pass that resolve to the same tool and model share one judge call, one evidence dir and
- * one answer with a label per scorer.
+ * Batches: the scorers of one pass that take the same model, stages and preferred tool share one judge call, one
+ * evidence dir and one answer with a label per scorer.
  */
 import { z } from 'zod';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
