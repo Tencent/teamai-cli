@@ -774,6 +774,31 @@ describe('a run with private steps', () => {
     });
   });
 
+  it('publishes no item or inputs a private step built from a private output', async () => {
+    const FIND = 'schemaVersion: v1alpha1\nname: judge\ndescription: Judge on this machine only.\nprivate: true\nsteps:\n  - id: find\n    command: echo find\n    output: { names: [string] }\n'
+      + '  - id: each\n    needs: [find]\n    for_each: steps.find.outputs.names\n    command: echo each\n'
+      + '  - id: deep\n    needs: [find]\n    workflow: deep\n    with: { who: "{{ steps.find.outputs.names }}" }\n';
+    const DEEP = 'schemaVersion: v1alpha1\nname: deep\ndescription: Look deeper.\ninputs:\n  who: [string]\nsteps:\n  - id: look\n    command: echo look\n';
+    const acme = team({ judge: FIND, deep: DEEP, reviewed: REVIEWED });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'reviewed');
+
+    for (;;) {
+      const next = await leaseNext(alice.config, runId, alice.driver);
+      if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+      const lease = next.data.lease as { step: string; attempt: string; revision: number };
+      if (lease.step === 'ship') break;
+      const outputs = lease.step === 'check.find' ? { names: ['Initech'] } : undefined;
+      await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver, ...(outputs ? { outputs } : {}) });
+    }
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    expect(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '').not.toContain('Initech');
+    const bob = await acme.member('bob');
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+    expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { lease: { step: 'ship' } } });
+  });
+
   it('keeps a run of a private workflow on the machine that started it', async () => {
     const acme = team({ judge: JUDGE });
     const alice = await acme.member('alice');

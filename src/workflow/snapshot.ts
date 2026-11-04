@@ -274,9 +274,9 @@ const PASS_RULES = {
 
 const ARCHIVED_RULES = { ...PASS_RULES, step: 'publish', within: 'publish' } satisfies FieldRules<ArchivedPass>;
 
-// What a step of a private workflow produced stays on the machine that ran it; the step that runs that workflow
-// publishes only the outputs the workflow declares.
-const PRIVATE_STEP_RULES = { ...STEP_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<StepState>;
+// What a step of a private workflow produced stays on the machine that ran it, with the item and inputs built from it;
+// the step that runs that workflow publishes only the outputs the workflow declares.
+const PRIVATE_STEP_RULES = { ...STEP_RULES, item: 'drop', inputs: 'drop', outputs: 'drop', results: 'drop' } satisfies FieldRules<StepState>;
 const PRIVATE_PASS_RULES = { ...PASS_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<StepPass>;
 const PRIVATE_ARCHIVED_RULES = { ...ARCHIVED_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<ArchivedPass>;
 
