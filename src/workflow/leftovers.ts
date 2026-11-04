@@ -109,6 +109,7 @@ async function deleteBranches(
   { checkout, runId, branches, tips }: { checkout: string; runId: string; branches: string[]; tips: Tips },
 ): Promise<Pick<RunLeftovers, 'deleted' | 'failed'>> {
   const failed: RunLeftovers['failed'] = [];
+
   const onOrigin = branches.flatMap((branch) => {
     const tip = tips.origin?.get(branch);
 
@@ -519,9 +520,9 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     }
 
     // A retry or a claim here since the run was read reopens it: what it left is its own again.
-    const stored = await readRun(config, run.id);
+    const reread = await readRun(config, run.id);
 
-    if (stored === 'missing' || stored === 'corrupt' || stored.revision !== run.revision) continue;
+    if (reread === 'missing' || reread === 'corrupt' || reread.revision !== run.revision) continue;
     const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(current.prBranches), attempts: attempts.names });
 
     if (!removed) continue;
