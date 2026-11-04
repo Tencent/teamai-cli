@@ -23,20 +23,12 @@ env:
 
 jobs:
   lint-and-test:
-    name: Lint & Test (Node ${{ matrix.node-version }} on ${{ matrix.os }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
+    name: Lint & Test (Node ${{ matrix.node-version }} on ubuntu-latest)
     strategy:
       fail-fast: false
-      # Every Node version on Linux. macOS differs by platform, not by Node
-      # version, and its runner takes over twice as long: one version, split in
-      # two so it finishes with the Linux legs.
       matrix:
-        include:
-          - { os: ubuntu-latest, node-version: 20 }
-          - { os: ubuntu-latest, node-version: 22 }
-          - { os: ubuntu-latest, node-version: 24 }
-          - { os: macos-latest, node-version: 22, shard: 1/2 }
-          - { os: macos-latest, node-version: 22, shard: 2/2 }
-    runs-on: ${{ matrix.os }}
+        node-version: [20, 22, 24]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,17 +42,46 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      # Lint and types do not depend on the platform; the Linux legs cover them.
       - name: Lint
-        if: matrix.os == 'ubuntu-latest'
         run: npm run lint
 
       - name: Type check
-        if: matrix.os == 'ubuntu-latest'
         run: npm run typecheck
 
       - name: Unit tests
-        run: npx vitest run ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+        run: npx vitest run
+
+  # The full suite. A git repo under os.tmpdir() resolves /var through
+  # /private/var here and not on Linux (branch-worktree-retire, run
+  # 39965490386). Outside build.needs, as coverage is: a red shard is a
+  # failed check on the PR, and Build does not wait. The provider PATH
+  # file is under e2e/, which the unit run excludes, so one shard runs it.
+  macos:
+    name: Unit tests (Node 22 on macos-latest, shard ${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/2', '2/2']
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Unit tests
+        run: npx vitest run --shard=${{ matrix.shard }}
+
+      - name: Provider CLI path
+        if: matrix.shard == '1/2'
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/providers-cli-path.test.ts
 
   # Coverage made the Node 20 leg the slowest unit job (17 min against 10).
   # It runs on its own, outside Build's needs, so nothing waits for it.
@@ -282,3 +303,9 @@ jobs:
       # files only, so the gate's e2e cases run here.
       - name: CodeBuddy project gate
         run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/hooks-project-isolation-issue373.test.ts
+
+      # CreateProcess launches the .cmd sibling. The rest of the provider PATH
+      # file compares directory strings, which disagree on this runner: temp
+      # is the 8.3 form and `where` returns the long form.
+      - name: Provider CLI .cmd shim
+        run: npx vitest run src/__tests__/providers-cli-cmd.test.ts

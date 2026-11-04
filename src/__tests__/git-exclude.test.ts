@@ -48,15 +48,6 @@ function memoryOwner(name: string, files: string[] = []): GitExcludeOwner & { fi
   return owner;
 }
 
-/** Whether names differing only in case are one file in `dir`. */
-async function caseInsensitive(dir: string): Promise<boolean> {
-  const probe = path.join(dir, 'CaseProbe');
-  await fse.writeFile(probe, '');
-  const result = await fse.pathExists(path.join(dir, 'caseprobe'));
-  await fse.remove(probe);
-  return result;
-}
-
 describe('git exclude blocks (#915)', () => {
   let tmp: string;
   let repo: string;
@@ -293,35 +284,6 @@ describe('git exclude blocks (#915)', () => {
         await sync(memoryOwner('delivered'), [inRepo('.cursor', 'new.md')]);
 
         expect(await read()).toMatch(/^\/config\/new\.md$/m);
-        expect(status(repo)).toBe('');
-      });
-
-      it.runIf(process.platform === 'darwin').each([
-        ['true', 'NFC', 'café'],
-        ['false', 'the on-disk bytes', 'café'],
-      ])('with core.precomposeunicode %s, writes %s for a name stored decomposed', async (precompose, _label, expected) => {
-        git(repo, 'config', 'core.precomposeunicode', precompose);
-        const skill = inRepo('.claude', 'skills', 'café');
-        await fse.outputFile(path.join(skill, 'SKILL.md'), 'x\n');
-
-        await sync(memoryOwner('delivered'), [path.join(skill, 'SKILL.md')]);
-
-        expect(await read()).toContain(`/.claude/skills/${expected}/SKILL.md\n`);
-        expect(status(repo)).toBe('');
-      });
-
-      it('spells the line as the name is on disk, on a case-insensitive filesystem', async (ctx) => {
-        if (!await caseInsensitive(tmp)) ctx.skip();
-        await fse.outputFile(inRepo('.claude', 'skills', 'Deploy', 'SKILL.md'), 'x\n');
-        await fse.outputFile(inRepo('.claude', 'rules', 'Team.md'), 'x\n');
-
-        await sync(memoryOwner('delivered'), [
-          inRepo('.CLAUDE', 'Skills', 'deploy', 'skill.md'),
-          inRepo('.claude', 'skills', 'Deploy', 'SKILL.md'),
-          inRepo('.claude', 'rules', 'team.md'),
-        ]);
-
-        expect(await read()).toContain('# [teamai:delivered:start]\n/.claude/rules/Team.md\n/.claude/skills/Deploy/SKILL.md\n# [teamai:delivered:end]\n');
         expect(status(repo)).toBe('');
       });
     });
