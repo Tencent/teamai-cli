@@ -18,6 +18,7 @@ import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retriedRunsAgain, retryStep } from './workflow/run-controls.js';
 import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
+import { driveRun, unsupportedDriver } from './workflow-drive.js';
 import { awaitsLine } from './default-driver.js';
 import { LOCAL_DRIVER, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
 import { driverIdentity } from './driver-identity.js';
@@ -646,20 +647,6 @@ function refusedDriver(asked: AskedDriver, takes: ReadonlyArray<'local' | 'skill
   }
 }
 
-/**
- * Drives run `run` of `config` here as driver `name`, which `drivesHere` said this machine drives: the local driver from
- * `cwd`. The one way `teamai score` and `teamai score --drain` drive a run.
- */
-export async function driveRun(config: LocalConfig, run: string, name: DriverName, { cwd, options }: { cwd: string; options: LocalDriverOptions }): Promise<WorkflowEnvelope> {
-  if (name === 'local') return runLocalDriver(config, run, cwd, options);
-
-  return { error: unsupportedDriver(name) };
-}
-
-/** The refusal of a `--driver` that is neither `local` nor `skill`. */
-function unsupportedDriver(driver: string): WorkflowFailure {
-  return { code: 'unsupported_driver', message: `Driver "${driver}" is not available. Use --driver local or --driver skill.` };
-}
 
 /** Answers the first issue of a `--json` driver's flags, as `invalid_arguments`. */
 function refuseOptions(error: z.ZodError): void {

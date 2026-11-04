@@ -4,7 +4,7 @@
  * warning, and the next level decides, as `workflows.retention` is. The order: `--driver`, this scope's config,
  * ~/.teamai/config.yaml, the team's teamai.yaml, then `local`. `workflow start` and `workflow resume` never read it:
  * without `--driver` they start a run unassigned, which a driver outside teamai relies on. `driveRun` in
- * workflow-commands.ts drives a run this machine drives; this module loads no driver, so the hooks can decide.
+ * workflow-drive.ts drives a run this machine drives; this module loads no driver, so the hooks can decide.
  */
 import { loadTeamConfig } from './config.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';

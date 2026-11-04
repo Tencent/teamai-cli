@@ -23,7 +23,7 @@ import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './ty
 import { DataBranches } from './utils/data-branches.js';
 import { log } from './utils/logger.js';
 import { agentSessionIdFromEnv } from './utils/session-id.js';
-import { driveRun } from './workflow-commands.js';
+import { driveRun } from './workflow-drive.js';
 import { inProcessClient } from './workflow/protocol.js';
 import { pendingRecords, publishPendingRecords } from './workflow/records.js';
 import type { StepState } from './workflow/step-state.js';
