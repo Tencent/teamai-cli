@@ -8,8 +8,7 @@ import type { ConfinedTool } from '../tool-launch/tools.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { isAgentToolId } from '../tools.js';
 import { JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
-import { writeJsonAtomic } from '../utils/fs.js';
-import { redact } from '../utils/redact.js';
+import { AttemptResult } from './attempt-result.js';
 import type { ReportInput } from './engine.js';
 import type { ConfinedLease, LeaseWire } from './lease-wire.js';
 import { MAX_TIMER_DELAY } from './shell-command.js';
@@ -148,7 +147,7 @@ export async function runConfinedStep(input: ConfinedStepInput): Promise<Confine
 async function failedReport(input: { file: string; tool: ConfinedTool; durationMs: number; result: Extract<ConfinedResult, { ok: false }>; secrets: Record<string, string> }): Promise<ConfinedStepReport> {
   const { file, tool, durationMs, result, secrets } = input;
 
-  if (result.raw !== undefined) await writeJsonAtomic(file, { raw: redact(result.raw, { envSecrets: secrets, patterns: false }) });
+  if (result.raw !== undefined) await AttemptResult.write(file, { raw: result.raw }, secrets);
   const saved = result.raw === undefined ? '' : ` The tool's output is in ${file}.`;
   const failure = { code: result.code, message: `${result.message}${saved}` };
 

@@ -10,9 +10,7 @@ import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand,
 import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, workflowLaunch, type RunMode } from '../../../launch-context.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
-import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
-import { redact, redactJson } from '../../../utils/redact.js';
 import { AgentSession } from '../../../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
@@ -38,6 +36,7 @@ import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { confinedOffers, type ConfinedOffer } from '../../../tool-launch/confined.js';
+import { AttemptResult } from '../../attempt-result.js';
 import { runConfinedStep } from '../../confined-step.js';
 import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
 import type { DriveOptions, DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
@@ -179,33 +178,6 @@ interface Lease extends LeaseWire {
   cwd?: string;
 }
 
-/**
- * Masks the secret values an attempt's result file holds, so the copy it keeps on disk carries none. A file that is
- * not JSON, such as one a tool stopped writing halfway, is masked as text.
- */
-async function maskResultFile(file: string, secrets: Record<string, string>): Promise<void> {
-  const text = await readFileSafe(file);
-
-  if (text === null) return;
-  let kept: unknown;
-
-  try {
-    kept = JSON.parse(text);
-  } catch {
-    // Text a tool wrote as JSON holds a secret with a quote or a backslash in its escaped form.
-    const escaped = Object.fromEntries(Object.entries(secrets).map(([label, value]) => [label, JSON.stringify(value).slice(1, -1)]));
-    const masked = redact(redact(text, { envSecrets: escaped, patterns: false }), { envSecrets: secrets, patterns: false });
-
-    if (masked !== text) await writeFileAtomic(file, masked);
-
-    return;
-  }
-
-  const masked = redactJson(kept, secrets);
-
-  if (JSON.stringify(masked) !== JSON.stringify(kept)) await writeJsonAtomic(file, masked);
-}
-
 /** Masks the result file of every attempt of the run, so one that ended without a report, on a signal too, keeps no secret. */
 async function maskAttemptFiles(config: LocalConfig, run: RunId, secrets: Record<string, string>): Promise<void> {
   const listed = await fs.readdir(attemptsDir(config, run)).catch(() => []);
@@ -216,7 +188,7 @@ async function maskAttemptFiles(config: LocalConfig, run: RunId, secrets: Record
     return attempt.success ? [attempt.data] : [];
   });
 
-  await Promise.all(attempts.map((attempt) => maskResultFile(attemptResultPath(config, run, attempt), secrets)));
+  await Promise.all(attempts.map((attempt) => AttemptResult.mask(attemptResultPath(config, run, attempt), secrets)));
 }
 
 function supportedTool(value: string): value is LaunchTool {
@@ -404,11 +376,9 @@ async function resumeSession(archive: SessionArchive, lease: Lease, tool: Launch
   return undefined;
 }
 
-async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandExit): Promise<ReportBody> {
+async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandExit, secrets: Record<string, string>): Promise<ReportBody> {
   const end = commandEnd(result);
-  const resultFile = attemptResultPath(config, lock.run, lease.attempt);
-  await fs.mkdir(path.dirname(resultFile), { recursive: true });
-  await writeJsonAtomic(resultFile, end.outputs !== undefined ? { output: end.outputs } : {});
+  await AttemptResult.write(attemptResultPath(config, lock.run, lease.attempt), end.outputs !== undefined ? { output: end.outputs } : {}, secrets);
 
   return { attempt: lease.attempt, revision: lease.revision, driver, ...end };
 }
@@ -441,6 +411,7 @@ async function promptReport(
   signal: AbortSignal,
   mode: RunMode,
   staged: LaunchChoice | undefined,
+  secrets: Record<string, string>,
 ): Promise<ReportBody> {
   const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
     const unrestored = await abandonPlace({ config, lock, attempt: lease.attempt });
@@ -561,6 +532,7 @@ async function promptReport(
     prompt: lease.prompt!,
     cwd,
     resultPath: resultFile,
+    secrets,
     // The lease `env` is set over the step's environment, as a command's is.
     env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, lock.run, lease.attempt, mode) },
   };
@@ -950,7 +922,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
   const report = async (body: ReportBody, lease: Lease): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config);
-    await maskResultFile(attemptResultPath(config, runId, lease.attempt), secrets);
+    await AttemptResult.mask(attemptResultPath(config, runId, lease.attempt), secrets);
     const answer = await managedReport({ config, runId, report: body, secrets, lock });
 
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
@@ -1119,7 +1091,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
           if (failure) return unstaged(lease, failure);
           interactiveIgnores = ignored;
 
-          return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode, launch);
+          return promptReport(config, lock, driver, lease, adapter, options, archive, controller.signal, mode, launch, turn.secrets);
         })() });
       }
 
@@ -1242,7 +1214,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
       const body = staged.kind === 'unstaged'
         ? unstaged(exited.lease, staged.failure)
-        : await commandReport(config, lock, driver, exited.lease, staged.result);
+        : await commandReport(config, lock, driver, exited.lease, staged.result, turn.secrets);
 
       const failed = await report(body, exited.lease);
 
