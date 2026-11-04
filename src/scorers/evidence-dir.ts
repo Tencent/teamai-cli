@@ -22,7 +22,7 @@ import { RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema, type
 import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import { RunScorers } from './run-scorers.js';
 import type { ScoreAttempt } from './score-attempt.js';
-import { judgeablePass, type Refusal } from './score-plan.js';
+import { judgeablePass, plannedSessionPins, type Refusal } from './score-plan.js';
 import { buildEvidence, isDelivered, missingEvidence } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
 import { Subject } from './subject.js';
@@ -190,7 +190,7 @@ async function runEvidence(attempt: ScoreAttempt, subject: RunSubject, names: re
 }
 
 async function sessionEvidence(attempt: ScoreAttempt, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[], hand: boolean): Promise<EvidenceOutput | Refusal> {
-  const pinned = pinsOf(names, { ok: true, pins: (await SessionWork.pinsOf(attempt.config, subject, names)).pins }, 'a scorer teamai pull cached or a routing question of the session');
+  const pinned = pinsOf(names, { ok: true, pins: await plannedSessionPins(attempt, subject, names) }, 'a scorer teamai pull cached or a routing question of the session');
 
   if ('ok' in pinned) return pinned;
   const read = await sessionRead(attempt, subject);

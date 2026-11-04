@@ -782,13 +782,15 @@ interface Walk {
   tip?: string;
   /** The ci step's `--wait`; 2h, as shipped, by default. */
   wait?: string;
+  /** What happens on this machine once a step reported, by step path. */
+  after?: Record<string, () => Promise<void>>;
 }
 
 /**
  * Drives a teamai-score run of `subject` to its end, each step by its verb, and returns what each verb answered by step
  * path, and what the engine answered when the run ended.
  */
-async function walk(config: LocalConfig, subject: string, { judge, confinedRecorded = true, inputs = {}, startedBy = 'cli', fake = {}, tip, wait = '2h' }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
+async function walk(config: LocalConfig, subject: string, { judge, confinedRecorded = true, inputs = {}, startedBy = 'cli', fake = {}, tip, wait = '2h', after = {} }: Walk = {}): Promise<{ runId: string; answers: Map<string, ScoreVerbAnswer>; ended: WorkflowEnvelope }> {
   const run = await scoreRun(config, { subject, ...inputs }, startedBy);
   const answers = new Map<string, ScoreVerbAnswer>();
   const items = (index: string) => {
@@ -818,6 +820,7 @@ async function walk(config: LocalConfig, subject: string, { judge, confinedRecor
     answers.set(lease.step, answer);
     // A confined run that failed reports what it spent as tokens, with no confined run, as the local driver does.
     await run.report(taken, answer, id === 'judge' ? (answer.ok ? (confinedRecorded ? { confined: JUDGED } : undefined) : { tokens: { input: 10, output: 2 } }) : undefined);
+    await after[lease.step]?.();
   }
 }
 
@@ -996,6 +999,20 @@ describe('score label and score write', () => {
     await walk(config, 'session:claude-code:one', { inputs: { scorers: ['quality'], demand: 'named' }, judge: { answer: { label: 'good', reasoning: 'It fixed the bug.' } } });
 
     expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good', agent: { tool: observed.tool, model: { requested: 'claude-x', reported: 'claude-x' } } }]);
+  });
+
+  it('judge a session by the rubric plan opened its mark with when a pull changed the scorer before evidence, and close that mark', async () => {
+    const config = await team({}, { quality: scorer({ extra: 'sessions: true\n' }) });
+    plantSession(path.join(root, 'app'), 'one', 'Fix the login bug.');
+    const pulled = async () => {
+      fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), scorer({ extra: 'sessions: true\n' }).replace('Judge the work.', 'Judge the work strictly.'));
+      await syncScorersThenWorkflows(config);
+    };
+    const { answers } = await walk(config, 'session:claude-code:one', { judge: { answer: { label: 'good', reasoning: 'It fixed the bug.' } }, after: { plan: pulled } });
+
+    expect(answers.get('score[0].evidence')).toMatchObject({ ok: true, output: { rubric: expect.not.stringContaining('strictly') } });
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good' }]);
+    expect(await ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW })).toEqual({ ok: true, output: { list: [] } });
   });
 
   it('settle a group whose evidence failed as a failed attempt, so automatic judging does not start it again', async () => {

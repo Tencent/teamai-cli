@@ -3,10 +3,13 @@
  * then the sampled ones that may share one judge launch are grouped, and the marks of every group are opened for the
  * root run, so a parallel run sees them taken.
  */
+import path from 'node:path';
+import { z } from 'zod';
 import { loadModelAliases } from '../models/aliases.js';
 import { installedConfinedTools } from '../tool-launch/confined.js';
 import type { LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
+import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { SessionWork } from '../session-flow/session-work.js';
 import { judgeablePasses } from '../workflow/judge-work.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -19,7 +22,7 @@ import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
 import { chooseJudgeModel, type JudgeModelChoice } from './judge-model.js';
 import type { RunSubject } from './label.js';
 import { Marks, type Demand, type Launch, type MarkFacts, type MarkKey } from './marks.js';
-import { pinnedDefinition, type PinnedScorer } from './pin.js';
+import { pinnedDefinition, PinnedScorerSchema, type PinnedScorer } from './pin.js';
 import { RunScorers } from './run-scorers.js';
 import { isSampled } from './sampling.js';
 import { ScoreAttempt } from './score-attempt.js';
@@ -85,6 +88,48 @@ async function restartsOf(request: PlanRequest, facts: MarkFacts): Promise<(key:
   const restartable = (await Marks.restartable(request.attempt.config, facts)).flatMap(({ key }) => (Subject.format(key.subject) === id ? [key] : []));
 
   return (key) => restartable.some((mark) => mark.scorer === key.scorer && mark.sourceHash === key.sourceHash);
+}
+
+/** What plan keeps in its attempt's directory: the pin of each session scorer whose mark it opened, by name. */
+const PLANNED_PINS = 'pins.json';
+
+// A file that does not parse, such as one a crash cut short, holds no pin.
+const PlannedPinsSchema = z.string().transform((text) => {
+  try {
+    const parsed: unknown = JSON.parse(text);
+
+    return parsed;
+  } catch {
+    return {};
+  }
+}).pipe(z.record(z.string(), PinnedScorerSchema).catch({}));
+
+/** Keeps in plan attempt directory `dir` the pin of each of `candidates` that one of `keys`, the marks plan opened, is for. */
+async function writePlannedPins(dir: string, candidates: readonly Candidate[], keys: readonly MarkKey[]): Promise<void> {
+  const names = new Set(keys.map((key) => key.scorer));
+
+  await writeJsonAtomic(path.join(dir, PLANNED_PINS), Object.fromEntries(candidates.flatMap(({ name, pin }): Array<[string, PinnedScorer]> => (names.has(name) ? [[name, pin]] : []))));
+}
+
+/** The directory of the plan attempt of the instance `attempt` is in, once plan was leased. */
+function planDir(attempt: ScoreAttempt): string | undefined {
+  const plan = attempt.run.steps.find((step) => step.id === `${attempt.instance.prefix}plan`);
+
+  return plan !== undefined && 'attempt' in plan && plan.attempt !== undefined ? path.join(path.dirname(attempt.dir), plan.attempt) : undefined;
+}
+
+/**
+ * The pins of `names` on session `subject` in the instance of `attempt`: the one plan opened each mark with, so a pull
+ * since judges and closes nothing else, else the one teamai pull cached, as for a hand label, which opens no mark.
+ */
+export async function plannedSessionPins(attempt: ScoreAttempt, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[]): Promise<Record<string, PinnedScorer>> {
+  const dir = planDir(attempt);
+  const text = dir === undefined ? null : await readFileSafe(path.join(dir, PLANNED_PINS));
+  const planned = PlannedPinsSchema.parse(text ?? '{}');
+  const missing = names.filter((name) => planned[name] === undefined);
+  const cached = missing.length === 0 ? {} : (await SessionWork.pinsOf(attempt.config, subject, missing)).pins;
+
+  return { ...cached, ...planned };
 }
 
 function refused(code: string, message: string): Refusal {
@@ -293,6 +338,8 @@ export async function planGroups(request: PlanRequest): Promise<{ ok: true; grou
   const opened = await Marks.open(config, launch, facts);
 
   if (opened.status === 'busy') return refused('busy', 'Another teamai process is writing the scoring marks of this data home. Nothing was planned; run the step again.');
+
+  if (subject.kind !== 'run') await writePlannedPins(request.attempt.dir, judged.candidates, opened.opened.flatMap(({ keys }) => keys));
 
   return {
     ok: true,
