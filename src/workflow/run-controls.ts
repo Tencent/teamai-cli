@@ -518,7 +518,7 @@ async function restoreForRetry(config: LocalConfig, runId: string, step: string,
   if (failed.length === 0) return undefined;
   const why = failed.map(({ branch, reason }) => `Branch ${branch} is not back ${reason}.`).join(' ');
 
-  return error('branches_not_restored', `Run ${runId} was not reopened: the branches its cleanup deleted, which the run needs again, did not all come back. ${why} Try again once that is fixed: ${retryCommand(runId, step)}`);
+  return error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand(runId, step)}`);
 }
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */

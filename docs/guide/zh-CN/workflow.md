@@ -562,7 +562,7 @@ $ teamai workflow retry r1ddcd1ca66beb067 finish
 
 ```text
 $ teamai workflow retry r1ddcd1ca66beb067 decide
-{"error":{"code":"branches_not_restored","message":"Run r1ddcd1ca66beb067 was not reopened: the branches its cleanup deleted, which the run needs again, did not all come back. Branch teamai/r1ddcd1ca66beb067/change/p1 is not back on origin: remote: creating teamai/* branches is not allowed\nTo https://git.example.com/team/app.git\n ! [remote rejected] f8cbcf2714e92aedb57f34f65896b0df926a1661 -> teamai/r1ddcd1ca66beb067/change/p1 (pre-receive hook declined)\nerror: failed to push some refs to 'https://git.example.com/team/app.git'. Try again once that is fixed: teamai workflow retry r1ddcd1ca66beb067 decide"}}
+{"error":{"code":"branches_not_restored","message":"Run r1ddcd1ca66beb067 was not reopened: not every branch the run recorded is back at the commit it recorded. Branch teamai/r1ddcd1ca66beb067/change/p1 is not back on origin: remote: creating teamai/* branches is not allowed\nTo https://git.example.com/team/app.git\n ! [remote rejected] f8cbcf2714e92aedb57f34f65896b0df926a1661 -> teamai/r1ddcd1ca66beb067/change/p1 (pre-receive hook declined)\nerror: failed to push some refs to 'https://git.example.com/team/app.git'. Try again once that is fixed: teamai workflow retry r1ddcd1ca66beb067 decide"}}
 ```
 
 既不是时长也不是 `never` 的值会被跳过并给出警告，由下一级决定。TeamAI 从不删除 pull request 的分支：请在代码托管平台上开启合并后自动删除头分支的选项。

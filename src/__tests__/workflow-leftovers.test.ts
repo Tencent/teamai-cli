@@ -865,7 +865,7 @@ describe('a retry of a run that succeeded', () => {
 
     const refused = await retryStep(config, runId, {}, 'decide');
     expect(refused).toEqual({ error: { code: 'branches_not_restored', message: expect.stringMatching(new RegExp(
-      `^Run ${runId} was not reopened: the branches its cleanup deleted, which the run needs again, did not all come back\\. Branch teamai/${runId}/change/p1 is not back on origin: .*creating is not allowed.*\\. Try again once that is fixed: teamai workflow retry ${runId} decide$`, 's',
+      `^Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded\\. Branch teamai/${runId}/change/p1 is not back on origin: .*creating is not allowed.*\\. Try again once that is fixed: teamai workflow retry ${runId} decide$`, 's',
     )) } });
     expect(await state(config, runId)).toEqual(settled);
     expect(branches(origin, runId)).toEqual(['join/p1']);
