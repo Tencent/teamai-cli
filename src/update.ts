@@ -987,10 +987,12 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
         )));
 
         if (installed.version !== result.latest) {
-          log.warn(
+          const message =
             `The running install at ${path.dirname(path.dirname(updatedEntry))} is still ` +
-            `v${installed.version ?? 'unknown'} (expected v${result.latest}) — it may need a manual update.`,
-          );
+            `v${installed.version ?? 'unknown'} (expected v${result.latest}) — it may need a manual update.`;
+
+          log.warn(message);
+          log.persist(message);
         }
       } catch { /* verification is best-effort */ }
     }
@@ -1015,13 +1017,20 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   } catch (e) {
     const msg = e instanceof Error ? e.message : '';
 
+    let message: string;
+
     if (msg.includes('EACCES') || errnoCode(e) === 'EACCES') {
-      log.warn(`Permission denied. Run "teamai update" manually with appropriate permissions.`);
+      message = 'Permission denied. Run "teamai update" manually with appropriate permissions.';
     } else if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
-      log.warn('Update timed out. Try again later.');
+      message = 'Update timed out. Try again later.';
     } else {
-      log.warn(`Update failed: ${msg}. Run "teamai update" manually.`);
+      message = `Update failed: ${msg}. Run "teamai update" manually.`;
     }
+
+    // Hooks discard stderr: without the file copy, a failed auto-update leaves
+    // no trace anywhere — the one failure the reporter cannot hand over.
+    log.warn(message);
+    log.persist(message);
   } finally {
     await releaseLock();
   }

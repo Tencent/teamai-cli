@@ -626,6 +626,8 @@ describe('doUpdate', () => {
     expect(mockedLog.warn).toHaveBeenCalledWith(
       expect.stringContaining('Another update is in progress'),
     );
+    // A concurrent update is not a failure: it must not fill debug.log.
+    expect(mockedLog.persist).not.toHaveBeenCalled();
     expect(mockedExecSync).toHaveBeenCalledTimes(1);
   });
 
@@ -645,6 +647,10 @@ describe('doUpdate', () => {
     expect(mockedLog.warn).toHaveBeenCalledWith(
       expect.stringContaining('Permission denied'),
     );
+    // Hook-triggered updates discard stderr; debug.log is the only record.
+    expect(mockedLog.persist).toHaveBeenCalledWith(
+      expect.stringContaining('Permission denied'),
+    );
     expect(mockedFse.remove).toHaveBeenCalled();
   });
 
@@ -662,6 +668,27 @@ describe('doUpdate', () => {
     expect(mockedLog.warn).toHaveBeenCalledWith(
       expect.stringContaining('timed out'),
     );
+    expect(mockedLog.persist).toHaveBeenCalledWith(
+      expect.stringContaining('timed out'),
+    );
+  });
+
+  // ─── Test #15: any other install failure ──────────────
+
+  it('should persist an unclassified install failure', async () => {
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockImplementationOnce(() => {
+        throw new Error('npm ERR! code ENOTEMPTY');
+      });
+
+    await doUpdate(null);
+
+    const expected = expect.stringContaining('Update failed: npm ERR! code ENOTEMPTY');
+    expect(mockedLog.warn).toHaveBeenCalledWith(expected);
+    // #1685: an auto-update that dies in a hook leaves no stderr behind, so the
+    // failure has to reach debug.log or it cannot be reported at all.
+    expect(mockedLog.persist).toHaveBeenCalledWith(expected);
   });
 
   // ─── Test: Already up to date ─────────────────────────
@@ -1277,9 +1304,10 @@ describe('self-update install-target safety', () => {
       expect.arrayContaining(['install', '-g', expect.stringContaining('--prefix=')]),
       expect.anything(),
     );
-    expect(mockedLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining('still v0.0.9 (expected v99.0.0)'),
-    );
+    const stale = expect.stringContaining('still v0.0.9 (expected v99.0.0)');
+    expect(mockedLog.warn).toHaveBeenCalledWith(stale);
+    // npm exited 0 but the running install did not move: same silent failure.
+    expect(mockedLog.persist).toHaveBeenCalledWith(stale);
   });
 
   it('logs plain success when the running install is the updated version', async () => {
