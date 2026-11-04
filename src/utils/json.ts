@@ -254,7 +254,19 @@ function withAppended(text: string, path: JSONPath, key: string | null, value: J
   const rendered = (key === null ? '' : `${JSON.stringify(key)}: `) + JSON.stringify(value, null, unit).split('\n').join(`${eol}${indent}`);
   let at = last.offset + last.length;
   const comma = commaAfter(text, at);
-  const lineComment = (from: number): number => from + (LINE_COMMENT.exec(text.slice(from))?.[0].length ?? 0);
+
+  // Same-line comments after the member, through the last one: `/* … */ // …` stays on that line.
+  const lineComment = (from: number): number => {
+    let past = from;
+    let length = LINE_COMMENT.exec(text.slice(past))?.[0].length ?? 0;
+
+    while (length > 0) {
+      past += length;
+      length = LINE_COMMENT.exec(text.slice(past))?.[0].length ?? 0;
+    }
+
+    return past;
+  };
 
   // A member list written with a trailing comma keeps one.
   if (comma !== undefined) {

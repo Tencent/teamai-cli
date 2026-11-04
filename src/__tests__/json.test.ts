@@ -127,6 +127,20 @@ describe('editJsonText', () => {
     ].join('\n'));
   });
 
+  it('appends after every comment on the member\'s line, so removing the added key keeps them', () => {
+    const trailingComma = '{\n  "mine": 1, /* explanation */ // keep\n}\n';
+    const appended = editJsonText(trailingComma, { mine: 1, team: 2 });
+
+    expect(appended).toBe('{\n  "mine": 1, /* explanation */ // keep\n  "team": 2,\n}\n');
+    expect(editJsonText(appended, { mine: 1 })).toBe(trailingComma);
+
+    const sameLine = '{\n  "mine": 1 /* explanation */ // keep\n}\n';
+    const withTeam = editJsonText(sameLine, { mine: 1, team: 2 });
+
+    expect(withTeam).toBe('{\n  "mine": 1, /* explanation */ // keep\n  "team": 2\n}\n');
+    expect(editJsonText(withTeam, { mine: 1 })).toBe(sameLine);
+  });
+
   it('removes the last key, keeping the comment of the key before it, and leaves no trailing comma', () => {
     const hooks = '{\n  "hooks": {\n    "stop": [{ "command": "mine" }], // my own\n    "sessionStart": [{ "command": "teamai" }]\n  }\n}\n';
     const edited = editJsonText(hooks, { hooks: { stop: [{ command: 'mine' }] } });
