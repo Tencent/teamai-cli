@@ -26,7 +26,7 @@ import type { JsonlRecord } from '../../utils/jsonl-store.js';
 import { JsonValueSchema, type JsonValue } from '../../types.js';
 import { fallbackTitle } from '../title.js';
 import { isSafeSessionFileId } from '../ids.js';
-import { findSqlite3 } from '../sqlite.js';
+import { findSqlite3, snapshotSqlite } from '../sqlite.js';
 import { execCommand, type ExecResult } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
 import { parseJson } from '../../utils/json.js';
@@ -116,17 +116,13 @@ export class AgyAdapter extends AgentAdapter {
     if (sessionId !== undefined && !isSafeSessionFileId(sessionId)) return [];
     const where = sessionId === undefined ? '' : ` WHERE conversation_id = '${sessionId}'`;
     const sql = `SELECT conversation_id, title, last_modified_time, workspace_uris FROM conversation_summaries${where} ORDER BY last_modified_time DESC;`;
-    // agy keeps the database in WAL mode, which sqlite3 cannot open read-only once agy has closed it and removed its
-    // -shm file. A copy, with the -wal that holds what agy has not checkpointed yet, reads without writing beside agy's.
+    // agy keeps the database in WAL mode and may be writing it: the query reads a snapshot, which writes nothing beside agy's.
     const copy = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'teamai-agy-summaries-'));
     let result: ExecResult;
 
     try {
       const copied = path.join(copy, 'conversation_summaries.db');
-      await fs.promises.copyFile(db, copied);
-      await fs.promises.copyFile(`${db}-wal`, `${copied}-wal`).catch((cause: unknown) => {
-        if (!(cause instanceof Error && 'code' in cause && cause.code === 'ENOENT')) throw cause;
-      });
+      await snapshotSqlite(sqlite3, db, copied);
       result = await execCommand(sqlite3, ['-json', copied, sql], { timeoutMs: 30_000 });
     } finally {
       await fs.promises.rm(copy, { recursive: true, force: true });

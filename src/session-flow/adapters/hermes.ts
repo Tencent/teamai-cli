@@ -2,14 +2,13 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef } from './base.js';
 import { resolveRealCwd } from '../fs.js';
 import { toolArgumentsFrom, type ContentBlock, type Message, type Session } from '../ir.js';
 import { fallbackTitle } from '../title.js';
 import { isSafeSessionFileId } from '../ids.js';
-import { findSqlite3 } from '../sqlite.js';
+import { findSqlite3, snapshotSqlite } from '../sqlite.js';
 import { execCommand, type ExecResult } from '../../utils/exec.js';
 import { JsonValueSchema } from '../../types.js';
 
@@ -154,14 +153,7 @@ export class HermesAdapter extends AgentAdapter {
 
     try {
       const copied = path.join(copy, 'state.db');
-      const source = `${pathToFileURL(this.db).href}?mode=ro`;
-      const target = copied.replaceAll('\\', '/').replaceAll('"', '""');
-      const backup = await execCommand(sqlite3, [source, `.backup "${target}"`], { timeoutMs: 30_000 });
-
-      if (backup.code !== 0) {
-        throw new Error(`sqlite3 could not snapshot ${this.db}: ${backup.stderr.trim() || `exit ${backup.code}`}`);
-      }
-
+      await snapshotSqlite(sqlite3, this.db, copied);
       result = await execCommand(sqlite3, ['-json', copied, sql], { timeoutMs: 30_000 });
     } finally {
       await fs.promises.rm(copy, { recursive: true, force: true });

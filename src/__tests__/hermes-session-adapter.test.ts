@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   messages: [] as unknown[],
 }));
 
-vi.mock('../session-flow/sqlite.js', () => ({ findSqlite3: () => mocks.sqlite3 || null }));
+vi.mock('../session-flow/sqlite.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../session-flow/sqlite.js')>(),
+  findSqlite3: () => mocks.sqlite3 || null,
+}));
 vi.mock('../utils/exec.js', () => ({
   execCommand: async (_command: string, args: string[]) => {
     mocks.commands.push(args);
@@ -48,6 +51,8 @@ function fixture(): { adapter: HermesAdapter; home: string; cwd: string; id: str
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hermes-'));
   roots.push(home);
   fs.writeFileSync(path.join(home, 'state.db'), 'fixture');
+  // Hermes is running, so its WAL index exists.
+  fs.writeFileSync(path.join(home, 'state.db-shm'), '');
   const cwd = path.join(home, 'work', 'app');
   fs.mkdirSync(cwd, { recursive: true });
   const id = '20261104_091523_a1b2c3d4';
