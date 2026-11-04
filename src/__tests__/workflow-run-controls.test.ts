@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
@@ -38,7 +38,7 @@ async function fixture(steps: string, header = '') {
   const config: LocalConfig = { repo: { localPath: path.join(root, 'repo'), remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
   fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows/build.yaml'), `schemaVersion: v1alpha1\nname: build\ndescription: Run controls.\n${header}steps:\n${steps}\n`);
-  const synced = await syncWorkflowDefinitions(config);
+  const synced = await syncScorersThenWorkflows(config);
   expect(synced.invalid).toEqual([]);
   const started = await startRun(config, 'build', header.includes('after:') ? { items: [{ id: 'one', after: [] }, { id: 'two', after: ['one'] }] } : header.includes('inputs:') ? { items: [{ name: 'one' }] } : {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
@@ -92,7 +92,7 @@ describe('workflow HITL', () => {
     expect(lease.step).toBe('work');
     expect(data(await f.next({ ...hitl, running: [lease.attempt], canTakeLease: false } as NextOptions)).hitl.step).toBe('finish');
     await f.respond('finish', 'no');
-    expect((await f.state()).steps[0]?.status).toBe('skipped');
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'skipped', message: 'Step "finish" was skipped: its approval was answered no.' });
     await f.report(lease);
     expect(data(await f.next()).done).toMatchObject({ run: f.id, outcome: 'succeeded' });
   });
@@ -119,6 +119,35 @@ describe('workflow HITL', () => {
     expect(state.status).toBe(status);
     expect(state.answer).toEqual(choice ? { choice, channel, agent: false, at: expect.any(String) } : undefined);
     if (state.status === 'failed') expect(state.failure?.code).toBe('hitl_required');
+  });
+
+  it.each([
+    ['approve: { message: Go?, required: true }', true],
+    ['choose: { message: Pick, options: [one, two] }', true],
+    ['choose: { message: Pick, options: [one, two], default: one }', false],
+  ])('keeps %s waiting for a person for a driver without HITL that hands runs to a person (auto_approve=%s), held for hitl', async (hitlSpec, auto) => {
+    const f = await fixture(`  - id: ask\n    ${hitlSpec}`);
+    const next = data(await leaseNext(f.config, f.id, driver, { handoff: { kind: 'offers' }, autoApprove: auto })) as unknown as { wait: { held: unknown[] } };
+    expect(next.wait.held).toEqual([{ step: 'ask', reason: 'step "ask" needs hitl, which this driver does not declare', missing: ['hitl'] }]);
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'waiting' });
+  });
+
+  it('holds an interactive step for hitl from a driver that hands runs to a person, and fails it hitl_required once the driver could not offer the run to a person', async () => {
+    const f = await fixture('  - id: pair\n    interactive: true\n    prompt: Pair on it.');
+    const held = data(await leaseNext(f.config, f.id, driver, { handoff: { kind: 'offers' } })) as unknown as { wait: { held: Array<{ step: string; missing: string[] }> } };
+    expect(held.wait.held).toEqual([expect.objectContaining({ step: 'pair', missing: expect.arrayContaining(['hitl']) })]);
+    expect(data(await leaseNext(f.config, f.id, driver, { handoff: { kind: 'unoffered', reason: 'its team repo has no teamai-reports' } }))).toHaveProperty('done');
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'failed', failure: { code: 'hitl_required', message: expect.stringContaining(`Step "pair" needs a person, and run ${f.id} could not be offered to one: its team repo has no teamai-reports.`) } });
+  });
+
+  it('fails a step that waits for a person with hitl_required once the driver could not offer the run to one, saying why and how to continue it', async () => {
+    const f = await fixture('  - id: ask\n    approve: { message: Go?, required: true }');
+    await leaseNext(f.config, f.id, driver, { handoff: { kind: 'offers' } });
+    expect(data(await leaseNext(f.config, f.id, driver, { handoff: { kind: 'unoffered', reason: 'teamai-reports could not be reached' } }))).toHaveProperty('done');
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'failed', failure: {
+      code: 'hitl_required',
+      message: `Step "ask" needs a person, and run ${f.id} could not be offered to one: teamai-reports could not be reached. Its state is on this machine. Retry the step here, then resume the run where a person answers: teamai workflow retry ${f.id} ask; then teamai workflow resume ${f.id}`,
+    } });
   });
 
   it('requires a terminal answer for a required HITL request, and validates choice and pass', async () => {
@@ -215,6 +244,7 @@ describe('workflow cancellation', () => {
     const cancelled = data(await cancelRun(f.config, f.id, await knownSecrets(f.config), 'nested'));
     expect(cancelled.cancelled.attempts).toEqual([lease.attempt]);
     expect((await f.state()).steps.map((s) => s.status)).toEqual(['cancelled', 'cancelled', 'skipped']);
+    expect((await f.state()).steps[2]).toMatchObject({ message: 'Step "nested.pending" was skipped before it started: Cancelled by teamai workflow cancel' });
     expect(await f.report(lease)).toMatchObject({ error: { code: 'lease_cancelled' } });
   });
 

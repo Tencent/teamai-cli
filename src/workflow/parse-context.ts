@@ -97,7 +97,7 @@ export function undeclaredOutput(children: Map<string, Child>, path: ExpressionP
 }
 
 /** Why a step does not expose the field a path reads, shared by step reads and workflow outputs. */
-export function unavailableField(path: ExpressionPath, forEach: boolean, choices?: string[]): string | undefined {
+export function unavailableField(path: ExpressionPath, forEach: boolean, choices: string[] | undefined, delivers: boolean): string | undefined {
   if (path.root !== 'steps') return undefined;
   const inPass = path.field === 'passes' && isIndex(path.fields[0]);
   const field = inPass ? path.fields[1] : path.field;
@@ -105,22 +105,37 @@ export function unavailableField(path: ExpressionPath, forEach: boolean, choices
 
   if (!choices && (field === 'choice' || field === 'note')) return `reads ${step}.${field}, but step "${path.step}" has no approve or choose, so it has no ${field}`;
 
+  if (!delivers && readsPr(path)) return `reads steps.${path.step}.${path.field}${fieldsText(path.fields)}, but step "${path.step}" has no deliver: pr, so it has no pr`;
+
   if (forEach && field === 'outputs') return `reads ${step}.outputs, but step "${path.step}" has for_each, so its outputs are in ${step}.results`;
+
+  if (forEach && field === 'pr') return `reads ${step}.pr, but step "${path.step}" has for_each, so its pr is in ${step}.results`;
 
   if (!forEach && field === 'results') return `reads ${step}.results, but step "${path.step}" has no for_each, so it has no results`;
 
   return undefined;
 }
 
+/** Whether `path` reads the pull request of a step, of one of its passes, or of one of its `for_each` items. */
+function readsPr(path: Extract<ExpressionPath, { root: 'steps' }>): boolean {
+  const [index, field, inner, innerField] = path.fields;
+
+  return path.field === 'pr'
+    || ((path.field === 'passes' || path.field === 'results') && isIndex(index) && field === 'pr')
+    || (path.field === 'passes' && isIndex(index) && field === 'results' && isIndex(inner) && innerField === 'pr');
+}
+
 /** Why `path` reads what the `output` its step declares does not have, or undefined. */
 export function undeclaredField(path: ExpressionPath, output: OutputSchema | undefined, forEach: boolean, choices?: string[]): string | undefined {
-  if (path.root !== 'steps' || (path.field !== 'outputs' && path.field !== 'passes' && path.field !== 'results')) return undefined;
+  if (path.root !== 'steps' || (path.field !== 'outputs' && path.field !== 'passes' && path.field !== 'results' && path.field !== 'pr')) return undefined;
   const schema = stepFieldSchema(path.field, output, forEach, choices);
 
   if (!schema || schemaAt(schema, path.fields)) return undefined;
   const read = `steps.${path.step}.${path.field}${fieldsText(path.fields)}`;
 
   if (path.field === 'outputs') return `reads ${read}, which is not in the output step "${path.step}" declares`;
+
+  if (path.field === 'pr') return `reads ${read}, which is not in a pull request: url`;
 
   return path.field === 'passes'
     ? `reads ${read}, which is not in a pass of step "${path.step}": pass, outcome, end, and ${forEach ? 'results with outputs as its output declares' : 'outputs as its output declares'}`

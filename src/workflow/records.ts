@@ -28,9 +28,9 @@ import type { RunMode } from '../launch-context.js';
 import type { RunOrigin } from '../default-workflows.js';
 import { uniqueOutcomes, type WorkOutcome } from '../outcomes.js';
 import { stepDefinitions } from './scope.js';
-import { isIsolated } from './workspace.js';
+import { isIsolated, runBranchPrefix } from './workspace.js';
 import { snapshotPath } from './snapshot.js';
-import { installOwner, runLockPath } from './store.js';
+import { installOwner, isRunId, runLockPath } from './store.js';
 import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { LIMIT_FAILURES, type Unenforced } from './requirements.js';
@@ -50,6 +50,7 @@ const RECORDED_FAILURES = [
   ...LIMIT_FAILURES,
   'delivery_failed', 'protected_path',
   'trial_prepare_failed', 'clone_prepare_failed', 'role_unavailable',
+  'confined_invalid', 'confined_tool_unavailable', 'confined_failed', 'confined_reply_invalid',
 ] as const;
 
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
@@ -88,6 +89,11 @@ export type WorkflowRunRecord = {
   failure?: { code: RecordedFailure };
   startedAt: string;
   endedAt?: string;
+  /**
+   * Until when what the run left is kept, which its owner's `workflows.retention` set as it ended. `teamai doctor --fix`
+   * on another machine removes it only a grace period after this; absent, never.
+   */
+  retainedUntil?: string;
   durationMs?: number;
   /**
    * Per-step entries (#1083: step, agent, tool/model, outcome, tokens) — a
@@ -124,6 +130,11 @@ export type WorkflowRunRecord = {
   iterations?: number;
   /** The pull requests the run delivered, in the order they first appeared. Public on a public team repo; absent when it delivered none. */
   prs?: string[];
+  /**
+   * The run branches its pull requests use, the head and, when it is the run's, the base of each; absent when it
+   * delivered none. `teamai doctor --fix` keeps them on origin once the run settled longer ago than workflows.retention.
+   */
+  prBranches?: string[];
   /** The run opens a clone, so it stays on the machine that started it, and its steps are measurements in no workflow total. */
   isolated?: true;
   username: string;
@@ -270,6 +281,7 @@ export function buildEndRecord(
 
   // Receipts are what delivery recorded, never a step's outputs, and each URL appears once.
   const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
+  const prBranches = pullRequestBranches(run);
 
   return definedFields<CurrentWorkflowRunRecord>({
     ...buildStartRecord(run, driver, username, now),
@@ -278,6 +290,7 @@ export function buildEndRecord(
     end: run.end,
     failure: failure ? { code: failure } : undefined,
     endedAt: run.updatedAt,
+    retainedUntil: run.retainedUntil,
     durationMs: Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : undefined,
     steps,
     stepCounts: {
@@ -291,7 +304,23 @@ export function buildEndRecord(
     // bounded history length (their true count is unknowable now).
     iterations: run.settledCount ?? run.settledAttempts.length,
     prs: prs.length ? prs : undefined,
+    prBranches: prBranches.length ? prBranches : undefined,
   });
+}
+
+/** The fields of a run record on teamai-reports its readers share, from whichever version wrote it. */
+export const RunRecordFieldsSchema = z.object({
+  run: z.string().refine(isRunId),
+  status: z.enum(['running', 'succeeded', 'failed', 'cancelled']) satisfies z.ZodType<RunStatus>,
+  endedAt: z.string().optional(),
+  prs: z.array(z.unknown()).optional().catch(undefined),
+});
+
+/** The run branches its pull requests use: the branch each came from, and the one it went into when that is the run's. */
+export function pullRequestBranches(run: Pick<RunState, 'id' | 'deliveries'>): string[] {
+  const own = (branch: string): boolean => branch.startsWith(runBranchPrefix(run.id));
+
+  return [...new Set((run.deliveries ?? []).flatMap((receipt) => [receipt.branch, receipt.base].filter(own)))];
 }
 
 /**
@@ -314,6 +343,10 @@ export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunR
 
   if (next.prs === undefined) delete merged.prs;
 
+  if (next.prBranches === undefined) delete merged.prBranches;
+
+  if (next.retainedUntil === undefined) delete merged.retainedUntil;
+
   return merged;
 }
 
@@ -327,9 +360,10 @@ async function isRecordingEnabled(config: LocalConfig): Promise<boolean> {
 
 /**
  * Build and queue a run's phase record (#1083). True once the record is in
- * the queue; false with usage reporting off, or when it could not be queued,
- * which logs a warning and never fails the run operation that produced it.
- * Queueing writes only local files, so it may run under the run lock.
+ * the queue; false with usage reporting off, for a run of a private workflow,
+ * which stays on this machine, or when it could not be queued, which logs a
+ * warning and never fails the run operation that produced it. Queueing writes
+ * only local files, so it may run under the run lock.
  */
 export async function queueRunRecord(
   config: LocalConfig,
@@ -339,7 +373,7 @@ export async function queueRunRecord(
   secrets: Record<string, string>,
 ): Promise<boolean> {
   try {
-    if (!await isRecordingEnabled(config)) return false;
+    if (run.definition.private || !await isRecordingEnabled(config)) return false;
     const username = config.username ?? 'unknown';
 
     const record = phase === 'start'

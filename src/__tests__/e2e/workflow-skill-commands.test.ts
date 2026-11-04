@@ -118,7 +118,7 @@ describe('command steps under the skill driver, through the CLI', () => {
     expect(Date.now() - started).toBeLessThan(25_000);
     const refused = await asAgent(fixture, ['workflow', 'start', 'slow', '--driver', 'skill', '--timeout', 'soon']);
     expect(refused.code).toBe(1);
-    expect(envelope(refused).error).toEqual({ code: 'invalid_arguments', message: '--timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h', next: null });
+    expect(envelope(refused).error).toEqual({ code: 'invalid_arguments', message: '--timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d', next: null });
   }, 120_000);
 
   it('runs a teamai command step on the teamai that drives the run, with none of its own on PATH', async () => {

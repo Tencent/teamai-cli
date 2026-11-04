@@ -2,12 +2,12 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  findTemplate, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
+  confinedTemplateErrors, findTemplate, modelTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
-  Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
+  Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, TeamPlace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
 } from './types.js';
-import { INVOKE_VALUES, STEP_ACTIONS, stepWorkflow } from './types.js';
+import { INVOKE_VALUES, SCORING_STARTS, STEP_ACTIONS, stepWorkflow } from './types.js';
 import {
   isYamlNode, locate, position, scalarOf, scalarString, scalarText, unknownKey, valueNode, unavailableField, undeclaredField, undeclaredOutput,
   type Child, type GraphNode, type ParseContext, type WorkflowFiles,
@@ -16,6 +16,7 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
+import { isDataBranch } from '../types.js';
 import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
@@ -37,9 +38,9 @@ export const INVOKE_ALIAS_SINCE = '0.28.0';
  */
 export const STEP_ROLE_SINCE = '0.29.0';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'workspace', 'steps', 'finally', 'invoke', 'alias', 'private']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver', 'continue_on_failure']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
@@ -47,6 +48,12 @@ const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
 
 /** Keys a step without an action may carry. */
 const ACTIONLESS_KEYS = new Set(['id', 'needs', 'if', 'end', 'approve', 'choose', 'loop', 'break']);
+
+/**
+ * What a step confined to a directory may carry: one prompt, which a confined launch runs headless with that directory as
+ * its only readable root, so no key that names a tool, an agent, a session, a role, a person or what it may change.
+ */
+const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file', 'with', 'model', 'output', 'end', 'loop', 'break', 'timeout', 'requires', 'workspace', 'continue_on_failure']);
 
 /** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
 const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
@@ -58,8 +65,8 @@ const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /** A scorer a step lists: a token, the name of a file in scorers/, or a scorer a run generates, whose name holds a colon. */
 const SCORER_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const DURATION = /^(\d+)(ms|s|m|h)$/;
-const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000]]);
+const DURATION = /^(\d+)(ms|s|m|h|d)$/;
+const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000], ['d', 86_400_000]]);
 
 /** The type names of the output shorthand. */
 function isTypeName(name: string | undefined): name is 'string' | 'number' | 'boolean' {
@@ -245,7 +252,9 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   for (const pair of root.items) {
     const key = scalarString(pair.key);
 
-    if (!key || !HEADER_KEYS.has(key)) {
+    if (key === 'deliver') {
+      diagnostics.push({ ...locate(file, lineCounter, pair.key ?? root, 'deliver', 'a workflow header takes no deliver; delivery belongs to a step, so run this workflow from a step with deliver: pr'), code: 'bad_delivery' });
+    } else if (!key || !HEADER_KEYS.has(key)) {
       diagnostics.push(unknownKey(file, lineCounter, pair.key ?? root, key ?? '(root)', key ?? '(root)'));
     }
   }
@@ -284,6 +293,11 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (aliasNode && (!alias || !TOKEN.test(alias))) diagnostics.push({ ...locate(file, lineCounter, aliasNode, 'alias', 'alias must be a non-empty token'), code: 'bad_alias' });
   else if (alias !== undefined && alias === name) diagnostics.push({ ...locate(file, lineCounter, aliasNode ?? root, 'alias', `alias must differ from the workflow name "${name}"`), code: 'bad_alias' });
 
+  const privateNode = valueNode(root, 'private');
+  const isPrivate = privateNode ? scalarOf(privateNode, z.boolean()) : undefined;
+
+  if (privateNode && isPrivate === undefined) diagnostics.push(locate(file, lineCounter, privateNode, 'private', 'private must be true or false'));
+
   const inputsPair = root.items.find((pair) => scalarString(pair.key) === 'inputs');
   let inputs: Record<string, OutputSchema> | undefined;
 
@@ -303,6 +317,12 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, 'budget', ctx) : undefined;
   const setupPair = root.items.find((pair) => scalarString(pair.key) === 'setup');
   const setup = setupPair ? parseSetup(setupPair.value ?? setupPair.key, ctx) : undefined;
+  const workspaceNode = valueNode(root, 'workspace');
+  const workspace = workspaceNode && scalarString(workspaceNode) === 'new' ? 'new' : undefined;
+
+  if (workspaceNode && !workspace) {
+    diagnostics.push({ ...locate(file, lineCounter, workspaceNode, 'workspace', 'workspace in a workflow header must be new, so its steps work in one copy; set workspace on a step for any other mode'), code: 'bad_workspace' });
+  }
 
   // A malformed inputs header is already reported; checking reads against it would only add noise.
   const readInputs = inputsPair && !inputs ? undefined : inputs ?? {};
@@ -320,7 +340,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
 
-  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, steps }, ctx));
+  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, workspace, steps }, ctx));
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   const header: Omit<WorkflowDefinition, 'schemaVersion' | 'name' | 'description' | 'steps' | 'finally'> = {};
@@ -328,6 +348,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (invoke) header.invoke = invoke;
 
   if (alias) header.alias = alias;
+
+  if (isPrivate) header.private = true;
 
   if (inputs) header.inputs = inputs;
 
@@ -344,6 +366,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (budget) header.budget = budget;
 
   if (setup) header.setup = setup;
+
+  if (workspace) header.workspace = workspace;
   const definition: WorkflowDefinition = { schemaVersion: 'v1alpha1', name, description, ...header, steps };
 
   if (finallySteps) definition.finally = finallySteps;
@@ -544,6 +568,13 @@ function parseBody(
         diagnostics.push(locate(file, lineCounter, interactivePair?.value, `${field}.interactive`, 'interactive needs a prompt or prompt_file: a person works in the tool on that prompt'));
       }
 
+      const continuePair = item.items.find((pair) => scalarString(pair.key) === 'continue_on_failure');
+      const continueOnFailure = continuePair ? scalarOf(continuePair.value, z.boolean()) : undefined;
+
+      if (continuePair && continueOnFailure === undefined) {
+        diagnostics.push(locate(file, lineCounter, continuePair.value ?? continuePair.key, `${field}.continue_on_failure`, `${stepLabel} continue_on_failure must be true or false`));
+      }
+
       const actions = ACTION_KEYS.map((key) => item.items.find((pair) => scalarString(pair.key) === key)).filter(Boolean);
 
       if (choosePair && actions.length > 0) diagnostics.push(locate(file, lineCounter, choosePair.key, `${field}.choose`, 'a choose step records the choice; put the work in a step that needs it'));
@@ -713,9 +744,53 @@ function parseBody(
         }));
       }
 
-      const templates = templatedTexts({ prompt, env, with: withValues, hitl }).map(({ what, text }) => {
+      const workspacePair = item.items.find((pair) => scalarString(pair.key) === 'workspace');
+      const workspace = parseStepWorkspace(workspacePair?.value);
+
+      if (workspacePair && !workspace) {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, { team: { branch? } }, { confined: <dir> }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
+          code: 'bad_workspace',
+        });
+      }
+
+      if (workspace === 'read-only' && workflow && TOKEN.test(workflow) && files && !files.cycle(workflow) && files.runnable(workflow)?.workspace === 'new') {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair?.value ?? item, `${field}.workspace`, `${stepLabel} has workspace: read-only but runs workflow "${workflow}", whose header says workspace: new, so its steps work in a copy; remove workspace from ${stepLabel} so it opens or continues one`),
+          code: 'bad_workspace',
+        });
+      }
+
+      const confined = workspace instanceof Object && 'confined' in workspace;
+
+      if (workspacePair && confined) {
+        const refuse = (node: Node | null | undefined, where: string, message: string): void => {
+          diagnostics.push({ ...locate(file, lineCounter, node ?? item, where, `${stepLabel} workspace confined ${message}`), code: 'bad_workspace' });
+        };
+
+        if (!promptPair && !promptFilePair) refuse(workspacePair.value ?? workspacePair.key, `${field}.workspace`, 'is only allowed on a prompt or prompt_file step');
+        else {
+          for (const pair of item.items) {
+            const key = scalarString(pair.key);
+
+            if (key !== undefined && STEP_KEYS.has(key) && !CONFINED_STEP_KEYS.has(key)) refuse(pair.key, `${field}.${key}`, `runs one prompt that reads only its directory, so it takes no ${key}`);
+          }
+
+          if (requires?.env !== undefined && requires.env.length > 0) {
+            refuse(valueNode(requiresPair?.value, 'env') ?? requiresPair?.key, `${field}.requires.env`, 'takes no requires.env: a confined prompt gets no team env or secrets');
+          }
+        }
+      }
+
+      // A model or a confined directory on another step is already reported, so its template is not checked.
+      const promptModel = commandPair || workflowPair ? undefined : model;
+      const promptWorkspace = confined && (promptPair || promptFilePair) ? workspace : undefined;
+
+      const templates = templatedTexts({ prompt, env, with: withValues, hitl, model: promptModel, workspace: promptWorkspace }).map(({ what, text }) => {
         const name = what.slice(what.indexOf('.') + 1);
-        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
+
+        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : what === 'model' ? modelPair?.value
+          : what === 'workspace.confined' ? valueNode(workspacePair?.value, 'confined') : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
 
         return { what, field: `${field}.${what}`, node, text };
       });
@@ -729,6 +804,18 @@ function parseBody(
               ...locate(file, lineCounter, template.node, template.field, `${stepLabel} ${template.what} template ${problem.source}: ${problem.message}`),
               code: 'bad_template',
             });
+          }
+        }
+
+        if (parsed.ok && template.what === 'model') {
+          for (const problem of modelTemplateErrors(template.text, parsed.template)) {
+            diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} model template ${problem.source}: ${problem.message}`), code: 'bad_template' });
+          }
+        }
+
+        if (parsed.ok && template.what === 'workspace.confined') {
+          for (const problem of confinedTemplateErrors(parsed.template)) {
+            diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} workspace.confined template ${problem.source}: ${problem.message}`), code: 'bad_template' });
           }
         }
 
@@ -811,16 +898,6 @@ function parseBody(
         diagnostics.push(locate(file, lineCounter, outputPair.key ?? item, `${field}.output`, 'output must be a shorthand type'));
       }
 
-      const workspacePair = item.items.find((pair) => scalarString(pair.key) === 'workspace');
-      const workspace = parseStepWorkspace(workspacePair?.value);
-
-      if (workspacePair && !workspace) {
-        diagnostics.push({
-          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
-          code: 'bad_workspace',
-        });
-      }
-
       const rolePair = item.items.find((pair) => scalarString(pair.key) === 'role');
       const role = scalarString(rolePair?.value)?.trim();
       // A role is the knowledge of the copy a step works in, which the step that opens the copy resolves, and a
@@ -835,7 +912,7 @@ function parseBody(
           ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}`
           : `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
           : workspace instanceof Object ? 'team' in workspace ? `${stepLabel} has role ${role} but runs in the team workspace, which takes no role's knowledge; remove role`
-            : !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
+            : 'clone' in workspace && !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 
@@ -854,8 +931,8 @@ function parseBody(
         const problem = workflowPair || forEachPair ? `${stepLabel} workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again`
           : scorersPair ? `${stepLabel} workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed`
             : branch && !branch.ok ? `${stepLabel} workspace team branch template ${branch.errors[0]?.source}: ${branch.errors[0]?.message}`
-              : branch?.ok && !templateExpressions(branch.template).every((read) => read.kind === 'path' && read.path.root === 'inputs')
-                ? `${stepLabel} workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch`
+              : branch?.ok && !templateExpressions(branch.template).every((read) => read.kind === 'path' && (read.path.root === 'inputs' || (read.path.root === 'steps' && read.path.field === 'outputs')))
+                ? `${stepLabel} workspace team branch may read only inputs and the outputs of steps the step needs, so every run that drafts the same thing goes on with the same branch`
                 : undefined;
 
         if (problem) diagnostics.push({ ...locate(file, lineCounter, node, `${field}.workspace`, problem), code: 'bad_workspace' });
@@ -868,7 +945,8 @@ function parseBody(
 
       // Only what no enclosing step can change is checked per file. A prompt without workspace may continue the copy of
       // the step that runs its workflow, so workflow start checks it on the whole tree.
-      const undeliverable = deliver !== 'pr' ? `${stepLabel} deliver must be pr; TeamAI opens a pull request and never merges`
+      const undeliverable = deliver === 'publish' ? publishProblem(stepLabel, team)
+        : deliver !== 'pr' ? `${stepLabel} deliver must be pr or publish; TeamAI opens a pull request, or publishes to a teamai data branch, and never merges`
         : workspace === 'read-only' ? `${stepLabel} has deliver: pr but runs read-only; set workspace: new so it has a branch to deliver`
           : commandPair && workspace === undefined ? `${stepLabel} has deliver: pr but runs read-only, as a command without workspace does; set workspace: new so it has a branch to deliver`
             : undefined;
@@ -966,11 +1044,13 @@ function parseBody(
 
         if (forEach) step.forEach = forEach;
 
+        if (continueOnFailure) step.continueOnFailure = true;
+
         if (workspace) step.workspace = workspace;
 
         if (role) step.role = role;
 
-        if (deliver === 'pr') step.deliver = deliver;
+        if (deliver === 'pr' || deliver === 'publish') step.deliver = deliver;
 
         if (session) step.session = session;
         steps.push(step);
@@ -1198,6 +1278,19 @@ interface Reference {
   with?: { node: Node; keys: Array<{ name: string; node: Node }> };
 }
 
+/** `schema` as an `inputs:` entry writes it, so a missing input's diagnostic shows the values to pass. */
+function declaredType(schema: OutputSchema): string {
+  if (schema.type === 'enum') return schema.values.join(' | ');
+
+  if (schema.type === 'array') return `[${declaredType(schema.items)}]`;
+
+  if (schema.type === 'object') return `{ ${Object.entries(schema.fields).map(([field, type]) => `${field}: ${declaredType(type)}`).join(', ')} }`;
+  // A new type that is not one of these fails to compile here until it is written out above.
+  const scalar: 'string' | 'number' | 'boolean' | 'json' | 'workflow' = schema.type;
+
+  return scalar;
+}
+
 /** Diagnostics for a step that runs a workflow file, checked against the version that step would run. */
 function referenceDiagnostics({ file, lineCounter }: ParseContext, files: WorkflowFiles, reference: Reference): WorkflowDiagnostic[] {
   const { label, field, workflow, node } = reference;
@@ -1221,8 +1314,8 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
   const passed = new Set(reference.with.keys.map((key) => key.name));
 
   return [
-    ...Object.keys(inputs).filter((name) => !passed.has(name)).map((name) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
-      `${label} with does not pass input "${name}", which workflow "${workflow}" declares`)),
+    ...Object.entries(inputs).filter(([name]) => !passed.has(name)).map(([name, type]) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
+      `${label} with does not pass input "${name}", which workflow "${workflow}" declares as ${declaredType(type)}`)),
     ...reference.with.keys.filter((key) => !Object.hasOwn(inputs, key.name)).map((key) => locate(file, lineCounter, key.node, `${field}.with.${key.name}`,
       `${label} with.${key.name} is not an input workflow "${workflow}" declares`)),
   ];
@@ -1373,10 +1466,15 @@ function parseModel(node: Node | null | undefined, field: string, ctx: ParseCont
 }
 
 /**
- * A step's `model`: an alias or a model name, as `parseModel` reads it, or the exact model, `{ name, effort? }`, which
- * the lease carries as written and no driver resolves through models/aliases.yaml.
+ * A step's `model`: an alias or a model name, as `parseModel` reads it, a template the lease renders to one, which the
+ * step's other templates check, or the exact model, `{ name, effort? }`, which the lease carries as written and no
+ * driver resolves through models/aliases.yaml.
  */
 function parseStepModel(node: Node | null | undefined, field: string, ctx: ParseContext): string | StepModel | undefined {
+  const text = scalarString(node);
+
+  if (text?.includes('{{')) return text;
+
   if (!isMap(node)) return parseModel(node, field, ctx);
   const name = scalarString(valueNode(node, 'name'));
   const effortNode = valueNode(node, 'effort');
@@ -1490,12 +1588,13 @@ function parseDefaultScorers(node: Node | undefined, ctx: ParseContext): { batch
   return batch === undefined ? undefined : { batch };
 }
 
-/** A step's `scorers`: a list of names, or `{ names, batch, sampling }`. */
+/** A step's `scorers`: a list of names, or `{ names, batch, sampling, start }`. */
 function parseScorers(node: Node | null | undefined, field: string, ctx: ParseContext): StepScorers | undefined {
   const { file, lineCounter, diagnostics } = ctx;
   let list: Node | null | undefined = node;
   let batch: boolean | undefined;
   let sampling: 'all' | undefined;
+  let start: StepScorers['start'];
 
   if (isMap(node)) {
     list = undefined;
@@ -1507,6 +1606,7 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
       if (key === 'names') list = valueNode(node, 'names');
       else if (key === 'batch') batch = parseBatch(valueNode(node, 'batch'), `${field}.batch`, ctx);
       else if (key === 'sampling') sampling = parseSampling(valueNode(node, 'sampling'), `${field}.sampling`, ctx);
+      else if (key === 'start') start = parseScoringStart(valueNode(node, 'start'), `${field}.start`, ctx);
       else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `${field}.${key ?? 'key'}`, key ?? 'key'));
     }
   }
@@ -1537,7 +1637,17 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
 
   if (sampling) scorers.sampling = sampling;
 
+  if (start) scorers.start = start;
+
   return scorers;
+}
+
+function parseScoringStart(node: Node | undefined, field: string, ctx: ParseContext): StepScorers['start'] {
+  const start = isScalar(node) ? SCORING_STARTS.find((value) => value === node.value) : undefined;
+
+  if (start === undefined) ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, 'start must be auto, where teamai starts the scoring of each pass, or workflow, where the workflow\'s own steps score them'));
+
+  return start;
 }
 
 function parseSampling(node: Node | undefined, field: string, ctx: ParseContext): 'all' | undefined {
@@ -1636,16 +1746,32 @@ function withheldKeys(requires: InEffect, env: readonly string[] = []): string[]
   return requires.floor?.isolation === 'sandbox' ? env.filter((key) => sameEnvName(SANDBOX_WITHHELD_ENV, key) !== undefined) : [];
 }
 
+/**
+ * Why `deliver: publish` cannot publish from a step in `team`, its team workspace, or undefined when it can: it publishes
+ * only to a teamai data branch, named as written, so pull knows where every run of it publishes.
+ */
+function publishProblem(stepLabel: string, team: TeamPlace | undefined): string | undefined {
+  const notData = 'is not a teamai data branch; publish to teamai-reports or teamai-learnings';
+
+  if (team === undefined) return `${stepLabel} has deliver: publish but runs in no team workspace; give it workspace: { team: { branch: teamai-reports } }`;
+
+  if (team.branch === undefined) return `${stepLabel} has deliver: publish to the run's own team branch, which ${notData}`;
+
+  return isDataBranch(team.branch) ? undefined : `${stepLabel} has deliver: publish to team branch ${team.branch}, which ${notData}`;
+}
+
 const TeamWorkspaceSchema = z.object({ team: z.object({ branch: z.string().min(1).optional() }).strict() }).strict();
 
-/** A step's `workspace`: `read-only`, `new`, `continue`, `{ team: … }` or `{ clone: … }`; undefined when it is none of them. */
+const ConfinedWorkspaceSchema = z.object({ confined: z.string().trim().min(1) }).strict();
+
+/** A step's `workspace`: `read-only`, `new`, `continue`, `{ team: … }`, `{ confined: … }` or `{ clone: … }`; undefined when it is none of them. */
 function parseStepWorkspace(node: Node | null | undefined): StepWorkspace | undefined {
   const text = scalarString(node)?.trim();
 
   if (text === 'read-only' || text === 'new' || text === 'continue') return text;
 
   if (!isMap(node)) return undefined;
-  const parsed = z.union([z.object({ clone: ClonePlaceSchema }).strict(), TeamWorkspaceSchema]).safeParse(node.toJSON());
+  const parsed = z.union([z.object({ clone: ClonePlaceSchema }).strict(), TeamWorkspaceSchema, ConfinedWorkspaceSchema]).safeParse(node.toJSON());
 
   if (!parsed.success) return undefined;
 
@@ -1694,7 +1820,7 @@ function parseSetup(node: Node | null | undefined, ctx: ParseContext): Setup | u
   return parsed.success && diagnostics.length === before ? parsed.data : undefined;
 }
 
-/** A positive whole number of `ms`, `s`, `m`, or `h`, such as `30s` or `2h`, read as milliseconds; undefined otherwise. */
+/** A positive whole number of `ms`, `s`, `m`, `h`, or `d`, such as `30s` or `14d`, read as milliseconds; undefined otherwise. */
 export function durationMs(text: string): number | undefined {
   const [, amount = '', unit = ''] = DURATION.exec(text.trim()) ?? [];
   const ms = Number(amount) * (DURATION_UNITS.get(unit) ?? 0);
@@ -1707,7 +1833,7 @@ function parseTimeout(node: Node | null | undefined, field: string, ctx: ParseCo
   const ms = durationMs(scalarString(node) ?? '');
 
   if (ms !== undefined) return ms;
-  ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${field} must be a positive duration, such as 500ms, 30s, 10m, or 2h`));
+  ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${field} must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d`));
 
   return undefined;
 }
@@ -1912,7 +2038,7 @@ function outputDiagnostics(
     }
 
     const step = steps.find((candidate) => candidate.id === path.step);
-    const unavailable = step && unavailableField(path, !!step.forEach, step.hitl?.options);
+    const unavailable = step && unavailableField(path, !!step.forEach, step.hitl?.options, step.deliver === 'pr');
 
     if (unavailable) {
       diagnostics.push(at(unavailable));

@@ -4,12 +4,13 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { log } from '../utils/logger.js';
 import { updateReports } from '../utils/reports-branch.js';
 import * as workflowCache from '../workflow/cache.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun, resumeRun } from '../workflow/handoff.js';
-import { publishPendingRecords } from '../workflow/records.js';
+import { pendingRecords, publishPendingRecords } from '../workflow/records.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { readRun, runLockPath } from '../workflow/store.js';
@@ -162,6 +163,21 @@ describe('workflow handoff through teamai-reports', () => {
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'succeeded', stateRevision: 2 });
   });
 
+  it('warns once that the branches of a run were not cleaned up when its end did not reach teamai-reports', async () => {
+    const acme = team({ copy: COPY });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'copy');
+    await work(alice, runId, 'change.txt');
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    receiveHook(acme.origin, 'exit 1');
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { done: { outcome: 'succeeded', notPublished: { code: 'records_pending' } } } });
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('were not cleaned up'))).toEqual([
+      [`The branches of run ${runId} were not cleaned up: its end did not reach teamai-reports. teamai doctor --fix tries again.`],
+    ]);
+  });
+
   it('publishes how a run ended on the next request when the end was saved but not published', async () => {
     const acme = team();
     const alice = await acme.member('alice');
@@ -261,6 +277,23 @@ describe('workflow handoff through teamai-reports', () => {
 
     expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config))).toMatchObject({ error: { code: 'run_settled' } });
     expect(originRef(acme.business, `refs/heads/teamai/${runId}/base`)).toBeUndefined();
+  });
+
+  it('answers a next after a cancel with the end record published, though the cancel was still publishing it when the run ended', async () => {
+    const acme = team();
+    const alice = await acme.member('alice');
+    const runId = await start(alice);
+    const lock = path.join(path.dirname(alice.config.repo.localPath), '.reports-lock');
+    expect(await acquireLock(lock)).toBe(true);
+    try {
+      expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config))).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    } finally {
+      await releaseLock(lock);
+    }
+    expect((await pendingRecords(alice.config)).map((record) => record.run)).toContain(runId);
+
+    expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { done: { run: runId, outcome: 'cancelled', record: 'published' } } });
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}.json`) ?? '{}')).toMatchObject({ phase: 'end' });
   });
 
   it('publishes the end a cancel settles, though the cancel answers with an error', async () => {
@@ -738,7 +771,7 @@ steps:
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
     fs.writeFileSync(path.join(alice.config.repo.localPath, 'workflows', 'build.yaml'), BUILD.replace('echo two', 'echo edited'));
-    await syncWorkflowDefinitions(alice.config);
+    await syncScorersThenWorkflows(alice.config);
     const runId = await start(alice);
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
 
@@ -773,7 +806,7 @@ steps:
     const acme = team();
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
-    const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' };
+    const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here', demand: 'named' };
     const startClose = async (): Promise<string> => {
       const started = await startRun(alice.config, 'teamai-share-session', inputs, { secrets: await knownSecrets(alice.config) });
       if ('error' in started) throw new Error(started.error.message);
@@ -822,7 +855,7 @@ steps:
         additionalRoles: [],
         dataHome: path.join(root, name, 'data'),
       };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout, driver: { kind: 'local', machine: name, workspace: checkout } };
     };
     const alice = await member('alice');
@@ -834,7 +867,7 @@ steps:
     git(seed, 'commit', '-qam', 'change build');
     git(seed, 'push', '-q', origin, 'main');
     git(bob.checkout, 'pull', '-q', '--ff-only');
-    await syncWorkflowDefinitions(bob.config);
+    await syncScorersThenWorkflows(bob.config);
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
     expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { lease: { step: 'two', command: 'echo two' } } });

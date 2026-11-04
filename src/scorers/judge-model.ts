@@ -1,13 +1,21 @@
 import { isModelAlias, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
 import { isAgentToolId } from '../tools.js';
-import type { LeasedAttempt } from './attempts.js';
 import type { ScorerDefinition } from './definition.js';
+
+/** The model a judge launches with, and how it was chosen: the scorer's, or the tool's own default in its place. */
+interface ChosenModel {
+  model?: { name: string; effort?: string };
+  by: 'scorer' | 'tool_default';
+  noModel?: 'local' | 'switched';
+  /** The scorer's `model` when it is an alias, also when the tool default judges in its place. */
+  alias?: string;
+}
 
 const ON_NO_MODEL = {
   local: { by: 'tool_default', noModel: 'local' },
   switched: { by: 'tool_default', noModel: 'switched' },
   unmapped: undefined, unresolved: undefined,
-} as const satisfies Record<NoModel, Pick<LeasedAttempt['judge'], 'by' | 'noModel'> | undefined>;
+} as const satisfies Record<NoModel, Pick<ChosenModel, 'by' | 'noModel'> | undefined>;
 
 const NO_MODEL_FIX = { unmapped: 'Add one, or remove model from the scorer.', unresolved: 'Fix that, or remove model from the scorer.' } as const;
 
@@ -21,7 +29,7 @@ const NO_EFFORT: ReadonlySet<string> = new Set(['codebuddy']);
 
 export type JudgeModelChoice<Tool extends string = string> =
   /** `note` says why the tool default judges in place of the scorer's alias. */
-  | { ok: true; choice: Pick<LeasedAttempt['judge'], 'model' | 'by' | 'noModel' | 'alias'> & { tool: Tool }; note?: string }
+  | { ok: true; choice: ChosenModel & { tool: Tool }; note?: string }
   | { ok: false; code: 'judge_model_unavailable'; reason: keyof typeof NO_MODEL_FIX; message: string };
 
 /**

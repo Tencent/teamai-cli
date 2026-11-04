@@ -41,7 +41,9 @@ export type ExpressionPath =
   | { root: 'inputs'; fields: PathField[]; column: number }
   /** The item a `for_each` step instance runs for. */
   | { root: 'item'; fields: PathField[]; column: number }
-  | { root: 'steps'; step: string; field: 'outcome' | 'end' | 'outputs' | 'passes' | 'results' | 'branches' | 'choice' | 'note'; fields: PathField[]; column: number };
+  /** The id of the root run, which a sub-workflow shares. */
+  | { root: 'run'; fields: ['id']; column: number }
+  | { root: 'steps'; step: string; field: 'outcome' | 'end' | 'outputs' | 'passes' | 'results' | 'branches' | 'choice' | 'note' | 'pr'; fields: PathField[]; column: number };
 
 /** `<`, `<=`, `>` and `>=` compare two numbers; with anything else they are false. */
 const COMPARISONS = {
@@ -92,11 +94,17 @@ export function branchNames(results: Array<{ branch?: string }> | undefined): st
   return names.length > 0 ? names : undefined;
 }
 
+/** The pull request a step with `deliver: pr` opened or took. */
+interface DeliveredPr {
+  url: string;
+}
+
 /** A step as an expression sees it. `outcome` is set once the step settled. */
 export interface ExpressionStep {
   outcome?: VisibleOutcome;
   end?: string;
   outputs?: unknown;
+  pr?: DeliveredPr;
   /** Every settled pass of the step, earliest first: those a loop ran again, then the current one once it settled. */
   passes?: ExpressionPass[];
   /** The current pass's HITL choice, when answered. */
@@ -104,7 +112,7 @@ export interface ExpressionStep {
   /** The note attached to that HITL answer. */
   note?: string;
   /** For a settled `for_each` step: how each item settled, in item order. `branch` is the item's change branch. */
-  results?: Array<{ item?: unknown; outcome: VisibleOutcome; outputs?: unknown; branch?: string }>;
+  results?: Array<{ item?: unknown; outcome: VisibleOutcome; outputs?: unknown; branch?: string; pr?: DeliveredPr }>;
   /** Change branches of a settled `for_each`, in item order. */
   branches?: string[];
 }
@@ -114,6 +122,7 @@ export interface ExpressionPass {
   pass: number;
   outcome: VisibleOutcome;
   outputs?: unknown;
+  pr?: DeliveredPr;
   end?: string;
   results?: ExpressionStep['results'];
   /** The choice retained for this pass. */
@@ -127,6 +136,8 @@ export interface ExpressionContext {
   steps: Record<string, ExpressionStep>;
   /** The item of the `for_each` the expression is evaluated for. */
   item?: unknown;
+  /** The root run the expression is evaluated in. */
+  run?: { id: string };
   /** The element a predicate is evaluated for. */
   element?: JsonValue;
 }
@@ -274,8 +285,14 @@ function parsePath(token: { text: string; column: number }): ExpressionPath {
 
   if (root === 'inputs' || root === 'item') return { root, fields: segments, column: token.column };
 
+  if (root === 'run') {
+    if (segments.length !== 1 || segments[0] !== 'id') throw new ExpressionError(token.column, `"${token.text}" is not readable; an expression reads only run.id of the run`);
+
+    return { root, fields: ['id'], column: token.column };
+  }
+
   if (root !== 'steps') {
-    throw new ExpressionError(token.column, `"${root}" is not readable; an expression reads only inputs, steps and item`);
+    throw new ExpressionError(token.column, `"${root}" is not readable; an expression reads only inputs, steps, item and run.id`);
   }
 
   const [step, field, ...fields] = segments;
@@ -286,7 +303,7 @@ function parsePath(token: { text: string; column: number }): ExpressionPath {
 
   if (step === undefined || isIndex(step) || !field) throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
 
-  if (field === 'outputs' || field === 'passes' || field === 'results' || field === 'branches') return { root, step, field, fields, column: token.column };
+  if (field === 'outputs' || field === 'passes' || field === 'results' || field === 'branches' || field === 'pr') return { root, step, field, fields, column: token.column };
 
   if ((field === 'outcome' || field === 'end' || field === 'choice' || field === 'note') && fields.length === 0) return { root, step, field, fields, column: token.column };
 
@@ -297,7 +314,7 @@ function parsePath(token: { text: string; column: number }): ExpressionPath {
   throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
 }
 
-const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results or steps.<id>.branches';
+const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr';
 
 /**
  * A type pull knows for a value before the run: a declared shorthand, or `unknown`, which any value fits, such as the
@@ -310,6 +327,7 @@ export type DeclaredType =
   | { type: 'object'; fields: Record<string, DeclaredType> };
 
 const UNKNOWN: DeclaredType = { type: 'unknown' };
+const PR: DeclaredType = { type: 'object', fields: { url: { type: 'string' } } };
 
 /**
  * The type the `output` a step declares gives `steps.<id>.<field>`, or undefined when it gives none: outcome and end
@@ -317,7 +335,7 @@ const UNKNOWN: DeclaredType = { type: 'unknown' };
  * `for_each` item.
  */
 export function stepFieldSchema(field: Extract<ExpressionPath, { root: 'steps' }>['field'], output: OutputSchema | undefined, forEach: boolean, choices?: string[]): DeclaredType | undefined {
-  const results: DeclaredType = { type: 'array', items: { type: 'object', fields: { item: UNKNOWN, outcome: { type: 'string' }, outputs: output ?? UNKNOWN, branch: { type: 'string' } } } };
+  const results: DeclaredType = { type: 'array', items: { type: 'object', fields: { item: UNKNOWN, outcome: { type: 'string' }, outputs: output ?? UNKNOWN, branch: { type: 'string' }, pr: PR } } };
 
   switch (field) {
     case 'choice': return choices ? { type: 'enum', values: choices } : undefined;
@@ -337,14 +355,19 @@ export function stepFieldSchema(field: Extract<ExpressionPath, { root: 'steps' }
         fields.note = { type: 'string' };
       }
 
-      if (forEach) fields.results = results;
-      else fields.outputs = output ?? UNKNOWN;
+      if (forEach) {
+        fields.results = results;
+      } else {
+        fields.outputs = output ?? UNKNOWN;
+        fields.pr = PR;
+      }
 
       return { type: 'array', items: { type: 'object', fields } };
     }
 
     case 'results': return forEach ? results : undefined;
     case 'branches': return { type: 'array', items: { type: 'string' } };
+    case 'pr': return forEach ? undefined : PR;
   }
 }
 
@@ -664,7 +687,7 @@ export function parseExpression(source: string): ExpressionParse {
 }
 
 /** A step field written as a path, `steps` misspelled `step` included, as in `steps.build.results`. */
-const STEP_FIELD = /^steps?\.[A-Za-z0-9_-]+\.(?:outcome|end|outputs|passes|results|choice|note)(?![A-Za-z0-9_-])/;
+const STEP_FIELD = /^steps?\.[A-Za-z0-9_-]+\.(?:outcome|end|outputs|passes|results|choice|note|pr)(?![A-Za-z0-9_-])/;
 
 /**
  * Whether `source` reads like an expression, judged by its tokens alone and past any that do not lex: its first value,
@@ -726,7 +749,7 @@ export function resolvePath(path: ExpressionPath, context: ExpressionContext): J
 /** Reads a path as `resolvePath` does, but anything missing along the way is undefined, so a null that is there stays apart. */
 export function pathValue(path: ExpressionPath, context: ExpressionContext): JsonValue | undefined {
   const step = path.root === 'steps' && Object.hasOwn(context.steps, path.step) ? context.steps[path.step] : undefined;
-  const root = path.root === 'inputs' ? context.inputs : path.root === 'item' ? context.item : step?.[path.field];
+  const root = path.root === 'inputs' ? context.inputs : path.root === 'item' ? context.item : path.root === 'run' ? context.run : step?.[path.field];
 
   // SAFETY: a context holds JSON: inputs, items and outputs are parsed JSON, and the rest of a step is strings, numbers, and lists and objects of them
   return readFields(root as JsonValue | undefined, path.fields);

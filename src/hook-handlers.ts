@@ -21,6 +21,7 @@ import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { pathExists } from './utils/fs.js';
+import { UPDATE_BUDGET_MS } from './update-policy.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -76,9 +77,6 @@ const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
  * cap. It is a local dedup-cache check that completes in microseconds anyway.
  */
 const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
-
-/** Background (detached) npm-registry update check — not awaited by the host. */
-const UPDATE_TIMEOUT_MS = 10_000;
 
 /**
  * Background (detached) local-agent HTTP report/sync. Detached runs are not
@@ -162,17 +160,18 @@ const pullHandler: HookHandler = {
     // cut the push of a report pull() stopped waiting for. The host does not
     // wait for this pass, so waiting here does not delay the session.
     await settleLateUsageReport();
-    // Finished attended sessions are judged or published in a process this pass does not wait for, where a scope turns that on.
-    const { backgroundPassScopes } = await import('./score-sessions.js');
+    // Finished sessions are archived and judged by a teamai-finished-sessions run in each scope that turns that on, driven
+    // in a process this pass does not wait for.
+    const { FinishedSessions } = await import('./session-flow/finished-sessions.js');
     const passCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
 
-    const scopes = await backgroundPassScopes(passCwd).catch((cause: unknown) => {
+    const scopes = await FinishedSessions.backgroundScopes(passCwd).catch((cause: unknown) => {
       log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${cause instanceof Error ? cause.message : String(cause)}`);
 
       return [];
     });
 
-    if (scopes.length > 0) await spawnDetachedScoreSessions(passCwd);
+    for (const scoped of scopes) await startFinishedSessions(scoped);
 
     return null;
   },
@@ -409,13 +408,48 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepar
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
 }
 
-/** Start `teamai score-sessions` in `cwd`, which this process does not wait for. */
-async function spawnDetachedScoreSessions(cwd: string): Promise<void> {
+/** Start `workflow resume <run> --driver local` in `cwd` with `env`, a process this one does not wait for. */
+async function spawnDetachedResume(run: string, { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
   const { resolveCliEntry } = await import('./builtin-hooks.js');
   const { spawn } = await import('node:child_process');
-  spawn(process.execPath, [resolveCliEntry() ?? '', 'score-sessions'], {
-    cwd, detached: true, stdio: 'ignore', windowsHide: true,
-  }).on('error', (e) => log.debug(`hook-dispatch: detached score-sessions failed to start: ${e.message}`)).unref();
+  spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', run, '--driver', 'local'], { cwd, detached: true, stdio: 'ignore', windowsHide: true, env })
+    .on('error', (e) => log.debug(`hook-dispatch: detached workflow resume ${run} failed to start: ${e.message}`)).unref();
+}
+
+/**
+ * Starts teamai-finished-sessions in `config` as the CLI's own run, then drives it with `workflow resume` in a process
+ * this one does not wait for, with no agent evidence, though the hook runs inside an agent session. A run already working
+ * on that data home is left to its driver.
+ */
+async function startFinishedSessions(config: LocalConfig): Promise<void> {
+  const [{ FinishedSessions }, { resolveWorkflowEnv }, { inProcessClient }, { resolveRunMode }, { withoutAgentEvidence }] = await Promise.all([
+    import('./session-flow/finished-sessions.js'), import('./env-resolution.js'), import('./workflow/protocol.js'), import('./launch-context.js'), import('./workflow/attempt-marker.js'),
+  ]);
+
+  try {
+    const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode: resolveRunMode(process.env) });
+
+    switch (started.kind) {
+      case 'failed':
+        log.debug(`hook-dispatch: teamai-finished-sessions did not start: ${started.failure.code}: ${started.failure.message}`);
+
+        return;
+      case 'working':
+      case 'idle':
+        return;
+      case 'started':
+        await spawnDetachedResume(started.run, { cwd: started.cwd, env: withoutAgentEvidence(process.env) });
+
+        return;
+      default: {
+        const unhandled: never = started;
+
+        return unhandled;
+      }
+    }
+  } catch (cause) {
+    log.debug(`hook-dispatch: teamai-finished-sessions did not start: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
 }
 
 /**
@@ -1420,7 +1454,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // to the npm registry — so they run detached to avoid pushing the Stop hook
     // past the host's hook timeout (CodeBuddy kills hooks at ~10s regardless of
     // the declared timeout).
-    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_BUDGET_MS, background: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     // Optional background LLM-judge (issue #723). Opt-in via TEAMAI_UPVOTE_JUDGE=1;
     // detached so it never delays the Stop. gitOnly (HTTP teams skip upvotes).

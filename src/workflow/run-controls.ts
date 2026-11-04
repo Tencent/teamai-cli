@@ -1,18 +1,22 @@
 import { z } from 'zod';
+import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
 import {
-  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, runData, withRun, workflowLabel,
+  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, retryCommand, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isRecord, isTruthy } from './expression.js';
-import { isItem, itemsAfter, itemsOf } from './fan-out.js';
+import { isItem, itemsAfter, itemsOf, keptResults } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
+import { cleanUpSucceededRun, restoreRecordedBranches } from './leftovers.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
-import { contextOf, localId, statesIn } from './scope.js';
+import { resolveRetention, runRetainedUntil, type ResolvedRetention } from './retention.js';
+import { contextOf, localId, statesIn, type Scope } from './scope.js';
+import { isRunId, readRun, withCleanupLock } from './store.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { isIsolated } from './workspace.js';
@@ -22,14 +26,15 @@ async function controlRun(
   runId: string,
   secrets: Record<string, string>,
   operation: (run: RunState, now: string, finish: (result: WorkflowResult) => Promise<void>) => Promise<WorkflowEnvelope>,
+  { reopen }: { reopen?: { busy: WorkflowEnvelope; prepare: () => Promise<WorkflowEnvelope | undefined> } } = {},
 ): Promise<WorkflowEnvelope> {
   let queued = false;
   let runSettled = false;
   let checkout = process.cwd();
 
-  const envelope = await withRun(config, runId, secrets, async (run, now) => {
+  const change = () => withRun(config, runId, secrets, async (run, now) => {
     const before = JSON.stringify(run);
-    checkout = run.driver?.workspace ?? checkout;
+    checkout = run.driver?.workspace ?? run.checkout ?? checkout;
 
     const finish = async (result: WorkflowResult): Promise<void> => {
       const finished = await finishRun(config, run, now, result, secrets, run.driver);
@@ -44,6 +49,18 @@ async function controlRun(
     return { envelope: opEnvelope, save: JSON.stringify(run) !== before };
   });
 
+  // A reopen holds the run's cleanup lock while it prepares and changes the run, so no cleanup deletes a branch the
+  // reopened run needs. `prepare` makes network calls, which the run lock never holds; its answer refuses the control.
+  let envelope: WorkflowEnvelope;
+
+  if (reopen === undefined) envelope = await change();
+  else {
+    const locked = await withCleanupLock(config, runId, async () => await reopen.prepare() ?? change());
+
+    if (locked.kind === 'busy') return reopen.busy;
+    envelope = locked.value;
+  }
+
   // Not on a control that only found a run already ended: its answer is an error, and the end was published before.
   // A control that settled the run answers with an error too, and still publishes its end.
   const notPublished = 'data' in envelope || runSettled ? await publishRunEnd(config, runId, checkout) : undefined;
@@ -51,6 +68,8 @@ async function controlRun(
   if (queued) await publishRunRecords(config);
 
   if (notPublished && 'data' in envelope) envelope.data.notPublished = notPublished;
+
+  if (runSettled) await cleanUpSucceededRun(config, { runId, checkout, secrets, notPublished });
 
   return envelope;
 }
@@ -237,10 +256,10 @@ export async function respondToHitl(config: LocalConfig, runId: string, secrets:
 }
 
 /** Stops a whole run or one open step and invalidates the attempts it cancelled. */
-export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string): Promise<WorkflowEnvelope> {
+export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string, message = 'Cancelled by teamai workflow cancel'): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
-    const failure = { code: 'cancelled', message: 'Cancelled by teamai workflow cancel' };
+    const failure = { code: 'cancelled', message };
 
     if (step !== undefined) {
       const reconciled = reconcileRun(run, now);
@@ -273,7 +292,7 @@ export async function cancelRun(config: LocalConfig, runId: string, secrets: Rec
       changed.push(state.id);
 
       if (state.status === 'leased') stopAttempt(run, state, now);
-      cancel(state, failure, run.revision);
+      cancel(state, failure, run.revision, keptResults(run, state, located.step));
       const reconciled = reconcileRun(run, now);
 
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
@@ -293,7 +312,25 @@ interface RetryContainer {
   resetStops: boolean;
 }
 
-function retryContainers(run: RunState, target: StepState): RetryContainer[] | WorkflowEnvelope {
+/**
+ * The steps `state` needs when it is confined, or when it is one of those itself (`isWriter`): together they write the
+ * confined directory under `$TEAMAI_RUN_DIR`, from files the earlier ones left there. None for another step.
+ */
+function confinedWriters(input: { scope: Scope; states: StepState[]; state: StepState; isWriter: boolean }): StepState[] {
+  const { scope, states, state, isWriter } = input;
+  const definition = scope.definition.steps.find((step) => step.id === localId(scope, state));
+
+  if (!isWriter && !(definition?.workspace instanceof Object && 'confined' in definition.workspace)) return [];
+  const needs = new Set(definition?.needs);
+
+  return states.filter((other) => needs.has(localId(scope, other)));
+}
+
+/**
+ * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. When the run
+ * settled, its `$TEAMAI_RUN_DIR` is gone, so a confined step that runs again takes the steps it needs, and theirs, with it.
+ */
+function retryContainers(run: RunState, target: StepState, scratchRemoved: boolean): RetryContainer[] | WorkflowEnvelope {
   const containers: RetryContainer[] = [];
   let child = target;
 
@@ -305,6 +342,7 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
     let states: StepState[];
     let runner: StepState | undefined;
     let dependencies: (state: StepState) => StepState[];
+    let writers: (state: StepState, isWriter: boolean) => StepState[] = () => [];
     let reads: RunReads | undefined;
 
     if (isItem(child)) {
@@ -330,15 +368,24 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
 
         return states.filter((other) => ids.has(localId(scope, other)));
       };
+
+      if (scratchRemoved) writers = (state, isWriter) => confinedWriters({ scope, states, state, isWriter });
     }
 
     const cone = new Set([child]);
+    const written = new Set<StepState>();
 
     for (let changed = true; changed;) {
       changed = false;
 
+      for (const writer of [...cone].flatMap((state) => writers(state, written.has(state)))) {
+        if (written.has(writer)) continue;
+        written.add(writer);
+        changed = true;
+      }
+
       for (const state of states) {
-        if (cone.has(state) || !dependencies(state).some((need) => cone.has(need))) continue;
+        if (cone.has(state) || !(written.has(state) || dependencies(state).some((need) => cone.has(need)))) continue;
         cone.add(state);
         changed = true;
       }
@@ -433,18 +480,91 @@ export function restartCommand(run: RunState): string {
   return `teamai benchmark run ${suite}${inputs.aliases === 'member' ? ' --member-aliases' : ''}`;
 }
 
+/** Why `step` of `run` cannot run again, as known before a running run is reconciled; undefined when it may. */
+function retryRefusal(run: RunState, step: string, retention: ResolvedRetention, now: string): WorkflowEnvelope | undefined {
+  const retainedUntil = run.status === 'running' ? undefined : runRetainedUntil(run, retention);
+
+  // Past it, doctor --fix on any machine may remove what the run needs, and no install coordinates a reopen with it.
+  if (retainedUntil !== undefined && retainedUntil <= Date.parse(now)) {
+    return error('run_expired', `Run ${run.id} was not reopened: workflows.retention kept what it left until ${new Date(retainedUntil).toISOString()}, counted from when it first ended, so teamai doctor --fix may have removed its branches. Start the workflow again: ${restartCommand(run)}`);
+  }
+
+  if (isIsolated(run)) {
+    return error('not_retryable', `Run ${run.id} is isolated: it runs only on the machine that started it, and a step that ran again would change what it already admitted or measured. Start a new run: ${restartCommand(run)}`);
+  }
+
+  if (run.finalizing) return error('not_retryable', `Run ${run.id} is running its finally steps; retry a step once the run ends`);
+
+  if (run.definition.finally?.some((item) => item.id === step)) {
+    return error('not_retryable', `Step "${step}" is a finally step, which runs again when the run ends again; retry a step of the run`);
+  }
+
+  return undefined;
+}
+
+/** The step a retry runs again and the workflows it runs again in, or why it cannot. */
+function retryTarget(run: RunState, step: string): { target: StepState; containers: RetryContainer[] } | WorkflowEnvelope {
+  const target = run.steps.find((state) => state.id === step);
+
+  if (!target) return missingStepError(run, step);
+  const hitl = locateStep(run, target.id)?.step.hitl;
+
+  const answeredHitl = target.answer !== undefined && ((hitl?.kind === 'approve' && target.status === 'skipped')
+    || (hitl?.kind === 'choose' && target.status === 'succeeded'));
+
+  if (target.status !== 'leased' && target.status !== 'failed' && target.status !== 'cancelled' && !answeredHitl) {
+    if (target.status === 'skipped' && run.status === 'cancelled' && !run.steps.some(stopped)) {
+      return error('not_retryable', `Run ${run.id} was cancelled before step "${step}" ran; start a new run`);
+    }
+
+    if (target.status === 'skipped') return error('not_retryable', `Step "${step}" is skipped; retry the step that stopped`);
+
+    if (target.status === 'running') return error('not_retryable', `Step "${step}" is running; retry a step inside it`);
+
+    return error('not_retryable', `Step "${step}" is ${target.status}; retry a leased or stopped step, or a HITL request to answer it again`);
+  }
+
+  // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun.
+  const containers = retryContainers(run, target, run.status !== 'running');
+
+  return Array.isArray(containers) ? { target, containers } : containers;
+}
+
+/**
+ * Brings back, before a retry reopens succeeded run `runId`, the branches it recorded that a cleanup deleted, here or on
+ * the install it was claimed from; answers why the run is not reopened when one does not come back. A retry refused
+ * anyway brings nothing back: the change under the run lock answers that refusal.
+ */
+async function restoreForRetry(config: LocalConfig, runId: string, step: string, retention: ResolvedRetention): Promise<WorkflowEnvelope | undefined> {
+  const run = await readRun(config, runId);
+
+  if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded') return undefined;
+
+  if (retryRefusal(run, step, retention, new Date().toISOString()) || !('target' in retryTarget(run, step))) return undefined;
+  // A claim keeps no driver, and takes the run into the checkout it names.
+  const failed = await restoreRecordedBranches(run, run.driver?.workspace ?? run.checkout ?? process.cwd());
+
+  if (failed.length === 0) return undefined;
+  const why = failed.map(({ branch, reason }) => `Branch ${branch} is not back ${reason}.`).join(' ');
+
+  return error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand(runId, step)}`);
+}
+
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
+  const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
+
+  const reopen = isRunId(runId)
+    ? {
+      busy: error('busy', `Cleanup of run ${runId} is removing its branches, so it was not reopened. Try again shortly: ${retryCommand(runId, step)}`),
+      prepare: () => restoreForRetry(config, runId, step, retention),
+    }
+    : undefined;
+
   return controlRun(config, runId, secrets, async (run, now, finish) => {
-    if (isIsolated(run)) {
-      return error('not_retryable', `Run ${run.id} is isolated: it runs only on the machine that started it, and a step that ran again would change what it already admitted or measured. Start a new run: ${restartCommand(run)}`);
-    }
+    const refused = retryRefusal(run, step, retention, now);
 
-    if (run.finalizing) return error('not_retryable', `Run ${run.id} is running its finally steps; retry a step once the run ends`);
-
-    if (run.definition.finally?.some((item) => item.id === step)) {
-      return error('not_retryable', `Step "${step}" is a finally step, which runs again when the run ends again; retry a step of the run`);
-    }
+    if (refused) return refused;
 
     // A run this reconcile finds ended, by its timeout or budget too, is reopened by the retry like a settled one.
     let ended = run.status !== 'running';
@@ -456,29 +576,10 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       ended = 'outcome' in reconciled;
     }
 
-    const target = run.steps.find((state) => state.id === step);
+    const planned = retryTarget(run, step);
 
-    if (!target) return missingStepError(run, step);
-    const hitl = locateStep(run, target.id)?.step.hitl;
-
-    const answeredHitl = target.answer !== undefined && ((hitl?.kind === 'approve' && target.status === 'skipped')
-      || (hitl?.kind === 'choose' && target.status === 'succeeded'));
-
-    if (target.status !== 'leased' && target.status !== 'failed' && target.status !== 'cancelled' && !answeredHitl) {
-      if (target.status === 'skipped' && run.status === 'cancelled' && !run.steps.some(stopped)) {
-        return error('not_retryable', `Run ${run.id} was cancelled before step "${step}" ran; start a new run`);
-      }
-
-      if (target.status === 'skipped') return error('not_retryable', `Step "${step}" is skipped; retry the step that stopped`);
-
-      if (target.status === 'running') return error('not_retryable', `Step "${step}" is running; retry a step inside it`);
-
-      return error('not_retryable', `Step "${step}" is ${target.status}; retry a leased or stopped step, or a HITL request to answer it again`);
-    }
-
-    const containers = retryContainers(run, target);
-
-    if (!Array.isArray(containers)) return containers;
+    if (!('target' in planned)) return planned;
+    const { target, containers } = planned;
     const reopened = run.status !== 'running';
 
     for (const container of containers) {
@@ -509,6 +610,8 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       run.status = 'running';
       delete run.end;
       delete run.failure;
+      // The branches its cleanup deleted are back, and the run's next end cleans up again.
+      delete run.leftovers;
       await removeQueuedEndRecord(config, run.id);
       delete run.endRecordQueued;
     }
@@ -523,5 +626,5 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
     const retried = { retried: { step: target.id, pass: target.pass ?? 1 }, reopened, run: runData(run) };
 
     return ok(reopened && run.status === 'running' ? { ...retried, resume: `teamai workflow resume ${run.id}` } : retried);
-  });
+  }, { reopen });
 }

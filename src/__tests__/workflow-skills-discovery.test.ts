@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { deployWorkflowSkills, shadowedWorkflowSkills } from '../workflow/discovery/workflow-skills.js';
 import { readGenerated } from '../workflow/discovery/generated-marker.js';
 import { log } from '../utils/logger.js';
@@ -43,12 +43,12 @@ async function team(workflows: Record<string, string>, tools: TeamaiConfig['tool
     sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true }, ...(recall ? { recall: { enabled: true } } : {}) },
     toolPaths: tools,
   };
-  await syncWorkflowDefinitions(localConfig);
+  await syncScorersThenWorkflows(localConfig);
   const put = async (name: string, yaml: string | null) => {
     const file = path.join(repo, 'workflows', `${name}.yaml`);
     if (yaml === null) fs.rmSync(file);
     else fs.writeFileSync(file, yaml);
-    await syncWorkflowDefinitions(localConfig);
+    await syncScorersThenWorkflows(localConfig);
   };
   const skillAt = (dir: string) => path.join(home, '.claude', 'skills', dir, 'SKILL.md');
   const skill = (name: string) => skillAt(`workflow-${name}`);

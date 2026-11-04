@@ -59,6 +59,9 @@ sharing:
         timeout: 5000
         retries: 3
 
+workflows:
+  retention: 14d              # doctor --fix 保留已结算运行所留内容的时长：14d 这样的时长，或 never
+
 ```
 
 ### config.yaml（本地配置）
@@ -108,6 +111,7 @@ ai:
 | 但某一个 workspace 仍用 Claude | `ai: { tool: claude }` | 该 workspace 的 `~/.teamai/projects/<slug>/config.yaml` |
 | 整个团队开启 recall | `sharing: { recall: { enabled: true } }` | 团队的 `teamai.yaml` |
 | 在任何 workspace 都不评判你手动运行的会话 | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
+| 本机把工作流运行留下的内容保留一周（[运行留下的分支](./workflow.md#运行留下的分支)） | `workflows: { retention: 7d }` | `~/.teamai/config.yaml` |
 
 `teamai doctor` 会给出它所在 workspace 的配置文件路径。Dashboard 的[成员设置](./dashboard.md#成员设置member-settings)面板会为你选中的 workspace 显示同样的信息。
 

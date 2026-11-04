@@ -7,7 +7,7 @@ import { afterEach, expect, it } from 'vitest';
 import YAML from 'yaml';
 import { resolveProjectDataHome } from '../../config.js';
 import type { LocalConfig } from '../../types.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 
 const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
 let sandbox: string;
@@ -41,7 +41,7 @@ async function project(workflows: Record<string, string>, { tokens }: { tokens: 
   fs.mkdirSync(path.join(team, 'workflows'), { recursive: true });
   fs.writeFileSync(path.join(team, 'teamai.yaml'), YAML.stringify({ team: 'resume-test', repo: config.repo.remote, provider: 'git', usageReport: false }));
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(team, 'workflows', `${name}.yaml`), yaml);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
 
   const fake = path.join(bin, 'claude');
   fs.writeFileSync(fake, `#!/usr/bin/env node

@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { readRun, RunIdSchema } from '../workflow/store.js';
 import { githubOrigin } from './helpers/skill-harness.js';
@@ -54,7 +54,7 @@ async function fixture(workflows: Record<string, string>) {
   fs.mkdirSync(path.join(root, 'knowledge', 'workflows'), { recursive: true });
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(root, 'knowledge', 'workflows', `${name}.yaml`), yaml);
   const config: LocalConfig = { repo: { kind: 'self', localPath: path.join(root, 'knowledge'), remote: 'local' }, username: 'test', scope: 'project', additionalRoles: [], projectRoot: work, dataHome: path.join(root, 'data') };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   return { config, work, client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }) };
 }
 
@@ -64,7 +64,7 @@ describe('a report through the protocol', () => {
   it('changes only its own attempt: a sibling that waits to be delivered and one still leased stay as they were, and the revision moves by one', async () => {
     const { config, work, client } = await fixture({ three: THREE });
     const driver = { kind: 'external', machine: 'test', workspace: work, can: { workspace: ['read-only', 'new', 'continue'] } };
-    const started = await client.start('three', { checkout: work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } });
+    const started = await client.start('three', { checkout: work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
     if (!('data' in started)) throw new Error(JSON.stringify(started));
     const run = RunIdSchema.parse(started.data.run);
     const a = LeaseSchema.parse(await client.next(run, { driver, running: [] })).data.lease;

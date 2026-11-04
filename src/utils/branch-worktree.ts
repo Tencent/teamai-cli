@@ -128,6 +128,24 @@ async function nothingLeftToPush(git: SimpleGit, spec: BranchWorktreeSpec): Prom
   }
 }
 
+/**
+ * Whether the checkout holds a commit origin lacks besides the one that started the branch here: the commit a publish
+ * left behind. A checkout that only started the branch owes origin nothing. Anything unreadable means "push and find out".
+ */
+async function unpushedImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<boolean> {
+  const git = createGitWithBlockTimeout(worktreePath(spec, localConfig));
+
+  try {
+    // for-each-ref answers by its output, so a missing ref is not read as an error git printed nothing for.
+    const tracked = (await git.raw(['for-each-ref', '--format=%(refname)', `refs/remotes/origin/${spec.branch}`])).trim() !== '';
+    const subjects = (await git.raw(['log', '--format=%s', tracked ? `origin/${spec.branch}..HEAD` : 'HEAD'])).split('\n').filter(Boolean);
+
+    return subjects.some((subject) => subject !== spec.initCommitMessage);
+  } catch {
+    return true;
+  }
+}
+
 /** Whether origin has the branch; null when git could not ask it. */
 async function remoteBranchExists(spec: BranchWorktreeSpec, repoRoot: string): Promise<boolean | null> {
   const git = createGitWithBlockTimeout(repoRoot);
@@ -1025,7 +1043,7 @@ async function updateImpl(
     let isOriginFresh = isFetched;
 
     try {
-      if (!current) isOriginFresh = await syncWorktree(spec, wt);
+      if (!current) isOriginFresh = (await syncWorktree(spec, wt)).origin === 'fetched';
     } catch (e) {
       log.debug(`[${spec.logTag}] sync before write failed, writing onto the local copy: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1289,6 +1307,14 @@ async function restageSnapshotIndex(spec: BranchWorktreeSpec, git: SimpleGit, sh
 }
 
 /**
+ * What a sync learned of origin's branch: fetched; absent, as origin answered, so it has nothing to sync from; or
+ * unreachable, with why.
+ */
+type OriginSync = { origin: 'fetched' } | { origin: 'absent' } | { origin: 'unreachable'; reason: string };
+
+const FETCHED: OriginSync = { origin: 'fetched' };
+
+/**
  * Bring the worktree up to date with origin. The caller holds this branch's
  * lock, so no publish runs at the same time.
  *
@@ -1306,9 +1332,9 @@ async function restageSnapshotIndex(spec: BranchWorktreeSpec, git: SimpleGit, sh
  *    `git stash` in another worktree of this repo is left alone. Stash-apply
  *    conflicts restore the original uncommitted files, never conflict markers.
  *
- * Returns whether the fetch reached origin.
+ * Answers what the fetch learned of origin's branch.
  */
-async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boolean> {
+async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<OriginSync> {
   const git = createGitWithBlockTimeout(wt);
   const upstream = `origin/${spec.branch}`;
 
@@ -1319,7 +1345,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boole
   } catch (e) {
     log.debug(`[${spec.logTag}] fetch failed, using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
-    return false;
+    return await remoteBranchExists(spec, wt) === false ? { origin: 'absent' } : { origin: 'unreachable', reason: failureReason(e) };
   }
 
   // Counted while conflicted files are restored, which never moves HEAD; the
@@ -1332,7 +1358,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boole
   const [behind, ahead] = counts.trim().split(/\s+/).map((count) => Number.parseInt(count, 10));
 
   // Already at origin's commit: nothing to fast-forward or rebase, uncommitted files stay as they are.
-  if (behind === 0 && ahead === 0) return true;
+  if (behind === 0 && ahead === 0) return FETCHED;
 
   let carried: string | null = null;
 
@@ -1342,7 +1368,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boole
     if (!carried) {
       log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy`);
 
-      return true;
+      return FETCHED;
     }
 
     try {
@@ -1351,7 +1377,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boole
       log.debug(`[${spec.logTag}] could not clear the worktree for rebase; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
       await applyDirtySnapshot(spec, git, carried);
 
-      return true;
+      return FETCHED;
     }
   }
 
@@ -1374,26 +1400,26 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boole
       await applyDirtySnapshot(spec, git, carried);
       log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
-      return true;
+      return FETCHED;
     }
 
     if (dirty) {
       log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
-      return true;
+      return FETCHED;
     }
 
     log.debug(`[${spec.logTag}] dropping ${ahead} unpushed commit(s) that conflict with ${upstream}: ${e instanceof Error ? e.message : String(e)}`);
     await git.raw(['reset', '--hard', upstream]);
 
-    return true;
+    return FETCHED;
   }
 
   if (carried) {
     await applyDirtySnapshot(spec, git, carried);
   }
 
-  return true;
+  return FETCHED;
 }
 
 /**
@@ -1405,8 +1431,11 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<boole
  * rewrites the checkout must stop instead: it may be another repository's, or
  * still being created. Failed, with the cause, when the checkout could not be
  * created or synced: a reader uses what is there, and a caller that rewrites
- * it stops, as the checkout may not exist. Throws only CheckoutRefusedError,
- * when teamai will not use the checkout until the member acts. Only ever
+ * it stops, as the checkout may not exist. Unfetched, with the cause, when
+ * origin could not be fetched: the checkout is the local copy as it was, which
+ * a reader uses, and a caller that acts on origin's state must not. Throws
+ * only CheckoutRefusedError, when teamai will not use the checkout until the
+ * member acts. Only ever
  * touches the orphan-branch worktree, never the active tree.
  */
 async function refreshImpl(
@@ -1420,6 +1449,7 @@ async function refreshImpl(
 
   const lockPath = lockFilePath(spec, localConfig);
   let locked = false;
+  let synced: OriginSync = FETCHED;
 
   try {
     locked = await acquireLock(lockPath);
@@ -1434,7 +1464,7 @@ async function refreshImpl(
 
     const { wt, current } = await openWorktree(spec, localConfig, options);
 
-    if (!current) await syncWorktree(spec, wt);
+    if (!current) synced = await syncWorktree(spec, wt);
   } catch (e) {
     // A refused checkout throws: the caller's paths are under it, or under the
     // checkout it keeps from being created.
@@ -1447,12 +1477,16 @@ async function refreshImpl(
     }
   }
 
-  return { status: 'done' };
+  return synced.origin === 'unreachable' ? { status: 'unfetched', reason: synced.reason } : { status: 'done' };
 }
 
-/** What a refresh did; busy names the lock it could not take, failed why the checkout is not ready. */
+/**
+ * What a refresh did. Unfetched: the checkout is ready but origin could not be fetched, so it holds the local copy as it
+ * was. Busy names the lock it could not take, failed why the checkout is not ready.
+ */
 export type RefreshResult =
   | { status: 'done' }
+  | { status: 'unfetched'; reason: string }
   | { status: 'busy'; lockPath: string }
   | { status: 'failed'; reason: string };
 
@@ -1486,6 +1520,8 @@ export interface BranchWorktree {
   ownsCheckout(localConfig: LocalConfig): Promise<boolean>;
   /** Whether this repository owns a side checkout with uncommitted changes. */
   isDirty(localConfig: LocalConfig): Promise<boolean>;
+  /** Whether the checkout, which must exist, holds a commit origin lacks besides the one that started the branch here. */
+  hasUnpushed(localConfig: LocalConfig): Promise<boolean>;
   /** Run an action while holding this branch's writer lock. */
   withLock(localConfig: LocalConfig, action: () => Promise<void>): Promise<void>;
   /** Retire this checkout while its writer lock is already held. */
@@ -1523,6 +1559,7 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
     ownsCheckout: (localConfig) => ownsCheckoutImpl(spec, localConfig),
     isDirty: (localConfig) => dirtyImpl(spec, localConfig),
+    hasUnpushed: (localConfig) => unpushedImpl(spec, localConfig),
     withLock: (localConfig, action) => withLockImpl(spec, localConfig, action),
     retireWhileLocked: (localConfig) => retireWhileLockedImpl(spec, localConfig),
     retire: (localConfig, whileLocked) => retireImpl(spec, localConfig, whileLocked),

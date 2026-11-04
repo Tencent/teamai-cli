@@ -67,7 +67,7 @@ limitsConformanceScenarios.push(
       { kind: 'next', saveAs: 'held', as: 'external', expect: { data: { wait: {
         held: [{ step: 'deploy', reason: 'step "deploy" needs env, which this driver does not declare', missing: ['env'] }],
       } } } },
-      { kind: 'next', saveAs: 'deploy', as: 'local', absent: ['env', 'unenforced'], expect: { data: { lease: {
+      { kind: 'next', saveAs: 'deploy', as: 'local', absent: ['env.CONFORMANCE_TOKEN', 'unenforced'], expect: { data: { lease: {
         step: 'deploy', requires: { env: ['CONFORMANCE_TOKEN'] }, envScope: { provide: ['CONFORMANCE_TOKEN'], withhold: [] },
       } } } },
     ],

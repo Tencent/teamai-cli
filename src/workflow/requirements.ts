@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ENV_KEY_RE, sameEnvName } from '../resources/env-key.js';
+import { ACCESS_LEVELS, CONFINED_LEVELS } from '../tool-launch/confined-level.js';
 import { stepWorkflow, WORKSPACE_MODES, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
@@ -128,6 +129,10 @@ const ENFORCEMENT = {
   prepare: 'strict',
   /** A step that runs with a team `role`: the driver runs it with what teamai delivered into its copy for that role. */
   role: 'strict',
+  /** A step confined to a directory: an offer in `can.confined` at a level its `confined.json` asks for, or above. */
+  confined: 'strict',
+  /** A confined step whose model a tool of those offers resolves. */
+  model: 'strict',
 } as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Floor | 'env', 'strict' | 'bestEffort'>;
 
 type Enforcement = typeof ENFORCEMENT;
@@ -137,6 +142,16 @@ type KeysOf<E extends Enforcement[keyof Enforcement]> = { [K in keyof Enforcemen
 export type StrictKey = KeysOf<'strict'>;
 
 type BestEffortKey = KeysOf<'bestEffort'>;
+
+/** The level a confined step runs at, which its `confined.json` sets: `verified` or `best-effort`. */
+export const ConfinedLevelSchema = z.enum(CONFINED_LEVELS);
+
+/** One offer of `can.confined`: tools a driver runs confined at `level`, which can do `access` there. */
+export const ConfinedOfferSchema = z.object({
+  level: ConfinedLevelSchema,
+  access: z.enum(ACCESS_LEVELS).optional(),
+  tools: z.array(z.string().min(1)).min(1),
+});
 
 /**
  * `driver.can`: what the driver declares it can do on this request. An omitted key means "not offered". The engine
@@ -159,6 +174,8 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  *   editing and running commands without asking, and fails the step rather than launch a tool that has none.
  * - `role`: the driver runs a step leased with `role` with what teamai delivered into its prepared copy for that role,
  *   and starts nothing that delivers the member's own assets there instead.
+ * - `confined`: the tools the driver runs a prompt on with one directory as its only readable root, each offer at the
+ *   level it reaches, with what those tools can do there. An offer without `access` counts as `full`.
  */
 export const CanSchema = z.object({
   hitl: z.boolean().optional(),
@@ -173,6 +190,7 @@ export const CanSchema = z.object({
   end_turn: z.boolean().optional(),
   unattended: z.boolean().optional(),
   role: z.boolean().optional(),
+  confined: z.array(z.lazy(() => ConfinedOfferSchema)).optional(),
 });
 
 export type DriverCan = z.infer<typeof CanSchema>;

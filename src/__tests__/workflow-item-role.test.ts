@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverCan } from '../workflow/requirements.js';
@@ -50,7 +50,7 @@ async function started(yaml: string, inputs: unknown): Promise<{ config: LocalCo
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data'),
   };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const run = await startRun(config, 'review', inputs, { secrets: await knownSecrets(config), base: BASE });
   if ('error' in run) throw new Error(run.error.message);
   return { config, runId: String(run.data.run) };
@@ -134,6 +134,32 @@ steps:
     expect(await failures(config, runId)).toMatchObject({ 'review[0].sum': {
       code: 'role_unavailable',
       message: 'step "review[0].sum" has role review but continues the copy step "review[0]" opened with role frontend, which every step there runs with; remove role from step "review[0].sum", or set it on step "review[0]"',
+    } });
+  });
+
+  it('fails a step continuing the copy the run opened with a role other than the copy\'s, at its lease', async () => {
+    const { config, runId } = await started(`schemaVersion: v1alpha1
+name: review
+description: Review each part in the one copy the run works in.
+workspace: new
+defaults: { role: review }
+inputs:
+  parts: [{ path: string, role: string }]
+steps:
+  - id: review
+    for_each: inputs.parts
+    role: "{{ item.role }}"
+    workflow:
+      steps:
+        - id: look
+          prompt: Review the change to {{ item.path }}.
+`, PARTS);
+
+    await runAll(config, runId);
+
+    expect(await failures(config, runId)).toMatchObject({ 'review[0].look': {
+      code: 'role_unavailable',
+      message: 'step "review[0].look" gets role frontend from step "review[0]" but continues the copy the run opened with role review, which every step there runs with; remove role from step "review[0]", or set it as defaults.role',
     } });
   });
 

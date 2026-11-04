@@ -2,17 +2,14 @@ import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
-import { copyOf, opensCopy, resolveMode, roleLevelOf, runsInCheckout, writtenRole, type RoleLevel } from './workspace.js';
+import { confinedOf, copyOf, isRunLevel, levelsInside, opensCopy, roleLevelOf, runLevels, runsInCheckout, writesBranch, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
- * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, and a
- * later step it is held from for `missing` works in that copy too, which only the driver that took it may continue.
+ * Why a driver cannot run a workflow to its end: a step it takes works in a workspace copy, the one the run opened
+ * (`copy: 'run'`) or the one step `opener` opened (`copy: 'step'`), and a later step it is held from for `missing`
+ * works in that copy too, which only the driver that took it may continue.
  */
-export interface LocalRoute {
-  opener: string;
-  held: string;
-  missing: 'env' | 'tokens';
-}
+export type LocalRoute = { held: string; missing: 'env' | 'tokens' } & ({ copy: 'run' } | { copy: 'step'; opener: string });
 
 /** What a gated step does once its question is answered. */
 export type GateGuards =
@@ -80,6 +77,8 @@ export interface WorkflowDescription {
     inWorkspace: string[];
     /** Steps whose succeeded passes a scorer judges, by path, with the scorers it lists. */
     scored: Array<{ step: string; scorers: string[] }>;
+    /** Prompt steps confined to a directory, by path, which only a confined tool or a fresh child answers. */
+    confined: string[];
     /**
      * Steps that open a pull request once they succeed, by path. `onto`: the delivering step whose branch the step's
      * own starts from, whose pull request it targets; without it, the pull request targets `base`.
@@ -111,28 +110,23 @@ type Gate = Facts['gates'][number];
 /** What the steps of one workflow in the tree run under, as the engine's scopes give it. */
 interface Scope {
   prefix: string;
-  /** The workflow steps around it, outermost first. */
-  ancestors: WorkflowStep[];
   requires: InEffect;
   budgeted: boolean;
   setup?: Setup;
-  /** The step that opened the copy its steps work in, by path. */
-  copy?: string;
+  /** Who opened the copy its steps work in. */
+  copy?: CopyOpener;
   /** The `defaults.model` in effect, as the engine's scope keeps it. */
   defaultModel?: string;
-  /** The steps around it as the engine resolves a step's role from them, outermost first, and the `defaults.role` in effect. */
-  roleLevels: RoleLevel[];
+  /**
+   * The levels around its steps, outermost first, the run's own copy included (`runLevels`), as the engine places a
+   * step and resolves its role from them, and the `defaults.role` in effect.
+   */
+  around: RoleLevel[];
   defaultRole?: string;
 }
 
-/** Whether `step` leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
-function writes(step: WorkflowStep, ancestors: WorkflowStep[], childOf: (step: WorkflowStep) => { steps: WorkflowStep[] } | undefined): boolean {
-  const child = childOf(step);
-
-  if (child) return child.steps.some((inner) => writes(inner, [...ancestors, step], childOf));
-
-  return (step.prompt !== undefined || step.promptFile !== undefined || (step.workspace !== undefined && step.workspace !== 'read-only')) && resolveMode(step, ancestors) !== 'read-only';
-}
+/** The step that opened a copy, by path, or the run, as its workflow's header says `workspace: new`. */
+type CopyOpener = { kind: 'run' } | { kind: 'step'; path: string };
 
 /**
  * Describes `definition`, which runs the workflows in `workflows` by name, for a driver that declares `can`, under the
@@ -152,7 +146,7 @@ export function describeWorkflow(input: {
   if (definition.timeout !== undefined) limit.timeout = definition.timeout;
 
   const facts: Facts = {
-    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...branch,
+    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], confined: [], deliver: [], ...branch,
     requiresEnv: {
       keys: [...runEnvKeys],
       missingHere: [...runEnvKeys].filter((key) => sameEnvName(env.present, key) === undefined),
@@ -164,18 +158,21 @@ export function describeWorkflow(input: {
     held: [],
   };
 
-  /** By the step that opened each copy: whether the driver takes a step in it, and the first step in it the driver is held from. */
-  const copies = new Map<string, { taken: boolean; held?: { step: string; missing: LocalRoute['missing'] } }>();
+  /**
+   * By the opener of each copy, the one object every scope in that copy shares: whether the driver takes a step in it,
+   * and the first step in it the driver is held from.
+   */
+  const copies = new Map<CopyOpener, { taken: boolean; held?: { step: string; missing: LocalRoute['missing'] } }>();
   // Before a run, a `from` step's workflow does not exist yet.
-  const childOf = (step: WorkflowStep): { steps: WorkflowStep[] } | undefined => workflowRunBy({ workflows }, step, '');
+  const childOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
 
   /** As the engine's `offerTerms` asks `negotiate`, so describe holds exactly what `next` would hold. */
   const offer = (step: WorkflowStep, path: string, scope: Scope): void => {
-    const hasContract = !runsInCheckout(step, scope.ancestors);
+    const hasContract = !runsInCheckout(step, scope.around.map((level) => level.step));
     const requires = mergeRequirements(scope.requires, step.requires);
     const executor = step.command !== undefined ? 'command' : 'prompt';
     // The role of the copy it runs in, as the engine's `stepRoleOf` finds it; a role template stands for its item's role.
-    const runsWith = copyOf([...scope.roleLevels, roleLevelOf(step, scope.defaultRole)])?.runsWith;
+    const runsWith = copyOf([...scope.around, roleLevelOf(step, scope.defaultRole)])?.runsWith;
     const role = runsWith?.kind === 'role' ? writtenRole(runsWith.role) : undefined;
     const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
     const run: Facts['runs'][number] = { step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])] };
@@ -219,7 +216,7 @@ export function describeWorkflow(input: {
 
         if (!found || seen.has(need)) continue;
         seen.add(need);
-        const writer = writes(found, scope.ancestors, childOf) ? found : startsFrom(found, seen);
+        const writer = writesBranch(found, scope.around, childOf) ? found : startsFrom(found, seen);
 
         if (writer) return writer;
       }
@@ -248,7 +245,7 @@ export function describeWorkflow(input: {
         }
       }
 
-      if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
+      if (!child && step.end === undefined && !runsInCheckout(step, scope.around.map((level) => level.step))) facts.inWorkspace.push(path);
 
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
 
@@ -257,6 +254,8 @@ export function describeWorkflow(input: {
       if ((step.prompt !== undefined || step.promptFile !== undefined) && (z.string().safeParse(step.model).success || (step.model === undefined && step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
 
       if (step.scorers && step.scorers.names.length > 0) facts.scored.push({ step: path, scorers: step.scorers.names });
+
+      if (confinedOf(step) !== undefined) facts.confined.push(path);
 
       if (step.deliver === 'pr') {
         const seen = new Set<string>();
@@ -280,14 +279,16 @@ export function describeWorkflow(input: {
         const limits = [step.forEach ? undefined : step.budget, named?.budget].flatMap((budget) => (budget ? [budget.tokens] : []));
 
         if (limits.length > 0) facts.budgets.push({ step: path, tokens: Math.min(...limits) });
+        const around = levelsInside(scope.around, roleLevelOf(step, scope.defaultRole), child);
+        const placed = around.at(-1)?.step;
         own = visit(child.steps, {
-          prefix: `${path}.`, ancestors: [...scope.ancestors, step],
+          prefix: `${path}.`,
           requires: mergeRequirements(scope.requires, step.requires, named?.defaults?.requires),
           budgeted: scope.budgeted || step.budget !== undefined || named?.budget !== undefined,
           setup,
-          copy: opensCopy(step) ? path : scope.copy,
+          copy: placed && opensCopy(placed) ? { kind: 'step', path } : scope.copy,
           defaultModel,
-          roleLevels: [...scope.roleLevels, roleLevelOf(step, scope.defaultRole)],
+          around,
           defaultRole,
         });
       } else if (step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined) {
@@ -315,18 +316,37 @@ export function describeWorkflow(input: {
   };
 
   const top: Scope = {
-    prefix: '', ancestors: [], requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
+    prefix: '', requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
     setup: definition.setup,
     defaultModel: definition.defaults?.model,
-    roleLevels: [],
+    around: runLevels(definition).map((step) => roleLevelOf(step, definition.defaults?.role)),
     defaultRole: definition.defaults?.role,
   };
+
+  if (top.around.some((level) => isRunLevel(level.step))) top.copy = { kind: 'run' };
 
   // The finally steps run under the same scope once the steps settled, never beside them.
   facts.width = Math.min(ceiling, Math.max(visit(definition.steps, top), visit(definition.finally ?? [], top)));
   const route = [...copies].find(([, copy]) => copy.taken && copy.held);
 
-  if (route?.[1].held) facts.localRoute = { opener: route[0], held: route[1].held.step, missing: route[1].held.missing };
+  if (route?.[1].held) {
+    const [opener, { held }] = route;
+
+    switch (opener.kind) {
+      case 'run':
+        facts.localRoute = { copy: 'run', held: held.step, missing: held.missing };
+        break;
+      case 'step':
+        facts.localRoute = { copy: 'step', opener: opener.path, held: held.step, missing: held.missing };
+        break;
+      default: {
+        const unhandled: never = opener;
+
+        return unhandled;
+      }
+    }
+  }
+
   const { name, description, alias, invoke, inputs } = definition;
 
   const aliased: Pick<WorkflowDescription, 'alias'> = {};

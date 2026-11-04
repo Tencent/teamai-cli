@@ -177,6 +177,40 @@ describe('Codex TOML table boundaries (real CLI)', () => {
     expect(parseToml(original)).toMatchObject({ mcp_servers: { 'team-mcp': { command: 'personal-server' } } });
   });
 
+  it.each(['"mcp_servers"', "'mcp_servers'"])('keeps a personal server under %s, replaces it only with --force and removes the managed copy', async (root) => {
+    const { home, file } = fixture();
+    const before = '# member settings\r\nmodel = "gpt-5"\r\n\r\n';
+    const personal = '# another server\r\n[\'mcp_servers\'.personal]\r\ncommand = "member-server"\r\n';
+    const original = before + `[ ${root} . 'team-mcp' ]\r\ncommand = "personal-server"\r\n[mcp_servers.team-mcp.env]\r\nOLD = "1"\r\n\r\n` + personal;
+    fs.writeFileSync(file, original);
+
+    const kept = await runCLI(home, ['inject']);
+    expect(kept.code, kept.output).toBe(0);
+    expect(kept.output).toMatch(/skipped\s+codex\/team-mcp/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+
+    const preview = await runCLI(home, ['inject', '--force', '--dry-run']);
+    expect(preview.code, preview.output).toBe(0);
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+
+    const replaced = await runCLI(home, ['inject', '--force']);
+    expect(replaced.code, replaced.output).toBe(0);
+    expect(replaced.output).toMatch(/updated\s+codex\/team-mcp/);
+    const installed = fs.readFileSync(file, 'utf8');
+    expect(installed.startsWith(before)).toBe(true);
+    expect(installed.endsWith(personal)).toBe(true);
+    expect(parseToml(installed).mcp_servers).toEqual({ 'team-mcp': { url: 'https://example.com/mcp' }, personal: { command: 'member-server' } });
+
+    const repeated = await runCLI(home, ['inject']);
+    expect(repeated.code, repeated.output).toBe(0);
+    expect(fs.readFileSync(file, 'utf8')).toBe(installed);
+
+    const removed = await runCLI(home, ['remove']);
+    expect(removed.code, removed.output).toBe(0);
+    expect(removed.output).toMatch(/removed\s+codex\/team-mcp/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before + personal);
+  });
+
   it.each(['', '  '])('keeps an example with indent %j in instructions when adding and updating a server', async (indent) => {
     const { home, file, definitions } = fixture();
     const instructions = `developer_instructions = """\nExample:\n${indent}[mcp_servers.team-mcp]\n${indent}command = "sample"\n"""\n\n`;

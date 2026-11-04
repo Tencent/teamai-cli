@@ -9,10 +9,12 @@ import { redact } from '../utils/redact.js';
 import type { JsonValue } from '../types.js';
 import { isRecord } from './expression.js';
 import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-schema.js';
+import { privateSteps } from './scope.js';
 import {
   ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
-import type { Finalizing, RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
+import { TeamPinSchema } from './store.js';
+import { STARTED_BY, type Finalizing, type RunState, type StepLease, type WorkflowDefinition, type WorkflowFailure } from './types.js';
 
 /**
  * The run state one install hands to another, at `workflows/runs/<id>/state.json` on `teamai-reports`. It carries what
@@ -57,8 +59,11 @@ const BodySchema = z.object({
   sourceHash: z.string(),
   definitionHash: z.string(),
   teamRevision: CommitIdSchema.optional(),
+  /** The team pin as the run started it. Its patch stays on the machine that started the run, so a pin with one is read nowhere else. */
+  teamPin: TeamPinSchema.optional(),
   runMode: RunModeSchema.optional(),
   origin: RunOriginSchema.optional(),
+  startedBy: z.enum(STARTED_BY).optional(),
   settledCount: z.number().int(),
   cancelledAttempts: z.array(z.string()),
   archive: z.array(withCommitIds(ArchivedPassSchema)),
@@ -71,11 +76,10 @@ const BodySchema = z.object({
   creating: z.array(UnresolvedCreateSchema).optional(),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
   releasedTokens: z.array(ReleasedTokensSchema).optional(),
-  /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
-  scorers: z.record(z.string(), z.object({ sourceHash: z.string() })).optional(),
   createdAt: z.string(),
   limitsFrom: LimitsFromSchema.optional(),
   updatedAt: z.string(),
+  retainedUntil: z.string().optional(),
   steps: z.array(withCommitIds(StepCheckpointSchema)),
 });
 
@@ -244,34 +248,45 @@ type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : n
 
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
-  end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', runMode: 'publish', origin: 'publish',
-  definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', admitted: 'drop', verdicts: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
+  end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', teamPin: 'publish', runMode: 'publish', origin: 'publish',
+  startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', driveOptions: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
-  stoppedAttempts: 'drop', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish',
+  stoppedAttempts: 'drop', publication: 'drop', leftovers: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish', retainedUntil: 'publish',
 } satisfies FieldRules<RunState>;
 
 const STEP_RULES = {
   id: 'publish', pass: 'publish', passes: 'rewrite', answer: 'rewrite', item: 'publish', inputs: 'publish',
   iteration: 'publish', round: 'publish', status: 'publish', attempt: 'publish', lease: 'rewrite', outcome: 'publish',
-  outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
+  outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', delivery: 'publish', unenforced: 'publish',
   runMode: 'publish', expiresAt: 'publish', limitsFrom: 'publish', allowanceSpent: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
+  confined: 'publish',
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {
-  pass: 'publish', attempt: 'publish', outcome: 'publish', outputs: 'publish', end: 'publish', results: 'publish',
+  pass: 'publish', attempt: 'publish', outcome: 'publish', outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish',
   failure: 'rewrite', exitCode: 'publish', message: 'drop', tool: 'publish', model: 'publish', session: 'publish',
   tokens: 'publish', changes: 'publish', read: 'publish', agent: 'publish', used: 'publish', installId: 'publish', answer: 'rewrite',
   delivery: 'publish', unenforced: 'publish', runMode: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
+  confined: 'publish',
 } satisfies FieldRules<StepPass>;
 
 const ARCHIVED_RULES = { ...PASS_RULES, step: 'publish', within: 'publish' } satisfies FieldRules<ArchivedPass>;
 
+// What a step of a private workflow produced stays on the machine that ran it, with the item and inputs built from it;
+// the step that runs that workflow publishes only the outputs the workflow declares.
+const PRIVATE_STEP_RULES = { ...STEP_RULES, item: 'drop', inputs: 'drop', outputs: 'drop', results: 'drop' } satisfies FieldRules<StepState>;
+const PRIVATE_PASS_RULES = { ...PASS_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<StepPass>;
+const PRIVATE_ARCHIVED_RULES = { ...ARCHIVED_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<ArchivedPass>;
+
 const ANSWER_RULES = {
   choice: 'publish', note: 'publish', at: 'publish', channel: 'publish', agent: 'publish', driver: 'drop',
 } satisfies FieldRules<HitlAnswer>;
+
+// A person's note on a private step may say what the step keeps on this machine.
+const PRIVATE_ANSWER_RULES = { ...ANSWER_RULES, note: 'drop' } satisfies FieldRules<HitlAnswer>;
 
 // Quoted so the records test that collects every failure code literal in src/workflow does not read this rule as one.
 const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldRules<WorkflowFailure>;
@@ -302,6 +317,11 @@ const PASS_REWRITES = {
   answer: (pass) => (pass.answer ? { answer: handed(pass.answer, ANSWER_RULES, {}) } : {}),
 } satisfies Rewrites<StepPass, typeof PASS_RULES>;
 
+const PRIVATE_PASS_REWRITES = {
+  ...PASS_REWRITES,
+  answer: (pass) => (pass.answer ? { answer: handed(pass.answer, PRIVATE_ANSWER_RULES, {}) } : {}),
+} satisfies Rewrites<StepPass, typeof PRIVATE_PASS_RULES>;
+
 const STEP_REWRITES = {
   passes: (step) => (step.passes ? { passes: step.passes.map((pass) => handed(pass, PASS_RULES, PASS_REWRITES)) } : {}),
   answer: (step) => (step.answer ? { answer: handed(step.answer, ANSWER_RULES, {}) } : {}),
@@ -309,22 +329,33 @@ const STEP_REWRITES = {
   failure: (step) => ('failure' in step && step.failure ? { failure: handed(step.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
 } satisfies Rewrites<StepState, typeof STEP_RULES>;
 
+const PRIVATE_STEP_REWRITES = {
+  ...STEP_REWRITES,
+  passes: (step) => (step.passes ? { passes: step.passes.map((pass) => handed(pass, PRIVATE_PASS_RULES, PRIVATE_PASS_REWRITES)) } : {}),
+  answer: (step) => (step.answer ? { answer: handed(step.answer, PRIVATE_ANSWER_RULES, {}) } : {}),
+} satisfies Rewrites<StepState, typeof PRIVATE_STEP_RULES>;
+
 const RUN_REWRITES = {
   // The snapshot header names the run.
   id: () => ({}),
   definition: (run) => ({ definitionHash: definitionHash(run.definition, run.workflows) }),
   workflows: () => ({}),
-  scorers: (run) => (run.scorers
-    ? { scorers: Object.fromEntries(Object.entries(run.scorers).map(([name, pin]) => [name, { sourceHash: pin.sourceHash }])) }
-    : {}),
   failure: (run) => (run.failure ? { failure: handed(run.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
   finalizing: (run) => (run.finalizing ? { finalizing: handed(run.finalizing, FINALIZING_RULES, FINALIZING_REWRITES) } : {}),
-  steps: (run) => ({ steps: run.steps.map((step) => handed(step, STEP_RULES, STEP_REWRITES)) }),
+  steps: (run) => {
+    const isPrivate = privateSteps(run);
+
+    return { steps: run.steps.map((step) => (isPrivate(step.id) ? handed(step, PRIVATE_STEP_RULES, PRIVATE_STEP_REWRITES) : handed(step, STEP_RULES, STEP_REWRITES))) };
+  },
   // settledAttempts only dedups reports on this machine; the engine counts from it when settledCount is absent.
   settledAttempts: () => ({}),
   settledCount: (run) => ({ settledCount: run.settledCount ?? run.settledAttempts.length }),
   cancelledAttempts: (run) => ({ cancelledAttempts: run.cancelledAttempts ?? [] }),
-  archive: (run) => ({ archive: (run.archive ?? []).map((pass) => handed(pass, ARCHIVED_RULES, PASS_REWRITES)) }),
+  archive: (run) => {
+    const isPrivate = privateSteps(run);
+
+    return { archive: (run.archive ?? []).map((pass) => (isPrivate(pass.step) ? handed(pass, PRIVATE_ARCHIVED_RULES, PRIVATE_PASS_REWRITES) : handed(pass, ARCHIVED_RULES, PASS_REWRITES))) };
+  },
   copies: (run) => ({ copies: Object.fromEntries(Object.entries(run.copies ?? {}).map(([branch, copy]) => [branch, handed(copy, COPY_RULES, {})])) }),
 } satisfies Rewrites<RunState, typeof RUN_RULES>;
 

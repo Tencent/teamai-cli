@@ -174,8 +174,8 @@ function sharing(install: Install): StepWork {
   };
 }
 
-/** Step `id` of `run`, which succeeded, as the run file in the data home of the install's project keeps it. */
-async function succeededStep(install: Install, run: string, id: string) {
+/** `run`, as the run file in the data home of the install's project keeps it. */
+async function runOf(install: Install, run: string) {
   const projects = path.join(install.home, '.teamai', 'projects');
   const [project, ...others] = fs.readdirSync(projects);
   if (project === undefined || others.length > 0) throw new Error(`expected one project data home in ${projects}`);
@@ -185,7 +185,12 @@ async function succeededStep(install: Install, run: string, id: string) {
   };
   const state = await readRun(config, run);
   if (typeof state === 'string') throw new Error(`run ${run} is ${state}`);
-  const step = state.steps.find((candidate) => candidate.id === id);
+  return state;
+}
+
+/** Step `id` of `run`, which succeeded. */
+async function succeededStep(install: Install, run: string, id: string) {
+  const step = (await runOf(install, run)).steps.find((candidate) => candidate.id === id);
   if (step?.status !== 'succeeded') throw new Error(`step ${id} of run ${run} is ${step?.status ?? 'missing'}`);
   return step;
 }
@@ -235,7 +240,7 @@ describe('sharing an agent session with teamai\'s default teamai-share-learnings
     for (const event of ofSession) expect(event).not.toHaveProperty('launchedBy');
   });
 
-  it('ends a judging item with an empty label when teamai score refuses the lease, and the run still succeeds', async () => {
+  it('gives up its teamai-score step when no tool of the session runs the scorer\'s model, and the run still succeeds', async () => {
     const install = selfModeInstall({
       'scorers/review-quality.md': '---\nlabels:\n  - { value: thorough, score: 1, description: Did the work }\n  - { value: shallow, score: 0, description: Did not }\npassingScore: 0.5\nsamplingRate: 0\nmodel: fast\n---\nJudge whether the session did what the member asked.\n',
       'models/aliases.yaml': 'aliases:\n  fast:\n    codex: gpt-6-mini\n',
@@ -246,28 +251,18 @@ describe('sharing an agent session with teamai\'s default teamai-share-learnings
       { type: 'user', uuid: 'u1', parentUuid: null, cwd: install.repo, sessionId: SESSION, timestamp: '2026-10-20T10:00:00.000Z', message: { role: 'user', content: 'Add retries.' } },
       { type: 'assistant', uuid: 'u2', parentUuid: 'u1', cwd: install.repo, sessionId: SESSION, timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'assistant', model: 'claude-x', content: [{ type: 'text', text: 'Added the retries.' }] } },
     ].map((record) => `${JSON.stringify(record)}\n`).join(''));
-    const refusals: Envelope[] = [];
+    const worked: string[] = [];
 
-    const shared = shareSession(install, { ...SHARE_INPUTS, scorers: ['review-quality'] }, (step, brief) => {
-      if (step === 'learning') return { learnings: [] };
-      const take = /^teamai score .+$/m.exec(brief)?.[0];
-      if (take === undefined) throw new Error(`the brief of ${step} names no teamai score line:\n${brief}`);
-      const taken = teamai(install, wordsOf(take.replace('<your tool>', 'claude')), SESSION);
-      const refusal = envelopeOf(taken.stdout);
-      refusals.push(refusal);
-      const empty = /If teamai answers (.+), return an empty label\./.exec(brief)?.[1]?.split(/, | or /) ?? [];
-      expect(empty).toContain(refusal.error?.code);
-      return { label: '' };
+    const shared = shareSession(install, { ...SHARE_INPUTS, scorers: ['review-quality'] }, (step) => {
+      worked.push(step);
+      return { learnings: [] };
     });
 
-    expect(refusals).toEqual([{ error: {
-      code: 'judge_model_unavailable',
-      message: 'Scorer "review-quality" asks for model alias "fast", which has no model for claude in models/aliases.yaml. Add one, or remove model from the scorer.',
-    } }]);
-    expect(shared.events.filter((event) => event.kind === 'settled' && event.step === 'share-session.score-driver[0]')).toEqual([{ kind: 'settled', step: 'share-session.score-driver[0]', outcome: 'success' }]);
+    expect(worked).toEqual(['learning']);
     expect(shared.outcome).toBe('succeeded');
-    expect((await succeededStep(install, shared.run, 'share-session.score-driver')).results).toEqual([
-      expect.objectContaining({ item: 'review-quality', outcome: 'success', outputs: { label: '' } }),
-    ]);
+    const statuses = new Map((await runOf(install, shared.run)).steps.map((step) => [step.id, step.status]));
+    expect(statuses.get('share-session.score.score[0]')).toBe('cancelled');
+    expect(statuses.get('share-session.score.score[0].judge')).toBe('skipped');
+    expect(await succeededStep(install, shared.run, 'share-session.score')).toMatchObject({ outputs: { labels: [expect.objectContaining({ outcome: 'cancelled' })] } });
   });
 });

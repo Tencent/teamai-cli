@@ -94,6 +94,8 @@ export interface ReadScope {
   hitl: Map<string, string[]>;
   /** The steps with `for_each`, which have results in place of outputs. */
   forEach: Set<string>;
+  /** The steps with `deliver: pr`, the only ones with a `pr`. */
+  delivers: Set<string>;
   /** Undefined when the inputs header is malformed, so `inputs.…` reads are not checked. */
   inputs?: OutputSchema;
   /** The workflow each workflow step runs: an inline one, or a file when a sync knows it. */
@@ -116,6 +118,7 @@ export function readScope(
     previous: stepLoops(steps).previous,
     outputs: new Map(steps.map((step) => [step.id, step.output])),
     forEach: new Set(steps.flatMap((step) => step.forEach ? [step.id] : [])),
+    delivers: new Set(steps.flatMap((step) => step.deliver === 'pr' ? [step.id] : [])),
   };
 
   if (inputs) scope.inputs = { type: 'object', fields: inputs };
@@ -156,6 +159,8 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
         continue;
       }
 
+      if (path.root === 'run') continue;
+
       if (path.root === 'item') {
         if (!site.item && !scope.item && !itemReported) {
           diagnostics.push(at(`${subject} ${site.what} reads item, which is bound only in the templates of a for_each step and in the workflow each item runs`));
@@ -179,7 +184,7 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
       }
 
       // A step pull rejected has its own diagnostic already.
-      const unavailable = scope.outputs.has(path.step) && unavailableField(path, scope.forEach.has(path.step), scope.hitl.get(path.step));
+      const unavailable = scope.outputs.has(path.step) && unavailableField(path, scope.forEach.has(path.step), scope.hitl.get(path.step), scope.delivers.has(path.step));
 
       if (unavailable) {
         diagnostics.push(at(`${subject} ${site.what} ${unavailable}`));
@@ -229,6 +234,8 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
 
 function declaredSchema(scope: ReadScope, readable: Set<string>, path: ExpressionPath): DeclaredType | undefined {
   if (path.root === 'inputs') return scope.inputs && schemaAt(scope.inputs, path.fields);
+
+  if (path.root === 'run') return { type: 'string' };
 
   if (path.root === 'item' || !readable.has(path.step)) return undefined;
   const schema = stepFieldSchema(path.field, scope.outputs.get(path.step), scope.forEach.has(path.step), scope.hitl.get(path.step));

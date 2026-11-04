@@ -1,7 +1,7 @@
 /**
  * How a trial's steps become its result, and the benchmark record. Pure over an ended run: the step states
- * the engine keeps, with the result each check step output, the frozen plan, and the judge verdicts the run froze when
- * it ended (`run.verdicts`). It classifies nothing: `teamai benchmark check` did that once, when the check ran.
+ * the engine keeps, with the result each check step output, the frozen plan, and the verdicts of the scorers that
+ * judged each trial (`verdicts.ts`). It classifies nothing: `teamai benchmark check` did that once, when the check ran.
  *
  * Results are never failure codes, and no value here enters record `status` or `steps[].outcome`: an older dashboard
  * drops a whole record on an enum value it does not know.
@@ -11,18 +11,18 @@ import path from 'node:path';
 import { z } from 'zod';
 import { AgentObservationSchema } from '../agent-observation.js';
 import { RunOriginSchema } from '../default-workflows.js';
-import type { EntryVerdict } from '../scorers/entry.js';
 import type { ArchivedPass, StepPass, StepState } from '../workflow/step-state.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import { LimitSchema } from '../workflow/requirements.js';
 import type { RunState } from '../workflow/types.js';
 import { definedFields } from '../utils/defined-fields.js';
-import { CheckOutputSchema, type CheckResult } from '../workflow/check.js';
+import { CheckOutputSchema, type CheckResult } from '../scorers/check.js';
 import { compareAgent } from './agent-match.js';
 import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
 import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 import { leavesOut, skillDefinitionOf } from './team-without.js';
+import type { EntryVerdict } from './verdicts.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
 
@@ -48,6 +48,8 @@ export const BenchmarkRecordSchema = z.object({
   /** The limits every trial's prompt ran under; absent when the suite set none. */
   limits: TrialLimitsSchema.optional(),
   baselineTeamRevision: z.string(),
+  /** The run ran only the tasks and arms `--task` and `--arm` chose, so it is never its suite's current version; absent: the whole suite. */
+  subset: z.literal(true).optional(),
   scorers: z.array(z.object({ name: z.string(), rubric: z.object({ sourceHash: z.string() }) })),
   tasks: z.array(z.object({
     id: z.string(), startingCommit: z.string(), sourceHash: z.string(), baseline: z.enum(BASELINES),
@@ -93,7 +95,7 @@ export const BenchmarkRecordSchema = z.object({
      * it does, `unknown` when no pass reported its loads. Absent when no task covers a skill.
      */
     routing: z.record(z.string().min(1), z.enum(['fit', 'idle', 'extra', 'missed', 'unknown'])).optional(),
-    /** What this install's judge attempts on the trial stated they cost, failed ones included; `complete: false` when one stated none. */
+    /** What the judges of the trial's labels stated they cost; `complete: false` when a scorer of the trial has no label that states one. */
     scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).optional(),
   })),
 });
@@ -123,16 +125,16 @@ export function benchmarkRecordFile(runsRoot: string, run: string): string {
 }
 
 /**
- * The block buildEndRecord adds for a benchmark run that has ended. Pure, so the `done` envelope and a run with
- * recording off get the same block a published record holds.
+ * The block buildEndRecord adds for a benchmark run that has ended, with `verdicts`, those of its trials. Pure, so the
+ * `done` envelope and a run with recording off get the same block a published record holds.
  */
-export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): BenchmarkRecord {
+export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdicts: readonly EntryVerdict[]): BenchmarkRecord {
   const stateOf = (step: string): StepState | undefined => run.steps.find((state) => state.id === `${prefix}${step}`);
 
   const verdictsOf = (trial: PlannedTrial): EntryVerdict[] => {
     const pass = stateOf(trial.step)?.pass ?? 1;
 
-    return (run.verdicts ?? []).filter((verdict) => verdict.step === `${prefix}${trial.step}` && verdict.pass === pass);
+    return verdicts.filter((verdict) => verdict.step === `${prefix}${trial.step}` && verdict.pass === pass);
   };
 
   const namesOf = ({ covers, coversSkills }: PlannedTask): string[] => (covers ?? []).flatMap((covered, index) => {
@@ -150,15 +152,16 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): Bench
     repetitions: plan.repetitions,
     limits: plan.limits,
     baselineTeamRevision: plan.baselineTeamRevision,
+    subset: plan.subset,
     scorers: plan.scorers,
     tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task), covers: task.covers ? [...task.covers] : undefined, coversSkills: task.coversSkills ? [...task.coversSkills] : undefined, coversWithheldFrom: task.coversWithheldFrom?.map((arms) => [...arms]) })),
     arms: plan.arms,
     skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
-      const verdicts = verdictsOf(trial);
-      const scoringCost = scoringCostOf(verdicts);
+      const judged = verdictsOf(trial);
+      const scoringCost = scoringCostOf(judged);
       const work = stateOf(trial.step);
-      const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check: stateOf(checkStepOf(trial)), verdicts }, plan, trial);
+      const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check: stateOf(checkStepOf(trial)), verdicts: judged }, plan, trial);
       const arm = plan.arms.find(({ name }) => name === trial.arm);
 
       const task = plan.tasks.find(({ id }) => id === trial.task);

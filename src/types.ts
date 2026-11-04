@@ -784,6 +784,8 @@ export const TeamaiConfigBaseSchema = z.object({
    * written, so a value this teamai cannot use never fails the file; `doctor` reports it.
    */
   sessions: z.unknown().optional(),
+  /** `workflows.retention`, the team's default for its members: kept as written, so a wrong value never fails the file. */
+  workflows: z.object({ retention: z.unknown().optional() }).optional().catch(undefined),
   /**
    * Language of the agent-facing texts teamai injects: the built-in
    * teamai-recall rule, the todowrite-hint, and the mr-hint.
@@ -888,6 +890,8 @@ export const MemberWorkflowSettingsSchema = z.object({
   sandbox: z.boolean().optional(),
   /** What a workflow step may use on this machine, whatever driver runs it. An unset key allows. */
   allow: AllowSchema.optional(),
+  /** How long `doctor --fix` leaves what a settled run left behind: a duration or never. Kept as written; `resolveRetention` reads it. */
+  retention: z.unknown().optional(),
 });
 
 export type MemberWorkflowSettings = z.infer<typeof MemberWorkflowSettingsSchema>;
@@ -3499,6 +3503,15 @@ export const LEARNINGS_BRANCH = 'teamai-learnings';
 
 /** Worktree directory name that checks out the learnings orphan branch. */
 export const LEARNINGS_WORKTREE_DIRNAME = 'learnings-wt';
+
+/** The orphan branches teamai keeps team data on, which a workflow step with `deliver: publish` publishes to. */
+export const DATA_BRANCHES = [REPORTS_BRANCH, LEARNINGS_BRANCH] as const;
+
+export type DataBranch = typeof DATA_BRANCHES[number];
+
+export function isDataBranch(branch: string): branch is DataBranch {
+  return DATA_BRANCHES.some((data) => data === branch);
+}
 
 /** Worktree directory (under .teamai) used to stage knowledge PRs off the active tree. */
 export const KNOWLEDGE_WORKTREE_DIRNAME = 'knowledge-wt';

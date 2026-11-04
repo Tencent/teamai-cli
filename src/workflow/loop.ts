@@ -343,7 +343,7 @@ export function firstPass(run: RunState, path: string): number {
 }
 
 function expressionPasses(passes: StepPass[]): ExpressionPass[] {
-  return passes.map(({ pass, outcome, outputs, end, results, answer }) => {
+  return passes.map(({ pass, outcome, outputs, pr, end, results, answer }) => {
     const read: ExpressionPass = { pass, outcome };
 
     if (answer) {
@@ -352,6 +352,8 @@ function expressionPasses(passes: StepPass[]): ExpressionPass[] {
     }
 
     if (outputs !== undefined) read.outputs = outputs;
+
+    if (pr) read.pr = pr;
 
     if (end !== undefined) read.end = end;
 

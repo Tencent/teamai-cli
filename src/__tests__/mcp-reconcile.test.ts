@@ -4718,12 +4718,32 @@ describe('spliceCodexBlock', () => {
     ['a comment after the header', '[mcp_servers.a] # mine'],
     ['spaces inside the brackets', '[ mcp_servers.a ]'],
     ['a quoted name', '[mcp_servers."a"]'],
+    ['a double-quoted root key', '["mcp_servers".a]'],
+    ['a single-quoted root key', "['mcp_servers'.a]"],
+    ['quoted keys and spaces', '[ "mcp_servers" . \'a\' ] # member'],
   ])('finds and replaces a header written with %s', (_label, header) => {
     const src = `model = "gpt-5"\n\n${header}\ncommand = "old"\n`;
     expect(codexServerNames(src)).toEqual(['a']);
     const out = spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n');
     expect(out).not.toContain('command = "old"');
     expect(out.match(/mcp_servers/g)).toHaveLength(1);
+  });
+
+  it.each(['mcp_servers', '"mcp_servers"', "'mcp_servers'"])('keeps mixed quoting across a server and its sub-table under %s', (root) => {
+    const before = '# member settings\nmodel = "gpt-5"\n\n';
+    const server = `[${root}.a]\ncommand = "old"\n["mcp_servers".a.env]\nOLD = "1"\n`;
+    const after = '# personal server\n[\'mcp_servers\'.other]\ncommand = "personal"\n';
+    const src = before + server + '\n' + after;
+    const block = '[mcp_servers.a]\ncommand = "new"\n';
+
+    expect(parseToml(src).mcp_servers).toMatchObject({ a: { command: 'old', env: { OLD: '1' } }, other: { command: 'personal' } });
+    expect(codexServerNames(src)).toEqual(['a', 'other']);
+    expect(codexBlockIn(src, 'a')).toBe(server);
+    const updated = spliceCodexBlock(src, 'a', block);
+    expect(updated).toBe(before + block + '\n' + after);
+    expect(parseToml(updated).mcp_servers).toEqual({ a: { command: 'new' }, other: { command: 'personal' } });
+    expect(spliceCodexBlock(updated, 'a', block)).toBe(updated);
+    expect(spliceCodexBlock(src, 'a', null)).toBe(before + after);
   });
 });
 

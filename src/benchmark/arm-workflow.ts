@@ -10,7 +10,8 @@ import path from 'node:path';
 import { z } from 'zod';
 import { getKnowledgeDir, isJsonObject, JsonObjectSchema, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { parseYaml } from '../utils/yaml.js';
-import { loadCachedWorkflow, loadWorkflowTree, syncWorkflowDefinitions, withTeamRevision, workflowsRunBy, type SyncWorkflowResult } from '../workflow/cache.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
+import { loadCachedWorkflow, loadWorkflowTree, withTeamRevision, workflowsRunBy, type SyncWorkflowResult } from '../workflow/cache.js';
 import { parseWorkflow } from '../workflow/parse.js';
 import { stepWorkflow, type InlineWorkflow, type WorkflowStep } from '../workflow/types.js';
 import type { PlannedArm } from './plan.js';
@@ -45,7 +46,7 @@ export async function pinArmWorkflow(
   const refuse = (message: string, code: Refusal['code'] = 'arm_workflow_unrunnable'): Refusal => ({ ok: false, code, message });
 
   const read = await withTeamRevision(config, revision, async (at) => {
-    const synced = await syncWorkflowDefinitions(at, { scopeLabel: `team commit ${revision.slice(0, 7)}` });
+    const synced = await syncScorersThenWorkflows(at, { scopeLabel: `team commit ${revision.slice(0, 7)}` });
     const conflicted = await namespaceConflict(at, name, synced);
 
     if (conflicted) {
@@ -178,7 +179,7 @@ function unrunnableStep(steps: readonly WorkflowStep[], prefix = ''): { step: st
   for (const step of steps) {
     const id = `${prefix}${step.id}`;
 
-    if (step.deliver !== undefined) return { step: id, why: 'delivers a pull request' };
+    if (step.deliver === 'pr') return { step: id, why: 'delivers a pull request' };
 
     if (step.hitl !== undefined || step.interactive === true) return { step: id, why: 'asks a person' };
 

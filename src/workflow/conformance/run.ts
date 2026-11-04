@@ -4,6 +4,8 @@ import {
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 import { ATTEMPT_ENV } from '../../launch-context.js';
 import { limitsConformanceScenarios } from '../limits-conformance.js';
+import { confinedConformanceScenarios } from './confined.js';
+import { primitiveConformanceScenarios } from './primitives.js';
 
 const TWO_STEPS = `schemaVersion: v1alpha1
 name: build
@@ -101,6 +103,37 @@ description: The workflow build runs.
 steps:
   - id: classify
     command: echo classify
+`;
+
+const SCORED_PASS = `schemaVersion: v1alpha1
+name: review
+description: A step whose passes a scorer judges.
+steps:
+  - id: review
+    prompt: Review the change.
+    scorers: [quality]
+`;
+
+const SCORED_WORKFLOW_STEP = `schemaVersion: v1alpha1
+name: ship
+description: A workflow step whose passes a scorer judges.
+steps:
+  - id: build
+    scorers: [quality]
+    workflow:
+      steps:
+        - id: compile
+          command: echo compile
+`;
+
+const QUALITY_SCORER = `---
+labels:
+  - { value: good, score: 1, description: Did the work }
+  - { value: bad, score: 0, description: Missed the work }
+passingScore: 0.5
+samplingRate: 100
+---
+Judge the work.
 `;
 
 const PROMPT_MODEL = `schemaVersion: v1alpha1
@@ -206,6 +239,25 @@ steps:
     needs: [build]
     prompt: Check.
     session: { from: plan }
+`;
+
+const ISOLATED_PUBLISH = `schemaVersion: v1alpha1
+name: trial
+description: A run with a step in a clone is isolated, so its step that publishes to a data branch is skipped.
+steps:
+  - id: tally
+    command: echo tally
+    output: { baseline: boolean }
+  - id: baseline
+    needs: [tally]
+    if: steps.tally.outputs.baseline
+    workspace: { clone: { commit: ${'c'.repeat(40)}, team: { treatment: none } } }
+    command: echo baseline
+  - id: publish
+    needs: [tally, baseline]
+    workspace: { team: { branch: teamai-reports } }
+    command: teamai score publish
+    deliver: publish
 `;
 
 /** Every protocol scenario a driver must pass, the ones each concern keeps in its own file included. */
@@ -319,6 +371,20 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       { kind: 'report', lease: 'docs', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
     ],
+    expectState: { steps: [{ id: 'build', status: 'failed' }, { id: 'test', status: 'skipped', message: 'Step "test" was skipped: it needs "build", which failed.' }, { id: 'docs', status: 'succeeded' }] },
+  },
+  {
+    name: 'an isolated run skips its step that publishes to a data branch, so a driver without the team workspace ends it',
+    workflowName: 'trial',
+    yaml: ISOLATED_PUBLISH,
+    operations: [
+      { kind: 'next', saveAs: 'tally', expect: { data: { lease: { step: 'tally' } } } },
+      { kind: 'report', lease: 'tally', body: { outcome: 'success', outputs: { baseline: false } }, expect: { data: { step: { status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+    expectState: { steps: [{ id: 'tally', status: 'succeeded' }, { id: 'baseline', status: 'skipped', message: 'Step "baseline" was skipped: its if is false: steps.tally.outputs.baseline' }, {
+      id: 'publish', status: 'skipped', message: 'Step "publish" was skipped: this run is isolated, so it publishes nothing to a data branch.',
+    }] },
   },
   {
     name: 'recovery runs after a failure',
@@ -382,6 +448,39 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       { kind: 'next', saveAs: 'compile', absent: ['model', 'defaultModel'], expect: { data: { lease: { step: 'compile' } } } },
       { kind: 'report', lease: 'compile', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
       { kind: 'next', saveAs: 'plan', expect: { data: { lease: { step: 'plan', model: 'strong', defaultModel: 'fast' } } } },
+    ],
+  },
+  {
+    name: 'the report that settles a scored pass answers the run it started for the pass, which the driver drives, and the scored run ends without it',
+    workflowName: 'review',
+    yaml: SCORED_PASS,
+    teamFiles: { 'scorers/quality.md': QUALITY_SCORER },
+    operations: [
+      { kind: 'next', saveAs: 'review', expect: { data: { lease: { step: 'review' } } } },
+      { kind: 'report', lease: 'review', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' }, started: [{ step: 'review', pass: 1, scorers: ['quality'] }] } } },
+      { kind: 'next', saveAs: 'end', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+  },
+  {
+    name: 'a step whose scorers judge every pass gets its own teamai-score run for each, and the run ends without waiting for a judge',
+    workflowName: 'review',
+    yaml: SCORED_PASS.replace('scorers: [quality]', 'scorers: { names: [quality], sampling: all }'),
+    teamFiles: { 'scorers/quality.md': QUALITY_SCORER.replace('samplingRate: 100', 'samplingRate: 0') },
+    operations: [
+      { kind: 'next', saveAs: 'review', expect: { data: { lease: { step: 'review' } } } },
+      { kind: 'report', lease: 'review', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' }, started: [{ step: 'review', pass: 1, scorers: ['quality'] }] } } },
+      { kind: 'next', saveAs: 'end', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+  },
+  {
+    name: 'the next that settles a scored workflow step answers the run it started for the pass, as the run ends',
+    workflowName: 'ship',
+    yaml: SCORED_WORKFLOW_STEP,
+    teamFiles: { 'scorers/quality.md': QUALITY_SCORER },
+    operations: [
+      { kind: 'next', saveAs: 'compile', expect: { data: { lease: { step: 'build.compile' } } } },
+      { kind: 'report', lease: 'compile', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'end', expect: { data: { done: { outcome: 'succeeded' }, started: [{ step: 'build', pass: 1, scorers: ['quality'] }] } } },
     ],
   },
   {
@@ -811,3 +910,7 @@ workflowConformanceScenarios.push({
 });
 
 workflowConformanceScenarios.push(...limitsConformanceScenarios);
+
+workflowConformanceScenarios.push(...primitiveConformanceScenarios);
+
+workflowConformanceScenarios.push(...confinedConformanceScenarios);

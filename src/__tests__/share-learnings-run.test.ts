@@ -37,24 +37,25 @@ function turnOf(envelope: WorkflowEnvelope): z.infer<typeof TurnSchema> {
 /**
  * Starts teamai's default teamai-share-learnings for SESSION with `inputs` over the defaults below, in a scope whose team keeps no
  * workflows, and drives it as a driver with HITL: `learning` returns `learning`, the person answers every approval yes
- * from their terminal, each `score-driver` item returns an empty label, and every command succeeds. What each lease
- * ran, by step, and how the run ended.
+ * from their terminal, and every command succeeds. What each lease ran, by step, the env of each command, and how the run
+ * ended.
  */
-async function shareLearnings(inputs: Record<string, unknown>, learning: Record<string, unknown>): Promise<{ ran: string[]; prompts: string[]; asked: string[]; contributed: Record<string, string>[]; outcome: string | undefined; config: LocalConfig; run: string }> {
+async function shareLearnings(inputs: Record<string, unknown>, learning: Record<string, unknown>, workflow = 'teamai-share-learnings'): Promise<{ ran: string[]; prompts: string[]; asked: string[]; contributed: Record<string, string>[]; envs: Map<string, Record<string, string>>; outcome: string | undefined; config: LocalConfig; run: string }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-share-learnings-run-'));
   roots.push(root);
   const config: LocalConfig = { repo: { localPath: path.join(root, 'repo'), remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
   fs.mkdirSync(config.repo.localPath, { recursive: true });
-  const started = await startRun(config, 'teamai-share-learnings', { session: SESSION, source: 'claude-code', publish: false, scorers: [], judge: 'here', ...inputs }, { secrets: {} });
+  const started = await startRun(config, workflow, { session: SESSION, source: 'claude-code', publish: false, scorers: [], judge: 'here', ...inputs }, { secrets: {} });
   if ('error' in started) throw new Error(started.error.message);
   const run = String(started.data.run);
   const ran: string[] = [];
   const prompts: string[] = [];
   const asked: string[] = [];
   const contributed: Record<string, string>[] = [];
+  const envs = new Map<string, Record<string, string>>();
   for (let turn = 0; turn < 20; turn += 1) {
     const next = turnOf(await leaseNext(config, run, driver, { can: { hitl: true } }));
-    if (next.done) return { ran, prompts, asked, contributed, outcome: next.done.outcome, config, run };
+    if (next.done) return { ran, prompts, asked, contributed, envs, outcome: next.done.outcome, config, run };
     if (next.hitl) {
       asked.push(`${next.hitl.step}${next.hitl.required ? ' (required)' : ''}`);
       turnOf(await respondToHitl(config, run, {}, { step: next.hitl.step, choice: 'yes', provenance: person }));
@@ -63,9 +64,10 @@ async function shareLearnings(inputs: Record<string, unknown>, learning: Record<
     if (!next.lease) throw new Error(JSON.stringify(next));
     const { step, attempt, revision, prompt, command, env } = next.lease;
     if (step.startsWith('contribute') && env) contributed.push(env);
+    if (env) envs.set(step, env);
     ran.push(`${step}: ${command ?? prompt?.split('\n')[0] ?? ''}`);
     if (prompt !== undefined) prompts.push(prompt);
-    const outputs = step === 'learning' ? learning : step.includes('score-driver') ? { label: '' } : undefined;
+    const outputs = step === 'learning' ? learning : undefined;
     turnOf(await reportAttempt(config, run, { attempt, revision, driver, outcome: 'success', ...(outputs ? { outputs } : {}) }));
   }
   throw new Error('the run did not end in 20 turns');
@@ -105,23 +107,23 @@ describe('a teamai-share-learnings run', () => {
     expect(shared.outcome).toBe('succeeded');
   });
 
-  it('judges each scorer here with teamai\'s own judge, and skips the session agent\'s judging', async () => {
-    const shared = await shareLearnings({ scorers: ['review-quality', 'secure-review'], judge: 'here' }, SKIP);
+  it('runs teamai-score on the session with every scorer the person named, whatever judge says', async () => {
+    for (const judge of ['here', 'driver']) {
+      const shared = await shareLearnings({ scorers: ['review-quality', 'secure-review'], judge }, SKIP);
 
-    expect(shared.ran.filter((ran) => ran.startsWith('share-session.score'))).toEqual([
-      expect.stringMatching(/^share-session\.score\[0\]: teamai score --session "\$SESSION" --source "\$SOURCE" --scorer "\$SCORER"$/),
-      expect.stringMatching(/^share-session\.score\[1\]: teamai score --session "\$SESSION" --source "\$SOURCE" --scorer "\$SCORER"$/),
-    ]);
-    expect(shared.outcome).toBe('succeeded');
+      expect(shared.ran.filter((ran) => ran.startsWith('share-session.score'))).toEqual([
+        'share-session.score.plan: teamai score plan --subject "$SUBJECT" --scorers "$SCORERS" --batch="$BATCH" --demand "$DEMAND"',
+      ]);
+      expect(shared.envs.get('share-session.score.plan')).toMatchObject({ SUBJECT: `session:claude-code:${SESSION}`, SCORERS: expect.stringMatching(/review-quality.*secure-review/), BATCH: 'false', DEMAND: 'named' });
+      expect(shared.prompts.join('\n')).not.toContain('judge work');
+      expect(shared.outcome).toBe('succeeded');
+    }
   });
 
-  it('has the session\'s agent judge each scorer when no judge tool is here, and succeeds when it returns no label', async () => {
-    const shared = await shareLearnings({ scorers: ['review-quality'], judge: 'driver' }, SKIP);
+  it('passes teamai-score the demand teamai-share-session was started with', async () => {
+    const shared = await shareLearnings({ scorers: ['review-quality'], demand: 'auto' }, SKIP, 'teamai-share-session');
 
-    expect(shared.ran.filter((ran) => ran.startsWith('share-session.score'))).toEqual([
-      expect.stringMatching(/^share-session\.score-driver\[0\]: Judge the claude-code session 7c1e.* with the scorer review-quality\. Take the judge work with$/),
-    ]);
-    expect(shared.prompts.at(-1)).toContain('If teamai answers isolation_unmet, judge_model_unavailable or busy, return an empty label.');
+    expect(shared.envs.get('score.plan')).toMatchObject({ SUBJECT: `session:claude-code:${SESSION}`, DEMAND: 'auto' });
     expect(shared.outcome).toBe('succeeded');
   });
 

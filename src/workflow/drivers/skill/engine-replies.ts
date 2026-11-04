@@ -1,13 +1,14 @@
 /**
- * The engine's envelopes as the skill driver reads them: each answer to `next`, `respond`, a report and `score --next`,
- * parsed once into the reply its row takes, and a lease, read as the step this driver runs.
+ * The engine's envelopes as the skill driver reads them: each answer to `next`, `respond` and a report, parsed
+ * once into the reply its row takes, and a lease, read as the step this driver runs.
  */
 import { z } from 'zod';
 import { LeaseWireSchema } from '../../lease-wire.js';
+import { StartedRunSchema, type StartedRun } from '../../protocol.js';
 import { FailureSchema } from '../../step-state.js';
 import { AttemptIdSchema, type AttemptId, type RunId } from '../../store.js';
 import type { WorkflowEnvelope } from '../../types.js';
-import type { AskedGate, EngineReply, ReadLease, ReportReply, RespondReply, ScoreReply } from './transitions.js';
+import type { AskedGate, EngineReply, ReadLease, ReportReply, RespondReply } from './transitions.js';
 
 /** The lease `raw` the engine sent, as this driver runs it. Undefined when this teamai cannot run it. */
 // oxlint-disable-next-line teamai/no-unknown-parameters -- the parse boundary: the engine's answer and a runner's job file carry the lease unread
@@ -15,7 +16,7 @@ export function readLease(raw: unknown): ReadLease | undefined {
   const read = LeaseWireSchema.safeParse(raw);
 
   if (!read.success) return undefined;
-  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires } = read.data;
+  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires, confined } = read.data;
   let lease: ReadLease;
 
   if (command !== undefined) {
@@ -28,8 +29,10 @@ export function readLease(raw: unknown): ReadLease | undefined {
 
     lease = {
       attempt, step: id, revision, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace',
-      writes: workspace?.mode === 'new' || workspace?.mode === 'continue',
+      writes: workspace?.mode === 'new' || workspace?.mode === 'continue' || workspace?.mode === 'team',
     };
+
+    if (workspace?.mode === 'team') lease.team = true;
 
     if (interactive) lease.interactive = interactive;
 
@@ -44,6 +47,8 @@ export function readLease(raw: unknown): ReadLease | undefined {
     if (defaultModel !== undefined) lease.defaultModel = defaultModel;
 
     if (output !== undefined) lease.output = output;
+
+    if (confined) lease.confined = confined;
   }
 
   if (expiresAt !== undefined) lease.expiresAt = expiresAt;
@@ -61,7 +66,7 @@ const NextDataSchema = z.object({
   wait: z.object({
     reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.object({ step: z.string(), missing: z.array(z.string()) })).optional(),
   }).optional(),
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), outputs: z.record(z.string(), z.json()).optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
 });
 
 /** What `engineReply` reads from an answer to `next`. */
@@ -85,6 +90,8 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): NextAnswer {
     const reply: EngineReply = { kind: 'done', outcome: done.outcome, prs: done.prs ?? [], out: done.notPublished === undefined || done.notPublished.code === 'not_owner' };
 
     if (done.failure) reply.failure = done.failure;
+
+    if (done.outputs !== undefined) reply.outputs = done.outputs;
 
     return { reply, cancelled };
   }
@@ -139,24 +146,10 @@ export function reportReply(answer: WorkflowEnvelope): ReportReply {
   return reply;
 }
 
-const ScoreDataSchema = z.object({
-  lease: z.object({ ref: z.string(), subject: z.object({ step: z.string() }), scorer: z.string().optional(), scorers: z.array(z.string()).optional() }).optional(),
-});
+const StartedDataSchema = z.object({ started: z.array(StartedRunSchema) });
 
-/** What `score --next` answered, with the lease read as the judge it opens. */
-export function scoreReply(answer: WorkflowEnvelope): ScoreReply {
-  if ('error' in answer) return { kind: 'error', error: { code: answer.error.code, message: answer.error.message } };
-  const data = ScoreDataSchema.safeParse(answer.data);
-
-  if (!data.success) return { kind: 'error', error: { code: 'run_unreadable', message: `score --next answered with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } };
-  const { lease } = data.data;
-
-  if (!lease) return { kind: 'idle' };
-  // A lease ref is `<entry>/<attempt>`: its attempt keys the judge's runner as a step's attempt keys its own.
-  const attempt = AttemptIdSchema.safeParse(lease.ref.slice(lease.ref.indexOf('/') + 1));
-  const scorers = lease.scorers ?? (lease.scorer !== undefined ? [lease.scorer] : []);
-
-  if (!attempt.success || scorers.length === 0) return { kind: 'error', error: { code: 'run_unreadable', message: `score --next answered with judge lease ${lease.ref}, which this teamai cannot read. Update teamai.` } };
-
-  return { kind: 'lease', judge: { ref: lease.ref, attempt: attempt.data, step: lease.subject.step, scorers } };
+/** The runs a `next` or report answer lists in `started`: those the run's settled passes started, which have not ended. */
+export function startedOf(answer: WorkflowEnvelope): StartedRun[] {
+  return 'data' in answer ? StartedDataSchema.safeParse(answer.data).data?.started ?? [] : [];
 }
+

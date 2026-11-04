@@ -721,3 +721,90 @@ describe('workflow handoff through teamai-reports', () => {
   });
 
 });
+
+describe('a run with private steps', () => {
+  const JUDGE = 'schemaVersion: v1alpha1\nname: judge\ndescription: Judge on this machine only.\nprivate: true\nsteps:\n  - id: label\n    command: echo label\n    output: { label: string, reasoning: string }\noutputs:\n  label: steps.label.outputs.label\n';
+  const REVIEWED = 'schemaVersion: v1alpha1\nname: reviewed\ndescription: Judge, then ship.\nsteps:\n  - id: check\n    workflow: judge\n  - id: ship\n    needs: [check]\n    command: echo ship\n';
+
+  it('refuses publish and claim with private_open while a private step is open, and publishes none of its outputs once it settled', async () => {
+    const acme = team({ judge: JUDGE, reviewed: REVIEWED });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await startIn(alice, 'reviewed');
+    const next = await leaseNext(alice.config, runId, alice.driver);
+    if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+    const lease = next.data.lease as { step: string; attempt: string; revision: number };
+    expect(lease.step).toBe('check.label');
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'private_open' } });
+    expect(await claimRun(alice.config, runId, { checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'private_open' } });
+
+    await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver, outputs: { label: 'good', reasoning: 'it reads well' } });
+    expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { lease: { step: 'ship' } } });
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+
+    const published = originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '';
+    expect(published).not.toContain('it reads well');
+    expect(JSON.parse(published)).toMatchObject({ steps: [{ id: 'check', outputs: { label: 'good' } }, { id: 'check.label', status: 'succeeded' }, { id: 'ship' }] });
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+  });
+
+  it('publishes the answer of a private step without its note, in the step, its passes and the archive', async () => {
+    const acme = team({ judge: JUDGE, reviewed: REVIEWED });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'reviewed');
+    const next = await leaseNext(alice.config, runId, alice.driver);
+    if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+    const lease = next.data.lease as { attempt: string; revision: number };
+    await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver, outputs: { label: 'good', reasoning: 'it reads well' } });
+    const answer = { choice: 'yes', note: 'the customer is Initech', at: '2026-10-21T10:00:00.000Z', channel: 'cli' as const, agent: false };
+    await editRun(alice.config, runId, (run) => ({
+      ...run,
+      steps: run.steps.map((step) => (step.id === 'check.label' ? { ...step, answer, passes: [{ pass: 1, attempt: 'a00000001', outcome: 'success', answer }] }
+        : step.id === 'ship' ? { ...step, answer: { ...answer, note: 'ship it' } } : step)),
+      archive: [{ pass: 1, attempt: 'a00000002', outcome: 'success', answer, step: 'check.label' }],
+    }));
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    const published = originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '';
+    expect(published).not.toContain('Initech');
+    expect(JSON.parse(published)).toMatchObject({
+      steps: [{ id: 'check' }, { id: 'check.label', answer: { choice: 'yes' }, passes: [{ answer: { choice: 'yes' } }] }, { id: 'ship', answer: { note: 'ship it' } }],
+      archive: [{ step: 'check.label', answer: { choice: 'yes' } }],
+    });
+  });
+
+  it('publishes no item or inputs a private step built from a private output', async () => {
+    const FIND = 'schemaVersion: v1alpha1\nname: judge\ndescription: Judge on this machine only.\nprivate: true\nsteps:\n  - id: find\n    command: echo find\n    output: { names: [string] }\n'
+      + '  - id: each\n    needs: [find]\n    for_each: steps.find.outputs.names\n    command: echo each\n'
+      + '  - id: deep\n    needs: [find]\n    workflow: deep\n    with: { who: "{{ steps.find.outputs.names }}" }\n';
+    const DEEP = 'schemaVersion: v1alpha1\nname: deep\ndescription: Look deeper.\ninputs:\n  who: [string]\nsteps:\n  - id: look\n    command: echo look\n';
+    const acme = team({ judge: FIND, deep: DEEP, reviewed: REVIEWED });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'reviewed');
+
+    for (;;) {
+      const next = await leaseNext(alice.config, runId, alice.driver);
+      if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
+      const lease = next.data.lease as { step: string; attempt: string; revision: number };
+      if (lease.step === 'ship') break;
+      const outputs = lease.step === 'check.find' ? { names: ['Initech'] } : undefined;
+      await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: alice.driver, ...(outputs ? { outputs } : {}) });
+    }
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });
+    expect(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '').not.toContain('Initech');
+    const bob = await acme.member('bob');
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true });
+    expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { lease: { step: 'ship' } } });
+  });
+
+  it('keeps a run of a private workflow on the machine that started it', async () => {
+    const acme = team({ judge: JUDGE });
+    const alice = await acme.member('alice');
+    const runId = await startIn(alice, 'judge');
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'isolated_run' } });
+    expect(await claimRun(alice.config, runId, { checkout: alice.checkout })).toMatchObject({ ok: false, error: { code: 'isolated_run' } });
+  });
+});

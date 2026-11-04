@@ -1,9 +1,8 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
-import type { RunOrigin } from '../default-workflows.js';
+import type { ContractCode, RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
-import type { EntryVerdict } from '../scorers/entry.js';
-import type { PinnedScorer } from '../scorers/pin.js';
+import type { TeamPin } from './team-pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
 import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
 import type { OnLimit, Requirements, Setup, TurnLimits, Unenforced } from './requirements.js';
@@ -45,6 +44,15 @@ export interface StepHitl {
   default?: string;
   /** Whether the answer must come from a person at a terminal or through a driver UI's declared answer. */
   required: boolean;
+}
+
+/**
+ * Whether only a person can answer `hitl` for a driver without HITL: a required request, or a choice that auto-approve
+ * does not answer, as it answers only a choice with a default and only when `autoApprove`. An optional approval nobody
+ * answers is skipped instead.
+ */
+export function onlyPersonAnswers(hitl: Pick<StepHitl, 'kind' | 'required' | 'default'>, { autoApprove }: { autoApprove: boolean }): boolean {
+  return hitl.required || (hitl.kind === 'choose' && !(autoApprove && hitl.default !== undefined));
 }
 
 export interface WorkflowStep {
@@ -93,6 +101,11 @@ export interface WorkflowStep {
   /** Runs the step's action once per item of a list, each as an instance such as `build[2]`. */
   forEach?: ForEach;
   /**
+   * The step, or any of its items, may end failed, timed out or cancelled without failing the workflow it is in. Its
+   * outcome still reads as it ended, and its dependents follow the usual rules.
+   */
+  continueOnFailure?: true;
+  /**
    * Where the step runs. A command that omits it uses the active checkout and is read-only.
    * A prompt that omits it continues an enclosing `new`, `continue` or clone copy, or stays read-only.
    */
@@ -105,8 +118,11 @@ export interface WorkflowStep {
    * as written, as run files and the cache store it; read it through `roleLevelOf`, which tells an id from a template.
    */
   role?: string;
-  /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */
-  deliver?: 'pr';
+  /**
+   * `pr`: opens a review request after the branch's work succeeds; TeamAI never merges it. `publish`: pushes what the
+   * step staged to the teamai data branch of its team workspace, only the member's own files.
+   */
+  deliver?: 'pr' | 'publish';
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
   session?: { continue: true } | { from: string };
   /** What the driver that runs this step, or every step of the workflow it runs, must provide. */
@@ -185,8 +201,16 @@ export interface TeamPlace {
   branch?: string;
 }
 
-/** A step's `workspace` as written: a mode, the clone it opens, or the team repo branch it commits to. */
-export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone' | 'team'> | { clone: ClonePlace } | { team: TeamPlace };
+/**
+ * The directory a prompt step runs confined to, `{ confined: <dir> }`: a template of the inputs, the item and the outputs
+ * of steps it needs, rendered when the step is leased. A relative directory is under the run's `$TEAMAI_RUN_DIR`.
+ */
+export interface ConfinedPlace {
+  confined: string;
+}
+
+/** A step's `workspace` as written: a mode, the clone it opens, the team repo branch it commits to, or the directory it is confined to. */
+export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone' | 'team'> | { clone: ClonePlace } | { team: TeamPlace } | ConfinedPlace;
 
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
 export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
@@ -278,12 +302,23 @@ export interface WorkflowDefaults {
 export interface StepScorers {
   names: string[];
   batch?: boolean;
-  /**
-   * `all`: every pass is judged whatever the scorers sample, the run waits for the judges before its `finally` steps,
-   * and an entry still open when its steps end is frozen unscored in `run.verdicts`.
-   */
+  /** `all`: every pass is judged, whatever the scorers sample. */
   sampling?: 'all';
+  /** Who starts the scoring of the step's passes: teamai after each pass (`auto`), or the workflow's own steps (`workflow`). */
+  start?: ScoringStart;
 }
+
+export const SCORING_STARTS = ['auto', 'workflow'] as const;
+
+export type ScoringStart = (typeof SCORING_STARTS)[number];
+
+/**
+ * Who started a run: a person, from a process with no agent evidence; an agent session; or one of the CLI's own automatic
+ * starts, which pass no agent evidence and take no inputs from an agent.
+ */
+export const STARTED_BY = ['person', 'agent', 'cli'] as const;
+
+export type StartedBy = typeof STARTED_BY[number];
 
 /** Whether an agent session may start a workflow: on its own (`allow`), after the person's yes (`ask`), or never (`deny`). */
 export const INVOKE_VALUES = ['allow', 'ask', 'deny'] as const;
@@ -295,6 +330,11 @@ export interface WorkflowDefinition {
   invoke?: Invoke;
   /** Another name `workflow start` accepts. It starts nothing while another workflow has it as alias or name. */
   alias?: string;
+  /**
+   * The workflow's own steps, and those of every workflow they run, stay on this machine: their sessions are never
+   * archived and their outputs never published. A run of it as the root run publishes nothing and is never claimed.
+   */
+  private?: true;
   schemaVersion: 'v1alpha1';
   name: string;
   description: string;
@@ -312,6 +352,11 @@ export interface WorkflowDefinition {
   budget?: Budget;
   /** Runs in each workspace a driver creates for a step of this file, or of a workflow it runs that has no setup. */
   setup?: Setup;
+  /**
+   * `new`: the steps work in one copy. A run of this file opens it (the run copy); a step that runs it continues the copy
+   * it has or is in, and opens one, as with `workspace: new`, when it has none.
+   */
+  workspace?: 'new';
   steps: WorkflowStep[];
   /**
    * Read-only command steps that run once the run's steps end, whatever the outcome, a timeout or a cancel included.
@@ -351,8 +396,11 @@ export interface WorkflowDiagnostic {
    *   changed.
    * `alias_conflict`: another workflow has the same alias, or takes it as its name. The workflow is cached and starts by
    *   name; only the alias starts nothing.
+   * `ContractCode`: a team file breaks the contract of a default it replaces or runs (`DefaultWorkflows.overrideProblems`);
+   *   teamai's default runs, never an older team copy.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_role' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_role' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'benchmark_namespace_conflict' | 'bad_delivery' | 'bad_invoke' | 'bad_alias' | 'alias_conflict'
+    | ContractCode;
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -421,22 +469,22 @@ export interface RunState {
   sourceHash: string;
   /** Remote-reachable team commit shared by every cached workflow in this run. */
   teamRevision?: string;
+  /** The team revision the run started from, with a patch of the checkout's changes past it. Absent on older runs, and where the team checkout is no git repository. */
+  teamPin?: TeamPin;
   /** The run mode `workflow start` resolved. A claim keeps it. Absent on runs started before it was recorded. */
   runMode?: RunMode;
   /** Whether `definition` is the team's or teamai's default. A claim keeps it. Absent on runs started before it was recorded, all team runs. */
   origin?: RunOrigin;
+  /** Who started the run. A claim keeps it. Absent on runs started before it was recorded. */
+  startedBy?: StartedBy;
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
-  /** The scorers its steps list, by name, as they were cached when it started. A name with no valid scorer then is absent. */
-  scorers?: Record<string, PinnedScorer>;
   /**
    * The `workflow` outputs of the steps a `from` step runs, by the path of the producing step, admitted when it reported
-   * and frozen for the run's life. The named workflows and generated scorers each brought are in `workflows` and `scorers`.
+   * and frozen for the run's life. The named workflows each brought are in `workflows`.
    */
   admitted?: Record<string, AdmittedWorkflow>;
-  /** How each entry of the run's `sampling: all` scorers stood when its steps ended, before `finally`, frozen by `finishRun`. */
-  verdicts?: EntryVerdict[];
   /**
    * Step instances in declaration order; a sub-workflow's steps follow the step that runs it. Never changed in place:
    * adding or removing an instance assigns a new array, so an index the engine keeps per array never goes stale.
@@ -494,6 +542,8 @@ export interface RunState {
   sessionContinuations?: SessionContinuation[];
   /** How this machine last published the run, or took it from another machine. Local run state only. */
   publication?: RunPublication;
+  /** What teamai removed of the run's branches once it settled, and what it kept. Local run state only. */
+  leftovers?: RunLeftovers;
   createdAt: string;
   /**
    * Where the workflow's `timeout` and `budget` count from once a retry reopened the run, so the reopened run gets a whole
@@ -501,6 +551,12 @@ export interface RunState {
    */
   limitsFrom?: LimitsFrom;
   updatedAt: string;
+  /**
+   * Until when what the run left is kept: the time it first settled plus the `workflows.retention` its owner had then. A
+   * later end does not change it. Past it a retry does not reopen the run, and `teamai doctor --fix` may remove what it
+   * left. Absent until the run first settles, under `never`, and on runs settled before it was recorded.
+   */
+  retainedUntil?: string;
 }
 
 /**
@@ -524,6 +580,26 @@ export interface DriveOptions {
   /** `false` after `resume --no-auto-approve`, which overrides `workflows.auto_approve` as the flag does. */
   autoApprove?: boolean;
   sandbox?: true;
+}
+
+/**
+ * Why a branch of a settled run stays: a pull request uses it, it holds the run's final copy, no branch that stays holds
+ * its tip, or the host has it checked out in the checkout, which keeps it there though origin deleted it.
+ */
+export type KeptBranchReason = 'pr' | 'final' | 'unmerged' | 'host';
+
+/**
+ * What teamai did with the `teamai/<run>/…` branches of a settled run, at run revision `revision`. `success`: the run
+ * succeeded and the branches a kept branch holds went. `retention`: `teamai doctor --fix` removed what the run left past
+ * `workflows.retention`. `failed` lists the deletions that did not go through, which `doctor --fix` tries again.
+ */
+export interface RunLeftovers {
+  by: 'success' | 'retention';
+  at: string;
+  revision: number;
+  kept: Array<{ branch: string; why: KeptBranchReason }>;
+  deleted: string[];
+  failed: Array<{ branch: string; reason: string }>;
 }
 
 /** What this machine knows of the run's snapshot on `teamai-reports`. */

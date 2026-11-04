@@ -5,6 +5,7 @@ import type { LocalConfig } from '../../../types.js';
 import type { ToolId } from '../../../tools.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
+import { onlyPersonAnswers } from '../../types.js';
 import { envAdvice } from '../../requirements.js';
 import type { OutputSchema } from '../../types.js';
 import { describeLiteral, localStartLiteral, startLiteral, type Invocation, type Literal } from './literals.js';
@@ -69,40 +70,31 @@ export function localReason(description: WorkflowDescription): string | undefine
   const keys = facts.held.find((held) => held.step === route.held)?.env ?? [];
   const lacks = missingReason(route.missing, keys);
 
-  return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
+  switch (route.copy) {
+    case 'run': return `Step ${route.held} works in the workspace the run opens, as the header of ${name} says workspace: new, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
+    case 'step': return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
+    default: {
+      const unhandled: never = route;
+
+      return unhandled;
+    }
+  }
 }
 
 /**
- * Why a run of `description` needs a person, which an unattended run lacks, as a refusal to `act` on it says it:
- * undefined when it can do without one, its optional gates auto-approved. A run to continue counts only the steps it
- * has not `settled` for good, as {@link stepNeeds} does. Its `invoke: ask` still does.
+ * Why a run of `description` needs a person before it starts or goes on, which an unattended run lacks, as a refusal to
+ * `act` on it says it: its `invoke: ask`. A step only a person can take needs none here: the session hands the run to
+ * one when it reaches that step.
  */
-export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue', settled: ReadonlySet<string> = new Set()): string | undefined {
-  const needs = [...(description.invoke === 'ask' ? [INVOKE_ASK_NEED] : []), ...stepNeeds(description, settled)];
-
-  if (needs.length === 0) return undefined;
-
-  return unattendedReason(description.name, listOf(needs), act);
+export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue'): string | undefined {
+  return description.invoke === 'ask' ? unattendedReason(description.name, INVOKE_ASK_NEED, act) : undefined;
 }
 
-/**
- * What in the steps of `description` needs a person, a clause each, with optional gates auto-approved: an interactive
- * step, a required approval or choice, and a choice with no default. A run to continue counts only the steps it has not
- * `settled` for good: an approval, a choice or an interactive step that already ran, or whose workflow or `for_each`
- * step settled whole (skipped, or every item done), needs nobody now. Who calls, and `invoke`, are not steps' needs.
- */
-export function stepNeeds(description: WorkflowDescription, settled: ReadonlySet<string> = new Set()): string[] {
-  const { facts } = description;
-  const left = (step: string): boolean => isLeft(step, settled);
-  const interactive = facts.interactive.filter(left);
-  const gates = facts.gates.filter((gate) => left(gate.step));
-  const required = gates.filter((gate) => gate.required);
-  const open = gates.filter((gate) => !gate.required && gate.kind === 'choose' && gate.default === undefined);
-
+/** What needs a person, a clause each: the `interactive` steps, and the `gates` only a person can answer. */
+export function personClauses({ interactive, gates }: { interactive: readonly string[]; gates: ReadonlyArray<{ step: string; kind: 'approve' | 'choose' }> }): string[] {
   return [
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
-    ...(required.length > 0 ? [`only a person can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}`] : []),
-    ...(open.length > 0 ? [`the ${open.length > 1 ? 'choices' : 'choice'} at ${listOf(open.map((gate) => gate.step))} ${open.length > 1 ? 'have' : 'has'} no default, so --auto-approve leaves ${open.length > 1 ? 'them' : 'it'} to a person`] : []),
+    ...(gates.length > 0 ? [`only a person can answer the ${gatesNoun(gates)} at ${listOf(gates.map((gate) => gate.step))}`] : []),
   ];
 }
 
@@ -283,14 +275,20 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
   const missing = facts.requiresEnv.missingHere;
   const [one, many] = [missing.length === 1, interactive.length > 1];
   const scored = listOf(facts.scored.map((step) => step.step));
+  const attended = answering === 'picked';
+  const people = attended ? [] : personClauses({ interactive, gates: facts.gates.filter((gate) => onlyPersonAnswers(gate, { autoApprove: true })) });
+  const confined = listOf(facts.confined);
+  // A run with both says why judging is not here once, on the scored line.
+  const [isScored, isConfined, oneConfined] = [facts.scored.length > 0, facts.confined.length > 0, facts.confined.length === 1];
 
   return [
     ...(named.length > 0 ? [`${name} needs the input${named.length > 1 ? 's' : ''} ${listOf(named)}.`] : []),
     ...(facts.width > 1 ? [`It can run up to ${facts.width} steps at once.`] : []),
-    ...(interactive.length > 0 ? [`${listOf(interactive)} ${many ? 'are' : 'is'} interactive: you work in ${many ? 'them' : 'it'} here, with this session's agent.`] : []),
-    ...(required.length > 0 ? [`Only you can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}, from your own terminal or teamai dashboard.`] : []),
+    ...(attended && interactive.length > 0 ? [`${listOf(interactive)} ${many ? 'are' : 'is'} interactive: you work in ${many ? 'them' : 'it'} here, with this session's agent.`] : []),
+    ...(attended && required.length > 0 ? [`Only you can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}, from your own terminal or teamai dashboard.`] : []),
     ...optional.map(optionalGateFact),
     ...(optional.length > 0 ? [optionalAnswersFact(optional, answering)] : []),
+    ...(people.length > 0 ? [`Nobody attends this run, so when it reaches a step only a person can take, it is offered on teamai-reports for one to continue, and this session stops: ${people.join('; ')}.`] : []),
     ...facts.deliver.map(({ step, onto }) => (onto !== undefined ? `It opens a pull request from ${step} onto the pull request of ${onto}.`
       : facts.base !== undefined ? `It opens a pull request from ${step} into ${facts.base}.`
         : `${step} opens a pull request, which needs a branch to target: check out a branch here before you start it.`)),
@@ -298,10 +296,13 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
     ...facts.held.map(heldFact),
     ...facts.budgets.map(({ step, tokens }) => (step === undefined ? `It may spend at most ${tokens} tokens.` : `${step} may spend at most ${tokens} tokens each time it starts.`)),
     ...(facts.timeout !== undefined ? [`It stops after ${durationOf(facts.timeout)}.`] : []),
-    ...(judging.kind === 'here' ? [`${judging.tool} judges ${scored} here, with one confined judge call per pass.`] : []),
-    ...(judging.kind === 'session' ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} judged by this session in a subagent once the run is done, at best-effort isolation. ${judging.reason}`] : []),
+    ...(judging.kind === 'here' && isScored ? [`${judging.tool} judges ${scored} here, with one confined judge call per pass.`] : []),
+    ...(judging.kind === 'session' && isScored ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} judged by this session in a subagent once the run is done, at best-effort isolation. ${judging.reason}`] : []),
     ...(judging.kind === 'session' && judging.verified ? [`${listOf(judging.verified)} ${judging.verified.length > 1 ? 'ask' : 'asks'} for verified isolation, so that work stays open for another driver.`] : []),
-    ...(judging.kind === 'elsewhere' ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} not judged on this machine. ${judging.reason}`] : []),
+    ...(judging.kind === 'elsewhere' && isScored ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} not judged on this machine. ${judging.reason}`] : []),
+    ...(judging.kind === 'here' && isConfined ? [`${judging.tool} runs ${confined} here, confined to the directory ${oneConfined ? 'it answers' : 'each answers'} from.`] : []),
+    ...(judging.kind === 'session' && isConfined ? [`A fresh subagent of this session runs ${confined}, reading only ${oneConfined ? 'its' : 'each one\'s'} directory, at best-effort isolation, unless ${oneConfined ? 'it asks' : 'one asks'} for verified isolation, which another driver runs.${isScored ? '' : ` ${judging.reason}`}`] : []),
+    ...(judging.kind === 'elsewhere' && isConfined ? [`${confined} ${oneConfined ? 'does' : 'do'} not run on this machine.${isScored ? '' : ` ${judging.reason}`}`] : []),
     ...(description.invoke === 'ask' ? ['The team asks that you agree before it starts.'] : []),
   ];
 }

@@ -6,7 +6,7 @@ import { expect } from 'vitest';
 import { AgentSession } from '../../session-flow/agent-session.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../../session-flow/sync.js';
 import type { LocalConfig } from '../../types.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { leaseNext, reportAttempt, startRun } from '../../workflow/engine.js';
 import { updateRun } from '../../workflow/store.js';
 import type { DriverIdentity, RunState } from '../../workflow/types.js';
@@ -170,7 +170,7 @@ export function team(workflows: Record<string, string> = { build: BUILD }, files
         additionalRoles: [],
         dataHome: path.join(home, 'data'),
       };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout, driver: { kind: 'local', machine: name, workspace: checkout } };
     },
     change: (changes) => {
@@ -191,7 +191,7 @@ export function team(workflows: Record<string, string> = { build: BUILD }, files
 /** Brings the member's team clone up to origin and syncs its workflow cache, as a pull does. */
 export async function pull({ config }: Member): Promise<void> {
   git(config.repo.localPath, 'pull', '-q', '--ff-only');
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
 }
 
 /** Every file of the member's workflow cache, with its content. */

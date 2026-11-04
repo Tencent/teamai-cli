@@ -43,8 +43,9 @@ The Overview's **Member settings** panel lists, for the selected workspace, each
 | `workflows.tools.default` | `codex` | This machine, `~/.teamai/config.yaml` | — |
 | `recallEnabled` | `false` | This workspace, `~/.teamai/projects/<slug>/config.yaml` | This machine `true`, Team `false` |
 | `updatePolicy` | `skip` | User config, `~/.teamai/config.yaml` | This workspace `auto`, not used |
+| `workflows.retention` | `7d` | This machine, `~/.teamai/config.yaml` | Team `30d`, This workspace `2 weeks`, not used |
 
-`not used` marks this workspace's own `updatePolicy` or `autoCompactTokens` when the user scope decides them. `scoring` is not listed, because the machine's only makes judging stricter: Session sharing shows what set each mode and the daily limit. **Not read** lists the keys of a `~/.teamai/config.yaml` with no user-scope install that are not member settings, such as `excludedSkills`. Pick another workspace in the sidebar to compare. The panel changes no setting: edit the file it names.
+`not used` marks this workspace's own `updatePolicy` or `autoCompactTokens` when the user scope decides them, and a value teamai skips, such as a `workflows.retention` that is not a duration. `scoring` is not listed, because the machine's only makes judging stricter: Session sharing shows what set each mode and the daily limit. **Not read** lists the keys of a `~/.teamai/config.yaml` with no user-scope install that are not member settings, such as `excludedSkills`. Pick another workspace in the sidebar to compare. The panel changes no setting: edit the file it names.
 
 ## Workflow Runs
 
@@ -54,14 +55,57 @@ The Workflow Runs page has three lists for the selected workspace. **Local runs*
 
 | Row | What it needs | Next step |
 |---|---|---|
-| `release` · Offered · alice | Needs a person: only a person can answer the approval at ship | `teamai workflow resume <run> --claim`, run by a person |
+| `release` · Offered · alice | Needs a person now: only a person can answer the approval at ship | `teamai workflow resume <run> --claim`, run by a person |
+| `review` · Offered · chen | May need a person at `pair`, `review.fix`: a runner takes it, and offers it again if it reaches one | `teamai workflow resume --next`, or `teamai workflow resume <run> --claim` for a person to take it over now |
 | `ship-issue` · Offered · alice | Nothing: a runner can finish it | `teamai workflow resume --next`, in a checkout of that repository |
 | `release-docs` · Offered · alice | A runner needs: env `SIGNING_KEY`, a tool for notes. Not on this machine: sign requires env SIGNING_KEY, which has no value here → set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY | `teamai workflow resume --next`, in a checkout of that repository |
 | `nightly-report` · Held · bob | — | `teamai workflow resume <run> --claim` takes it over from bob |
 
 On the install that offered a run, the next step is `teamai workflow resume <run>` instead, which takes it back there. A local run that is offered, or that another install now holds, says so under its status. **A runner needs** (**Their machine needs** on a run that needs a person) lists the `requires.env` keys and prompt steps of the steps left: set those up on the runner, as [its job](workflow.md#take-offered-runs-from-ci) does. **Not on this machine** is what this machine lacks of them, as `teamai workflow resume` lists it as `cannot run here`. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.
 
-The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt. Each pass names its harness, such as `claude · claude-sonnet-5-5 · review step role · 3bb7751`. A pass whose harness differs from the previous pass of its step says what changed, such as `model changed: claude-sonnet-5-5 → claude-opus-5-5` under `review` pass 2. Each pass's scores show the label, and the stage that decided it when that was not the judge, such as `delivered: partial  Pull request CI`. The run's judge count leaves those labels out. The details of a [benchmark](benchmarks.md) run that ended show its results, usage and task × arm tables, as the CLI prints them.
+The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt. Each pass names its harness, such as `claude · claude-sonnet-5-5 · review step role · 3bb7751`. A pass whose harness differs from the previous pass of its step says what changed, such as `model changed: claude-sonnet-5-5 → claude-opus-5-5` under `review` pass 2. A skipped step of a run on this machine shows why under its status, such as `Step "label" was skipped: its if is false: steps.check.outcome == 'failed'` or `Step "ship" was skipped: it needs "test", which failed.` Each pass's scores show the label, its score, and what decided it: `Judge`, `Scorer check`, `Pull request CI`, `Protected paths` or `Hand label`, such as `delivered: partial · score 0.5  Pull request CI`. The run's judge count counts each judge label, a batch's tokens once, and each failed judge attempt with the tokens it spent, and leaves out the labels a stage decided. The **Branches** of a settled local run show what happened to its [branches](workflow.md#the-branches-a-run-leaves): for a run that succeeded, the ones it kept and why (`Pull request`, `Final copy`), the ones it deleted, and any it could not delete, which `teamai doctor --fix` tries again. For a failed or cancelled run, they list the branches kept for inspection, and from when `doctor --fix` removes them under `workflows.retention`, with the file that set it. The details of a [benchmark](benchmarks.md) run that ended show its results, usage and task × arm tables, as the CLI prints them.
+
+On a local run, a pass this machine judges also lists each scorer that has no label, and why:
+
+```text
+review-quality: good · score 1  Judge
+test-coverage: bad · score 0  Hand label
+style: Failed · judge_answer_invalid
+  The judge's answer did not match the scorer's answer schema, so no label was written. Check the scorer's labels, then judge it again.
+  teamai score --run raa1e5b63a680fc90 --step review --pass 1 --scorer style
+docs: Judging in r8fd8dc67cfd476f5 since 11/3/2026, 1:04:43 PM
+naming: Not sampled at 0%
+Score runs: rd9b944dbf01dff5a Succeeded · r8fd8dc67cfd476f5 Running
+```
+
+| State | What it means | What to do |
+|---|---|---|
+| Not judged yet | The scorer samples the pass, and no `teamai-score` run has taken it yet. | Wait for the run to settle. A `start: workflow` step is judged when its workflow runs `teamai score subjects`. |
+| Not sampled at 20% | The scorer's `samplingRate` left the pass out. | Nothing, or judge it anyway with the command shown. |
+| Judging in `<run>` | That `teamai-score` run holds the scorer and has not ended. | Open the run to see which of its steps waits. |
+| Waiting for CI | The pull request's CI has not finished. Waiting is not a lapse. | Nothing: the next `teamai-finished-sessions` judges it once CI has. |
+| Lapsed 3/4 · expires `<time>` | Score runs ended that many times without labelling it. | Nothing: the next `teamai-finished-sessions` starts it again, until the fourth lapse or the expiry. Or judge it now with the command shown. |
+| Failed · `<code>` | The attempt ended with that code, and automatic judging does not start it again. The sentence under it says why. | Fix the cause it names, then run the command shown. |
+| Expired | It was not judged within 14 days of the run's last change. | Judge it with the command shown. |
+
+The command starts `teamai-score` with demand `named`, which opens a failed or expired scorer again. Run it from your own terminal. Each score run of the pass opens its own details, though Local runs leaves `private` runs such as `teamai-score` out.
+
+**Judging on this machine**, below Local runs, says whether judging keeps up:
+
+```text
+Labels this week 3 · 33% passed   Judge tokens this week 1,992   Judging now 1 · 1 Not judged yet
+Waiting for CI 1                  Lapsed 1 · 0 Expired           Failed 1 · judge_answer_invalid 1
+Decided by  Judge 1  Pull request CI 1  Hand label 1
+Session launches per day  daily_limit 10   0  3  0  6  0  10  2
+Missing labels
+RUN            PASS       SCORER     WHY
+ship           change #1  delivered  Waiting for CI
+review-change  review #1  style      Failed · judge_answer_invalid   teamai score --run raa1e5b63a680fc90 --step review --pass 1 --scorer style
+```
+
+- The labels and judge tokens cover every label this machine wrote in the last 7 days, benchmark labels included. A judge call that failed wrote no label, so its tokens are not counted.
+- The states count the scorers of the passes Local runs lists. **Missing labels** lists up to 25 of them, newest run first, and leaves out the ones sampling left out.
+- **Session launches per day** counts this machine's session judge launches on each local day against `daily_limit`. A day at the limit is amber. A session someone asked for by name counts, and is never refused.
 
 A waiting approve or choose request can be answered from the run's details. The answer goes through the same `respond` operation as the CLI, with channel `dashboard` and `agent: false`, so it can answer a required approval. A dashboard started inside an agent session records `agent: true`, as an answer from that shell would, and cannot answer a required approval. It carries the pass the page showed: if that request was answered or replaced in the meantime, the page shows the refusal and reloads. Another website cannot send an answer. A request without an `Origin` header, such as a plain `curl`, is refused too. This marks an answer as sent from a browser; it does not stop a local script that sets the header.
 
@@ -202,7 +246,7 @@ The panels above are the **Arms** tab. Two more tabs answer what changed between
 How the numbers are counted:
 
 - A pass rate is passed trials over planned trials, as the run's own table prints it.
-- The pooled numbers, the task tables and the leader count only the runs of the suite's current version: the suite files of its newest run. **Pass rate per run** also draws the older runs, after a dashed `Suite changed` line.
+- The pooled numbers, the task tables and the leader count only the runs of the suite's current version: the suite files of its newest run of all its tasks and arms, so a `--task` or `--arm` run does not replace it. **Pass rate per run** also draws the older runs, after a dashed `Suite changed` line.
 - An arm is its name, tool, model, effort, team assets, workflow and role. Each arm with a role shows it under its name, such as `review role`. When one of them changed, the older runs are a separate line, marked `earlier configuration`.
 - Each arm with a role also shows the role's pass rate in production: the Scorers labels whose role is the same, in the Scorers page's window and measurement, with their 95% interval and whether the role ran as a workflow step's own (`step`), the member's (`member`) or `both`, as By Role says. Beside `review` at 2/2 it reads `In production: 100% 1/1 · 95% 21%–100% · not separated · step · review-quality · 30 days Scorers ↗`. `not separated`, and a rate not in bold, mean that interval overlaps the arm's: these labels do not tell production apart from the benchmark. **Scorers ↗** opens Scorers grouped by Role on `review`. A role with no labels says `no labels for this role`.
 - **Pass rate by arm** also counts the arm's deviations and trials not verified over those runs, as each run's table counts them. A deviation is a trial whose prompt ran on another tool, model, team revision or role than its arm's.

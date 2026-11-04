@@ -30,6 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | A label passes when its score is at or above this. |
 | `samplingRate`, `model`, `isolation` | Optional. Percent of passes judged, 0 to 100, default 25. The judge's model: a team [model alias](sharing.md#model-aliases), resolved per judge tool, or a model name, which goes unchanged to the first judge tool; default the tool's. `verified` or `best-effort`. |
 | `sessions` | Optional. `true`: the scorer also judges [finished sessions](#finished-sessions). |
+| `stages` | Optional. Which [stages](#score-what-a-run-delivered) may decide the scorer before its judge: some of `check`, `ci` and `protected`. Default all three. |
 
 The text after the frontmatter is the judge's prompt. `teamai pull` caches valid scorers, which `teamai status` lists, and warns about the rest. `teamai review --branch` fails on a malformed scorer, on a model alias the branch's `models/aliases.yaml` maps for no tool, on any file in `scorers/` other than `<name>.md`, `<namespace>/<name>.md`, `scoring.yaml` and `README.md`, on a `scoring.yaml` with a key or value it does not know, and on a credential or internal address in any file there, as it does for rules.
 
@@ -58,7 +59,7 @@ aliases:
     claude: haiku
 ```
 
-Judge tools are tried in order, and the first whose entry gives a model judges. When none does, `score --next` lists the work under `skipped` with the reason and leaves it open for a driver whose tools can, and `teamai doctor` warns about the scorer. A member's `~` entry for the tool sends it to the tool's default model. So does an active `teamai models switch`, except that Claude keeps `opus`, `sonnet` or `haiku` and routes it through the switch; a switch also drops the alias's effort. CodeBuddy judges run without the alias's effort.
+Judge tools are tried in order, and the first whose entry gives a model judges. When none does, the judge step of its teamai-score run waits for a driver whose tools can, and `teamai doctor` warns about the scorer. A member's `~` entry for the tool sends it to the tool's default model. So does an active `teamai models switch`, except that Claude keeps `opus`, `sonnet` or `haiku` and routes it through the switch; a switch also drops the alias's effort. CodeBuddy judges run without the alias's effort.
 
 Each label records what judged:
 
@@ -66,12 +67,15 @@ Each label records what judged:
 "judge":{"kind":"model","tool":"claude","model":{"requested":"haiku","reported":"claude-haiku-4-5","alias":"fast"},"isolation":"verified","access":"read"}
 ```
 
-`requested` is the model the judge was launched with, or the one the lease named for a driver's judge. `reported` is the one the tool reports, or the submission's `judge.model`. `alias` stays when the tool default judges. An alias effort adds `"effort":{"requested":"low"}`.
+`requested` is the model the judge was launched with, or the one a driver's report of the judge step names in `confined.model`. `reported` is the one the tool reports. `alias` stays when the tool default judges. An alias effort adds `"effort":{"requested":"low"}`.
 
 ## Score a step
 
 ```yaml
 # workflows/review-and-fix.yaml
+schemaVersion: v1alpha1
+name: review-and-fix
+description: Review the change, judged by review-quality.
 steps:
   - id: review
     prompt: Review the change.
@@ -83,20 +87,68 @@ A name with no valid `scorers/<name>.md` fails `teamai review --branch`; `teamai
 ## A run and its judge
 
 ```console
-$ teamai workflow start review-and-fix --driver local     # the run settles; judging never holds it
-$ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
-{"data":{"lease":{"ref":"s5d1e07c2a9b4a/a91c0d7e0","subject":{"runId":"r3f9…","step":"review","pass":1},
-  "evidence":"…/scores/evidence/a91c0d7e0/","prompt":"…/prompt.md","answer":{"schema":{…}},
-  "submit":"teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin"}}}
-$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
-{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
+$ teamai workflow start review-and-fix --driver local     # attended: each scored pass gets its own teamai-score run
+ℹ run:r3f9…:review:1: review-quality good (teamai-score run r7c2…).
+{"data":{"done":{"run":"r3f9…","outcome":"succeeded",…}}}
 ```
 
-`samplingRate` picks the succeeded passes to judge, the same way on every machine. `workflow next` never hands out judge work. `--lease <ref>` judges here with the tool the lease names, in a [confined profile](#isolation), and settles the lease like any driver's answer. A failed judge leaves the lease open. A step whose `scorers` sets `sampling: all` is the exception: its scorers judge every succeeded pass, and the run waits for them before its `finally` steps and its end, while `workflow next` answers `wait` with `judging`, the judge entries still open. The local driver judges them itself and settles a failed judge at once; another driver's are judged with `teamai score --next` on the install that ran them. A [benchmark](benchmarks.md) judges its trials this way.
+When a pass of a scored step settles, the `workflow report` that settles it (`workflow next` for a `workflow:` step) starts one [`teamai-score`](#the-teamai-score-workflow) run for that pass, with `demand: auto`, and lists it in `started` on every answer until that run ends. The scored run's driver drives it as its own run. The scored run's steps and `finally` never wait for it, and it never changes the run's outcome:
+
+```console
+$ teamai workflow report r3f9… --json '{"attempt":"…","revision":3,"outcome":"success","driver":{…}}'   # your own driver
+{"data":{"accepted":true,…,"started":[{"run":"r7c2…","step":"review","pass":1,"scorers":["review-quality"]}]}}
+$ teamai workflow next r7c2… --json '{"driver":{…}}'                                                   # drive it as any run
+```
+
+| Driver | Who starts the run | Who drives it | `--no-judge` |
+|---|---|---|---|
+| `local`, attended | the report that settles the pass | `workflow start` or `resume`, before it returns, so the label is written by then | no such option |
+| `local`, unattended | the same | the same, before the [drain](#drain-before-an-unattended-job-ends). Before this release the drain judged the pass | no such option |
+| `skill` | the same | the skill driver, as a child run: its commands in the background runner, its judge as the agent's judging reference says | the run starts and stays running for `teamai workflow resume <run>` |
+| `none`, or your own | the same | your driver, with `workflow next` and `report` on the run id in `started` | no such option |
+
+`samplingRate` picks the succeeded passes to judge, the same way on every machine; a teamai-score run for a pass it does not pick ends with no label. A step whose `scorers` sets `sampling: all` has every succeeded pass judged, whatever its scorers sample, by a teamai-score run of its own as above, and its run ends without waiting for them. A [benchmark](benchmarks.md) sets it with `start: workflow`, and judges its trials with its own `score` step.
 
 The label records `used.skills`, the team skills the pass or its subagents loaded, found as for [a session](#score-a-session) from what the checkout held as teamai delivered it when the pass started. A `workflow:` step's label lists every skill its child passes recorded, and has no `used` when none of them recorded one.
 
-The evidence directory holds `evidence.json`, `prompt.md`, `diff.patch` when a range was recorded, `repo/` (tracked files at the judged commit, symlink targets stored as text), `transcripts/` (with readable subagents) and `outputs.json`. Every file is redacted, including the values of the secrets the team declares in `env/secrets.yaml`. A tracked file that is not text is left out and listed under `omitted`. Missing evidence is listed as gap codes. It is removed when the lease settles or lapses.
+The evidence directory holds `evidence.json`, `prompt.md`, `diff.patch` when a range was recorded, `repo/` (tracked files at the judged commit, symlink targets stored as text), `transcripts/` (with readable subagents) and `outputs.json`. Every file is redacted, including the values of the secrets the team declares in `env/secrets.yaml`. A tracked file that is not text is left out and listed under `omitted`. Missing evidence is listed as gap codes. It is written under the teamai-score run's directory.
+
+### Labels before the next step
+
+`scorers.start: workflow` leaves the scoring of a step's passes to the workflow's own steps. teamai starts no teamai-score run for them. `teamai score subjects` lists them, and a `workflow: teamai-score` step labels each. Pull warns on such a step that no `workflow: teamai-score` step after it reads `teamai score subjects --step` for: its passes are then scored only after the run ended, by the next `teamai-finished-sessions` that `teamai score --drain` or a session start runs:
+
+```yaml
+# workflows/fix-until-good.yaml
+schemaVersion: v1alpha1
+name: fix-until-good
+description: Fix a change, and revise it once when its review label is not good.
+inputs: { task: string }
+steps:
+  - id: fix
+    prompt: "{{ inputs.task }}"
+    workspace: new
+    scorers: { names: [review-quality], sampling: all, start: workflow }
+  - id: subjects
+    needs: [fix]
+    if: steps.fix.outcome != 'skipped'
+    command: teamai score subjects --run "$RUN" --step fix
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [string] }
+  - id: score
+    needs: [subjects]
+    for_each: steps.subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    timeout: 1h
+    continue_on_failure: true
+  - id: revise
+    needs: [fix, score]
+    if: steps.score.results[0].outputs.labels[0].outputs.labels[0].label != 'good'
+    prompt: The review of this change did not score good. Address what it asks for, with tests.
+    workspace: continue
+```
+
+`revise` runs only after `fix`'s label is written, and only when it is not `good`; a label that is missing reads `null`. `teamai-score`'s own `timeout`, 336h, binds it as a step too, and the shorter of the two ends it, so the step sets a shorter one, with `continue_on_failure: true`.
 
 ### The harness a label judged
 
@@ -164,26 +216,23 @@ The harness comes from the label, so it stays after the run file is deleted. `Ha
 
 ## Any driver
 
-A driver runs its own judge on `prompt.md`, with the evidence directory as its only readable root, and submits the answer:
+A driver drives each teamai-score run in `started` with `workflow next` and `report`, as any run. Its command steps run in the place `workflow next --prepare` gives them, with the lease's `env`. Its judge step is a confined prompt: the driver runs its own judge on it, with the evidence directory as its only readable root, and reports the answer and what judged:
 
 ```console
-$ teamai score --next --json '{"driver":{"kind":"t3","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":[]}'
-$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin <<'JSON'
-{"driver":{"kind":"t3","machine":"m1","workspace":"/work"},"outcome":"success",
- "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"claude"}}
-JSON
-{"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,"agent":{"v":1,"tool":{"name":"claude",…},…},…},"published":true}}
+$ teamai workflow next r7c2… --prepare --json '{"driver":{"kind":"t3","machine":"m1","workspace":"/work","can":{"confined":[{"level":"verified","access":"read","tools":["claude"]}],"workspace":["team"]}}}'
+$ teamai workflow report r7c2… --json '{"attempt":"…","revision":5,"outcome":"success","driver":{…},
+ "outputs":{"answer":{"label":"good","reasoning":"…"}},"confined":{"tool":"claude","isolation":"verified","access":"read"}}'
 ```
 
-With `run`, `score --next` finds the run's scope by its id, so a driver can ask from the run's worktree or from outside the checkout the run started in, and judge and submit its lease from there too. To judge one session by id, lease it with [`score --session`](#with-your-own-judge).
+`workflow next` finds a run's scope by its id, so a driver can drive it from outside the checkout the run started in. To judge one session by id, start its run with [`score --session`](#with-your-own-judge).
 
-| `can.judge` | Meaning |
+| `can.confined` entry | Meaning |
 |---|---|
-| `isolation` | `verified` or `best-effort`. Only work whose [required level](#isolation) it meets is leased. A [session you lease by id](#with-your-own-judge) that asks for more fails `isolation_unmet`. |
-| `access` | What the judge can do: `answer` (no tools), `read` (reads the evidence) or `full` (any tool), the default. Labels record it. |
-| `tools` | In your order of preference. The first that resolves the scorer's model wins. |
+| `level` | `verified` or `best-effort`. A judge step is leased only to a driver that offers the [level](#isolation) its scorers need. |
+| `access` | What the judge can do: `answer` (no tools), `read` (reads the evidence) or `full` (any tool). Labels record it. |
+| `tools` | The tools your judge runs. |
 
-An answer's `decided` lists the labels a stage gave [a delivered pull request](#score-what-a-run-delivered) while the lease was looked for; they need no judge. A label the scorer does not list is refused, and the lease stays open. `running` lists the refs you still judge, which renews them; a lease lapses 30 minutes after it was taken or renewed. Never list a judge ref in `workflow next`'s `running`: it answers `judge_lease` and changes nothing. `run`, a run id, takes only that run's workflow passes and never a session. `canTakeLease: false` renews `running` and takes nothing. `teamai score --help` has every field.
+`confined` in the report says what judged: `tool`, `isolation` and `access`, and optionally `model`, `effort` and `usage`. The label records it. An answer with a label the scorer does not list fails the pass `judge_answer_invalid` and writes no label; [`teamai score --run`](#on-demand) judges it again. `teamai workflow next --help` and `teamai workflow report --help` have every field.
 
 Your driver names the team skills a pass loaded when it reports the pass, and the pass's labels carry them:
 
@@ -196,11 +245,23 @@ Names only: a value that is not a skill name, such as a path, is dropped. A repo
 ## On demand
 
 ```console
-$ teamai score --run r3f9… --scorer review-quality                                   # the one step that lists it, latest succeeded pass
-$ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --queue     # any driver's --next takes it
+$ teamai score --run r5863… --scorer review-quality                                        # the one step that lists it, latest succeeded pass
+ℹ Run rd4894… started. If it stops before it ends, continue it with: teamai workflow resume rd4894…
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/d3ce….md
+$ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --driver none   # any driver's workflow next takes it
 ```
 
-`--step` is optional when one step of the run with a succeeded pass lists the scorer. Otherwise the error names the steps to pick from. Sampling does not apply, and judge work that failed or expired opens again. A scorer the run pinned judges with that rubric; any other scorer `teamai pull` cached, with its current one. Without `--queue`, the first judge tool on PATH runs, preferring the tool that ran the pass. An unknown run, step, pass or scorer fails and lists the ones that exist. A scorer whose model no judge tool here runs fails `judge_model_unavailable` and stays open. The error's `labels` lists what the other scorers labelled.
+`--run`, `--session` or `--team-session` with `--scorer` starts [`teamai-score`](#the-teamai-score-workflow) for that pass or session on the local driver, and prints the labels it wrote. `--driver none` only starts the run, for any driver's `workflow next`; it replaces `--queue`. `--step` is optional when one step of the run with a succeeded pass lists the scorer. Otherwise the error names the steps to pick from. Sampling does not apply, and judge work that failed or expired opens again. `--run` reads each scorer at the team commit the run started from, with the changes the checkout had past it, so a rubric edited during the run does not change the label; a session takes any scorer `teamai pull` cached, with its current one. An unknown run, step, pass or scorer fails, lists the ones that exist, and starts no run.
+
+A scorer left without a label makes the command exit 1 with its code, and `labels` lists what the others got:
+
+```console
+$ teamai score --run r2907… --scorer review-quality --scorer style   # style asks for model alias fast, which maps only codex
+ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/c6cb….md
+{"error":{"code":"judge_pending","message":"Run rffc… left the judge of style open for a driver that can run it: … The run waits for one until its timeout, and teamai score --drain lists it. Kept the label of review-quality: good.","labels":[…]}}
+```
+
+When only a judge step no tool here can take is left, such as one whose model no tool here runs, or a `verified` scorer with no verified judge here, the code is `judge_pending`, and the run stays open for a driver that can take it. A scorer another `teamai-score` run is still judging gets `not_planned`.
 
 A pass whose commits or recorded session are gone from this machine fails before any judge, and no label is written:
 
@@ -215,6 +276,9 @@ A step with `deliver: pr` hands its work to review as a pull request. A scorer o
 
 ```yaml
 # workflows/ship-issue.yaml
+schemaVersion: v1alpha1
+name: ship-issue
+description: Make the change an issue asks for, and deliver it as a pull request.
 inputs: { issue: number }
 steps:
   - id: read-issue
@@ -252,6 +316,21 @@ The stages run in this order, and the first that fails decides:
 | Pull request CI | The CI of the delivered commit finished and failed. GitHub: any check run that failed, timed out or needs action, or a failed commit status. GitLab: the newest pipeline failed. | `ci` |
 | Protected paths | The pass changed a path the run protects, so the step failed with `protected_path` and delivered nothing. | `protected` |
 
+A scorer's `stages` picks which of them may decide it, when `teamai-score` labels the pass. `clarity` neither waits for CI nor is decided by it:
+
+```markdown
+---
+stages: [protected]
+labels:
+  - { value: clear, score: 1, description: The change reads clearly. }
+  - { value: unclear, score: 0, description: It does not. }
+passingScore: 1
+---
+Judge whether the change is easy to read.
+```
+
+On a step with `scorers: [clarity, delivered]` and CI still running, `clarity` is judged at once and `delivered` waits for CI. A failed CI decides `delivered`, not `clarity`.
+
 The failing label is the highest one below `passingScore`, here `partial`. No judge is launched and no tokens are spent. When every stage passes, or any CI check is still running, there are no checks, or the origin is not GitHub or GitLab, the judge decides and the label says `"decidedBy":"judge"`. A scorer without `check` skips that stage. A pass that changed nothing delivered no commit, so its check and CI are skipped too.
 
 The judge of a delivering step also reads the run's inputs (`inputs.json`) and the outputs of every step, so it can compare the pull request with the issue `read-issue` returned.
@@ -274,22 +353,25 @@ $ teamai score --run r3f9… --scorer delivered
 {"error":{"code":"check_could_not_run","message":"The check of scorer delivered, `npm test`, could not run on commit 4be1c0d… (not_found). Fix the check, then run this command again. No label was written."}}
 ```
 
-`score --next` closes that entry with `check_could_not_run` and the same reason. A scorer with a `check` is never [batched](#batching) with others, since its check runs alone. Two passes of one step that delivered two pull requests get a label each, told apart by `subject.pass`.
+The teamai-score run of an automatic pass fails it with `check_could_not_run` and the same reason. A scorer with a `check` is never [batched](#batching) with others, since its check runs alone. Two passes of one step that delivered two pull requests get a label each, told apart by `subject.pass`.
 
 [The Scorers page](dashboard.md#scorers) shows how many labels each stage decided.
 
 ## Score a session
 
 ```console
-$ teamai score --scorer review-quality          # inside an agent session: scores that session
+$ teamai score --session 7c1e… --scorer review-quality          # in your own terminal
 ℹ Scoring claude-code session 7c1e… in /work/app
 ℹ First prompt: Add retries to the client
+ℹ Run r2b7… started. If it stops before it ends, continue it with: teamai workflow resume r2b7…
 ℹ review-quality: bad (score 0, did not pass). Reasoning: ~/.teamai/scores/reasoning/9f2c….md
 ℹ To share what went wrong, ask your agent to read ~/.teamai/scores/reasoning/9f2c….md and share it with the team (teamai contribute --session-id 7c1e…).
 $ teamai score --session 7c1e… --source codex --scorer review-quality --push
 ```
 
-Outside a session, pass `--session <id>`. Scoring never guesses the session. `--source` takes the platform names of `teamai session migrate --source`. Leave it out when an agent session variable such as `CLAUDE_CODE_SESSION_ID`, or the session's captures, name one platform. The judge reads the redacted session with its subagents' transcripts, and sampling does not apply. Its `evidence.json` lists `skills`: `available`, the team skills the captures show teamai delivered, each with its skills `namespace` (`namespaceUnknown` when two identical copies cannot be told apart) and its `description` (left out when the frontmatter does not parse), and `used`. A session captured by an older release has the `skills_unknown` gap instead.
+To score the session you are in, ask its agent ("score this session with review-quality"). It runs [`/teamai-share-session`](workflow.md#teamai-share-learnings-and-teamai-share-session), whose `teamai-score` step judges the session in a background judge or a fresh subagent, never in the agent's own context. `teamai score` run by the agent answers `invoke_denied`.
+
+Pass `--session <id>`: scoring never guesses the session. `--source` takes the platform names of `teamai session migrate --source`. Leave it out when the session's captures name one platform. The judge reads the redacted session with its subagents' transcripts, and sampling does not apply. Its `evidence.json` lists `skills`: `available`, the team skills the captures show teamai delivered, each with its skills `namespace` (`namespaceUnknown` when two identical copies cannot be told apart) and its `description` (left out when the frontmatter does not parse), and `used`. A session captured by an older release has the `skills_unknown` gap instead.
 
 The judge reads at most 200,000 characters of a session. A session scorer that names a cheaper [model alias](#choose-the-judges-model) keeps a long session cheap to judge.
 
@@ -299,12 +381,13 @@ The label is kept in the scope the session ran in, from whichever directory you 
 
 A judge is a model, and a model can be wrong. Label a few sessions yourself, and the [Scorers page](dashboard.md#scorers) shows how often the judge agrees with you.
 
-The agent just said the retry loop is fixed, and it is not. Still inside the session:
+The agent just said the retry loop is fixed, and it is not. In your own terminal:
 
 ```console
-$ teamai score --scorer review-quality --label missed-bug --push
+$ teamai score --session 7c1e… --scorer review-quality --label missed-bug --push
 ℹ Labelling claude-code session 7c1e… in /work/app
 ℹ First prompt: Fix the retry loop in sync.ts
+ℹ Run rfc5… started. If it stops before it ends, continue it with: teamai workflow resume rfc5…
 ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
 ```
 
@@ -317,11 +400,30 @@ $ teamai score --session 7c1e… --source claude-code --scorer review-quality --
 A value the scorer does not list fails, and nothing is written:
 
 ```console
-$ teamai score --scorer review-quality --label flaky
+$ teamai score --session 7c1e… --scorer review-quality --label flaky
 {"error":{"code":"label_invalid","message":"\"flaky\" is not a label of scorer review-quality. Use one of: good, partial, missed-bug."}}
 ```
 
-`--label` takes one `--scorer`, a name `teamai pull` cached. The label's `score` and pass come from the scorer, as for a judge's label, and it has no reasoning file. It is stored and published as a judge's label is, with `judge: { kind: "human" }`. A hand label and a judge's label of the same session are kept side by side: rescoring with the judge never replaces a hand label. When several members label one session by hand, the newest hand label is the one counted.
+A hand label is the person's. Run by an agent, the command answers `invoke_denied` and writes nothing:
+
+```console
+$ teamai score --session 7c1e… --scorer review-quality --label good       # in the agent's shell
+{"error":{"code":"invoke_denied","message":"Workflow \"teamai-score\" has invoke: deny, so no coding agent starts it, with any driver, and this command runs inside an agent session (CLAUDE_CODE_SESSION_ID is set). The person runs teamai score --session 7c1e… --source claude-code --scorer review-quality --label good in their own terminal, and the agent judges this session with /teamai-share-session."}}
+```
+
+`--label` takes one `--scorer`, a name `teamai pull` cached, and is checked before any run starts. `teamai-score` then skips the stages and the judge. The label's `score` and pass come from the scorer, as for a judge's label, and it has no reasoning file. It is stored and published as a judge's label is, with `judge: { kind: "human" }`. A hand label and a judge's label of the same session are kept side by side: rescoring with the judge never replaces a hand label. When several members label one session by hand, the newest hand label is the one counted.
+
+`--label` labels a session. To label a workflow pass by hand, start `teamai-score` from your own terminal with the label in its inputs. The subject is `run:<run id>:<step path>:<pass>`:
+
+```console
+$ teamai score --run r24df… --step review --pass 1 --scorer review-quality --label missed-bug
+{"error":{"code":"invalid_arguments","message":"--label labels a session. To label pass 1 of step review of run r24df… by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs '{\"subject\":\"run:r24df…:review:1\",\"scorers\":[\"review-quality\"],\"label\":\"missed-bug\",\"batch\":false,\"demand\":\"named\"}'"}}
+$ teamai workflow start teamai-score --driver local --inputs '{"subject":"run:r24df…:review:1","scorers":["review-quality"],"label":"missed-bug","batch":false,"demand":"named"}'
+ℹ Run re440… started. If it stops before it ends, continue it with: teamai workflow resume re440…
+{"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}],"written":["9c41…"]}}]}},"cancelled":[]}}
+```
+
+The label is stored with `judge: { kind: "human" }`, and the run's `publish` step sends it to `teamai-reports`, as for a session.
 
 ### A session a teammate pushed
 
@@ -374,20 +476,15 @@ $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021
 
 ### With your own judge
 
-A driver that judges with its own tool, such as a Cursor session or an orchestrator, leases a session instead of having it judged here. With `--json` declaring `can.judge`, as [`score --next`](#any-driver) takes it, `score --session` answers a lease. A subagent or a separate agent judges it from `prompt.md` and the evidence directory only, and the driver submits the answer:
+A driver that judges with its own tool, such as a Cursor session or an orchestrator, starts the session's teamai-score run with `--driver none` and drives it [as any driver does](#any-driver), its judge step with its own tool:
 
 ```console
-$ teamai score --session 7c1e… --source cursor --scorer review-quality \
-    --json '{"driver":{"kind":"cursor","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"best-effort","access":"read","tools":["cursor"]}}}}'
-{"data":{"lease":{"ref":"s0c4a9e2f7b1d3/a6e8f2107","source":"session","scorer":"review-quality","prompt":"…/prompt.md","cwd":"/work/app",
-  "submit":"teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin",…}}}
-$ teamai score --lease s0c4a9e2f7b1d3/a6e8f2107 --submit --stdin <<'JSON'
-{"driver":{"kind":"cursor","machine":"m1","workspace":"/work"},"outcome":"success",
- "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"cursor","model":"…"}}
-JSON
+$ teamai score --session 7c1e… --source cursor --scorer review-quality --driver none
+{"data":{"run":"r9a1…",…}}
+$ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","machine":"m1","workspace":"/work","can":{"confined":[{"level":"best-effort","access":"read","tools":["cursor"]}],"workspace":["team"]}}}'
 ```
 
-`--source` names where the session is read, and `tools` what judges it. The lease is taken whatever sampling, the six idle hours, `scoring.sessions`, the scorer's `sessions`, an earlier label or `daily_limit` say, and counts toward the day's `daily_limit`. Several scorers share one lease with `--batch`. Nothing is taken when a scorer asks for more [isolation](#isolation) than you offer (`isolation_unmet`), when a scorer pins a model none of your tools runs (`judge_model_unavailable`: a pinned model needs a tool teamai knows, such as `cursor`), or while another live lease holds the work (`busy`). The label records your tool, `access` and the model you report.
+`--source` names where the session is read. The run judges whatever sampling, the six idle hours, `scoring.sessions`, the scorer's `sessions`, an earlier label or `daily_limit` say, and counts toward the day's `daily_limit`. Several scorers share one judge step with `--batch`. A scorer that asks for more [isolation](#isolation) than you offer leaves the judge step to a driver that offers it. The label records your tool, `access` and the model you report.
 
 ### Try a scorer file
 
@@ -397,7 +494,7 @@ $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 
 Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any judge runs. The judge runs as it does for a cached scorer, also with `--batch` and inside a session.
 
-The file's label is never stored, so the command takes no `--push`, and `--run` takes scorer names only. The output prints the label with its reasoning and `"stored": false`. Next to it, `stored` lists the newest label kept on this machine for that session and the scorer of the same name, one per rubric, so you see whether your edit changes the verdict. `control` is the file judged a second time, on the session's first prompt alone. When it passes, it carries a warning: the rubric passes a session where the agent did nothing, so it may not judge the work. It warns and never fails, since a rubric may judge the prompt by design.
+The file's label is never stored, so the command takes no `--push`, `--run` takes scorer names only, and a scorer name beside a file is refused: score it in a command of its own. The output prints the label with its reasoning and `"stored": false`. Next to it, `stored` lists the newest label kept on this machine for that session and the scorer of the same name, one per rubric, so you see whether your edit changes the verdict. `control` is the file judged a second time, on the session's first prompt alone. When it passes, it carries a warning: the rubric passes a session where the agent did nothing, so it may not judge the work. It warns and never fails, since a rubric may judge the prompt by design.
 
 A workflow or a whole team branch is tried with `teamai pull --team-ref <branch>` ([distribution](distribution.md)).
 
@@ -427,7 +524,7 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 |---|---|---|
 | `off` | Nothing. The default. | Nothing. |
 | `ask` | When the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
-| `auto` | A session is judged once nothing has happened in it for six hours, by the background judge. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
+| `auto` | A session is judged once nothing has happened in it for six hours, by the [`teamai-finished-sessions`](#teamai-finished-sessions) run a session start begins. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
 
 `skill_routing` turns on the routing questions of `#1469` for the sessions `sessions` already judges, off by default:
 
@@ -436,7 +533,7 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 skill_routing: true
 ```
 
-Each finished session then gets one generated question per team skill its own captures delivered — `teamai:routing:<skill>` for a root skill, `teamai:routing:<namespace>:<skill>` for a namespaced one — judged by the same rubric whatever the skill's description says: fit (loaded, and the session needed it) and idle (not loaded, and it did not) pass, extra (loaded where it was not needed) and missed (not loaded where it was) fail. A skill whose delivery record cannot tell its namespace gets no question: judging it could judge another skill of the same name. The questions are never sampled, always share one judge launch however many there are, and count toward the same `daily_limit`; with `batch` a session still costs one launch. The names resolve on demand too, whatever `skill_routing` says — `teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>` — but only for a skill in that session's `skills.available`, else `scorer_not_found`.
+Each finished session then gets one generated question per team skill its own captures delivered — `teamai:routing:<skill>` for a root skill, `teamai:routing:<namespace>:<skill>` for a namespaced one — judged by the same rubric whatever the skill's description says: fit (loaded, and the session needed it) and idle (not loaded, and it did not) pass, extra (loaded where it was not needed) and missed (not loaded where it was) fail. A skill whose delivery record cannot tell its namespace gets no question: judging it could judge another skill of the same name. The questions are never sampled, always share one judge launch however many there are, and count toward the same `daily_limit`; with `batch` a session still costs one launch. The names resolve on demand too, whatever `skill_routing` says — `teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>` — but only for a skill in that session's `skills.available`, else `scorer_not_found`. `teamai-finished-sessions` lists them for each finished session, and `teamai-score`'s `plan` step puts them in one group, which the team scorers join only under `batch`.
 
 Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:
 
@@ -473,15 +570,42 @@ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended
 | A session teamai launched, such as a workflow step or a judge | Nothing. It writes no capture, and its step is judged as a pass. |
 | A session of a tool teamai reads no sessions from, such as Pi | Nothing. `teamai doctor` notes each such tool the team enables, in each mode whose publish or scoring policy is not `off`. With the defaults, that is both modes. |
 
-A namespace scorer judges a session only when the roles and projects each of its starts recorded make that namespace active. `score --next` hands out workflow work first, then sessions. A session lease has `"source":"session"`, and its `cwd` is where to submit from.
+A namespace scorer judges a session only when the roles and projects each of its starts recorded make that namespace active.
 
-A session is judged once per scorer and rubric. A release, a lapse, or a local judge that fails closes it. An answer to a lapsed lease is still recorded, unless a judge has labelled the session since or [your own judge](#with-your-own-judge) leased it again. `scoring.daily_limit` in `config.yaml` sets how many sessions one data home leases per local day, 10 by default, counting those that failed or could not be read. On a fresh CI runner each job starts a new data home, so the limit caps one job, not one day. `0` turns session scoring off. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
+A session is judged once per scorer and rubric. A label or a failed judgment closes it. A lapse, such as a judge its timeout cancelled, is started again by the next `teamai-finished-sessions`, until the fourth; before this release a lapse closed it. `scoring.daily_limit` in `config.yaml` sets how many session judgings one data home starts per local day, 10 by default, each start of a lapse included and a batch of scorers on one session counted once. On a fresh CI runner each job starts a new data home, so the limit caps one job, not one day. `0` turns session scoring off. Scorers a person names count toward the limit and are never refused by it. Editing a scorer's rubric makes the captured sessions judge work again for it, and the daily limit spreads that over the following days.
 
-With `attended: auto`, you do not have to run a driver. After the pull at a session's start, when the session's project or your user scope scores sessions, teamai starts a background judge for both scopes. It judges each finished session with a judge tool installed here, stops taking work after 30 minutes, and leaves the labels pending for the next `teamai pull` to publish. Each lease is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: { attended: off }` in `config.yaml`, or in `~/.teamai/config.yaml` for every workspace on this machine.
+With `attended: auto`, you do not have to run a driver. After the pull at a session's start, teamai starts one `teamai-finished-sessions` run in each scope the session's directory reaches, its project and your user scope, that judges or archives attended sessions automatically, and drives it in a detached process. The run archives and judges each finished session with a judge tool installed here, and starts `teamai-score` again for each pass and session whose judging lapsed. So a member's session start also rescores the lapsed workflow passes of that data home. The run ends after 30 minutes. Each `teamai-score` it runs publishes its labels to `teamai-reports`; offline, they stay pending for the next `teamai pull`. A start that would find nothing starts no run, and a run already working on the data home is left to finish. Each judging is one judge call on your account, at most `daily_limit` a day. A session scorer with a cheap [model alias](#choose-the-judges-model), such as `model: fast`, keeps that cheap. To stop it, set `scoring.sessions: { attended: off }` in `config.yaml`, or in `~/.teamai/config.yaml` for every workspace on this machine.
 
-The background judge uses the tool's home that `teamai init` recorded, such as a moved `CLAUDE_CONFIG_DIR`. It does not see a credential or base URL that only your shell sets, notably on Windows. Keep those in the tool's sign-in, your user environment, or the tool's `settings.json` `env`.
+The detached run uses the tool's home that `teamai init` recorded, such as a moved `CLAUDE_CONFIG_DIR`. It does not see a credential or base URL that only your shell sets, notably on Windows. Keep those in the tool's sign-in, your user environment, or the tool's `settings.json` `env`.
 
 A teamai older than this one rejects a scorer with `sessions: true`, so update teamai on every member's machine before the team adds one. An older teamai that takes judge work on your machine, such as a driver's own copy, removes the rubrics of session leases, so update every copy there before you turn on `scoring.sessions`.
+
+### teamai-finished-sessions
+
+```text
+teamai-finished-sessions   private, invoke: deny, timeout 30m
+  sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
+  share      teamai-share-session, for each             its publish step, then its teamai-score step
+  lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored, each with its scorers
+  rescore    teamai-score, for each                     starts their judging again with those scorers only
+```
+
+A session start and `teamai score --drain` start it with `{"publish":"policy","scorers":[]}`, so the session policies decide. From your own terminal you can pass other inputs, for example to judge every finished session with one scorer and archive none, whatever the policies say:
+
+```console
+$ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publish":"never","scorers":["review-quality"]}'
+```
+
+`publish` is `policy`, `always` or `never`. `scorers` names the scorers that judge each finished session, unsampled, counted toward `daily_limit` and never refused by it; `[]` leaves that to `scoring.sessions`. A run that a session start, a drain or an agent started lists sessions only with `policy` and `[]`, and other inputs fail with `policy_override_refused`.
+
+| Clock | Set in | Default |
+|---|---|---|
+| A session counts as finished | `--idle` of the `sessions` step | 6 hours after its last activity; an unattended session once a drain reached it |
+| A run ends | the file's `timeout` | 30 minutes; what it cancels lapses, and the next run starts it again |
+| A judge no driver here takes | the `timeout` of share-session's `score` step | 30 minutes; the session stays published and its judging lapses |
+| A lapse is started again | the scoring marks | until the fourth lapse, and only within 14 days of the run's last change; with the scorers its marks hold, a named one included, unsampled and, once named, never refused by `daily_limit`, and with no scorer the session policy would add now |
+
+A team changes these in `workflows/teamai-finished-sessions.yaml` in its team repo, which replaces the default: `--idle 1h` takes a session one hour after its last activity, and `timeout` bounds a run. Steps can be added or reordered there too. What a team cannot change stays in the CLI: the automatic starts pass no agent evidence and only the policy inputs.
 
 ### Drain before an unattended job ends
 
@@ -491,21 +615,21 @@ $ teamai score --drain
 ✔ Published 1 label to teamai-reports
 ✔ Archived 1 captured session to teamai-reports (scrubbed)
 ✔ Reported usage to stats/<member>.yaml
-ℹ Left open: 1 session whose scorer pins a model no judge tool here runs (judge_model_unavailable). A driver whose tools run it takes it with: teamai score --next --json '{"driver":{…,"can":{"judge":{…}}}}'
+ℹ Left open: the judge of 1 session in run rffc…: … A driver whose tools judge it takes it with: teamai workflow next rffc… --json '{"driver":{…,"can":{…}}}'
 ```
 
-Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
+Every unattended driver ends with `teamai score --drain`. The local driver runs it at the end of an unattended run, unless publishing and scoring of unattended sessions are both `off`, or the run is a `teamai-finished-sessions` run. The skill driver, T3, Paseo and a CI script run it as their last step. It works in this order:
 
 1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
-2. It judges every open judge entry this machine can judge: sampled step passes, and sampled sessions the policies allow, within `daily_limit`. While another judge pass runs on this machine, such as the background judge, it judges nothing and says so. Run the drain again once that pass ends.
-3. It publishes every pending label, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
-4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived. The trial sessions of a [benchmark](benchmarks.md) run stay on the machine that ran it.
+2. It starts a [`teamai-finished-sessions`](#teamai-finished-sessions) run here, as a session start does, and drives it on the local driver. The run archives the finished sessions with `publish: auto` for their mode and judges the sampled ones the policies allow, within `daily_limit`. It starts `teamai-score` again for each pass and session whose judging lapsed, for each `start: workflow` pass its run left unscored, and for the open passes and sessions the upgrade carried over from judge attempts, except a pass whose run last changed more than 14 days ago. A run already working on this data home is left to it, and the drain says so: run the drain again once it ends.
+3. It publishes every pending label, and what a [`deliver: publish`](workflow.md#publish-to-a-data-branch) step left pending on a data branch, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
+4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived. The trial sessions of a [benchmark](benchmarks.md) run stay on the machine that ran it.
 5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.
-6. It prints what is left: entries whose scorer pins a model no judge tool here runs (`judge_model_unavailable`), or whose isolation this machine does not meet, and every open entry when no judge tool is installed here. Those wait for another driver's `score --next`.
+6. It prints what is left: a judge step of its run that no driver here can take, such as one whose scorer pins a model no judge tool here runs, which waits for another driver's `workflow next`, and each pass or session whose CI has not finished, which the next drain labels.
 
 A drain finishes and publishes only the sessions of its own run mode, so on a machine that is not in unattended mode, run `TEAMAI_MODE=unattended teamai score --drain` to drain unattended sessions.
 
-The drain exits 0 when nothing is left that it can do here, entries left for other drivers included. It exits 1 when a judgment, a publish or a usage report failed. A failed publish or usage report stays pending, and the next `--drain` retries it. A failed judgment is final: the drain prints it and never retries it. To ask for a new one, run `teamai score --session <id> --source <platform> --scorer <name>`.
+The drain exits 0 when nothing is left that it can do here, judging left for other drivers included. It exits 1 when a judgment, a publish, a usage report or its run failed. A failed publish or usage report stays pending, and the next `--drain` retries it. A failed judgment is final: the drain prints it and never retries it. To ask for a new one, run `teamai score --session <id> --source <platform> --scorer <name>`.
 
 Where the drain runs decides what it sees of the calling session:
 
@@ -516,25 +640,127 @@ skill:   … last turn of an unattended session → teamai score --drain  # the 
 
 As the job's last step, after the tool exits, the drain sees the session complete. From inside a session, it judges and publishes that session as it stands, and its later turns are neither judged nor published again.
 
-Runs, judge attempts and leases live in the runner's data home. A lapsed session lease or a failed judge attempt is final, and a runner killed before its drain loses that judging. A long-lived VM runs `teamai score --drain` at the end of each job.
+Runs and scoring marks live in the runner's data home, so a runner killed before its drain loses that judging. A long-lived VM runs `teamai score --drain` at the end of each job.
+
+## The teamai-score workflow
+
+`teamai score` and `teamai-share-session` label a subject by starting the [default workflow](workflow.md#default-workflows) `teamai-score`, `workflows/teamai-score.yaml` in the installed package:
+
+```text
+teamai-score   private, invoke: deny, timeout 336h
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named }
+
+plan           teamai score plan → the groups: scorers that share one judge launch and the same stages
+score          once per group:
+  evidence     teamai score evidence → the redacted evidence, in a directory of its own
+  check, ci, protected   the stages a delivered pass goes through; the first that fails decides
+  judge        a prompt confined to the evidence directory, unless a stage decided or label is set
+  label        teamai score label → each scorer's label
+  write        teamai score write → scores/labels.jsonl and the pending outbox
+  publish      teamai score publish → this member's pending labels, published to teamai-reports
+  settle       teamai score settle, after a step of the group broke
+```
+
+`subject` is `run:<run>:<step>:<pass>`, `session:<source>:<id>` or `team-session:<author>:<archive>`. The run is `private`: it and the judge's reasoning stay on this machine. `invoke: deny` keeps every agent session from starting it, so an agent never labels its own work. A score verb run outside a `teamai-score` attempt answers `score_attempt_required`.
+
+### Replace it for your team
+
+A team `workflows/teamai-score.yaml` replaces teamai's for whoever receives it. It may reword the judge prompt around the rubric and the schema, reorder the stages, or drop `ci` or `protected`:
+
+```yaml
+# workflows/teamai-score.yaml (team file): teamai's, with the ci step left out and the judge prompt reworded
+        - id: judge
+          prompt: |
+            Judge this change for our team, strictly. The rubric is in {{ steps.evidence.outputs.rubric }}.
+            Answer with the schema in {{ steps.evidence.outputs.schema }}.
+```
+
+Pull refuses a file that changes what a label means, and teamai's default runs instead:
+
+```text
+⚠ [workflows] workflows/teamai-score.yaml:1: field "invoke": sets invoke: allow, so an agent session could start it and label its own work. Set invoke: deny
+⚠ [workflows] workflows/teamai-score.yaml has no runnable version, so teamai's default teamai-score stays in effect
+```
+
+| Code | The file |
+|---|---|
+| `score_override_contract` | changes `inputs` or any `outputs`, drops `private: true`, or sets `invoke` to anything but `deny` |
+| `score_override_command` | runs a command other than a score verb with the arguments teamai's gives it, gives a verb other `env`, or adds a `finally` step or a `setup` command |
+| `score_override_workflow_step` | has a `workflow:` step other than the inline `score` |
+| `score_override_prompt` | has a prompt step not confined to a directory, or one that lists `scorers` |
+| `score_override_confined_dir` | confines the judge to a directory that is not an output of a step it needs |
+| `score_override_judge_prompt` | has a judge prompt that does not read `steps.evidence.outputs.rubric` and `steps.evidence.outputs.schema` |
+| `score_override_publish` | runs `teamai score publish` without `deliver: publish` to `teamai-reports`, or publishes to another branch |
+| `score_override_step_missing` | drops or renames `plan`, `evidence`, `judge`, `label`, `write`, `publish` or `settle`, or `check` while a scorer here has a check |
+| `default_override_alias` | is another workflow with `alias: teamai-score` |
+
+A project runs teamai's default, or the project team's file, never a user scope's `teamai-score`, and each start from the project says so:
+
+```text
+⚠ [workflows] Ignored the user scope's teamai-score from this project: teamai's default runs here. Replace it for this project in the project's team repo.
+```
+
+### Run it from your workflow
+
+```yaml
+# workflows/wrap-up.yaml (team file)
+schemaVersion: v1alpha1
+name: wrap-up
+description: Label the session that just ended with the scorers it names.
+inputs: { source: string, session: string, scorers: [string] }
+steps:
+  - id: score
+    workflow: teamai-score
+    with: { subject: "session:{{ inputs.source }}:{{ inputs.session }}", scorers: "{{ inputs.scorers }}", label: "", batch: false, demand: named }
+    timeout: 30m
+    continue_on_failure: true
+```
+
+A judge no driver here can take keeps `teamai-score` open until a timeout ends it. Its own `timeout`, 336h, binds it as a step and binds each `for_each` item, and the step's own ends it when that is shorter. Give the step a shorter `timeout` and `continue_on_failure: true`, as `teamai-share-session` does. Pull warns on a step without a timeout:
+
+```text
+⚠ [workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.
+```
+
+In a coding session, the skill driver gives up such a judge step at once, when nothing else of the run is left and `continue_on_failure` lets it.
+
+A judging run is never judged. Pull refuses `scorers:` on a step that runs `teamai-score` or `teamai-finished-sessions`, with `judging_scored`, and the file does not run:
+
+```text
+⚠ [workflows] workflows/wrap-up.yaml:1: field "steps.score.scorers": step "score" runs teamai-score and lists scorers, so its judging would be judged in turn. Remove scorers from the step
+```
 
 ## Batching
 
 ```yaml
+schemaVersion: v1alpha1
+description: Review the change, judged by two scorers in one judge call.
 steps:
   - id: review
     prompt: Review the change.
     scorers: { names: [review-quality, test-coverage], batch: true }
 ```
 
-The scorers of one pass that resolve to the same tool and model share one lease, one evidence directory and one prompt. The lease lists `scorers` and `batched: true`, and the answer has one label per scorer:
+`scorers/test-coverage.md`:
 
-```json
-{"driver":{"kind":"t3","machine":"m1","workspace":"/work"},"outcome":"success",
- "answer":{"review-quality":{"label":"good","reasoning":"…"},"test-coverage":{"label":"thin","reasoning":"…"}}}
+```markdown
+---
+labels:
+  - { value: covered, score: 1, description: Tests cover each behavior the change adds or alters. }
+  - { value: thin, score: 0.5, description: Tests cover the main path only. }
+  - { value: none, score: 0, description: No test covers the change. }
+passingScore: 1
+---
+Judge whether the tests in the diff cover what the change does.
 ```
 
-A step's `batch` wins over the workflow's `defaults.scorers.batch`, which wins over `batch` in [`scorers/scoring.yaml`](#isolation). `--batch` does the same for `--run`. Each label records `judge.batched: true`. One label a scorer does not list refuses the whole answer, and the lease stays open.
+The scorers of one pass that resolve to the same tool and model share one judge step, one evidence directory and one prompt, and the answer has one label per scorer:
+
+```json
+{"answer":{"review-quality":{"label":"good","reasoning":"…"},"test-coverage":{"label":"thin","reasoning":"…"}}}
+```
+
+A step's `batch` wins over the workflow's `defaults.scorers.batch`, which wins over `batch` in [`scorers/scoring.yaml`](#isolation). `--batch` does the same for `--run`. Each label records `judge.batched: true`. One label a scorer does not list fails the whole answer `judge_answer_invalid`, and no label is written.
 
 ## Isolation
 
@@ -577,6 +803,6 @@ A `best-effort` tool cannot judge for a scorer that requires `verified`, nor can
 | `<dataHome>/scores/reasoning/` | The judge's reasoning, one file per label. Never published. |
 | `<dataHome>/scores/raw/` | A failed local judge's output, until a later attempt replaces it. |
 | `<dataHome>/sessions/captures/` | What each session started as, written by the session-start hook. Removed a day after the session's file is gone. |
-| `scores/<member>/<YYYY-MM>.jsonl` on `teamai-reports` | Published labels, the newest per scorer, rubric, subject and judge: a person, or each model judge's tool and model. Labels wait in `<dataHome>/scores/pending/` until a push lands, and stay there while usage reporting is off. |
+| `scores/<member>/<YYYY-MM>.jsonl` on `teamai-reports` | Published labels, the newest per scorer, rubric, subject and judge: a person, or each model judge's tool and model. Labels wait in `<dataHome>/scores/pending/` until the `publish` step of `teamai-score`, `teamai score --push` or `teamai pull` finds them on `teamai-reports`, and stay there while usage reporting is off. |
 
 Labels never enter a workflow run or its record. A benchmark run freezes each trial's verdict when it ends, and its record carries the trial's result, not the label. Workflow Runs shows each pass's labels, and what judging cost apart from the run's own tokens. For a run on this machine that counts every judge attempt; for a run a member published, only the labelled ones. The dashboard's [Scorers page](dashboard.md#scorers) shows each scorer's pass rate over time and by configuration. `teamai digest --json` prints the same measurements with each failing label and the commit its work started at, which [`teamai self-improvement run`](self-improvement.md) turns into a PR.

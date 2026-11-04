@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkVerdict } from '../workflow/check.js';
-import { restoreProtected, writeAdded } from '../workflow/check-run.js';
+import { checkVerdict } from '../scorers/check.js';
+import { restoreProtected, writeAdded } from '../scorers/check-run.js';
 import type { CommandExit } from '../workflow/shell-command.js';
 
 const dirs: string[] = [];

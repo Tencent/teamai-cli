@@ -2,13 +2,14 @@
 import path from 'node:path';
 import { packagedSkillRoots } from '../../../skill-content.js';
 import type { WorkflowDescription } from '../../describe.js';
+import { offeredToPerson } from '../../handoff.js';
 import type { Judging } from '../../protocol.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import { HOST_CHOICES, HOST_PROFILES, HOST_QUESTION, type HostChoice } from './host-profiles.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral,
-  sessionJudgeLiteral, skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
+  skillResumeLiteral, takeoverLiteral, unavailableLiteral, type Invocation, type Literal,
 } from './literals.js';
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent, type Answer, type Refusal } from './transitions.js';
@@ -53,7 +54,7 @@ export interface DispatchAction {
    * `parallel`: the child may run beside other children of the run. `person`: the agent works the step itself, with the
    * person. `isolation`: the step requires a sandbox, which TeamAI does not enforce.
    */
-  needs: { place: Dispatch['place']; parallel: boolean; person: boolean; isolation?: 'sandbox' };
+  needs: { place: Dispatch['place']; parallel: boolean; person: boolean; isolation?: 'sandbox'; confined?: true };
   dir: string;
   /** The masked brief the child works from: the prompt, where to work, the result to write and the report to run. */
   brief: string;
@@ -138,6 +139,18 @@ export interface HandoffAction {
   run: Literal[];
 }
 
+/**
+ * The run reached `steps`, which only a person can take, in a session nobody attends, so it is offered on teamai-reports.
+ * The agent reports `message` and stops: the turn has no `then`. A person continues the run with `run`.
+ */
+export interface OfferedAction {
+  kind: 'person';
+  why: 'offered';
+  steps: string[];
+  message: string;
+  run: Literal[];
+}
+
 export type Action =
   /** The agent's own answer, once per run with prompt steps: how its host runs a child. */
   | { kind: 'choose'; about: 'host'; decide: 'agent'; question: string; options: Array<{ id: HostChoice; label: string; run: Literal }>; reference: string }
@@ -147,11 +160,12 @@ export type Action =
   | GateAction
   | PersonAction
   | HandoffAction
+  | OfferedAction
   /**
-   * `judging`: the judge running now, on the pass of `step` that `scorers` judge. `score`: the `score --next` that leases
-   * the run's judge work to the session's own judge, when the session judges the run.
+   * `branch`: the branch the run left its changes on, when it worked in a copy of its own. `judging`: the judge running
+   * now, on the pass of `step` that `scorers` judge.
    */
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; judging?: { step: string; scorers: string[] }; score?: Literal };
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; branch?: string; judging?: { step: string; scorers: string[] } };
 
 export interface RunningEntry {
   attempt: AttemptId;
@@ -351,6 +365,8 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
 
   if (dispatch.isolation) needs.isolation = dispatch.isolation;
 
+  if (dispatch.confined) needs.confined = true;
+
   const action: DispatchAction = {
     kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open), needs, dir: dispatch.dir, brief: dispatch.brief, model: dispatch.model,
     ack: ackLiteral(invocation, run, attempt), report: reportLiteral(invocation, run, attempt),
@@ -389,22 +405,34 @@ function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
   return action;
 }
 
+function stopsOf(state: SkillState): StopAction[] {
+  return state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
+    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
+    : []));
+}
+
+function offersOf(state: SkillState): DispatchAction[] {
+  return state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
+}
+
+/** Whether a run that scores a pass of this one waits for the agent: a child to stop, or a dispatch to ack. */
+export function scoringWaits(scoring: readonly SkillState[]): boolean {
+  return scoring.some((run) => stopsOf(run).length > 0 || offersOf(run).length > 0);
+}
+
 /**
- * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, then every
- * place to adopt, then the gate; and the end once the run is done.
+ * What waits for the agent: the host question; else every child to stop, then every dispatch not acked yet, of this run
+ * and of each run in `scoring` (J8), then every place to adopt, then the gate; and the end once the run is done.
  */
-function actionsOf(state: SkillState): Action[] {
+function actionsOf(state: SkillState, scoring: readonly SkillState[]): Action[] {
   if (state.host.kind === 'pending') {
     const options = HOST_CHOICES.map((id) => ({ id, label: HOST_PROFILES[id].label, run: chooseHostLiteral(state.invocation, state.run, id) }));
 
     return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: reference('hosts.md') }];
   }
 
-  const stops = state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
-    ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
-    : []));
-
-  const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
+  const stops = stopsOf(state);
+  const offers = offersOf(state);
 
   const places = state.attempts.flatMap((open): PlaceAction[] => {
     if (open.phase !== 'placing') return [];
@@ -415,7 +443,7 @@ function actionsOf(state: SkillState): Action[] {
     return [place];
   });
 
-  const judge = state.judging?.open;
+  const [judge] = state.scoring;
 
   const end: Action[] = [];
 
@@ -424,15 +452,15 @@ function actionsOf(state: SkillState): Action[] {
 
     if (state.done.failure) done.failure = state.done.failure;
 
-    if (judge) done.judging = { step: judge.step, scorers: judge.scorers };
+    if (state.done.branch !== undefined) done.branch = state.done.branch;
 
-    if (state.sessionJudge) done.score = sessionJudgeLiteral(state.invocation, state.run, state.driver, state.orchestrator.tool ?? state.sessionJudge.tool);
+    if (judge) done.judging = { step: judge.step, scorers: judge.scorers };
     end.push(done);
   }
 
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
 
-  return [...stops, ...offers, ...places, ...gate, ...end];
+  return [...stops, ...scoring.flatMap(stopsOf), ...offers, ...scoring.flatMap(offersOf), ...places, ...gate, ...end];
 }
 
 /**
@@ -449,11 +477,19 @@ function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullab
   };
 }
 
+/** The run offered to a person at `steps`, and the claim that person runs. */
+function offeredOf(state: SkillState, steps: string[]): OfferedAction {
+  const claim = resumeLiteral(state.invocation, state.run, { claim: true });
+
+  return { kind: 'person', why: 'offered', steps, message: offeredToPerson(state.run, steps, claim), run: [claim] };
+}
+
 /**
  * The turn of `state` that shows `events`, with `after` as its `then` while the run drives, or an attempt or a judge of
- * it is open. A `quiet` turn carries no action; any other shows the handoff of a `waiting` that holds steps.
+ * it is open. A `quiet` turn carries no action; any other shows the run `offered` to a person at those steps, else the
+ * handoff of a `waiting` that holds steps.
  */
-export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string }): Turn {
+export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string; scoring?: readonly SkillState[]; offered?: string[] }): Turn {
   const running = state.attempts.map((open): RunningEntry => {
     const entry: RunningEntry = { attempt: open.attempt, step: open.step, phase: open.phase };
 
@@ -463,12 +499,14 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
   });
 
   const waiting = input.waiting && !state.done && state.attempts.length === 0 ? input.waiting : undefined;
-  const handoff = waiting?.held && !input.quiet ? [handoffOf(state, { reason: waiting.reason, held: waiting.held }, input.localTool)] : [];
+
+  const handoff = input.quiet ? [] : input.offered ? [offeredOf(state, input.offered)]
+    : waiting?.held ? [handoffOf(state, { reason: waiting.reason, held: waiting.held }, input.localTool)] : [];
 
   const turn: Turn = {
     run: state.run,
     status: state.done ? 'done' : 'driving',
-    actions: input.quiet ? [] : [...actionsOf(state), ...handoff],
+    actions: input.quiet ? [] : [...actionsOf(state, input.scoring ?? []), ...handoff],
     running,
     events: input.events,
   };
@@ -477,7 +515,7 @@ export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: 
 
   // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
   // oxlint-disable-next-line unicorn/no-thenable
-  if (input.after && (!state.done || state.attempts.length > 0 || state.judging?.open)) turn.then = input.after;
+  if (input.after && (!state.done || state.attempts.length > 0 || state.scoring.length > 0)) turn.then = input.after;
 
   return turn;
 }

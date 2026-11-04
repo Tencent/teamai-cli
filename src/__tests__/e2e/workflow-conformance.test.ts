@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
 import { DRIVERS_UNDER_TEST, runConformanceScenario } from '../../workflow/conformance-interpreter.js';
 import { benchmarkConformanceScenarios } from '../../benchmark/conformance.js';
@@ -89,6 +89,13 @@ describe.each([DRIVERS_UNDER_TEST[0]])('workflow protocol conformance through th
       for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) {
         fs.writeFileSync(path.join(workflows, `${name}.yaml`), yaml);
       }
+      // Removed after the scenario, so no other scenario of this install reads them.
+      const teamFiles = Object.keys(scenario.teamFiles ?? {}).map((file) => path.join(repo, '.teamai', file));
+      for (const [file, text] of Object.entries(scenario.teamFiles ?? {})) {
+        fs.mkdirSync(path.dirname(path.join(repo, '.teamai', file)), { recursive: true });
+        fs.writeFileSync(path.join(repo, '.teamai', file), text);
+      }
+      onTestFinished(() => { for (const file of teamFiles) fs.rmSync(file, { force: true }); });
       const pulled = await runCLI(['pull'], repo);
       expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
       const env = { ...process.env, ...scenario.env };
@@ -111,6 +118,7 @@ describe.each([DRIVERS_UNDER_TEST[0]])('workflow protocol conformance through th
         },
         // Each CLI call reads the system clock, so the runner waits for real.
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+        runDir: async (runId) => path.join(await resolveProjectDataHome(repo), 'workflows', 'runs', runId, 'scratch'),
         expect,
       }, profile);
 

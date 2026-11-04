@@ -1,15 +1,16 @@
 import fs from 'node:fs';
+import { RunScorers } from '../scorers/run-scorers.js';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
-import type { ScoreLabel } from '../scorers/label.js';
-import { LabelStore } from '../scorers/label-store.js';
 import type { LocalConfig } from '../types.js';
 import { trialsOf } from '../benchmark/plan.js';
 import { planBenchmark } from '../benchmark/start.js';
 import { benchmarkRecord, type BenchmarkRecord } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
+import { TrialVerdicts } from '../benchmark/verdicts.js';
+import { LabelStore } from '../scorers/label-store.js';
 import type { BenchmarkSuiteFiles } from '../workflow/conformance-interpreter.js';
 import { leaseNext, reconcileRun, reportAttempt } from '../workflow/engine.js';
 import { stepDefinitions } from '../workflow/scope.js';
@@ -17,7 +18,7 @@ import type { DriverCan } from '../workflow/requirements.js';
 import { cancelRun } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
-import { benchmarkRunConfig, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun } from './helpers/benchmark-fixture.js';
+import { benchmarkRunConfig, PLANNED_BENCHMARK, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun } from './helpers/benchmark-fixture.js';
 
 const driver: DriverIdentity = { kind: 'external', machine: 'ci', workspace: '/work' };
 const can: DriverCan = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, tools: ['claude'], end_turn: true };
@@ -56,11 +57,11 @@ async function startFix(shape?: Parameters<typeof suiteOf>[0]): Promise<{ config
   return { config, runId: String(started.data.run) };
 }
 
-/** The benchmark record the run's report would write, from the plan its plan step printed. */
+/** The benchmark record the run's report would write, from the plan its plan step printed and no verdict. */
 function recordOf(run: RunState): BenchmarkRecord {
   const planned = planOfRun(run);
   if ('failure' in planned) throw new Error(planned.failure.message);
-  return benchmarkRecord(run, planned.found);
+  return benchmarkRecord(run, planned.found, []);
 }
 
 /** The first trial prompt's lease, once every baseline failed on its starting commit, as the tasks expect. */
@@ -466,29 +467,19 @@ async function judgedTrial(): Promise<{ config: LocalConfig; runId: string }> {
 }
 
 describe('benchmark run judges', () => {
-  it("waits while a trial's correctness entry is open, and ends once a label is in the store", async () => {
+  it("ends once its trial prompt succeeded, without waiting for a judge, and a trial no scorer labelled is unscored", async () => {
     const { config, runId } = await judgedTrial();
 
-    const judging = await leaseNext(config, runId, driver, { can, prepare: true });
-    const run = await readRun(config, runId);
-    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
-    const label: ScoreLabel = {
-      scorer: CORRECTNESS, rubric: { sourceHash: run.scorers?.[CORRECTNESS]?.sourceHash ?? '' }, label: 'correct', score: 1, passed: true,
-      source: 'workflow', subject: { runId, step: PROMPT, pass: 1 }, judge: { kind: 'model', tool: 'claude', isolation: 'verified', access: 'read' },
-      scoredAt: new Date().toISOString(),
-    };
-    await LabelStore.append(config, label, 'The test passes.');
     const done = await leaseNext(config, runId, driver, { can, prepare: true });
 
     const ended = await readRun(config, runId);
     if (typeof ended !== 'object') throw new Error(`run ${runId} is ${ended}`);
-    expect(judging).toEqual({ data: { wait: { reason: expect.any(String), judging: 1 }, cancelled: [] } });
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(ended.verdicts).toEqual([{ scorer: CORRECTNESS, step: PROMPT, pass: 1, outcome: { kind: 'labelled', label: 'correct', passed: true } }]);
-    expect(recordOf(ended).trials).toMatchObject([{ step: PROMPT, result: 'passed' }]);
+    expect(ended).not.toHaveProperty('verdicts');
+    expect(recordOf(ended).trials).toMatchObject([{ step: PROMPT, result: 'unscored' }]);
   });
 
-  it("pins a generated correctness scorer per task, by its rubric's hash, and judges every pass of each trial prompt", async () => {
+  it("pins a generated correctness scorer per task, by its rubric's hash, and leaves judging each trial to the workflow's own steps", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
     dirs.push(root);
     const config = benchmarkRunConfig(root);
@@ -501,30 +492,71 @@ describe('benchmark run judges', () => {
       await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, tool: 'claude' });
     }
 
-    const judging = await leaseNext(config, runId, driver, { can, prepare: true });
+    const done = await leaseNext(config, runId, driver, { can, prepare: true });
 
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
-    const pins = run.scorers ?? {};
+    const read = await RunScorers.of(config, run);
+    const pins = read.ok ? read.pins : {};
     expect(Object.keys(pins).sort()).toEqual([CORRECTNESS, 'teamai:correctness:t02']);
     expect(Object.values(pins).map((pin) => pin.generated)).toEqual([true, true]);
     expect(pins[CORRECTNESS]?.sourceHash).not.toBe(pins['teamai:correctness:t02']?.sourceHash);
-    expect(stepDefinitions(run)(PROMPT)?.scorers).toEqual({ names: [CORRECTNESS], sampling: 'all' });
-    expect(judging).toEqual({ data: { wait: { reason: expect.any(String), judging: 2 }, cancelled: [] } });
+    expect(stepDefinitions(run)(PROMPT)?.scorers).toEqual({ names: [CORRECTNESS], sampling: 'all', start: 'workflow' });
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
+});
 
-  it('ends the run failed at its timeout while it judges, and freezes the open entry unscored', async () => {
-    const { config, runId } = await judgedTrial();
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(Date.now() + 11 * 60_000);
+/** The planned benchmark with the shipped workflow's steps that list each trial pass and label it with teamai-score. */
+const SCORED_BENCHMARK = `${PLANNED_BENCHMARK}  - id: subjects
+    needs: [trials]
+    command: teamai score subjects --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [string] }
+  - id: score
+    needs: [subjects]
+    for_each: steps.subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    continue_on_failure: true
+`;
 
-    const next = await leaseNext(config, runId, driver, { can, prepare: true });
+describe('benchmark run verdicts', () => {
+  it('leave a trial unscored when its score step labelled it and the write failed, though an earlier write stored that label', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
+    dirs.push(root);
+    const config = benchmarkRunConfig(root);
+    const started = await startBenchmarkRun(config, CRITERIA_SUITE, { body: SCORED_BENCHMARK });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const subject = `run:${runId}:${PROMPT}:1`;
+    const outputs: Record<string, unknown> = {
+      subjects: { list: [subject] },
+      plan: { groups: [{ subject, hand: '', scorers: CORRECTNESS, model: '', ci: false, protected: false }] },
+      evidence: { dir: root, rubric: 'Judge it.', schema: path.join(root, 'answer.schema.json'), delivers: false },
+      judge: { answer: { label: 'correct', reasoning: 'The test passes.' } },
+      label: { labels: [{ scorer: CORRECTNESS, label: 'correct', code: '' }] },
+    };
+    const judging: DriverCan = { ...can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }], workspace: [...can.workspace ?? [], 'team'] };
+    for (;;) {
+      const answer = await leaseNext(config, runId, driver, { can: judging, prepare: true });
+      const lease = LeaseSchema.safeParse(answer);
+      if (!lease.success) break;
+      const { step, attempt, revision } = lease.data.data.lease;
+      const id = step.split('.').at(-1) ?? step;
+      await reportAttempt(config, runId, id === 'write'
+        ? { attempt, revision, outcome: 'failed', driver, failure: { code: 'command_failed', message: 'Another teamai process is writing the score labels.' } }
+        : { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: outputs[id] ?? {} });
+    }
+    await LabelStore.append(config, [{ label: {
+      scorer: CORRECTNESS, rubric: { sourceHash: 'rubric-1' }, label: 'correct', score: 1, passed: true, scoredAt: '2026-11-03T10:00:00.000Z', source: 'workflow',
+      subject: { runId, step: PROMPT, pass: 1 }, judge: { kind: 'model', tool: 'claude', model: { reported: 'claude-x' }, isolation: 'verified', access: 'read' },
+    }, reasoning: 'The test passes.' }]);
 
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
-    expect(next).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'timeout' } } } });
-    expect(run.verdicts).toEqual([{ scorer: CORRECTNESS, step: PROMPT, pass: 1, outcome: { kind: 'unscored', because: 'run_ended' } }]);
-    expect(recordOf(run).trials).toMatchObject([{ step: PROMPT, result: 'unscored' }]);
+    const planned = planOfRun(run);
+    if ('failure' in planned) throw new Error(planned.failure.message);
+    expect(await TrialVerdicts.of(config, run, planned.found)).toEqual([{ scorer: CORRECTNESS, step: PROMPT, pass: 1, outcome: { kind: 'unscored', because: 'run_ended' } }]);
   });
 });
 
@@ -534,7 +566,7 @@ describe('benchmark plan on a machine that cannot pin the team a trial gets', ()
     dirs.push(root);
     const config: LocalConfig = { ...benchmarkRunConfig(root), repo: { localPath: path.join(root, 'team'), remote: 'https://teamai.example.com/acme', kind: 'http' } };
 
-    const planned = await planBenchmark(config, 'fix', { checkout: root, memberAliases: false, unattended: false });
+    const planned = await planBenchmark(config, 'fix', { checkout: root, memberAliases: false, unattended: false, chosen: { tasks: [], arms: [] } });
 
     expect(planned).toEqual({ refused: { error: { code: 'team_ref_blocked', message: 'A benchmark installs each trial\'s team assets from a commit of the team repo, and this team is served over HTTP, which has no commits to install from. Run the benchmark from a workspace whose team is a git repo.' } } });
   });
@@ -594,7 +626,7 @@ async function pulledMember({ arms, team = {}, branches = {}, delivered = {}, co
   await syncTeamDefinitions(config);
   return {
     config, project, pulled, recordPull, commit: (files: Record<string, string>) => commit(repo, files),
-    plan: (memberAliases = false) => planBenchmark(config, 'fix', { checkout: project, memberAliases, unattended: false }),
+    plan: (memberAliases = false) => planBenchmark(config, 'fix', { checkout: project, memberAliases, unattended: false, chosen: { tasks: [], arms: [] } }),
   };
 }
 

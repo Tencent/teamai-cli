@@ -135,6 +135,7 @@ steps:
     { refused: 'asks a person', fixer: fixThen('    approve: Ship it?\n    command: echo shipped\n    workspace: continue\n'), says: 'whose step "more" asks a person' },
     { refused: 'delivers a pull request', fixer: fixThen('    prompt: Ship it.\n    deliver: pr\n    workspace: new\n'), says: 'whose step "more" delivers a pull request.' },
     { refused: 'opens another workspace', fixer: fixThen('    command: echo more\n    workspace: new\n'), says: 'whose step "more" opens a workspace other than continue.' },
+    { refused: 'publishes from the team workspace', fixer: fixThen('    command: teamai score publish\n    workspace: { team: { branch: teamai-reports } }\n    deliver: publish\n'), says: 'whose step "more" opens a workspace other than continue.' },
     { refused: 'runs a command in the checkout', fixer: fixThen('    command: echo more\n'), says: 'whose step "more" runs a command in the member\'s checkout; give it workspace: continue.' },
     {
       refused: 'runs per item',

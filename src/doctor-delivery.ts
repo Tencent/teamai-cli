@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
 import { isToolId } from './tools.js';
+import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -2814,12 +2815,20 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
 
   if (team.mode === 'legacy') {
     const firstLevelRules = team.rules.filter((rule) => rule.name.split('/').length <= 2);
+    // A file the two source directories both define is reported by the
+    // shadowing note below, which says which copy is delivered. The legacy
+    // note is about duplicates WITHIN one directory (a namespace file and
+    // the root file of the same name), so only the SHADOWED copies stay out
+    // of it — the delivered copy is still there, and dropping it would hide
+    // a duplicate that is really in the block.
+    const shadowed = team.shadowed;
 
     // claudemd file names at the root and one level down, as the block collects them.
     // listFilesRecursive joins with '/' on every platform.
     const claudemdFiles = team.claudemdFiles
-      .map((file) => file.split('/'))
-      .filter((segments) => segments.length <= 2 && (segments[segments.length - 1] ?? '').endsWith('.md'));
+      .map((entry) => ({ dir: entry.dir, segments: entry.file.split('/') }))
+      .filter((entry) => entry.segments.length <= 2 && (entry.segments[entry.segments.length - 1] ?? '').endsWith('.md'))
+      .filter((entry) => !shadowed.some((s) => s.path === entry.segments.join('/') && s.shadowedIn.includes(entry.dir)));
 
     return [
       ...repeatedNames(team.skills, (item) => item.name, (item) => item.relativePath).map(([name, sources]) => (
@@ -2827,9 +2836,14 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
       ...repeatedNames(firstLevelRules, (item) => path.posix.basename(item.name), (item) => item.relativePath)
         .map(([name, sources]) => (
           `rules: "${name}" is defined in ${listed(sources)} (legacy mode: each is delivered at its own path)`)),
-      ...repeatedNames(claudemdFiles, (segments) => segments[segments.length - 1] ?? '', (segments) => `claudemd/${segments.join('/')}`)
+      ...repeatedNames(
+        claudemdFiles,
+        (entry) => entry.segments[entry.segments.length - 1] ?? '',
+        (entry) => `${entry.dir}/${entry.segments.join('/')}`,
+      )
         .map(([name, sources]) => (
           `claudemd: "${name}" is defined in ${listed(sources)} (legacy mode: all of them are in the managed block)`)),
+      ...shadowedNotes(shadowed),
     ];
   }
 
@@ -2838,7 +2852,22 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
     ...(team.agents.kind === 'resolved' ? team.agents.overrides : []).map((override) => describeOverride('agents', override)),
     ...team.rules.overrides.map((override) => describeOverride('rules', override)),
     ...team.claudemd.overrides.map((override) => describeOverride('claudemd', override)),
+    // Only the conflicts this member actually receives: a namespace their
+    // role does not carry is not delivered by pull, so reporting it would
+    // name a copy that never reaches them.
+    ...shadowedNotes(team.shadowed.filter((entry) => team.claudemd.paths.includes(entry.deliveredPath))),
   ];
+}
+
+/**
+ * A shared-instruction file defined in more than one source directory: pull
+ * delivers one copy, so the note names the copy it delivers and the ones it
+ * leaves out (#1682).
+ */
+function shadowedNotes(shadowed: readonly { path: string; deliveredPath: string; deliveredFrom: string; shadowedIn: string[] }[]): string[] {
+  return shadowed.map((entry) => (
+    `claudemd: "${entry.path}" is delivered from ${entry.deliveredFrom}/; `
+    + `${listed(entry.shadowedIn.map((dir) => `${dir}/`))} not delivered`));
 }
 
 /** What `buildNamespaceNotes` reads from the team repo; throws when a manifest cannot be read. */
@@ -2846,13 +2875,22 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
   const desired = await import('./resources/desired.js');
   const { getHandler } = await import('./resources/index.js');
   const roleContext = await desired.buildRolePullContext(localConfig);
+  // A file name defined in both source directories is delivered once, from
+  // the preferred one. The note says so in both modes (#1682).
+  const shadowed = await shadowedSharedInstructionFiles(localConfig.repo.localPath);
 
   if (!roleContext) {
     return {
       mode: 'legacy' as const,
       skills: await getHandler('skills').scanTeamForPull(teamConfig, localConfig),
       rules: await getHandler('rules').scanTeamForPull(teamConfig, localConfig),
-      claudemdFiles: await listFilesRecursive(path.join(localConfig.repo.localPath, 'claudemd')),
+      // The shared-instruction source directory the team repo uses:
+      // `claudemd/` or `agentsmd/` (#1682). Each file carries its own source
+      // directory, so the note can name where a duplicate came from.
+      claudemdFiles: (await Promise.all((await existingSharedInstructionDirs(localConfig.repo.localPath))
+        .map(async (dir) => (await listFilesRecursive(path.join(localConfig.repo.localPath, dir)))
+          .map((file) => ({ dir, file }))))).flat(),
+      shadowed,
     };
   }
 
@@ -2862,6 +2900,7 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
     agents: await desired.resolveDesiredAgents(teamConfig, localConfig, roleContext),
     rules: await desired.resolveDesiredRules(teamConfig, localConfig, roleContext),
     claudemd: await desired.collectClaudemdFiles(localConfig, roleContext),
+    shadowed,
   };
 }
 

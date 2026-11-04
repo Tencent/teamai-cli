@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { commandShell } from '../command-shell.js';
 import { stopProcess } from '../tool-launch/process-stop.js';
 
 /** How a shell command this process ran ended. */
@@ -35,7 +36,7 @@ export async function runShellCommand({ command, cwd, env, signal, expiresAt, st
 
   if (remaining === 0) return { exit: { kind: 'timeout' }, output: '', errors: '' };
   const detached = process.platform !== 'win32';
-  const child = spawn(command, { cwd, env, shell: true, windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, { cwd, ...commandShell(env), windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   let errors = '';
 

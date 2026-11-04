@@ -294,6 +294,48 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(branchHead(zeta)).toBe(before);
   }, 120_000);
 
+  it('pushes nothing the step may have written through a symlink on main, and names the symlink', async () => {
+    const before = branchHead('teamai/notes/kappa');
+    const seed = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-team-symlink-'));
+    const seeded = (args: string[]): string => execFileSync('git', args, { cwd: seed, encoding: 'utf8' });
+    const pushLinks = (change: () => void): void => {
+      seeded(['pull', '-q', fixture.teamOrigin, 'main']);
+      change();
+      seeded(['add', '-A']);
+      seeded(['-c', 'user.name=Other', '-c', 'user.email=other@example.com', 'commit', '-qm', 'links']);
+      seeded(['push', '-q', fixture.teamOrigin, 'HEAD:main']);
+    };
+    seeded(['init', '-q', '-b', 'main']);
+    pushLinks(() => {
+      fs.mkdirSync(path.join(seed, 'skills', 'deploy'), { recursive: true });
+      fs.writeFileSync(path.join(seed, 'skills', 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: Deploy the app.\n---\nDeploy it.\n');
+      fs.symlinkSync('deploy', path.join(seed, 'skills', 'linked'));
+      fs.symlinkSync('notes.md', path.join(seed, 'rules', 'alias.md'));
+    });
+
+    try {
+      const refused = await run([
+        "const fs = require('fs');",
+        "fs.writeFileSync('skills/linked/SKILL.md', '---\\nname: deploy\\ndescription: Deploy the app.\\n---\\nDeploy it twice.\\n');",
+        "fs.appendFileSync('rules/alias.md', 'through the alias\\n');",
+      ].join('\n'), { inputs: { topic: 'kappa' } });
+
+      expect(refused.outcome, refused.said).toBe('failed');
+      const failure = refused.state.steps.find((step) => step.id === 'edit')?.failure;
+      expect(failure?.code).toBe('push_failed');
+      expect(failure?.message.split('\n')).toEqual(expect.arrayContaining([
+        'skills/deploy/SKILL.md: also reached through the symlink skills/linked, so the step may have changed it there; change it by a path with no symlink on the way, or remove skills/linked',
+        'rules/notes.md: also reached through the symlink rules/alias.md, so the step may have changed it there; change it by a path with no symlink on the way, or remove rules/alias.md',
+      ]));
+      expect(branchHead('teamai/notes/kappa')).toBe(before);
+    } finally {
+      pushLinks(() => {
+        for (const link of ['skills/linked', 'rules/alias.md', 'skills/deploy']) fs.rmSync(path.join(seed, link), { recursive: true, force: true });
+      });
+      fs.rmSync(seed, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('publishes no run whose step worked in the team workspace, since another machine could not reach its clone', async () => {
     const ran = await run("require('fs').writeFileSync('rules/epsilon.md', '# Epsilon\\n');", { inputs: { topic: 'epsilon' } });
     expect(ran.outcome, ran.said).toBe('succeeded');

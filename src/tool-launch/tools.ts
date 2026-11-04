@@ -1,6 +1,6 @@
 import { TOOLS } from '../tools.js';
 import type { ToolId } from '../tools.js';
-import { LAUNCH_ADAPTERS, type JudgeLaunch, type LaunchAdapter, type LaunchAdapterId, type StepLaunch } from './adapters.js';
+import { LAUNCH_ADAPTERS, type ConfinedLaunch, type LaunchAdapter, type LaunchAdapterId, type StepLaunch } from './adapters.js';
 
 /** The tools whose `launch` facet names an adapter. */
 export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extends 'none' ? never : T }[ToolId];
@@ -32,10 +32,10 @@ export function executableOf(tool: LaunchOrderTool): string {
   return adapter.executable ?? tool;
 }
 
-type Profile = 'step' | 'judge';
+type Profile = 'step' | 'confined';
 
 /** The tools whose adapter builds `P`. */
-export type ToolWith<P extends Profile> = { [T in LaunchOrderTool]: (typeof LAUNCH_ADAPTERS)[(typeof TOOLS)[T]['launch']] extends { readonly [K in P]: StepLaunch | JudgeLaunch } ? T : never }[LaunchOrderTool];
+export type ToolWith<P extends Profile> = { [T in LaunchOrderTool]: (typeof LAUNCH_ADAPTERS)[(typeof TOOLS)[T]['launch']] extends { readonly [K in P]: StepLaunch | ConfinedLaunch } ? T : never }[LaunchOrderTool];
 
 function toolsWith<P extends Profile>(profile: P): readonly ToolWith<P>[] {
   return LAUNCH_ORDER.filter((tool): tool is ToolWith<P> => profile in launchAdapterOf(tool));
@@ -50,10 +50,10 @@ export function isLaunchTool(value: string): value is LaunchTool {
   return LAUNCH_TOOLS.some((tool) => tool === value);
 }
 
-/** The tools the local judge runs, in `LAUNCH_ORDER`. */
-export const JUDGE_TOOLS = toolsWith('judge');
+/** The tools that run confined to one directory, in `LAUNCH_ORDER`. */
+export const CONFINED_TOOLS = toolsWith('confined');
 
-export type JudgeTool = ToolWith<'judge'>;
+export type ConfinedTool = ToolWith<'confined'>;
 
 /** OpenCode's model arguments: OpenCode 2 has no `--variant` and reads the effort from `--model provider/model#variant`. */
 export function opencodeModelArgs(model: { name: string; effort?: string } | undefined, major: number): string[] {

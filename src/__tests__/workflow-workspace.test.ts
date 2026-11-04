@@ -8,11 +8,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { detectProjectConfig, loadStateForScope } from '../config.js';
 import { resolveAnchors } from '../utils/git.js';
 import { resolvePartitionDir } from '../utils/partition.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import * as engine from '../workflow/engine.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
@@ -58,7 +58,7 @@ async function fixture(yaml: string, inputs: unknown = {}): Promise<{ config: Lo
     workflows: { tools: {}, max_parallel: 2 },
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', inputs, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
@@ -113,7 +113,7 @@ async function teamWorkspace(yaml: string): Promise<{ config: LocalConfig; works
   const config = await detectProjectConfig(workspace);
   if (!config) throw new Error('project config was not found');
   config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
@@ -509,10 +509,11 @@ steps:
       expect.stringMatching(/\/fan-0\/p1$/),
       expect.stringMatching(/\/fan-1\/p1$/),
     ]);
-    const branch = join && 'changes' in join ? join.changes?.branch : undefined;
-    expect(git(['show', `${branch}:joined.txt`], workspace)).toBe('J');
-    expect(git(['show', `${branch}:left.txt`], workspace)).toBe('L');
-    expect(git(['show', `${branch}:right.txt`], workspace)).toBe('R');
+    // The run deleted join's branch once the fan branches held it, so read the commit join reported.
+    const joined = join && 'changes' in join ? join.changes?.to : undefined;
+    expect(git(['show', `${joined}:joined.txt`], workspace)).toBe('J');
+    expect(git(['show', `${joined}:left.txt`], workspace)).toBe('L');
+    expect(git(['show', `${joined}:right.txt`], workspace)).toBe('R');
   });
 
   it('says where a failed push left the commits, so pushing them from there works', async () => {

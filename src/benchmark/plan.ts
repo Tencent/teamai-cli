@@ -20,7 +20,7 @@ import type { Suite, Task, TaskJudge } from './suite.js';
 import type { CommittedSuite } from './trial.js';
 import type { PinnedArmWorkflow } from './arm-workflow.js';
 import { CommitSchema, TeamSelectionSchema, type CloneTeam, type TeamSelection } from '../workflow/clone.js';
-import { AddedSchema, CHECK_RESULTS, type Added } from '../workflow/check.js';
+import { AddedSchema, CHECK_RESULTS, type Added } from '../scorers/check.js';
 import { ArmTeamSchema, BenchmarkNameSchema, SkillChangesSchema, TrialLimitsSchema, type ArmTeam, type SkillChanges } from './terms.js';
 
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/);
@@ -96,6 +96,8 @@ export const BenchmarkPlanSchema = z.object({
   suite: z.object({ name: BenchmarkNameSchema, sourceHash: Sha256, repo: z.string().url() }).strict(),
   baselineTeamRevision: CommitSchema,
   selection: TeamSelectionSchema,
+  /** The run plans only the tasks and arms `--task` and `--arm` chose, not the whole suite; absent: the whole suite. */
+  subset: z.literal(true).optional(),
   repetitions: z.number().int().min(1).max(10),
   /** The lanes the trials run in, each one trial at a time; absent: one. A trial's step is under `lane<n>` with more than one. */
   parallel: z.number().int().positive().optional(),
@@ -172,6 +174,8 @@ export function freezePlan(input: {
   /** By covered path, the arms whose selection pull does not deliver it to, as plan checked it; absent or empty: none. */
   coveredWithheldFrom?: Record<string, readonly string[]>;
   skillChanges?: SkillChanges[];
+  /** The committed suite holds only some of the suite's tasks or arms. */
+  isSubset?: boolean;
 }): BenchmarkPlan {
   const { suite, files } = input.committed;
   const { coveredSkills, coveredWithheldFrom = {} } = input;
@@ -184,6 +188,7 @@ export function freezePlan(input: {
     suite: { name: suite.name, sourceHash: suite.sourceHash, repo: suite.repo },
     baselineTeamRevision: input.baselineTeamRevision,
     selection: input.selection,
+    subset: input.isSubset === true ? true : undefined,
     repetitions: suite.repetitions,
     parallel: suite.parallel > 1 ? suite.parallel : undefined,
     limits: suite.trial,
@@ -307,7 +312,8 @@ export function compileBundle(
 
     if (timeoutMs !== undefined || maxTurns !== undefined || tokens !== undefined) step.on_limit = 'end_turn';
 
-    if (names.length > 0) step.scorers = { names, sampling: 'all' };
+    // The workflow's own teamai-score steps judge every trial, with the pins the trial ran under.
+    if (names.length > 0) step.scorers = { names, sampling: 'all', start: 'workflow' };
 
     return step;
   };

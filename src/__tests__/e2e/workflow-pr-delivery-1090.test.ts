@@ -47,6 +47,7 @@ steps:
 `;
 
 const DoneSchema = z.object({ data: z.object({ done: z.object({ run: z.string(), outcome: z.string() }) }) });
+const HandoffSchema = z.object({ data: z.object({ handoff: z.object({ run: z.string(), steps: z.array(z.string()) }) }) });
 const RunSchema = z.object({
   steps: z.array(z.object({
     id: z.string(), status: z.string(),
@@ -244,13 +245,17 @@ describe('the CI recipe in the workflow guide, run through the real CLI', () => 
     expect(createsOf(gh)).toEqual([]);
   }, 180_000);
 
-  it('fails a required approval unattended with hitl_required, and opens nothing', () => {
-    const { recipe, ran, root, gh } = runRecipe(GITHUB_URL, true);
+  it('hands a run at a required approval to a person on teamai-reports, exits 0, and opens nothing', () => {
+    const { recipe, ran, root, gh, team } = runRecipe(GITHUB_URL, true);
 
-    expect(ran.map((step) => step.status), said(ran)).toEqual(runCommandsOf(recipe).map((_, index, all) => (index === all.length - 1 ? 1 : 0)));
-    const done = doneOf(ran.at(-1));
-    expect(done.outcome).toBe('failed');
-    expect(runState(root, done.run).steps.find((step) => step.id === 'approve')?.failure).toMatchObject({ code: 'hitl_required' });
+    expect(ran.map((step) => step.status), said(ran)).toEqual(runCommandsOf(recipe).map(() => 0));
+    const line = ran.at(-1)?.stdout.trim().split('\n').findLast((item) => item.startsWith('{')) ?? '';
+    const { run, steps } = HandoffSchema.parse(JSON.parse(line)).data.handoff;
+    expect(steps).toEqual(['approve']);
+    expect(ran.at(-1)?.stderr).toContain(`Step "approve" needs a person, so run ${run} is offered on teamai-reports. A person continues it with: teamai workflow resume ${run} --claim`);
+    expect(runState(root, run).steps.find((step) => step.id === 'approve')?.status).toBe('waiting');
+    const offered = JSON.parse(git(root, ['--git-dir', team, 'show', `teamai-reports:workflows/runs/${run}/state.json`]));
+    expect(offered).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
     expect(createsOf(gh)).toEqual([]);
   }, 180_000);
 });

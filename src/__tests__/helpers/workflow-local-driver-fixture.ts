@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { onTestFinished } from 'vitest';
 import { getDataHome, getUserConfigPath, type LocalConfig, type TeamaiConfig } from '../../types.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { startRun } from '../../workflow/engine.js';
 import { pendingRecords, type WorkflowRunRecord } from '../../workflow/records.js';
 import { knownSecrets } from '../../env-resolution.js';
@@ -62,7 +62,7 @@ export async function workflowFixture(yaml: string): Promise<{ config: LocalConf
     workflows: { tools: { default: 'claude' } },
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };

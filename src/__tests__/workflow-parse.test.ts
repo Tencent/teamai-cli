@@ -428,6 +428,64 @@ steps:
     loop: { back_to: review, max_iterations: 3 }
 `;
 
+describe('a workflow header workspace', () => {
+  const HEADER = `schemaVersion: v1alpha1
+name: build
+description: Review and fix in one copy.
+`;
+  const STEPS = `steps:
+  - id: review
+    command: node review.js
+`;
+
+  it('accepts workspace: new, which the definition keeps', () => {
+    const result = parse(`${HEADER}workspace: new\n${STEPS}`);
+    expect(result.ok && result.definition.workspace).toBe('new');
+  });
+
+  it('rejects any other header workspace', () => {
+    expect(rejected(`${HEADER}workspace: continue\n${STEPS}`)).toEqual([
+      { message: `${FILE}:4: field "workspace": workspace in a workflow header must be new, so its steps work in one copy; set workspace on a step for any other mode`, code: 'bad_workspace' },
+    ]);
+  });
+
+  it('rejects deliver in the header, pointing at the step that runs the workflow', () => {
+    expect(rejected(`${HEADER}workspace: new\ndeliver: pr\n${STEPS}`)).toEqual([
+      { message: `${FILE}:5: field "deliver": a workflow header takes no deliver; delivery belongs to a step, so run this workflow from a step with deliver: pr`, code: 'bad_delivery' },
+    ]);
+  });
+
+  it('refuses a role on a step continuing the copy the run opens with another, naming defaults.role as where the copy gets its role', () => {
+    expect(rejected(`${HEADER}workspace: new
+defaults: { role: review }
+steps:
+  - id: fix
+    role: spec
+    prompt: Fix it.
+`)).toEqual([
+      { code: 'bad_role', message: `${FILE}:8: field "steps[0].role": step "fix" has role spec but continues the copy the run opens with role review, which every step there runs with; remove role from step "fix", or set it as defaults.role` },
+    ]);
+  });
+
+  it('rejects a read-only step that runs a workflow whose header says workspace: new, naming both', () => {
+    const child = parse(`schemaVersion: v1alpha1
+name: review-and-fix
+description: Review and fix in one copy.
+workspace: new
+${STEPS}`, 'workflows/review-and-fix.yaml');
+    if (!child.ok) throw new Error(child.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'review-and-fix' ? child.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `${HEADER}steps:
+  - id: check
+    workspace: read-only
+    workflow: review-and-fix
+`, files);
+    expect(result.ok ? [] : result.diagnostics.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { message: `${FILE}:6: field "steps[0].workspace": step "check" has workspace: read-only but runs workflow "review-and-fix", whose header says workspace: new, so its steps work in a copy; remove workspace from step "check" so it opens or continues one`, code: 'bad_workspace' },
+    ]);
+  });
+});
+
 describe('deliver', () => {
   const FIX = `schemaVersion: v1alpha1
 name: build
@@ -447,7 +505,7 @@ steps:
   it('rejects a delivery other than pr, and deliver: pr on a step that can only read', () => {
     expect(rejected(`${FIX}    prompt: Fix it.
     deliver: merge
-`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" deliver must be pr; TeamAI opens a pull request and never merges`, code: 'bad_delivery' }]);
+`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" deliver must be pr or publish; TeamAI opens a pull request, or publishes to a teamai data branch, and never merges`, code: 'bad_delivery' }]);
     expect(rejected(`${FIX}    prompt: Fix it.
     workspace: read-only
     deliver: pr
@@ -455,6 +513,30 @@ steps:
     expect(rejected(`${FIX}    command: node fix.js
     deliver: pr
 `)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" has deliver: pr but runs read-only, as a command without workspace does; set workspace: new so it has a branch to deliver`, code: 'bad_delivery' }]);
+  });
+
+  it.each(['teamai-reports', 'teamai-learnings'])('parses deliver: publish on a step in the team workspace of the data branch %s', (branch) => {
+    const result = parse(`${FIX}    command: teamai score publish
+    workspace: { team: { branch: ${branch} } }
+    deliver: publish
+`);
+    expect(result.ok && result.definition.steps[0]).toMatchObject({ deliver: 'publish', workspace: { team: { branch } } });
+  });
+
+  it('rejects deliver: publish outside the team workspace of a teamai data branch', () => {
+    const NOT_DATA = 'is not a teamai data branch; publish to teamai-reports or teamai-learnings';
+    expect(rejected(`${FIX}    command: teamai score publish
+    workspace: new
+    deliver: publish
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: publish but runs in no team workspace; give it workspace: { team: { branch: teamai-reports } }`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    command: teamai score publish
+    workspace: { team: {} }
+    deliver: publish
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: publish to the run's own team branch, which ${NOT_DATA}`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    command: teamai score publish
+    workspace: { team: { branch: main } }
+    deliver: publish
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: publish to team branch main, which ${NOT_DATA}`, code: 'bad_delivery' }]);
   });
 });
 
@@ -792,6 +874,91 @@ steps:
     ]);
   });
 
+  it('reads the pull request of a step, a workflow step, each for_each item and each pass with deliver: pr, and passes it out as an output', () => {
+    expect(parse(`schemaVersion: v1alpha1
+name: build
+description: Build and deliver.
+inputs:
+  targets: [string]
+outputs:
+  pr: steps.fix.pr
+steps:
+  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          workspace: continue
+          command: node patch.js
+  - id: build
+    needs: []
+    for_each: inputs.targets
+    workspace: new
+    command: node build.js
+    deliver: pr
+  - id: bump
+    needs: []
+    workspace: new
+    command: node bump.js
+    deliver: pr
+    loop: { back_to: bump, while: "steps.bump.passes[0].pr == null", max_iterations: 2 }
+  - id: report
+    needs: [fix, build, bump]
+    if: steps.fix.pr == null || steps.bump.pr != null
+    env:
+      FIX: "{{ steps.fix.pr.url }}"
+      FIRST: "{{ steps.build.results[0].pr.url }}"
+    command: node report.js
+`)).toMatchObject({ ok: true });
+  });
+
+  it('rejects a read of the pull request of a step without deliver: pr', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Build.
+steps:
+  - id: build
+    workspace: new
+    command: node build.js
+  - id: report
+    needs: [build]
+    if: steps.build.pr != null
+    command: node report.js
+`)).toEqual([
+      { message: `${FILE}:10: field "steps[1].if": step "report" if reads steps.build.pr, but step "build" has no deliver: pr, so it has no pr` },
+    ]);
+  });
+
+  it('rejects a read of the pull request of a for_each step, whose pull requests are per item', () => {
+    const content = `${FAN.replace('    for_each: inputs.targets\n', '    for_each: inputs.targets\n    workspace: new\n    deliver: pr\n')}  - id: report
+    needs: [build]
+    if: steps.build.pr != null
+    command: node report.js
+`;
+    expect(rejected(content)).toEqual([
+      { message: `${FILE}:16: field "steps[1].if": step "report" if reads steps.build.pr, but step "build" has for_each, so its pr is in steps.build.results` },
+    ]);
+  });
+
+  it('rejects a read of a pull request field other than url', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Build.
+steps:
+  - id: build
+    workspace: new
+    command: node build.js
+    deliver: pr
+  - id: report
+    needs: [build]
+    if: steps.build.pr.number > 0
+    command: node report.js
+`)).toEqual([
+      { message: `${FILE}:11: field "steps[1].if": step "report" if reads steps.build.pr.number, which is not in a pull request: url` },
+    ]);
+  });
+
   it('reports a rejected for_each step once, not again at each read of its results', () => {
     const content = `${FAN.replace('node build.js', 'node build.js {{ item }}')}  - id: report
     needs: [build]
@@ -846,7 +1013,7 @@ describe('expressions in templates', () => {
     ['a double-quoted string', '{{ filter(steps.build.results, .outcome == "failed") }}', "strings use single quotes, as in 'failed'"],
     ['= for ==', "{{ any(steps.build.results, .outcome = 'failed') }}", 'any is called as any(list, predicate)'],
     ['a field a step does not have', '{{ length(steps.build.result) }}',
-      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results or steps.<id>.branches'],
+      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
     ['a string compared with <', "{{ length(steps.build.results) < 'x' }}", "compares 'x' with <, but it is not a number"],
   ])('rejects a call with %s, with the parse error', (_case, text, message) => {
     expect(rejected(TRIAGE.replace(FIX_PROMPT, `'Fix ${text.replaceAll("'", "''")}.'`))).toEqual([
@@ -981,7 +1148,7 @@ steps:
     expect(result.diagnostics.every((diagnostic) => diagnostic.code === undefined)).toBe(true);
   });
 
-  it('reports a templated model on a step and in defaults as a validation error', () => {
+  it('reports a templated defaults.model as a validation error', () => {
     for (const template of ['${{ inputs.m }}', '{{ inputs.m }}']) {
       const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -993,15 +1160,95 @@ defaults:
 steps:
   - id: plan
     prompt: Plan it.
-    model: "${template}"
 `);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.diagnostics.map(formatDiagnostic)).toEqual([
         'workflows/build.yaml:7: field "defaults.model": model cannot contain a template; write an alias or a model name as is',
-        'workflows/build.yaml:11: field "steps[0].model": model cannot contain a template; write an alias or a model name as is',
       ]);
     }
+  });
+
+  it('keeps a step model template that reads an input, the item, or the outputs of a step it needs, as written', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+inputs:
+  judge: string
+steps:
+  - id: plan
+    command: echo plan
+    output:
+      model: string
+      groups: [{ model: string }]
+  - id: label
+    needs: [plan]
+    for_each: steps.plan.outputs.groups
+    prompt: Label it.
+    model: "{{ item.model }}"
+  - id: sum
+    needs: [plan]
+    prompt: Sum it.
+    model: "claude-{{ steps.plan.outputs.model }}"
+  - id: pick
+    needs: []
+    prompt: Pick one.
+    model: "{{ inputs.judge }}"
+`);
+    expect(result.ok ? [] : result.diagnostics.map(formatDiagnostic)).toEqual([]);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.model)).toEqual([undefined, '{{ item.model }}', 'claude-{{ steps.plan.outputs.model }}', '{{ inputs.judge }}']);
+  });
+
+  it('refuses a step model template that reads anything but an input, the item, or the outputs of a step the step needs', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+inputs:
+  m: string
+steps:
+  - id: plan
+    command: echo plan
+    output:
+      model: string
+  - id: other
+    needs: []
+    command: echo other
+    output:
+      model: string
+  - id: a
+    needs: [plan]
+    prompt: Run it.
+    model: "{{ run.id }}"
+  - id: b
+    needs: [plan]
+    prompt: Run it.
+    model: "{{ steps.plan.outcome }}"
+  - id: c
+    needs: [plan]
+    prompt: Run it.
+    model: "{{ steps.other.outputs.model }}"
+  - id: d
+    needs: []
+    prompt: Run it.
+    model: "{{ item.model }}"
+  - id: e
+    needs: []
+    prompt: Run it.
+    model: "\${{ inputs.m }}"
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const READS = 'a model template reads only inputs, item and the outputs of steps the step needs';
+    const LITERAL = 'text outside a template cannot hold a space or {{, and {{ item }} is a template only where for_each binds an item';
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      `workflows/build.yaml:19: field "steps[2].model": step "a" model template {{ run.id }}: ${READS}`,
+      `workflows/build.yaml:23: field "steps[3].model": step "b" model template {{ steps.plan.outcome }}: ${READS}`,
+      `workflows/build.yaml:31: field "steps[5].model": step "d" model template {{ item.model }}: ${LITERAL}`,
+      `workflows/build.yaml:35: field "steps[6].model": step "e" model template \${{ inputs.m }}: ${LITERAL}`,
+      'workflows/build.yaml:27: field "steps[4].model": step "c" model reads steps.other, which is not a step it needs, directly or through its needs',
+    ]);
+    expect(result.diagnostics.every((diagnostic) => diagnostic.code === 'bad_template')).toBe(true);
   });
 
   it('keeps a prompt step model and defaults.model as written', () => {
@@ -1234,6 +1481,22 @@ ends: { shipped: succeeded }
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[0].requires.gpu', code: 'unknown_key' }));
   });
 
+  it('reads a timeout in days', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+timeout: 2d
+steps:
+  - id: plan
+    prompt: Plan it.
+    timeout: 1d
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.timeout).toBe(172_800_000);
+    expect(result.definition.steps.map((step) => step.timeout)).toEqual([86_400_000]);
+  });
+
   it('reads timeout on the file and on a step as milliseconds', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -1279,8 +1542,8 @@ ends: { shipped: succeeded }
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
-      'workflows/build.yaml:4: field "timeout": timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
-      'workflows/build.yaml:8: field "steps[0].timeout": steps[0].timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
+      'workflows/build.yaml:4: field "timeout": timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d',
+      'workflows/build.yaml:8: field "steps[0].timeout": steps[0].timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d',
       expect.stringContaining('field "steps[1].workflow.timeout": step "check" runs an inline workflow'),
       expect.stringContaining('field "steps[2].timeout": step "done" has no action'),
     ]));
@@ -1621,6 +1884,41 @@ steps:
     ]);
   });
 
+  it('reads who starts the scoring of a step\'s passes, start: auto or workflow, and refuses any other start', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: fix
+    prompt: Fix it.
+    scorers: { names: [quality], sampling: all, start: workflow }
+  - id: review
+    needs: [fix]
+    prompt: Review it.
+    scorers: { names: [quality], start: auto }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps.map((step) => step.scorers)).toEqual([
+      { names: ['quality'], sampling: 'all', start: 'workflow' },
+      { names: ['quality'], start: 'auto' },
+    ]);
+
+    const refused = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: fix
+    prompt: Fix it.
+    scorers: { names: [quality], start: later }
+`);
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].scorers.start": start must be auto, where teamai starts the scoring of each pass, or workflow, where the workflow\'s own steps score them',
+    ]);
+  });
+
   it('reports a long form without names, and a name that is not a scalar', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -1710,21 +2008,25 @@ steps:
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual([
-      'workflows/build.yaml:6: field "steps[0].workspace": step "short" workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
-      'workflows/build.yaml:10: field "steps[1].workspace": step "revised" workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+      'workflows/build.yaml:6: field "steps[0].workspace": step "short" workspace must be read-only, new, continue, { team: { branch? } }, { confined: <dir> }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+      'workflows/build.yaml:10: field "steps[1].workspace": step "revised" workspace must be read-only, new, continue, { team: { branch? } }, { confined: <dir> }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
     ]);
   });
 });
 
 describe('team workspace', () => {
-  it('reads the branch a step commits to in the team repo, or none for the run\'s own', () => {
+  it('reads the branch a step commits to in the team repo, from inputs and the outputs of steps it needs, or none for the run\'s own', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
 description: Tidy the team's rules.
 inputs: { topic: string }
 steps:
+  - id: plan
+    command: ./plan.sh
+    output: { id: string }
   - id: named
-    workspace: { team: { branch: "teamai/tidy/{{ inputs.topic }}" } }
+    needs: [plan]
+    workspace: { team: { branch: "teamai/tidy/{{ inputs.topic }}/{{ steps.plan.outputs.id }}" } }
     deliver: pr
     command: ./tidy.sh
   - id: own
@@ -1733,12 +2035,13 @@ steps:
     prompt: Tidy the rules.
 `);
     expect(result.ok && result.definition.steps.map((step) => step.workspace)).toEqual([
-      { team: { branch: 'teamai/tidy/{{ inputs.topic }}' } },
+      undefined,
+      { team: { branch: 'teamai/tidy/{{ inputs.topic }}/{{ steps.plan.outputs.id }}' } },
       { team: {} },
     ]);
   });
 
-  it('rejects a branch that reads a step, and a team workspace on a step that runs a workflow, runs per item, or is scored', () => {
+  it('rejects a branch that reads a step\'s outcome, the run or a step it does not need, and a team workspace on a step that runs a workflow, runs per item, or is scored', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
 description: Tidy the team's rules.
@@ -1749,7 +2052,7 @@ steps:
     output: { topic: string }
   - id: fromStep
     needs: [plan]
-    workspace: { team: { branch: "teamai/tidy/{{ steps.plan.outputs.topic }}" } }
+    workspace: { team: { branch: "teamai/tidy/{{ steps.plan.outcome }}" } }
     command: ./tidy.sh
   - id: perItem
     needs: []
@@ -1761,13 +2064,117 @@ steps:
     workspace: { team: {} }
     scorers: [review-quality]
     prompt: Tidy the rules.
+  - id: fromRun
+    needs: []
+    workspace: { team: { branch: "teamai/tidy/{{ run.id }}" } }
+    command: ./tidy.sh
+  - id: unneeded
+    needs: []
+    workspace: { team: { branch: "teamai/tidy/{{ steps.plan.outputs.topic }}" } }
+    command: ./tidy.sh
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const READS = 'workspace team branch may read only inputs and the outputs of steps the step needs, so every run that drafts the same thing goes on with the same branch';
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      `workflows/build.yaml:11: field "steps[1].workspace": step "fromStep" ${READS}`,
+      'workflows/build.yaml:16: field "steps[2].workspace": step "perItem" workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again',
+      'workflows/build.yaml:20: field "steps[3].workspace": step "scored" workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed',
+      `workflows/build.yaml:25: field "steps[4].workspace": step "fromRun" ${READS}`,
+      'workflows/build.yaml:29: field "steps[5].workspace": step "unneeded" workspace team branch reads steps.plan, which is not a step it needs, directly or through its needs',
+    ]);
+  });
+
+  it('reads a confined directory a prompt step names from its inputs, its item, or a step it needs', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Judge each change from its evidence.
+inputs: { changes: [string] }
+steps:
+  - id: evidence
+    command: ./evidence.sh
+    output: { dir: string }
+  - id: judge
+    needs: [evidence]
+    workspace: { confined: "{{ steps.evidence.outputs.dir }}" }
+    model: "{{ inputs.changes }}"
+    prompt: Judge the change from the files here.
+    output: { verdict: pass | fail }
+  - id: each
+    needs: []
+    for_each: inputs.changes
+    workflow:
+      steps:
+        - id: judge
+          workspace: { confined: "changes/{{ item }}" }
+          prompt: Judge this change.
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const each = stepWorkflow(result.definition.steps[2] ?? { id: 'each' });
+    expect([result.definition.steps[1]?.workspace, each?.kind === 'inline' ? each.workflow.steps[0]?.workspace : undefined]).toEqual([
+      { confined: '{{ steps.evidence.outputs.dir }}' },
+      { confined: 'changes/{{ item }}' },
+    ]);
+  });
+
+  it('rejects a confined directory on a step that is not one prompt, with requires.env or scorers, or read from what is not an output', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Judge the change.
+inputs: { changes: [string] }
+steps:
+  - id: plan
+    command: ./plan.sh
+    output: { dir: string }
+  - id: cmd
+    needs: []
+    workspace: { confined: evidence }
+    command: ./judge.sh
+  - id: perItem
+    needs: []
+    for_each: inputs.changes
+    workspace: { confined: evidence }
+    prompt: Judge it.
+  - id: runs
+    needs: []
+    workspace: { confined: evidence }
+    workflow: other
+  - id: secret
+    needs: []
+    workspace: { confined: evidence }
+    requires: { env: [API_KEY] }
+    prompt: Judge it.
+  - id: scored
+    needs: []
+    workspace: { confined: evidence }
+    scorers: [review-quality]
+    prompt: Judge it.
+  - id: named
+    needs: []
+    workspace: { confined: evidence }
+    tool: claude
+    prompt: Judge it.
+  - id: outcome
+    needs: [plan]
+    workspace: { confined: "{{ steps.plan.outcome }}" }
+    prompt: Judge it.
+  - id: unneeded
+    needs: []
+    workspace: { confined: "{{ steps.plan.outputs.dir }}" }
+    prompt: Judge it.
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual([
-      'workflows/build.yaml:11: field "steps[1].workspace": step "fromStep" workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch',
-      'workflows/build.yaml:16: field "steps[2].workspace": step "perItem" workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again',
-      'workflows/build.yaml:20: field "steps[3].workspace": step "scored" workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed',
+      'workflows/build.yaml:11: field "steps[1].workspace": step "cmd" workspace confined is only allowed on a prompt or prompt_file step',
+      'workflows/build.yaml:15: field "steps[2].for_each": step "perItem" workspace confined runs one prompt that reads only its directory, so it takes no for_each',
+      'workflows/build.yaml:20: field "steps[3].workspace": step "runs" workspace confined is only allowed on a prompt or prompt_file step',
+      'workflows/build.yaml:25: field "steps[4].requires.env": step "secret" workspace confined takes no requires.env: a confined prompt gets no team env or secrets',
+      'workflows/build.yaml:30: field "steps[5].scorers": step "scored" workspace confined runs one prompt that reads only its directory, so it takes no scorers',
+      'workflows/build.yaml:35: field "steps[6].tool": step "named" workspace confined runs one prompt that reads only its directory, so it takes no tool',
+      'workflows/build.yaml:39: field "steps[7].workspace.confined": step "outcome" workspace.confined template {{ steps.plan.outcome }}: a confined directory template reads only inputs, item and the outputs of steps the step needs',
+      'workflows/build.yaml:43: field "steps[8].workspace.confined": step "unneeded" workspace.confined reads steps.plan, which is not a step it needs, directly or through its needs',
     ]);
   });
 

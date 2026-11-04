@@ -3,27 +3,28 @@
  * effect, and feeds each answer back as the next input. It holds the lock only while it ticks, never across a sleep.
  */
 import { driverIdentity } from '../../../driver-identity.js';
+import { scoredLabels } from '../../../scorers/engine-hooks.js';
 import type { ToolId } from '../../../tools.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
-import type { ResumeClaim, RunReadied } from '../../protocol.js';
+import type { PersonHandoff, ResumeClaim, RunReadied } from '../../protocol.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
-import { engineReply, reportReply, respondReply, scoreReply } from './engine-replies.js';
-import { canFor, HOST_PROFILES, judgeCan, type HostChoice } from './host-profiles.js';
+import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
+import { canFor, confinedCan, HOST_PROFILES, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
   type Literal,
 } from './literals.js';
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
-import { drivesRun, newSkillState, readSkillState, removeSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
+import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, graceRow, hasSlot, heldProbeRow, invokeRow, judgeFreeRow, judgeTickRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
-  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoreReplyRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, readiedRow, reopenedRow, replyRow,
+  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
-import { errorOf, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
+import { errorOf, scoringWaits, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
 import type { SkillContext } from './skill-driver.js';
 
 /** How long one poll waits for something to show the agent. */
@@ -77,6 +78,13 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
         break;
       }
 
+      case 'give-up': {
+        const answer = await context.client.giveUp(applied.state.run, effect.steps);
+
+        if ('error' in answer) applied.refused = answer.error;
+        break;
+      }
+
       default: {
         const unhandled: never = effect;
 
@@ -99,38 +107,14 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  */
 async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
-  const reply = reportReply(await context.client.report(state.run, body, { lock }));
-  const taken = traced(context, reportedRow(state, { attempt, reply, at: context.now().toISOString() }));
+  const answer = await context.client.report(state.run, body, { lock });
+  const taken = traced(context, reportedRow(state, { attempt, reply: reportReply(answer), at: context.now().toISOString() }));
 
   if (!taken) return { state };
 
-  return 'answer' in taken ? { state, refused: taken.answer.error } : { state: taken.state };
-}
+  if ('answer' in taken) return { state, refused: taken.answer.error };
 
-/**
- * The judge work of a tick: gives judging up when the open judge's runner is gone (J5), then renews its lease, or,
- * with no judge open, takes the next pass of this run to judge and spawns its runner (J1, J2).
- */
-async function judgeTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<SkillState> {
-  let state = start;
-  const open = state.judging?.open;
-
-  if (open && !(await context.runners.alive(state.run, open.attempt))) {
-    const freed = traced(context, judgeFreeRow(state, { at: context.now().toISOString(), graceMs: WAIT_GRACE_MS }));
-
-    if (freed) state = (await applyEffects(context, lock, freed.state, freed.effects)).state;
-  }
-
-  const ticked = traced(context, judgeTickRow(state, role));
-
-  if (!ticked) return state;
-  const { tool, running, canTakeLease } = ticked.request;
-  const answer = await context.client.scoreNext({ driver: { ...state.driver, can: { judge: judgeCan(tool) } }, run: state.run, running, canTakeLease });
-  const replied = traced(context, scoreReplyRow(state, { reply: scoreReply(answer), at: context.now().toISOString() }));
-
-  if (!replied) return state;
-
-  return (await applyEffects(context, lock, replied.state, replied.effects)).state;
+  return { state: traced(context, startedRow(taken.state, startedOf(answer)))?.state ?? taken.state };
 }
 
 /**
@@ -143,14 +127,47 @@ interface Ticked extends TickTurn {
   error?: SkillError;
 }
 
-/**
- * One tick under `lock`: the steps' tick, then the judge work's. Judge runners count as no spawn: a turn waits for
- * nothing of theirs.
- */
+/** One tick under `lock`: the steps' tick, then, for a call, each run `scoring` lists. */
 export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<Ticked> {
   const stepped = await stepTick(context, lock, start, role);
 
-  return { ...stepped, state: await judgeTick(context, lock, stepped.state, role) };
+  return { ...stepped, state: role === 'call' ? await scoringTick(context, stepped.state) : stepped.state };
+}
+
+/**
+ * J8: ticks each run `scoring` lists as a call ticks its own run, under that run's lock, writing its skill.json from
+ * `start`'s the first time; a run whose lock is busy waits for the next tick. J9 and J10 drop a run once it is done or
+ * its tick fails.
+ */
+async function scoringTick(context: SkillContext, start: SkillState): Promise<SkillState> {
+  let state = start;
+
+  for (const run of traced(context, scoringTickRow(start))?.runs ?? []) {
+    const taken = await context.locks.take(run, async (lock) => {
+      const read = await readSkillState(context.config, run);
+      const child = read.kind === 'found' ? read.state : scoringSkillState(state, run, context.now().toISOString());
+      const ticked = await runTick(context, lock, child, 'call');
+      await writeSkillState(context.config, lock, ticked.state, context.env.secrets);
+
+      return ticked;
+    }, 0);
+
+    if (taken.kind === 'busy') continue;
+    const { state: ticked, error } = taken.value;
+    const labels = scoredLabels(ticked.done?.outputs);
+    const row = traced(context, scoredRow(state, error ? { run, ticked, labels, error } : { run, ticked, labels }));
+
+    if (row) state = row.state;
+  }
+
+  return state;
+}
+
+/** The skill states of the runs `state`'s `scoring` lists, as last saved; one not saved yet has nothing to show. */
+async function scoringStates(context: SkillContext, state: SkillState): Promise<SkillState[]> {
+  const read = await Promise.all(state.scoring.map(({ run }) => readSkillState(context.config, run)));
+
+  return read.flatMap((found) => (found.kind === 'found' ? [found.state] : []));
 }
 
 /**
@@ -214,10 +231,12 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   let state = start;
   let spawned = false;
 
-  const apply = async (effects: readonly Effect[]): Promise<void> => {
+  const apply = async (effects: readonly Effect[]): Promise<Applied> => {
     const applied = await applyEffects(context, lock, state, effects);
     state = applied.state;
     spawned = spawned || applied.spawned;
+
+    return applied;
   };
 
   for (const open of start.attempts) {
@@ -229,6 +248,8 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   }
 
   let probed = false;
+  // Set once the run could not be offered to a person: the engine then fails the steps only one can take.
+  let unoffered: PersonHandoff | undefined;
 
   for (;;) {
     const version = state.done ? await context.client.runVersion(state.run) : undefined;
@@ -242,18 +263,25 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
     // The engine reads an absent autoApprove and an undefined one alike, and the CLI's JSON drops it.
     const body = {
-      driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: request.running, canTakeLease: request.canTakeLease,
+      driver: { ...state.driver, can: { ...canFor(state.host.kind === 'chosen' ? state.host.id : undefined), confined: confinedCan(state) } }, running: request.running, canTakeLease: request.canTakeLease,
       runMode: state.options.mode, autoApprove: request.autoApprove ? true : undefined,
     };
 
-    const answer = await context.client.next(state.run, body);
+    const handoff = unoffered ?? request.handoff;
+    const options = handoff === undefined ? undefined : { handoff };
+    const answer = await context.client.next(state.run, body, options);
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);
+    state = traced(context, startedRow(state, startedOf(answer)))?.state ?? state;
     const sameEnd = reply.kind === 'done' && reply.out && state.done !== undefined && canonicalJson(endOf(reply)) === canonicalJson(endOf(state.done));
     state = traced(context, reopenedRow(state, { reply, sameEnd }))?.state ?? state;
 
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
+    const givingUp = traced(context, giveUpRow(state, reply));
+
+    // A step given up lets the run go on, so the engine is asked again; one it refused waits as D14 says.
+    if (givingUp && (await apply(givingUp.effects)).refused === undefined) continue;
     const ended = reply.kind === 'done' && !state.done ? await context.client.runVersion(state.run) : undefined;
     const replied = traced(context, replyRow(state, { reply, at, version: ended }));
 
@@ -266,9 +294,20 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     state = replied.state;
     await apply(replied.effects);
 
+    if (replied.row === 'D30') {
+      const offered = traced(context, offeredRow({ steps: replied.offer, offered: await context.client.offer(state.run, state.driver.workspace) }));
+
+      if (offered.row === 'D32') {
+        unoffered = offered.handoff;
+        continue;
+      }
+
+      return { state, spawned, waiting: replied.waiting, turn: offered.turn };
+    }
+
     if (!probed && traced(context, heldProbeRow(reply))) {
       probed = true;
-      const probe = engineReply(state.run, await context.client.next(state.run, { ...body, canTakeLease: false })).reply;
+      const probe = engineReply(state.run, await context.client.next(state.run, { ...body, canTakeLease: false }, options)).reply;
       state = traced(context, gateCheckRow(state, probe))?.state ?? state;
       const asked = probe.kind === 'hitl' ? traced(context, replyRow(state, { reply: probe, at })) : undefined;
 
@@ -376,17 +415,22 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
 }
 
 /** What still needs a person to continue a run: nothing once it ended, since a resume then only readies it as it ended. */
-function attendedNow(run: Pick<Extract<RunReadied, { kind: 'ready' }>, 'description' | 'settled' | 'status'>): string | undefined {
-  return run.status === 'running' ? attendedReason(run.description, 'continue', new Set(run.settled)) : undefined;
+function attendedNow(run: Pick<Extract<RunReadied, { kind: 'ready' }>, 'description' | 'status'>): string | undefined {
+  return run.status === 'running' ? attendedReason(run.description, 'continue') : undefined;
 }
 
-/** The turn of `state` as `answer` renders it, from the events the session has not seen and why the run waits. */
-function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEvent[]; waiting?: Waiting; localTool?: string }): Turn {
+/**
+ * The turn of `state` as `answer` renders it, from the events the session has not seen, why the run waits, and the runs
+ * that score its passes (J8). A run that scores another's pass leads back to that run, which drives it.
+ */
+function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEvent[]; waiting?: Waiting; localTool?: string; scoring?: readonly SkillState[] }): Turn {
+  const back = state.scores ?? state.run;
+
   const after = answer.after === 'none' ? undefined
-    : { kind: answer.after, run: answer.after === 'wake' ? nextLiteral(state.invocation, state.run) : pollLiteral(state.invocation, state.run) };
+    : { kind: answer.after, run: answer.after === 'wake' ? nextLiteral(state.invocation, back) : pollLiteral(state.invocation, back) };
 
   return turnOf(state, {
-    events: answer.events === 'unseen' ? input.events : [], after, waiting: input.waiting, quiet: answer.quiet ? true : undefined, localTool: input.localTool,
+    events: answer.events === 'unseen' ? input.events : [], after, waiting: input.waiting, quiet: answer.quiet ? true : undefined, localTool: input.localTool, scoring: input.scoring, offered: answer.offered,
   });
 }
 
@@ -400,8 +444,9 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
   const events = unseenEvents(state, context.session);
   const shown = traced(context, turnRow(state, { session: context.session, ticked }));
   await writeSkillState(context.config, lock, shown.state, context.env.secrets);
+  const scoring = await scoringStates(context, shown.state);
 
-  return { data: { turn: rendered(shown.state, shown.turn, { events, waiting: shown.waiting, localTool: runPromptTool(context, shown.state) }) } };
+  return { data: { turn: rendered(shown.state, shown.turn, { events, waiting: shown.waiting, localTool: runPromptTool(context, shown.state), scoring }) } };
 }
 
 /**
@@ -677,13 +722,14 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
       }
 
       const events = unseenEvents(result.state, context.session);
-      const polled = traced(context, pollRow(result.state, { session: context.session, busy: false, boundReached, ticked: result }));
+      const scoring = await scoringStates(context, result.state);
+      const polled = traced(context, pollRow(result.state, { session: context.session, busy: false, boundReached, ticked: result, scoringWaits: scoringWaits(scoring) }));
       last = 'state' in polled ? polled.state : result.state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
 
       if (!('turn' in polled)) return 'sleep';
 
-      return { data: { turn: rendered(last, polled.turn, { events, waiting: polled.waiting, localTool: runPromptTool(context, last) }) } };
+      return { data: { turn: rendered(last, polled.turn, { events, waiting: polled.waiting, localTool: runPromptTool(context, last), scoring }) } };
     }, 0);
 
     switch (ticked.kind) {
@@ -696,7 +742,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
           break;
         }
 
-        const polled = traced(context, pollRow(last, { session: context.session, busy: true, boundReached, ticked: {} }));
+        const polled = traced(context, pollRow(last, { session: context.session, busy: true, boundReached, ticked: {}, scoringWaits: false }));
 
         if ('turn' in polled) return { data: { turn: rendered(polled.state, polled.turn, { events: [] }) } };
         break;

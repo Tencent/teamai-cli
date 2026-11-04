@@ -138,7 +138,7 @@ export function completeDelivery(
   const step = deliveringStep(run, job.key);
   const awaited = !outcome.ok && outcome.fault.kind === 'branch_ahead' && unchecked();
 
-  if (step && outcome.ok && settles) delivered(step);
+  if (step && outcome.ok && settles) delivered(step, outcome.pr);
   else if (step && !outcome.ok && !awaited) deliveryFailed(step, deliveryFailure(job, outcome.fault));
 
   return { requeueEnd: receipted && run.status !== 'running' };

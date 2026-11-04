@@ -1078,9 +1078,13 @@ async function removeBlockingSymlink(dir: string, relative: string): Promise<voi
   }
 }
 
-export async function removeWorktree(main: string, dir: string): Promise<void> {
-  await git(main, ['worktree', 'remove', '--force', dir]);
+/** Removes worktree `dir` of `main`'s repository, or says why `git worktree remove` left it. */
+export async function removeWorktree(main: string, dir: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const removed = await git(main, ['worktree', 'remove', '--force', dir]);
+
   await git(main, ['worktree', 'prune']);
+
+  return removed.code === 0 ? { ok: true } : { ok: false, reason: removed.stderr.trim() || 'git worktree remove failed' };
 }
 
 const UnrestoredMarker = z.object({ branch: z.string(), commit: z.string(), step: z.string(), reason: z.string(), found: z.array(z.string()) });

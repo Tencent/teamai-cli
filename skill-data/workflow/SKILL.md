@@ -39,7 +39,7 @@ Done when a turn has no `then`.
 In an unattended run nobody reads you: step 2 is for your own log, and you ask nothing. Keep running `then` until a turn has none, also after `done` while it carries `judging`, so the judge's label lands before your session ends.
 Run `teamai score --drain` before your session ends.
 
-An unattended session that reaches a `handoff` reports that the run waits for a person, and stops.
+An unattended session that reaches a `person` action reports its `message`, and stops.
 
 When you have lost the last turn, after a compaction or in a new session, run `teamai workflow next <run> --driver skill` once for the current one.
 
@@ -73,6 +73,10 @@ A `person` action with `why: handoff` means the run waits only on steps this ses
 
 Done when the person has the literal.
 
+A `person` action with `why: offered` comes only in an unattended run: `steps` need a person, so TeamAI offered the run on teamai-reports for one to continue, and released it. Report `message`, which carries the literal in `run` a person claims it with, and stop: the turn has no `then`, and the run is no longer this session's.
+
+Done when you reported `message`.
+
 ## Stop
 
 A `stop` action names a child you started whose step the run no longer wants. `why` says why: `cancelled` or `timeout`. For each one:
@@ -99,6 +103,8 @@ On `h4` you are the child, so no child starts and nothing runs in the background
 
 A dispatch whose `needs.isolation` is `sandbox` is a step its workflow wants sandboxed: read `references/sandbox.md` before step 1.
 
+A dispatch whose `needs.confined` is true is a step answered from `dir` alone: read `references/judging.md` before step 1.
+
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
 The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself.
@@ -113,7 +119,7 @@ Done when the turn carries a `dispatch` for its `attempt`.
 
 ## Done
 
-The `done` action carries the `outcome`, the pull requests the run opened in `prs`, and the `failure` when there is one. Tell the person the outcome and each pull request; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says. When `done` carries `score`, judge the run's scored steps yourself, as `references/judging.md` says.
+The `done` action carries the `outcome`, the pull requests the run opened in `prs`, the `branch` the run left its changes on when it worked in a copy of its own, and the `failure` when there is one. Tell the person the outcome and each pull request; for a `branch`, that branch and that `git merge <branch>` brings its changes in; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says.
 
 ## Errors
 

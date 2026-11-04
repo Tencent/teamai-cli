@@ -8,12 +8,11 @@ import type { JsonValue } from '../types.js';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
 import { isUnder, passesWithin, runPasses, type RunPass } from './loop.js';
-import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
+import { contextOf, localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
-import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
+import { renderLeaseText, renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
 import { passOf, type Delivery, type StepState } from './step-state.js';
 import { ClonePlaceSchema, type ClonePlace } from './clone.js';
-import { parseTemplate, renderText } from './template.js';
 import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type TeamPlace, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
 
 export type WorkspaceMode = typeof WORKSPACE_MODES[number];
@@ -62,9 +61,15 @@ const CopyContractOptions = [
 
 export const CopyContractSchema = z.discriminatedUnion('mode', CopyContractOptions) satisfies z.ZodType<CopyContract>;
 
-export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.string().min(1) });
+/** `publish`: the step publishes what it stages to `branch`, a teamai data branch, as `deliver: publish` does. */
+export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.string().min(1), publish: z.literal(true).optional() });
 
 export const WorkspaceContractSchema = z.discriminatedUnion('mode', [...CopyContractOptions, TeamContractSchema]) satisfies z.ZodType<WorkspaceContract>;
+
+/** Whether `contract` publishes what its step stages to a data branch, so it makes no copy a driver works in. */
+export function isPublishContract(contract: WorkspaceContract): boolean {
+  return contract.mode === 'team' && contract.publish === true;
+}
 
 export interface SessionRef {
   tool: string;
@@ -88,6 +93,11 @@ export interface WorkspacePlan {
   fail?: WorkflowFailure;
 }
 
+/** What every branch of run `runId` starts with: `teamai/<run>/`. */
+export function runBranchPrefix(runId: string): string {
+  return `teamai/${runId}/`;
+}
+
 /** A branch name that includes the run, the step path, and the pass, and is safe in a ref. */
 export function branchName(runId: string, stepPath: string, pass: number): string {
   const safe = parseStepPath(stepPath).map((segment) => {
@@ -98,7 +108,7 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
     return segment.index === undefined ? id : `${id}-${segment.index}`;
   }).join('-') || 'step';
 
-  return `teamai/${runId}/${safe}/p${pass}`;
+  return `${runBranchPrefix(runId)}${safe}/p${pass}`;
 }
 
 /**
@@ -106,7 +116,7 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
  * A prompt that omits it continues the nearest enclosing copy, or stays read-only. Inside a `for_each` item that copy
  * is the item's own, so siblings do not share a worktree.
  */
-export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): WorkspaceMode {
+export function resolveMode(step: WorkflowStep, ancestors: readonly WorkflowStep[]): WorkspaceMode {
   switch (step.workspace) {
     case undefined:
       break;
@@ -115,7 +125,10 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
     case 'continue':
       return step.workspace;
     default:
-      return 'clone' in step.workspace ? 'clone' : 'team';
+      if ('clone' in step.workspace) return 'clone';
+
+      // A step confined to a directory opens no copy and changes nothing.
+      return 'team' in step.workspace ? 'team' : 'read-only';
   }
 
   if (step.command !== undefined && step.prompt === undefined && step.promptFile === undefined) return 'read-only';
@@ -156,6 +169,13 @@ export function contractClone(contract: WorkspaceContract | undefined): ClonePla
   return contract?.mode === 'new' || contract?.mode === 'continue' ? contract.clone : undefined;
 }
 
+/** The directory `step` is confined to, as written, or undefined when it is not confined to one. */
+export function confinedOf(step: WorkflowStep): string | undefined {
+  const place = placeOf(step);
+
+  return place && 'confined' in place ? place.confined : undefined;
+}
+
 /** The team repo branch `step` commits to, or undefined when it runs in no team workspace. */
 function teamOf(step: WorkflowStep): TeamPlace | undefined {
   const place = placeOf(step);
@@ -172,9 +192,12 @@ export function isIsolated(run: Pick<RunState, 'definition' | 'workflows'>): boo
   return someStep(run, (step) => cloneOf(step) !== undefined || stepWorkflow(step)?.kind === 'from');
 }
 
-/** Whether a step of `run`, or of a workflow it runs, works in the team workspace, whose clone only the machine that ran it has. */
+/**
+ * Whether a step of `run`, or of a workflow it runs, works in the team workspace, whose clone only the machine that ran it
+ * has. A step that publishes to a data branch leaves nothing behind that another machine would need.
+ */
 export function worksInTeam(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
-  return someStep(run, (step) => teamOf(step) !== undefined);
+  return someStep(run, (step) => teamOf(step) !== undefined && step.deliver !== 'publish');
 }
 
 /** Whether `matches` holds for a step of `run`, of a workflow it runs inline, or of one it admitted. */
@@ -189,8 +212,21 @@ function someStep(run: Pick<RunState, 'definition' | 'workflows'>, matches: (ste
 }
 
 /** Whether a step runs in the member's checkout as it is: read-only, with no enclosing step that opens a copy. */
-export function runsInCheckout(step: WorkflowStep, ancestors: WorkflowStep[]): boolean {
+export function runsInCheckout(step: WorkflowStep, ancestors: readonly WorkflowStep[]): boolean {
   return resolveMode(step, ancestors) === 'read-only' && !ancestors.some(opensCopy);
+}
+
+/** The workflow a step runs, as a walk of the tree reads it. */
+type ChildOf = (step: WorkflowStep) => WorkflowDefinition | InlineWorkflow | undefined;
+
+/** Whether `step`, inside `outer`, leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
+export function writesBranch(step: WorkflowStep, outer: readonly Level[], childOf: ChildOf): boolean {
+  const child = childOf(step);
+
+  if (child) return child.steps.some((inner) => writesBranch(inner, levelsInside(outer, { step }, child), childOf));
+
+  return (step.prompt !== undefined || step.promptFile !== undefined || (step.workspace !== undefined && step.workspace !== 'read-only'))
+    && resolveMode(step, outer.map((level) => level.step)) !== 'read-only';
 }
 
 /**
@@ -204,38 +240,31 @@ export function deliveryProblem(
   let delivering: string | undefined;
   const childOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
 
-  const writes = (steps: WorkflowStep[], ancestors: WorkflowStep[]): boolean => steps.some((step) => {
-    const child = childOf(step);
-
-    if (child) return writes(child.steps, [...ancestors, step]);
-
-    return (step.prompt !== undefined || step.promptFile !== undefined || (step.workspace !== undefined && step.workspace !== 'read-only'))
-      && resolveMode(step, ancestors) !== 'read-only';
-  });
-
-  const visit = (steps: WorkflowStep[], ancestors: WorkflowStep[], prefix: string): WorkflowFailure | undefined => {
+  const visit = (steps: WorkflowStep[], outer: readonly Level[], prefix: string): WorkflowFailure | undefined => {
     for (const step of steps) {
       const path = `${prefix}${step.id}`;
       const child = childOf(step);
+      const inside = levelsInside(outer, { step }, child);
+      const placed = inside.at(-1)?.step;
 
       if (step.deliver === 'pr') {
         // A team step's pull request goes into the team repo's default branch, whatever the checkout has checked out.
         if (!teamOf(step)) delivering ??= path;
 
-        if (step.workflow !== undefined && step.workspace !== 'new' && !step.forEach) {
+        if (step.workflow !== undefined && placed?.workspace !== 'new' && !step.forEach) {
           return { code: 'bad_delivery', message: `Step "${path}" delivers its workflow, so it needs workspace: new to own the branch it delivers.` };
         }
 
-        if (child && !writes(child.steps, [...ancestors, step])) {
+        if (child && !writesBranch(step, outer, childOf)) {
           return { code: 'bad_delivery', message: `Step "${path}" has deliver: pr, but no step of the workflow it runs writes a branch, so it would deliver nothing. Set workspace: new on "${path}" so its prompt steps write, or give a step in that workflow workspace: new or continue.` };
         }
 
-        if (step.workflow === undefined && resolveMode(step, ancestors) === 'read-only') {
+        if (step.workflow === undefined && resolveMode(step, outer.map((level) => level.step)) === 'read-only') {
           return { code: 'bad_delivery', message: `Step "${path}" has deliver: pr but runs read-only. Set workspace: new on it, or on the workflow step that runs it.` };
         }
       }
 
-      const problem = child && visit(child.steps, [...ancestors, step], `${path}.`);
+      const problem = child && visit(child.steps, inside, `${path}.`);
 
       if (problem) return problem;
     }
@@ -243,7 +272,7 @@ export function deliveryProblem(
     return undefined;
   };
 
-  const problem = visit(definition.steps, [], '');
+  const problem = visit(definition.steps, runLevels(definition).map((step) => ({ step })), '');
 
   if (problem || delivering === undefined || !base || base.ref !== undefined) return problem;
 
@@ -255,15 +284,141 @@ export function deliveryProblem(
 
 /** How step instance `path` runs, or undefined when the run's definitions have no such step. */
 export function stepMode(run: StepTree, path: string): WorkspaceMode | undefined {
-  const definition = stepDefinitions(run)(path);
+  const { own, ancestors } = splitLevels(levelsTo(run, path), path);
 
-  return definition && resolveMode(definition, ancestorsOf(run, path).map((ancestor) => ancestor.step));
+  return own && resolveMode(own.step, ancestors.map((ancestor) => ancestor.step));
 }
 
-interface Ancestor {
-  instance: string;
+/**
+ * The level of the run itself, before its first step, when its workflow's header says `workspace: new`: it opens the
+ * copy its steps work in, as a `workflow` step with `workspace: new` does for the steps inside it.
+ */
+const RUN_COPY: WorkflowStep = { id: '', workspace: 'new' };
+
+/**
+ * The levels a walk of the steps of `definition`, the workflow a run starts, begins inside: the run's own copy when
+ * the header says `workspace: new`, else none. Every chain of copies starts here.
+ */
+export function runLevels(definition: Pick<WorkflowDefinition, 'workspace'>): WorkflowStep[] {
+  return definition.workspace === 'new' ? [RUN_COPY] : [];
+}
+
+/** Whether a level on the way to a step is the run itself, rather than a step. */
+export function isRunLevel(step: WorkflowStep): boolean {
+  return step === RUN_COPY;
+}
+
+/** A level on the way to a step: a step, or the run itself (`isRunLevel`), as `resolveMode` and `opensCopy` read it. */
+export interface Level {
   step: WorkflowStep;
-  pass: number;
+}
+
+/**
+ * The levels the steps of `child`, the workflow `level`'s step runs, are inside: `outer`, then that step as placed
+ * there. A step with no `workspace` that runs a workflow whose header says `workspace: new` opens a copy, as
+ * `workspace: new` on it would, unless a copy is already around it, which the workflow's steps then continue. Every
+ * chain of levels starts at `runLevels` and grows through this.
+ */
+export function levelsInside<TLevel extends Level>(outer: readonly TLevel[], level: TLevel, child: WorkflowDefinition | InlineWorkflow | undefined): TLevel[] {
+  const { step } = level;
+
+  if (step.workspace !== undefined || !child || !isWorkflowFile(child) || child.workspace !== 'new' || outer.some((around) => opensCopy(around.step))) return [...outer, level];
+
+  return [...outer, { ...level, step: { ...step, workspace: 'new' } }];
+}
+
+/**
+ * A level on the way to a step instance, with the `defaults.role` in effect where it sits: the run itself, or a step
+ * instance on the path, with its pass and the `for_each` item it runs for, at any depth.
+ */
+type PathLevel = Level & { defaultRole?: string } & ({ kind: 'run' } | { kind: 'step'; instance: string; pass: number; item?: { value: unknown } });
+
+/**
+ * The levels to step instance `path` in the run's definitions, outermost first: the run's own copy, then one level per
+ * instance on the path, `path` itself last. It stops before a segment the definitions have no step for.
+ */
+function levelsTo(run: StepTree, path: string): PathLevel[] {
+  let defaultRole = run.definition.defaults?.role;
+  let levels: PathLevel[] = [];
+  let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
+  let prefix = '';
+  let item: { value: unknown } | undefined;
+
+  for (const step of runLevels(run.definition)) {
+    const level: PathLevel = { kind: 'run', step };
+
+    if (defaultRole !== undefined) level.defaultRole = defaultRole;
+    levels.push(level);
+  }
+
+  for (const segment of path.split('.')) {
+    const parsed = parseStepPath(segment)[0];
+    const step = workflow?.steps.find((entry) => entry.id === (parsed?.id ?? segment));
+
+    if (!step) break;
+    const instance = `${prefix}${segment}`;
+
+    if (parsed?.index !== undefined) item = { value: instanceOf(run, instance)?.item };
+    workflow = workflowRunBy(run, step, prefix);
+    const level: PathLevel = { kind: 'step', instance, step, pass: instanceOf(run, instance)?.pass ?? 1 };
+
+    if (defaultRole !== undefined) level.defaultRole = defaultRole;
+
+    if (item) level.item = item;
+    levels = levelsInside(levels, level, workflow);
+
+    if (workflow && isWorkflowFile(workflow)) defaultRole = workflow.defaults?.role ?? defaultRole;
+    prefix = `${instance}.`;
+  }
+
+  return levels;
+}
+
+/** `levels` to `path` as the step itself, when the definitions have it, and the levels around it. */
+function splitLevels(levels: PathLevel[], path: string): { own?: PathLevel; ancestors: PathLevel[] } {
+  const last = levels.at(-1);
+
+  return last?.kind === 'step' && last.instance === path ? { own: last, ancestors: levels.slice(0, -1) } : { ancestors: levels };
+}
+
+/** The nearest level around `path` that opens the copy the steps inside it work in, the run's own included. */
+function copyOwner(run: StepTree, path: string): PathLevel | undefined {
+  return splitLevels(levelsTo(run, path), path).ancestors.toReversed().find((ancestor) => opensCopy(ancestor.step));
+}
+
+/** The branch of the copy `owner` opens: the run's own copy, or the branch of the step instance and its pass. */
+function ownerBranch(runId: string, owner: PathLevel): string {
+  switch (owner.kind) {
+    case 'run': return runCopyBranch(runId);
+    case 'step': return branchName(runId, owner.instance, owner.pass);
+    default: {
+      const unhandled: never = owner;
+
+      return unhandled;
+    }
+  }
+}
+
+/** The branch that pins the commit run `runId` started from on origin, so a driver's fetch of the run's branches brings it in. */
+export function basePinBranch(runId: string): string {
+  return `${runBranchPrefix(runId)}base`;
+}
+
+/** The branch of the copy a run opens when its workflow's header says `workspace: new`. No step's branch takes this name. */
+export function runCopyBranch(runId: string): string {
+  return `${runBranchPrefix(runId)}_run`;
+}
+
+/**
+ * The branch a person brings a succeeded run's changes in from: the copy the run opened, as its workflow's header says
+ * `workspace: new`, when the run left commits on it. A driver names it as the run ends.
+ */
+export function runCopyToMerge(run: Pick<RunState, 'id' | 'status' | 'definition' | 'copies' | 'base'>): string | undefined {
+  if (run.status !== 'succeeded' || run.definition.workspace !== 'new') return undefined;
+  const branch = runCopyBranch(run.id);
+  const commit = run.copies?.[branch]?.commit;
+
+  return commit === undefined || commit === run.base?.commit ? undefined : branch;
 }
 
 /** What finding a step's workspace reads of a run: its definitions, and the pass of each step instance. */
@@ -283,25 +438,6 @@ function instanceOf(run: StepTree, id: string): StepTree['steps'][number] | unde
   }
 
   return index.get(id);
-}
-
-function ancestorsOf(run: StepTree, path: string): Ancestor[] {
-  const definitionOf = stepDefinitions(run);
-  const segments = parseStepPath(path);
-  const ancestors: Ancestor[] = [];
-
-  for (let length = 1; length < segments.length; length += 1) {
-    const instance = segments.slice(0, length).map((segment) => (
-      segment.index === undefined ? segment.id : `${segment.id}[${segment.index}]`
-    )).join('.');
-
-    const step = definitionOf(instance);
-
-    if (!step) continue;
-    ancestors.push({ instance, step, pass: instanceOf(run, instance)?.pass ?? 1 });
-  }
-
-  return ancestors;
 }
 
 function changesOf(state: StepState | undefined): StepChanges | undefined {
@@ -734,8 +870,11 @@ export function planWorkspace(
   request: WorkspaceRequest,
   handback = false,
 ): WorkspacePlan {
-  const ancestors = ancestorsOf(run, state.id);
+  const { ancestors } = splitLevels(levelsTo(run, state.id), state.id);
   const mode = resolveMode(definition, ancestors.map((ancestor) => ancestor.step));
+
+  // It reads only its directory, so it runs in no copy, whatever the steps around it open, and resumes no session.
+  if (confinedOf(definition) !== undefined) return { mode };
   // A role template that gives no role id fails the step before any role it would run with is compared.
   const levels = roleLevelsOf(run, state.id);
 
@@ -747,19 +886,19 @@ export function planWorkspace(
   const owner = ancestors.toReversed().find((ancestor) => opensCopy(ancestor.step));
   const modes = request.modes ?? ['read-only'];
 
-  const cloned = mode === 'clone' ? { clone: cloneOf(definition), instance: state.id, pass: state.pass ?? 1 }
-    : owner && cloneOf(owner.step) ? { clone: cloneOf(owner.step), instance: owner.instance, pass: owner.pass } : undefined;
+  const cloned = mode === 'clone' ? { clone: cloneOf(definition), branch: branchName(run.id, state.id, state.pass ?? 1) }
+    : owner && cloneOf(owner.step) ? { clone: cloneOf(owner.step), branch: ownerBranch(run.id, owner) } : undefined;
 
   // A copy runs with the role it was opened with; a step another file runs there may resolve another only by mistake.
   const conflict = copyRoleConflict(levels);
 
-  if (conflict) return { mode, fail: copyRoleFailure(state.id, conflict) };
+  if (conflict) return { mode, fail: copyRoleFailure(state.id, levels, conflict) };
 
   if (cloned?.clone) return planClone(run, state, request, { ...cloned, clone: cloned.clone, mode, session, handback });
 
   const team = teamOf(definition);
 
-  if (team) return planTeam(run, state, request, { team, session, handback });
+  if (team) return planTeam(run, state, request, { scope, team, session, handback, publish: definition.deliver === 'publish' });
 
   if (mode === 'clone') return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" opens a clone this teamai cannot read` } };
 
@@ -779,7 +918,7 @@ export function planWorkspace(
     }
 
     const needed = heads.length === 1 ? heads[0] : undefined;
-    const branch = needed?.branch ?? branchName(run.id, owner.instance, owner.pass);
+    const branch = needed?.branch ?? ownerBranch(run.id, owner);
 
     if (!handback && !modes.includes('continue')) {
       return { mode, defer: { reason: `step "${state.id}" reads workspace ${branch}, which needs continue`, needs: 'continue' } };
@@ -814,7 +953,7 @@ export function planWorkspace(
 
   const branch = mode === 'new' || !owner
     ? branchName(run.id, state.id, state.pass ?? 1)
-    : branchName(run.id, owner.instance, owner.pass);
+    : ownerBranch(run.id, owner);
 
   if (mode === 'continue' && !owner) {
     return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" continues a workspace, but no enclosing step opens one` } };
@@ -846,57 +985,80 @@ export function planWorkspace(
 }
 
 /**
- * The failure of step instance `path`, which resolves a role other than the one of the copy an enclosing step opened:
- * what each runs with, and where to set the role instead.
+ * The failure of step instance `path`, which resolves a role other than the one of the copy an enclosing step, or the
+ * run, opened: what each runs with, and where to set the role instead.
  */
-function copyRoleFailure(path: string, { copy, resolved }: NonNullable<ReturnType<typeof copyRoleConflict<RoleIdSpec>>>): WorkflowFailure {
-  const opener = path.split('.').slice(0, copy.opener + 1).join('.');
+function copyRoleFailure(path: string, levels: readonly PathRoleLevel[], { copy, resolved }: NonNullable<ReturnType<typeof copyRoleConflict<RoleIdSpec>>>): WorkflowFailure {
+  const opener = copyOpenerWords(levels[copy.opener]);
   const copyRole = copy.runsWith.kind === 'role' ? copy.runsWith.role.id : undefined;
   const failed = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
 
   if (resolved === undefined) {
     return failed(copyRole === undefined
-      ? `step "${path}" runs with your roles but continues the copy step "${opener}" opened without a role, which every step there runs with; give step "${path}" that role, or remove it from step "${opener}"`
-      : `step "${path}" runs with your roles but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; give step "${path}" that role, or remove it from step "${opener}"`);
+      ? `step "${path}" runs with your roles but continues the copy ${opener.label} opened without a role, which every step there runs with; give step "${path}" that role, or remove it ${opener.from}`
+      : `step "${path}" runs with your roles but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; give step "${path}" that role, or remove it ${opener.from}`);
   }
 
   const role = resolved.role.id;
+  const named = resolved.from === 'defaults' ? undefined : levels[resolved.from];
 
-  if (resolved.from === 'defaults') {
-    return failed(copyRole === undefined
-      ? `step "${path}" gets role ${role} from defaults.role but continues the copy step "${opener}" opened without a role, which every step there runs with; give the steps continuing that copy its role, or set role ${role} on step "${opener}"`
-      : `step "${path}" gets role ${role} from defaults.role but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; give the steps continuing that copy its role, or set role ${role} on step "${opener}"`);
+  switch (named?.kind) {
+    // The run names no role of its own: a role it gives is its defaults.role.
+    case undefined:
+    case 'run':
+      return failed(copyRole === undefined
+        ? `step "${path}" gets role ${role} from defaults.role but continues the copy ${opener.label} opened without a role, which every step there runs with; give the steps continuing that copy its role, or set role ${role} ${opener.on}`
+        : `step "${path}" gets role ${role} from defaults.role but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; give the steps continuing that copy its role, or set role ${role} ${opener.on}`);
+    case 'step': {
+      const { instance } = named;
+
+      if (instance === path) {
+        return failed(copyRole === undefined
+          ? `step "${path}" has role ${role} but continues the copy ${opener.label} opened without a role, which every step there runs with; remove role from step "${path}", or set it ${opener.on}`
+          : `step "${path}" has role ${role} but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; remove role from step "${path}", or set it ${opener.on}`);
+      }
+
+      return failed(copyRole === undefined
+        ? `step "${path}" gets role ${role} from step "${instance}" but continues the copy ${opener.label} opened without a role, which every step there runs with; remove role from step "${instance}", or set it ${opener.on}`
+        : `step "${path}" gets role ${role} from step "${instance}" but continues the copy ${opener.label} opened with role ${copyRole}, which every step there runs with; remove role from step "${instance}", or set it ${opener.on}`);
+    }
+
+    default: {
+      const unhandled: never = named;
+
+      return unhandled;
+    }
   }
+}
 
-  const named = path.split('.').slice(0, resolved.from + 1).join('.');
+/** How a role failure names the level that opened a copy, where to set its role, and where to remove it from. */
+function copyOpenerWords(opening: PathRoleLevel) {
+  switch (opening.kind) {
+    // The run's own copy gets its role from defaults.role, as a step's gets it from the step.
+    case 'run': return { label: 'the run', on: 'as defaults.role', from: 'from defaults.role' };
+    case 'step': return { label: `step "${opening.instance}"`, on: `on step "${opening.instance}"`, from: `from step "${opening.instance}"` };
+    default: {
+      const unhandled: never = opening;
 
-  if (named === path) {
-    return failed(copyRole === undefined
-      ? `step "${path}" has role ${role} but continues the copy step "${opener}" opened without a role, which every step there runs with; remove role from step "${path}", or set it on step "${opener}"`
-      : `step "${path}" has role ${role} but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; remove role from step "${path}", or set it on step "${opener}"`);
+      return unhandled;
+    }
   }
-
-  return failed(copyRole === undefined
-    ? `step "${path}" gets role ${role} from step "${named}" but continues the copy step "${opener}" opened without a role, which every step there runs with; remove role from step "${named}", or set it on step "${opener}"`
-    : `step "${path}" gets role ${role} from step "${named}" but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; remove role from step "${named}", or set it on step "${opener}"`);
 }
 
 /**
- * The contract of a step in the clone `instance` opened, `instance` itself or its nearest enclosing copy: the clone's
+ * The contract of a step in the clone on `branch`, opened by the step itself or its nearest enclosing copy: the clone's
  * commit is its base, whatever the run's, and its agent configuration; it merges nothing, as `needs` only order steps
  * there. It continues the clone's branch, held by the driver that opened it. A read-only step is refused: a clone has
  * no reader place.
  */
 function planClone(run: RunState, state: StepState, request: WorkspaceRequest, input: {
-  clone: ClonePlace; instance: string; pass: number; mode: WorkspaceMode; session: { session?: LeaseSession }; handback: boolean;
+  clone: ClonePlace; branch: string; mode: WorkspaceMode; session: { session?: LeaseSession }; handback: boolean;
 }): WorkspacePlan {
-  const { clone, mode, session, handback } = input;
+  const { clone, branch, mode, session, handback } = input;
 
   if (mode === 'read-only') {
     return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" runs read-only inside a clone, which has no reader place; give it workspace: continue` } };
   }
-
-  const branch = branchName(run.id, input.instance, input.pass);
 
   if (!handback && !(request.modes ?? []).includes('clone')) {
     return { mode, defer: { reason: `step "${state.id}" runs in a clone, which this driver does not provide`, needs: 'clone' } };
@@ -918,19 +1080,21 @@ function planClone(run: RunState, state: StepState, request: WorkspaceRequest, i
 const GIT_BRANCH = /^(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)))(?![-./])[\w./-]*[\w-]$/;
 
 /**
- * The contract of a step in the team workspace: `team.branch` rendered with the run's inputs, else the run's own branch
- * of the step. Only a driver that provides `team` takes it, and a step the copy's owner did not lease waits for it.
+ * The contract of a step in the team workspace: `team.branch` rendered from what the step reads when it is leased, its
+ * workflow's inputs and the outputs of the steps it needs, else the run's own branch of the step. Only a driver that
+ * provides `team` takes it, and a step the copy's owner did not lease waits for it.
  */
-function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { team: TeamPlace; session: { session?: LeaseSession }; handback: boolean }): WorkspacePlan {
-  const { team, session, handback } = input;
+function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { scope: Scope; team: TeamPlace; session: { session?: LeaseSession }; handback: boolean; publish: boolean }): WorkspacePlan {
+  const { scope, team, session, handback, publish } = input;
   const mode = 'team';
-  const parsed = team.branch === undefined ? undefined : parseTemplate(team.branch, false);
 
-  if (parsed && !parsed.ok) return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" workspace team branch ${team.branch} is not a template teamai reads` } };
-  const branch = parsed ? renderText(parsed.template, { inputs: run.inputs ?? {}, steps: {} }) : branchName(run.id, state.id, state.pass ?? 1);
+  const branch = team.branch === undefined ? branchName(run.id, state.id, state.pass ?? 1)
+    : renderLeaseText(contextOf(scope, statesIn(run, scope), state), state, { what: 'workspace team branch', text: team.branch });
+
+  if (branch instanceof Object) return { mode, fail: branch };
 
   if (!GIT_BRANCH.test(branch)) {
-    return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs that make workspace team branch a branch name.` } };
+    return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs and step outputs that make workspace team branch a branch name.` } };
   }
 
   if (!handback && !(request.modes ?? []).includes('team')) {
@@ -943,7 +1107,7 @@ function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, in
     return { mode, defer: { reason: `step "${state.id}" commits to team branch ${branch}, which another driver of this run holds` } };
   }
 
-  return { mode, ...session, contract: { mode, branch } };
+  return { mode, ...session, contract: publish ? { mode, branch, publish } : { mode, branch } };
 }
 
 /**
@@ -954,9 +1118,9 @@ export function cloneBranchOf(run: StepTree & Pick<RunState, 'id'>, path: string
   const own = stepDefinitions(run)(path);
 
   if (own && cloneOf(own)) return branchName(run.id, path, instanceOf(run, path)?.pass ?? 1);
-  const owner = ancestorsOf(run, path).toReversed().find((ancestor) => opensCopy(ancestor.step));
+  const owner = copyOwner(run, path);
 
-  return owner && cloneOf(owner.step) ? branchName(run.id, owner.instance, owner.pass) : undefined;
+  return owner && cloneOf(owner.step) ? ownerBranch(run.id, owner) : undefined;
 }
 
 /** A role id, as a step names one or a lease renders one for its item. */
@@ -967,8 +1131,7 @@ export type RoleIdSpec = Extract<StepRoleSpec, { kind: 'id' }>;
  * effect where it sits: its own workflow file's, else that of the nearest file around it that sets one. Before a lease
  * the role may be a template of the item (`StepRoleSpec`); a lease's levels hold the id it renders (`RoleIdSpec`).
  */
-export interface RoleLevel<TRole extends StepRoleSpec = StepRoleSpec> {
-  step: WorkflowStep;
+export interface RoleLevel<TRole extends StepRoleSpec = StepRoleSpec> extends Level {
   role?: TRole;
   defaultRole?: string;
 }
@@ -1068,43 +1231,52 @@ export function copyRoleConflict<TRole extends StepRoleSpec>(levels: readonly Ro
   return (resolved && writtenRole(resolved.role)) === copyRole ? undefined : { copy, resolved };
 }
 
+/** A level to a step instance as its role resolves: the run, or the step instance it is, as `PathLevel` has it. */
+type PathRoleLevel = RoleLevel<RoleIdSpec> & ({ kind: 'run' } | { kind: 'step'; instance: string });
+
 /**
- * The levels to step instance `path` in the run's definitions, or none when they have no such step. A role written as
- * a template of the item (`{{ item.role }}`) is rendered for the item the level runs for; the failure is why one gives
- * no role.
+ * The role levels to step instance `path` in the run's definitions, or none when they have no such step. A role
+ * written as a template of the item (`{{ item.role }}`) is rendered for the item the level runs for; the failure is why
+ * one gives no role.
  */
-function roleLevelsOf(run: StepTree, path: string): RoleLevel<RoleIdSpec>[] | WorkflowFailure {
-  const levels: RoleLevel<RoleIdSpec>[] = [];
-  let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
-  let defaultRole = run.definition.defaults?.role;
-  let prefix = '';
-  let item: { value: unknown } | undefined;
+function roleLevelsOf(run: StepTree, path: string): PathRoleLevel[] | WorkflowFailure {
+  const levels = levelsTo(run, path);
 
-  for (const segment of path.split('.')) {
-    const parsed = parseStepPath(segment)[0];
-    const id = parsed?.id ?? segment;
-    const step = workflow?.steps.find((entry) => entry.id === id);
+  if (!splitLevels(levels, path).own) return [];
+  const rendered: PathRoleLevel[] = [];
 
-    if (!step) return [];
+  for (const level of levels) {
+    const { step, defaultRole } = level;
+    let roleLevel: PathRoleLevel;
 
-    if (parsed?.index !== undefined) item = { value: instanceOf(run, `${prefix}${segment}`)?.item };
-    const written = roleLevelOf(step, defaultRole);
-    const role = written.role === undefined ? undefined : itemRoleOf({ path: `${prefix}${segment}`, role: written.role, item });
+    switch (level.kind) {
+      // The run names no role of its own: its copy gets the one in defaults.role.
+      case 'run':
+        roleLevel = { kind: 'run', step };
+        break;
+      case 'step': {
+        const written = roleLevelOf(step, defaultRole);
+        const role = written.role === undefined ? undefined : itemRoleOf({ path: level.instance, role: written.role, item: level.item });
 
-    if (role !== undefined && 'code' in role) return role;
-    const level: RoleLevel<RoleIdSpec> = { step };
+        if (role !== undefined && 'code' in role) return role;
+        roleLevel = { kind: 'step', instance: level.instance, step };
 
-    if (role !== undefined) level.role = role;
+        if (role !== undefined) roleLevel.role = role;
+        break;
+      }
 
-    if (defaultRole !== undefined) level.defaultRole = defaultRole;
-    levels.push(level);
-    workflow = workflowRunBy(run, step, prefix);
+      default: {
+        const unhandled: never = level;
 
-    if (workflow && isWorkflowFile(workflow)) defaultRole = workflow.defaults?.role ?? defaultRole;
-    prefix = `${prefix}${segment}.`;
+        return unhandled;
+      }
+    }
+
+    if (defaultRole !== undefined) roleLevel.defaultRole = defaultRole;
+    rendered.push(roleLevel);
   }
 
-  return levels;
+  return rendered;
 }
 
 /**
@@ -1179,10 +1351,12 @@ export function opensCopy(step: WorkflowStep): boolean {
  */
 export function plannedBranch(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): string | undefined {
   if (definition.workflow !== undefined) {
-    if (opensCopy(definition)) return undefined;
-    const owner = ancestorsOf(run, state.id).toReversed().find((ancestor) => opensCopy(ancestor.step));
+    const { own, ancestors } = splitLevels(levelsTo(run, state.id), state.id);
 
-    return owner && branchName(run.id, owner.instance, owner.pass);
+    if (opensCopy(own?.step ?? definition)) return undefined;
+    const owner = ancestors.toReversed().find((ancestor) => opensCopy(ancestor.step));
+
+    return owner && ownerBranch(run.id, owner);
   }
 
   return planWorkspace(run, scope, state, definition, {

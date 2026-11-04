@@ -1,6 +1,6 @@
 /**
  * Real CLI: how a run ends. Its `finally` steps run after its steps end, whatever the outcome, its `outputs` reach
- * `done`, and `workflow start --timeout` bounds it.
+ * `done`, `workflow start --timeout` bounds it, and its `$TEAMAI_RUN_DIR` is removed.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -117,7 +118,71 @@ steps:
 
     const refused = await runCLI(['workflow', 'start', 'slow', '--timeout', 'soon'], repo);
     expect(refused.code).toBe(1);
-    expect(envelope(refused.stdout)).toEqual({ error: { code: 'invalid_arguments', message: '--timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h' } });
+    expect(envelope(refused.stdout)).toEqual({ error: { code: 'invalid_arguments', message: '--timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d' } });
+  });
+
+  it('gives every step of a run, sub-workflows included, one $TEAMAI_RUN_DIR, and removes it when the run ends, whatever the end', async () => {
+    const workflows = path.join(repo, '.teamai', 'workflows');
+    fs.mkdirSync(workflows, { recursive: true });
+    fs.writeFileSync(path.join(repo, 'write.js'), [
+      "const fs = require('fs');",
+      "const dir = process.env.TEAMAI_RUN_DIR;",
+      "fs.writeFileSync(require('path').join(dir, 'note.txt'), 'from write');",
+      `fs.writeFileSync(require('path').join(${JSON.stringify(out)}, process.argv[2] + '.txt'), dir);`,
+      "process.exit(process.argv[2] === 'fail' ? 1 : 0);",
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(repo, 'read.js'), [
+      "const note = require('fs').readFileSync(require('path').join(process.env.TEAMAI_RUN_DIR, 'note.txt'), 'utf8');",
+      'process.stdout.write(JSON.stringify({ note }));',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(workflows, 'shared.yaml'), `schemaVersion: v1alpha1
+name: shared
+description: Write a note in the run directory, then read it in a sub-workflow.
+steps:
+  - id: write
+    command: node write.js pass
+  - id: check
+    needs: [write]
+    workflow: shared-read
+outputs:
+  note: steps.check.outputs.note
+`);
+    fs.writeFileSync(path.join(workflows, 'shared-read.yaml'), `schemaVersion: v1alpha1
+name: shared-read
+description: Read the note the run left in its directory.
+steps:
+  - id: read
+    command: node read.js
+    output: { note: string }
+outputs:
+  note: steps.read.outputs.note
+`);
+    fs.writeFileSync(path.join(workflows, 'shared-fail.yaml'), `schemaVersion: v1alpha1
+name: shared-fail
+description: Write a note in the run directory, then fail.
+steps:
+  - id: write
+    command: node write.js fail
+`);
+    const pulled = await runCLI(['pull'], repo);
+    expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
+
+    const passed = await runCLI(['workflow', 'start', 'shared', '--driver', 'local'], repo);
+    expect(passed.code, `${passed.stdout}\n${passed.stderr}`).toBe(0);
+    const done = envelope(passed.stdout);
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded', outputs: { note: 'from write' } } } });
+    const runId = String(z.object({ data: z.object({ done: z.object({ run: z.string() }) }) }).parse(done).data.done.run);
+    const dir = fs.readFileSync(path.join(out, 'pass.txt'), 'utf8');
+    expect(dir).toContain(runId);
+    expect(fs.existsSync(dir), 'the run directory is gone once the run succeeded').toBe(false);
+    expect(fs.readFileSync(path.join(path.dirname(path.dirname(dir)), `${runId}.json`), 'utf8')).not.toContain(dir);
+
+    const failed = await runCLI(['workflow', 'start', 'shared-fail', '--driver', 'local'], repo);
+    expect(failed.code, `${failed.stdout}\n${failed.stderr}`).toBe(1);
+    const failedDir = fs.readFileSync(path.join(out, 'fail.txt'), 'utf8');
+    expect(failedDir).not.toBe(dir);
+    expect(fs.existsSync(failedDir), 'the run directory is gone once the run failed').toBe(false);
   });
 });
-

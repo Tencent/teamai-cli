@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { runsDir } from '../workflow/store.js';
 import { fakeJudge, skillHarness } from './helpers/skill-harness.js';
 
@@ -260,12 +261,32 @@ describe('skill driver preflight', () => {
   it('routes a run whose continue step needs env to the local driver', async () => {
     const made = await harness({ 'release-docs': RELEASE_DOCS });
     expect(await made.call({ kind: 'describe', name: 'release-docs' })).toMatchObject({ data: { describe: {
-      workflow: { facts: { localRoute: { opener: 'docs', held: 'docs.sign', missing: 'env' } } },
+      workflow: { facts: { localRoute: { copy: 'step', opener: 'docs', held: 'docs.sign', missing: 'env' } } },
       ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local --tools default=claude' },
     } } });
     expect(await made.call({ kind: 'start', name: 'release-docs', answers: { confirmed: false }, inputs: undefined }))
       .toMatchObject({ error: { code: 'needs_local_driver', next: null } });
     expect(runCount(made)).toBe(0);
+  });
+
+  it('routes a run whose workflow header opens its copy, and whose step there needs env, to the local driver', async () => {
+    const made = await harness({ 'release-docs': `schemaVersion: v1alpha1
+name: release-docs
+description: Draft the release notes, then sign them, in one copy
+invoke: allow
+workspace: new
+steps:
+  - id: draft
+    prompt: Draft the release notes.
+  - id: sign
+    needs: [draft]
+    prompt: Sign the notes.
+    requires: { env: [SIGNING_KEY] }
+` });
+    const described = await made.call({ kind: 'describe', name: 'release-docs' });
+    expect(described).toMatchObject({ data: { describe: { ask: { kind: 'local', start: 'teamai workflow start release-docs --driver local --tools default=claude' } } } });
+    expect(described).toMatchObject({ data: { describe: { workflow: { facts: { localRoute: { copy: 'run', held: 'sign', missing: 'env' } } } } } });
+    expect(JSON.stringify(described)).not.toContain('"opener"');
   });
 
   it("routes a run whose steps run as a team role to a driver that delivers it, before any step runs on this one", async () => {
@@ -488,15 +509,19 @@ describe('skill driver preflight of optional gates', () => {
   });
 
   it('names the approval teamai-share-learnings asks before it shares the learnings, and no approval of its teamai-share-session step', async () => {
-    expect(await questionOf({}, 'teamai-share-learnings')).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: [
+    const described = await questionOf({}, 'teamai-share-learnings');
+    const text = z.string().parse(z.object({ data: z.object({ describe: z.object({ ask: z.object({ question: z.object({ text: z.string() }) }) }) }) }).parse(described).data.describe.ask.question.text);
+    expect(text.split('\n')).toEqual([
       '- teamai-share-learnings needs the inputs session (string), source (string), publish (boolean), scorers (list of string) and judge (one of here, driver).',
       '- It can run up to 3 steps at once.',
       '- learning is interactive: you work in it here, with this session\'s agent.',
       '- Optional approval at approve: no action; contribute waits for it.',
       approvalsAnswer,
+      // The judge step of teamai-score, which teamai-share-session runs; what follows names the judge tool found here.
+      expect.stringMatching(/^- A fresh subagent of this session runs share-session\.score\.score\.judge, reading only its directory, at best-effort isolation, unless it asks for verified isolation, which another driver runs\. /),
       '- The team asks that you agree before it starts.',
       'Start it, and if so, how should it run?',
-    ].join('\n') } } } } });
+    ]);
   });
 });
 
@@ -525,16 +550,24 @@ describe('skill driver preflight in an unattended run', () => {
     } } } });
   });
 
+  it('denies an invoke: ask workflow, naming what needs the person', async () => {
+    const made = await harness({ gated: GATED });
+    expect(await made.call({ kind: 'describe', name: 'gated' }, unattended)).toEqual({ data: { describe: expect.objectContaining({
+      ask: { kind: 'denied', reason: needsPerson('gated', 'the team asks that a person agree before it starts (invoke: ask)') },
+    }) } });
+  });
+
   it.each([
     ['a required approval', 'deploy', { deploy: DEPLOY }, 'only a person can answer the approval at go-live'],
     ['an interactive step', 'draft', { draft: DRAFT }, 'write is interactive, worked with a person'],
-    ['invoke: ask', 'gated', { gated: GATED }, 'the team asks that a person agree before it starts (invoke: ask)'],
-    ['a choice without a default', 'pick', { pick: PICK }, 'the choice at target has no default, so --auto-approve leaves it to a person'],
-  ])('denies a workflow with %s, naming what needs the person', async (_case, name, workflows, needs) => {
+    ['a choice without a default', 'pick', { pick: PICK }, 'only a person can answer the choice at target'],
+  ])('starts a workflow with %s, saying the run goes to a person on teamai-reports when it reaches that step', async (_case, name, workflows, needs) => {
     const made = await harness(workflows);
-    expect(await made.call({ kind: 'describe', name }, unattended)).toEqual({ data: { describe: expect.objectContaining({
-      ask: { kind: 'denied', reason: needsPerson(name, needs) },
-    }) } });
+    expect(await made.call({ kind: 'describe', name }, unattended)).toMatchObject({ data: { describe: { ask: {
+      kind: 'start',
+      start: `teamai workflow start ${name} --driver skill --auto-approve`,
+      say: expect.stringContaining(`- Nobody attends this run, so when it reaches a step only a person can take, it is offered on teamai-reports for one to continue, and this session stops: ${needs}.`),
+    } } } });
   });
 
   it('keeps the {inputs} slot for the agent to fill from its task, and lists the inputs', async () => {

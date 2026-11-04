@@ -111,7 +111,9 @@ steps:
 if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorough', reasoning: 'It read the change.' } }));
+const at = process.argv.indexOf('--json-schema');
+const answer = { label: 'thorough', reasoning: 'It read the change.' };
+console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.parse(process.argv[at + 1]).properties.answer ? { answer } : answer }));
 });\n`, { mode: 0o755 });
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
       GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
