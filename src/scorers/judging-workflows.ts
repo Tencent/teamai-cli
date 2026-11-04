@@ -19,13 +19,16 @@ function stepOf(index: number, step: ScoreItemStep): string {
   return `score[${index}].${step}`;
 }
 
-/** The plan group a teamai-score run's step `id` is `step` of, `score[<index>]`; undefined for any other step. */
+/**
+ * The plan group a run's step `id` is `step` of: `score[<index>]`, under the scope of the step that runs teamai-score
+ * when another workflow runs it, such as `share-session.score.score[0]`; undefined for any other step.
+ */
 function groupOf(id: string, step: ScoreItemStep): string | undefined {
   const suffix = `.${step}`;
   const group = id.endsWith(suffix) ? id.slice(0, -suffix.length) : undefined;
 
-  return group !== undefined && /^score\[\d+\]$/u.test(group) ? group : undefined;
+  return group !== undefined && /(?:^|\.)score\[\d+\]$/u.test(group) ? group : undefined;
 }
 
-/** The ids of the steps of a teamai-score run's plan groups. */
+/** The ids of the steps of a teamai-score instance's plan groups. */
 export const ScoreItem = { stepOf, groupOf } as const;

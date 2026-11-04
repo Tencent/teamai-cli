@@ -600,6 +600,31 @@ describe('marks of a score run that ended', () => {
     expect(await states()).toEqual([{ kind: 'lapsed', lapses: 1 }]);
   });
 
+  it('counts a lapse once the judge of a teamai-score another workflow runs was leased', async () => {
+    const SCORING = `schemaVersion: v1alpha1
+name: scoring
+description: Score a pass of review inside another workflow.
+inputs: { subject: string }
+steps:
+  - id: share
+    workflow: teamai-score
+    with: { subject: "{{ inputs.subject }}", scorers: [quality], label: "", batch: false, demand: auto }
+`;
+    const config = await team({ review: REVIEW, scoring: SCORING }, { quality: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const key: MarkKey = { scorer: 'quality', subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } };
+    const run = runOf(config, String(data(await startRun(config, 'scoring', { subject }, { secrets: await knownSecrets(config), startedBy: 'cli' })).run));
+    const plan = await run.next('share.plan');
+    await run.report(plan, await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'auto' }, { ...plan.ctx, now: new Date().toISOString() }));
+    const evidence = await run.next('share.score[0].evidence');
+    await run.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'quality' }, evidence.ctx));
+    await run.next('share.score[0].judge');
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    expect(await Marks.states(config, [key], markFacts(config, new Date().toISOString()))).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
   it('counts a lapse once a judge attempt ran for a batch that one already labelled scorer left smaller', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
