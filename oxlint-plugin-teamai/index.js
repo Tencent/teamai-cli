@@ -3,6 +3,7 @@ import { definePlugin } from '@oxlint/plugins';
 
 import homeEnv from './rules/home-env.js';
 import removeDelivered from './rules/remove-delivered.js';
+import attemptResultWrites from './rules/attempt-result-writes.js';
 import learningsRoot from './rules/learnings-root.js';
 import configuredToolPaths from './rules/configured-tool-paths.js';
 import launchEnv from './rules/launch-env.js';
@@ -37,6 +38,7 @@ export default definePlugin({
     'workflow-failure-codes': workflowFailureCodes,
     'home-env': homeEnv,
     'remove-delivered': removeDelivered,
+    'attempt-result-writes': attemptResultWrites,
     'learnings-root': learningsRoot,
     'tool-facts': toolFacts,
     'no-low-value-comments': noLowValueComments,
