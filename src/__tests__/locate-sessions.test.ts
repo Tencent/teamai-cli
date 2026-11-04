@@ -2,15 +2,16 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { installOf, locate, sessionStoreDir } from '../locate.js';
 import type { Host } from '../tool-home.js';
-import { describeLocateMatrix, type FilesRow, type OtherRow } from './helpers/locate-matrix.js';
+import { describeLocateMatrix, type FilesRow, type OtherRow, type Spot } from './helpers/locate-matrix.js';
 
 const CODEBUDDY_SOURCE = '@tencent-ai/codebuddy-code 2.176.0 dist/codebuddy.js: resolveCliHomeDir() is CODEBUDDY_CONFIG_DIR, else ~/.codebuddy; getHomeProjectsDir() joins "projects", "all project transcripts (.jsonl)"';
 const OPENCODE_SOURCE = 'opencode v2.1.2 binary, Global.Path: data = (XDG_DATA_HOME || ~/.local/share)/opencode';
 const PI_SOURCE = 'Pi 1.4.0: v3 JSONL under PI_CODING_AGENT_SESSION_DIR, else the resolved agent home/sessions';
 const OMP_SOURCE = 'Oh My Pi 18.12.6: Pi v3 JSONL under PI_CODING_AGENT_SESSION_DIR, else the resolved profile agent home/sessions';
+const HERMES_SOURCE = 'Hermes Agent 0.1.0: state.db in the resolved Hermes home (hermes_state_common.py and session_export.py)';
 const IGNORED_ROOT = 'toolRoots takes claude, codex, cursor-data and cursor-config only (RELOCATABLE_TOOLS): an entry for an internal build is ignored for its store as for its other files';
 
-const store = (tool: string, at: `~/${string}` | `/${string}`, rest: Omit<Partial<FilesRow>, 'tool' | 'writes' | 'reads'> = {}): FilesRow => ({
+const store = (tool: string, at: Spot, rest: Omit<Partial<FilesRow>, 'tool' | 'writes' | 'reads'> = {}): FilesRow => ({
   tool, scope: 'user', existingDirs: [], installed: null, gates: 'none',
   writes: [at], reads: [{ at, when: 'always' }],
   source: 'issue #1221 matrix, Sessions column',
@@ -65,6 +66,18 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('omp', '~/.omp-alt/profiles/work/agent/sessions', { scope: 'project', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' }, source: `${OMP_SOURCE}; project sessions use the user-view store` }),
   store('omp', '/omp-sessions', { env: { PI_CODING_AGENT_SESSION_DIR: '/omp-sessions' }, source: OMP_SOURCE }),
   store('omp', '/omp-sessions', { scope: 'project', env: { PI_CODING_AGENT_SESSION_DIR: '/omp-sessions' }, source: `${OMP_SOURCE}; project sessions use the user-view store` }),
+  store('hermes', '~/.hermes', { platforms: ['darwin', 'linux'], source: HERMES_SOURCE }),
+  store('hermes', '~/.hermes', { scope: 'project', platforms: ['darwin', 'linux'], source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
+  store('hermes', '$LOCALAPPDATA/hermes', { platforms: ['win32'], source: HERMES_SOURCE }),
+  store('hermes', '$LOCALAPPDATA/hermes', { scope: 'project', platforms: ['win32'], source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
+  store('hermes', '/moved', { env: { HERMES_HOME: '/moved' }, source: HERMES_SOURCE }),
+  store('hermes', '/moved', { scope: 'project', env: { HERMES_HOME: '/moved' }, source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
+  store('hermes', '~/.hermes-moved', { platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-moved' }, source: HERMES_SOURCE }),
+  store('hermes', '~/.hermes-moved', { scope: 'project', platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-moved' }, source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
+  store('hermes', '$LOCALAPPDATA/hermes-moved', { platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-moved' }, source: HERMES_SOURCE }),
+  store('hermes', '$LOCALAPPDATA/hermes-moved', { scope: 'project', platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-moved' }, source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
+  store('hermes', '/moved/hermes', { platforms: ['win32'], env: { LOCALAPPDATA: '/moved' }, source: HERMES_SOURCE }),
+  store('hermes', '/moved/hermes', { scope: 'project', platforms: ['win32'], env: { LOCALAPPDATA: '/moved' }, source: `${HERMES_SOURCE}; project sessions use the user-view store` }),
   store('joycode', '~/.joycode/sessions', { source: 'JoyCode: rollout JSONL under ~/.joycode/sessions (session-flow/adapters/codex.ts)' }),
   store('joycode', '/joycode/sessions', { env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: JOYCODE_HOME moves the rollout store' }),
   store('joycode', '/joycode/sessions', { scope: 'project', env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: project sessions use the user-view store under JOYCODE_HOME' }),
