@@ -596,7 +596,7 @@ $ teamai benchmark run fix-auth --sandbox
 ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
-`benchmark run` plans the suite first, so a suite that cannot run leaves no run. It then starts the workflow `teamai-benchmark` with the suite's `timeout` and drives it with the local driver.
+`benchmark run` plans the suite first, so a suite that cannot run leaves no run. It then starts the workflow `teamai-benchmark` with the suite's `timeout`, on the driver `--driver` names, else the one [`workflows.driver`](reference.md#member-settings) names, else the local driver, which drives it here.
 
 Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#unattended-prompts), because the shipped workflow runs the trials in a strict sandbox: the tool edits files and runs commands without asking, whatever this machine's settings for it say.
 

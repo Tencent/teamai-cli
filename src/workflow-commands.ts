@@ -1503,7 +1503,7 @@ const BenchmarkDoneSchema = z.object({
 /**
  * `teamai benchmark run <suite>`: plans the suite once without a run, so a suite that cannot run leaves none, then
  * starts the workflow `teamai-benchmark`, the team's or teamai's default, with the suite as its input and the suite's timeout as
- * the run's, on the local driver unless `--driver` names another. Exits as `workflow start` does for the run's outcome,
+ * the run's, on the driver `--driver` names, else the one `workflows.driver` names, else local. Exits as `workflow start` does for the run's outcome,
  * and also 1 when a `finally` step failed or was cancelled: the report, or the regression gate, which with
  * `--fail-on-regression` fails when an arm dropped against the newest earlier comparable record on teamai-reports. A
  * record still pending never changes it.
@@ -1581,10 +1581,11 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
   // A team workflow without one of these inputs runs as its command does without the flag: the team's aliases, the whole suite, no comparison.
   const inputs = Object.fromEntries(optionalInputs.flatMap(({ input, value }) => (workflow.definition.inputs?.[input] === undefined ? [] : [[input, value]])));
 
-  const start: StartOptions = { driver: options.driver ?? 'local', inputs: JSON.stringify({ suite, ...inputs }), timeout: `${preflight.timeoutMs}ms` };
+  const { driver, byDefault } = await shortcutDriver(config, options.driver);
+  const start: StartOptions = { driver, inputs: JSON.stringify({ suite, ...inputs }), timeout: `${preflight.timeoutMs}ms` };
 
   if (options.sandbox) start.sandbox = true;
-  const done = await startWorkflow(BENCHMARK_WORKFLOW, start);
+  const done = await startWorkflow(BENCHMARK_WORKFLOW, start, { byDefault });
 
   const ended = done && 'data' in done ? BenchmarkDoneSchema.safeParse(done.data.done) : undefined;
 
@@ -1608,7 +1609,8 @@ const SELF_IMPROVEMENT_WORKFLOW = 'teamai-self-improvement';
 
 /**
  * `teamai self-improvement run <scorer>`: starts the workflow `teamai-self-improvement`, the team's or teamai's default,
- * with inputs scorer and suite, on the local driver unless `--driver` names another, as `benchmark run` starts its own.
+ * with inputs scorer and suite, on the driver `--driver` names, else the one `workflows.driver` names, else local, as
+ * `benchmark run` starts its own.
  */
 export async function selfImprovementRun(scorer: string, options: { suite: string; driver?: string; tools?: string; sandbox?: boolean }): Promise<void> {
   setStderrOnly(true);
@@ -1642,8 +1644,17 @@ export async function selfImprovementRun(scorer: string, options: { suite: strin
     log.info(`Running the team's ${workflow.relativePath}, which replaces teamai's self-improvement workflow.`);
   }
 
-  const start: StartOptions = { driver: options.driver ?? 'local', inputs: JSON.stringify({ scorer, suite: options.suite }), tools: options.tools };
+  const { driver, byDefault } = await shortcutDriver(config, options.driver);
+  const start: StartOptions = { driver, inputs: JSON.stringify({ scorer, suite: options.suite }), tools: options.tools };
 
   if (options.sandbox) start.sandbox = true;
-  await startWorkflow(SELF_IMPROVEMENT_WORKFLOW, start);
+  await startWorkflow(SELF_IMPROVEMENT_WORKFLOW, start, { byDefault });
+}
+
+/** The driver a command's `--driver` names, else what `workflows.driver` decides, which `byDefault` carries for the start to say. */
+async function shortcutDriver(config: LocalConfig, asked: string | undefined): Promise<{ driver?: string; byDefault?: DefaultDrive }> {
+  if (asked !== undefined) return { driver: asked };
+  const byDefault = await driveByDefault(config);
+
+  return { driver: byDefault.kind === 'drive' ? byDefault.driver : undefined, byDefault };
 }
