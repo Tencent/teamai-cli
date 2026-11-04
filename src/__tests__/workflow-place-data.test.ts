@@ -367,6 +367,18 @@ describe('DataBranches.pushPending', () => {
     expect(await DataBranches.kept(config, 'teamai-reports')).toHaveLength(1);
   });
 
+  it('sends a note later whose commit failed after its patch applied', async () => {
+    await append(NOTES, 'Mon: fixed CI.');
+    git(config.repo.localPath, 'config', 'commit.gpgsign', 'true');
+    git(config.repo.localPath, 'config', 'gpg.program', 'false');
+    await append(NOTES, 'Tue: paired.');
+    git(config.repo.localPath, 'config', '--unset', 'commit.gpgsign');
+
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+    expect(onOrigin(NOTES)).toBe('Mon: fixed CI.\nTue: paired.\n');
+    expect(await DataBranches.kept(config, 'teamai-reports')).toEqual([]);
+  });
+
   it('pushes nothing for an http team repo', async () => {
     expect(await DataBranches.pushPending({ ...config, repo: { ...config.repo, kind: 'http' } })).toEqual([]);
   });

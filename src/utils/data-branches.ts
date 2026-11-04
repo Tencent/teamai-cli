@@ -53,7 +53,15 @@ async function commitKept(input: { worktree: string; branch: DataBranch; files: 
     }
 
     const paths = (await repo.raw(['apply', '--numstat', '-z', file])).split('\0').flatMap((entry) => entry.split('\t').slice(2));
-    await commitSkippingHooks(repo, file === own?.file ? own.message : `[teamai] Publish pending ${branch} data`, paths, { identityFallback: true });
+
+    try {
+      await commitSkippingHooks(repo, file === own?.file ? own.message : `[teamai] Publish pending ${branch} data`, paths, { identityFallback: true });
+    } catch (e) {
+      // Take the patch back out, so the next send applies and commits it rather than finding it on the branch.
+      await repo.raw(['apply', '--index', '--reverse', '--binary', file]);
+      throw e;
+    }
+
     await fs.rm(file, { force: true });
   }
 
