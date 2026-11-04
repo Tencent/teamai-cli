@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
 import { isToolId } from './tools.js';
-import { existingSharedInstructionDirs, shadowedSharedInstructionNames } from './shared-instruction-source.js';
+import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -2815,6 +2815,12 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
 
   if (team.mode === 'legacy') {
     const firstLevelRules = team.rules.filter((rule) => rule.name.split('/').length <= 2);
+    // A file the two source directories both define is reported by the
+    // shadowing note below, which says which copy is delivered. The legacy
+    // note is about duplicates WITHIN one directory (a namespace file and
+    // the root file of the same name), so the shadowed copies stay out of
+    // it — otherwise it would claim a copy is delivered that pull drops.
+    const shadowedPaths = new Set(team.shadowed.map((entry) => entry.path));
 
     // claudemd file names at the root and one level down, as the block collects them.
     // listFilesRecursive joins with '/' on every platform.
@@ -2829,7 +2835,7 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
         .map(([name, sources]) => (
           `rules: "${name}" is defined in ${listed(sources)} (legacy mode: each is delivered at its own path)`)),
       ...repeatedNames(
-        claudemdFiles,
+        claudemdFiles.filter((entry) => !shadowedPaths.has(entry.segments.join('/'))),
         (entry) => entry.segments[entry.segments.length - 1] ?? '',
         (entry) => `${entry.dir}/${entry.segments.join('/')}`,
       )
@@ -2853,9 +2859,10 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
  * delivers one copy, so the note names the copy it delivers and the ones it
  * leaves out (#1682).
  */
-function shadowedNotes(shadowed: readonly { name: string; deliveredFrom: string; shadowedIn: string[] }[]): string[] {
+function shadowedNotes(shadowed: readonly { path: string; deliveredFrom: string; shadowedIn: string[] }[]): string[] {
   return shadowed.map((entry) => (
-    `claudemd: "${entry.name}" is delivered from ${entry.deliveredFrom}/; ${listed(entry.shadowedIn.map((dir) => `${dir}/`))} not delivered`));
+    `claudemd: "${entry.path}" is delivered from ${entry.deliveredFrom}/; `
+    + `${listed(entry.shadowedIn.map((dir) => `${dir}/`))} not delivered`));
 }
 
 /** What `buildNamespaceNotes` reads from the team repo; throws when a manifest cannot be read. */
@@ -2865,7 +2872,7 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
   const roleContext = await desired.buildRolePullContext(localConfig);
   // A file name defined in both source directories is delivered once, from
   // the preferred one. The note says so in both modes (#1682).
-  const shadowed = await shadowedSharedInstructionNames(localConfig.repo.localPath);
+  const shadowed = await shadowedSharedInstructionFiles(localConfig.repo.localPath);
 
   if (!roleContext) {
     return {

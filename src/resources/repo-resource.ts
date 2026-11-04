@@ -303,18 +303,8 @@ export class RepoResourceHandler extends ResourceHandler {
     _teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<string[]> {
-    const repoPath = localConfig.repo.localPath;
-
-    // The file may sit under any of the repo's source directories (#1682).
-    for (const dir of await this.dirsIn(repoPath)) {
-      const target = path.resolve(repoPath, dir, ...name.split('/'));
-
-      if (await pathExists(target)) {
-        await fs.rm(target, { force: true });
-
-        return [name];
-      }
-    }
+    const target = path.resolve(localConfig.repo.localPath, this.dir, ...name.split('/'));
+    await fs.rm(target, { force: true });
 
     return [name];
   }

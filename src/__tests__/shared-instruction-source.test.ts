@@ -13,7 +13,7 @@ import fse from 'fs-extra';
 import { collectClaudemdFiles } from '../resources/desired.js';
 import {
   existingSharedInstructionDirs,
-  shadowedSharedInstructionNames,
+  shadowedSharedInstructionFiles,
 } from '../shared-instruction-source.js';
 import type { LocalConfig } from '../types.js';
 
@@ -106,18 +106,38 @@ describe('shared-instruction source directory', () => {
     await teamFile('claudemd/common.md', 'FROM CLAUDEMD\n');
     await teamFile('agentsmd/common.md', 'FROM AGENTSMD\n');
 
-    const shadowed = await shadowedSharedInstructionNames(repoPath);
+    const shadowed = await shadowedSharedInstructionFiles(repoPath);
 
     expect(shadowed).toHaveLength(1);
-    expect(shadowed[0].name).toBe('common.md');
+    expect(shadowed[0].path).toBe('common.md');
     expect(shadowed[0].deliveredFrom).toBe('agentsmd');
     expect(shadowed[0].shadowedIn).toEqual(['claudemd']);
+  });
+
+  it('sees a conflict under a knowledge namespace too', async () => {
+    await teamFile('claudemd/backend/conventions.md', 'FROM CLAUDEMD\n');
+    await teamFile('agentsmd/backend/conventions.md', 'FROM AGENTSMD\n');
+
+    const shadowed = await shadowedSharedInstructionFiles(repoPath);
+
+    expect(shadowed).toHaveLength(1);
+    expect(shadowed[0].path).toBe('backend/conventions.md');
+    expect(shadowed[0].deliveredFrom).toBe('agentsmd');
+    expect(shadowed[0].shadowedIn).toEqual(['claudemd']);
+  });
+
+  it('keeps a root file and a namespace file of one name apart', async () => {
+    await teamFile('claudemd/common.md', 'ROOT\n');
+    await teamFile('agentsmd/backend/common.md', 'BACKEND\n');
+
+    // Different relative paths, so different files — no conflict.
+    expect(await shadowedSharedInstructionFiles(repoPath)).toEqual([]);
   });
 
   it('reports no shadowed name when the directories hold different files', async () => {
     await teamFile('claudemd/legacy.md', 'A\n');
     await teamFile('agentsmd/modern.md', 'B\n');
 
-    expect(await shadowedSharedInstructionNames(repoPath)).toEqual([]);
+    expect(await shadowedSharedInstructionFiles(repoPath)).toEqual([]);
   });
 });

@@ -64,36 +64,60 @@ function rank(dir: SharedInstructionSourceDir): number {
 }
 
 /**
- * The shared-instruction file names that exist in more than one source
- * directory, with the directory each copy is in. The preferred directory
- * holds the copy pull delivers; the others are shadowed by it, and a team
- * that keeps both should hear about it rather than discover it (#1682).
+ * The shared-instruction files that exist in more than one source directory,
+ * with the directory each copy is in. The preferred directory holds the copy
+ * pull delivers; the others are shadowed by it, and a team that keeps both
+ * should hear about it rather than discover it (#1682).
+ *
+ * The key is the path relative to the source directory — `note.md` at the
+ * root, `backend/note.md` under a knowledge namespace — because that is how
+ * pull identifies a file: the same relative path in two directories is one
+ * file, and the preferred directory's copy is the one that is delivered.
  */
-export async function shadowedSharedInstructionNames(
+export async function shadowedSharedInstructionFiles(
   repoPath: string,
-): Promise<Array<{ name: string; deliveredFrom: SharedInstructionSourceDir; shadowedIn: SharedInstructionSourceDir[] }>> {
+): Promise<Array<{ path: string; deliveredFrom: SharedInstructionSourceDir; shadowedIn: SharedInstructionSourceDir[] }>> {
   const dirs = await existingSharedInstructionDirs(repoPath);
 
   if (dirs.length < 2) return [];
 
-  const byName = new Map<string, SharedInstructionSourceDir[]>();
+  const byPath = new Map<string, SharedInstructionSourceDir[]>();
 
   for (const dir of dirs) {
-    const entries = await fs.readdir(path.join(repoPath, dir));
+    const root = path.join(repoPath, dir);
+    const entries = await fs.readdir(root, { withFileTypes: true });
 
     for (const entry of entries) {
-      if (!entry.endsWith('.md')) continue;
-      const sources = byName.get(entry) ?? [];
-      sources.push(dir);
-      byName.set(entry, sources);
+      // The root's own .md files, and one level down in a namespace
+      // directory — the two levels the collection reads.
+      if (entry.isFile()) {
+        if (!entry.name.endsWith('.md')) continue;
+        addSource(byPath, entry.name, dir);
+        continue;
+      }
+
+      if (!entry.isDirectory()) continue;
+
+      const namespaceFiles = await fs.readdir(path.join(root, entry.name), { withFileTypes: true });
+
+      for (const file of namespaceFiles) {
+        if (!file.isFile() || !file.name.endsWith('.md')) continue;
+        addSource(byPath, `${entry.name}/${file.name}`, dir);
+      }
     }
   }
 
-  return [...byName].flatMap(([name, sources]) => sources.length > 1
+  return [...byPath].flatMap(([filePath, sources]) => sources.length > 1
     ? [{
-      name,
+      path: filePath,
       deliveredFrom: sources[0],
       shadowedIn: sources.slice(1),
     }]
     : []);
+}
+
+function addSource(byPath: Map<string, SharedInstructionSourceDir[]>, filePath: string, dir: SharedInstructionSourceDir): void {
+  const sources = byPath.get(filePath) ?? [];
+  sources.push(dir);
+  byPath.set(filePath, sources);
 }
