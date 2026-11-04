@@ -313,6 +313,13 @@ function parseLockContent(content: string): LockHolder | null {
  * if a crash left it, so it is named in a warning.
  */
 export async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
+  return (await inspectLock(resolved)).state;
+}
+
+/** lockState's verdict, with the dead holder when the lock is stale. */
+type LockVerdict = { state: 'live' } | { state: 'missing' } | { state: 'stale'; holder: LockHolder };
+
+async function inspectLock(resolved: string): Promise<LockVerdict> {
   let content: string;
 
   try {
@@ -320,12 +327,12 @@ export async function lockState(resolved: string): Promise<'live' | 'stale' | 'm
   } catch (err) {
     const code = errnoCode(err);
 
-    if (code === 'ENOENT') return 'missing';
+    if (code === 'ENOENT') return { state: 'missing' };
 
     if (code !== 'EACCES' && code !== 'EPERM') throw err;
     log.warn(`${resolved} cannot be read (${code}); treating it as held. Remove it if no teamai process is running.`);
 
-    return 'live';
+    return { state: 'live' };
   }
 
   const parsed = parseLockContent(content);
@@ -333,24 +340,24 @@ export async function lockState(resolved: string): Promise<'live' | 'stale' | 'm
   if (!parsed) {
     log.warn(`${resolved} names no owner; treating it as held. Remove it if no teamai process is running.`);
 
-    return 'live';
+    return { state: 'live' };
   }
 
   try {
     process.kill(parsed.pid, 0);
 
-    return 'live'; // process alive → lock genuinely held
+    return { state: 'live' }; // process alive → lock genuinely held
   } catch (err) {
     // EPERM: alive, owned by another user. ESRCH: the owning process is gone.
-    if (errnoCode(err) === 'EPERM') return 'live';
+    if (errnoCode(err) === 'EPERM') return { state: 'live' };
   }
 
   // The owner may have released the lock and exited after the read, and
   // another process created a fresh one: only the dead owner's own file is stale.
   try {
-    return (await fse.readFile(resolved, 'utf-8')) === content ? 'stale' : 'live';
+    return (await fse.readFile(resolved, 'utf-8')) === content ? { state: 'stale', holder: parsed } : { state: 'live' };
   } catch (err) {
-    if (errnoCode(err) === 'ENOENT') return 'missing';
+    if (errnoCode(err) === 'ENOENT') return { state: 'missing' };
     throw err;
   }
 }
@@ -439,9 +446,9 @@ async function removeIfOwner(target: string, owner: string): Promise<void> {
  * observe the same stale lock, all delete it, and all recreate it — ending with
  * more than one "winner". The sentinel is created with the same atomic exclusive
  * create as the lock itself, so exactly ONE process becomes the reclaimer; the
- * rest back off. A sentinel whose own holder died (dead pid) is stolen via an
- * atomic rename (only one process can rename a given file away) so a crashed
- * reclaimer cannot wedge stale-lock recovery forever.
+ * rest back off. A sentinel whose own holder died is removed with
+ * removeDeadFile and created again, so a crashed reclaimer cannot wedge
+ * stale-lock recovery forever.
  */
 async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<boolean> {
   const payload = JSON.stringify({
@@ -452,19 +459,61 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
 
   if (await exclusiveCreate(sentinel, payload)) return true;
 
-  // Sentinel is held. Only reclaim it if its holder is gone.
-  if ((await lockState(sentinel)) !== 'stale') return false;
-
-  try {
-    await fse.rename(sentinel, `${sentinel}.reclaim-${owner}`);
-  } catch (err) {
-    if (errnoCode(err) === 'ENOENT') return false; // another process stole it first
-    throw err;
-  }
-
-  await fse.remove(`${sentinel}.reclaim-${owner}`).catch(() => {});
+  // Sentinel is held. Only take it over if its holder is gone.
+  if (!(await removeDeadFile(sentinel, owner))) return false;
 
   return exclusiveCreate(sentinel, payload);
+}
+
+/** The owner token acquireLock writes (randomUUID), the only kind removeDeadFile puts in a file name. */
+const OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Remove `target` only while it is still the file of the dead owner inspectLock
+ * judged stale; true when this call removed it.
+ *
+ * A rename or remove acts on whatever file has the name by then, which may be a
+ * live one another reclaimer has just created. So the removal runs under an
+ * exclusive claim `<target>.steal-<dead owner>`: an owner token is never
+ * written again, so while one process holds that claim no other can remove the
+ * dead file, and the holder re-reads the file before removing it. A claim whose
+ * own holder died is removed the same way, one level deeper, before it is taken.
+ */
+async function removeDeadFile(target: string, owner: string): Promise<boolean> {
+  const verdict = await inspectLock(target);
+
+  if (verdict.state !== 'stale' || !verdict.holder.owner || !OWNER_TOKEN.test(verdict.holder.owner)) return false;
+  const dead = verdict.holder.owner;
+  const claim = `${target}.steal-${dead}`;
+
+  const payload = JSON.stringify({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    owner,
+  } satisfies LockPayload);
+
+  const claimed = (await exclusiveCreate(claim, payload))
+    || ((await removeDeadFile(claim, owner)) && (await exclusiveCreate(claim, payload)));
+
+  if (!claimed) return false;
+
+  try {
+    let current: string;
+
+    try {
+      current = await fse.readFile(target, 'utf-8');
+    } catch (err) {
+      if (errnoCode(err) === 'ENOENT') return false;
+      throw err;
+    }
+
+    if (parseLockContent(current)?.owner !== dead) return false;
+    await fse.remove(target);
+
+    return true;
+  } finally {
+    await removeIfOwner(claim, owner);
+  }
 }
 
 /**
@@ -480,9 +529,8 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
  *
  * Reclaiming a STALE lock (its owner is provably dead; see lockState) is serialized
  * behind a reclaim sentinel and completed with an atomic rename-into-place, so
- * concurrent reclaimers cannot each end up believing they hold the lock. (A
- * residual window exists only if the reclaiming process itself dies mid-reclaim:
- * stealing its dead-pid sentinel is not yet race-free, see #760.)
+ * concurrent reclaimers cannot each end up believing they hold the lock, even
+ * when a reclaimer dies holding the sentinel (see removeDeadFile).
  */
 export async function acquireLock(
   lockPath?: string,
@@ -839,11 +887,18 @@ function registryUnreachableMessage(result: CheckResult): string | null {
 }
 
 /**
+ * What a self-update attempt did. `failed` means the install itself failed:
+ * the difference matters to `teamai update`, which must not report success,
+ * and to the hook path, which discards the exit status anyway.
+ */
+export type UpdateOutcome = 'ok' | 'failed';
+
+/**
  * Perform the actual update (check + install based on policy). The CLI is
  * shared by the whole machine, so one scope decides: the user scope when there
  * is one, else `runningScope`, the scope the update runs in.
  */
-export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean }): Promise<void> {
+export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean }): Promise<UpdateOutcome> {
   const result = await checkForUpdate(options);
   const unreachable = registryUnreachableMessage(result);
 
@@ -852,7 +907,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   if (!result.available) {
     if (!unreachable) log.info(`Already up to date (v${result.current})`);
 
-    return;
+    return 'ok';
   }
 
   // Load configs for update policy. Team config is the default; local
@@ -873,7 +928,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     log.debug(`Auto-update skipped: ${reason}`);
 
-    return;
+    return 'ok';
   }
 
   // Refuse unsupported install layouts before prompting, so nobody confirms
@@ -898,7 +953,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     log.warn(message);
     log.persist(message);
 
-    return;
+    return 'ok';
   }
 
   const entry = fileURLToPath(import.meta.url);
@@ -916,7 +971,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     log.warn(message);
     log.persist(message);
 
-    return;
+    return 'ok';
   }
 
   if (!target.global) {
@@ -932,14 +987,14 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     log.warn(message);
     log.persist(message);
 
-    return;
+    return 'ok';
   }
 
   if (policy === 'prompt') {
     if (!isInteractive()) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
 
-      return;
+      return 'ok';
     }
 
     const confirmed = await askConfirmation(
@@ -949,7 +1004,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     if (!confirmed) {
       log.info('Update skipped');
 
-      return;
+      return 'ok';
     }
   }
 
@@ -959,7 +1014,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   if (!locked) {
     log.warn('Another update is in progress, skipping');
 
-    return;
+    return 'ok';
   }
 
   try {
@@ -987,10 +1042,12 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
         )));
 
         if (installed.version !== result.latest) {
-          log.warn(
+          const message =
             `The running install at ${path.dirname(path.dirname(updatedEntry))} is still ` +
-            `v${installed.version ?? 'unknown'} (expected v${result.latest}) — it may need a manual update.`,
-          );
+            `v${installed.version ?? 'unknown'} (expected v${result.latest}) — it may need a manual update.`;
+
+          log.warn(message);
+          log.persist(message);
         }
       } catch { /* verification is best-effort */ }
     }
@@ -1015,16 +1072,27 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   } catch (e) {
     const msg = e instanceof Error ? e.message : '';
 
+    let message: string;
+
     if (msg.includes('EACCES') || errnoCode(e) === 'EACCES') {
-      log.warn(`Permission denied. Run "teamai update" manually with appropriate permissions.`);
+      message = 'Permission denied. Run "teamai update" manually with appropriate permissions.';
     } else if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
-      log.warn('Update timed out. Try again later.');
+      message = 'Update timed out. Try again later.';
     } else {
-      log.warn(`Update failed: ${msg}. Run "teamai update" manually.`);
+      message = `Update failed: ${msg}. Run "teamai update" manually.`;
     }
+
+    // Hooks discard stderr: without the file copy, a failed auto-update leaves
+    // no trace anywhere — the one failure the reporter cannot hand over.
+    log.warn(message);
+    log.persist(message);
+
+    return 'failed';
   } finally {
     await releaseLock();
   }
+
+  return 'ok';
 }
 
 // ─── Public API ─────────────────────────────────────────
@@ -1058,5 +1126,9 @@ export async function update(options: UpdateOptions): Promise<void> {
     return;
   }
 
-  await doUpdate(await resolveConfigForDir(), { force: true });
+  // The failure is already on stderr; without this, a script running
+  // `teamai update` would read a broken install as a successful update.
+  if (await doUpdate(await resolveConfigForDir(), { force: true }) === 'failed') {
+    process.exitCode = 1;
+  }
 }
