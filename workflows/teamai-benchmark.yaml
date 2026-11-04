@@ -5,7 +5,7 @@ invoke: deny
 inputs: { suite: string, aliases: string, tasks: [string], arms: [string], fail_on_regression: boolean }
 steps:
   - id: plan
-    command: teamai --env-args benchmark plan @SUITE --aliases @ALIASES --tasks @TASKS --arms @ARMS
+    command: teamai benchmark plan "$SUITE" --aliases "$ALIASES" --tasks "$TASKS" --arms "$ARMS"
     env: { SUITE: "{{ inputs.suite }}", ALIASES: "{{ inputs.aliases }}", TASKS: "{{ inputs.tasks }}", ARMS: "{{ inputs.arms }}" }
     output: { definition: workflow, plan: json }
   - id: trials
@@ -17,7 +17,7 @@ steps:
   - id: subjects
     needs: [trials]
     if: steps.trials.outcome != 'skipped'
-    command: teamai --env-args score subjects --run @RUN --step trials
+    command: teamai score subjects --run "$RUN" --step trials
     env: { RUN: "{{ run.id }}" }
     output: { list: [string] }
   - id: score

@@ -7,7 +7,6 @@ import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
 import type { EvidenceOptions, LabelOptions, PlanOptions, StageOptions, SubjectsOptions, WriteOptions } from './score-verbs.js';
-import { expandEnvArgs } from './utils/env-args.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -832,7 +831,7 @@ envCmd
     const globalOpts = program.opts<GlobalOptions>();
     const { envExec, exitLike } = await import('./env-exec.js');
     // What was typed after `exec`, `--` included: Commander drops it.
-    const argv = expandEnvArgs(process.argv.slice(2), process.env);
+    const argv = process.argv.slice(2);
     exitLike(await envExec(argv.slice(argv.indexOf('exec', argv.indexOf('env')) + 1), globalOpts));
   });
 
@@ -2089,7 +2088,5 @@ if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
 
   // Every error a command action throws leaves as one line on stderr with exit
   // 1, never as an unhandled rejection with a Node stack trace (#1270).
-  await Promise.resolve().then(() => program.parseAsync(
-    expandEnvArgs(process.argv.slice(2), process.env), { from: 'user' },
-  )).catch(reportCommandError);
+  await program.parseAsync().catch(reportCommandError);
 }

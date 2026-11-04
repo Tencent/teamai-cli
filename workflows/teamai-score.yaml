@@ -17,9 +17,8 @@ inputs:
   demand: auto | named
 steps:
   - id: plan
-    # The parent score command also has a boolean --batch; keep the verb's value joined with =.
-    command: teamai --env-args score plan --subject @SUBJECT --scorers @SCORERS @BATCH_ARG --demand @DEMAND
-    env: { SUBJECT: "{{ inputs.subject }}", SCORERS: "{{ inputs.scorers }}", BATCH_ARG: "--batch={{ inputs.batch }}", DEMAND: "{{ inputs.demand }}" }
+    command: teamai score plan --subject "$SUBJECT" --scorers "$SCORERS" --batch="$BATCH" --demand "$DEMAND"
+    env: { SUBJECT: "{{ inputs.subject }}", SCORERS: "{{ inputs.scorers }}", BATCH: "{{ inputs.batch }}", DEMAND: "{{ inputs.demand }}" }
     output:
       groups: [{ subject: string, hand: string, scorers: string, model: string, ci: boolean, protected: boolean }]
   - id: score
@@ -32,26 +31,26 @@ steps:
       outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels }
       steps:
         - id: evidence
-          command: teamai --env-args score evidence --subject @SUBJECT --scorers @GROUP
+          command: teamai score evidence --subject "$SUBJECT" --scorers "$GROUP"
           env: { SUBJECT: "{{ item.subject }}", GROUP: "{{ item.scorers }}" }
           output: { dir: string, rubric: string, schema: string, delivers: boolean }
         - id: check
           needs: [evidence]
           if: item.hand == '' && steps.evidence.outputs.delivers
-          command: teamai --env-args score stage check --evidence @DIR
+          command: teamai score stage check --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { decided: boolean }
         - id: ci
           needs: [evidence, check]
           if: item.hand == '' && item.ci && steps.evidence.outputs.delivers && steps.check.outputs.decided != true
           # Past 2h of a CI run that has not finished, judge without it.
-          command: teamai --env-args score stage ci --evidence @DIR --wait 2h
+          command: teamai score stage ci --evidence "$DIR" --wait 2h
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { decided: boolean, pending: boolean }
         - id: protected
           needs: [evidence, ci]
           if: item.hand == '' && item.protected && steps.evidence.outputs.delivers && steps.check.outputs.decided != true && steps.ci.outputs.decided != true && steps.ci.outputs.pending != true
-          command: teamai --env-args score stage protected --evidence @DIR
+          command: teamai score stage protected --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { decided: boolean }
         - id: judge
@@ -75,12 +74,12 @@ steps:
           needs: [evidence, judge]
           # Reading judge keeps a failed judge from skipping label.
           if: steps.evidence.outcome == 'success' && steps.judge.outcome != 'cancelled'
-          command: teamai --env-args score label --evidence @DIR --answer @ANSWER --judge @JUDGE
+          command: teamai score label --evidence "$DIR" --answer "$ANSWER" --judge "$JUDGE"
           env: { DIR: "{{ steps.evidence.outputs.dir }}", ANSWER: "{{ steps.judge.outputs.answer }}", JUDGE: "{{ steps.judge.outcome }}" }
           output: { labels: [{ scorer: string, label: string, code: string }] }
         - id: write
           needs: [label]
-          command: teamai --env-args score write --evidence @DIR
+          command: teamai score write --evidence "$DIR"
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { written: number, labels: [string] }   # labels: the version of each label written, which teamai score answers with
         # Publishes this member's pending labels to teamai-reports. Offline, or with an http team repo, they stay pending.
@@ -95,6 +94,6 @@ steps:
           if: >-
             !(steps.evidence.outcome == 'success' || steps.evidence.outcome == 'skipped') || !(steps.check.outcome == 'success' || steps.check.outcome == 'skipped') || !(steps.ci.outcome == 'success' || steps.ci.outcome == 'skipped')
             || !(steps.protected.outcome == 'success' || steps.protected.outcome == 'skipped') || !(steps.label.outcome == 'success' || steps.label.outcome == 'skipped') || !(steps.write.outcome == 'success' || steps.write.outcome == 'skipped')
-          command: teamai --env-args score settle --subject @SUBJECT --scorers @GROUP
+          command: teamai score settle --subject "$SUBJECT" --scorers "$GROUP"
           env: { SUBJECT: "{{ item.subject }}", GROUP: "{{ item.scorers }}" }
 outputs: { labels: steps.score.results }
