@@ -77,8 +77,11 @@ const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
  */
 const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
 
-/** Background (detached) npm-registry update check — not awaited by the host. */
-const UPDATE_TIMEOUT_MS = 10_000;
+/**
+ * Detached updates can spend 5s checking, 60s installing and 15s refreshing hooks.
+ * Dispatch must not exit and sweep the update lock while the installer still runs.
+ */
+const UPDATE_TIMEOUT_MS = 90_000;
 
 /**
  * Background (detached) local-agent HTTP report/sync. Detached runs are not
