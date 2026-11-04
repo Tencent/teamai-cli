@@ -12,7 +12,7 @@ import { stepWorkflow, type RunState, type WorkflowDefinition, type WorkflowStep
 import type { RunSubject } from './label.js';
 import { removeSubjectEvidence } from './evidence.js';
 import { scoresDir } from './home.js';
-import { Marks, type MarkFacts } from './marks.js';
+import { MARK_WINDOW_MS, Marks, type MarkFacts } from './marks.js';
 import { PassScoring } from './pass-scoring.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import { RunScorers, type RunScorerPins } from './run-scorers.js';
@@ -131,6 +131,15 @@ async function unplannedOf(config: LocalConfig, run: RunState, install: string, 
   return list;
 }
 
+/** The passes settled here of each run past its 14 days, none of whose scorers has a mark left open or to start again. */
+async function expiredUnmarked(config: LocalConfig, runs: readonly RunState[], install: string, facts: MarkFacts): Promise<RunSubject[]> {
+  const aged = runs.filter((run) => Date.parse(run.updatedAt) + MARK_WINDOW_MS <= Date.parse(facts.now));
+  const passes = aged.flatMap((run) => scoredPasses(run, install));
+  const states = await Promise.all(passes.map(({ subject, scorers }) => Marks.states(config, scorers.map((scorer) => ({ scorer, subject: { kind: 'run' as const, subject } })), facts)));
+
+  return passes.flatMap(({ subject }, at) => ((states[at] ?? []).some((state) => state.kind === 'open' || Marks.startsAgain(state)) ? [] : [subject]));
+}
+
 export const ScoreSubjects = {
   /**
    * Why pull warns about `definition`, at `file`: a step says `scorers.start: workflow`, so the scoring module starts no
@@ -168,7 +177,7 @@ export const ScoreSubjects = {
   /**
    * The subjects automatic judging starts again, once each, sorted: those whose mark is a lapse, or waits on CI that has
    * since finished or outwaited the ci step's `--wait`, and the passes no teamai-score run planned, of each run inside its 14 days.
-   * The evidence staged for a pass whose marks all closed or expired is removed first.
+   * The evidence staged for a pass whose marks all closed or expired, or whose run is past its 14 days unmarked, is removed.
    */
   async lapsed(config: LocalConfig, now: string): Promise<string[]> {
     const facts = markFacts(config, now);
@@ -177,10 +186,15 @@ export const ScoreSubjects = {
     const list = new Set<string>();
     const install = (await installOwner(config)).id;
 
+    const runs = await readRuns(config);
+
     // A pass of a run that last changed 14 days ago reads as expired, not unmarked.
-    for (const run of await readRuns(config)) {
+    for (const run of runs) {
       for (const subject of await unplannedOf(config, run, install, facts)) list.add(subject);
     }
+
+    // A pass no scorer sampled has no mark, so closing marks never removes what was staged for it.
+    await removeSubjectEvidence(scoresDir(config), await expiredUnmarked(config, runs, install, facts));
 
     for (const { key, state } of marks) {
       if (state.kind === 'waiting' && key.subject.kind === 'run') {

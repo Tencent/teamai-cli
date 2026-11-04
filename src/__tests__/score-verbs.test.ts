@@ -836,6 +836,20 @@ describe('score label and score write', () => {
     expect(fs.existsSync(copy ?? '')).toBe(false);
   });
 
+  it('remove, once its run is past its 14 days, the evidence staged for a pass no teamai-score run ever marked', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer() });
+    const runId = await deliveredRun(config);
+    const run = await readRun(config, runId);
+    if (run === 'missing' || run === 'corrupt') throw new Error(run);
+    const copy = await stageEvidence(config, run, { runId, step: 'change', pass: 1 }, { checkout: config.projectRoot ?? '', untrustedEnv: process.env });
+    const lapsed = (now: string) => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now });
+
+    await lapsed(NOW);
+    expect(fs.existsSync(copy ?? '')).toBe(true);
+    await lapsed('2027-01-01T00:00:00.000Z');
+    expect(fs.existsSync(copy ?? '')).toBe(false);
+  });
+
   it('label each scorer of a batch from the judge\'s answer, print no reasoning, and write them with what judged, closing their marks', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config);
