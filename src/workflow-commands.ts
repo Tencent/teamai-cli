@@ -24,7 +24,7 @@ import { LOCAL_DRIVER, parseDriver, type Driver } from './workflow/driver-name.j
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type RunId } from './workflow/store.js';
-import { inProcessClient, isRefusal, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare, type StartedRun } from './workflow/protocol.js';
+import { inProcessClient, isRefusal, resumeRefusal, startAsCli, workflowNotFound, type InvokeCaller, type NextPrepare, type StartedRun } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow, namespaceConflictOf, resolveStart } from './workflow/cache.js';
 import { durationMs } from './workflow/parse.js';
@@ -417,6 +417,11 @@ export async function workflowStart(name: string, options: StartOptions): Promis
  */
 export interface ShortcutStart {
   scope?: LocalConfig;
+  /**
+   * A released command's shortcut, which the person or agent asked for rather than the workflow: it starts with no agent
+   * evidence, so `invoke` and the nested-start checks do not judge it, and an agent's start is recorded as `cli`.
+   */
+  asCli?: boolean;
   /** What the person and the agent run in place of the shortcut, when an agent session's start is refused. */
   instead?: string;
   answer?: (config: LocalConfig, runId: string, driven: WorkflowEnvelope) => Promise<WorkflowEnvelope | undefined>;
@@ -435,7 +440,7 @@ export interface ShortcutStart {
 export async function startWorkflow(name: string, options: StartOptions, shortcut: ShortcutStart = {}): Promise<WorkflowEnvelope | undefined> {
   const asked = askedDriver(options.driver);
 
-  if (refusedNested(await nestedStart(process.env, process.cwd()), asks(asked, 'skill'))) return undefined;
+  if (!shortcut.asCli && refusedNested(await nestedStart(process.env, process.cwd()), asks(asked, 'skill'))) return undefined;
 
   if (asks(asked, 'skill')) {
     const { driver: _skill, timeout, ...rest } = options;
@@ -525,7 +530,12 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const alone = asks(asked, 'local') ? localStrictCan(config, options) : undefined;
   const { byDefault } = shortcut;
   const awaits = byDefault && awaitsOf(byDefault);
-  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person', awaits });
+  const start = { inputs, checkout: process.cwd(), alone, timeout, awaits };
+  const client = inProcessClient({ config, env });
+
+  const started = shortcut.asCli && caller.evidence.kind !== 'none'
+    ? await startAsCli(client, name, { ...start, mode: caller.mode })
+    : await client.start(name, { ...start, caller, instead: shortcut.instead, startedBy: 'person' });
 
   if ('error' in started && shortcut.present) {
     await shortcut.present(config, started, secrets);
@@ -594,7 +604,8 @@ const ShortcutDoneSchema = z.object({
 });
 
 /**
- * Starts `workflow` as the shortcut `command` does, on the driver `workflows.driver` names, else local: it shows the
+ * Starts `workflow` as the shortcut `command` does, as the CLI, so an agent session runs the command as it did before
+ * it was a workflow, on the driver `workflows.driver` names, else local: it shows the
  * lines its steps say as they run, then prints the run's `outputs.text` and exits with its `outputs.exit_code`, 1 when
  * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
  * text. A private run starts no drain.
@@ -651,8 +662,8 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
 
   await startWorkflow(workflow, { driver, inputs: JSON.stringify(inputs) }, {
     scope: config,
+    asCli: true,
     byDefault: decided,
-    instead: `The person runs ${command} in their own terminal.`,
     progress: say,
     present: async (scope, driven, secrets) => {
       if ('error' in driven && !json) {

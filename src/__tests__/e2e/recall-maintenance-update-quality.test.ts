@@ -19,10 +19,10 @@ const GIT_ENV = {
 
 type Ran = { code: number | null; stdout: string; stderr: string };
 
-function runCLI(args: string[], { home, cwd, bin }: { home: string; cwd: string; bin: string }): Promise<Ran> {
+function runCLI(args: string[], { home, cwd, bin, extra }: { home: string; cwd: string; bin: string; extra?: Record<string, string> }): Promise<Ran> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
-      env: { ...process.env, ...GIT_ENV, FORCE_COLOR: '0', HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, TEAMAI_AI_TOOL: '' },
+      env: { ...process.env, ...GIT_ENV, FORCE_COLOR: '0', HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, TEAMAI_AI_TOOL: '', ...extra },
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd,
     });
@@ -106,12 +106,12 @@ describe('recall maintenance --update-quality', () => {
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  const run = (args: string[], fails?: string): Promise<Ran> => {
+  const run = (args: string[], fails?: string, extra?: Record<string, string>): Promise<Ran> => {
     const bin = fs.mkdtempSync(path.join(sandbox, 'bin-'));
     fakeClaude(bin, fails);
     for (const id of ['guide', 'lesson']) fs.rmSync(path.join(docs, `${id}.md.draft.md`), { force: true });
 
-    return runCLI(['recall', 'maintenance', '--update-quality', ...args], { home, cwd: sandbox, bin });
+    return runCLI(['recall', 'maintenance', '--update-quality', ...args], { home, cwd: sandbox, bin, extra });
   };
 
   const listing = [
@@ -143,6 +143,27 @@ describe('recall maintenance --update-quality', () => {
     ]);
     expect(code).toBe(0);
     expect(fs.readFileSync(path.join(docs, 'lesson.md.draft.md'), 'utf8')).toBe('---\ndate: 2026-11-04\n---\n\n# lesson, updated');
+  });
+
+  it('runs inside an agent session as it does in the person\'s terminal', async () => {
+    const { code, stdout } = await run([], undefined, { CLAUDE_CODE_SESSION_ID: 'agent-session' });
+
+    expect(stdout.split('\n').filter((line) => line !== '')).toEqual([
+      ...listing,
+      'ℹ ',
+      'Generating AI-powered update drafts...',
+      `✔   Draft written: ${path.join(docs, 'guide.md')}.draft.md`,
+      `✔   Draft written: ${path.join(docs, 'lesson.md')}.draft.md`,
+      'Review drafts, then rename .draft.md -> .md to apply updates.',
+    ]);
+    expect(code).toBe(0);
+  });
+
+  it('still refuses an agent that starts the workflow by name, which has invoke: deny', async () => {
+    const { code, stdout } = await runCLI(['workflow', 'start', 'teamai-draft-learning-updates', '--driver', 'local'], { home, cwd: sandbox, bin: sandbox, extra: { CLAUDE_CODE_SESSION_ID: 'agent-session' } });
+
+    expect(JSON.parse(stdout)).toMatchObject({ error: { code: 'invoke_denied' } });
+    expect(code).toBe(1);
   });
 
   it('drafts the other entries when one fails, names the one it could not draft and why, and exits 1', async () => {
