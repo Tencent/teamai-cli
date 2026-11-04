@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { commandShell } from '../../command-shell.js';
 import { recordGroup, stopProcess } from '../../tool-launch/process-stop.js';
 import { redact } from '../../utils/redact.js';
 import type { WorkflowFailure } from '../types.js';
@@ -150,7 +151,7 @@ async function fileStamps(dir: string): Promise<Map<string, FileStamp>> {
 /** Runs `command` in a process group of its own, so an abort stops everything it started. */
 async function runCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal | undefined, groupDir: string | undefined): Promise<{ code: number; output: string }> {
   const detached = process.platform !== 'win32';
-  const child = spawn(command, { cwd, env, shell: true, windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, { cwd, ...commandShell(env), windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
 
   if (detached && groupDir !== undefined) recordGroup(child, groupDir);
 

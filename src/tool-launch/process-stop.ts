@@ -2,6 +2,7 @@ import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_pro
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { commandShell } from '../command-shell.js';
 
 /** The start time of every process, as `ps -o lstart=` prints it, by pid; undefined when ps cannot run. */
 export function processStarts(): Map<number, string> | undefined {
@@ -165,7 +166,7 @@ export interface GroupedCommand {
  */
 export function startGroupedCommand(input: { command: string; cwd: string; env: NodeJS.ProcessEnv; detached: boolean; group: string }): GroupedCommand {
   const { command, cwd, env, detached, group } = input;
-  const child = spawn(command, { shell: true, cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(command, { ...commandShell(env), cwd, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
   if (detached) recordGroup(child, group);
 
