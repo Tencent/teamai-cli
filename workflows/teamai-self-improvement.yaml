@@ -5,8 +5,8 @@ invoke: deny
 inputs: { scorer: string, suite: string }
 steps:
   - id: plan
-    command: teamai digest --json --scorer "$SCORER" --suite "$SUITE" --proposal "teamai/self-improvement/$SCORER"
-    env: { SCORER: "{{ inputs.scorer }}", SUITE: "{{ inputs.suite }}" }
+    command: teamai --env-args digest --json --scorer @SCORER --suite @SUITE --proposal @PROPOSAL
+    env: { PROPOSAL: "teamai/self-improvement/{{ inputs.scorer }}", SCORER: "{{ inputs.scorer }}", SUITE: "{{ inputs.suite }}" }
     output: { data: { improvement: { hasProposal: boolean, failures: [json], covered: [string] } } }
   - id: improve
     needs: [plan]

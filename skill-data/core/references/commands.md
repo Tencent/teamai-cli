@@ -12,6 +12,7 @@ Generated: do not edit by hand. Regenerate with
 ## Global options
 
 - `-V, --version` — output the version number
+- `--env-args` — Replace @NAME arguments with environment values after shell parsing (must be first)
 - `--dry-run` — Preview mode, no changes made; a command with no preview exits 1 without running
 - `-v, --verbose` — Verbose output
 
