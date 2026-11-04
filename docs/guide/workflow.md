@@ -547,18 +547,18 @@ $ teamai doctor --fix
 ⚠ teamai-reports could not be fetched from origin (fatal: unable to access 'https://git.example.com/team/app.git/': Could not resolve host: git.example.com), so runs published there are not swept this time. teamai doctor --fix tries again.
 ```
 
-As a run settles, teamai records until when it keeps what the run left: the settle time plus the retention in effect, as `retainedUntil` on the run and on its record on `teamai-reports` (none under `never`). Past it, a retry no longer reopens the run, since `doctor --fix` here or on another machine may already have removed its branches. Start the workflow again:
+When a run first settles, teamai records until when it keeps what the run left: that time plus the retention in effect, as `retainedUntil` on the run and on its record on `teamai-reports` (none under `never`). A retry that ends the run again does not move it, so the retention counts from when the run first ended. Past it, a retry no longer reopens the run, since `doctor --fix` here or on another machine may already have removed its branches. Start the workflow again:
 
 ```text
 $ teamai workflow retry r1ddcd1ca66beb067 finish
-{"error":{"code":"run_expired","message":"Run r1ddcd1ca66beb067 was not reopened: it settled at 2026-10-13T09:12:40.118Z, and workflows.retention kept what it left until 2026-10-27T09:12:40.118Z, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start review"}}
+{"error":{"code":"run_expired","message":"Run r1ddcd1ca66beb067 was not reopened: workflows.retention kept what it left until 2026-10-27T09:12:40.118Z, counted from when it first ended, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start review"}}
 ```
 
 A run another machine published with no `retainedUntil`, such as one an older teamai settled, stays on origin. A longer retention set later, or `never`, keeps this machine's earlier runs longer, but a retry still stops at their `retainedUntil`.
 
 While this machine deletes a run's branches, by `doctor --fix` or as the run succeeds, a retry of that run answers `busy` with `Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`.
 
-A retry of a run that succeeded first puts back, on origin and here, the branches its cleanup deleted, at the commits the run recorded, since the run needs them again. If one does not come back, the run is not reopened, and the answer names the branch and why:
+A retry of a run that succeeded first puts back, on origin and here, each branch of the run that a cleanup deleted from either, at the commit the run recorded, since the run needs them again. It does so on a machine that claimed the run too. If one does not come back, the run is not reopened, and the answer names the branch and why:
 
 ```text
 $ teamai workflow retry r1ddcd1ca66beb067 decide

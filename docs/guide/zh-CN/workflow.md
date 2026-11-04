@@ -547,18 +547,18 @@ $ teamai doctor --fix
 ⚠ teamai-reports could not be fetched from origin (fatal: unable to access 'https://git.example.com/team/app.git/': Could not resolve host: git.example.com), so runs published there are not swept this time. teamai doctor --fix tries again.
 ```
 
-运行结算时，teamai 会记下它留下的内容保留到何时：结算时间加上当时生效的保留期，记在运行和它在 `teamai-reports` 上的记录里，字段为 `retainedUntil`（`never` 时没有）。过了这个时间，retry 不再重新打开该运行，因为本机或其他机器上的 `doctor --fix` 可能已经移除了它的分支。请重新启动工作流：
+运行第一次结算时，teamai 会记下它留下的内容保留到何时：那次结算时间加上当时生效的保留期，记在运行和它在 `teamai-reports` 上的记录里，字段为 `retainedUntil`（`never` 时没有）。retry 之后运行再次结束，这个时间也不会变，所以保留期从运行第一次结束时算起。过了这个时间，retry 不再重新打开该运行，因为本机或其他机器上的 `doctor --fix` 可能已经移除了它的分支。请重新启动工作流：
 
 ```text
 $ teamai workflow retry r1ddcd1ca66beb067 finish
-{"error":{"code":"run_expired","message":"Run r1ddcd1ca66beb067 was not reopened: it settled at 2026-10-13T09:12:40.118Z, and workflows.retention kept what it left until 2026-10-27T09:12:40.118Z, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start review"}}
+{"error":{"code":"run_expired","message":"Run r1ddcd1ca66beb067 was not reopened: workflows.retention kept what it left until 2026-10-27T09:12:40.118Z, counted from when it first ended, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start review"}}
 ```
 
 其他机器发布的运行如果没有 `retainedUntil`（例如旧版 teamai 结算的运行），会留在 origin 上。之后设置更长的保留期或 `never`，本机较早的运行会保留得更久，但 retry 仍在它们的 `retainedUntil` 处停止。
 
 本机正在删除某个运行的分支时（`doctor --fix` 或运行成功时），对该运行的 retry 会返回 `busy`：`Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`。
 
-重试一个已成功的运行时，会先在 origin 和本地按运行记录的提交恢复其清理删除的分支，因为运行还要用到它们。有分支未能恢复时，运行不会重新打开，返回会写明是哪个分支以及原因：
+重试一个已成功的运行时，会先在 origin 和本地按运行记录的提交，恢复清理从任一处删除的该运行分支，因为运行还要用到它们。在认领了该运行的机器上也是如此。有分支未能恢复时，运行不会重新打开，返回会写明是哪个分支以及原因：
 
 ```text
 $ teamai workflow retry r1ddcd1ca66beb067 decide
