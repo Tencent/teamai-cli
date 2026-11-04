@@ -754,7 +754,7 @@ passingScore: 1
 Judge whether the tests in the diff cover what the change does.
 ```
 
-同一轮中解析到相同工具和模型的评分器共用一个评审步骤、一个证据目录和一个提示，答案为每个评分器给出一个标签：
+同一轮中请求相同 `model` 且经过相同阶段的评分器共用一个评审步骤、一个证据目录和一个提示，答案为每个评分器给出一个标签。评审工具在驱动程序租用该步骤时选定，而不取决于本机安装了什么：
 
 ```json
 {"answer":{"review-quality":{"label":"good","reasoning":"…"},"test-coverage":{"label":"thin","reasoning":"…"}}}

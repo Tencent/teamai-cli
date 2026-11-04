@@ -754,7 +754,7 @@ passingScore: 1
 Judge whether the tests in the diff cover what the change does.
 ```
 
-The scorers of one pass that resolve to the same tool and model share one judge step, one evidence directory and one prompt, and the answer has one label per scorer:
+The scorers of one pass that ask for the same `model` and take the same stages share one judge step, one evidence directory and one prompt, and the answer has one label per scorer. The judge tool is chosen when the driver leases the step, not by what this machine has installed:
 
 ```json
 {"answer":{"review-quality":{"label":"good","reasoning":"…"},"test-coverage":{"label":"thin","reasoning":"…"}}}
