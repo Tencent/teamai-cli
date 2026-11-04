@@ -11,9 +11,9 @@ export { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, Draf
 
 export type { StaleEntry, QualityUpdateOptions } from './quality-update.js';
 
-export { findPromotionCandidates, executePromotion, fetchPromotionRefs } from './promote.js';
+export { findPromotionCandidates, writePromotion, fetchPromotionRefs, chooseCategory, PromotionCategorySchema } from './promote.js';
 
-export type { PromotionCandidate, PromoteOptions } from './promote.js';
+export type { PromotionCandidate, PromotionCategory } from './promote.js';
 
 export { CheckoutLockedError, CheckoutUnavailableError, SyncLockedError, resolveMaintenancePaths } from './paths.js';
 

@@ -136,7 +136,7 @@ export const readSessionRun = ForwardedSessionRunSchema.parse;
  */
 export type LaunchedBy =
   | 'workflow' | 'confined' | 'answer'
-  | 'codebase' | 'deep-enrich' | 'enrich-with-ai' | 'import-local' | 'iwiki-dual' | 'import-mr' | 'recall-promote' | 'votes-judge';
+  | 'codebase' | 'deep-enrich' | 'enrich-with-ai' | 'import-local' | 'iwiki-dual' | 'import-mr' | 'votes-judge';
 
 /** A tool launched by a workflow step, in the checkout whose pull record has key `checkout`. */
 export type Launch = { by: 'workflow'; tool: string; checkout: string };

@@ -5,6 +5,7 @@ import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
+import type { PromotionCandidate } from './maintenance/promote.js';
 import type { ScoreOptions } from './score-commands.js';
 import type { EvidenceOptions, LabelOptions, PlanOptions, StageOptions, SubjectsOptions, WriteOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
@@ -1944,83 +1945,45 @@ maintenanceCmd
     process.stdout.write(`${JSON.stringify(DraftLearningUpdates.report(DraftLearningUpdates.parseResults(cmdOpts.results)))}\n`);
   });
 
-recallCmd
+const promoteCmd = recallCmd
   .command('promote [learningId]')
-  .description('Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted')
-  .addOption(new Option('--category <cat>', 'Target category: skills | rules | docs; skills use <learningId>/SKILL.md').choices(['skills', 'rules', 'docs']))
+  .description('List the learnings ready to promote, high-confidence and adopted by several members, each with the category its keywords suggest; listing makes no AI call. With a learning id: starts the default workflow teamai-promote-learning on the driver workflows.driver names, else local. The AI picks the category, unless --category gives it, and rewrites the learning for it; the result is pushed on a review branch with a pull request that says the category and why, then the learning is marked promoted. Exits 1 when the learning is not a candidate. --dry-run only says where it would go')
+  .addOption(new Option('--category <cat>', 'Target category: skills | rules | docs; skills use <learningId>/SKILL.md. Without it, the AI picks one').choices(['skills', 'rules', 'docs']))
   .option('--dry-run', 'Show what would be done without making changes')
-  .action(async (learningId, localOpts) => {
+  .action(async (learningId: string | undefined, localOpts) => {
     // As in `recall maintenance`: `--dry-run` reaches the root's options only (#900).
     const cmdOpts = { ...program.opts<GlobalOptions>(), ...localOpts };
-    const { autoDetectInit } = await import('./config.js');
-    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
-    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
-    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
 
     if (learningId && !cmdOpts.dryRun) {
-      const { promoteAndPublish } = await import('./maintenance/promotion-publish.js');
-      await promoteAndPublish(learningId, localConfig, teamConfig, {
-        category: cmdOpts.category,
-        namespaces: learningsNamespaces,
-      });
+      const { runShortcut } = await import('./workflow-commands.js');
+      await runShortcut({ workflow: 'teamai-promote-learning', inputs: { learning: learningId, category: cmdOpts.category ?? '' }, command: `teamai recall promote ${learningId}`, json: false });
 
       return;
     }
 
-    const {
-      findPromotionCandidates,
-      executePromotion,
-      fetchPromotionRefs,
-    } = await import('./maintenance/index.js');
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
+    const listed = await promotionListing(localConfig, { dryRun: cmdOpts.dryRun === true });
 
-    // An HTTP team repo has no git checkout: its directory may sit in the business repo.
-    const { usesBranchWorktree, getKnowledgeDir } = await import('./types.js');
-    const knowledgeCheckout = usesBranchWorktree(localConfig) ? getKnowledgeDir(localConfig) : undefined;
-    let paths: MaintenancePaths | undefined;
+    if (!listed) return;
+    const { paths, candidates } = listed;
 
-    if (knowledgeCheckout && !cmdOpts.dryRun) {
-      // A fetch beside a pull in the same clone pushes the pull into its reset
-      // fallback, so the checkouts and the review branches share one hold of the sync lock.
-      const refreshForListing = async () => {
-        const refreshed = await maintenancePathsOrExit(localConfig, { holdsSyncLock: true });
+    if (learningId) {
+      const { PromotionCategorySchema, writePromotion } = await import('./maintenance/index.js');
+      const candidate = candidates.find((c) => c.docId === learningId);
 
-        if (refreshed) {
-          await fetchPromotionRefs(knowledgeCheckout).catch((cause: unknown) => {
-            log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${cause instanceof Error ? cause.message : String(cause)}`);
-          });
-        }
+      if (!candidate) {
+        log.error(`Learning "${learningId}" not found or not eligible for promotion.`);
+        process.exitCode = 1;
 
-        return refreshed;
-      };
-
-      const { syncLockPath } = await import('./utils/learnings-publish.js');
-      const { withFileLock } = await import('./update.js');
-      const lock = syncLockPath(localConfig);
-
-      const listed = lock === null
-        ? { held: true as const, value: await refreshForListing() }
-        : await withFileLock(lock, { attempts: 1, delayMs: 0 }, refreshForListing);
-
-      if (listed.held) {
-        paths = listed.value;
-      } else {
-        log.warn('Another teamai pull/push is in progress, so candidates follow the last fetch.');
-        // As a dry run does: both checkouts as they are, neither refreshed nor created.
-        paths = await maintenancePathsOrExit(localConfig, { dryRun: true });
+        return;
       }
-    } else {
-      paths = await maintenancePathsOrExit(localConfig, { dryRun: cmdOpts.dryRun });
+
+      const category = PromotionCategorySchema.optional().parse(cmdOpts.category) ?? candidate.suggestedCategory;
+      await writePromotion(candidate, paths.repoPath, { category, dryRun: true });
+
+      return;
     }
-
-    if (!paths) return;
-
-    const {
-      repoPath, votesDir, learningsReadDirs, learningsWriteDir,
-    } = paths;
-
-    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, {
-      namespaces: learningsNamespaces,
-    });
 
     if (candidates.length === 0) {
       log.info('No learnings eligible for promotion yet.');
@@ -2028,34 +1991,140 @@ recallCmd
       return;
     }
 
-    if (!learningId) {
-      log.info(`${candidates.length} learning(s) eligible for promotion:`);
+    log.info(`${candidates.length} learning(s) eligible for promotion:`);
 
-      for (const c of candidates) {
-        log.info(`  - ${c.docId} (confidence: ${c.confidence.toFixed(2)}, suggested: ${c.suggestedCategory})`);
-      }
-
-      log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
-
-      return;
+    for (const c of candidates) {
+      log.info(`  - ${c.docId} (confidence: ${c.confidence.toFixed(2)}, suggested: ${c.suggestedCategory})`);
     }
 
-    const candidate = candidates.find((c) => c.docId === learningId);
-
-    if (!candidate) {
-      log.error(`Learning "${learningId}" not found or not eligible for promotion.`);
-
-      return;
-    }
-
-    await executePromotion(candidate, repoPath, {
-      // SAFETY: --category is declared with .choices(['skills', 'rules', 'docs']), so Commander admits nothing else.
-      category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
-      dryRun: cmdOpts.dryRun,
-      learningsWriteDir,
-    });
+    log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
   });
 
+// The verbs a teamai-promote-learning run's steps call.
+promoteCmd
+  .command('candidate')
+  .description('A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Fails when it is not a candidate, or when this workspace cannot publish one.')
+  .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
+  .action(async (cmdOpts: { learning: string }) => {
+    setStderrOnly(true);
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: false });
+    const { assertCanPromote, promotionCandidate } = await import('./maintenance/promotion-publish.js');
+    assertCanPromote(localConfig);
+    const listed = await promotionListing(localConfig, { dryRun: false });
+
+    if (!listed) return;
+    const candidate = promotionCandidate(listed.candidates, cmdOpts.learning);
+    const { readFileSafe } = await import('./utils/fs.js');
+    process.stdout.write(`${JSON.stringify({ title: candidate.title, content: await readFileSafe(candidate.path) ?? '', suggested: candidate.suggestedCategory })}\n`);
+  });
+
+promoteCmd
+  .command('category')
+  .description('A step of a teamai-promote-learning run: the category to promote to, and why: --given, else --chosen, else, when the AI could not choose, --suggested. Prints {"category","reason"}.')
+  .requiredOption('--given <cat>', 'The category recall promote --category gave, or \'\'')
+  .requiredOption('--chosen <cat>', 'The category the AI chose, or \'\' when it did not run or could not choose')
+  .requiredOption('--reason <text>', 'Why the AI chose it, or \'\'')
+  .addOption(new Option('--suggested <cat>', 'The category the learning\'s keywords suggest').choices(['skills', 'rules', 'docs']).makeOptionMandatory())
+  .action(async (cmdOpts: { given: string; chosen: string; reason: string; suggested: string }) => {
+    setStderrOnly(true);
+    const { chooseCategory, PromotionCategorySchema } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(chooseCategory({ ...cmdOpts, suggested: PromotionCategorySchema.parse(cmdOpts.suggested) }))}\n`);
+  });
+
+promoteCmd
+  .command('publish')
+  .description('A step of a teamai-promote-learning run: write the promoted entry, push it on a teamai/push/ review branch, and open a pull request whose body says the category and why. With an empty --content the learning is published as written. Prints {"target","exit_code"}; exit_code is 1 when no pull request could be opened.')
+  .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
+  .addOption(new Option('--to <cat>', 'The category to promote to, as the category step chose it').choices(['skills', 'rules', 'docs']).makeOptionMandatory())
+  .requiredOption('--reason <text>', 'Why it is promoted to that category, as the pull request says it')
+  .requiredOption('--content <text>', 'The learning rewritten for its category, or \'\' to publish it as written')
+  .option('--content-failure <message>', 'Why the AI could not rewrite it, said when --content is empty', '')
+  .action(async (cmdOpts: { learning: string; to: string; reason: string; content: string; contentFailure: string }) => {
+    setStderrOnly(true);
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: false });
+    const { PromotionCategorySchema } = await import('./maintenance/index.js');
+    const { PromoteLearning } = await import('./maintenance/promotion-publish.js');
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+
+    const published = await PromoteLearning.publish(cmdOpts.learning, localConfig, teamConfig, {
+      category: PromotionCategorySchema.parse(cmdOpts.to),
+      reason: cmdOpts.reason,
+      content: cmdOpts.content === '' ? { kind: 'as-written', why: cmdOpts.contentFailure } : { kind: 'rewritten', text: cmdOpts.content },
+      namespaces: await safeDeliveredLearningsNamespaces(localConfig, 'recall promote'),
+    });
+
+    process.stdout.write(`${JSON.stringify(published)}\n`);
+  });
+
+promoteCmd
+  .command('mark')
+  .description('A step of a teamai-promote-learning run: mark the learning as promoted to the entry publish pushed, and publish the mark to the learnings branch. Prints {"exit_code"}; it is 1 when the pull request or the mark could not be published.')
+  .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
+  .requiredOption('--published <json>', 'What the publish step printed: {"target","exit_code"}')
+  .action(async (cmdOpts: { learning: string; published: string }) => {
+    setStderrOnly(true);
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: false });
+    const { PromoteLearning } = await import('./maintenance/promotion-publish.js');
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const namespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
+    process.stdout.write(`${JSON.stringify(await PromoteLearning.mark(cmdOpts.learning, PromoteLearning.parsePublished(cmdOpts.published), localConfig, { namespaces }))}\n`);
+  });
+
+/**
+ * The learnings ready to promote, as `recall promote` lists them, with the paths it read them from. Outside a dry run
+ * the checkouts and the review branches are refreshed first, under one hold of the sync lock; while another sync holds
+ * it, they are listed as last fetched. Undefined once the failure is said.
+ */
+async function promotionListing(localConfig: LocalConfig, options: { dryRun: boolean }): Promise<{ paths: MaintenancePaths; candidates: PromotionCandidate[] } | undefined> {
+  const { findPromotionCandidates, fetchPromotionRefs } = await import('./maintenance/index.js');
+  const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+  const namespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
+  // An HTTP team repo has no git checkout: its directory may sit in the business repo.
+  const { usesBranchWorktree, getKnowledgeDir } = await import('./types.js');
+  const knowledgeCheckout = usesBranchWorktree(localConfig) ? getKnowledgeDir(localConfig) : undefined;
+  let paths: MaintenancePaths | undefined;
+
+  if (knowledgeCheckout && !options.dryRun) {
+    // A fetch beside a pull in the same clone pushes the pull into its reset
+    // fallback, so the checkouts and the review branches share one hold of the sync lock.
+    const refreshForListing = async () => {
+      const refreshed = await maintenancePathsOrExit(localConfig, { holdsSyncLock: true });
+
+      if (refreshed) {
+        await fetchPromotionRefs(knowledgeCheckout).catch((cause: unknown) => {
+          log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${cause instanceof Error ? cause.message : String(cause)}`);
+        });
+      }
+
+      return refreshed;
+    };
+
+    const { syncLockPath } = await import('./utils/learnings-publish.js');
+    const { withFileLock } = await import('./update.js');
+    const lock = syncLockPath(localConfig);
+
+    const listed = lock === null
+      ? { held: true as const, value: await refreshForListing() }
+      : await withFileLock(lock, { attempts: 1, delayMs: 0 }, refreshForListing);
+
+    if (listed.held) {
+      paths = listed.value;
+    } else {
+      log.warn('Another teamai pull/push is in progress, so candidates follow the last fetch.');
+      // As a dry run does: both checkouts as they are, neither refreshed nor created.
+      paths = await maintenancePathsOrExit(localConfig, { dryRun: true });
+    }
+  } else {
+    paths = await maintenancePathsOrExit(localConfig, { dryRun: options.dryRun });
+  }
+
+  if (!paths) return undefined;
+
+  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces }) };
+}
 
 /**
  * The maintenance paths, or undefined with exit code 1 when teamai refuses a

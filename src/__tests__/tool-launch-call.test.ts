@@ -58,13 +58,13 @@ it('runs Claude headless with the prompt on stdin and returns its answer and tok
   vi.stubEnv('TEAMAI_LAUNCHED_CHECKOUT', '/outer-step');
   vi.stubEnv('TEAMAI_MODE', 'unattended');
 
-  const answer = await only('claude', claude.executable).callTool('Classify this entry', { launchedBy: 'recall-promote' });
+  const answer = await only('claude', claude.executable).callTool('Classify this entry', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'skills', tool: 'claude', tokens: { input: 12, output: 3, cachedInput: 5 } });
   const { args, env, stdin } = await claude.invocation();
   expect(args).toEqual(['-p', '--output-format', 'json']);
   expect(stdin).toBe('Classify this entry');
-  expect(env).toMatchObject({ TEAMAI_LAUNCHED_BY: 'recall-promote', TEAMAI_MODE: 'unattended', TEAMAI_CONTRIBUTE_HINT_DISABLED: '1' });
+  expect(env).toMatchObject({ TEAMAI_LAUNCHED_BY: 'answer', TEAMAI_MODE: 'unattended', TEAMAI_CONTRIBUTE_HINT_DISABLED: '1' });
   expect(env).not.toHaveProperty('TEAMAI_LAUNCHED_TOOL');
   expect(env).not.toHaveProperty('TEAMAI_LAUNCHED_CHECKOUT');
 });
@@ -124,7 +124,7 @@ it('runs Codex with the prompt on stdin, reads its last message from the -o file
     lastMessage: 'docs\n',
   });
 
-  const answer = await only('codex', codex.executable).callTool('Classify this entry', { launchedBy: 'recall-promote' });
+  const answer = await only('codex', codex.executable).callTool('Classify this entry', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'docs', tool: 'codex', tokens: { input: 20, output: 2, cachedInput: 4 } });
   const { args, stdin } = await codex.invocation();
@@ -156,7 +156,7 @@ it('runs OpenCode with the prompt on stdin and joins the text parts it prints, w
 it('runs WorkBuddy through the CodeBuddy adapter, which prints Claude\'s result record', async () => {
   const workbuddy = await fakeTool('workbuddy', { stdout: JSON.stringify({ type: 'result', is_error: false, result: 'rules', usage: { input_tokens: 9, output_tokens: 1 } }) });
 
-  const answer = await only('workbuddy', workbuddy.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await only('workbuddy', workbuddy.executable).callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'rules', tool: 'workbuddy', tokens: { input: 9, output: 1 } });
   expect((await workbuddy.invocation()).args).toEqual(['-p', '--output-format', 'json']);
@@ -165,7 +165,7 @@ it('runs WorkBuddy through the CodeBuddy adapter, which prints Claude\'s result 
 it('runs OpenClaw as one embedded exec turn, with the prompt on stdin, and reads the JSON envelope', async () => {
   const openclaw = await fakeTool('openclaw', { stdout: JSON.stringify({ ok: true, status: 'ok', final: 'skills', usage: { input: 40, output: 3, total: 43 }, model: 'm', sessionId: 's' }, null, 2) });
 
-  const answer = await only('openclaw', openclaw.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await only('openclaw', openclaw.executable).callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'skills', tool: 'openclaw', tokens: { input: 40, output: 3 } });
   const { args, stdin } = await openclaw.invocation();
@@ -176,7 +176,7 @@ it('runs OpenClaw as one embedded exec turn, with the prompt on stdin, and reads
 it('fails with the error in OpenClaw\'s envelope', async () => {
   const openclaw = await fakeTool('openclaw', { stdout: JSON.stringify({ ok: false, status: 'error', error: { message: 'no provider key', kind: 'incomplete_turn' } }), exitCode: 1 });
 
-  await expect(only('openclaw', openclaw.executable).callTool('Classify', { launchedBy: 'recall-promote' })).rejects.toThrow('AI call failed (tool: openclaw): no provider key');
+  await expect(only('openclaw', openclaw.executable).callTool('Classify', { launchedBy: 'answer' })).rejects.toThrow('AI call failed (tool: openclaw): no provider key');
 });
 
 /** What `pi -p --mode json` prints: the turn's events, the assistant's reply in its `message_end`. */
@@ -192,7 +192,7 @@ function piEvents(assistant: Record<string, unknown>): string {
 it('runs pi with the prompt on stdin, in an ephemeral session, and reads the assistant\'s reply and usage', async () => {
   const pi = await fakeTool('pi', { stdout: piEvents({ content: [{ type: 'thinking', thinking: 'hm' }, { type: 'text', text: 'skills' }], usage: { input: 30, output: 2, cacheRead: 8, totalTokens: 40 }, stopReason: 'stop' }) });
 
-  const answer = await only('pi', pi.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await only('pi', pi.executable).callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'skills', tool: 'pi', tokens: { input: 30, output: 2, cachedInput: 8 } });
   const { args, stdin } = await pi.invocation();
@@ -203,13 +203,13 @@ it('runs pi with the prompt on stdin, in an ephemeral session, and reads the ass
 it('fails with the error pi reports on its reply, though pi exits 0', async () => {
   const pi = await fakeTool('pi', { stdout: piEvents({ content: [], stopReason: 'error', errorMessage: 'OpenAI API error (400): model_not_found' }) });
 
-  await expect(only('pi', pi.executable).callTool('Classify', { launchedBy: 'recall-promote' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: pi): OpenAI API error (400): model_not_found' });
+  await expect(only('pi', pi.executable).callTool('Classify', { launchedBy: 'answer' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: pi): OpenAI API error (400): model_not_found' });
 });
 
 it('runs omp as it runs pi, its fork, and reads the same events', async () => {
   const omp = await fakeTool('omp', { stdout: piEvents({ content: [{ type: 'text', text: 'docs' }], usage: { input: 5, output: 1 }, stopReason: 'stop' }) });
 
-  const answer = await only('omp', omp.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await only('omp', omp.executable).callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'docs', tool: 'omp', tokens: { input: 5, output: 1 } });
   const { args, stdin } = await omp.invocation();
@@ -231,7 +231,7 @@ function museRecords(terminal: Record<string, unknown>): string {
 it('runs muse exec with the prompt in a file, and reads the answer and usage of the run', async () => {
   const muse = await fakeTool('muse', { stdout: museRecords({ terminal: 'completed', text: 'rules', reason: null }) });
 
-  const answer = await only('muse', muse.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await only('muse', muse.executable).callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'rules', tool: 'muse', tokens: { input: 11, output: 3, cachedInput: 2 } });
   const { args, stdin, promptFile } = await muse.invocation();
@@ -244,7 +244,7 @@ it('runs muse exec with the prompt in a file, and reads the answer and usage of 
 it('fails with the reason a muse run ends without completing', async () => {
   const muse = await fakeTool('muse', { stdout: museRecords({ terminal: 'failed', text: null, reason: 'provider refused the request' }), exitCode: 1 });
 
-  await expect(only('muse', muse.executable).callTool('Classify', { launchedBy: 'recall-promote' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: muse): provider refused the request' });
+  await expect(only('muse', muse.executable).callTool('Classify', { launchedBy: 'answer' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: muse): provider refused the request' });
 });
 
 /** What `agy --output-format=stream-json --print=` prints, as agy 1.4.8 does: an init event, step updates, the result. */
@@ -259,7 +259,7 @@ function agyEvents(result: Record<string, unknown>): string {
 it('runs agy with the prompt as a stream-json user message on stdin, and reads the answer and usage of the result', async () => {
   const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'SUCCESS', response: 'rules\n', usage: { input_tokens: 14057, output_tokens: 4, thinking_tokens: 0, cache_read_tokens: 9000, total_tokens: 14061 } }) });
 
-  const answer = await only('agy', agy.executable).callTool('Classify "this"\nentry', { launchedBy: 'recall-promote' });
+  const answer = await only('agy', agy.executable).callTool('Classify "this"\nentry', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'rules', tool: 'agy', tokens: { input: 14057, output: 4, cachedInput: 9000 } });
   const { args, stdin } = await agy.invocation();
@@ -276,7 +276,7 @@ it("runs agy on the gateway a model switch gave it, over the member's own key", 
   await fs.mkdir(path.join(root, '.teamai', 'models'), { recursive: true });
   await fs.writeFile(path.join(root, '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY='gateway-key' GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
 
-  await only('agy', agy.executable).callTool('hi', { launchedBy: 'recall-promote' });
+  await only('agy', agy.executable).callTool('hi', { launchedBy: 'answer' });
 
   expect((await agy.invocation()).env).toMatchObject({ GEMINI_API_KEY: 'gateway-key', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
 });
@@ -289,7 +289,7 @@ it('never hands the gateway the member\'s own key when the variable the profile 
   await fs.mkdir(path.join(root, '.teamai', 'models'), { recursive: true });
   await fs.writeFile(path.join(root, '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY="\${TEAM_GATEWAY_KEY}" GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
 
-  await only('agy', agy.executable).callTool('hi', { launchedBy: 'recall-promote' });
+  await only('agy', agy.executable).callTool('hi', { launchedBy: 'answer' });
 
   // As the shell function does: an unset variable gives agy an empty key.
   expect((await agy.invocation()).env).toMatchObject({ GEMINI_API_KEY: '', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
@@ -305,7 +305,7 @@ it('runs Cursor through its cursor-agent executable, read-only, with the prompt 
   const cursor = await fakeTool('cursor-agent', { stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'skills', session_id: 's1' }) });
   const caller = createToolCaller({ resolveTool: (command) => command === 'cursor-agent' ? cursor.executable : null, resolveScope: async () => undefined });
 
-  const answer = await caller.callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await caller.callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'skills', tool: 'cursor' });
   const { args, stdin } = await cursor.invocation();
@@ -316,7 +316,7 @@ it('runs Cursor through its cursor-agent executable, read-only, with the prompt 
 it('runs Copilot with the prompt as its -p argument, silent, and reads the reply it prints', async () => {
   const copilot = await fakeTool('copilot', { stdout: 'docs\n' });
 
-  const answer = await only('copilot', copilot.executable).callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await only('copilot', copilot.executable).callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'docs', tool: 'copilot' });
   const { args, stdin } = await copilot.invocation();
@@ -332,7 +332,7 @@ it.each([
   const fake = await fakeTool(executable, { stdout: 'rules\n' });
   const caller = createToolCaller({ resolveTool: (command) => command === executable ? fake.executable : null, resolveScope: async () => undefined });
 
-  const answer = await caller.callTool('Classify', { launchedBy: 'recall-promote' });
+  const answer = await caller.callTool('Classify', { launchedBy: 'answer' });
 
   expect(answer).toEqual({ text: 'rules', tool });
   expect((await fake.invocation()).args).toEqual(args);

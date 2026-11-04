@@ -519,9 +519,25 @@ Generated: do not edit by hand. Regenerate with
       - `--draft <text>` — The draft's content
     - `teamai recall maintenance draft-report` — A step of a teamai-draft-learning-updates run: from the results of its draft step, what --update-quality prints: each entry it could not draft, and how to apply the drafts. Prints {"text","exit_code"}; exit_code is 1 when an entry could not be drafted.
       - `--results <json>` — The draft step's results, as a JSON array
-  - `teamai recall promote [learningId]` — Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted
-    - `--category <cat>` — Target category: skills | rules | docs; skills use <learningId>/SKILL.md
+  - `teamai recall promote [learningId]` — List the learnings ready to promote, high-confidence and adopted by several members, each with the category its keywords suggest; listing makes no AI call. With a learning id: starts the default workflow teamai-promote-learning on the driver workflows.driver names, else local. The AI picks the category, unless --category gives it, and rewrites the learning for it; the result is pushed on a review branch with a pull request that says the category and why, then the learning is marked promoted. Exits 1 when the learning is not a candidate. --dry-run only says where it would go
+    - `--category <cat>` — Target category: skills | rules | docs; skills use <learningId>/SKILL.md. Without it, the AI picks one
     - `--dry-run` — Show what would be done without making changes
+    - `teamai recall promote candidate` — A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Fails when it is not a candidate, or when this workspace cannot publish one.
+      - `--learning <id>` — The learning id, as recall promote lists it
+    - `teamai recall promote category` — A step of a teamai-promote-learning run: the category to promote to, and why: --given, else --chosen, else, when the AI could not choose, --suggested. Prints {"category","reason"}.
+      - `--given <cat>` — The category recall promote --category gave, or ''
+      - `--chosen <cat>` — The category the AI chose, or '' when it did not run or could not choose
+      - `--reason <text>` — Why the AI chose it, or ''
+      - `--suggested <cat>` — The category the learning's keywords suggest
+    - `teamai recall promote publish` — A step of a teamai-promote-learning run: write the promoted entry, push it on a teamai/push/ review branch, and open a pull request whose body says the category and why. With an empty --content the learning is published as written. Prints {"target","exit_code"}; exit_code is 1 when no pull request could be opened.
+      - `--learning <id>` — The learning id, as recall promote lists it
+      - `--to <cat>` — The category to promote to, as the category step chose it
+      - `--reason <text>` — Why it is promoted to that category, as the pull request says it
+      - `--content <text>` — The learning rewritten for its category, or '' to publish it as written
+      - `--content-failure <message>` — Why the AI could not rewrite it, said when --content is empty
+    - `teamai recall promote mark` — A step of a teamai-promote-learning run: mark the learning as promoted to the entry publish pushed, and publish the mark to the learnings branch. Prints {"exit_code"}; it is 1 when the pull request or the mark could not be published.
+      - `--learning <id>` — The learning id, as recall promote lists it
+      - `--published <json>` — What the publish step printed: {"target","exit_code"}
 
 ## import
 

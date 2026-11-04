@@ -149,11 +149,11 @@ describe('the Improvement Center payload', () => {
 
 describe('the Improvement Center page', () => {
   const e = (v: unknown) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  const renderPage = (kb: unknown, range = '30'): string => new Function(
+  const renderPage = (kb: unknown, range = '30', tab?: string): string => new Function(
     't', 'e', 'label', 'number', 'when', 'read', 'save', 'kb', 'kbError', 'source', 'errorPanel', 'link', 'trendPanel', 'language', 'render', 'document',
     `${improvementClient}\nreturn improvement();`,
   )(
-    (x: string) => x, e, (x: string) => e(x), String, String, (key: string, d: string) => (key.endsWith('-range') ? range : d), () => undefined, kb, null, () => '', () => '', () => '', () => '', 'en', () => undefined,
+    (x: string) => x, e, (x: string) => e(x), String, String, (key: string, d: string) => (key.endsWith('-range') ? range : key.endsWith('-tab') ? tab ?? d : d), () => undefined, kb, null, () => '', () => '', () => '', () => '', 'en', () => undefined,
     { addEventListener: () => undefined, querySelectorAll: () => [] },
   ) as string;
   const day = (date: string, over: Record<string, number> = {}) => ({ date, ended: 0, succeeded: 0, corrected: 0, prompts: 0, durationMs: 0, costMicros: 0, priced: 0, cacheRead: 0, cacheEligible: 0, members: 0, ...over });
@@ -200,6 +200,15 @@ describe('the Improvement Center page', () => {
 
     expect(small).toContain('>$0.20</text>');
     expect(fractional).toContain('>$2.50</text>');
+  });
+
+  it('offers each promote candidate as a command that lets the AI choose its category', () => {
+    const promote = [{ docId: 'retry', title: 'Retry with backoff', category: 'skills', confidence: 0.95, upvoted: 6, users: 3 }];
+    const html = renderPage({ improvement: { ...payload(days(1, () => ({}))).improvement, maintenance: { promote, prune: [], stale: [], silent: 0 } } }, '30', 'promote');
+
+    expect(html).toContain('data-copy="teamai recall promote retry"');
+    expect(html).toContain('<td>skills</td>');
+    expect(html).not.toContain('--category');
   });
 
   it('labels the skill count as all-time', () => {

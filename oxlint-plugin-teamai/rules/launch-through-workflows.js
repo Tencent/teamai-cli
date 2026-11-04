@@ -25,7 +25,6 @@ const BASELINE = scopedFiles([
   'src/import-local.ts',
   'src/import-mr.ts',
   'src/iwiki-dual.ts',
-  'src/maintenance/promote.ts',
   'src/scorers/judge.ts',
   'src/votes-judge.ts',
 ]);
