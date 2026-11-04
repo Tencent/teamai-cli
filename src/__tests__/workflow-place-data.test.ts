@@ -175,6 +175,19 @@ describe('the place of a deliver: publish step', () => {
     expect(fs.readFileSync(path.join(opened.dir, 'scores', 'tester', '2026-11.jsonl'), 'utf8')).toBe('{"tester":1}\n');
   });
 
+  it('opens at origin\'s tip when this machine\'s checkout of the branch is behind it and another process holds that checkout', async () => {
+    await append(NOTES, 'NOTE-ONE');
+
+    const opened = await whileLocked(async () => {
+      onAnotherMachine(NOTES, 'NOTE-ONE\nNOTE-TWO\n');
+      git(config.repo.localPath, 'fetch', '-q', 'origin', '+refs/heads/teamai-reports:refs/remotes/origin/teamai-reports');
+      return openDataCheckout({ config, run: RUN, attempt: ATTEMPT, branch: 'teamai-reports' });
+    });
+
+    expect(opened.at).toEqual({ kind: 'checkout', base: tip() });
+    expect(fs.readFileSync(path.join(opened.dir, NOTES), 'utf8')).toBe('NOTE-ONE\nNOTE-TWO\n');
+  });
+
   it('opens offline, on a machine that never fetched the branch, on the branch this machine starts, and leaves the data pending', async () => {
     git(config.repo.localPath, 'update-ref', '-d', 'refs/remotes/origin/teamai-reports');
     fs.renameSync(remote, `${remote}.away`);

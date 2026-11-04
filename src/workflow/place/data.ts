@@ -61,7 +61,20 @@ export async function openDataCheckout(input: { config: LocalConfig; run: RunId;
   }
 
   const repo = gitRoot(config);
+  const base = await startOf(repo, branch);
 
+  if (base === '') return unavailable(`neither origin nor this machine has ${branch} yet`);
+  await fs.mkdir(path.dirname(dir), { recursive: true });
+  const added = await git(repo, ['worktree', 'add', '-q', '--detach', '--', dir, base]);
+
+  return added.code === 0 ? { dir, at: { kind: 'checkout', base: await withKept({ config, branch, dir, base }) } } : unavailable(`git could not check out ${branch}: ${said(added)}`);
+}
+
+/**
+ * The commit a step on `branch` starts from: this machine's branch when it holds origin's tip, with the commits origin
+ * lacks yet, else origin's tip; '' when neither has the branch.
+ */
+async function startOf(repo: string, branch: DataBranch): Promise<string> {
   const tipOf = async (ref: string): Promise<string> => {
     const found = await git(repo, ['rev-parse', '--verify', '-q', `${ref}^{commit}`]);
 
@@ -70,13 +83,8 @@ export async function openDataCheckout(input: { config: LocalConfig; run: RunId;
 
   const [origin, local] = await Promise.all([tipOf(`refs/remotes/origin/${branch}`), tipOf(`refs/heads/${branch}`)]);
   const holdsOrigin = local !== '' && (origin === '' || (await git(repo, ['merge-base', '--is-ancestor', origin, local])).code === 0);
-  const base = holdsOrigin ? local : origin;
 
-  if (base === '') return unavailable(`neither origin nor this machine has ${branch} yet`);
-  await fs.mkdir(path.dirname(dir), { recursive: true });
-  const added = await git(repo, ['worktree', 'add', '-q', '--detach', '--', dir, base]);
-
-  return added.code === 0 ? { dir, at: { kind: 'checkout', base: await withKept({ config, branch, dir, base }) } } : unavailable(`git could not check out ${branch}: ${said(added)}`);
+  return holdsOrigin ? local : origin;
 }
 
 /**
