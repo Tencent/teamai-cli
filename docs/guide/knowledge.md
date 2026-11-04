@@ -150,7 +150,7 @@ teamai recall maintenance --prune --archive
 teamai recall maintenance --update-quality
 ```
 
-`--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md`. Rename it to `.md` when the draft is right.
+`--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md` beside each entry the team recalls often but rarely adopts. Rename it to `.md` when the draft is right. It runs the default workflow [`teamai-draft-learning-updates`](workflow.md#default-workflows), and exits 1 when an entry could not be drafted.
 
 Digest and maintenance commands (`teamai digest`, `teamai recall maintenance`, and `teamai recall promote`) include the active learnings namespaces for the current scope alongside the shared root.
 

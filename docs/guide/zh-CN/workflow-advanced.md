@@ -575,6 +575,58 @@ steps:
 
 `workflow: { from: <step> }` 运行它 `needs` 的某个步骤的 bundle。该步骤报告时，teamai 像 `workflow start` 检查文件一样检查这个 bundle，固定它，并在运行期间保留它。无法接受的 bundle，例如包含秘密值、`from` 步骤、`prompt_file` 步骤或 `finally` 步骤的 bundle，会让产生它的步骤以 `invalid_output` 失败并给出原因。产生 bundle 的步骤只运行一次，不在任何循环或 `for_each` 中。带 `from` 步骤的运行是[隔离的](#隔离运行)。
 
+## 让成员的 AI 工具给出回答
+
+`answer` 是一个由成员的 AI 工具一次调用就回答的提示词，没有工作区、会话和 agent。只需要模型给出一段文字或一个判断的步骤用它：
+
+```yaml
+schemaVersion: v1alpha1
+name: classify-learning
+description: Ask which kind of team knowledge a learning is.
+inputs: { learning: string }
+steps:
+  - id: category
+    answer: "Is this learning a skill, a rule or a doc? Give the category and one sentence why. {{ inputs.learning }}"
+    output: { category: skill | rule | doc, reason: string }
+    timeout: 60s
+outputs: { category: steps.category.outputs.category }
+```
+
+```text
+$ teamai workflow start classify-learning --driver local --inputs '{"learning":"Retry 429 responses with backoff."}'
+{"data":{"done":{"run":"r3f9a1c2b","outcome":"succeeded","outputs":{"category":"rule"}},"cancelled":[]}}
+```
+
+- 必须写 `output`。`{ text: string }` 把回答当作文字。其他 output 说明回答中的 JSON，本地驱动会向工具要这个 JSON。
+- 使用的工具和 teamai 自己的 AI 调用相同：先看 `TEAMAI_AI_TOOL`，再看项目的 `ai.tool`，再看本机的，最后是 teamai 能启动的第一个已安装工具。pull 拒绝这个步骤上的 `tool`、`agent`、`model`、`workspace` 和 `session`。
+- 这次启动标记为 teamai 自己的，成员的 hooks 不会捕获它。
+- 它不占用位置，所以会和检出中的命令同时运行。
+- 提示词没有默认超时，请给这个步骤设置一个。
+- 没有安装工具时它以 `tool_unavailable` 失败，成员指定的工具无法运行时以 `tool_unconfigured` 失败，调用失败时以 `tool_failed` 失败，回答里没有 JSON 时以 `invalid_output` 失败。
+
+其他驱动把 answer 步骤当作带 `answer: true`、没有工作区的提示词租约。驱动回答这个提示词并报告 outputs。
+
+## 让命令在检出中写入
+
+没有 `workspace` 的命令以只读方式运行：它在检出中留下的改动会让它以 `read_only_dirty` 失败。`writes` 列出相对于检出的路径，这些路径下的改动会被保留：
+
+```yaml
+schemaVersion: v1alpha1
+name: refresh-api-docs
+description: Regenerate the API reference of one area beside the code.
+inputs: { area: string }
+steps:
+  - id: generate
+    command: npm run docs:api -- --out "docs/api/$AREA"
+    env: { AREA: "{{ inputs.area }}" }
+    writes: ["docs/api/{{ inputs.area }}/"]
+```
+
+命令在 `docs/api/<area>/` 下写的文件留在检出中，步骤成功。其他地方的改动仍会让它以 `read_only_dirty` 失败，移动过的 HEAD 从不保留。
+
+- 只有命令步骤可以写 `writes`。
+- pull 拒绝绝对路径、离开检出的路径，以及读取 `inputs` 之外内容的模板。渲染后落在检出之外的路径会让步骤在运行前以 `invalid_template` 失败。
+
 ## 克隆工作区
 
 ```yaml

@@ -37,11 +37,14 @@ Nothing changes for a command a member already runs:
 
 ```text
 $ teamai recall maintenance --update-quality
-Checking 3 stale entries…
-  learnings/retry-policy.md            → learnings/retry-policy.draft.md
-  learnings/helm-values.md             → learnings/helm-values.draft.md
-  skills/pod-startup/SKILL.md          → skills/pod-startup/SKILL.draft.md
-Review drafts, then rename each over its original.
+ℹ Found 2 entry(ies) recalled often but rarely adopted:
+ℹ   - [docs] retry-policy: recalled 9x by 3 users, adopted 0x
+ℹ   - [docs] helm-values: recalled 6x by 2 users, adopted 1x
+ℹ
+Generating AI-powered update drafts...
+✔   Draft written: ~/.teamai/team-repo/docs/retry-policy.md.draft.md
+✔   Draft written: ~/.teamai/team-repo/docs/helm-values.md.draft.md
+Review drafts, then rename .draft.md -> .md to apply updates.
 ```
 
 Behind it, a run of `teamai-draft-learning-updates` on the default driver. `--json` prints the run's envelope instead
@@ -51,31 +54,53 @@ of the text. The same run works from the skill driver:
 $ teamai recall maintenance --update-quality --driver skill
 ```
 
-A team changes the prompt, the timeout or the model by committing a file of the same name:
+A team changes the prompt, the timeout or the model by committing a file of the same name. It runs the same
+`recall maintenance` verbs, so the command prints what it printed:
 
-```yaml fragment
+```yaml
 # workflows/teamai-draft-learning-updates.yaml in the team repo
 schemaVersion: v1alpha1
 name: teamai-draft-learning-updates
 description: Draft an update for each stale learning, in our house style.
-inputs: { entries: [string] }
+invoke: deny
+private: true
 steps:
   - id: stale
-    command: teamai recall maintenance stale --json
-    output: { entries: [{ id: string, file: string }] }
+    command: teamai recall maintenance stale
+    output:
+      entries: [{ doc_id: string, path: string, type: string, recalled_count: number, upvoted_count: number, user_count: number }]
   - id: draft
     needs: [stale]
-    for_each: { items: steps.stale.outputs.entries, max_parallel: 3 }
-    answer: |
-      Rewrite {{ item.file }} so it states what is still true today. Keep our headings: Context, Rule, Example.
-    output: { text: string }
-    timeout: 120s
-  - id: write
+    for_each: steps.stale.outputs.entries
+    continue_on_failure: true
+    workflow:
+      steps:
+        - id: context
+          command: teamai recall maintenance draft-context --path "$ENTRY" --doc-id "$DOC_ID"
+          env: { ENTRY: "{{ item.path }}", DOC_ID: "{{ item.doc_id }}" }
+          output: { content: string, related: string }
+        - id: ask
+          needs: [context]
+          answer: |
+            Rewrite this entry so it states what is still true today. Keep our headings: Context, Rule, Example.
+            Output only the file.
+
+            {{ steps.context.outputs.content }}
+          output: { text: string }
+          timeout: 120s
+        - id: write
+          needs: [ask]
+          command: teamai recall maintenance write-draft --path "$ENTRY" --draft "$DRAFT"
+          env: { ENTRY: "{{ item.path }}", DRAFT: "{{ steps.ask.outputs.text }}" }
+          writes: [.teamai/]
+          output: { draft: string }
+  - id: report
     needs: [draft]
-    command: teamai recall maintenance write-drafts
-    writes: ["learnings/", "skills/"]
+    if: steps.draft.outcome == 'success' || steps.draft.outcome == 'failed'
+    command: teamai recall maintenance draft-report --results "$RESULTS"
+    env: { RESULTS: "{{ steps.draft.results }}" }
     output: { text: string, exit_code: number }
-outputs: { text: steps.write.outputs.text, exit_code: steps.write.outputs.exit_code }
+outputs: { text: steps.report.outputs.text, exit_code: steps.report.outputs.exit_code }
 ```
 
 ## Generic keys this adds to the engine

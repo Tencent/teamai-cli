@@ -575,6 +575,58 @@ steps:
 
 `workflow: { from: <step> }` runs the bundle of a step it `needs`. When that step reports, teamai checks the bundle as `workflow start` checks a file, pins it, and keeps it for the run. A bundle it cannot take, one that holds a secret value, a `from` step, a `prompt_file` step or `finally` steps, fails the producing step `invalid_output` with the reason. The producing step runs once, outside any loop or `for_each`. A run with a `from` step is [isolated](#isolated-runs).
 
+## Ask the member's AI tool for an answer
+
+`answer` is a prompt the member's AI tool answers in one call, with no workspace, no session and no agent. A step that only needs text or a decision from a model uses it:
+
+```yaml
+schemaVersion: v1alpha1
+name: classify-learning
+description: Ask which kind of team knowledge a learning is.
+inputs: { learning: string }
+steps:
+  - id: category
+    answer: "Is this learning a skill, a rule or a doc? Give the category and one sentence why. {{ inputs.learning }}"
+    output: { category: skill | rule | doc, reason: string }
+    timeout: 60s
+outputs: { category: steps.category.outputs.category }
+```
+
+```text
+$ teamai workflow start classify-learning --driver local --inputs '{"learning":"Retry 429 responses with backoff."}'
+{"data":{"done":{"run":"r3f9a1c2b","outcome":"succeeded","outputs":{"category":"rule"}},"cancelled":[]}}
+```
+
+- `output` is required. `{ text: string }` takes the reply as text. Any other output names the JSON the reply holds, and the local driver asks the tool for it.
+- The tool is the one teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model`, `workspace` and `session` on the step.
+- The launch is marked as teamai's own, so the member's hooks do not capture it.
+- It takes no place, so it runs beside a command in the checkout.
+- A prompt has no default timeout. Give the step one.
+- It fails `tool_unavailable` when no tool is installed, `tool_unconfigured` when the tool the member names cannot run, `tool_failed` when the call fails, and `invalid_output` when the reply holds no JSON.
+
+Another driver gets an answer step as a prompt lease with `answer: true` and no workspace. It answers the prompt and reports the outputs.
+
+## Let a command write in the checkout
+
+A command with no `workspace` runs read-only: a change it leaves in the checkout fails it `read_only_dirty`. `writes` lists the paths, relative to the checkout, where a change is kept instead:
+
+```yaml
+schemaVersion: v1alpha1
+name: refresh-api-docs
+description: Regenerate the API reference of one area beside the code.
+inputs: { area: string }
+steps:
+  - id: generate
+    command: npm run docs:api -- --out "docs/api/$AREA"
+    env: { AREA: "{{ inputs.area }}" }
+    writes: ["docs/api/{{ inputs.area }}/"]
+```
+
+A file the command writes under `docs/api/<area>/` stays in the checkout, and the step succeeds. A change anywhere else still fails it `read_only_dirty`, and a moved HEAD is never kept.
+
+- Only a command step takes `writes`.
+- Pull rejects an absolute path, a path that leaves the checkout, and a template that reads anything but `inputs`. A path that renders outside the checkout fails the step `invalid_template` before it runs.
+
 ## Clone workspaces
 
 ```yaml
