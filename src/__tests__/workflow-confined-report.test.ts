@@ -8,6 +8,7 @@ import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
+import { DriverNameSchema } from '../workflow/driver-name.js';
 import { readRun, runFilePath, runScratchDir } from '../workflow/store.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
 
@@ -103,5 +104,21 @@ describe('a confined report checked against its lease', () => {
     const config = await fixture();
 
     expect(await judged(config, 'best-effort', { tool: 'codex', isolation: 'verified', access: 'read' }, { leasedAgainOn: 'codex' })).toMatchObject({ status: 'succeeded' });
+  });
+});
+
+describe('a run started awaiting a driver', () => {
+  it('keeps awaiting it while a driver that asks is given no lease, and no longer once one takes a lease', async () => {
+    const config = await fixture();
+    const awaits = { driver: DriverNameSchema.parse('acme-sandbox') };
+    const run = String(data(await startRun(config, 'judge', {}, { secrets: await knownSecrets(config), awaits })).run);
+    fs.mkdirSync(path.join(runScratchDir(config, run), 'evidence'), { recursive: true });
+    fs.writeFileSync(path.join(runScratchDir(config, run), 'evidence', 'confined.json'), JSON.stringify({ level: 'best-effort' }));
+
+    expect(data(await leaseNext(config, run, driver, { can: {} }))).not.toHaveProperty('lease');
+    expect(await readRun(config, run)).toMatchObject({ awaits });
+
+    expect(data(await leaseNext(config, run, driver, { can: { confined: [{ level: 'verified', access: 'read', tools: ['claude'] }] } }))).toHaveProperty('lease');
+    expect(await readRun(config, run)).not.toHaveProperty('awaits');
   });
 });
