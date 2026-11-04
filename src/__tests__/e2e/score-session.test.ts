@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { encodeCwdClaude } from '../../session-flow/fs.js';
+import { executableOf, LAUNCH_ORDER } from '../../tool-launch/tools.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -376,8 +377,9 @@ console.log(JSON.stringify({ type: 'result', structured_output: given?.propertie
     git(knowledge, 'push', '-q', team, 'main');
     expect((await runCLI(['pull'], app, env)).code).toBe(0);
     // Only the fake Claude judges here, so no tool here runs style's model.
-    const claudeOnly = { ...env, PATH: (env.PATH ?? '').split(path.delimiter)
-      .filter((dir) => !['codex', 'codex.exe', 'codex.cmd'].some((name) => fs.existsSync(path.join(dir, name)))).join(path.delimiter) };
+    const agents = LAUNCH_ORDER.flatMap((tool) => ['', '.exe', '.cmd', '.bat'].map((ext) => `${executableOf(tool)}${ext}`));
+    const claudeOnly = { ...env, PATH: [path.join(root, 'bin'), ...(env.PATH ?? '').split(path.delimiter)
+      .filter((dir) => !agents.some((name) => fs.existsSync(path.join(dir, name))))].join(path.delimiter) };
 
     const scored = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--scorer', 'style'], app, claudeOnly);
 
