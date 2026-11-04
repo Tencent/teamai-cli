@@ -5,14 +5,14 @@
  * reached origin meanwhile, as every other teamai-reports writer does. A step stages only the member's own files: those
  * whose second path segment, less its extension, is the member's username, such as `scores/<member>/2026-11.jsonl` or
  * `votes/<member>.yaml`. A place that cannot be made, or a publish that cannot land, leaves the data pending and the step
- * succeeds: a producer keeps what it publishes until it finds it on origin's tip.
+ * succeeds. What the step staged and could not land is kept as a patch that `DataBranches.pushPending` sends later.
  *
  *   <runsDir>/<run>/data/<attempt>/    the checkout, made again by every prepare and removed once the step finished
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { usesBranchWorktree, type DataBranch, type LocalConfig } from '../../types.js';
-import { failureReason, gitRoot } from '../../utils/branch-worktree.js';
+import { failureReason, gitRoot, type PublishResult } from '../../utils/branch-worktree.js';
 import { DataBranches } from '../../utils/data-branches.js';
 import { runsDir, type AttemptId, type RunId } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
@@ -137,19 +137,25 @@ export async function finishDataCheckout(input: { config: LocalConfig; dir: stri
 
     if (patch.code !== 0) return { code: 'push_failed', message: `Step "${step}" could not read what it staged in ${dir}: ${said(patch)}` };
 
-    return await land({ config, step, branch, files: entries.filter((_, index) => index % 2 === 1), patch: patch.stdout });
+    // The checkout is <runs>/<run>/data/<attempt>; the time first keeps patches in the order they were made.
+    const name = `${String(Date.now()).padStart(15, '0')}-${path.basename(path.dirname(path.dirname(dir)))}-${path.basename(dir)}`;
+
+    return await land({ config, step, branch, files: entries.filter((_, index) => index % 2 === 1), patch: { name, text: patch.stdout } });
   } finally {
     await removeDataCheckout(config, dir);
   }
 }
 
-/** Applies `patch`, which changes `files`, to the member's persistent checkout of `branch`, and pushes it. */
-async function land(input: { config: LocalConfig; step: string; branch: DataBranch; files: string[]; patch: string }): Promise<{ message?: string }> {
-  const { config, step, branch, files } = input;
+/**
+ * Applies `patch`, which changes `files`, to the member's persistent checkout of `branch`, and pushes it. A patch that
+ * did not land is kept for the next send; one committed here and not pushed is then found on the checkout and dropped.
+ */
+async function land(input: { config: LocalConfig; step: string; branch: DataBranch; files: string[]; patch: { name: string; text: string } }): Promise<{ message?: string }> {
+  const { config, step, branch, files, patch } = input;
   let conflict: string | undefined;
 
   const published = await DataBranches.checkout(branch).update(config, async (worktree) => {
-    const applied = await git(worktree, ['apply', '--index', '--binary', '-'], { input: input.patch });
+    const applied = await git(worktree, ['apply', '--index', '--binary', '-'], { input: patch.text });
 
     if (applied.code === 0) return { files, message: `[teamai] ${step}: ${config.username}` };
     conflict = said(applied);
@@ -157,16 +163,24 @@ async function land(input: { config: LocalConfig; step: string; branch: DataBran
     return null;
   });
 
-  if (conflict !== undefined) return pending(step, `${branch} on origin changed what it staged: ${conflict}`);
+  const why = conflict !== undefined ? `${branch} on origin changed what it staged: ${conflict}` : pendingReason(published, branch);
 
+  if (why === undefined) return {};
+  await DataBranches.keep(config, branch, { name: patch.name, patch: patch.text });
+
+  return pending(step, why);
+}
+
+/** Why a publish leaves its data on this machine, or undefined when origin has it. */
+function pendingReason(published: PublishResult, branch: DataBranch): string | undefined {
   switch (published.status) {
     case 'published':
     case 'already-present':
-      return {};
+      return undefined;
     case 'busy':
-      return pending(step, `another teamai process is writing ${branch}`);
+      return `another teamai process is writing ${branch}`;
     case 'failed':
-      return pending(step, published.reason.trim());
+      return published.reason.trim();
     default: {
       const unhandled: never = published;
 

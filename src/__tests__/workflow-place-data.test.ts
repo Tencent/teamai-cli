@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { DataBranches } from '../utils/data-branches.js';
 import { finishDataCheckout, openDataCheckout } from '../workflow/place/data.js';
 import type { AttemptId, RunId } from '../workflow/store.js';
@@ -187,6 +188,43 @@ describe('DataBranches.pushPending', () => {
 
     expect(await DataBranches.pushPending(config)).toEqual([]);
     expect(spawnSync('git', ['--git-dir', remote, 'rev-parse', '--verify', '-q', 'teamai-reports']).status).not.toBe(0);
+  });
+
+  it('sends what a publish staged while another teamai process wrote the branch', async () => {
+    const lock = path.join(path.dirname(config.repo.localPath), '.reports-lock');
+    await DataBranches.checkout('teamai-reports').refresh(config);
+    expect(await acquireLock(lock)).toBe(true);
+    const { finished } = await publish({ 'standups/tester/2026-11.md': 'Shipped the retry fix.\n' }).finally(() => releaseLock(lock));
+
+    expect(finished).toMatchObject({ message: expect.stringContaining('another teamai process is writing teamai-reports') });
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+    expect(onOrigin('standups/tester/2026-11.md')).toBe('Shipped the retry fix.\n');
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+  });
+
+  it('keeps, and names, what a publish staged when origin changed the same file so it no longer applies', async () => {
+    config = { ...config, username: 'bob' };
+    await publish({ 'scores/bob/2026-11.jsonl': '{"bob":2}\n' }, () => {
+      const other = path.join(sandbox, 'other');
+      git(sandbox, 'clone', '-q', '--branch', 'teamai-reports', remote, other);
+      fs.writeFileSync(path.join(other, 'scores', 'bob', '2026-11.jsonl'), '{"bob":3}\n');
+      git(other, 'commit', '-qam', 'teammate');
+      git(other, 'push', '-q', 'origin', 'teamai-reports');
+    });
+
+    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.stringMatching(/no longer applies; it is kept in .+data-branches\/teamai-reports\/pending\.$/) }]);
+    expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":3}\n');
+  });
+
+  it('keeps sending nothing twice: labels a later publish put on the branch are not added again from what a busy publish kept', async () => {
+    const lock = path.join(path.dirname(config.repo.localPath), '.reports-lock');
+    await DataBranches.checkout('teamai-reports').refresh(config);
+    expect(await acquireLock(lock)).toBe(true);
+    await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n' }).finally(() => releaseLock(lock));
+    await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n{"tester":2}\n' });
+
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+    expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":1}\n{"tester":2}\n');
   });
 
   it('pushes nothing for an http team repo', async () => {
