@@ -599,7 +599,7 @@ skill_routing: true
 }
 ```
 
-会话为 `skills.available` 中的每个技能各生成一个问题：根技能是 `teamai:routing:<skill>`，带命名空间的是 `teamai:routing:<namespace>:<skill>`。标记为 `namespaceUnknown` 的技能没有问题，因为它可能和同名的另一个技能混淆。这些问题从不抽样，无论多少个都共用一次评审调用，并计入 `daily_limit`。设置 `batch: true` 时，团队的会话评分器也加入这次调用。这些名字也可以按需解析，不受 `skill_routing` 影响，但只对该会话 `skills.available` 中的技能有效；其他名字会得到 `scorer_not_found`：
+会话为 `skills.available` 中的每个技能各生成一个问题：根技能是 `teamai:routing:<skill>`，带命名空间的是 `teamai:routing:<namespace>:<skill>`。标记为 `namespaceUnknown` 的技能没有问题，因为它可能和同名的另一个技能混淆。这些问题从不抽样，无论多少个都共用一次评审调用，并计入 `daily_limit`。设置 `batch: true` 时，团队中要求同一模型和工具的会话评分器也加入这次调用。这些名字也可以按需解析，不受 `skill_routing` 影响，但只对该会话 `skills.available` 中的技能有效；其他名字会得到 `scorer_not_found`：
 
 ```console
 $ teamai score --session 7c1e… --scorer teamai:routing:ops:release --scorer teamai:routing:review-notes
@@ -625,16 +625,17 @@ precision(ops:release) ≈ 31 / (31 + 6) = 84%   不需要时加载了 6 次
 recall(ops:release)    ≈ 31 / (31 + 9) = 78%   需要时没有加载 9 次
 ```
 
-每个技能都用同一份评分标准，只填入技能名。改写技能描述不会改变评分器的度量，所以改写前后的计数可以直接比较：
+每个技能都用同一份评分标准，只填入技能名和它的命名空间。改写技能描述不会改变评分器的度量，所以改写前后的计数可以直接比较：
 
 ```text
 fit     1  <skill> is in skills.used, and the session needed what its description says.
 idle    1  <skill> is not in skills.used, and the session did not need what its description says, or another skill or the agent's own steps did it.
 extra   0  <skill> is in skills.used, and the session did not need what its description says.
 missed  0  The session needed what the description of <skill> says, <skill> is not in skills.used, and nothing else did it.
+Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
 ```
 
-评分器命名空间可以像关闭 `sessions` 一样，为它的成员关闭路由问题：
+生效的评分器命名空间的 `scoring.yaml` 会覆盖根文件的 `skill_routing`，设为 `false` 时为它的成员关闭路由问题：
 
 ```yaml
 # scorers/ops/scoring.yaml
@@ -660,7 +661,7 @@ sessions: true
 Judge only the team skill `release`, against its entry in `skills.available` in `evidence.json`.
 ```
 
-设置 [`batch: true`](#批量评审) 后，一次评审调用回答一个会话的所有评分器。每个评分器各自抽样会话，所以十个按技能、抽样率 25% 的评分器仍会覆盖约 94% 的会话，而只得到约四分之一的回答。想少花一些，就调低 `daily_limit`，而不是 `samplingRate`。
+设置 [`batch: true`](#批量评审) 后，一次评审调用回答一个会话中要求同一模型和工具的所有评分器。每个评分器各自抽样会话，所以十个按技能、抽样率 25% 的评分器仍会覆盖约 94% 的会话，而只得到约四分之一的回答。抽样率为 100% 时，同样的调用会回答每个评分器。想少花一些，就调低 `daily_limit`，而不是 `samplingRate`。
 
 ### teamai-finished-sessions
 

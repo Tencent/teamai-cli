@@ -599,7 +599,7 @@ Suppose a session asked for a review. It was delivered the root skill `review-no
 }
 ```
 
-The session gets one generated question per skill in `skills.available`: `teamai:routing:<skill>` for a root skill and `teamai:routing:<namespace>:<skill>` for a namespaced one. A skill marked `namespaceUnknown` gets no question, because it could be confused with another skill of the same name. The questions are never sampled. They share one judge launch however many there are, and count toward `daily_limit`. Under `batch: true`, the team's session scorers join that launch too. The names also resolve on demand, whatever `skill_routing` says, but only for a skill in that session's `skills.available`; any other name gives `scorer_not_found`:
+The session gets one generated question per skill in `skills.available`: `teamai:routing:<skill>` for a root skill and `teamai:routing:<namespace>:<skill>` for a namespaced one. A skill marked `namespaceUnknown` gets no question, because it could be confused with another skill of the same name. The questions are never sampled. They share one judge launch however many there are, and count toward `daily_limit`. Under `batch: true`, the team's session scorers that ask for the same model and tool join that launch too. The names also resolve on demand, whatever `skill_routing` says, but only for a skill in that session's `skills.available`; any other name gives `scorer_not_found`:
 
 ```console
 $ teamai score --session 7c1e… --scorer teamai:routing:ops:release --scorer teamai:routing:review-notes
@@ -625,16 +625,17 @@ precision(ops:release) ≈ 31 / (31 + 6) = 84%   loaded where it was not needed 
 recall(ops:release)    ≈ 31 / (31 + 9) = 78%   not loaded where it was needed 9 times
 ```
 
-Every skill gets the same rubric, with only the skill's name filled in. Rewriting a skill's description leaves the scorer's measurement unchanged, so the counts from before and after the change can be compared:
+Every skill gets the same rubric, with only the skill's name, and its namespace, filled in. Rewriting a skill's description leaves the scorer's measurement unchanged, so the counts from before and after the change can be compared:
 
 ```text
 fit     1  <skill> is in skills.used, and the session needed what its description says.
 idle    1  <skill> is not in skills.used, and the session did not need what its description says, or another skill or the agent's own steps did it.
 extra   0  <skill> is in skills.used, and the session did not need what its description says.
 missed  0  The session needed what the description of <skill> says, <skill> is not in skills.used, and nothing else did it.
+Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
 ```
 
-A scorers namespace turns routing off for its members the same way it turns off `sessions`:
+An active scorers namespace's `scoring.yaml` overrides the root file's `skill_routing`, and one that sets `false` turns routing off for its members:
 
 ```yaml
 # scorers/ops/scoring.yaml
@@ -660,7 +661,7 @@ sessions: true
 Judge only the team skill `release`, against its entry in `skills.available` in `evidence.json`.
 ```
 
-With [`batch: true`](#batching), one judge launch answers all of a session's scorers. Each scorer samples sessions on its own, so ten per-skill scorers at 25% still reach about 94% of sessions while getting about a quarter of the answers. To spend less, lower `daily_limit` instead of `samplingRate`.
+With [`batch: true`](#batching), one judge launch answers all of a session's scorers that ask for the same model and tool. Each scorer samples sessions on its own, so ten per-skill scorers at 25% still reach about 94% of sessions while getting about a quarter of the answers. At 100%, the same launches answer every scorer. To spend less, lower `daily_limit` instead of `samplingRate`.
 
 ### teamai-finished-sessions
 
