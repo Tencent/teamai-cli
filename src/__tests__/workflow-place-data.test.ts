@@ -89,6 +89,10 @@ function onAnotherMachine(file: string, text: string): void {
   git(other, 'push', '-q', 'origin', 'teamai-reports');
 }
 
+/** What `teamai score --push` says of kept patches `files` that no longer apply to teamai-reports. */
+const stuckMessage = (files: string[]): string => 'What workflow steps published to teamai-reports stays pending on this machine: kept patches no longer apply to teamai-reports. '
+  + `To publish them, apply each by hand in a checkout of teamai-reports (git apply --3way <patch>), resolve any conflict, commit and push, then delete the patch: ${files.join(', ')}.`;
+
 async function whileLocked<T>(action: () => Promise<T>): Promise<T> {
   const lock = path.join(path.dirname(config.repo.localPath), '.reports-lock');
   await DataBranches.checkout('teamai-reports').refresh(config);
@@ -193,7 +197,9 @@ describe('the place of a deliver: publish step', () => {
       before.tip = tip();
     });
 
-    expect(finished).toMatchObject({ message: expect.stringMatching(/^Step "note" left its data on this machine, pending: teamai-reports on origin changed what it staged: .*scores\/bob\/2026-11\.jsonl.*\. Run teamai score --push to publish it\.$/s) });
+    const [kept] = await DataBranches.kept(config, 'teamai-reports');
+    expect(finished).toMatchObject({ message: expect.stringMatching(/^Step "note" left its data on this machine: it no longer applies to teamai-reports \(.*scores\/bob\/2026-11\.jsonl.*\)\. /s) });
+    expect(finished).toMatchObject({ message: expect.stringContaining(`. To publish it, apply it by hand in a checkout of teamai-reports (git apply --3way ${kept}), resolve any conflict, commit and push, then delete ${kept}.`) });
     expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":3}\n');
     expect(tip()).toBe(before.tip);
   });
@@ -245,7 +251,7 @@ describe('DataBranches.pushPending', () => {
       git(other, 'push', '-q', 'origin', 'teamai-reports');
     });
 
-    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.stringMatching(/no longer applies; it is kept in .+data-branches\/teamai-reports\/pending\.$/) }]);
+    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: stuckMessage(await DataBranches.kept(config, 'teamai-reports')) }]);
     expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":3}\n');
   });
 
@@ -271,7 +277,7 @@ describe('DataBranches.pushPending', () => {
     git(other, 'commit', '-qam', 'another machine');
     git(other, 'push', '-q', 'origin', 'teamai-reports');
 
-    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.stringMatching(/no longer applies; it is kept in .+data-branches\/teamai-reports\/pending\.$/) }]);
+    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: stuckMessage(await DataBranches.kept(config, 'teamai-reports')) }]);
     expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":0}\n{"tester":2}\n');
   });
 

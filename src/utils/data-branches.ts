@@ -81,10 +81,13 @@ async function sendKept(config: LocalConfig, branch: DataBranch, own?: OwnPatch)
 }
 
 /** What a send came to: failed while a kept patch does not apply, though the rest landed. */
-function sentResult(config: LocalConfig, branch: DataBranch, { result, stuck }: { result: PublishResult; stuck: Stuck[] }): PublishResult {
+function sentResult(branch: DataBranch, { result, stuck }: { result: PublishResult; stuck: Stuck[] }): PublishResult {
   if (stuck.length === 0 || !isDelivered(result)) return result;
 
-  return { status: 'failed', reason: `${branch} on origin changed what ${stuck.length === 1 ? 'a step' : `${stuck.length} steps`} staged, so it no longer applies; it is kept in ${keptDir(config, branch)}` };
+  return {
+    status: 'failed',
+    reason: `kept patches no longer apply to ${branch}. To publish them, apply each by hand in a checkout of ${branch} (git apply --3way <patch>), resolve any conflict, commit and push, then delete the patch: ${stuck.map(({ file }) => file).join(', ')}`,
+  };
 }
 
 export const DataBranches = {
@@ -116,7 +119,7 @@ export const DataBranches = {
 
     for (const branch of DATA_BRANCHES) {
       // A send's update pushes the checkout's own commits too, or did not happen, and a push now would meet the same.
-      if ((await keptFiles(config, branch)).length > 0) results.push({ branch, result: sentResult(config, branch, await sendKept(config, branch)) });
+      if ((await keptFiles(config, branch)).length > 0) results.push({ branch, result: sentResult(branch, await sendKept(config, branch)) });
       else if (await isGitRepo(CHECKOUTS[branch].dir(config)) && await CHECKOUTS[branch].hasUnpushed(config)) results.push({ branch, result: await CHECKOUTS[branch].commitAndPush(config, `[teamai] Publish pending ${branch} data`, []) });
     }
 

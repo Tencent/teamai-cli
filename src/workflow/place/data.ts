@@ -175,7 +175,12 @@ async function land(input: { config: LocalConfig; step: string; branch: DataBran
   const file = await DataBranches.keep(config, branch, { name: patch.name, patch: patch.text });
   const { result, stuck } = await DataBranches.send(config, branch, { file, message: `[teamai] ${step}: ${config.username}` });
   const conflict = stuck.find((kept) => kept.file === file);
-  const why = conflict !== undefined ? `${branch} on origin changed what it staged: ${conflict.error}` : pendingReason(result, branch);
+
+  if (conflict !== undefined) {
+    return { message: `Step "${step}" left its data on this machine: it no longer applies to ${branch} (${conflict.error}). To publish it, apply it by hand in a checkout of ${branch} (git apply --3way ${file}), resolve any conflict, commit and push, then delete ${file}.` };
+  }
+
+  const why = pendingReason(result, branch);
 
   return why === undefined ? {} : pending(step, why);
 }
