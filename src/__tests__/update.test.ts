@@ -118,6 +118,7 @@ import {
   prefixFromEntryPath,
   isVoltaPackageImage,
   restoreInterruptedInstall,
+  restoreInterruptedBins,
 } from '../update.js';
 import { resolveTeamaiEntryScript } from '../builtin-hooks.js';
 import type { LocalConfig } from '../types.js';
@@ -181,7 +182,11 @@ const expectNoInstall = () => expect(mockedExecSync).not.toHaveBeenCalledWith(
 let globalPrefix: string;
 beforeAll(() => {
   globalPrefix = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-update-prefix-'));
-  fs.mkdirSync(path.join(globalPrefix, 'lib', 'node_modules', getCurrentPackageName()), { recursive: true });
+  const installDir = path.join(globalPrefix, 'lib', 'node_modules', getCurrentPackageName());
+  fs.mkdirSync(installDir, { recursive: true });
+  // A real npm install always carries its manifest; an empty directory is what a
+  // killed install leaves behind, and restoreInterruptedInstall treats it as such.
+  fs.writeFileSync(path.join(installDir, 'package.json'), JSON.stringify({ name: getCurrentPackageName(), version: '0.22.0' }));
 });
 afterAll(() => {
   fs.rmSync(globalPrefix, { recursive: true, force: true });
@@ -1418,10 +1423,26 @@ describe('restoreInterruptedInstall', () => {
     const pkgDir = path.join(nodeModules, getCurrentPackageName());
 
     fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), '{"version":"0.22.0"}');
     fs.mkdirSync(staging, { recursive: true });
 
     expect(restoreInterruptedInstall(pkgDir)).toBeNull();
     expect(fs.existsSync(staging)).toBe(true);
+  });
+
+  it('restores over the empty directory npm creates before it fetches the tarball', () => {
+    // A hard kill leaves `teamai-cli/` behind with nothing in it.
+    const pkgDir = path.join(nodeModules, getCurrentPackageName());
+
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.mkdirSync(staging, { recursive: true });
+    fs.writeFileSync(path.join(staging, 'package.json'), '{"version":"0.21.0"}');
+
+    expect(restoreInterruptedInstall(pkgDir)).toBe(staging);
+    expect(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')).toContain('0.21.0');
+    // The empty directory is moved aside, not deleted.
+    const setAside = fs.readdirSync(nodeModules).filter((entry) => entry.includes('incomplete-'));
+    expect(setAside).toHaveLength(1);
   });
 
   it('does nothing when npm left nothing behind', () => {
@@ -1433,6 +1454,62 @@ describe('restoreInterruptedInstall', () => {
 
   it('does nothing when node_modules itself is gone', () => {
     expect(restoreInterruptedInstall(path.join(nodeModules, 'nope', getCurrentPackageName()))).toBeNull();
+  });
+});
+
+describe('restoreInterruptedBins', () => {
+  const posix = process.platform !== 'win32';
+  let prefix: string;
+  let pkgDir: string;
+  let binDir: string;
+
+  beforeEach(() => {
+    prefix = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-bins-'));
+    pkgDir = path.join(prefix, 'node_modules', getCurrentPackageName());
+    binDir = posix ? path.join(prefix, 'bin') : prefix;
+
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: getCurrentPackageName(), bin: { teamai: 'dist/index.js' } }),
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(prefix, { recursive: true, force: true });
+  });
+
+  it('puts back the command npm moved aside with the package', () => {
+    const shim = posix ? 'teamai' : 'teamai.cmd';
+
+    fs.writeFileSync(path.join(binDir, `.${shim}-HHJBGUJu`), 'shim');
+
+    expect(restoreInterruptedBins(pkgDir)).toContain(shim);
+    expect(fs.readFileSync(path.join(binDir, shim), 'utf-8')).toBe('shim');
+  });
+
+  it('keeps the newest of several moved-aside commands', () => {
+    const shim = posix ? 'teamai' : 'teamai.cmd';
+    const older = path.join(binDir, `.${shim}-AAAA`);
+    const newer = path.join(binDir, `.${shim}-BBBB`);
+
+    fs.writeFileSync(older, 'old');
+    fs.writeFileSync(newer, 'new');
+    fs.utimesSync(older, new Date(1_000_000), new Date(1_000_000));
+
+    expect(restoreInterruptedBins(pkgDir)).toContain(shim);
+    expect(fs.readFileSync(path.join(binDir, shim), 'utf-8')).toBe('new');
+  });
+
+  it('does not overwrite a command that is already in place', () => {
+    const shim = posix ? 'teamai' : 'teamai.cmd';
+
+    fs.writeFileSync(path.join(binDir, shim), 'working');
+    fs.writeFileSync(path.join(binDir, `.${shim}-HHJBGUJu`), 'stale');
+
+    expect(restoreInterruptedBins(pkgDir)).not.toContain(shim);
+    expect(fs.readFileSync(path.join(binDir, shim), 'utf-8')).toBe('working');
   });
 });
 
