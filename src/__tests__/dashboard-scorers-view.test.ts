@@ -299,6 +299,22 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
   });
 });
 
+describe('the Scorers page of labels a stage decided before any judge ran', () => {
+  const decided = (runId: string): ViewedLabel => {
+    const judged = label(runId, 'implement', { passed: false, scoredAt: '2026-10-27T10:00:00.000Z' });
+    return viewed('ana', judged.source === 'workflow' ? { ...judged, judge: { kind: 'stage' }, decidedBy: 'ci' } : judged);
+  };
+
+  it('names the stage as what measured them, in every language, and no judge tool', async () => {
+    const { html } = await renderPage([decided('r0000000000000005'), decided('r0000000000000006')]);
+    const { keys } = await renderPage([decided('r0000000000000005')], { language: 'zh-CN' });
+
+    expect(text(html)).toContain('Workflow labels · Not recorded · Decided by a stage');
+    expect(text(html)).not.toContain('model not recorded');
+    expect([...new Set(keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+});
+
 describe('the Scorers page counts one of a thing in the singular', () => {
   const ran = (revision: string) => ranAs({ tool: 'claude', model: 'claude-review-1', revision, stepRole: 'review' });
   /** `count` labels of the review step, `passed` of them passing, on work delivered at `revision`, from run `first` on. */

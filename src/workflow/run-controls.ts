@@ -1,13 +1,15 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import { loadTeamConfig } from '../config.js';
-import type { LocalConfig } from '../types.js';
+import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
 import {
   error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, retryCommand, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
-import { evaluateExpression, isRecord, isTruthy } from './expression.js';
+import { evaluateExpression, isRecord, isTruthy, pathValue } from './expression.js';
 import { isItem, itemsAfter, itemsOf, keptResults } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
 import { cleanUpSucceededRun, restoreRecordedBranches } from './leftovers.js';
@@ -16,8 +18,9 @@ import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { resolveRetention, runRetainedUntil, type ResolvedRetention } from './retention.js';
 import { contextOf, localId, statesIn, type Scope } from './scope.js';
-import { isRunId, readRun, withCleanupLock } from './store.js';
+import { isRunId, readRun, runScratchDir, withCleanupLock } from './store.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
+import { parseTemplate, templatePaths, templatedTexts } from './template.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { isIsolated } from './workspace.js';
 
@@ -310,6 +313,11 @@ interface RetryContainer {
   cone: Set<StepState>;
   runner?: StepState;
   resetStops: boolean;
+  /**
+   * Whether `child`, the workflow step a step that runs again is inside, runs again itself: a step of this workflow it
+   * reads a gone run-dir path from runs again, and its own steps must wait until that one wrote the path again.
+   */
+  rerunsChild: boolean;
 }
 
 /**
@@ -327,12 +335,68 @@ function confinedWriters(input: { scope: Scope; states: StepState[]; state: Step
 }
 
 /**
- * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. When the run
- * settled, its `$TEAMAI_RUN_DIR` is gone, so a confined step that runs again takes the steps it needs, and theirs, with it.
+ * Whether `value`, or a string inside it, is an absolute path inside `dir` that is gone. Compared as written: `dir` may
+ * be removed, so it has no real path to resolve.
  */
-function retryContainers(run: RunState, target: StepState, scratchRemoved: boolean): RetryContainer[] | WorkflowEnvelope {
+function holdsGonePathIn(value: JsonValue | undefined, dir: string): boolean {
+  if (Array.isArray(value)) return value.some((entry) => holdsGonePathIn(entry, dir));
+
+  if (isJsonObject(value)) return Object.values(value).some((entry) => holdsGonePathIn(entry, dir));
+  const text = z.string().safeParse(value).data;
+
+  if (text === undefined || !path.isAbsolute(text)) return false;
+  const relative = path.relative(dir, text);
+
+  return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !fs.existsSync(text);
+}
+
+/** The producers of gone run-dir paths a step reads: the steps of its own workflow, and the ids of those around it. */
+interface RunDirProducers {
+  here: StepState[];
+  enclosing: string[];
+}
+
+/**
+ * The steps whose outputs `state`'s templates render where they hold a path inside `runDir`, the run's
+ * `$TEAMAI_RUN_DIR`, that is gone: its run's end removed it, and a step that ran since a retry reopened the run brought
+ * back only its own. A read only in `if` renders nothing, so it brings no step. `here` are those of `state`'s own
+ * workflow; `enclosing`, by id, those of the workflows around it.
+ */
+function runDirProducers(input: { scope: Scope; states: StepState[]; state: StepState; runDir: string }): RunDirProducers {
+  const { scope, states, state, runDir } = input;
+  const id = localId(scope, state);
+  const definition = scope.definition.steps.find((step) => step.id === id);
+
+  if (!definition) return { here: [], enclosing: [] };
+  const bindsItem = Object.hasOwn(scope, 'item') || definition.forEach !== undefined;
+  const context = contextOf(scope, states, state);
+
+  const reads = templatedTexts(definition).flatMap(({ text }) => {
+    const template = parseTemplate(text, bindsItem);
+
+    return template.ok ? templatePaths(template.template) : [];
+  });
+
+  const producers = new Set(reads.flatMap((read) => (
+    read.root === 'steps' && read.field === 'outputs' && read.step !== id && holdsGonePathIn(pathValue(read, context), runDir) ? [read.step] : []
+  )));
+
+  const here = states.filter((other) => producers.has(localId(scope, other)));
+  const own = new Set(here.map((other) => localId(scope, other)));
+
+  return { here, enclosing: [...producers].filter((producer) => !own.has(producer)) };
+}
+
+/**
+ * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. A step that runs
+ * again takes the steps whose outputs its templates read as paths in the run's `$TEAMAI_RUN_DIR` that are gone, and
+ * theirs, with it; once the run dir is gone, or such a path is, a confined step that runs again takes the steps it needs.
+ */
+function retryContainers(run: RunState, target: StepState, runDir: { path: string; isGone: boolean }): RetryContainer[] | WorkflowEnvelope {
   const containers: RetryContainer[] = [];
   let child = target;
+  // The ids of the steps of the workflows around this one that a step running again reads gone run-dir paths from.
+  const enclosing = new Set<string>();
 
   for (;;) {
     const located = locateStep(run, child.id);
@@ -369,11 +433,19 @@ function retryContainers(run: RunState, target: StepState, scratchRemoved: boole
         return states.filter((other) => ids.has(localId(scope, other)));
       };
 
-      if (scratchRemoved) writers = (state, isWriter) => confinedWriters({ scope, states, state, isWriter });
+      writers = (state, isWriter) => {
+        const producers = runDirProducers({ scope, states, state, runDir: runDir.path });
+
+        for (const id of producers.enclosing) enclosing.add(id);
+
+        return [...runDir.isGone || isWriter || producers.here.length > 0 ? confinedWriters({ scope, states, state, isWriter }) : [], ...producers.here];
+      };
     }
 
     const cone = new Set([child]);
-    const written = new Set<StepState>();
+    // The steps of this workflow an inner one read gone run-dir paths from run again, as a step of its own would bring them.
+    const written = new Set(isItem(child) ? [] : states.filter((state) => enclosing.delete(localId(scope, state))));
+    const rerunsChild = written.size > 0;
 
     for (let changed = true; changed;) {
       changed = false;
@@ -414,9 +486,11 @@ function retryContainers(run: RunState, target: StepState, scratchRemoved: boole
       }
     }
 
-    containers.push({ child, states, cone, runner, resetStops });
+    containers.push({ child, states, cone, runner, resetStops, rerunsChild });
 
-    if (!runner || runner.status === 'running') return containers;
+    // A running workflow step goes on with its steps that run again, unless one of them reads a gone path from a step
+    // around it, which only the workflow that holds that step can run again.
+    if (!runner || (runner.status === 'running' && enclosing.size === 0)) return containers;
     child = runner;
   }
 }
@@ -503,7 +577,7 @@ function retryRefusal(run: RunState, step: string, retention: ResolvedRetention,
 }
 
 /** The step a retry runs again and the workflows it runs again in, or why it cannot. */
-function retryTarget(run: RunState, step: string): { target: StepState; containers: RetryContainer[] } | WorkflowEnvelope {
+function retryTarget(config: LocalConfig, run: RunState, step: string): { target: StepState; containers: RetryContainer[] } | WorkflowEnvelope {
   const target = run.steps.find((state) => state.id === step);
 
   if (!target) return missingStepError(run, step);
@@ -524,8 +598,9 @@ function retryTarget(run: RunState, step: string): { target: StepState; containe
     return error('not_retryable', `Step "${step}" is ${target.status}; retry a leased or stopped step, or a HITL request to answer it again`);
   }
 
-  // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun.
-  const containers = retryContainers(run, target, run.status !== 'running');
+  // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun, and a retry that reopened it brings none back.
+  const runDir = runScratchDir(config, run.id);
+  const containers = retryContainers(run, target, { path: runDir, isGone: run.status !== 'running' || !fs.existsSync(runDir) });
 
   return Array.isArray(containers) ? { target, containers } : containers;
 }
@@ -540,7 +615,7 @@ async function restoreForRetry(config: LocalConfig, runId: string, step: string,
 
   if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded') return undefined;
 
-  if (retryRefusal(run, step, retention, new Date().toISOString()) || !('target' in retryTarget(run, step))) return undefined;
+  if (retryRefusal(run, step, retention, new Date().toISOString()) || !('target' in retryTarget(config, run, step))) return undefined;
   // A claim keeps no driver, and takes the run into the checkout it names.
   const failed = await restoreRecordedBranches(run, run.driver?.workspace ?? run.checkout ?? process.cwd());
 
@@ -548,6 +623,14 @@ async function restoreForRetry(config: LocalConfig, runId: string, step: string,
   const why = failed.map(({ branch, reason }) => `Branch ${branch} is not back ${reason}.`).join(' ');
 
   return error('branches_not_restored', `Run ${runId} was not reopened: not every branch the run recorded is back at the commit it recorded. ${why} Try again once that is fixed: ${retryCommand(runId, step)}`);
+}
+
+/** What a retry answers under `retried`: the step, the pass it runs again as, and the other steps that run again with it. */
+const RetriedSchema = z.object({ step: z.string(), pass: z.number(), runsAgain: z.array(z.string()) });
+
+/** The other steps that run again with the retried step, by the answer of `retryStep`; none for a refusal. */
+export function retriedRunsAgain(answer: WorkflowEnvelope): string[] {
+  return 'data' in answer ? RetriedSchema.safeParse(answer.data.retried).data?.runsAgain ?? [] : [];
 }
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
@@ -576,11 +659,12 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       ended = 'outcome' in reconciled;
     }
 
-    const planned = retryTarget(run, step);
+    const planned = retryTarget(config, run, step);
 
     if (!('target' in planned)) return planned;
     const { target, containers } = planned;
     const reopened = run.status !== 'running';
+    const again = new Set<StepState>();
 
     for (const container of containers) {
       if (container.child === target) {
@@ -593,8 +677,10 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       for (const state of container.states) {
         if (state === container.child) continue;
 
-        if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) retryInstance(run, state, now);
-        else if (state.status === 'skipped' && !state.answer) resetPending(state);
+        if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) {
+          again.add(state);
+          retryInstance(run, state, now);
+        } else if (state.status === 'skipped' && !state.answer) resetPending(state);
       }
 
       // A retried workflow runs again, so its timeout and budget count from now.
@@ -602,6 +688,11 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       const located = runner && locateStep(run, runner.id);
 
       if (runner) start(runner, undefined, located ? startLimits(run, runner, located.step, now) : undefined);
+
+      if (container.rerunsChild) {
+        again.add(container.child);
+        retryInstance(run, container.child, now);
+      }
     }
 
     if (ended) run.limitsFrom = { at: now, tokens: spentTokens(run, () => true) };
@@ -623,7 +714,9 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
 
     if ('outcome' in reconciled) await finish(reconciled);
 
-    const retried = { retried: { step: target.id, pass: target.pass ?? 1 }, reopened, run: runData(run) };
+    const runsAgain = run.steps.filter((state) => again.has(state)).map((state) => state.id);
+    const answered: z.infer<typeof RetriedSchema> = { step: target.id, pass: target.pass ?? 1, runsAgain };
+    const retried = { retried: answered, reopened, run: runData(run) };
 
     return ok(reopened && run.status === 'running' ? { ...retried, resume: `teamai workflow resume ${run.id}` } : retried);
   }, { reopen });

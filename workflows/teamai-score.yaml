@@ -64,7 +64,8 @@ steps:
 
             {{ steps.evidence.outputs.rubric }}
 
-            Reply with JSON that matches the schema in {{ steps.evidence.outputs.schema }}, and nothing else.
+            Reply with that answer under "answer" and nothing else: {"answer": <the answer>}, where the answer matches
+            the schema in {{ steps.evidence.outputs.schema }}.
           # Rendered when the step is leased; '' is the tool's default.
           model: "{{ item.model }}"
           # The only readable root. The level comes from confined.json there, which evidence wrote.

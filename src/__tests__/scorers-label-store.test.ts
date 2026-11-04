@@ -64,7 +64,7 @@ function clone(remote: string, name: string, overrides: Partial<LocalConfig> = {
 
 const runSubject = { runId: 'r0123456789abcdef', step: 'review', pass: 1 };
 
-function modelLabel(scoredAt: string, label = 'good'): ScoreLabel {
+function modelLabel(scoredAt: string, label = 'good'): Extract<ScoreLabel, { source: 'workflow' }> {
   return {
     scorer: 'quality', rubric: { sourceHash: 'h1' }, label, score: label === 'good' ? 1 : 0, passed: label === 'good',
     source: 'workflow', subject: runSubject,
@@ -108,6 +108,27 @@ describe('ScoreLabel', () => {
       .toEqual([['claude', '2026-10-22T13:00:00.000Z'], ['codex', '2026-10-22T12:00:00.000Z'], ['claude', '2026-10-22T12:30:00.000Z'], ['human', '2026-10-22T09:00:00.000Z']]);
     expect(labelId(codex)).not.toBe(labelId(claude));
     expect(labelId(claudeAgain)).toBe(labelId(claude));
+  });
+});
+
+describe('a label a stage decided', () => {
+  const stage = (scoredAt: string, decidedBy: string | undefined, fields: Record<string, unknown> = {}) => JSON.stringify({ ...modelLabel(scoredAt, 'bad'), judge: { kind: 'stage' }, ...decidedBy ? { decidedBy } : {}, ...fields });
+  /** A label a stage decided as v0.29.0 wrote it: the judge the lease would have run. */
+  const before: ScoreLabel = { ...modelLabel('2026-10-22T10:00:00.000Z', 'bad'), decidedBy: 'ci' };
+
+  it('reads judge kind stage only with the check, CI or protected stage that decided it', () => {
+    expect(parseScoreLabels(stage('2026-10-22T11:00:00.000Z', 'ci')).map((label) => label.judge)).toEqual([{ kind: 'stage' }]);
+    expect(parseScoreLabels([stage('2026-10-22T11:00:00.000Z', 'judge'), stage('2026-10-22T11:00:00.000Z', undefined)].join('\n'))).toEqual([]);
+    expect(parseScoreLabels(stage('2026-10-22T11:00:00.000Z', undefined, { source: 'session', subject: { platform: 'claude-code', sessionId: '7c1e' } }))).toEqual([]);
+    expect(parseScoreLabels(JSON.stringify(before))).toEqual([before]);
+  });
+
+  it('keys a stage decision as a stage whichever shape wrote it, so the newer replaces the older', () => {
+    const [after] = parseScoreLabels(stage('2026-10-22T11:00:00.000Z', 'ci'));
+
+    expect(after && labelId(after)).toBe(labelId(before));
+    expect(newestLabels([before, ...after ? [after] : []])).toEqual([after]);
+    expect(labelId(modelLabel('2026-10-22T09:00:00.000Z'))).not.toBe(labelId(before));
   });
 });
 
@@ -251,6 +272,17 @@ describe('LabelStore', () => {
     await LabelStore.append(config, [{ label: { ...modelLabel('2026-10-22T10:00:00.000Z', 'good'), judge: { kind: 'human' } }, reasoning: 'person' }]);
     expect((await LabelStore.ofRuns(config, [runSubject.runId], { published: false })).get(runSubject.runId)?.get('review#1'))
       .toEqual([{ scorer: 'quality', label: 'good', score: 1, passed: true, decidedBy: 'hand' }]);
+  });
+
+  it('shows the newer of a label a stage decided and a model label of a scorer', async () => {
+    const config = clone(origin(), 'staged');
+    const shown = async () => (await LabelStore.ofRuns(config, [runSubject.runId], { published: false })).get(runSubject.runId)?.get('review#1');
+    await LabelStore.append(config, [{ label: { ...modelLabel('2026-10-22T10:00:00.000Z', 'bad'), judge: { kind: 'stage' }, decidedBy: 'ci' }, reasoning: 'ci failed' }]);
+    await LabelStore.append(config, [{ label: modelLabel('2026-10-22T11:00:00.000Z', 'good'), reasoning: 'judged' }]);
+
+    expect(await shown()).toEqual([{ scorer: 'quality', label: 'good', score: 1, passed: true }]);
+    await LabelStore.append(config, [{ label: { ...modelLabel('2026-10-22T12:00:00.000Z', 'bad'), judge: { kind: 'stage' }, decidedBy: 'check' }, reasoning: 'check failed' }]);
+    expect(await shown()).toEqual([{ scorer: 'quality', label: 'bad', score: 0, passed: false, decidedBy: 'check' }]);
   });
 
   it('shows the newest model label of a scorer across its rubric versions', async () => {

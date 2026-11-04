@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { loadCachedScorer, syncScorerDefinitions } from '../scorers/cache.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
+import { log } from '../utils/logger.js';
 
 const dirs: string[] = [];
 
@@ -59,6 +60,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -72,6 +74,18 @@ describe('scorer cache', () => {
     expect(result).toEqual({ cached: ['quality'], invalid: [], verified: [] });
     expect(dataFiles(config)).toEqual(['scorers/cache/quality.json']);
     expect((await loadCachedScorer(config, 'quality'))?.definition).toMatchObject({ name: 'quality', passingScore: 1, prompt: 'Judge the change.\n' });
+  });
+
+  it('caches a scorer that prefers a judge tool teamai does not know, and warns that only a driver offering it judges with it', async () => {
+    const config = testConfig();
+    writeScorer(config, 'quality.md', VALID.replace('passingScore: 1\n', 'passingScore: 1\ntool: acme-judge\n'));
+    writeScorer(config, 'coverage.md', VALID.replace('passingScore: 1\n', 'passingScore: 1\ntool: codex\n'));
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await syncScorerDefinitions(config)).toEqual({ cached: ['coverage', 'quality'], invalid: [], verified: [] });
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      '[scorers] scorers/quality.md: tool "acme-judge" is no tool this teamai knows. A driver that offers a judge tool of that name judges with it; any other judges with a tool it offers.',
+    ]);
   });
 
   it('ignores README.md, reports every other file, and caches none of them', async () => {

@@ -15,7 +15,7 @@ import { installOwner, readRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
-import { scoreEvidenceDir, scoreWrite } from './helpers/score-run.js';
+import { scoreEvidenceDir, scoreJudgePrompt, scoreWrite } from './helpers/score-run.js';
 import * as cliPaths from '../utils/cli-path.js';
 
 
@@ -266,6 +266,16 @@ describe('the run mode of a judged pass (#1384)', () => {
     data(await cancelRun(config, runId, await knownSecrets(config)));
 
     expect(await runOf(config, runId)).toMatchObject({ steps: [{ status: 'cancelled', runMode: 'unattended' }] });
+  });
+});
+
+describe('the judge prompt', () => {
+  // A judge whose tool enforces no reply schema follows the prompt, and the judge step takes its answer under `answer`.
+  it('asks for the answer under `answer`, the reply the judge step takes', async () => {
+    const config = fixture(scorer(100));
+    const runId = await settledRun(config);
+
+    expect(await scoreJudgePrompt(config, `run:${runId}:review:1`, ['quality'])).toContain('{"answer": ');
   });
 });
 

@@ -7,7 +7,6 @@ import { DefaultWorkflows } from '../default-workflows.js';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
 import { scoringUnavailable, startedByPasses, verifiedScorers } from '../scorers/engine-hooks.js';
-import { confinedToolLevel, isConfinedTool } from '../tool-launch/confined.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 import type { JsonValue, LocalConfig } from '../types.js';
@@ -102,9 +101,9 @@ export interface WorkflowClient {
    * the run's only driver, gives strict requirements; a step it could never take refuses the start, `requirement_unmet`.
    * The run records an agent as its starter when `caller` has agent evidence, else `startedBy`: `cli` for one of the
    * CLI's own automatic starts, `person` for a start a person asked for. `driver`: the driver the run is recorded for
-   * from its start.
+   * from its start. `awaits`: the driver `workflows.driver` names, which this machine does not run.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy: 'person' | 'cli'; driver?: DriverIdentity; instead?: string }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy: 'person' | 'cli'; driver?: DriverIdentity; awaits?: RunState['awaits']; instead?: string }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -329,7 +328,7 @@ export async function resumeRefusal(
  * Starts `name` as one of the CLI's own automatic starts, in run mode `mode`: with no agent evidence, so no agent gave its
  * inputs, and recorded as started by `cli`, which hand labels and policy overrides never trust as a person.
  */
-export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: { inputs: unknown; checkout?: string; driver?: DriverIdentity; mode: RunMode }): Promise<WorkflowEnvelope> {
+export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: { inputs: unknown; checkout?: string; driver?: DriverIdentity; awaits?: RunState['awaits']; mode: RunMode }): Promise<WorkflowEnvelope> {
   return client.start(name, { ...options, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli' });
 }
 
@@ -353,10 +352,11 @@ export type Judging =
   | { kind: 'elsewhere'; reason: string };
 
 /**
- * Who judges `description`'s scored steps on this machine: the confined judge of `tool`, the session, or nobody. The
- * scorers of `run`, once it has started, are read at its team pin, and only when this line needs them.
+ * Who judges `description`'s scored steps, as the confined runs `offers` of the driver asking say: its `verified`
+ * judge, the session at `best-effort`, or nobody here. `tool` is the session's. The scorers of `run`, once it has
+ * started, are read at its team pin, and only when this line needs them.
  */
-async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined, run?: RunState): Promise<Judging> {
+async function judgingOf(config: LocalConfig, description: WorkflowDescription, { tool, offers }: { tool: string | undefined; offers: NonNullable<DriverCan['confined']> }, run?: RunState): Promise<Judging> {
   const { scored, confined } = description.facts;
 
   if (scored.length === 0 && confined.length === 0) return { kind: 'none' };
@@ -365,28 +365,34 @@ async function judgingOf(config: LocalConfig, description: WorkflowDescription, 
   if (unavailable) return { kind: 'elsewhere', reason: unavailable };
 
   if (tool === undefined) return { kind: 'elsewhere', reason: 'This coding session names no tool.' };
-  const level = isConfinedTool(tool) ? await confinedToolLevel(tool) : undefined;
+  const [verifiedTool] = offers.find((offer) => offer.level === 'verified')?.tools ?? [];
 
-  if (level?.isolation === 'verified') return { kind: 'here', tool };
+  if (verifiedTool !== undefined) return { kind: 'here', tool: verifiedTool };
+  const [sessionTool] = offers.find((offer) => offer.level === 'best-effort')?.tools ?? [];
 
-  const reason = !isConfinedTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`
-    : level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile` : `The ${tool} executable is not on PATH`;
-
+  if (sessionTool === undefined) return { kind: 'elsewhere', reason: 'This session\'s driver offers no confined judge.' };
   const scorers = [...new Set(scored.flatMap((step) => step.scorers))];
   const verified = await verifiedScorers(config, scorers, run);
+  const reason = `This session's driver offers no verified judge of ${sessionTool}.`;
 
-  if (!verified.ok) return { kind: 'elsewhere', reason: `${reason}. ${verified.reason}` };
+  if (!verified.ok) return { kind: 'elsewhere', reason: `${reason} ${verified.reason}` };
 
   // A confined step whose confined.json asks for best-effort is still the session's to run.
-  if (confined.length === 0 && verified.scorers.length === scorers.length) {
-    return { kind: 'elsewhere', reason: `${reason}, and ${verified.scorers.join(', ')} ${verified.scorers.length > 1 ? 'ask' : 'asks'} for verified isolation.` };
-  }
+  if (confined.length === 0 && verified.scorers.length === scorers.length) return { kind: 'elsewhere', reason: verifiedLeftOpen(verified.scorers) };
 
-  const session: Extract<Judging, { kind: 'session' }> = { kind: 'session', tool, reason: `${reason}.` };
+  const session: Extract<Judging, { kind: 'session' }> = { kind: 'session', tool: sessionTool, reason };
 
   if (verified.scorers.length > 0) session.verified = verified.scorers;
 
   return session;
+}
+
+/** That `scorers`, which ask for verified isolation, stay open for a driver that offers a verified judge. */
+export function verifiedLeftOpen(scorers: readonly string[]): string {
+  const many = scorers.length > 1;
+  const named = many ? `${scorers.slice(0, -1).join(', ')} and ${scorers.slice(-1).join('')}` : scorers.join('');
+
+  return `${named} ${many ? 'need' : 'needs'} a verified judge, which this session's driver does not offer; ${many ? 'their' : 'its'} runs stay open for a driver that does.`;
 }
 
 /** Where the host made the place of a lease: `host`, the place an earlier attempt adopted for its branch; `adopt`, `dir`. */
@@ -567,7 +573,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       const undeliverable = deliveryProblem(cached.definition, tree.workflows, head);
 
-      const described: DescribedWorkflow = { description, judging: await judgingOf(config, description, tool) };
+      const described: DescribedWorkflow = { description, judging: await judgingOf(config, description, { tool, offers: can.confined ?? [] }) };
 
       if (undeliverable) described.undeliverable = undeliverable;
 
@@ -750,7 +756,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         definition: run.definition, source: DefaultWorkflows.sourceOfRun(run), workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts,
       });
 
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, tool, run) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, { tool, offers: can.confined ?? [] }, run) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
@@ -872,7 +878,7 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
 
 /** `WorkflowClient.start`: starts workflow `name` when its `invoke` lets `caller` start it. */
 async function startNamed({ config, secrets }: { config: LocalConfig; secrets: Record<string, string> }, name: string, options: Parameters<WorkflowClient['start']>[1]): Promise<WorkflowEnvelope> {
-  const { inputs, checkout, caller, timeout, alone, startedBy, driver, instead } = options;
+  const { inputs, checkout, caller, timeout, alone, startedBy, driver, awaits, instead } = options;
   const cached = await loadCachedWorkflow(config, name);
   const refused = invokeRefusal(cached?.definition, caller, { kind: 'start', instead });
 
@@ -880,7 +886,7 @@ async function startNamed({ config, secrets }: { config: LocalConfig; secrets: R
   const base = checkout === undefined ? undefined : await headCommit(checkout);
 
   return startRun(config, name, inputs ?? {}, {
-    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', driver, checkout, base, timeout, alone,
+    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', awaits, driver, checkout, base, timeout, alone,
   });
 }
 

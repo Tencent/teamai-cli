@@ -62,6 +62,20 @@ describe('readMemberSettingsPanel', () => {
     });
   });
 
+  it('shows workflows.driver from the first level that names a driver a default may be, and the wrong one it skipped', async () => {
+    fs.mkdirSync(path.dirname(machineFile()), { recursive: true });
+    fs.writeFileSync(machineFile(), 'workflows: { driver: acme-sandbox }\n');
+    const { config, scopeFile } = await workspace('workflows: { driver: skill }\n', 'workflows: { driver: none }\n');
+
+    const read = await readMemberSettingsPanel(config);
+
+    expect(read.configured && read.rows).toContainEqual({
+      key: 'workflows.driver', value: 'acme-sandbox', source: { level: 'machine', value: 'acme-sandbox', file: machineFile() },
+      below: [{ level: 'team', value: 'none', file: path.join(config.repo.localPath, 'teamai.yaml') }],
+      unused: [{ level: 'scope', value: 'skill', file: scopeFile, used: false }],
+    });
+  });
+
   it('shows a workspace that keeps its runs\' branches with workflows.retention never', async () => {
     const { config, scopeFile } = await workspace('workflows: { retention: never }\n');
 

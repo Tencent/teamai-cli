@@ -8,7 +8,7 @@ import type { ConfinedRunReport } from '../../workflow/step-state.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../../workflow/types.js';
 
 const external: DriverIdentity = { kind: 'external', machine: 'judge', workspace: '/judge' };
-const LeaseSchema = z.object({ attempt: z.string(), revision: z.number(), step: z.string() });
+const LeaseSchema = z.object({ attempt: z.string(), revision: z.number(), step: z.string(), prompt: z.string().optional() });
 const GroupsSchema = z.object({ groups: z.array(z.object({ scorers: z.string() })) });
 
 function dataOf(envelope: WorkflowEnvelope): Record<string, unknown> {
@@ -29,7 +29,7 @@ const JUDGING = { confined: [{ level: 'verified' as const, access: 'read' as con
 /** What the judge step's confined run measured, as a driver reports it. */
 const JUDGED: ConfinedRunReport = { tool: 'claude', model: { requested: 'claude-x' }, usage: { inputTokens: 10, outputTokens: 2 }, isolation: 'verified', access: 'read' };
 
-async function leased(config: LocalConfig, runId: string): Promise<{ step: string; attempt: string; revision: number; ctx: ScoreVerbContext }> {
+async function leased(config: LocalConfig, runId: string): Promise<{ step: string; attempt: string; revision: number; prompt?: string; ctx: ScoreVerbContext }> {
   const answer = dataOf(await leaseNext(config, runId, external, { can: JUDGING }));
   if (answer.lease === undefined) throw new Error(`teamai-score run ${runId} leased nothing: ${JSON.stringify(answer)}`);
   const lease = LeaseSchema.parse(answer.lease);
@@ -69,6 +69,17 @@ export async function scoreEvidenceDir(config: LocalConfig, subject: string, sco
  * verb and the judge step by `answer`, until `teamai score write` has written its labels, and answers what write said.
  */
 export async function scoreWrite(config: LocalConfig, subject: string, scorers: readonly string[], answer: unknown): Promise<ScoreVerbAnswer> {
+  return driveScore(config, subject, scorers, answer, 'write');
+}
+
+/** The prompt the judge step of a teamai-score run a person started on `subject` with `scorers` named is leased with. */
+export async function scoreJudgePrompt(config: LocalConfig, subject: string, scorers: readonly string[]): Promise<string> {
+  const judged = await driveScore(config, subject, scorers, null, 'judge');
+  if (!judged.ok) throw new Error(`${judged.code}: ${judged.message}`);
+  return z.object({ prompt: z.string() }).parse(judged.output).prompt;
+}
+
+async function driveScore(config: LocalConfig, subject: string, scorers: readonly string[], answer: unknown, until: 'judge' | 'write'): Promise<ScoreVerbAnswer> {
   const runId = await startScore(config, subject, scorers);
   const answers = new Map<string, ScoreVerbAnswer>();
   const outputOf = (step: string) => {
@@ -78,6 +89,7 @@ export async function scoreWrite(config: LocalConfig, subject: string, scorers: 
   for (;;) {
     const lease = await leased(config, runId);
     const id = /^score\[0\]\.(.+)$/u.exec(lease.step)?.[1] ?? lease.step;
+    if (id === 'judge' && until === 'judge') return { ok: true, output: { prompt: lease.prompt ?? '' } };
     const [group] = GroupsSchema.parse({ groups: [], ...outputOf('plan') }).groups;
     const dir = z.object({ dir: z.string().optional() }).parse(outputOf('score[0].evidence')).dir;
     const verb: ScoreVerbAnswer = id === 'plan'

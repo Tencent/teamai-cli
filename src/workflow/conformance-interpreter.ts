@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveRunMode } from '../launch-context.js';
-import type { JsonValue } from '../types.js';
+import { isJsonObject, type JsonValue } from '../types.js';
 import { agentEvidence } from './attempt-marker.js';
 import { commandOutputs, type NextPrepare, type WorkflowClient } from './protocol.js';
 import type { WorkflowRunRecord } from './records.js';
@@ -34,6 +34,19 @@ export function controlsYaml(steps: string): string {
 
 /** A JSON object a scenario sends as a body, or that an answer, the run file, or its end record must match. */
 export type ScenarioJson = { [key: string]: JsonValue };
+
+/** What a report body writes for the run's `$TEAMAI_RUN_DIR`, an absolute path no scenario knows before the run starts. */
+const RUN_DIR = '<run-dir>';
+
+/** `value` with `RUN_DIR` in each of its strings replaced by `dir`. */
+function withRunDir(value: JsonValue, dir: string): JsonValue {
+  if (Array.isArray(value)) return value.map((entry) => withRunDir(entry, dir));
+
+  if (isJsonObject(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, withRunDir(entry, dir)]));
+  const text = z.string().safeParse(value);
+
+  return text.success ? text.data.replaceAll(RUN_DIR, dir) : value;
+}
 
 /**
  * A benchmark suite as files: `benchmarks/<name>/suite.yaml` and `tasks/<task>.yaml`, where `{{startingCommit}}` in a
@@ -170,6 +183,7 @@ export type ConformanceOperation =
     revision?: number;
     /** Fields added to the `changes` the harness reports from the workspace of this operation's saved lease. */
     changes?: ScenarioJson;
+    /** What the driver reports; `<run-dir>` in a string stands for the run's `$TEAMAI_RUN_DIR`, and needs a runner with `runDir`. */
     body: ScenarioJson;
     expect: ScenarioJson;
   };
@@ -490,6 +504,14 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         Object.assign(body, operation.body);
 
         if (operation.changes) body.changes = leasedChanges(lease, operation.changes);
+
+        if (JSON.stringify(body).includes(RUN_DIR)) {
+          if (!runner.runDir) throw new Error(`A scenario that reports ${RUN_DIR} needs a runner with a runDir`);
+          const dir = await runner.runDir(runId);
+
+          for (const [key, value] of Object.entries(body)) body[key] = withRunDir(value, dir);
+        }
+
         expect(await client.report(runId, body)).toMatchObject(operation.expect);
         break;
       }

@@ -4,7 +4,7 @@ import { TOOLS } from '../../../tools.js';
 import type { LocalConfig } from '../../../types.js';
 import type { ToolId } from '../../../tools.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
-import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
+import { INVOKE_ASK_NEED, unattendedReason, verifiedLeftOpen, type Judging } from '../../protocol.js';
 import { onlyPersonAnswers } from '../../types.js';
 import { envAdvice } from '../../requirements.js';
 import type { OutputSchema } from '../../types.js';
@@ -298,7 +298,7 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
     ...(facts.timeout !== undefined ? [`It stops after ${durationOf(facts.timeout)}.`] : []),
     ...(judging.kind === 'here' && isScored ? [`${judging.tool} judges ${scored} here, with one confined judge call per pass.`] : []),
     ...(judging.kind === 'session' && isScored ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} judged by this session in a subagent once the run is done, at best-effort isolation. ${judging.reason}`] : []),
-    ...(judging.kind === 'session' && judging.verified ? [`${listOf(judging.verified)} ${judging.verified.length > 1 ? 'ask' : 'asks'} for verified isolation, so that work stays open for another driver.`] : []),
+    ...(judging.kind === 'session' && judging.verified ? [verifiedLeftOpen(judging.verified)] : []),
     ...(judging.kind === 'elsewhere' && isScored ? [`${scored} ${facts.scored.length > 1 ? 'are' : 'is'} not judged on this machine. ${judging.reason}`] : []),
     ...(judging.kind === 'here' && isConfined ? [`${judging.tool} runs ${confined} here, confined to the directory ${oneConfined ? 'it answers' : 'each answers'} from.`] : []),
     ...(judging.kind === 'session' && isConfined ? [`A fresh subagent of this session runs ${confined}, reading only ${oneConfined ? 'its' : 'each one\'s'} directory, at best-effort isolation, unless ${oneConfined ? 'it asks' : 'one asks'} for verified isolation, which another driver runs.${isScored ? '' : ` ${judging.reason}`}`] : []),

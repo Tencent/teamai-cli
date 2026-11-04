@@ -15,6 +15,7 @@ import path from 'node:path';
 import type { ResolvedEntry } from './namespaced-entries.js';
 import { stdinString, type HookHandler, type HookStdin } from './hook-dispatch.js';
 import type { GlobalOptions, LocalConfig, WebhookPayload } from './types.js';
+import type { DriverName } from './workflow/driver-name.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
@@ -408,26 +409,30 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepar
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
 }
 
-/** Start `workflow resume <run> --driver local` in `cwd` with `env`, a process this one does not wait for. */
-async function spawnDetachedResume(run: string, { cwd, env }: { cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
+/** Start `workflow resume <run> --driver <driver>` in `cwd` with `env`, a process this one does not wait for. */
+async function spawnDetachedResume(run: string, { driver, cwd, env }: { driver: DriverName; cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
   const { resolveCliEntry } = await import('./builtin-hooks.js');
   const { spawn } = await import('node:child_process');
-  spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', run, '--driver', 'local'], { cwd, detached: true, stdio: 'ignore', windowsHide: true, env })
+  spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', run, '--driver', driver], { cwd, detached: true, stdio: 'ignore', windowsHide: true, env })
     .on('error', (e) => log.debug(`hook-dispatch: detached workflow resume ${run} failed to start: ${e.message}`)).unref();
 }
 
 /**
- * Starts teamai-finished-sessions in `config` as the CLI's own run, then drives it with `workflow resume` in a process
- * this one does not wait for, with no agent evidence, though the hook runs inside an agent session. A run already working
- * on that data home is left to its driver.
+ * Starts teamai-finished-sessions in `config` as the CLI's own run, then drives it on the driver `workflows.driver`
+ * names with `workflow resume` in a process this one does not wait for, with no agent evidence, though the hook runs
+ * inside an agent session. A run for a driver this machine does not run awaits it, one for any driver is left to it, and
+ * a run already working on that data home is left to its driver.
  */
 async function startFinishedSessions(config: LocalConfig): Promise<void> {
-  const [{ FinishedSessions }, { resolveWorkflowEnv }, { inProcessClient }, { resolveRunMode }, { withoutAgentEvidence }] = await Promise.all([
+  const [{ FinishedSessions }, { resolveWorkflowEnv }, { inProcessClient }, { resolveRunMode }, { withoutAgentEvidence }, { awaitsLine, awaitsOf, driveByDefault }] = await Promise.all([
     import('./session-flow/finished-sessions.js'), import('./env-resolution.js'), import('./workflow/protocol.js'), import('./launch-context.js'), import('./workflow/attempt-marker.js'),
+    import('./default-driver.js'),
   ]);
 
   try {
-    const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode: resolveRunMode(process.env) });
+    const decided = await driveByDefault(config);
+    const awaits = awaitsOf(decided);
+    const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode: resolveRunMode(process.env), awaits });
 
     switch (started.kind) {
       case 'failed':
@@ -438,7 +443,8 @@ async function startFinishedSessions(config: LocalConfig): Promise<void> {
       case 'idle':
         return;
       case 'started':
-        await spawnDetachedResume(started.run, { cwd: started.cwd, env: withoutAgentEvidence(process.env) });
+        if (decided.kind === 'drive') await spawnDetachedResume(started.run, { driver: decided.driver, cwd: started.cwd, env: withoutAgentEvidence(process.env) });
+        else if (awaits) log.debug(`hook-dispatch: ${awaitsLine(started.run, awaits.driver)}`);
 
         return;
       default: {

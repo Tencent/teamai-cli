@@ -18,6 +18,7 @@ import { runConfinedStep, type ConfinedStepEnd, type ConfinedStepLease } from '.
 import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
+import { HOST_PROFILES } from './host-profiles.js';
 import { writeSkillState, readSkillState, type AttemptState, type Dispatch, type ReportBody, type SkillState } from './skill-state.js';
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
@@ -289,8 +290,10 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
 
+  const childTool = state.orchestrator.tool ?? context.tool;
+
   const picked = await pickChildModel({
-    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: state.orchestrator.tool ?? context.tool, agent, model, defaultModel,
+    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: childTool, agent, model, defaultModel,
   });
 
   if (!picked.ok) return failed(picked.failure, 'model');
@@ -301,13 +304,15 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   const brief = await writeChildBrief({
     config: context.config, run: lock.run, attempt, step: open.step, dir: workDir, prompt: prepared.prompt ?? lease.prompt,
     changes: confined ? 'confined' : writes ? 'commit' : interactive && place === 'checkout' && !readOnly ? 'keep' : 'none',
-    by: interactive ? 'person' : state.host.kind === 'chosen' && state.host.id === 'h4' ? 'self' : 'child',
+    by: interactive ? 'person' : state.host.kind === 'chosen' && !HOST_PROFILES[state.host.id].startsChildAgent ? 'self' : 'child',
     output, report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
 
   const dispatch: Dispatch = { place, dir: workDir, brief, model: picked.model };
 
   if (confined) dispatch.confined = true;
+
+  if (confined && childTool !== undefined) dispatch.tool = childTool;
 
   if (interactive) dispatch.person = true;
 
@@ -400,7 +405,7 @@ async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId,
  */
 async function runConfinedHere(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'confined' }>): Promise<ConfinedStepEnd> {
   const stop = new AbortController();
-  const work = runConfinedStep({ config: context.config, run, lease: stage.lease, signal: stop.signal });
+  const work = runConfinedStep({ config: context.config, run, lease: stage.lease, signal: stop.signal, secrets: context.env.secrets });
   const ended = await whileOpen(context, run, attempt, { work, phases: ['running'], expiresAt: stage.expiresAt });
 
   if (ended) return ended;

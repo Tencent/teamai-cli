@@ -512,7 +512,7 @@ describe('skill driver preflight of optional gates', () => {
     const described = await questionOf({}, 'teamai-share-learnings');
     const text = z.string().parse(z.object({ data: z.object({ describe: z.object({ ask: z.object({ question: z.object({ text: z.string() }) }) }) }) }).parse(described).data.describe.ask.question.text);
     expect(text.split('\n')).toEqual([
-      '- teamai-share-learnings needs the inputs session (string), source (string), publish (boolean), scorers (list of string) and judge (one of here, driver).',
+      '- teamai-share-learnings needs the inputs session (string), source (string), publish (boolean) and scorers (list of string).',
       '- It can run up to 3 steps at once.',
       '- learning is interactive: you work in it here, with this session\'s agent.',
       '- Optional approval at approve: no action; contribute waits for it.',

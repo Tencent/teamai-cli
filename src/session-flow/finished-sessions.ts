@@ -25,7 +25,9 @@ import { runDeadline } from '../workflow/limits.js';
 import { durationMs } from '../workflow/parse.js';
 import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
+import { wasLeased } from '../workflow/step-state.js';
 import { readRuns, RunIdSchema, type RunId } from '../workflow/store.js';
+import type { DriverName } from '../workflow/driver-name.js';
 import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPolicy } from './session-policy.js';
@@ -291,12 +293,18 @@ async function backgroundScopes(cwd: string): Promise<LocalConfig[]> {
 const PASS_MS = 30 * 60 * 1000;
 
 /**
- * What a start of teamai-finished-sessions did in a data home: started a run, found one already working on it, or found
+ * Who has an open run: a driver that took it, none yet while it awaits the driver `workflows.driver` names, or none yet
+ * while it is left to any driver.
+ */
+export type RunHolder = { kind: 'driven' } | { kind: 'awaits'; driver: DriverName } | { kind: 'unassigned' };
+
+/**
+ * What a start of teamai-finished-sessions did in a data home: started a run, found one already holding it, or found
  * nothing for a run to do. `cwd` is the directory a driver of the run works from.
  */
 export type FinishedStart =
   | { kind: 'started'; run: RunId; cwd: string }
-  | { kind: 'working'; run: RunId; cwd: string }
+  | { kind: 'working'; run: RunId; cwd: string; holder: RunHolder }
   | { kind: 'idle' }
   | { kind: 'failed'; failure: WorkflowFailure };
 
@@ -307,11 +315,16 @@ function holdsUntil(run: RunState): number {
   return deadline === undefined ? Date.parse(run.createdAt) + PASS_MS : Date.parse(deadline);
 }
 
-/** The run of teamai-finished-sessions this data home started that has not ended and still holds it. */
-async function workingRun(config: LocalConfig, now: number): Promise<RunId | undefined> {
+/** The run of teamai-finished-sessions this data home started that has not ended and still holds it, and who has it. */
+async function workingRun(config: LocalConfig, now: number): Promise<Pick<Extract<FinishedStart, { kind: 'working' }>, 'run' | 'holder'> | undefined> {
   const run = (await readRuns(config)).findLast((one) => one.name === FINISHED_WORKFLOW && one.status === 'running' && holdsUntil(one) > now);
 
-  return run && RunIdSchema.parse(run.id);
+  if (!run) return undefined;
+  // A driver that only asked for the run's next step, and took no lease, is recorded on it as well: only a lease drives it.
+  const isDriven = run.steps.some(wasLeased) || (run.archive ?? []).some((pass) => pass.attempt !== undefined);
+  const holder: RunHolder = run.awaits ? { kind: 'awaits', driver: run.awaits.driver } : isDriven ? { kind: 'driven' } : { kind: 'unassigned' };
+
+  return { run: RunIdSchema.parse(run.id), holder };
 }
 
 /**
@@ -350,16 +363,16 @@ async function hasWork(config: LocalConfig, now: string): Promise<boolean> {
  * agent evidence, whatever process calls it, from the directory whose teamai resolves to this data home. A run that
  * already works on this data home is answered instead, so two passes never archive one session twice.
  */
-async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start' | 'next' | 'cancel'>; mode: RunMode }): Promise<FinishedStart> {
+async function start(config: LocalConfig, { client, mode, awaits }: { client: Pick<WorkflowClient, 'start' | 'next' | 'cancel'>; mode: RunMode; awaits?: RunState['awaits'] }): Promise<FinishedStart> {
   const cwd = SessionWork.scopeCwd(config);
   await endExpired(config, { client, cwd });
   const working = await workingRun(config, Date.now());
 
-  if (working) return { kind: 'working', run: working, cwd };
+  if (working) return { kind: 'working', cwd, ...working };
 
   if (!await hasWork(config, new Date().toISOString())) return { kind: 'idle' };
 
-  const answer = await startAsCli(client, FINISHED_WORKFLOW, { inputs: { publish: 'policy', scorers: [] }, checkout: cwd, mode });
+  const answer = await startAsCli(client, FINISHED_WORKFLOW, { inputs: { publish: 'policy', scorers: [] }, checkout: cwd, mode, awaits });
 
   if ('error' in answer) return { kind: 'failed', failure: answer.error };
   const run = RunIdSchema.safeParse(answer.data.run);

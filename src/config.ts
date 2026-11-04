@@ -389,8 +389,8 @@ function readMachineWorkflowSettings(raw: RawMapping, configPath: string): Membe
     if (value !== undefined) settings[key] = value;
   }
 
-  // Kept as written: resolveRetention skips a wrong value with a warning, and the next level decides.
-  if (Object.prototype.hasOwnProperty.call(workflow, 'retention')) settings.retention = workflow.retention;
+  // Kept as written: resolveRetention and driveByDefault skip a wrong value with a warning, and the next level decides.
+  for (const key of ['retention', 'driver'] as const) if (Object.prototype.hasOwnProperty.call(workflow, key)) settings[key] = workflow[key];
   const tools = OptionalMappingSchema.parse(workflow.tools);
 
   if (tools) {

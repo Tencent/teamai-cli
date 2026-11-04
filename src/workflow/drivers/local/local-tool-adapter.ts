@@ -7,13 +7,13 @@ import { z } from 'zod';
 import { launchEnv, type Launch } from '../../../launch-context.js';
 import { opencodeMajorVersion } from '../../../opencode-hooks.js';
 import { resolveCliPath } from '../../../utils/cli-path.js';
-import { writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
 import type { toolExtrasFor } from '../../../resources/agent-format.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { tokenMeter, toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
 import type { LaunchAdapter } from '../../../tool-launch/adapters.js';
 import { executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import { AttemptResult } from '../../attempt-result.js';
 import { budgeted } from '../../limits.js';
 import { expectedOutput } from '../../output.js';
 import type { Limit } from '../../requirements.js';
@@ -26,6 +26,8 @@ export interface LocalToolRun {
   prompt: string;
   cwd: string;
   resultPath: string;
+  /** What the run masks: a result kept from the tool's stdout is masked with it before it is written. */
+  secrets: Record<string, string>;
   /** The step's declared output, which the result instruction asks the tool to match. */
   output?: OutputSchema;
   /** The definition the step runs as. `settings` are the deployed OpenCode file's other fields, such as `mode` and `variant`. */
@@ -87,7 +89,8 @@ type ResultFile = ToolReport & { failure?: WorkflowFailure };
 
 function resultInstruction(input: LocalToolRun, prompt: string): string {
   return `${prompt}\n\nWrite the workflow result as JSON to ${input.resultPath}. `
-    + `Use this shape: {"output":...,"failure":{"code":"optional","message":"optional"}}, where output is ${expectedOutput(input.output)}.`;
+    + `Use this shape: {"output":...}, where output is ${expectedOutput(input.output)}. `
+    + 'Leave failure out unless the step failed; then add "failure":{"code":"...","message":"..."}.';
 }
 
 /** Codex, and OpenCode 1 for a subagent, which `opencode run --agent` does not start, get the definition's instructions in the prompt. */
@@ -162,8 +165,11 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
   }
 }
 
-/** The result file a tool writes: its output, when it wrote one, and a failure with a code and a message. */
-const ResultFileSchema = z.object({ output: z.unknown().optional(), failure: z.object({ code: z.string(), message: z.string() }).optional() });
+/** The result file a tool writes: its output, when it wrote one, and a failure with a code and a message. A null failure is none. */
+const ResultFileSchema = z.object({
+  output: z.unknown().optional(),
+  failure: z.object({ code: z.string(), message: z.string() }).nullish().transform((failure) => failure ?? undefined),
+});
 
 async function readResultFile(resultPath: string): Promise<ResultFile | null> {
   try {
@@ -183,13 +189,13 @@ function redactFailure(result: ResultFile, input: LocalToolRun): void {
   }
 }
 
-async function persistFallback(resultPath: string, result: ResultFile): Promise<void> {
+async function persistFallback(input: LocalToolRun, result: ResultFile): Promise<void> {
   const artifact: ResultFile = {};
 
   if ('output' in result) artifact.output = result.output;
 
   if (result.failure) artifact.failure = result.failure;
-  await writeJsonAtomic(resultPath, artifact);
+  await AttemptResult.write(input.resultPath, artifact, input.secrets);
 }
 
 function combineResults(fileResult: ResultFile | null, reported: ToolReport | null): ResultFile | null {
@@ -413,7 +419,7 @@ export function createLocalToolAdapter(
         result.failure = { code: 'tool_failed', message: `${tool} exited with status ${completed.exitCode}` };
       }
 
-      if (!fileResult) await persistFallback(input.resultPath, result);
+      if (!fileResult) await persistFallback(input, result);
 
       return { started: true, exitCode: completed.exitCode, ...applied, ...ended, ...result };
     };

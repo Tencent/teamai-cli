@@ -132,18 +132,16 @@ steps:
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.publish is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.scorers is not an input workflow "teamai-share-session" declares',
-      '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.judge is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.demand is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.scorers is not an input workflow "teamai-share-session" declares',
-      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.judge is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.demand is not an input workflow "teamai-share-session" declares',
     ]);
-    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' }, { secrets: await knownSecrets(config) });
+    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [] }, { secrets: await knownSecrets(config) });
 
     expect(started).toMatchObject({ error: {
       code: 'invalid_inputs',
-      message: 'Workflow "teamai-share-learnings" step "share-session" passes publish, scorers, judge, demand to workflow "teamai-share-session", which does not declare them. Make the two agree, then pull again.',
+      message: 'Workflow "teamai-share-learnings" step "share-session" passes publish, scorers, demand to workflow "teamai-share-session", which does not declare them. Make the two agree, then pull again.',
     } });
   });
 
@@ -164,11 +162,9 @@ steps:
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.publish is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.scorers is not an input workflow "teamai-share-session" declares',
-      '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.judge is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" with.demand is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.scorers is not an input workflow "teamai-share-session" declares',
-      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.judge is not an input workflow "teamai-share-session" declares',
       '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" with.demand is not an input workflow "teamai-share-session" declares',
     ]);
   });
@@ -179,7 +175,7 @@ steps:
 name: wrap-up
 alias: teamai-share-session
 description: Publish this session our way.
-inputs: { session: string, source: string, publish: string, scorers: [string], judge: here | driver, demand: auto | named }
+inputs: { session: string, source: string, publish: string, scorers: [string], demand: auto | named }
 steps:
   - id: note
     command: echo wrapped
@@ -191,19 +187,19 @@ steps:
       '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" passes publish, which workflow "wrap-up" declares as another type than teamai\'s default teamai-share-session',
       '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "wrap-up" declares as another type than teamai\'s default teamai-share-session',
     ]);
-    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' }, { secrets: await knownSecrets(config) });
+    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [] }, { secrets: await knownSecrets(config) });
     expect(started).toMatchObject({ error: {
       code: 'invalid_inputs',
       message: 'Workflow "teamai-share-learnings" step "share-session" passes publish, which workflow "wrap-up" declares as another type than teamai\'s default teamai-share-session. Make the two agree, then pull again.',
     } });
   });
 
-  it('start teamai-share-learnings with a team teamai-share-session that lists judge\'s values in another order', async () => {
+  it('start teamai-share-learnings with a team teamai-share-session that lists demand\'s values in another order', async () => {
     const config = testConfig();
     writeWorkflow(config, 'teamai-share-session', `schemaVersion: v1alpha1
 name: teamai-share-session
 description: Publish this session our way.
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: driver | here, demand: named | auto }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], demand: named | auto }
 steps:
   - id: note
     command: echo wrapped
@@ -212,16 +208,16 @@ steps:
     await syncScorersThenWorkflows(config);
 
     expect(warn).not.toHaveBeenCalled();
-    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' }, { secrets: await knownSecrets(config) });
+    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [] }, { secrets: await knownSecrets(config) });
     expect(started).toMatchObject({ data: { run: expect.any(String) } });
   });
 
-  it('warn at pull while the team\'s teamai-share-session repeats one of judge\'s values in place of another', async () => {
+  it('warn at pull while the team\'s teamai-share-session repeats one of demand\'s values in place of another', async () => {
     const config = testConfig();
     writeWorkflow(config, 'teamai-share-session', `schemaVersion: v1alpha1
 name: teamai-share-session
 description: Publish this session our way.
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | here, demand: auto | named }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], demand: auto | auto }
 steps:
   - id: note
     command: echo wrapped
@@ -230,8 +226,8 @@ steps:
     await syncScorersThenWorkflows(config);
 
     expect(warn.mock.calls.map(([message]) => message)).toEqual([
-      '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" passes judge, which workflow "teamai-share-session" declares as another type than teamai\'s default teamai-share-session',
-      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" passes judge, which workflow "teamai-share-session" declares as another type than teamai\'s default teamai-share-session',
+      '[workflows] teamai\'s default teamai-finished-sessions cannot start: step "share" passes demand, which workflow "teamai-share-session" declares as another type than teamai\'s default teamai-share-session',
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" passes demand, which workflow "teamai-share-session" declares as another type than teamai\'s default teamai-share-session',
     ]);
   });
 
@@ -240,11 +236,11 @@ steps:
     writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1
 name: wrap-up
 description: Run the checks, then share the session.
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string] }
 steps:
   - id: share
     workflow: teamai-share-session
-    with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", judge: "{{ inputs.judge }}", demand: named }
+    with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", demand: named }
 `);
 
     const result = await syncScorersThenWorkflows(config);
@@ -261,11 +257,11 @@ steps:
     writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1
 name: wrap-up
 description: Run the checks, then share the session.
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string] }
 steps:
   - id: share
     workflow: teamai-share-session
-    with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", judge: "{{ inputs.judge }}" }
+    with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}" }
 `);
 
     const result = await syncScorersThenWorkflows(config);
@@ -288,7 +284,7 @@ steps:
       return run;
     };
 
-    const shared = await runOf('teamai-share-session', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here', demand: 'named' });
+    const shared = await runOf('teamai-share-session', { session: 's1', source: 'claude', publish: false, scorers: [], demand: 'named' });
     const built = await runOf('build', {});
 
     expect(shared).toMatchObject({ origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });

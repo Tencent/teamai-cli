@@ -61,6 +61,7 @@ sharing:
 
 workflows:
   retention: 14d              # how long doctor --fix leaves what a settled run left: a duration such as 14d, or never
+  driver: local                # the driver teamai score, score --drain and a session start start their runs for: local, none, or a driver's name
 
 ```
 
@@ -112,6 +113,7 @@ The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHi
 | Recall on for the whole team | `sharing: { recall: { enabled: true } }` | the team's `teamai.yaml` |
 | No judging of the sessions you run by hand, in any workspace | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
 | Keep what workflow runs leave for a week on this machine ([The branches a run leaves](./workflow.md#the-branches-a-run-leaves)) | `workflows: { retention: 7d }` | `~/.teamai/config.yaml` |
+| Leave the runs `teamai score`, `teamai score --drain` and a session start begin to driver `acme-sandbox`, which this machine does not run: each run waits for it. `workflow start` and `resume` do not read it | `workflows: { driver: acme-sandbox }` | the team's `teamai.yaml` |
 
 `teamai doctor` names the file of the workspace it runs in. The dashboard's [Member settings](./dashboard.md#member-settings) panel shows the same for the workspace you select.
 

@@ -17,14 +17,14 @@ import type { LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
-import { cancelRun } from '../workflow/run-controls.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { ScoreAnswer } from '../scorers/score-answer.js';
 import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
 import { labelVersion } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { log } from '../utils/logger.js';
-import { Marks } from '../scorers/marks.js';
+import { Marks, type MarkKey } from '../scorers/marks.js';
 import { markFacts } from '../scorers/score-plan.js';
 import { PassScoring } from '../scorers/pass-scoring.js';
 import { RunScorers } from '../scorers/run-scorers.js';
@@ -373,20 +373,29 @@ describe('score plan', () => {
     expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality', model: 'gpt-5.4' }] } });
   });
 
-  it('plans a scorer whose model no judge tool here runs, in a group of its own, so its judge step waits for a driver that can', async () => {
-    const config = await team({ review: REVIEW }, { quality: scorer({ extra: 'model: fast\n' }), coverage: scorer() });
+  it('groups batched scorers by the model they ask for, whichever judge tool this machine has, leaving the tool to the lease', async () => {
+    const config = await team({ review: REVIEW.replace('[quality, coverage]', '[quality, coverage, tests]') }, { quality: scorer({ extra: 'model: fast\n' }), coverage: scorer(), tests: scorer({ extra: 'model: fast\n' }) });
     fs.mkdirSync(path.join(config.repo.localPath, 'models'));
     fs.writeFileSync(path.join(config.repo.localPath, 'models', 'aliases.yaml'), 'aliases:\n  fast:\n    codex: gpt-6-mini\n');
-    const bin = path.join(root, 'bin');
-    fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\n', { mode: 0o755 });
-    vi.stubEnv('PATH', [bin, '/usr/bin', '/bin'].join(path.delimiter));
+    await syncScorersThenWorkflows(config);
+    vi.stubEnv('PATH', ['/usr/bin', '/bin'].join(path.delimiter));
     const subject = `run:${await reviewedRun(config)}:review:1`;
     const { ctx } = await (await scoreRun(config, { subject, batch: true })).next('plan');
 
-    expect(await ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', batch: 'true' }, ctx)).toMatchObject({ ok: true, output: { groups: [
-      { scorers: 'quality', model: 'fast' },
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality","coverage","tests"]', batch: 'true' }, ctx)).toMatchObject({ ok: true, output: { groups: [
+      { scorers: 'quality,tests', model: 'fast' },
       { scorers: 'coverage', model: '' },
+    ] } });
+  });
+
+  it('keeps batched scorers that prefer another judge tool apart, so each judge call can run in the tool its scorers prefer', async () => {
+    const config = await team({ review: REVIEW.replace('[quality, coverage]', '[quality, coverage, tests]') }, { quality: scorer({ extra: 'tool: codex\n' }), coverage: scorer(), tests: scorer({ extra: 'tool: codex\n' }) });
+    const subject = `run:${await reviewedRun(config)}:review:1`;
+    const { ctx } = await (await scoreRun(config, { subject, batch: true })).next('plan');
+
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality","coverage","tests"]', batch: 'true' }, ctx)).toMatchObject({ ok: true, output: { groups: [
+      { scorers: 'quality,tests' },
+      { scorers: 'coverage' },
     ] } });
   });
 
@@ -564,6 +573,98 @@ async function plannedGroup(config: LocalConfig, subject: string, inputs: Record
   return { run, evidence: await run.next('score[0].evidence'), scorers: groups.groups[0]?.scorers ?? '' };
 }
 
+describe('marks of a score run that ended', () => {
+  it('counts no lapse when the run ended before its judge was leased, and one once a judge attempt ran', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const key: MarkKey = { scorer: 'quality', subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } };
+    const states = async () => Marks.states(config, [key], markFacts(config, new Date().toISOString()));
+    /** A score run of `quality` planned now, so its mark's 14 days start from now. */
+    const planned = async () => {
+      const run = await scoreRun(config, { subject, scorers: ['quality'] });
+      const plan = await run.next('plan');
+      await run.report(plan, await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'auto' }, { ...plan.ctx, now: new Date().toISOString() }));
+      return run;
+    };
+
+    const unjudged = await planned();
+    data(await cancelRun(config, unjudged.runId, await knownSecrets(config)));
+    expect(await states()).toEqual([{ kind: 'lapsed', lapses: 0 }]);
+
+    const judged = await planned();
+    const evidence = await judged.next('score[0].evidence');
+    await judged.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'quality' }, evidence.ctx));
+    await judged.next('score[0].judge');
+    data(await cancelRun(config, judged.runId, await knownSecrets(config)));
+    expect(await states()).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
+  it.each(['score[0]', 'score'])('counts a lapse for a judge attempt that ran before a retry of %s, which moved it to the archive', async (retried) => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const key: MarkKey = { scorer: 'quality', subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } };
+    const run = await scoreRun(config, { subject, scorers: ['quality'] });
+    const plan = await run.next('plan');
+    await run.report(plan, await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'auto' }, { ...plan.ctx, now: new Date().toISOString() }));
+    const evidence = await run.next('score[0].evidence');
+    await run.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'quality' }, evidence.ctx));
+    await run.next('score[0].judge');
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    data(await retryStep(config, run.runId, await knownSecrets(config), retried));
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    expect(await Marks.states(config, [key], markFacts(config, new Date().toISOString()))).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
+  it('counts a lapse once the judge of a teamai-score another workflow runs was leased', async () => {
+    const SCORING = `schemaVersion: v1alpha1
+name: scoring
+description: Score a pass of review inside another workflow.
+inputs: { subject: string }
+steps:
+  - id: share
+    workflow: teamai-score
+    with: { subject: "{{ inputs.subject }}", scorers: [quality], label: "", batch: false, demand: auto }
+`;
+    const config = await team({ review: REVIEW, scoring: SCORING }, { quality: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const key: MarkKey = { scorer: 'quality', subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } };
+    const run = runOf(config, String(data(await startRun(config, 'scoring', { subject }, { secrets: await knownSecrets(config), startedBy: 'cli' })).run));
+    const plan = await run.next('share.plan');
+    await run.report(plan, await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'auto' }, { ...plan.ctx, now: new Date().toISOString() }));
+    const evidence = await run.next('share.score[0].evidence');
+    await run.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'quality' }, evidence.ctx));
+    await run.next('share.score[0].judge');
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    expect(await Marks.states(config, [key], markFacts(config, new Date().toISOString()))).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
+  it('counts a lapse once a judge attempt ran for a batch that one already labelled scorer left smaller', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const keyOf = (name: string): MarkKey => ({ scorer: name, subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } });
+    await Marks.close(config, [keyOf('quality')], { kind: 'labelled' }, { now: new Date().toISOString() });
+
+    const run = await scoreRun(config, { subject, scorers: ['quality', 'coverage'] });
+    const plan = await run.next('plan');
+    const planned = await ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', batch: 'true', demand: 'auto' }, { ...plan.ctx, now: new Date().toISOString() });
+    expect(planned).toMatchObject({ ok: true, output: { groups: [{ scorers: 'coverage' }] } });
+    await run.report(plan, planned);
+    const evidence = await run.next('score[0].evidence');
+    await run.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'coverage' }, evidence.ctx));
+    await run.next('score[0].judge');
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    expect(await Marks.states(config, [keyOf('coverage')], markFacts(config, new Date().toISOString()))).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+});
+
 describe('score evidence', () => {
   it('writes the evidence of a pass into the attempt\'s own directory, hashed', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer({ extra: 'isolation: verified\n' }) });
@@ -582,6 +683,17 @@ describe('score evidence', () => {
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'reply.schema.json'), 'utf8'))).toEqual({
       type: 'object', properties: { answer: JSON.parse(fs.readFileSync(path.join(dir, 'answer.schema.json'), 'utf8')) }, required: ['answer'], additionalProperties: false,
     });
+  });
+
+  it('asks the judge for the tool its scorer prefers, then the tool the pass ran in', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer({ extra: 'tool: codex\n' }), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['quality'] });
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+
+    expect(await checkConfinedDir({ step: 'judge', runDir: runScratchDir(config, run.runId), dir })).toMatchObject({ ok: true, place: { prefer: ['codex', 'claude'] } });
   });
 
   it('refuses with evidence_missing when a session the pass recorded is gone, and writes no evidence', async () => {
@@ -841,7 +953,7 @@ async function walk(config: LocalConfig, subject: string, { judge, confinedRecor
 }
 
 const marksOf = async (config: LocalConfig, runId: string, scorers: string[]) =>
-  Marks.states(config, scorers.map((name) => ({ scorer: name, subject: { kind: 'run' as const, subject: { runId, step: 'review', pass: 1 } } })), { now: NOW, readRun: async () => ({ ended: true, changedAt: NOW }) });
+  Marks.states(config, scorers.map((name) => ({ scorer: name, subject: { kind: 'run' as const, subject: { runId, step: 'review', pass: 1 } } })), { now: NOW, readRun: async () => ({ ended: true, changedAt: NOW, judgeRan: () => true }) });
 
 describe('score label and score write', () => {
   it('remove the evidence staged from a clone once every mark of its pass closed, and keep it while one waits for CI', async () => {
@@ -1088,9 +1200,17 @@ steps:
   it('start a lapsed session again only until its fourth lapse, a pull having changed the rubric in between', async () => {
     const config = await team({}, { quality: scorer({ rate: 0 }) });
     const subject = 'session:claude-code:one';
+    plantSession(config.projectRoot ?? '', 'one', 'Add retries.');
+    /** A run that plans the session and leases its judge, then is cancelled: one lapse. */
     const lapse = async (demand: string) => {
       const started = await scoreRun(config, { subject, scorers: ['quality'], demand });
-      expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand }, (await started.next('plan')).ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+      const plan = await started.next('plan');
+      const planned = await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand }, plan.ctx);
+      expect(planned).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+      await started.report(plan, planned);
+      const evidence = await started.next('score[0].evidence');
+      await started.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'quality' }, evidence.ctx));
+      await started.next('score[0].judge');
       data(await cancelRun(config, started.runId, await knownSecrets(config)));
     };
     const lapsed = async () => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
@@ -1427,14 +1547,6 @@ describe('score verbs refuse what they cannot act on', () => {
   });
 });
 
-/** A claude on PATH, which the stage-decided label names as the judge that would have run. */
-function claudeOnPath(): void {
-  const bin = path.join(root, 'bin');
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
-}
-
 describe('score label and score write read what the run recorded', () => {
   /** A group of `quality` on the reviewed pass, its evidence written and its judge step answered `answer`, at its label step. */
   async function judgedGroup(answer: unknown, startedBy: StartedBy = 'cli') {
@@ -1459,6 +1571,23 @@ describe('score label and score write read what the run recorded', () => {
     const [stored] = await LabelStore.local(config);
     expect(stored).toMatchObject({ judge: { kind: 'model', tool: 'claude', usage: { inputTokens: 10, outputTokens: 2 } } });
     expect(stored?.judge).not.toHaveProperty('batched');
+  });
+
+  it('write records the access the judge\'s confined run reported, not the one its tool\'s profile gives', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['quality'] });
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    await run.report(evidence, written);
+    const judge = await run.next('score[0].judge');
+    await run.report(judge, { ok: true, output: { answer: { label: 'good', reasoning: 'ok' } } }, { confined: { ...JUDGED, access: 'answer' } });
+    const label = await run.next('score[0].label');
+    const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+    await run.report(label, await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, label.ctx));
+    await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx);
+
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', judge: { kind: 'model', tool: 'claude', access: 'answer' } }]);
   });
 
   it('label gives judge_answer_invalid for an answer that is not JSON', async () => {
@@ -1490,26 +1619,26 @@ describe('score label and score write read what the run recorded', () => {
 
     expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 1, labels: (await LabelStore.local(config)).map(labelVersion) } });
     const held = { scorer: 'quality', subject: { kind: 'run' as const, subject: { runId, step: 'review', pass: 1 } } };
-    expect(await Marks.states(config, [held], { now: NOW, readRun: async () => ({ ended: false, changedAt: NOW }) })).toMatchObject([{ kind: 'open', run: holder.run.runId }]);
+    expect(await Marks.states(config, [held], { now: NOW, readRun: async () => ({ ended: false, changedAt: NOW, judgeRan: () => true }) })).toMatchObject([{ kind: 'open', run: holder.run.runId }]);
   });
 });
 
 describe('labels a stage decided', () => {
   const clarityOnly = SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]');
 
-  it('give the scorer\'s best failing label, decided by protected paths, with the judge that would have run', async () => {
+  it('give the scorer\'s best failing label, decided by protected paths, naming the stage and no judge tool', async () => {
     const config = await team({ ship: clarityOnly }, { clarity: scorer() });
-    claudeOnPath();
     const runId = await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' });
     mocks.ci.mockResolvedValue({ kind: 'unsupported' });
-    const { answers } = await walk(config, `run:${runId}:change:1`);
+    const { answers, runId: scoreRunId, ended } = await walk(config, `run:${runId}:change:1`);
 
     expect(answers.has('score[0].judge')).toBe(false);
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: 'bad', code: '' }] } });
-    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'clarity', label: 'bad', passed: false, decidedBy: 'protected', judge: { kind: 'model', tool: 'claude', isolation: 'best-effort' } }]);
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'clarity', label: 'bad', passed: false, decidedBy: 'protected', judge: { kind: 'stage' } }]);
+    expect(await ScoreAnswer.of(config, scoreRunId, ended, ['clarity'])).toMatchObject({ data: { label: { scorer: 'clarity', judge: { kind: 'stage' }, decidedBy: 'protected' } } });
   });
 
-  it('give judge_tool_unavailable when a stage decided and no judge tool here runs the scorer', async () => {
+  it('record the label a stage decided where no judge tool is installed', async () => {
     const config = await team({ ship: clarityOnly }, { clarity: scorer() });
     const runId = await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' });
     mocks.ci.mockResolvedValue({ kind: 'unsupported' });
@@ -1522,7 +1651,7 @@ describe('labels a stage decided', () => {
     const label = await run.next('score[0].label');
     vi.stubEnv('PATH', '/usr/bin:/bin');
 
-    expect(await ScoreVerbs.label({ evidence: dir, answer: '', judge: '' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: '', code: 'judge_tool_unavailable' }] } });
+    expect(await ScoreVerbs.label({ evidence: dir, answer: '', judge: '' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: 'bad', code: '' }] } });
   });
 
   it('give ci_pending while CI has not finished, and leave the mark waiting for it', async () => {
@@ -1532,7 +1661,7 @@ describe('labels a stage decided', () => {
     const { answers } = await walk(config, `run:${runId}:change:1`);
 
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: '', code: 'ci_pending' }] } });
-    expect(await Marks.states(config, [{ scorer: 'clarity', subject: { kind: 'run', subject: { runId, step: 'change', pass: 1 } } }], { now: NOW, readRun: async () => ({ ended: false, changedAt: NOW }) })).toEqual([{ kind: 'waiting' }]);
+    expect(await Marks.states(config, [{ scorer: 'clarity', subject: { kind: 'run', subject: { runId, step: 'change', pass: 1 } } }], { now: NOW, readRun: async () => ({ ended: false, changedAt: NOW, judgeRan: () => true }) })).toEqual([{ kind: 'waiting' }]);
   });
 
   it('give check_could_not_run for a check that could not run', async () => {
@@ -1552,7 +1681,7 @@ describe('labels a stage decided', () => {
     expect(answers.get('score[0].label')).toMatchObject({ ok: false, code: 'stage_record_missing' });
     expect(answers.get('score[0].settle')).toEqual({ ok: true, output: { settled: 1 } });
     expect(await LabelStore.local(config)).toEqual([]);
-    expect(await Marks.states(config, [{ scorer: 'delivered', subject: { kind: 'run', subject: { runId, step: 'change', pass: 1 } } }], { now: NOW, readRun: async () => ({ ended: true, changedAt: NOW }) }))
+    expect(await Marks.states(config, [{ scorer: 'delivered', subject: { kind: 'run', subject: { runId, step: 'change', pass: 1 } } }], { now: NOW, readRun: async () => ({ ended: true, changedAt: NOW, judgeRan: () => true }) }))
       .toEqual([{ kind: 'failed', code: 'judge_failed', usage: { inputTokens: 10, outputTokens: 2 } }]);
   });
 });

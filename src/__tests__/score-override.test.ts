@@ -156,7 +156,7 @@ inputs: { subject: string }
 steps:
 ${step}`;
     const timed = '  - id: score\n    workflow: teamai-score\n    with: { subject: "{{ inputs.subject }}", scorers: [], label: "", batch: false, demand: named }\n    timeout: 30m\n    continue_on_failure: true\n';
-    const other = '  - id: share\n    workflow: teamai-share-session\n    with: { session: "{{ inputs.subject }}", source: claude-code, publish: false, scorers: [], judge: here, demand: named }\n';
+    const other = '  - id: share\n    workflow: teamai-share-session\n    with: { session: "{{ inputs.subject }}", source: claude-code, publish: false, scorers: [], demand: named }\n';
 
     for (const step of [timed, other]) expect((await pulled({ 'score-this': wrapper(step) })).warned.filter((line) => line.includes('no timeout'))).toEqual([]);
   });

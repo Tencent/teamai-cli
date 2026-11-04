@@ -78,7 +78,7 @@ async function member({ scorers, files = {}, config = {} }: { scorers: Record<st
   return local;
 }
 
-const offerOf = (config: LocalConfig, tool = 'claude', judgeTools = ['claude']) => SessionShare.offer(config, { tool, sessionId: SESSION }, { now: NOW, judgeTools: () => judgeTools });
+const offerOf = (config: LocalConfig, tool = 'claude') => SessionShare.offer(config, { tool, sessionId: SESSION }, { now: NOW });
 
 describe('the session share offer', () => {
   it('proposes the scorers that sample the session, as the background judge picks them', async () => {
@@ -110,34 +110,15 @@ describe('the session share offer', () => {
     });
   });
 
-  it('judges here when a judge tool teamai runs is installed, and with the session\'s agent otherwise, leaving out scorers that need verified isolation', async () => {
-    const scorers = { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n'), 'secure-review.md': scorer('samplingRate: 100\nsessions: true\n') };
-    const config = await member({ scorers, files: { 'scorers/scoring.yaml': 'isolation: verified\n' } });
+  it('proposes the scorers that need verified isolation too, whose runs stay open for a driver that offers a verified judge, and proposes no judge', async () => {
+    const scorers = { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n'), 'secure-review.md': scorer('samplingRate: 100\nsessions: true\nisolation: verified\n') };
+    const offered = await offerOf(await member({ scorers, files: { 'scorers/scoring.yaml': 'isolation: verified\n' } }));
 
-    expect(await offerOf(config, 'claude', [])).toMatchObject({
-      judge: { value: 'driver', why: 'No judge tool teamai runs is installed here, so this session\'s agent judges, best-effort.' },
-      scorers: {
-        value: [],
-        why: `${SCORERS_WHY} None proposed: review-quality and secure-review are left out: scorers/scoring.yaml asks for verified isolation, which this session's agent cannot give. Name any scorer to judge with it.`,
-      },
+    expect(offered.scorers).toEqual({
+      value: ['review-quality', 'secure-review'],
+      why: `${SCORERS_WHY} review-quality (samplingRate 100) and secure-review (samplingRate 100) sample this session. [] skips scoring.`,
     });
-
-    expect(await offerOf(config)).toMatchObject({
-      judge: { value: 'here', why: 'claude is installed here, so teamai\'s own judge scores it.' },
-      scorers: { value: ['review-quality', 'secure-review'] },
-    });
-  });
-
-  it('leaves out, for the session\'s agent, a scorer whose own file asks for verified isolation', async () => {
-    const config = await member({ scorers: {
-      'review-quality.md': scorer('samplingRate: 100\nsessions: true\n'),
-      'secure-review.md': scorer('samplingRate: 100\nsessions: true\nisolation: verified\n'),
-    } });
-
-    expect((await offerOf(config, 'claude', [])).scorers).toEqual({
-      value: ['review-quality'],
-      why: `${SCORERS_WHY} review-quality samples this session (samplingRate 100). secure-review is left out: scorers/secure-review.md asks for verified isolation, which this session's agent cannot give. [] skips scoring.`,
-    });
+    expect(offered).not.toHaveProperty('judge');
   });
 
   it('proposes publishing while the attended publish policy is ask, and says why not otherwise', async () => {
@@ -190,20 +171,15 @@ describe('the session share offer', () => {
     });
   });
 
-  it('offers in the reminder the same publish and scorers describe proposes, looking for judge tools only when a scorer needs verified isolation', async () => {
-    const judgeTools = vi.fn(() => []);
-    const plain = await member({ scorers: { 'review-quality.md': scorer('samplingRate: 100\nsessions: true\n') } });
-    expect(await SessionShare.reminderOffer(plain, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools })).toEqual({ publish: true, scorers: ['review-quality'] });
-    expect(judgeTools).not.toHaveBeenCalled();
-
+  it('offers in the reminder the same publish and scorers describe proposes', async () => {
     const verified = await member({ scorers: {
       'review-quality.md': scorer('samplingRate: 100\nsessions: true\n'),
       'secure-review.md': scorer('samplingRate: 100\nsessions: true\nisolation: verified\n'),
     } });
-    const proposed = await offerOf(verified, 'claude', []);
-    expect(await SessionShare.reminderOffer(verified, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW, judgeTools }))
+    const proposed = await offerOf(verified);
+
+    expect(await SessionShare.reminderOffer(verified, { tool: 'claude', sessionId: SESSION, cwd: root, run: { runMode: 'attended' } }, { now: NOW }))
       .toEqual({ publish: proposed.publish.value, scorers: proposed.scorers.value });
-    expect(proposed.scorers.value).toEqual(['review-quality']);
-    expect(judgeTools).toHaveBeenCalledTimes(1);
+    expect(proposed.scorers.value).toEqual(['review-quality', 'secure-review']);
   });
 });

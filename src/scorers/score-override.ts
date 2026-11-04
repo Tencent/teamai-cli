@@ -10,7 +10,7 @@ import { canonicalJson } from '../utils/canonical-json.js';
 import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
 import { confinedOf } from '../workflow/workspace.js';
 import { anyScorerChecks, cachedScorerNames } from './cache.js';
-import { JUDGING_WORKFLOWS, SCORE_WORKFLOW } from './judging-workflows.js';
+import { JUDGING_WORKFLOWS, SCORE_WORKFLOW, type ScoreItemStep } from './judging-workflows.js';
 
 /** Why pull refuses a team teamai-score.yaml, one code per part of this contract. */
 export type ScoreOverrideCode = 'score_override_contract' | 'score_override_command' | 'score_override_workflow_step' | 'score_override_prompt' | 'score_override_confined_dir' | 'score_override_judge_prompt' | 'score_override_step_missing' | 'score_override_publish';
@@ -26,7 +26,7 @@ const KEPT = {
   'score.write': LABELS_GO_THROUGH,
   'score.publish': LABELS_GO_THROUGH,
   'score.settle': LABELS_GO_THROUGH,
-} as const;
+} as const satisfies Record<'plan' | `score.${ScoreItemStep}`, string>;
 
 const PUBLISH = 'teamai score publish';
 

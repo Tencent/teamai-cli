@@ -30,6 +30,7 @@ Judge whether the change does what the step asked. Read the diff and the session
 | `passingScore` | 标签分数不低于它即为通过。 |
 | `samplingRate`、`model`、`isolation` | 可选。被评判的步骤执行比例，0 到 100，默认 25。评审者的模型：团队[模型别名](sharing.md#模型别名)，按评审工具分别解析；或模型名，原样交给第一个评审工具。默认用工具自己的模型。`verified` 或 `best-effort`。 |
 | `sessions` | 可选。`true`：评分器也评判[已结束的会话](#已结束的会话)。 |
+| `tool` | 可选。优先使用的评审工具，例如 `codex`。租用评审步骤的驱动提供它时由它评审；否则用被评判工作所用的工具，再否则用驱动的第一个工具。teamai 不认识的名称只给出警告，不会被拒绝。 |
 | `stages` | 可选。哪些[阶段](#为交付的工作评分)可以在评审者之前为该评分器做出判定：`check`、`ci`、`protected` 中的若干个。默认三个都用。 |
 
 frontmatter 之后的文本是评审者的提示词。`teamai pull` 缓存有效的评分器（`teamai status` 会列出它们），并对其余文件给出警告。`teamai review --branch` 遇到格式错误的评分器、分支的 `models/aliases.yaml` 没有为任何工具映射的模型别名、`scorers/` 里除 `<name>.md`、`<namespace>/<name>.md`、`scoring.yaml` 和 `README.md` 以外的文件、含有它不认识的键或值的 `scoring.yaml`，或其中任何文件含有凭据或内网地址时会失败，与规则的检查相同。
@@ -251,7 +252,7 @@ $ teamai score --run r5863… --scorer review-quality                           
 $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --driver none   # 交给任意 driver 的 workflow next
 ```
 
-`--run`、`--session` 或 `--team-session` 加上 `--scorer`，会在本地 driver 上为该执行轮次或会话启动 [`teamai-score`](#teamai-score-工作流)，并输出它写入的标签。`--driver none` 只启动运行，交给任意 driver 的 `workflow next`；它取代了 `--queue`。运行中只有一个有成功执行的步骤列出该评分器时，`--step` 可以省略；否则错误会列出可选的步骤。不应用抽样，失败或过期的评审任务会重新打开。`--run` 在运行开始时的团队提交读取每个评分器，并带上检出当时在该提交之后的改动，因此运行期间修改的评分标准不会改变标签；会话接受 `teamai pull` 缓存的任意评分器，使用当前版本。未知的运行、步骤、执行轮次或评分器会失败，列出存在的值，且不启动运行。
+`--run`、`--session` 或 `--team-session` 加上 `--scorer`，会在 [`workflows.driver`](reference.md#成员设置) 指定的 driver 上（未指定则在本地 driver 上）为该执行轮次或会话启动 [`teamai-score`](#teamai-score-工作流)，并输出它写入的标签。`--driver none` 只启动运行，交给任意 driver 的 `workflow next`；它取代了 `--queue`。指定的 driver 本机不运行时，只启动运行，让它等待该 driver，并输出 `<run> waits for driver <name>, which this machine does not run. To drive it here: teamai workflow resume <run> --driver local`。运行中只有一个有成功执行的步骤列出该评分器时，`--step` 可以省略；否则错误会列出可选的步骤。不应用抽样，失败或过期的评审任务会重新打开。`--run` 在运行开始时的团队提交读取每个评分器，并带上检出当时在该提交之后的改动，因此运行期间修改的评分标准不会改变标签；会话接受 `teamai pull` 缓存的任意评分器，使用当前版本。未知的运行、步骤、执行轮次或评分器会失败，列出存在的值，且不启动运行。
 
 有评分器没有得到标签时，命令以退出码 1 结束并给出它的代码，`labels` 列出其他评分器得到的标签：
 
@@ -341,10 +342,10 @@ Judge whether the change is easy to read.
 {"scorer":"delivered","label":"partial","score":0.5,"passed":false,"source":"workflow",
  "subject":{"runId":"r3f9…","step":"change","pass":1},"decidedBy":"ci",
  "evidenceHash":"sha256:8ddbddc64a7180bc866ce3fc0da3e5ad940854e7855a51b0318851f932737ba1",
- "judge":{"kind":"model","tool":"claude",…},…}
+ "judge":{"kind":"stage"},…}
 ```
 
-`evidenceHash` 标识标签读取的证据。同一轮执行的两个标签哈希相同，说明读取的是同一份工作；如果标签不同，变化的是评分标准或评审者，而不是工作。阶段发现的内容（检查的退出码、CI 结果）只保存在命令输出中指明的本地 reasoning 文件里。由于没有评审者运行，标签没有 `usage`。
+`evidenceHash` 标识标签读取的证据。同一轮执行的两个标签哈希相同，说明读取的是同一份工作；如果标签不同，变化的是评分标准或评审者，而不是工作。阶段发现的内容（检查的退出码、CI 结果）只保存在命令输出中指明的本地 reasoning 文件里。它的 judge 是 `{"kind":"stage"}`：没有评审者运行，因此标签不记录评审工具，也没有 `usage`。早期版本写入的标签以 `kind: model` 记录本应运行的评审者，同样按阶段判定读取。
 
 无法运行的检查（例如本机没有该命令，或运行超时）不写入标签。修复检查后，再次为该轮评分：
 
@@ -621,7 +622,7 @@ $ teamai score --drain
 每个无人值守的 driver 都以 `teamai score --drain` 结束。本地驱动在无人值守运行结束时自动执行它，除非无人值守会话的发布和评判都设为 `off`，或该运行本身是 `teamai-finished-sessions` 运行。skill 驱动、T3、Paseo 和 CI 脚本把它作为最后一步执行。它按以下顺序工作：
 
 1. 在无人值守模式下，本数据目录记录为无人值守的每个已捕获会话都算已结束，包括调用它的会话。有人值守的会话仍按六小时规则。
-2. 像会话启动那样在这里启动一次 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行，并用本地驱动驱动它。该运行在会话所属模式的 `publish` 为 `auto` 时归档已结束的会话，并在 `daily_limit` 内评判策略允许的抽样会话。它为评审过期的每个 pass 和会话、运行未评分的每个 `start: workflow` pass，以及升级时从评审尝试带过来的未完成 pass 和会话重新启动 `teamai-score`，但运行最后一次变更已超过 14 天的 pass 除外。已在处理该数据目录的运行会被留给它，drain 会说明这一点：等它结束后再运行一次 drain。
+2. 像会话启动那样在这里启动一次 [`teamai-finished-sessions`](#teamai-finished-sessions) 运行，并用 `workflows.driver` 指定的驱动（未指定则用本地驱动）驱动它。指定的驱动本机不运行时，运行会等待该驱动，drain 会说明如何在本机驱动它。该运行在会话所属模式的 `publish` 为 `auto` 时归档已结束的会话，并在 `daily_limit` 内评判策略允许的抽样会话。它为评审过期的每个 pass 和会话、运行未评分的每个 `start: workflow` pass，以及升级时从评审尝试带过来的未完成 pass 和会话重新启动 `teamai-score`，但运行最后一次变更已超过 14 天的 pass 除外。已在处理该数据目录的运行会被留给它，drain 会说明这一点：等它结束后再运行一次 drain。
 3. 像 `score --push` 一样发布每个待发布的标签，以及 [`deliver: publish`](workflow.md#发布到数据分支) 步骤留在数据分支上待发布的内容，并像 `teamai pull` 一样发布运行当时没能发布的工作流运行记录。
 4. 当前模式的 `publish` 为 `auto` 时，把在这里驱动的运行中尚未归档的步骤会话，脱敏后归档到 `teamai-reports`。无法从这里归档的步骤会话（teamai 读不到其工具的会话，或本机读不到这个会话）只列出一次已跳过及原因，之后不再重试。该运行的其他步骤会话照常归档。[基准测试](benchmarks.md)运行的 trial 会话留在运行它的机器上。
 5. 像 `teamai pull` 一样把用量上报到 `stats/<member>.yaml`，让临时 runner 的计数到达团队。
@@ -672,7 +673,7 @@ score          每组一次：
         - id: judge
           prompt: |
             Judge this change for our team, strictly. The rubric is in {{ steps.evidence.outputs.rubric }}.
-            Answer with the schema in {{ steps.evidence.outputs.schema }}.
+            Reply with {"answer": <the answer>}, where the answer matches the schema in {{ steps.evidence.outputs.schema }}.
 ```
 
 pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
@@ -754,7 +755,7 @@ passingScore: 1
 Judge whether the tests in the diff cover what the change does.
 ```
 
-同一轮中解析到相同工具和模型的评分器共用一个评审步骤、一个证据目录和一个提示，答案为每个评分器给出一个标签：
+同一轮中请求相同 `model` 和 `tool` 且经过相同阶段的评分器共用一个评审步骤、一个证据目录和一个提示，答案为每个评分器给出一个标签。评审工具在驱动程序租用该步骤时选定，而不取决于本机安装了什么：
 
 ```json
 {"answer":{"review-quality":{"label":"good","reasoning":"…"},"test-coverage":{"label":"thin","reasoning":"…"}}}

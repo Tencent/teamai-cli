@@ -30,14 +30,21 @@ function session(scorer: string, sessionId = '7c1e', sourceHash = 'h1'): MarkKey
   return { scorer, sourceHash, subject: { kind: 'session', subject: { platform: 'claude-code', sessionId } } };
 }
 
-/** Runs by id, as the run store would answer: the judged run changed at NOW, every scoring run is still going. */
-function runs(): { readRun: (id: string) => Promise<RunStatus | undefined>; end: (id: string) => void; set: (id: string, status: RunStatus) => void } {
-  const known = new Map<string, RunStatus>([[JUDGED, { ended: true, changedAt: NOW }]]);
+const judgeRan = () => true;
+const noJudgeRan = () => false;
+
+/**
+ * Runs by id, as the run store would answer: the judged run changed at NOW, every scoring run is still going. A run that
+ * `end`s ran the judge of every group it launched; one that ends `unjudged` ended before a judge attempt of any ran.
+ */
+function runs(): { readRun: (id: string) => Promise<RunStatus | undefined>; end: (id: string) => void; unjudged: (id: string, at?: string) => void; set: (id: string, status: Omit<RunStatus, 'judgeRan'>) => void } {
+  const known = new Map<string, RunStatus>([[JUDGED, { ended: true, changedAt: NOW, judgeRan: noJudgeRan }]]);
 
   return {
-    readRun: async (id) => known.get(id) ?? (id.startsWith('score-') ? { ended: false, changedAt: NOW } : undefined),
-    end: (id) => known.set(id, { ended: true, changedAt: NOW }),
-    set: (id, status) => known.set(id, status),
+    readRun: async (id) => known.get(id) ?? (id.startsWith('score-') ? { ended: false, changedAt: NOW, judgeRan: noJudgeRan } : undefined),
+    end: (id) => known.set(id, { ended: true, changedAt: NOW, judgeRan }),
+    unjudged: (id, at = NOW) => known.set(id, { ended: true, changedAt: at, judgeRan: noJudgeRan }),
+    set: (id, status) => known.set(id, { ...status, judgeRan }),
   };
 }
 
@@ -185,6 +192,60 @@ describe('Marks', () => {
     expect(await Marks.states(config, [session('review'), session('review', '7c1e', 'h2')], { now: NOW, readRun: reader.readRun })).toEqual([{ kind: 'labelled' }, { kind: 'unmarked' }]);
   });
 
+  it('leaves a mark lapsed with the same count when its run ended before a judge attempt of its group ran', async () => {
+    const config = scope();
+    const reader = runs();
+    const states = async () => Marks.states(config, [session('review')], { now: NOW, readRun: reader.readRun });
+
+    await launch(config, [session('review')], NOW, { reader });
+    reader.unjudged('score-1');
+    expect(await states()).toEqual([{ kind: 'lapsed', lapses: 0 }]);
+    expect(await launch(config, [session('review')], NOW, { run: 'score-2', reader })).toMatchObject({ opened: [{ keys: [session('review')] }] });
+    reader.unjudged('score-2');
+    expect(await states()).toEqual([{ kind: 'lapsed', lapses: 0 }]);
+
+    await launch(config, [session('review')], NOW, { run: 'score-3', reader });
+    reader.end('score-3');
+    expect(await states()).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
+  it('counts a run that ended unjudged as a lapse once 14 days passed since the mark first opened, and a named launch starts them again', async () => {
+    const config = scope();
+    const reader = runs();
+    const states = async (now: string) => Marks.states(config, [session('review')], { now, readRun: reader.readRun });
+
+    await launch(config, [session('review')], NOW, { reader });
+    reader.unjudged('score-1');
+    await launch(config, [session('review')], later(13), { run: 'score-2', reader });
+    reader.unjudged('score-2', later(13.9));
+    expect(await states(later(13.9))).toEqual([{ kind: 'lapsed', lapses: 0 }]);
+
+    await launch(config, [session('review')], later(13.9), { run: 'score-3', reader });
+    reader.unjudged('score-3', later(14));
+    expect(await states(later(14))).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+
+    await launch(config, [session('review')], later(20), { run: 'score-4', demand: 'named', reader });
+    reader.unjudged('score-4', later(21));
+    expect(await states(later(21))).toEqual([{ kind: 'lapsed', lapses: 0 }]);
+  });
+
+  it('counts a run that ended unjudged within the 14 days as a lapse when it is read after them', async () => {
+    const config = scope();
+    const reader = runs();
+    await launch(config, [session('review')], NOW, { reader });
+    reader.unjudged('score-1', later(1));
+
+    expect(await Marks.states(config, [session('review')], { now: later(30), readRun: reader.readRun })).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
+  it('counts a lapse as before when the run that launched the mark is gone', async () => {
+    const config = scope();
+    const reader = runs();
+    await launch(config, [session('review')], NOW, { run: 'r-gone', reader });
+
+    expect(await Marks.states(config, [session('review')], { now: NOW, readRun: reader.readRun })).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
   describe('the daily limit', () => {
     it('counts the session launches of the local day, a group once, and no pass', async () => {
       const config = scope();
@@ -227,6 +288,18 @@ describe('Marks', () => {
 
       expect(await launch(config, [session('review', 'c')], NOW, { reader, group: 'review', dailyLimit: 2 })).toMatchObject({ opened: [], limited: true });
       expect(await Marks.launchesToday(config, NOW)).toBe(2);
+    });
+
+    it('spends no slot on a restart that counted no lapse, so the limit neither refuses nor counts it', async () => {
+      const config = scope();
+      const reader = runs();
+      await launch(config, [session('review', 'a')], NOW, { reader, dailyLimit: 1 });
+      reader.unjudged('score-1');
+
+      expect(await launch(config, [session('review', 'a')], NOW, { run: 'score-2', reader, dailyLimit: 1 })).toMatchObject({ opened: [{ keys: [session('review', 'a')] }], limited: false });
+      expect(await launch(config, [session('review', 'a')], NOW, { run: 'score-2', reader, dailyLimit: 1 })).toMatchObject({ opened: [{ keys: [session('review', 'a')] }], limited: false });
+      expect(await Marks.launchesToday(config, NOW)).toBe(1);
+      expect(await launch(config, [session('review', 'b')], NOW, { run: 'score-3', reader, dailyLimit: 1 })).toMatchObject({ opened: [], limited: true });
     });
 
     it('spends no slot on a group whose scorers are all closed', async () => {

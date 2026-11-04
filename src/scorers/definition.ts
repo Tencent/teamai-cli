@@ -24,6 +24,8 @@ const LabelSchema = z.object({
   description: text('must be a non-empty string'),
 }).strict();
 
+const TOOL_FORMAT = 'must be a tool name: letters, digits, ".", "_" and "-", starting with a letter or digit';
+
 const LABEL_COUNT = 'must list 2 to 20 labels: at least one that passes and one that fails';
 
 /** What may decide a delivered pass before its judge, in the order the decisions apply. */
@@ -55,6 +57,8 @@ const FrontmatterSchema = z.object({
     if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   }).optional(),
   isolation: z.enum(['verified', 'best-effort'], { error: 'must be verified or best-effort' }).optional(),
+  /** The judge tool this scorer prefers, when the driver that leases its judge offers it. Any name of a tool's format. */
+  tool: z.string({ error: TOOL_FORMAT }).regex(TOKEN, TOOL_FORMAT).optional(),
   /** `true`: this scorer judges a member's finished agent sessions too, in the background where the member turns that on. */
   sessions: z.boolean({ error: 'must be true or false' }).optional(),
   /** Runs on what a `deliver: pr` step delivered before the judge (#1247), as a benchmark task's check runs (#1180). */

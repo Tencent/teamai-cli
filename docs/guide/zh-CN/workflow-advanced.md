@@ -916,7 +916,7 @@ workflows:
 
 `allow.network` 筛选步骤显式声明的网络请求。v1 的 setup 仅声明环境变量键，不会从该设置继承网络限制。如需保证 setup 和步骤都无法联网，请使用能约束每个进程的驱动和运行环境。
 
-`env/secrets.yaml` 中声明的每个键的值（包括本机像 CI 任务那样从环境变量中获取的值），以及名称看起来像 secret 的环境变量的值，在运行文件、运行记录、每个 `teamai workflow` 输出以及本地驱动为每次 attempt 保留的 `result.json` 中都会显示为 `<REDACTED:KEY>`。`start` 拒绝包含这些值的输入，返回 `invalid_inputs`，只指出键名，不显示值。要遮蔽名称看起来不像 secret 的值（例如 `DATABASE_URL`），请在 `env/secrets.yaml` 中声明它的键。
+`env/secrets.yaml` 中声明的每个键的值（包括本机像 CI 任务那样从环境变量中获取的值），以及名称看起来像 secret 的环境变量的值，在运行文件、运行记录、每个 `teamai workflow` 输出以及本地驱动和 skill 驱动为每次 attempt 保留的 `result.json` 中都会显示为 `<REDACTED:KEY>`。`start` 拒绝包含这些值的输入，返回 `invalid_inputs`，只指出键名，不显示值。要遮蔽名称看起来不像 secret 的值（例如 `DATABASE_URL`），请在 `env/secrets.yaml` 中声明它的键。
 
 `local` 以外的驱动在每次 `next` 的 `driver.can` 中声明它能做什么：
 
@@ -1104,7 +1104,7 @@ $ teamai workflow resume redf22a69e4ae6652 --no-auto-approve         # 从现在
 | `--auto-approve` | 保留；`--no-auto-approve` 关闭它 | 不带过去 |
 | `--sandbox` | 保留 | 不带过去；列表和 `busy` 都会指出 `--sandbox`，`--next` 跳过这个运行 |
 
-`retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问；重新打开已结束的运行时，其 `$TEAMAI_RUN_DIR` 已被删除，所以其中的 `workspace: { confined }` 步骤还会重置它 `needs` 中的步骤以及这些步骤所需的步骤，由它们写入其目录），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
+`retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问；重新打开已结束的运行时，其 `$TEAMAI_RUN_DIR` 已被删除，所以其中的 `workspace: { confined }` 步骤还会重置它 `needs` 中的步骤以及这些步骤所需的步骤，由它们写入其目录；其中在模板中（而不只是在 `if` 中）读取另一步骤输出、且该输出是该目录内路径的步骤，还会重置那个步骤；若那个步骤位于被重试步骤外层的工作流中，包含被重试步骤的 `workflow` 步骤也会在它之后重新运行；`workflow retry` 会打印它一并重新运行的其他步骤），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
 
 历史保留在 passes 和 archive 中，因此 `length(steps.x.passes)` 也统计失败尝试。重试循环所有者会重置其迭代数；重试范围内的其他步骤则保留所有者的计数。重试保留顶层工作流的 round，耗尽最后一轮后重试仍可能再次 `loop_exhausted`。
 
@@ -1293,7 +1293,7 @@ $ teamai workflow report r245b… --json '{"attempt":"afd63…","revision":2,"ou
 {"data":{"accepted":true,"revision":3,"step":{"id":"judge","status":"succeeded","outcome":"success"}}}
 ```
 
-[限定在一个目录里](workflow.md#限定在一个目录里的提示步骤)的步骤只租给 `can.confined` 中有不低于其级别的提供的驱动。它的租约带 `confined`：`dir`、`level`、`tools`（达到该级别的各提供中的工具，按顺序排列，`prefer` 在最前），以及 `confined.json` 指定了 schema 时的 `schema`。这些工具在本机都解析不了该步骤的模型时，步骤等待，`wait.held[].missing` 列出 `model`；没有提供达到其级别时列出 `confined`。
+[限定在一个目录里](workflow.md#限定在一个目录里的提示步骤)的步骤只租给 `can.confined` 中有不低于其级别的提供的驱动。它的租约带 `confined`：`dir`、`level`、`tools`（达到该级别的各提供中的工具，按顺序排列，`prefer` 列出的工具按其顺序在最前），以及 `confined.json` 指定了 schema 时的 `schema`。这些工具在本机都解析不了该步骤的模型时，步骤等待，`wait.held[].missing` 列出 `model`；没有提供达到其级别时列出 `confined`。
 
 驱动在 `tools` 中第一个能解析 `lease.model` 的工具上运行 `lease.prompt`，以 `dir` 作为工具的工作目录和唯一可读的根目录，不带任何团队 env，也不保留会话。它把回答作为 `outputs` 报告，TeamAI 按步骤的 `output` 检查它，并按这次运行的测量报告 `confined`：`tool`、`isolation`、`access`，以及工具报告了时的 `model`、`effort` 和 `usage`。找不到工具运行的驱动报告 `outcome: "released"`。`src/workflow/conformance/confined.ts` 中的 `confinedConformanceScenarios` 检查这些租用规则。
 

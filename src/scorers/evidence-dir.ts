@@ -155,15 +155,20 @@ async function passEvidence(attempt: ScoreAttempt, run: RunState, subject: RunSu
   return built.ok ? built : refused(built.code, `The evidence of pass ${subject.pass} of step ${subject.step} in run ${run.id} is empty: the place it ran in kept none of its work.`);
 }
 
-/** The records a judge reads beside the evidence: the isolation its scorers need, the tool to prefer, and the answer schema. */
-async function judgeRecords(attempt: ScoreAttempt, group: GroupRecord, rubrics: Rubrics, prefer: string | undefined): Promise<EvidenceOutput | Refusal> {
+/**
+ * The records a judge reads beside the evidence: the isolation its scorers need, the tools to prefer, the one its scorers
+ * name before `worked`, the one the judged work ran in, and the answer schema.
+ */
+async function judgeRecords(attempt: ScoreAttempt, group: GroupRecord, rubrics: Rubrics, worked: string | undefined): Promise<EvidenceOutput | Refusal> {
   const scoring = await scopeScoring(attempt.config);
 
   if (!scoring.ok) return refused('scoring_settings_invalid', scoring.reason);
   const settings = group.scorers.map(({ name, pin }, index) => ({ source: scorerIsolationSource(name, pin.relativePath), value: rubrics[index]?.isolation }));
   const confined: ConfinedFile = { level: requiredIsolation([...scoring.isolation, ...settings]).level, schema: REPLY_SCHEMA };
 
-  if (prefer !== undefined) confined.prefer = prefer;
+  const [first, ...more] = [...new Set([rubrics[0].tool, worked].flatMap((tool) => tool ?? []))];
+
+  if (first !== undefined) confined.prefer = more.length > 0 ? [first, ...more] : first;
   await writeRecords(attempt.dir, group, { confined, reply: replySchema(rubrics), answer: answerSchema(rubrics) });
 
   return { dir: attempt.dir, rubric: rubricPrompt(rubrics), schema: path.join(attempt.dir, ANSWER_SCHEMA), delivers: group.delivers };

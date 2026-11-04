@@ -10,3 +10,25 @@ export const SCORE_WORKFLOW = 'teamai-score';
 export const FINISHED_WORKFLOW = 'teamai-finished-sessions';
 
 export const JUDGING_WORKFLOWS: readonly string[] = [SCORE_WORKFLOW, FINISHED_WORKFLOW];
+
+/** The steps of each plan group of teamai-score, its `score` for_each, that teamai reads by id, and a team file keeps. */
+export type ScoreItemStep = 'evidence' | 'judge' | 'label' | 'write' | 'publish' | 'settle';
+
+/** `step` of plan group `index` in a teamai-score run: `score[<index>].<step>`. */
+function stepOf(index: number, step: ScoreItemStep): string {
+  return `score[${index}].${step}`;
+}
+
+/**
+ * The plan group a run's step `id` is `step` of: `score[<index>]`, under the scope of the step that runs teamai-score
+ * when another workflow runs it, such as `share-session.score.score[0]`; undefined for any other step.
+ */
+function groupOf(id: string, step: ScoreItemStep): string | undefined {
+  const suffix = `.${step}`;
+  const group = id.endsWith(suffix) ? id.slice(0, -suffix.length) : undefined;
+
+  return group !== undefined && /(?:^|\.)score\[\d+\]$/u.test(group) ? group : undefined;
+}
+
+/** The ids of the steps of a teamai-score instance's plan groups. */
+export const ScoreItem = { stepOf, groupOf } as const;

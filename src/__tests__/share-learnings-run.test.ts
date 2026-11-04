@@ -45,7 +45,7 @@ async function shareLearnings(inputs: Record<string, unknown>, learning: Record<
   roots.push(root);
   const config: LocalConfig = { repo: { localPath: path.join(root, 'repo'), remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
   fs.mkdirSync(config.repo.localPath, { recursive: true });
-  const started = await startRun(config, workflow, { session: SESSION, source: 'claude-code', publish: false, scorers: [], judge: 'here', ...inputs }, { secrets: {} });
+  const started = await startRun(config, workflow, { session: SESSION, source: 'claude-code', publish: false, scorers: [], ...inputs }, { secrets: {} });
   if ('error' in started) throw new Error(started.error.message);
   const run = String(started.data.run);
   const ran: string[] = [];
@@ -107,17 +107,15 @@ describe('a teamai-share-learnings run', () => {
     expect(shared.outcome).toBe('succeeded');
   });
 
-  it('runs teamai-score on the session with every scorer the person named, whatever judge says', async () => {
-    for (const judge of ['here', 'driver']) {
-      const shared = await shareLearnings({ scorers: ['review-quality', 'secure-review'], judge }, SKIP);
+  it('runs teamai-score on the session with every scorer the person named', async () => {
+    const shared = await shareLearnings({ scorers: ['review-quality', 'secure-review'] }, SKIP);
 
-      expect(shared.ran.filter((ran) => ran.startsWith('share-session.score'))).toEqual([
-        'share-session.score.plan: teamai score plan --subject "$SUBJECT" --scorers "$SCORERS" --batch="$BATCH" --demand "$DEMAND"',
-      ]);
-      expect(shared.envs.get('share-session.score.plan')).toMatchObject({ SUBJECT: `session:claude-code:${SESSION}`, SCORERS: expect.stringMatching(/review-quality.*secure-review/), BATCH: 'false', DEMAND: 'named' });
-      expect(shared.prompts.join('\n')).not.toContain('judge work');
-      expect(shared.outcome).toBe('succeeded');
-    }
+    expect(shared.ran.filter((ran) => ran.startsWith('share-session.score'))).toEqual([
+      'share-session.score.plan: teamai score plan --subject "$SUBJECT" --scorers "$SCORERS" --batch="$BATCH" --demand "$DEMAND"',
+    ]);
+    expect(shared.envs.get('share-session.score.plan')).toMatchObject({ SUBJECT: `session:claude-code:${SESSION}`, SCORERS: expect.stringMatching(/review-quality.*secure-review/), BATCH: 'false', DEMAND: 'named' });
+    expect(shared.prompts.join('\n')).not.toContain('judge work');
+    expect(shared.outcome).toBe('succeeded');
   });
 
   it('passes teamai-score the demand teamai-share-session was started with', async () => {
@@ -128,11 +126,9 @@ describe('a teamai-share-learnings run', () => {
   });
 
   it('runs no judge when started with no scorers', async () => {
-    for (const judge of ['here', 'driver']) {
-      const shared = await shareLearnings({ scorers: [], judge }, SKIP);
+    const shared = await shareLearnings({ scorers: [] }, SKIP);
 
-      expect(shared.ran.filter((ran) => ran.startsWith('share-session.score'))).toEqual([]);
-      expect(shared.outcome).toBe('succeeded');
-    }
+    expect(shared.ran.filter((ran) => ran.startsWith('share-session.score'))).toEqual([]);
+    expect(shared.outcome).toBe('succeeded');
   });
 });

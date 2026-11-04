@@ -7,7 +7,7 @@ import { ACCESS_LEVELS, CONFINED_LEVELS, ConfinedUsageSchema, CostSchema } from 
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema, type PrUrl } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
-import type { RunState, StepLease, WorkflowFailure } from './types.js';
+import type { LeasedConfined, RunState, StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
 /** The tokens an attempt spent, as its driver reports them. */
@@ -49,10 +49,14 @@ export type SessionContinuation = z.infer<typeof SessionContinuationSchema>;
 
 const LeaseSessionSchema = SessionRefSchema.extend({ earlier: z.array(SessionRefSchema).optional() });
 
+/** What a confined lease's report is checked against: the tools it named and the level it asked for, at least. */
+const LeasedConfinedSchema = z.object({ level: z.enum(CONFINED_LEVELS), tools: z.array(z.string().min(1)).min(1) }) satisfies z.ZodType<LeasedConfined>;
+
 const LeaseSchema: z.ZodType<StepLease> = z.object({
   attempt: z.string(), revision: z.number(), driver: DriverSchema, session: LeaseSessionSchema.optional(),
   unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(), leasedAt: z.string().optional(), runMode: RunModeSchema.optional(),
   limits: TurnLimitsSchema.optional(),
+  confined: LeasedConfinedSchema.optional(),
 });
 
 export const ChangesSchema = z.object({
@@ -185,6 +189,8 @@ export const ArchivedPassSchema = StepPassSchema.extend({
   step: z.string(),
   /** The step whose new pass archived this one, and that step's pass when it did. */
   within: z.object({ step: z.string(), pass: z.number().int() }).optional(),
+  /** The item of the fan-out instance the pass belongs to, which the instance's id alone does not say once it is gone. */
+  item: z.unknown().optional(),
 });
 
 export type ArchivedPass = z.infer<typeof ArchivedPassSchema>;
@@ -486,6 +492,11 @@ export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running
   }
 
   return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...stoppedLease(state), ...results && { results }, failure });
+}
+
+/** Whether `state` was ever leased: it holds an attempt, settled with one, or a pass of it did. */
+export function wasLeased(state: StepState): boolean {
+  return ('attempt' in state && state.attempt !== undefined) || (state.passes ?? []).some((pass) => pass.attempt !== undefined);
 }
 
 /** The current pass of a settled step, as `passes` keeps it once a loop runs the step again; undefined while it has not settled. */

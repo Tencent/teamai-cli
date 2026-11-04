@@ -8,7 +8,7 @@ import type { ConfinedTool } from '../tool-launch/tools.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { isAgentToolId } from '../tools.js';
 import { JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
-import { writeJsonAtomic } from '../utils/fs.js';
+import { AttemptResult } from './attempt-result.js';
 import type { ReportInput } from './engine.js';
 import type { ConfinedLease, LeaseWire } from './lease-wire.js';
 import { MAX_TIMER_DELAY } from './shell-command.js';
@@ -33,6 +33,8 @@ export interface ConfinedStepInput {
   run: RunId;
   lease: ConfinedStepLease;
   signal?: AbortSignal;
+  /** What the run masks: the output kept of a tool that failed is masked with it before it is written. */
+  secrets: Record<string, string>;
   /** Where the tools' executables are looked up: PATH unless given. */
   resolveTool?: (executable: string) => string | null;
 }
@@ -114,7 +116,7 @@ function timeoutOf(lease: ConfinedStepLease): number {
  * `output`. A failed run keeps the tool's output in the attempt's result file, which the message names.
  */
 export async function runConfinedStep(input: ConfinedStepInput): Promise<ConfinedStepEnd> {
-  const { config, run, lease, signal, resolveTool } = input;
+  const { config, run, lease, signal, resolveTool, secrets } = input;
   const found = await firstResolving(input);
 
   if ('reasons' in found) {
@@ -133,16 +135,19 @@ export async function runConfinedStep(input: ConfinedStepInput): Promise<Confine
 
   const durationMs = Date.now() - startedAt;
 
-  if (!result.ok) return { kind: 'ran', report: await failedReport({ file: attemptResultPath(config, run, lease.attempt), tool: found.tool, durationMs, result }) };
+  if (!result.ok) return { kind: 'ran', report: await failedReport({ file: attemptResultPath(config, run, lease.attempt), tool: found.tool, durationMs, result, secrets }) };
 
   return { kind: 'ran', report: ranReport({ run: result.run, reply: result.reply, durationMs }) };
 }
 
-/** The report of a run that failed. The tool's output, when it gave any, is kept in `file`, which the message names. */
-async function failedReport(input: { file: string; tool: ConfinedTool; durationMs: number; result: Extract<ConfinedResult, { ok: false }> }): Promise<ConfinedStepReport> {
-  const { file, tool, durationMs, result } = input;
+/**
+ * The report of a run that failed. The tool's output, when it gave any, is kept in `file`, which the message names, with
+ * `secrets` masked: a tool's error can repeat a credential it was given.
+ */
+async function failedReport(input: { file: string; tool: ConfinedTool; durationMs: number; result: Extract<ConfinedResult, { ok: false }>; secrets: Record<string, string> }): Promise<ConfinedStepReport> {
+  const { file, tool, durationMs, result, secrets } = input;
 
-  if (result.raw !== undefined) await writeJsonAtomic(file, { raw: result.raw });
+  if (result.raw !== undefined) await AttemptResult.write(file, { raw: result.raw }, secrets);
   const saved = result.raw === undefined ? '' : ` The tool's output is in ${file}.`;
   const failure = { code: result.code, message: `${result.message}${saved}` };
 

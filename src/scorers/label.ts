@@ -53,7 +53,8 @@ export const ModelJudgeSchema = z.object({
   batched: z.literal(true).optional(),
 });
 
-const JudgeSchema = z.discriminatedUnion('kind', [ModelJudgeSchema, z.object({ kind: z.literal('human') })]);
+/** `stage`: a check, CI or protected-path stage decided a workflow label before any judge ran; its `decidedBy` says which. */
+const JudgeSchema = z.discriminatedUnion('kind', [ModelJudgeSchema, z.object({ kind: z.literal('human') }), z.object({ kind: z.literal('stage') })]);
 
 const LabelFields = {
   scorer: z.string().min(1),
@@ -94,12 +95,26 @@ export const JUDGE_FAILURES = ['judge_failed', 'lease_expired', 'evidence_empty'
 
 export type JudgeFailureCode = (typeof JUDGE_FAILURES)[number];
 
-/** Whether a check, CI or protected-path stage decided a label before any judge ran. A label from before #1247 has none: a judge decided it. */
+/**
+ * Whether a check, CI or protected-path stage decided a label before any judge ran. A label from before #1247 has none: a
+ * judge decided it. A label a stage decided records judge kind `stage`, or, written before teamai recorded that, kind
+ * `model` naming the judge that would have run: both carry the stage in `decidedBy`.
+ */
 export function isStageDecider(by: Decider | undefined): boolean {
   return by !== undefined && by !== 'judge';
 }
 
-/** Unknown keys are dropped, so a label a newer teamai wrote still reads here. */
+/** Whether a label of judge kind `stage` names the stage that decided it; a session label, which no stage decides, never does. */
+function namesItsStage(label: { judge: { kind: string }; decidedBy?: Decider | undefined }): boolean {
+  return label.judge.kind !== 'stage' || isStageDecider(label.decidedBy);
+}
+
+const STAGE_NAMED = { message: 'A label of judge kind stage names the check, ci or protected stage that decided it in decidedBy.', path: ['decidedBy'] };
+
+/**
+ * Unknown keys are dropped, so a label a newer teamai wrote still reads here. Judge kind `stage` needs the stage that
+ * decided it; a stage `decidedBy` under a model judge stays valid, as earlier releases wrote it.
+ */
 export const ScoreLabelSchema = z.discriminatedUnion('source', [
   z.object({
     ...LabelFields,
@@ -113,8 +128,8 @@ export const ScoreLabelSchema = z.discriminatedUnion('source', [
     decidedBy: z.enum(DECIDERS).optional(),
     /** `sha256:<hex>` of the evidence the label was decided on, so a rescore of unchanged evidence shows the same hash. */
     evidenceHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
-  }),
-  SessionLabelSchema,
+  }).refine(namesItsStage, STAGE_NAMED),
+  SessionLabelSchema.refine(namesItsStage, STAGE_NAMED),
 ]);
 
 export type ScoreLabel = z.infer<typeof ScoreLabelSchema>;
@@ -152,12 +167,15 @@ export function parseScoreLabels(text: string): ScoreLabel[] {
 /** A judge as labels and cohorts tell judges apart: a model judge by its tool and the model it recorded. */
 export type JudgeCohort =
   | { kind: 'human' }
+  | { kind: 'stage' }
   | { kind: 'model'; tool: string; model?: { id: string; isReported: boolean; alias?: string } };
 
-export function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
+function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
   switch (judge.kind) {
     case 'human':
       return { kind: 'human' };
+    case 'stage':
+      return { kind: 'stage' };
     case 'model': {
       const id = judge.model?.reported ?? judge.model?.requested;
 
@@ -172,17 +190,25 @@ export function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
   }
 }
 
+/** What a label's judge and key read of it: the scorer, rubric, subject and judge, and the stage that decided it, if one did. */
+type KeyedLabel = Pick<ScoreLabel, 'scorer' | 'rubric' | 'subject' | 'judge'> & { decidedBy?: Decider | undefined };
+
+/** The judge `label` counts under: `stage` when a stage decided it, whichever judge kind it recorded. */
+export function labelJudge(label: Pick<KeyedLabel, 'judge' | 'decidedBy'>): JudgeCohort {
+  return isStageDecider(label.decidedBy) ? { kind: 'stage' } : judgeCohort(label.judge);
+}
+
 /**
  * The logical key: a newer label with the same key replaces an older one. The judge is its cohort, so a model rescore
  * never replaces a hand label, and the label of one model judge never replaces another's. An outbox file named by an
  * older key is still read by its content.
  */
-function labelKey(label: Pick<ScoreLabel, 'scorer' | 'rubric' | 'subject' | 'judge'>): string {
-  return canonicalJson({ scorer: label.scorer, sourceHash: label.rubric.sourceHash, subject: label.subject, judge: judgeCohort(label.judge) });
+function labelKey(label: KeyedLabel): string {
+  return canonicalJson({ scorer: label.scorer, sourceHash: label.rubric.sourceHash, subject: label.subject, judge: labelJudge(label) });
 }
 
 /** sha256 of the canonical logical key: the name of the label's outbox file. */
-export function labelId(label: Pick<ScoreLabel, 'scorer' | 'rubric' | 'subject' | 'judge'>): string {
+export function labelId(label: KeyedLabel): string {
   return createHash('sha256').update(labelKey(label)).digest('hex');
 }
 

@@ -133,7 +133,7 @@ The command gets these variables on top of its usual environment, so a value suc
 
 A command runs in `sh` on Linux and macOS, and in Git Bash on Windows, so `"$NAME"` works on both. Without Git for Windows, teamai warns and runs it in cmd.exe, where `"$NAME"` stays literal.
 
-Every process a step of the run starts, in a workflow it runs too, gets `TEAMAI_RUN_DIR`: one directory for the whole run, under the TeamAI data directory and outside the checkout. It exists while the run runs and is removed when the run ends, however it ends, so steps can hand each other files there. A retry that reopens the run makes it again, empty, and a `workspace: { confined }` step it runs again takes the steps it `needs`, and the steps those need, with it, so they write its directory again.
+Every process a step of the run starts, in a workflow it runs too, gets `TEAMAI_RUN_DIR`: one directory for the whole run, under the TeamAI data directory and outside the checkout. It exists while the run runs and is removed when the run ends, however it ends, so steps can hand each other files there. A retry that reopens the run makes it again, empty, and a `workspace: { confined }` step it runs again takes the steps it `needs`, and the steps those need, with it, so they write its directory again. A step it runs again that reads, in a template and not only in `if`, another step's output holding a path inside that directory takes that step with it too. `workflow retry` prints every other step it runs again.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -507,10 +507,10 @@ teamai workflow start judge-change --driver local
 ```
 
 - `<dir>` may be a template that reads inputs, `item` and the outputs of the steps the step needs. It is rendered when the step is leased, and a relative one is under `$TEAMAI_RUN_DIR`. A directory outside it, a symlink, or one without a readable `confined.json` fails the step with `confined_invalid`, which says what to fix.
-- `confined.json` is `{ "level": "verified" | "best-effort", "prefer": "<tool>", "schema": "<file>" }`. `verified` runs only on a tool version whose confined launch TeamAI checked, such as Claude Code 2.1.308, Codex 0.163.0 or OpenCode 2.1.2, and `best-effort` on any tool TeamAI launches confined, such as Cursor. `prefer` is tried first. `schema` is a JSON Schema file in the directory that the reply follows. The step that writes the evidence sets the level: the workflow file cannot set or lower it.
+- `confined.json` is `{ "level": "verified" | "best-effort", "prefer": "<tool>" | ["<tool>", …], "schema": "<file>" }`. `verified` runs only on a tool version whose confined launch TeamAI checked, such as Claude Code 2.1.308, Codex 0.163.0 or OpenCode 2.1.2, and `best-effort` on any tool TeamAI launches confined, such as Cursor. `prefer` is tried first; a list is tried in its order. `schema` is a JSON Schema file in the directory that the reply follows. The step that writes the evidence sets the level: the workflow file cannot set or lower it.
 - The step runs one prompt, once. Pull refuses `workspace: { confined }` on a command or `workflow` step, and beside `for_each`, `scorers`, `requires.env`, `agent`, `tool`, `session`, `role`, `interactive` or `deliver`. It may set `model`: a step whose model no tool that reaches its level resolves here stays pending.
-- The local driver runs it. When only such steps are left and no tool here can run them, it stops with `confined_pending`, which names what is missing; make that tool available, then run `teamai workflow resume`. In a coding session, the skill driver runs it in the background on the session's tool when that tool reaches `verified` here, else in a fresh subagent that reads only the directory, at `best-effort`. With `--no-judge`, or on a host that starts no child agent, the step waits for another driver.
-- The step records `confined`: the tool, the model and effort the tool reported, the isolation TeamAI measured, the access the tool had, and its usage.
+- The local driver runs it. When only such steps are left and no tool here can run them, it stops with `confined_pending`, which names what is missing; make that tool available, then run `teamai workflow resume`. In a coding session, the skill driver runs it in the background on the session's tool when that tool reaches `verified` here, else in a fresh subagent that reads only the directory, at `best-effort`. On a host that starts no child agent, it runs the step in the background on the session's tool at `best-effort` when that tool is on PATH. With `--no-judge`, or on such a host without it, the step waits for another driver.
+- The step records `confined`: the tool, the model and effort the tool reported, the isolation TeamAI measured, the access the tool had, and its usage. A success with no record, or a record whose tool the lease did not offer or whose isolation is below the step's level, fails the step with `confined_report_mismatch`.
 
 ## Deliver a PR
 
@@ -1058,7 +1058,7 @@ With `--hitl person`, the agent asks the person. With `--hitl recommend`, the ag
 
 ### Judging
 
-When a step lists [scorers](scorers.md) and the confined judge of the session's tool is installed on this machine, TeamAI judges each scored pass in the background, and the session tells the person the labels. When this machine has no verified judge of the session's tool, such as Cursor's, the judge step of each pass's teamai-score run comes to the session, which judges it in a fresh subagent at `best-effort` isolation. Work a scorer requires `verified` for stays open for another driver, and so does all of it when the session's host starts no child agent. To leave the scored steps unjudged on this machine, the person picks the start option without judging (`--no-judge`). The orchestrating agent never judges a pass in its own context.
+When a step lists [scorers](scorers.md) and the confined judge of the session's tool is installed on this machine, TeamAI judges each scored pass in the background, and the session tells the person the labels. When this machine has no verified judge of the session's tool, such as Cursor's, the judge step of each pass's teamai-score run comes to the session, which judges it in a fresh subagent at `best-effort` isolation. Work a scorer requires `verified` for stays open for another driver. When the session's host starts no child agent, TeamAI judges in the background on the session's tool at `best-effort` when that tool is on PATH, and otherwise leaves all of it open. To leave the scored steps unjudged on this machine, the person picks the start option without judging (`--no-judge`). The orchestrating agent never judges a pass in its own context.
 
 ### Limits
 
@@ -1105,7 +1105,7 @@ For one name, the first runnable version wins: the project's team file, then the
 
 The exception is a name that two namespaces you receive both define: it has no runnable version, and a start of it is refused with `workflow_namespace_conflict`, naming both files.
 
-`teamai-share-learnings` runs `teamai-share-session` with its six inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same six with the same types, even the ones it ignores:
+`teamai-share-learnings` runs `teamai-share-session` with its five inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same five with the same types, even the ones it ignores:
 
 ```yaml
 schemaVersion: v1alpha1
@@ -1113,7 +1113,7 @@ name: teamai-share-session
 alias: wrap-up
 description: Publish this session our way.
 invoke: ask
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, demand: auto | named }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], demand: auto | named }
 steps:
   - id: archive
     command: ./scripts/archive-session.sh "$SESSION"
@@ -1129,9 +1129,9 @@ With other inputs, such as only `session` and `source`, or one of another type, 
 ⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "teamai-share-session" declares as another type than teamai's default teamai-share-session
 ```
 
-An enum's values may come in any order: `judge: driver | here` is the same type as `here | driver`.
+An enum's values may come in any order: `demand: named | auto` is the same type as `auto | named`.
 
-Keep the six inputs, or replace `teamai-share-learnings` too.
+Keep the five inputs, or replace `teamai-share-learnings` too.
 
 A team workflow that runs `teamai-share-session` as a step passes `demand`: `named` when a person or an agent asks for the session, so every scorer judges it, `auto` from `teamai-finished-sessions`, which samples it. Pull refuses one that does not:
 
@@ -1147,7 +1147,7 @@ A team workflow that runs `teamai-share-session` as a step passes `demand`: `nam
 
 ```text
 teamai-share-learnings
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string] }
 
 learning         interactive: the session's agent runs `teamai skill get share` with the person
                  → { learnings: [{ title, file, namespace }, …] }, [] when nothing is worth sharing
@@ -1157,7 +1157,7 @@ share-session    runs teamai-share-session with the same inputs and demand: name
   publish        on publish: true only
                  → teamai session push --scrub --session <session> --source <source>
   score          when scorers is not empty → runs teamai-score on the session, for at most 30 minutes
-                 (timeout: 30m, continue_on_failure: true); judge is accepted and ignored
+                 (timeout: 30m, continue_on_failure: true)
 ```
 
 `learning` and `share-session` do not wait for each other. `scorers: []` runs no judge. Each `teamai contribute` records its learning as an outcome of the session, so a session that shared three learnings shows all three in the dashboard. The files are `workflows/teamai-share-learnings.yaml` and `workflows/teamai-share-session.yaml` in the installed package.
@@ -1170,7 +1170,6 @@ The agent runs describe, which proposes a `value` and a `why` for each input, fo
 | `source` | `"claude-code"` | This session's tool, as teamai session list names it. |
 | `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing. |
 | `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
-| `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
 | `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as teamai-finished-sessions does. |
 
 An agent that starts the run with `--confirmed` can keep `publish: true` for you, and teamai cannot check that you chose it.
@@ -1183,17 +1182,14 @@ The proposal follows the team's [publish policy](sharing.md#sessions) and [scori
 | | `off`; or `auto`, which publishes the session once it has been idle 6 hours anyway | `false` |
 | `scorers` | attended scoring policy `ask` | the scorers with `sessions: true` that sample this session, the same ones `teamai-finished-sessions` picks under `auto` |
 | | `off` or `auto` | `[]` |
-| | `judge: driver`, and a scorer that requires `verified` isolation | that scorer is left out, and `why` names the file that asks for it |
 | `publish`, `scorers` | a tool teamai reads no sessions from | `false`, `[]` |
-| `judge` | a judge tool teamai runs is installed (claude, codex, opencode, codebuddy) | `here` |
-| | none is, such as on a Cursor-only machine | `driver` |
 | `session`, `source` | describe finds no agent session | no value: the person gives them |
 
 The person keeps, changes or empties each value before the start. Some runs:
 
 ```text
 # A long debugging session ends: the friction reminder fires. Claude Code, default policies
-agent   proposes teamai-share-learnings {"session":"7c1e…","source":"claude-code","publish":true,"scorers":[],"judge":"here"}
+agent   proposes teamai-share-learnings {"session":"7c1e…","source":"claude-code","publish":true,"scorers":[]}
 person  go ahead
 agent   learning   → two learnings the person picked:
                      "Delay the payments readiness probe until the cache warms"   (namespace payments)
@@ -1209,7 +1205,7 @@ agent   starts teamai-share-session {…,"publish":true,"scorers":[]}  → publi
 
 # A Cursor-only machine, with a scorer sampling did not pick
 person  score this session with style
-agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[],"judge":"driver"}
+agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[]}
 person  add style
 agent   starts with "scorers":["style"] → score: a fresh subagent judges style, best-effort
 
@@ -1254,8 +1250,8 @@ describe still proposes values for the inputs that keep their name and type from
 
 | Your `workflows/teamai-share-learnings.yaml` | describe proposes |
 |---|---|
-| The same five inputs, other steps or prompts | all five |
-| Adds `ticket: string` | the five; the person gives `ticket` |
+| The same four inputs, other steps or prompts | all four |
+| Adds `ticket: string` | the four; the person gives `ticket` |
 | Keeps only `session` and `source` | those two |
 | Renames `session` to `sessionId`, or makes `scorers` a `string` | all but that one |
 | Sets `invoke: deny` | nothing: the friction reminder goes back to `teamai skill get share` |
@@ -1263,7 +1259,7 @@ describe still proposes values for the inputs that keep their name and type from
 Comment on the ticket the session worked on, once per shared learning: keep the default, add an input,
 
 ```yaml
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, ticket: string }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], ticket: string }
 ```
 
 and add a step after `contribute`:

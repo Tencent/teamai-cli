@@ -2193,13 +2193,13 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     run: async () => {
       const made = await harness({ review: REVIEW }, { scorers: SCORERS });
       expect(await made.call({ kind: 'describe', name: 'review' }, { tool: 'copilot' })).toMatchObject({ data: { describe: { judging: { kind: 'session' }, ask: { kind: 'ask', question: {
-        text: '- review is judged by this session in a subagent once the run is done, at best-effort isolation. The coding session\'s tool, copilot, has no confined judge teamai runs.\nHow should it run?',
+        text: '- review is judged by this session in a subagent once the run is done, at best-effort isolation. This session\'s driver offers no verified judge of copilot.\nHow should it run?',
         options: [{ label: 'Recommended: with judging', start: 'teamai workflow start review --driver skill' }, { label: 'Same, but without judging', start: 'teamai workflow start review --driver skill --no-judge' }],
       } } } } });
       // A scorer that asks for verified isolation leaves its work to another driver.
       const verified = await harness({ review: REVIEW }, { scorers: { 'review-quality': SCORERS['review-quality'].replace('samplingRate: 100', 'samplingRate: 100\nisolation: verified') } });
       expect(await verified.call({ kind: 'describe', name: 'review' }, { tool: 'copilot' })).toMatchObject({ data: { describe: { judging: { kind: 'elsewhere' }, ask: {
-        kind: 'start', say: '- review is not judged on this machine. The coding session\'s tool, copilot, has no confined judge teamai runs, and review-quality asks for verified isolation.',
+        kind: 'start', say: '- review is not judged on this machine. review-quality needs a verified judge, which this session\'s driver does not offer; its runs stay open for a driver that does.',
         start: 'teamai workflow start review --driver skill',
       } } } });
       // A project whose teamai data is still inside its repository, where scoring is off.
@@ -2365,7 +2365,7 @@ steps:
         text: '- claude runs judge here, confined to the directory it answers from.\nHow should it run?',
       } } } } });
       expect(await made.call({ kind: 'describe', name: 'judged' }, { tool: 'copilot' })).toMatchObject({ data: { describe: { judging: { kind: 'session' }, ask: { kind: 'ask', question: {
-        text: '- A fresh subagent of this session runs judge, reading only its directory, at best-effort isolation, unless it asks for verified isolation, which another driver runs. The coding session\'s tool, copilot, has no confined judge teamai runs.\nHow should it run?',
+        text: '- A fresh subagent of this session runs judge, reading only its directory, at best-effort isolation, unless it asks for verified isolation, which another driver runs. This session\'s driver offers no verified judge of copilot.\nHow should it run?',
       } } } } });
       return made.rows;
     },

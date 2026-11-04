@@ -9,7 +9,7 @@ import { wilson } from '../benchmark/table.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import type { FailureLinks } from './failure-links.js';
-import { DECIDERS, isStageDecider, judgeCohort, labelId, type Decider, type JudgeCohort, type RunSubject, type ScoreLabel, type SessionSubject } from './label.js';
+import { DECIDERS, isStageDecider, labelId, labelJudge, type Decider, type JudgeCohort, type RunSubject, type ScoreLabel, type SessionSubject } from './label.js';
 
 /** A label as the view reads it: who published it, and what the judged work ran as when that was recorded. */
 export type ViewedLabel = {
@@ -325,12 +325,12 @@ function isDecidedByStage(label: ScoreLabel): boolean {
 }
 
 /**
- * Whether `cohort` is the measurement of the model judge a stage label names (#1247): the same scorer, rubric, source,
- * run mode and judge tool. The label names the lease's judge, whose model it never reported.
+ * Whether `cohort` is a model judge's measurement of what a stage label (#1247) measures: the same scorer, rubric, source
+ * and run mode. A stage decided before any judge ran, so whichever tool would have judged does not matter.
  */
 function judgesLike(cohort: CohortIdentity, stage: CohortIdentity): boolean {
   return cohort.scorer === stage.scorer && cohort.rubric.sourceHash === stage.rubric.sourceHash && cohort.source === stage.source
-    && cohort.runMode === stage.runMode && cohort.judge.kind === 'model' && stage.judge.kind === 'model' && cohort.judge.tool === stage.judge.tool;
+    && cohort.runMode === stage.runMode && cohort.judge.kind === 'model';
 }
 
 function cohortOf(label: ScoreLabel): CohortIdentity {
@@ -339,7 +339,7 @@ function cohortOf(label: ScoreLabel): CohortIdentity {
     rubric: { sourceHash: label.rubric.sourceHash },
     source: label.source,
     runMode: label.runMode ?? null,
-    judge: judgeCohort(label.judge),
+    judge: labelJudge(label),
   };
 
   return { id: createHash('sha256').update(canonicalJson(identity)).digest('hex').slice(0, 16), ...identity };
@@ -649,8 +649,8 @@ function agreement({ labels, scorer, sourceHash, source, inWindow, rubricLabels 
   for (const entry of ofScorer) {
     const { label } = entry;
 
-    if (label.judge.kind !== 'model' || label.rubric.sourceHash !== sourceHash || !inWindow(entry)) continue;
-    const judge = judgeCohort(label.judge);
+    if (label.judge.kind !== 'model' || isDecidedByStage(label) || label.rubric.sourceHash !== sourceHash || !inWindow(entry)) continue;
+    const judge = labelJudge(label);
     const key = canonicalJson(judge);
     const row = rows.get(key) ?? { judge, labels: 0, paired: 0, agree: 0, judgePassedHumanFailed: 0, judgeFailedHumanPassed: 0 };
     rows.set(key, row);
@@ -794,8 +794,8 @@ export const ScorerResults = {
 
     for (const entry of kept) if (!isDecidedByStage(entry.label)) add(identityOf(entry.label).cohort, entry);
 
-    // A stage label names its scorer's model judge but no model, so it counts in that judge tool's measurement of its
-    // rubric (one per model the tool reported), and stands alone only while that judge labelled none of it.
+    // A stage label names no judge, so it counts in each model judge's measurement of its scorer and rubric, and stands
+    // alone only while no judge labelled any of it.
     for (const entry of kept.filter(({ label }) => isDecidedByStage(label))) {
       const own = identityOf(entry.label).cohort;
       const judged = [...byCohort.values()].filter(({ cohort }) => judgesLike(cohort, own));

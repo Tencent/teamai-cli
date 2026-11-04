@@ -52,6 +52,14 @@ describe('parseScorer', () => {
     expect(parsed.ok && parsed.definition).toMatchObject({ samplingRate: 100, model: 'fast', isolation: 'verified' });
   });
 
+  it('reads the judge tool a scorer prefers, any name of a tool\'s format, and rejects one that is not', () => {
+    const parsed = parseScorer('scorers/q.md', scorerWith(`${LABELS}passingScore: 1\ntool: acme-judge.v2\n`));
+    expect(parsed.ok && parsed.definition.tool).toBe('acme-judge.v2');
+    expect(problems('scorers/q.md', scorerWith(`${LABELS}passingScore: 1\ntool: claude code\n`))).toEqual([
+      'scorers/q.md: tool must be a tool name: letters, digits, ".", "_" and "-", starting with a letter or digit',
+    ]);
+  });
+
   it('reads a check that decides before the judge, as a benchmark task writes one', () => {
     const parsed = parseScorer('scorers/q.md', scorerWith(`${LABELS}passingScore: 1\ncheck: { run: npm test, protect: ['test/**', package.json] }\n`));
     expect(parsed.ok && parsed.definition.check).toEqual({ run: 'npm test', protect: ['test/**', 'package.json'] });

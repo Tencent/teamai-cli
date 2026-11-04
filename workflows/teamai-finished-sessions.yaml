@@ -22,7 +22,7 @@ steps:
     if: length(steps.sessions.outputs.list) > 0
     for_each: steps.sessions.outputs.list
     workflow: teamai-share-session
-    with: { session: "{{ item.session }}", source: "{{ item.source }}", publish: "{{ item.publish }}", scorers: "{{ item.scorers }}", judge: here, demand: "{{ item.demand }}" }
+    with: { session: "{{ item.session }}", source: "{{ item.source }}", publish: "{{ item.publish }}", scorers: "{{ item.scorers }}", demand: "{{ item.demand }}" }
     continue_on_failure: true
   - id: lapsed
     # After share, whatever it did: a mark share opened is then closed, or held by this run, so no subject is judged twice.

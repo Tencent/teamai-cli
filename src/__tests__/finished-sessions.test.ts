@@ -320,7 +320,22 @@ describe('the start of teamai-finished-sessions', () => {
     const second = await FinishedSessions.start(config, { client, mode: 'attended' });
 
     expect(first).toMatchObject({ kind: 'started' });
-    expect(second).toEqual(first.kind === 'started' ? { ...first, kind: 'working' } : first);
+    expect(second).toEqual(first.kind === 'started' ? { ...first, kind: 'working', holder: { kind: 'unassigned' } } : first);
+  });
+
+  it('says the run nobody took a lease of is unassigned, though a driver asked for its next step, and driven once one did', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const first = await FinishedSessions.start(config, { client, mode: 'attended' });
+    if (first.kind !== 'started') throw new Error(JSON.stringify(first));
+    const driver = { kind: 'external' as const, machine: 'm1', workspace: '/w' };
+
+    data(await leaseNext(config, first.run, driver, { canTakeLease: false }));
+    expect(await FinishedSessions.start(config, { client, mode: 'attended' })).toMatchObject({ kind: 'working', holder: { kind: 'unassigned' } });
+
+    expect(data(await leaseNext(config, first.run, driver))).toHaveProperty('lease');
+    expect(await FinishedSessions.start(config, { client, mode: 'attended' })).toMatchObject({ kind: 'working', holder: { kind: 'driven' } });
   });
 
   it('starts a new run once the one before ended, though inside its timeout', async () => {
@@ -345,7 +360,7 @@ describe('the start of teamai-finished-sessions', () => {
     if (first.kind !== 'started') throw new Error(JSON.stringify(first));
     const pins = await pinScorers(config, ['quality']);
     const key = { scorer: 'quality', sourceHash: pins.quality?.sourceHash ?? '', subject: { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: IDLE } } };
-    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString() }) });
+    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString(), judgeRan: () => true }) });
     vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 31 * 60 * 1000 });
 
     try {
@@ -371,7 +386,7 @@ describe('the start of teamai-finished-sessions', () => {
     expect(started.definition.timeout).toBeUndefined();
     const pins = await pinScorers(config, ['quality']);
     const key = { scorer: 'quality', sourceHash: pins.quality?.sourceHash ?? '', subject: { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: IDLE } } };
-    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString() }) });
+    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString(), judgeRan: () => true }) });
     vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 31 * 60 * 1000 });
 
     try {

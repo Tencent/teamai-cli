@@ -14,6 +14,7 @@ import {
   ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
 import { TeamPinSchema } from './store.js';
+import { DriverNameSchema } from './driver-name.js';
 import { STARTED_BY, type Finalizing, type RunState, type StepLease, type WorkflowDefinition, type WorkflowFailure } from './types.js';
 
 /**
@@ -64,6 +65,7 @@ const BodySchema = z.object({
   runMode: RunModeSchema.optional(),
   origin: RunOriginSchema.optional(),
   startedBy: z.enum(STARTED_BY).optional(),
+  awaits: z.object({ driver: DriverNameSchema }).optional(),
   settledCount: z.number().int(),
   cancelledAttempts: z.array(z.string()),
   archive: z.array(withCommitIds(ArchivedPassSchema)),
@@ -249,7 +251,7 @@ type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : n
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
   end: 'publish', failure: 'rewrite', finalizing: 'rewrite', timeout: 'publish', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', teamPin: 'publish', runMode: 'publish', origin: 'publish',
-  startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
+  startedBy: 'publish', awaits: 'publish', definition: 'rewrite', workflows: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', driveOptions: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
   stoppedAttempts: 'drop', publication: 'drop', leftovers: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish', retainedUntil: 'publish',
@@ -273,13 +275,13 @@ const PASS_RULES = {
   confined: 'publish',
 } satisfies FieldRules<StepPass>;
 
-const ARCHIVED_RULES = { ...PASS_RULES, step: 'publish', within: 'publish' } satisfies FieldRules<ArchivedPass>;
+const ARCHIVED_RULES = { ...PASS_RULES, step: 'publish', within: 'publish', item: 'publish' } satisfies FieldRules<ArchivedPass>;
 
 // What a step of a private workflow produced stays on the machine that ran it, with the item and inputs built from it;
 // the step that runs that workflow publishes only the outputs the workflow declares.
 const PRIVATE_STEP_RULES = { ...STEP_RULES, item: 'drop', inputs: 'drop', outputs: 'drop', results: 'drop' } satisfies FieldRules<StepState>;
 const PRIVATE_PASS_RULES = { ...PASS_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<StepPass>;
-const PRIVATE_ARCHIVED_RULES = { ...ARCHIVED_RULES, outputs: 'drop', results: 'drop' } satisfies FieldRules<ArchivedPass>;
+const PRIVATE_ARCHIVED_RULES = { ...ARCHIVED_RULES, item: 'drop', outputs: 'drop', results: 'drop' } satisfies FieldRules<ArchivedPass>;
 
 const ANSWER_RULES = {
   choice: 'publish', note: 'publish', at: 'publish', channel: 'publish', agent: 'publish', driver: 'drop',
@@ -292,7 +294,7 @@ const PRIVATE_ANSWER_RULES = { ...ANSWER_RULES, note: 'drop' } satisfies FieldRu
 const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldRules<WorkflowFailure>;
 
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
-const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', leasedAt: 'drop', runMode: 'drop', limits: 'drop' } satisfies FieldRules<StepLease>;
+const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', leasedAt: 'drop', runMode: 'drop', limits: 'drop', confined: 'drop' } satisfies FieldRules<StepLease>;
 
 // An isolated run, the only one with a clone, is never published. A team copy is delivered only where it ran: another
 // machine reads its branch as a run branch, which the project's origin does not have, so its delivery fails.

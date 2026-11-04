@@ -214,8 +214,8 @@ async function eventsUntil(harness: Harness, run: RunId, kind: string, mode: Run
   return events;
 }
 
-async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: ToolId } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown }> {
-  const { host = 'h1', tool, ...judge } = options;
+async function reviewed(harness: Harness, mode: RunMode = 'attended', options: { judge?: false; host?: 'h1' | 'h4'; tool?: ToolId; output?: string } = {}): Promise<{ run: RunId; chosen: unknown; turn: unknown; result: string }> {
+  const { host = 'h1', tool, output = 'Reviewed the change.', ...judge } = options;
   const answers = { ...(mode === 'unattended' ? { confirmed: false, hitl: 'auto-approve' as const } : { confirmed: false }), ...judge };
   const started = await harness.call({ kind: 'start', name: 'review', answers, inputs: undefined, ...(tool !== undefined ? { tool } : {}) }, { mode });
   if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
@@ -227,9 +227,9 @@ async function reviewed(harness: Harness, mode: RunMode = 'attended', options: {
   await harness.call({ kind: 'ack', run, attempt: dispatch.attempt }, { mode });
   const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(dispatch.brief, 'utf8'))?.[1];
   if (!file) throw new Error(`${dispatch.brief} names no result file`);
-  fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: 'Reviewed the change.' }));
+  fs.writeFileSync(file, JSON.stringify({ kind: 'output', output }));
   expect(await harness.call({ kind: 'report', run, attempt: dispatch.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
-  return { run, chosen, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }) };
+  return { run, chosen, turn: await harness.call({ kind: 'next', run, wait: false }, { mode }), result: file };
 }
 
 /** A claude on PATH without a verified judge profile, so no confined judge of it runs here. */
@@ -931,6 +931,18 @@ steps:
     expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'build')).toMatchObject({ status: 'cancelled' });
   });
 
+  it('masks the run\'s secrets in the result a child wrote once it reports', async () => {
+    vi.stubEnv('ACME_API_TOKEN', 'tm-child-credential-5810');
+    const harness = await skillHarness({ review: REVIEW });
+    roots.push(harness.root);
+
+    const { result } = await reviewed(harness, 'attended', { judge: false, output: 'Reviewed it with tm-child-credential-5810.' });
+
+    const kept = fs.readFileSync(result, 'utf8');
+    expect(kept).toContain('Reviewed it with');
+    expect(kept).not.toContain('tm-child-credential-5810');
+  });
+
   it.each(['attended', 'unattended'] as const)('an %s run settles a scored step with judging open, asks nothing, and a poll returns judged once the run its pass started labelled it', async (mode) => {
     const scoring: { label?: RunId } = {};
     const harness = await skillHarness({ review: REVIEW, 'label-pass': LABEL_PASS('verified') }, { scorers: { 'review-quality': REVIEW_QUALITY }, client: scoringStarted(scoring) });
@@ -1085,6 +1097,69 @@ steps:
     }]) } } });
   });
 
+  it('a takeover in another tool releases the confined step a child of the earlier session was given, and leases it again under the new tool', async () => {
+    const harness = await skillHarness({ 'label-pass': LABEL_PASS('best-effort') });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const started = await harness.call({ kind: 'start', name: 'label-pass', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const ConfinedDispatch = z.object({ kind: z.literal('dispatch'), attempt: AttemptIdSchema, step: z.string(), needs: z.object({ confined: z.literal(true) }), reissued: z.string().optional() });
+    const confinedIn = (answer: unknown) => z.object({ data: z.object({ turn: z.object({ actions: z.array(z.unknown()) }) }) }).parse(answer).data.turn.actions.flatMap((action) => ConfinedDispatch.safeParse(action).data ?? []);
+    await harness.call({ kind: 'choose', run, choice: 'h1' });
+    const dispatched = async (session: string, tool: ToolId) => {
+      for (let poll = 0; poll < 10; poll += 1) {
+        await harness.call({ kind: 'next', run, wait: true }, { session, tool });
+        const [found] = confinedIn(await harness.call({ kind: 'next', run, wait: false }, { session, tool }));
+        if (found) return found;
+      }
+      throw new Error('the confined step was never dispatched');
+    };
+    const first = await dispatched('session-a', 'claude');
+    await harness.call({ kind: 'ack', run, attempt: first.attempt });
+
+    const taken = await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b', tool: 'pi' });
+    expect(taken).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'settled', step: 'score[0].judge', outcome: 'released' }]) } } });
+    const again = await dispatched('session-b', 'pi');
+    expect(again).toMatchObject({ step: 'score[0].judge' });
+    expect(again.attempt).not.toBe(first.attempt);
+    expect(again).not.toHaveProperty('reissued');
+  });
+
+  it('records what a child judged a confined step with, by the session tool for a dispatch kept before the tool was', async () => {
+    const harness = await skillHarness({ 'label-pass': LABEL_PASS('best-effort') });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const started = await harness.call({ kind: 'start', name: 'label-pass', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    await harness.call({ kind: 'choose', run, choice: 'h1' });
+    const Dispatch = z.object({ kind: z.literal('dispatch'), attempt: AttemptIdSchema, step: z.string(), brief: z.string() });
+    let judge: z.infer<typeof Dispatch> | undefined;
+    for (let poll = 0; poll < 10 && !judge; poll += 1) {
+      await harness.call({ kind: 'next', run, wait: true });
+      const turn = z.object({ data: z.object({ turn: z.object({ actions: z.array(z.unknown()) }) }) }).parse(await harness.call({ kind: 'next', run, wait: false }));
+      [judge] = turn.data.turn.actions.flatMap((action) => Dispatch.safeParse(action).data ?? []);
+    }
+    if (!judge) throw new Error('the confined step was never dispatched');
+    await harness.call({ kind: 'ack', run, attempt: judge.attempt });
+    // A teamai before the dispatch kept its tool.
+    const Kept = z.object({ attempts: z.array(z.object({ dispatch: z.object({ tool: z.string().optional() }).passthrough().optional() }).passthrough()) }).passthrough();
+    const kept = Kept.parse(JSON.parse(fs.readFileSync(skillStatePath(harness.config, run), 'utf8')));
+    expect(kept.attempts.map((open) => open.dispatch?.tool)).toEqual(['claude']);
+    for (const open of kept.attempts) delete open.dispatch?.tool;
+    fs.writeFileSync(skillStatePath(harness.config, run), JSON.stringify(kept));
+    const file = /Write `([^`]+result\.json)`/u.exec(fs.readFileSync(judge.brief, 'utf8'))?.[1];
+    if (!file) throw new Error(`${judge.brief} names no result file`);
+    fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: { label: 'thorough' } }));
+    await harness.call({ kind: 'report', run, attempt: judge.attempt, role: 'agent', modelUnavailable: false });
+
+    const stored = await readRun(harness.config, run);
+    expect(typeof stored === 'object' && stored.steps.find((step) => step.id === 'score[0].judge')).toMatchObject({
+      tool: 'claude', session: 'session-a', confined: { tool: 'claude', isolation: 'best-effort', access: 'read' },
+    });
+  });
+
   it('keeps a declared tool in every start command describe offers, and in the describe command a refused start prints', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('invoke: allow', 'invoke: ask'), check: CHECK }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
     roots.push(harness.root);
@@ -1108,12 +1183,24 @@ steps:
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
-  it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off', async () => {
+  it('a session whose host has no child agent judges its run in the background, at best-effort, on its tool on PATH', async () => {
+    const scoring: { label?: RunId } = {};
+    const harness = await skillHarness({ review: REVIEW, 'label-pass': LABEL_PASS('best-effort') }, { scorers: { 'review-quality': REVIEW_QUALITY }, client: scoringStarted(scoring) });
+    roots.push(harness.root);
+    fakeConfinedClaude(harness.root, { label: 'thorough' }, { version: '0.0.1' });
+    const { run, chosen } = await reviewed(harness, 'attended', { host: 'h4' });
+    expect(JSON.stringify(chosen)).not.toContain('judging-off');
+    expect(await eventsUntil(harness, run, 'judged')).toContainEqual({ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' });
+    const judged = scoring.label === undefined ? undefined : await readRun(harness.config, scoring.label);
+    expect(typeof judged === 'object' && judged.steps.find((step) => step.id === 'score[0].judge')).toMatchObject({ confined: { tool: 'claude', isolation: 'best-effort' } });
+  });
+
+  it('a session whose host has no child agent, and whose tool is not on PATH, does not judge its run: choosing h4 turns judging off', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
-    unverifiedClaude(harness);
+    vi.stubEnv('PATH', path.join(harness.root, 'empty-bin'));
     const { chosen, turn: done } = await reviewed(harness, 'attended', { host: 'h4' });
-    expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
+    expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.stringContaining('claude') } }]) } } });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
@@ -1122,6 +1209,9 @@ steps:
     const gated = 'schemaVersion: v1alpha1\nname: gated\ndescription: Build, scored\ninvoke: allow\nsteps:\n  - id: built\n    workflow: build\n    scorers: [review-quality]\n';
     const harness = await skillHarness({ build, gated }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: 'pi' });
     roots.push(harness.root);
+    // No pi on PATH, which would judge the run in the background.
+    const withoutPi = (process.env.PATH ?? '').split(path.delimiter).filter((dir) => !['pi', 'pi.cmd', 'pi.exe'].some((name) => fs.existsSync(path.join(dir, name))));
+    vi.stubEnv('PATH', withoutPi.join(path.delimiter));
     const started = await harness.call({ kind: 'start', name: 'gated', answers: { confirmed: false }, inputs: undefined });
     expect(started).toMatchObject({ data: { turn: { actions: [{ kind: 'choose', about: 'host' }] } } });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));

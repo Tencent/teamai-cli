@@ -66,6 +66,13 @@ describe('confinedCandidates', () => {
     expect(confinedCandidates(offers, { level: 'best-effort', prefer: 'cursor' })).toEqual(['cursor', 'claude']);
     expect(confinedCandidates(offers, { level: 'verified', prefer: 'cursor' })).toEqual(['claude']);
   });
+
+  it('tries each preferred tool the offers hold, in order, then the offers in theirs', () => {
+    const offers: Parameters<typeof confinedCandidates>[0] = [{ level: 'best-effort', access: 'read', tools: ['claude', 'codex', 'opencode'] }];
+
+    expect(confinedCandidates(offers, { level: 'best-effort', prefer: ['opencode', 'claude'] })).toEqual(['opencode', 'claude', 'codex']);
+    expect(confinedCandidates(offers, { level: 'best-effort', prefer: ['acme-judge', 'codex'] })).toEqual(['codex', 'claude', 'opencode']);
+  });
 });
 
 describe('decideConfined', () => {

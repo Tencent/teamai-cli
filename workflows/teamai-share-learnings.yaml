@@ -2,7 +2,7 @@ schemaVersion: v1alpha1
 name: teamai-share-learnings
 description: Close out this session with the person - share what it taught as team learnings, one or several, then publish and score it with teamai-share-session. Use when the person asks to close the session, or to share what it taught.
 invoke: ask
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string] }
 steps:
   - id: learning
     interactive: true
@@ -21,4 +21,4 @@ steps:
   - id: share-session
     needs: []
     workflow: teamai-share-session
-    with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", judge: "{{ inputs.judge }}", demand: named }
+    with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", demand: named }

@@ -7,11 +7,12 @@ import { scoredLabels } from '../../../scorers/engine-hooks.js';
 import type { ToolId } from '../../../tools.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { PersonHandoff, ResumeClaim, RunReadied } from '../../protocol.js';
-import type { AttemptId, RunId, RunLock } from '../../store.js';
+import { AttemptResult } from '../../attempt-result.js';
+import { attemptResultPath, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
-import { canFor, confinedCan, HOST_PROFILES, type HostChoice } from './host-profiles.js';
+import { canFor, confinedCan, HOST_PROFILES, sessionJudgeTool, sessionOffers, sessionToolJudge, type ConfinedJudge, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
@@ -379,7 +380,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
 
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
-      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined), tool: context.tool,
+      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: { ...canFor(undefined), confined: await sessionOffers(context.tool) }, tool: context.tool,
     });
 
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
@@ -516,7 +517,7 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
     case 'resume':
       return undefined;
     case 'choose':
-      return chooseRow(state, { choice: call.choice, profile: HOST_PROFILES[call.choice] });
+      return chooseRow(state, { choice: call.choice, profile: HOST_PROFILES[call.choice], judgeTool: sessionJudgeTool(state), judge: await sessionJudgeOn(state, call.choice) });
     case 'ack':
       return ackRow(state, call.attempt);
     case 'adopt':
@@ -533,6 +534,13 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
       return unhandled;
     }
   }
+}
+
+/** The confined judge of the session's tool, probed only when `choice` is a host that starts no child agent for a session judge. */
+async function sessionJudgeOn(state: SkillState, choice: HostChoice): Promise<ConfinedJudge | undefined> {
+  const tool = sessionJudgeTool(state);
+
+  return HOST_PROFILES[choice].startsChildAgent || tool === undefined ? undefined : sessionToolJudge(tool);
 }
 
 /**
@@ -665,6 +673,7 @@ export async function agentReport(context: SkillContext, run: RunId, call: { att
     if ('answer' in read) return read.answer;
     const { state } = read;
     const result = await readChildResult({ config: context.config, run, attempt });
+    await AttemptResult.mask(attemptResultPath(context.config, run, attempt), context.env.secrets);
     const taken = traced(context, reportRow(state, { attempt, modelUnavailable: call.modelUnavailable, result }));
 
     if (!taken) return { data: { runner: { attempt, status: 'gone' } } };

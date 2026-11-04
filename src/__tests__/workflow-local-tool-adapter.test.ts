@@ -68,6 +68,38 @@ afterEach(async () => {
 });
 
 describe('local tool adapter', () => {
+  it.each([
+    ['leaves failure out', {}, undefined],
+    ['writes failure as null', { failure: null }, undefined],
+    ['writes a failure', { failure: { code: 'blocked', message: 'No access.' } }, { code: 'blocked', message: 'No access.' }],
+  ])('reads the result file a tool wrote when it %s', async (_case, written, failure) => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-failure-${Date.now()}-${Math.random()}.json`);
+    files.push(resultPath);
+    const output = { summary: 'Done.' };
+    await fs.writeFile(resultPath, JSON.stringify({ output, ...written }));
+    const adapter = createLocalToolAdapter(() => child(claudeStream('claude-sonnet', { result: 'Wrote the result file.' })) as ReturnType<ToolSpawn>, () => 'claude');
+
+    const result = await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, secrets: {} });
+
+    expect(result).toMatchObject({ started: true, exitCode: 0, output });
+    expect(result.failure).toEqual(failure);
+  });
+
+  it('asks the tool to leave failure out of the result file unless the step failed', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-instruction-${Date.now()}.json`);
+    files.push(resultPath);
+    let prompt = '';
+    const adapter = createLocalToolAdapter((_command, args) => {
+      prompt = args.join(' ');
+      return child(claudeStream('claude-sonnet', { result: '{}' })) as ReturnType<ToolSpawn>;
+    }, () => 'claude');
+
+    await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, secrets: {} });
+
+    expect(prompt).toContain('Leave failure out unless the step failed');
+    expect(prompt).not.toContain('"code":"optional"');
+  });
+
   it('preserves UTF-8 split across stdout chunks in the result and persisted fallback', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-utf8-${Date.now()}.json`);
     files.push(resultPath);
@@ -76,10 +108,23 @@ describe('local tool adapter', () => {
     const chunks = Array.from(bytes, (_byte, index) => bytes.subarray(index, index + 1));
     const adapter = createLocalToolAdapter(() => child(chunks) as ReturnType<ToolSpawn>, () => 'claude');
 
-    const result = await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath });
+    const result = await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, secrets: {} });
 
     expect(result).toMatchObject({ started: true, exitCode: 0, output });
     expect(JSON.parse(await fs.readFile(resultPath, 'utf8'))).toEqual({ output });
+  });
+
+  it('masks the run\'s secrets in the result it keeps from stdout, before anything else reads the file', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-masked-${Date.now()}.json`);
+    files.push(resultPath);
+    const stdout = claudeStream('claude-sonnet', { result: JSON.stringify({ summary: 'Used tm-deploy-credential-2291 to deploy.' }) });
+    const adapter = createLocalToolAdapter(() => child(stdout) as ReturnType<ToolSpawn>, () => 'claude');
+
+    await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, secrets: { DEPLOY_TOKEN: 'tm-deploy-credential-2291' } });
+
+    const kept = await fs.readFile(resultPath, 'utf8');
+    expect(kept).toContain('to deploy.');
+    expect(kept).not.toContain('tm-deploy-credential-2291');
   });
 
   it('starts the resolved executable and ignores token counts written into result.json', async () => {
@@ -102,7 +147,7 @@ describe('local tool adapter', () => {
     const result = await adapter.run('claude-internal', {
       prompt: 'Review the change.',
       cwd: os.tmpdir(),
-      resultPath,
+      resultPath, secrets: {},
     });
 
     expect(resolveTool).toHaveBeenCalledWith('claude-internal');
@@ -130,7 +175,7 @@ describe('local tool adapter', () => {
     const spawnTool = vi.fn(() => child(claudeStream('glm-5', { session_id: 'session-2', usage: { input_tokens: 7, output_tokens: 3 }, result: JSON.stringify({ ok: true }) }))) as unknown as ToolSpawn;
     const adapter = createLocalToolAdapter(spawnTool, () => '/bin/workbuddy');
 
-    const result = await adapter.run('workbuddy', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, model: { name: 'glm-5', effort: 'high' }, resume: 'session-1', maxTurns: 3 });
+    const result = await adapter.run('workbuddy', { prompt: 'Review.', cwd: os.tmpdir(), resultPath, secrets: {}, model: { name: 'glm-5', effort: 'high' }, resume: 'session-1', maxTurns: 3 });
 
     const args = vi.mocked(spawnTool).mock.calls[0]?.[1] ?? [];
     expect(args.slice(0, 1)).toEqual(['-p']);
@@ -155,7 +200,7 @@ describe('local tool adapter', () => {
     const adapter = createLocalToolAdapter(spawnTool, () => '/bin/agy');
 
     const result = await adapter.run('agy', {
-      prompt: 'Review.', cwd: os.tmpdir(), resultPath, model: { name: 'gemini-3.8-flash', effort: 'high' }, resume: 'conv-1',
+      prompt: 'Review.', cwd: os.tmpdir(), resultPath, secrets: {}, model: { name: 'gemini-3.8-flash', effort: 'high' }, resume: 'conv-1',
       agent: { name: 'reviewer', instructions: 'Review the change.' },
     });
 
@@ -183,7 +228,7 @@ describe('local tool adapter', () => {
     files.push(resultPath);
     const spawnTool = vi.fn(() => child('')) as unknown as ToolSpawn;
     const adapter = createLocalToolAdapter(spawnTool, () => `/bin/${tool}`);
-    const input = { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, resume: 'session-1' };
+    const input = { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, resume: 'session-1' };
 
     await adapter.run(tool, { ...input, unattended: true });
     await adapter.runInteractive(tool, { ...input, unattended: true });
@@ -203,7 +248,7 @@ describe('local tool adapter', () => {
     const spawnTool = vi.fn(() => child(claudeStream('claude-sonnet', { result: JSON.stringify({ ok: true }) }))) as unknown as ToolSpawn;
     const adapter = createLocalToolAdapter(spawnTool, () => 'claude');
 
-    await adapter.run('claude', { prompt: 'Plan.', cwd: os.tmpdir(), resultPath, maxTurns: 3 });
+    await adapter.run('claude', { prompt: 'Plan.', cwd: os.tmpdir(), resultPath, secrets: {}, maxTurns: 3 });
 
     expect(spawnTool).toHaveBeenCalledWith('claude', expect.arrayContaining(['-p', '--max-turns', '3']), expect.anything());
   });
@@ -216,7 +261,7 @@ describe('local tool adapter', () => {
     files.push(resultPath);
     const adapter = createLocalToolAdapter(() => child(claudeStream('claude-sonnet', { subtype, is_error: exitCode !== 0 }), exitCode) as ReturnType<ToolSpawn>, () => 'claude');
 
-    const result = await adapter.run('claude', { prompt: 'Plan.', cwd: os.tmpdir(), resultPath, maxTurns: 3 });
+    const result = await adapter.run('claude', { prompt: 'Plan.', cwd: os.tmpdir(), resultPath, secrets: {}, maxTurns: 3 });
 
     expect(result).toMatchObject({ started: true, exitCode });
     expect(result.started && result.stoppedBy).toBe(stoppedAtMaxTurns ? 'max_turns' : undefined);
@@ -250,7 +295,7 @@ describe('local tool adapter', () => {
     files.push(resultPath);
     const adapter = createLocalToolAdapter(() => workingChild([...lines]) as unknown as ReturnType<ToolSpawn>, () => tool);
 
-    const result = await adapter.run(tool, { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, budget: 100 });
+    const result = await adapter.run(tool, { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, budget: 100 });
 
     expect(result).toMatchObject({ started: true, stoppedBy: 'budget', tokens: { input: 40, output: 70, cachedInput: 1000 } });
   });
@@ -260,7 +305,7 @@ describe('local tool adapter', () => {
     files.push(resultPath);
     const adapter = createLocalToolAdapter(() => workingChild([]) as unknown as ReturnType<ToolSpawn>, () => 'codex');
 
-    const result = await adapter.run('codex', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, timeoutMs: 20 });
+    const result = await adapter.run('codex', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, timeoutMs: 20 });
 
     expect(result).toMatchObject({ started: true, stoppedBy: 'timeout' });
   });
@@ -271,7 +316,7 @@ describe('local tool adapter', () => {
     const init = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'session-1', model: 'claude-sonnet' });
     const adapter = createLocalToolAdapter(() => workingChild([init]) as unknown as ReturnType<ToolSpawn>, () => 'claude');
 
-    const result = await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, timeoutMs: 20 });
+    const result = await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, timeoutMs: 20 });
 
     expect(result).toMatchObject({ started: true, stoppedBy: 'timeout', model: 'claude-sonnet', session: 'session-1' });
     expect(result.started && result.tokens).toBeUndefined();
@@ -283,7 +328,7 @@ describe('local tool adapter', () => {
     const init = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'session-1', model: 'claude-sonnet' });
     const adapter = createLocalToolAdapter(() => child(`${init}\n`) as unknown as ReturnType<ToolSpawn>, () => 'claude');
 
-    const result = await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath });
+    const result = await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {} });
 
     expect(result).toMatchObject({ started: true, exitCode: 0, failure: { code: 'tool_failed', message: 'claude did not write a valid workflow result' } });
   });
@@ -294,7 +339,7 @@ describe('local tool adapter', () => {
     const over = JSON.stringify({ type: 'step_finish', part: { type: 'step-finish', tokens: { input: 60, output: 60 } } });
     const adapter = createLocalToolAdapter(() => workingChild([over], { closesAfterMs: 80 }) as unknown as ReturnType<ToolSpawn>, () => 'opencode');
 
-    const result = await adapter.run('opencode', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, budget: 100, timeoutMs: 20 });
+    const result = await adapter.run('opencode', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, budget: 100, timeoutMs: 20 });
 
     expect(result).toMatchObject({ started: true, stoppedBy: 'budget' });
   });
@@ -304,7 +349,7 @@ describe('local tool adapter', () => {
     files.push(resultPath);
     const adapter = createLocalToolAdapter(() => workingChild([], { exitsAfterMs: 30 }) as unknown as ReturnType<ToolSpawn>, () => 'codex');
 
-    const result = await adapter.run('codex', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, timeoutMs: 30 });
+    const result = await adapter.run('codex', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, timeoutMs: 30 });
 
     expect(result).toMatchObject({ started: true, exitCode: 0 });
     expect(result.started && result.stoppedBy).toBeUndefined();
@@ -319,7 +364,7 @@ describe('local tool adapter', () => {
     const spawnTool = vi.fn(() => child(claudeStream('claude-sonnet', { result: JSON.stringify({ ok: true }) }))) as unknown as ToolSpawn;
     const adapter = createLocalToolAdapter(spawnTool, () => 'claude');
 
-    await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, ...(budget !== undefined ? { budget } : {}) });
+    await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, ...(budget !== undefined ? { budget } : {}) });
 
     const args = vi.mocked(spawnTool).mock.calls[0]?.[1] ?? [];
     expect(args.includes('--include-partial-messages')).toBe(streams);
@@ -331,7 +376,7 @@ describe('local tool adapter', () => {
     const stdout = claudeStream('claude-sonnet', { usage: { input_tokens: 40, output_tokens: 60 } });
     const adapter = createLocalToolAdapter(() => child(stdout) as ReturnType<ToolSpawn>, () => 'claude');
 
-    const result = await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, budget: 100 });
+    const result = await adapter.run('claude', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {}, budget: 100 });
 
     expect(result).toMatchObject({ started: true, exitCode: 0, tokens: { input: 40, output: 60 } });
     expect(result.started && result.stoppedBy).toBeUndefined();
@@ -350,7 +395,7 @@ describe('local tool adapter', () => {
     const result = await adapter.run('claude', {
       prompt: 'Review the change.',
       cwd: os.tmpdir(),
-      resultPath,
+      resultPath, secrets: {},
     });
 
     expect(result).toMatchObject({
@@ -381,7 +426,7 @@ describe('local tool adapter', () => {
     const codex = await adapter.run('codex-internal', {
       prompt: 'Review the change.',
       cwd: os.tmpdir(),
-      resultPath,
+      resultPath, secrets: {},
       agent: { name: 'reviewer', instructions: 'Read only.', model: 'gpt-5.4' },
     });
 
@@ -411,7 +456,7 @@ describe('local tool adapter', () => {
     const opened = await opencode.run('opencode', {
       prompt: 'Review the change.',
       cwd: os.tmpdir(),
-      resultPath: opencodePath,
+      resultPath: opencodePath, secrets: {},
       agent: { name: 'reviewer', instructions: 'Read only.' },
     });
 
@@ -437,7 +482,7 @@ describe('local tool adapter', () => {
     ].join('\n');
     const adapter = createLocalToolAdapter(vi.fn(() => child(stdout)) as unknown as ToolSpawn, () => '/usr/bin/opencode');
 
-    const ran = await adapter.run('opencode', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath });
+    const ran = await adapter.run('opencode', { prompt: 'Fix it.', cwd: os.tmpdir(), resultPath, secrets: {} });
 
     expect(ran).toMatchObject({ session: 'ses_1', tokens: { input: 16, output: 3 }, cost: { amount: 0.75, unit: 'USD' } });
   });
@@ -449,7 +494,7 @@ describe('local tool adapter', () => {
     const result = await adapter.run('codex', {
       prompt: 'Review',
       cwd: os.tmpdir(),
-      resultPath: path.join(os.tmpdir(), 'missing-result.json'),
+      resultPath: path.join(os.tmpdir(), 'missing-result.json'), secrets: {},
     });
 
     expect(spawnTool).not.toHaveBeenCalled();
@@ -472,7 +517,7 @@ describe('local tool adapter', () => {
       return process;
     }) as unknown as ToolSpawn;
     const throws = vi.fn(() => { throw new Error('EACCES'); }) as unknown as ToolSpawn;
-    const run = { prompt: 'Review', cwd: os.tmpdir(), resultPath: path.join(os.tmpdir(), 'never-result.json') };
+    const run = { prompt: 'Review', cwd: os.tmpdir(), resultPath: path.join(os.tmpdir(), 'never-result.json'), secrets: {} };
 
     expect(await createLocalToolAdapter(missing, () => 'claude').run('claude', run))
       .toMatchObject({ started: false, failure: { code: 'tool_unavailable' } });
@@ -499,7 +544,7 @@ describe('local tool adapter', () => {
       modelUsage,
     }))) as unknown as ToolSpawn;
 
-    const result = await createLocalToolAdapter(spawnTool, () => 'claude').run('claude', { prompt: 'Review', cwd: os.tmpdir(), resultPath });
+    const result = await createLocalToolAdapter(spawnTool, () => 'claude').run('claude', { prompt: 'Review', cwd: os.tmpdir(), resultPath, secrets: {} });
 
     expect(result).toMatchObject({ started: true, output: { ok: true }, session: 'session-1' });
     expect(result.started && result.model).toBe(model ?? undefined);
@@ -510,7 +555,7 @@ describe('local tool adapter', () => {
     const spawnTool = vi.fn(() => child(claudeStream(undefined, { result: '{}' }))) as unknown as ToolSpawn;
 
     await createLocalToolAdapter(spawnTool, () => 'claude').run('claude', {
-      prompt: 'Review', cwd: os.tmpdir(), resultPath, launch: { by: 'workflow', tool: 'claude', checkout: 'checkout-1' },
+      prompt: 'Review', cwd: os.tmpdir(), resultPath, secrets: {}, launch: { by: 'workflow', tool: 'claude', checkout: 'checkout-1' },
     });
 
     expect(spawnTool).toHaveBeenCalledWith('claude', expect.anything(), expect.objectContaining({
@@ -525,11 +570,11 @@ describe('local tool adapter', () => {
     const claude = vi.fn(() => child(claudeStream(undefined, { result: '{}' }))) as unknown as ToolSpawn;
     const codex = vi.fn(() => child('{"type":"thread.started","thread_id":"thread-1"}')) as unknown as ToolSpawn;
 
-    expect(await createLocalToolAdapter(claude, () => 'claude').run('tclaude', { prompt: 'Review', cwd: os.tmpdir(), resultPath, agent }))
+    expect(await createLocalToolAdapter(claude, () => 'claude').run('tclaude', { prompt: 'Review', cwd: os.tmpdir(), resultPath, secrets: {}, agent }))
       .toMatchObject({ started: true, applied: 'main' });
-    expect(await createLocalToolAdapter(codex, () => 'codex').run('codex-internal', { prompt: 'Review', cwd: os.tmpdir(), resultPath, agent }))
+    expect(await createLocalToolAdapter(codex, () => 'codex').run('codex-internal', { prompt: 'Review', cwd: os.tmpdir(), resultPath, secrets: {}, agent }))
       .toMatchObject({ started: true, applied: 'prompt' });
-    expect(await createLocalToolAdapter(claude, () => 'claude').run('claude', { prompt: 'Review', cwd: os.tmpdir(), resultPath }))
+    expect(await createLocalToolAdapter(claude, () => 'claude').run('claude', { prompt: 'Review', cwd: os.tmpdir(), resultPath, secrets: {} }))
       .not.toHaveProperty('applied');
   });
 
@@ -545,7 +590,7 @@ process.exit(1);
 `, { mode: 0o755 });
 
       const result = await createLocalToolAdapter(undefined, () => executable).run('opencode', {
-        prompt: 'Review', cwd: root, resultPath: path.join(root, 'result.json'),
+        prompt: 'Review', cwd: root, resultPath: path.join(root, 'result.json'), secrets: {},
         agent: { name: 'reviewer', instructions: 'Read only.', settings: { mode: 'subagent' } },
       });
 
@@ -564,7 +609,7 @@ process.exit(1);
     }) as unknown as ToolSpawn;
 
     const result = await createLocalToolAdapter(failsAfterSpawn, () => 'claude').run('claude', {
-      prompt: 'Review', cwd: os.tmpdir(), resultPath: path.join(os.tmpdir(), 'never-result.json'), agent: { name: 'reviewer', instructions: 'Read only.' },
+      prompt: 'Review', cwd: os.tmpdir(), resultPath: path.join(os.tmpdir(), 'never-result.json'), secrets: {}, agent: { name: 'reviewer', instructions: 'Read only.' },
     });
 
     expect(result).toMatchObject({ started: true, applied: 'main', failure: { code: 'tool_failed' } });
@@ -577,7 +622,7 @@ describe('interactive tool invocations', () => {
     files.push(resultPath);
     const spawnTool = vi.fn(() => child('')) as unknown as ToolSpawn;
     const adapter = createLocalToolAdapter(spawnTool, () => tool);
-    expect(await adapter.runInteractive(tool, { prompt: 'Work with me.', cwd: os.tmpdir(), resultPath, model: { name: 'example', effort: 'high' } })).toMatchObject({ started: true, exitCode: 0 });
+    expect(await adapter.runInteractive(tool, { prompt: 'Work with me.', cwd: os.tmpdir(), resultPath, secrets: {}, model: { name: 'example', effort: 'high' } })).toMatchObject({ started: true, exitCode: 0 });
     const args = vi.mocked(spawnTool).mock.calls[0]![1];
     expect(args).toContain('--model');
     expect(args).toContain('example');
@@ -597,7 +642,7 @@ describe('interactive tool invocations', () => {
     files.push(resultPath);
     const spawnTool = vi.fn(() => child('')) as unknown as ToolSpawn;
     const adapter = createLocalToolAdapter(spawnTool, () => tool);
-    expect(await adapter.runInteractive(tool, { prompt: 'Again.', cwd: os.tmpdir(), resultPath, resume: 'sess-1' })).toMatchObject({ started: true, exitCode: 0 });
+    expect(await adapter.runInteractive(tool, { prompt: 'Again.', cwd: os.tmpdir(), resultPath, secrets: {}, resume: 'sess-1' })).toMatchObject({ started: true, exitCode: 0 });
     const args = vi.mocked(spawnTool).mock.calls[0]![1] as string[];
     expect(args).toContain('sess-1');
     expect(args).toContain(tool === 'claude' ? '--resume' : 'resume');
@@ -619,7 +664,7 @@ it.each([undefined, 'SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'])('stops a headless
     return tool;
   };
   const adapter = createLocalToolAdapter(spawnTool, () => process.execPath);
-  expect(await adapter.run('codex', { prompt: 'Wait.', cwd: os.tmpdir(), resultPath }, controller.signal)).toMatchObject({ started: true, exitCode: 1 });
+  expect(await adapter.run('codex', { prompt: 'Wait.', cwd: os.tmpdir(), resultPath, secrets: {} }, controller.signal)).toMatchObject({ started: true, exitCode: 1 });
   expect(stopped).toBe('SIGTERM');
 });
 
@@ -633,7 +678,7 @@ it('reports an interactive tool exit status without requiring a result file', as
     return tool;
   }) as unknown as ToolSpawn;
   const adapter = createLocalToolAdapter(spawnTool, () => 'claude');
-  expect(await adapter.runInteractive('claude', { prompt: 'Pair.', cwd: os.tmpdir(), resultPath })).toMatchObject({
+  expect(await adapter.runInteractive('claude', { prompt: 'Pair.', cwd: os.tmpdir(), resultPath, secrets: {} })).toMatchObject({
     started: true, exitCode: 7, failure: { code: 'tool_failed', message: 'claude exited with status 7' },
   });
 });
@@ -651,6 +696,6 @@ it.each(['SIGTERM', 'SIGHUP'] as const)('passes %s through to an attached intera
     return tool;
   };
   const adapter = createLocalToolAdapter(spawnTool, () => process.execPath);
-  expect(await adapter.runInteractive('claude', { prompt: 'Wait.', cwd: os.tmpdir(), resultPath }, controller.signal)).toMatchObject({ started: true, exitCode: 1 });
+  expect(await adapter.runInteractive('claude', { prompt: 'Wait.', cwd: os.tmpdir(), resultPath, secrets: {} }, controller.signal)).toMatchObject({ started: true, exitCode: 1 });
   expect(stopped).toBe(signalName);
 });

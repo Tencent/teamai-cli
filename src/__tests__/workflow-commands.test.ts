@@ -207,6 +207,17 @@ describe('workflow next, report, start and resume without --driver skill', () =>
   });
 });
 
+describe('workflow start and resume --driver', () => {
+  it.each(['acme-sandbox', 'fleet', 'none', 'acme sandbox'])('refuses --driver %s, which no driver of this machine is', async (named) => {
+    state.config = testConfig();
+    const refused = { error: { code: 'unsupported_driver', message: `Driver "${named}" is not available. Use --driver local or --driver skill.` } };
+
+    expect(await capture(() => workflowStart('mark', { driver: named }))).toEqual(refused);
+    expect(await capture(() => workflowResume('r00000000', { driver: named }))).toEqual(refused);
+    expect(await capture(() => workflowResume(undefined, { driver: named, next: true }))).toEqual(refused);
+  });
+});
+
 describe('workflow start --inputs', () => {
   function inputsConfig(): LocalConfig {
     const config = testConfig();
@@ -1064,6 +1075,12 @@ steps:
     expect(await capture(() => workflowResume(second.runId, {}))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(await readRun(second.config, second.runId)).toMatchObject({ steps: [{ id: 'build' }, { id: 'ship', pass: 2, status: 'skipped', answer: { choice: 'no' } }] });
     expect(fs.existsSync(path.join(process.cwd(), 'shipped'))).toBe(false);
+  });
+
+  it('prints the steps a retry runs again besides the one it names', async () => {
+    const { runId, printed } = await started('ship', ship, {});
+    await capture(() => workflowRetry(runId, 'build'));
+    expect(printed).toContainEqual(expect.stringContaining('Retrying build runs again: ship'));
   });
 
   const sealed = `schemaVersion: v1alpha1

@@ -5,9 +5,6 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { observedModel } from '../agent-observation.js';
-import { loadModelAliases } from '../models/aliases.js';
-import { confinedAccess, installedConfinedTools } from '../tool-launch/confined.js';
 import { ConfinedUsageSchema, CostSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { writeFileAtomic } from '../utils/fs.js';
@@ -18,9 +15,8 @@ import { isIsolated } from '../workflow/workspace.js';
 import { JudgeAnswerSchema, verdictsOf } from './batch.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
 import { removeSubjectEvidence } from './evidence.js';
-import { EvidenceDir, readRecord, type GroupRecord } from './evidence-dir.js';
+import { readRecord, type GroupRecord } from './evidence-dir.js';
 import { scoresDir } from './home.js';
-import { chooseJudgeModel } from './judge-model.js';
 import { JUDGE_FAILURES, labelVersion, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
 import { Marks, type MarkKey, type MarkOutcome } from './marks.js';
@@ -167,40 +163,14 @@ function labelOf({ group, run, now, hash }: Labelling, member: Member, given: Sc
   return label;
 }
 
-/** The judge a stage decided in place of: the tool and model the group's judge would have run, at the level it needed. */
-async function stageJudge(attempt: ScoreAttempt, dir: string, member: Member): Promise<ScoreLabel['judge'] | undefined> {
-  const confined = await EvidenceDir.confined(dir);
-  const chosen = confined && chooseJudgeModel(await loadModelAliases(attempt.config), member.definition, installedConfinedTools(confined.prefer ? [confined.prefer] : []));
-
-  if (!confined || !chosen?.ok) return undefined;
-  const { tool, model, alias } = chosen.choice;
-  const observed = observedModel({ requested: model?.name, alias });
-  const judge: ScoreLabel['judge'] = { kind: 'model', tool, isolation: confined.level, access: confinedAccess(tool) };
-
-  if (observed) judge.model = observed;
-
-  return judge;
-}
-
-async function stageEntries(labelling: Labelling, dir: string, members: readonly Member[], { stage, record }: { stage: string; record: Exclude<StageRecord, { kind: 'judge' }> }): Promise<Entry[]> {
+function stageEntries(labelling: Labelling, members: readonly Member[], record: Exclude<StageRecord, { kind: 'judge' }>): Entry[] {
   switch (record.kind) {
     case 'unrunnable':
       return failedAll(members, 'check_could_not_run', record.message);
     case 'pending':
       return failedAll(members, 'ci_pending', `The CI of commit ${record.head} has not finished; the group is judged once it has.`);
-    case 'decided': {
-      const entries: Entry[] = [];
-
-      for (const member of members) {
-        const judge = await stageJudge(labelling.attempt, dir, member);
-
-        entries.push(judge
-          ? { kind: 'labelled', scorer: member.name, label: labelOf(labelling, member, failingLabel(member.definition), judge, record.by), reasoning: record.reasoning }
-          : { kind: 'failed', scorer: member.name, code: 'judge_tool_unavailable', message: `The ${stage} stage decided scorer ${member.name}, and no judge tool on this machine runs its model, so its label could not be recorded.` });
-      }
-
-      return entries;
-    }
+    case 'decided':
+      return members.map((member) => ({ kind: 'labelled', scorer: member.name, label: labelOf(labelling, member, failingLabel(member.definition), { kind: 'stage' }, record.by), reasoning: record.reasoning }));
 
     default: {
       const unhandled: never = record;
@@ -338,7 +308,7 @@ export const ScoreLabels = {
       return refused('stage_record_missing', `Scorer ${unchecked.name} has a check, and the delivered pass has no record of it in ${dir}: run teamai score stage check first.`);
     }
 
-    const decided = records.flatMap(({ stage, record }) => (record.kind === 'judge' ? [] : [{ stage, record }]))[0];
+    const decided = records.flatMap(({ record }) => (record.kind === 'judge' ? [] : [record]))[0];
     let entries: Entry[];
 
     if (group.hand) {
@@ -347,7 +317,7 @@ export const ScoreLabels = {
       if (!given) return refused('label_invalid', `"${attempt.hand}" is not a label of scorer ${first.name}. Use one of: ${first.definition.labels.map((label) => label.value).join(', ')}.`);
       entries = [{ kind: 'labelled', scorer: first.name, label: labelOf(labelling, first, given, { kind: 'human' }, undefined) }];
     } else if (decided) {
-      entries = await stageEntries(labelling, dir, [first, ...rest], decided);
+      entries = stageEntries(labelling, [first, ...rest], decided);
     } else {
       const step = judgeStepOf(attempt);
 

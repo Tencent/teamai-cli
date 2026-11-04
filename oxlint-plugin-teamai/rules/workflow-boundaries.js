@@ -29,6 +29,8 @@ const SKILL_IMPORTS = {
   'src/workflow/step-state.ts': { names: ['FailureSchema', 'ConfinedRunReportSchema', 'TokenUsageSchema'] },
   // A step confined to a directory, which the background runner runs as the local driver does.
   'src/workflow/confined-step.ts': { names: ['runConfinedStep', 'ConfinedStepEnd', 'ConfinedStepLease'] },
+  // An attempt's result file, which the driver masks once a child wrote it, as the local driver does once a tool did.
+  'src/workflow/attempt-result.ts': { names: ['AttemptResult'] },
   // What a prompt step's output must be, as every driver's result instruction says it.
   'src/workflow/output.ts': { names: ['expectedOutput'] },
   'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'runsDir', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
@@ -48,8 +50,8 @@ const SKILL_IMPORTS = {
   // skill-data root the host question's reference is under.
   'src/tools.ts': { names: ['isToolId', 'TOOLS', 'isAgentToolId', 'ToolId'] },
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
-  // The confined tools of this machine, what each can do there, and the confined run the background runner starts.
-  'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess'] },
+  // The confined tools of this machine, what each can do there, and the level the session's tool reaches here.
+  'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess', 'confinedToolLevel'] },
   // The level a confined run reaches and what its tool can do there.
   'src/tool-launch/confined-level.ts': { typeOnly: true },
   // What describe proposes for the inputs of teamai's default share workflows, for the calling session.
@@ -79,7 +81,7 @@ const ENTRIES = [
     testEntries: ['place.ts', 'team-without.ts', 'role-copy.ts', 'data.ts'],
   },
   // workflow-published-runs.ts judges an offered run by the tool the local driver would launch for its prompt steps.
-  { folder: LOCAL, entries: { 'local-driver.ts': ['src/workflow-commands.ts', 'src/workflow-published-runs.ts'], 'local-tool-adapter.ts': [] }, testEntries: ['local-driver.ts', 'local-tool-adapter.ts'] },
+  { folder: LOCAL, entries: { 'local-driver.ts': ['src/workflow-commands.ts', 'src/workflow-published-runs.ts', 'src/workflow-drive.ts'], 'local-tool-adapter.ts': [] }, testEntries: ['local-driver.ts', 'local-tool-adapter.ts'] },
   { folder: DISCOVERY, entries: { 'workflow-skills.ts': 'any', 'generated-marker.ts': 'any' }, testEntries: ['workflow-skills.ts', 'generated-marker.ts', 'render.ts'] },
   // A suite's checks, start and report change state, so only the commands reach them. Pull, push and their checks sync suites with the team's other definitions.
   {

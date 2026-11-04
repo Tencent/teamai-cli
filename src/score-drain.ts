@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { loadTeamConfig } from './config.js';
+import { awaitsLine, awaitsOf, driveByDefault, leftOpenLine } from './default-driver.js';
 import { resolveWorkflowEnv } from './env-resolution.js';
 import type { RunMode } from './launch-context.js';
 import { scoringUnavailable } from './scorers/home.js';
@@ -22,12 +23,12 @@ import { isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from './ty
 import { DataBranches } from './utils/data-branches.js';
 import { log } from './utils/logger.js';
 import { agentSessionIdFromEnv } from './utils/session-id.js';
-// oxlint-disable-next-line teamai/workflow-boundaries -- the drain drives the teamai-finished-sessions run it starts, as workflow start --driver local does
-import { runLocalDriver } from './workflow/drivers/local/local-driver.js';
+import { driveRun } from './workflow-drive.js';
 import { inProcessClient } from './workflow/protocol.js';
 import { pendingRecords, publishPendingRecords } from './workflow/records.js';
 import type { StepState } from './workflow/step-state.js';
 import { readRun } from './workflow/store.js';
+import type { DriverName } from './workflow/driver-name.js';
 import type { RunState, WorkflowEnvelope } from './workflow/types.js';
 
 /** A pass or a session the drain's run judged, by the scorers that got a label. */
@@ -70,6 +71,10 @@ export interface DrainResult {
   ciPending: { passes: number; sessions: number };
   /** The teamai-finished-sessions runs already working on a scope, which the drain left to their driver. */
   working: string[];
+  /** The teamai-finished-sessions runs the drain started awaiting the driver `workflows.driver` names, which this machine does not run. */
+  awaiting: Array<{ run: string; driver: DriverName }>;
+  /** The teamai-finished-sessions runs the drain started for any driver, as `workflows.driver: none` says. */
+  unassigned: string[];
   /** Why a teamai-finished-sessions run did not start, or ended failed, for each scope where it did. */
   broke: string[];
   /** Runs whose queued workflow run records reached teamai-reports. */
@@ -86,9 +91,9 @@ export interface DrainResult {
   usage: Array<{ member: string; reported: boolean }>;
 }
 
-type Finished = Pick<DrainResult, 'judged' | 'failed' | 'held' | 'ciPending' | 'working' | 'broke' | 'capturedArchived' | 'unpublished'>;
+type Finished = Pick<DrainResult, 'judged' | 'failed' | 'held' | 'ciPending' | 'working' | 'awaiting' | 'unassigned' | 'broke' | 'capturedArchived' | 'unpublished'>;
 
-const nothing = (): Finished => ({ judged: [], failed: [], held: [], ciPending: { passes: 0, sessions: 0 }, working: [], broke: [], capturedArchived: 0, unpublished: [] });
+const nothing = (): Finished => ({ judged: [], failed: [], held: [], ciPending: { passes: 0, sessions: 0 }, working: [], awaiting: [], unassigned: [], broke: [], capturedArchived: 0, unpublished: [] });
 
 /** In unattended mode, every session captured unattended in this data home is finished from now on. */
 async function finishUnattended(config: LocalConfig, now: string): Promise<void> {
@@ -235,19 +240,40 @@ function readDriven(driven: WorkflowEnvelope, ran: RunState, into: Finished): vo
 }
 
 /**
- * Starts teamai-finished-sessions in `config`, as the CLI's own start, and drives it here, unless a run of it already
- * works on this data home or nothing waits for one. Says what the run judged, archived and left open.
+ * Starts teamai-finished-sessions in `config`, as the CLI's own start, and drives it here on the driver
+ * `workflows.driver` names, unless a run of it already works on this data home or nothing waits for one. Says what the
+ * run judged, archived and left open. A run for a driver this machine does not run, or for any driver, is left to it.
  */
 async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finished> {
   const finished = nothing();
   const unavailable = scoringUnavailable(config);
 
   if (unavailable) log.warn(unavailable);
-  const started = await startHere(config, mode, finished);
+  const decided = await driveByDefault(config);
+  const started = await startHere(config, { mode, awaits: awaitsOf(decided) }, finished);
 
   if (!started) return finished;
+
+  switch (decided.kind) {
+    case 'awaits':
+      finished.awaiting.push({ run: started.run, driver: decided.driver });
+
+      return finished;
+    case 'unassigned':
+      finished.unassigned.push(started.run);
+
+      return finished;
+    case 'drive':
+      break;
+    default: {
+      const unhandled: never = decided;
+
+      return unhandled;
+    }
+  }
+
   const team = await loadTeamConfig(config.repo.localPath);
-  const driven = await runLocalDriver(config, started.run, started.cwd, { toolPaths: team?.toolPaths });
+  const driven = await driveRun(config, started.run, decided.driver, { cwd: started.cwd, options: { toolPaths: team?.toolPaths } });
   const ran = await readRun(config, started.run);
 
   if (ran === 'missing' || ran === 'corrupt') finished.broke.push(`Run ${started.run} of ${FINISHED_WORKFLOW} could not be read after it was driven (${ran}).`);
@@ -257,14 +283,30 @@ async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finis
 }
 
 /** The run of teamai-finished-sessions this drain started in `config`, or undefined, with why in `finished`, when none. */
-async function startHere(config: LocalConfig, mode: RunMode, finished: Finished): Promise<Extract<FinishedStart, { kind: 'started' }> | undefined> {
-  const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode });
+async function startHere(config: LocalConfig, { mode, awaits }: { mode: RunMode; awaits: RunState['awaits'] }, finished: Finished): Promise<Extract<FinishedStart, { kind: 'started' }> | undefined> {
+  const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode, awaits });
 
   switch (started.kind) {
     case 'idle':
       return undefined;
     case 'working':
-      finished.working.push(started.run);
+      // A run no driver has taken is not working here: say what it waits for.
+      switch (started.holder.kind) {
+        case 'awaits':
+          finished.awaiting.push({ run: started.run, driver: started.holder.driver });
+          break;
+        case 'unassigned':
+          finished.unassigned.push(started.run);
+          break;
+        case 'driven':
+          finished.working.push(started.run);
+          break;
+        default: {
+          const unhandled: never = started.holder;
+
+          return unhandled;
+        }
+      }
 
       return undefined;
     case 'failed':
@@ -346,6 +388,8 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     result.ciPending.passes += finished.ciPending.passes;
     result.ciPending.sessions += finished.ciPending.sessions;
     result.working.push(...finished.working);
+    result.awaiting.push(...finished.awaiting);
+    result.unassigned.push(...finished.unassigned);
     result.broke.push(...finished.broke);
     result.capturedArchived += finished.capturedArchived;
     result.unpublished.push(...finished.unpublished);
@@ -490,13 +534,17 @@ function printLeft(result: DrainResult): void {
   if (ci !== '') log.info(`Left open: ${ci} whose CI has not finished. The next teamai score --drain labels them once it has.`);
 
   for (const runId of result.working) log.info(`Left open: run ${runId} of ${FINISHED_WORKFLOW} is already working here. Run teamai score --drain again once it ends.`);
+
+  for (const { run: runId, driver } of result.awaiting) log.info(awaitsLine(runId, driver));
+
+  for (const runId of result.unassigned) log.info(leftOpenLine(runId, FINISHED_WORKFLOW));
 }
 
 /** Prints what `result` did, one line per kind of work. */
 function print(result: DrainResult): void {
   printDone(result);
   printLeft(result);
-  const left = result.held.length + result.working.length + result.ciPending.passes + result.ciPending.sessions;
+  const left = result.held.length + result.working.length + result.awaiting.length + result.unassigned.length + result.ciPending.passes + result.ciPending.sessions;
 
   if (left === 0 && !hasFailed(result)) log.success('Nothing left to do here');
 }
