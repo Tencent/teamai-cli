@@ -1096,7 +1096,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
             await stopRecordedGroup(attemptDir(config, runId, lease.attempt));
 
             if (!startable(lease, controller.signal)) return undefined;
-            const ended = await runConfinedStep({ config, run: runId, lease: { ...lease, confined: place }, signal: controller.signal, ...lookup });
+            const secrets = env?.secrets ?? await knownSecrets(config);
+            const ended = await runConfinedStep({ config, run: runId, lease: { ...lease, confined: place }, signal: controller.signal, secrets, ...lookup });
             const id = { attempt: lease.attempt, revision: lease.revision, driver };
 
             if (ended.kind === 'ran') return { ...id, ...ended.report };

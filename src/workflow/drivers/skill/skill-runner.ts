@@ -405,7 +405,7 @@ async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId,
  */
 async function runConfinedHere(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'confined' }>): Promise<ConfinedStepEnd> {
   const stop = new AbortController();
-  const work = runConfinedStep({ config: context.config, run, lease: stage.lease, signal: stop.signal });
+  const work = runConfinedStep({ config: context.config, run, lease: stage.lease, signal: stop.signal, secrets: context.env.secrets });
   const ended = await whileOpen(context, run, attempt, { work, phases: ['running'], expiresAt: stage.expiresAt });
 
   if (ended) return ended;
