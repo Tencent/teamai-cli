@@ -106,10 +106,10 @@ async function isLeftToLapsed(config: LocalConfig, pass: { all: boolean; start: 
  * module started but whose run never planned it, and, once `run` ended, any other pass, such as one of a `start:
  * workflow` step that no step of its workflow scored. A pass the engine judges itself (`sampling: all`) is left to it.
  */
-async function unplannedOf(config: LocalConfig, run: RunState, install: string, facts: MarkFacts): Promise<string[]> {
+async function unplannedOf(config: LocalConfig, run: RunState, install: string, facts: MarkFacts): Promise<LapsedSubject[]> {
   const definitionOf = stepDefinitions(run);
   const ended = run.status !== 'running';
-  const list: string[] = [];
+  const list: LapsedSubject[] = [];
 
   // Read only once a pass has an unmarked scorer: most passes of most runs are marked, and the read clones the team pin.
   let pins: Promise<RunScorerPins> | undefined;
@@ -125,7 +125,9 @@ async function unplannedOf(config: LocalConfig, run: RunState, install: string, 
     if (unmarked.length === 0) continue;
     const read = await (pins ??= RunScorers.of(config, run));
 
-    if (read.ok && unmarked.some((name) => samples(read.pins, name, subject, all))) list.push(Subject.format({ kind: 'run', subject }));
+    const sampled = read.ok ? unmarked.filter((name) => samples(read.pins, name, subject, all)) : [];
+
+    if (sampled.length > 0) list.push({ subject: Subject.format({ kind: 'run', subject }), scorers: sampled });
   }
 
   return list;
@@ -137,6 +139,10 @@ function expiredUnmarked(runs: readonly RunState[], install: string, { now, live
 
   return aged.flatMap((run) => scoredPasses(run, install)).flatMap(({ subject }) => (live.has(Subject.format({ kind: 'run', subject })) ? [] : [subject]));
 }
+
+/** A subject automatic judging starts again, with the scorers to start it for. */
+// A type, not an interface, so it is a JSON value the verb prints.
+export type LapsedSubject = { subject: string; scorers: string[] };
 
 export const ScoreSubjects = {
   /**
@@ -173,23 +179,26 @@ export const ScoreSubjects = {
   },
 
   /**
-   * The subjects automatic judging starts again, once each, sorted: those whose mark is a lapse, or waits on CI that has
-   * since finished or outwaited the ci step's `--wait`, and the passes no teamai-score run planned, of each run inside its 14 days.
-   * The evidence staged for a pass whose marks all closed or expired, or whose run is past its 14 days unmarked, is removed.
+   * The subjects automatic judging starts again, once each, sorted, each with the scorers to start it for: those whose
+   * mark is a lapse, or waits on CI that has since finished or outwaited the ci step's `--wait`, and those of a pass that
+   * no teamai-score run planned, of each run inside its 14 days, that sample it. A scorer someone named is among them, and
+   * one nobody asked for that the subject's policy would take now is not. The evidence staged for a pass whose marks all
+   * closed or expired, or whose run is past its 14 days unmarked, is removed.
    */
-  async lapsed(config: LocalConfig, now: string): Promise<string[]> {
+  async lapsed(config: LocalConfig, now: string): Promise<LapsedSubject[]> {
     const facts = markFacts(config, now);
     const marked = await Marks.passes(config, facts);
     await removeSubjectEvidence(scoresDir(config), marked.closed);
     const marks = await Marks.restartable(config, facts);
-    const list = new Set<string>();
+    const list = new Map<string, Set<string>>();
+    const add = (subject: string, scorers: readonly string[]) => list.set(subject, new Set([...list.get(subject) ?? [], ...scorers]));
     const install = (await installOwner(config)).id;
 
     const runs = await readRuns(config);
 
     // A pass of a run that last changed 14 days ago reads as expired, not unmarked.
     for (const run of runs) {
-      for (const subject of await unplannedOf(config, run, install, facts)) list.add(subject);
+      for (const { subject, scorers } of await unplannedOf(config, run, install, facts)) add(subject, scorers);
     }
 
     // A pass no scorer sampled has no mark, so closing marks never removes what was staged for it.
@@ -205,9 +214,9 @@ export const ScoreSubjects = {
         if (ci.kind === 'pending' && !await ScoreStage.isCiWaitOver(config, ci.head, now)) continue;
       }
 
-      list.add(Subject.format(key.subject));
+      add(Subject.format(key.subject), [key.scorer]);
     }
 
-    return [...list].sort();
+    return [...list].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([subject, scorers]) => ({ subject, scorers: [...scorers] }));
   },
 } as const;

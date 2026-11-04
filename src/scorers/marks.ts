@@ -334,7 +334,7 @@ export const Marks = {
    * Opens the keys of each group a launch of `demand` may start, for `launch.run`; a key that run already holds counts as
    * opened again. An automatic launch starts an unmarked key, one waiting for CI and a lapse before the fourth; a named
    * one every key no live run holds, with its lapses and 14 days started again. A group with a session that would pass
-   * the daily limit is refused when automatic, and counted when named.
+   * the daily limit is refused when automatic, and counted when named or when it starts again a mark someone asked for.
    */
   async open(config: LocalConfig, launch: Launch, facts: MarkFacts): Promise<Opened> {
     const done = await scoresLocked(config, 'marks', async () => {
@@ -345,13 +345,17 @@ export const Marks = {
 
       for (const { group, keys } of launch.groups) {
         const starts: Array<{ key: MarkKey; line?: Line }> = [];
+        let isAsked = launch.demand === 'named';
 
         for (const key of keys) {
           const derived = await derive(key, ledger.newest.get(idOf(key))?.line, facts);
 
           if (derived.state.kind === 'open' && derived.state.run === launch.run) starts.push({ key });
-          else if (canLaunch(derived, launch.demand)) starts.push({ key, line: openLine(key, derived, launch, group, facts.now) });
-          else outcome.skipped.push({ key, state: derived.state });
+          else if (canLaunch(derived, launch.demand)) {
+            starts.push({ key, line: openLine(key, derived, launch, group, facts.now) });
+            // A mark someone asked for keeps that when automatic judging starts it again.
+            isAsked ||= derived.restart.requestedAt !== undefined;
+          } else outcome.skipped.push({ key, state: derived.state });
         }
 
         if (starts.length === 0) continue;
@@ -359,7 +363,7 @@ export const Marks = {
         const slot = counted && slotOf(launch.run, group, counted.key);
         const spends = slot !== undefined && !slots.has(slot);
 
-        if (spends && launch.demand === 'auto' && launch.dailyLimit !== undefined && slots.size >= launch.dailyLimit) {
+        if (spends && !isAsked && launch.dailyLimit !== undefined && slots.size >= launch.dailyLimit) {
           outcome.limited = true;
           continue;
         }

@@ -586,8 +586,8 @@ A teamai older than this one rejects a scorer with `sessions: true`, so update t
 teamai-finished-sessions   private, invoke: deny, timeout 30m
   sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
   share      teamai-share-session, for each             its publish step, then its teamai-score step
-  lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored
-  rescore    teamai-score, for each                     starts their judging again
+  lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored, each with its scorers
+  rescore    teamai-score, for each                     starts their judging again with those scorers only
 ```
 
 A session start and `teamai score --drain` start it with `{"publish":"policy","scorers":[]}`, so the session policies decide. From your own terminal you can pass other inputs, for example to judge every finished session with one scorer and archive none, whatever the policies say:
@@ -603,7 +603,7 @@ $ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publ
 | A session counts as finished | `--idle` of the `sessions` step | 6 hours after its last activity; an unattended session once a drain reached it |
 | A run ends | the file's `timeout` | 30 minutes; what it cancels lapses, and the next run starts it again |
 | A judge no driver here takes | the `timeout` of share-session's `score` step | 30 minutes; the session stays published and its judging lapses |
-| A lapse is started again | the scoring marks | until the fourth lapse, and only within 14 days of the run's last change |
+| A lapse is started again | the scoring marks | until the fourth lapse, and only within 14 days of the run's last change; with the scorers its marks hold, a named one included, unsampled and, once named, never refused by `daily_limit`, and with no scorer the session policy would add now |
 
 A team changes these in `workflows/teamai-finished-sessions.yaml` in its team repo, which replaces the default: `--idle 1h` takes a session one hour after its last activity, and `timeout` bounds a run. Steps can be added or reordered there too. What a team cannot change stays in the CLI: the automatic starts pass no agent evidence and only the policy inputs.
 

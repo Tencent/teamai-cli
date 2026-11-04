@@ -74,6 +74,19 @@ interface Judged {
   key: (candidate: Candidate) => MarkKey;
 }
 
+/**
+ * Whether a plan of `request` starts a mark again: on an automatic demand with no hand label, a lapse or a wait for CI on
+ * its subject of a scorer an earlier launch took, which may be one someone named, that does not judge sessions or does
+ * not sample the subject, so sampling skips none.
+ */
+async function restartsOf(request: PlanRequest, facts: MarkFacts): Promise<(key: MarkKey) => boolean> {
+  if (request.demand !== 'auto' || request.label !== '') return () => false;
+  const id = Subject.format(request.subject);
+  const restartable = (await Marks.restartable(request.attempt.config, facts)).flatMap(({ key }) => (Subject.format(key.subject) === id ? [key] : []));
+
+  return (key) => restartable.some((mark) => mark.scorer === key.scorer && mark.sourceHash === key.sourceHash);
+}
+
 function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
@@ -228,13 +241,13 @@ function groupKey(candidate: Candidate, judged: Judged, { batch, choose }: { bat
  * judge and take the same stages. A session's routing questions share a group whatever `batch` says, and its team
  * scorers join them only under `batch`.
  */
-async function grouped(request: PlanRequest, judged: Judged): Promise<Candidate[][]> {
+async function grouped(request: PlanRequest, judged: Judged, restarts: (key: MarkKey) => boolean): Promise<Candidate[][]> {
   const aliases = await loadModelAliases(request.attempt.config);
   const tools = installedConfinedTools(judged.prefer);
   const groups = new Map<string, Candidate[]>();
   const batch = request.batch || judged.batch === true;
 
-  for (const candidate of judged.candidates.filter((one) => request.demand === 'named' || judged.sampled(one))) {
+  for (const candidate of judged.candidates.filter((one) => request.demand === 'named' || judged.sampled(one) || restarts(judged.key(one)))) {
     const key = groupKey(candidate, judged, { batch, choose: () => chooseJudgeModel(aliases, candidate.definition, tools) });
     groups.set(key, [...groups.get(key) ?? [], candidate]);
   }
@@ -261,12 +274,14 @@ export async function planGroups(request: PlanRequest): Promise<{ ok: true; grou
 
   if (!scoring.ok) return refused('scoring_settings_invalid', scoring.reason);
   const { subject } = request;
+  const facts = markFacts(config, request.now);
+  const restarts = await restartsOf(request, facts);
   const judged = subject.kind === 'run' ? await runJudged(request, subject.subject, scoring.batch) : await sessionJudged(request, subject, scoring);
 
   if ('ok' in judged) return judged;
 
   if (request.label !== '') return handGroup(request, judged);
-  const groups = await grouped(request, judged);
+  const groups = await grouped(request, judged, restarts);
 
   const launch: Launch = {
     run: run.id,
@@ -275,7 +290,7 @@ export async function planGroups(request: PlanRequest): Promise<{ ok: true; grou
     dailyLimit: scoring.sessions.dailyLimit,
   };
 
-  const opened = await Marks.open(config, launch, markFacts(config, request.now));
+  const opened = await Marks.open(config, launch, facts);
 
   if (opened.status === 'busy') return refused('busy', 'Another teamai process is writing the scoring marks of this data home. Nothing was planned; run the step again.');
 

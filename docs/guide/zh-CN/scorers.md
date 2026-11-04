@@ -586,8 +586,8 @@ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended
 teamai-finished-sessions   private, invoke: deny, timeout 30m
   sessions   teamai session list --finished --idle 6h   the finished sessions to archive or judge here
   share      teamai-share-session, for each             its publish step, then its teamai-score step
-  lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored
-  rescore    teamai-score, for each                     starts their judging again
+  lapsed     teamai score subjects --lapsed             passes and sessions whose judging lapsed, and passes no run scored, each with its scorers
+  rescore    teamai-score, for each                     starts their judging again with those scorers only
 ```
 
 会话启动和 `teamai score --drain` 用 `{"publish":"policy","scorers":[]}` 启动它，因此由会话策略决定。在你自己的终端中可以传入其他输入，例如不管策略怎么说，用一个评分器评判每个已结束的会话且不归档任何会话：
@@ -603,7 +603,7 @@ $ teamai workflow start teamai-finished-sessions --driver local --inputs '{"publ
 | 会话算作已结束 | `sessions` 步骤的 `--idle` | 最后一次活动后 6 小时；无人值守的会话在 drain 到达它时 |
 | 运行结束 | 文件的 `timeout` | 30 分钟；它取消的工作会过期，下一次运行会重新开始 |
 | 本机没有 driver 领取的评审 | share-session 的 `score` 步骤的 `timeout` | 30 分钟；会话保持已发布，它的评审过期 |
-| 过期被重新开始 | 评分标记 | 直到第四次过期，且只在运行最后一次变更后的 14 天内 |
+| 过期被重新开始 | 评分标记 | 直到第四次过期，且只在运行最后一次变更后的 14 天内；只用标记里的评分器，包括有人点名的那个，不抽样；点名过的不会被 `daily_limit` 拒绝；不加入会话策略此时会选的其他评分器 |
 
 团队在团队仓库的 `workflows/teamai-finished-sessions.yaml` 中修改这些，它会替换默认文件：`--idle 1h` 在会话最后一次活动一小时后就处理它，`timeout` 限定一次运行的时长。也可以在那里添加或调整步骤的顺序。团队不能改变的部分留在 CLI 中：自动启动不传递 agent 证据，只传策略输入。
 

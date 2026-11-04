@@ -17,6 +17,7 @@ import type { LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
+import { cancelRun } from '../workflow/run-controls.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { ScoreAnswer } from '../scorers/score-answer.js';
 import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
@@ -318,6 +319,26 @@ describe('score plan', () => {
 
     expect(await planned('session:claude-code:one')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
     expect(await planned(`run:${await reviewedRun(config)}:review:1`)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+  });
+
+  it('starts again only the scorer someone named, on an automatic demand, whatever it samples, judges sessions or the daily limit says', async () => {
+    const config = { ...await team({ review: REVIEW }, { quality: scorer({ rate: 0 }), coverage: scorer({ rate: 0 }), sessq: scorer({ extra: 'sessions: true\n' }) }), scoring: { daily_limit: 1 } };
+    const lapse = async (subject: string) => {
+      const asked = await scoreRun(config, { subject, scorers: ['quality'], demand: 'named' });
+      expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'named' }, (await asked.next('plan')).ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+      data(await cancelRun(config, asked.runId, await knownSecrets(config)));
+    };
+    const pass = `run:${await reviewedRun(config)}:review:1`;
+    await lapse(pass);
+    await lapse('session:claude-code:one');
+
+    const listed = await ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
+
+    expect(listed).toEqual({ ok: true, output: { list: [{ subject: pass, scorers: ['quality'] }, { subject: 'session:claude-code:one', scorers: ['quality'] }] } });
+    for (const subject of [pass, 'session:claude-code:one']) {
+      const { ctx } = await (await scoreRun(config, { subject, scorers: ['quality'] })).next('plan');
+      expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'auto' }, ctx)).toEqual({ ok: true, output: { groups: [{ subject, hand: '', scorers: 'quality', model: '', ci: false, protected: false }] } });
+    }
   });
 
   it('judges a session automatically with each scorer that judges sessions and samples it, and only those', async () => {
@@ -1142,9 +1163,9 @@ describe('score subjects', () => {
     const lapsed = () => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
 
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
-    expect(await lapsed()).toEqual({ ok: true, output: { list: ['session:claude-code:one'] } });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: 'session:claude-code:one', scorers: ['q'] }] } });
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'passed' });
-    expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${runId}:change:1`, 'session:claude-code:one'] } });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: `run:${runId}:change:1`, scorers: ['clarity'] }, { subject: 'session:claude-code:one', scorers: ['q'] }] } });
   });
 
   it('lists a pass whose CI is still pending once the ci step\'s --wait has passed, so the next run judges it without CI', async () => {
@@ -1156,7 +1177,7 @@ describe('score subjects', () => {
 
     expect(answers.get('score[0].label')).toMatchObject({ ok: true, output: { labels: [{ code: 'ci_pending' }] } });
     expect(await lapsed('2026-11-03T10:29:59.999Z')).toEqual({ ok: true, output: { list: [] } });
-    expect(await lapsed('2026-11-03T10:30:00.000Z')).toEqual({ ok: true, output: { list: [`run:${runId}:change:1`] } });
+    expect(await lapsed('2026-11-03T10:30:00.000Z')).toEqual({ ok: true, output: { list: [{ subject: `run:${runId}:change:1`, scorers: ['clarity'] }] } });
   });
 
   it('lists a pass of an ended run inside its 14 days that no teamai-score run planned, for a scorer that samples it', async () => {
@@ -1168,7 +1189,7 @@ describe('score subjects', () => {
     for (const runId of [auto, ownRun]) expect(data(await leaseNext(config, runId, external))).toMatchObject({ done: { outcome: 'succeeded' } });
     const lapsed = (now = NOW) => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now });
 
-    expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${auto}:review:1`] } });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: `run:${auto}:review:1`, scorers: ['quality'] }] } });
     await Marks.open(config, { run: 'r0000000000000001', demand: 'auto', groups: [{ group: 'quality', keys: [{ scorer: 'quality', subject: { kind: 'run', subject: { runId: auto, step: 'review', pass: 1 } } }] }] }, { now: NOW, readRun: async () => undefined });
     await Marks.close(config, [{ scorer: 'quality', subject: { kind: 'run', subject: { runId: auto, step: 'review', pass: 1 } } }], { kind: 'labelled' }, { now: NOW });
     expect(await lapsed()).toEqual({ ok: true, output: { list: [] } });
@@ -1184,7 +1205,7 @@ describe('score subjects', () => {
     const started = await PassScoring.start(config, runId, { client: { start: (name, options) => startRun(config, name, options.inputs, { secrets, startedBy: 'cli' }) }, mode: 'attended' });
 
     expect(started.runs).toHaveLength(1);
-    expect(await lapsed()).toEqual({ ok: true, output: { list: [`run:${runId}:review:1`] } });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: `run:${runId}:review:1`, scorers: ['quality', 'coverage'] }] } });
   });
 
   it('lists a start: workflow pass with no scoring step only once its run ended, and not past the run\'s 14 days', async () => {
@@ -1198,7 +1219,7 @@ describe('score subjects', () => {
 
     expect(await lapsed(new Date().toISOString())).toEqual({ ok: true, output: { list: [] } });
     expect(data(await leaseNext(config, ownRun, external))).toMatchObject({ done: { outcome: 'succeeded' } });
-    expect(await lapsed(new Date().toISOString())).toEqual({ ok: true, output: { list: [`run:${ownRun}:review:1`] } });
+    expect(await lapsed(new Date().toISOString())).toEqual({ ok: true, output: { list: [{ subject: `run:${ownRun}:review:1`, scorers: ['quality'] }] } });
     expect(await lapsed(later)).toEqual({ ok: true, output: { list: [] } });
   });
 });
