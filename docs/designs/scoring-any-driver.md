@@ -150,7 +150,9 @@ another driver could judge. The `judge: here | driver` input is removed from `te
 `$TEAMAI_RUN_DIR` is removed when a run ends. Retrying `score[0].label` after it failed then read a directory that no
 longer exists. A retry also runs again the steps whose output fields the retried step uses in its templates (not reads
 that appear only in `if`) when those fields hold a path inside the run directory that no longer exists, in its own
-workflow or one around it. It checks each path, so a second retry still finds what a step run since did not bring back.
+workflow or one around it. When that step is in a workflow around it, the `workflow` step that holds the retried step
+runs again after it, whether it is still running or not, so its steps read the path only once it is written again. It
+checks each path, so a second retry still finds what a step run since did not bring back.
 `workflow retry` prints what else it runs.
 
 ```

@@ -313,6 +313,11 @@ interface RetryContainer {
   cone: Set<StepState>;
   runner?: StepState;
   resetStops: boolean;
+  /**
+   * Whether `child`, the workflow step a step that runs again is inside, runs again itself: a step of this workflow it
+   * reads a gone run-dir path from runs again, and its own steps must wait until that one wrote the path again.
+   */
+  rerunsChild: boolean;
 }
 
 /**
@@ -440,6 +445,7 @@ function retryContainers(run: RunState, target: StepState, runDir: { path: strin
     const cone = new Set([child]);
     // The steps of this workflow an inner one read gone run-dir paths from run again, as a step of its own would bring them.
     const written = new Set(isItem(child) ? [] : states.filter((state) => enclosing.delete(localId(scope, state))));
+    const rerunsChild = written.size > 0;
 
     for (let changed = true; changed;) {
       changed = false;
@@ -480,9 +486,11 @@ function retryContainers(run: RunState, target: StepState, runDir: { path: strin
       }
     }
 
-    containers.push({ child, states, cone, runner, resetStops });
+    containers.push({ child, states, cone, runner, resetStops, rerunsChild });
 
-    if (!runner || runner.status === 'running') return containers;
+    // A running workflow step goes on with its steps that run again, unless one of them reads a gone path from a step
+    // around it, which only the workflow that holds that step can run again.
+    if (!runner || (runner.status === 'running' && enclosing.size === 0)) return containers;
     child = runner;
   }
 }
@@ -680,6 +688,11 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       const located = runner && locateStep(run, runner.id);
 
       if (runner) start(runner, undefined, located ? startLimits(run, runner, located.step, now) : undefined);
+
+      if (container.rerunsChild) {
+        again.add(container.child);
+        retryInstance(run, container.child, now);
+      }
     }
 
     if (ended) run.limitsFrom = { at: now, tokens: spentTokens(run, () => true) };
