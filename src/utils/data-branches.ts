@@ -31,9 +31,77 @@ async function keptFiles(config: LocalConfig, branch: DataBranch): Promise<strin
 type Stuck = { file: string; error: string };
 
 /**
+ * The lines `patch` appends to the end of each file it changes, or undefined unless that is all it does: one hunk per
+ * file, adding lines after its context and removing none, as a step that appends a note or a label does.
+ */
+function appendedLines(patch: string): Map<string, string[]> | undefined {
+  if (patch.includes('\nGIT binary patch\n') || patch.includes('\n\\ No newline at end of file')) return undefined;
+  const appended = new Map<string, string[]>();
+  let lines: string[] | undefined;
+  let hunks = 0;
+
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      lines = undefined;
+      hunks = 0;
+    } else if (line.startsWith('+++ b/')) {
+      lines = [];
+      appended.set(line.slice('+++ b/'.length), lines);
+    } else if (lines !== undefined && line.startsWith('@@')) {
+      hunks += 1;
+
+      if (hunks > 1) return undefined;
+    } else if (lines !== undefined && hunks === 1) {
+      if (line.startsWith('+')) lines.push(line.slice(1));
+      else if (line.startsWith('-') || (line.startsWith(' ') && lines.length > 0)) return undefined;
+    }
+  }
+
+  return appended.size > 0 && [...appended.values()].every((added) => added.length > 0) ? appended : undefined;
+}
+
+/**
+ * Appends the lines of `patch`, an append-only one, to the end of its files at `worktree` as they are now, and stages
+ * them: what it meant when it no longer applies, because another step appended to the same file since it was cut.
+ * Answers how to take it back out, or undefined when `patch` is not append-only or a file does not end in a newline.
+ */
+async function appendAgain(worktree: string, patch: string): Promise<(() => Promise<void>) | undefined> {
+  const appended = appendedLines(patch);
+
+  if (appended === undefined) return undefined;
+  const before = new Map<string, string | undefined>();
+
+  for (const file of appended.keys()) {
+    const text = await fs.readFile(path.join(worktree, file), 'utf8').catch(() => undefined);
+
+    if (text !== undefined && text !== '' && !text.endsWith('\n')) return undefined;
+    before.set(file, text);
+  }
+
+  const repo = createGit(worktree);
+
+  for (const [file, lines] of appended) {
+    await fs.mkdir(path.dirname(path.join(worktree, file)), { recursive: true });
+    await fs.writeFile(path.join(worktree, file), `${before.get(file) ?? ''}${lines.join('\n')}\n`);
+  }
+
+  await repo.raw(['add', '--', ...appended.keys()]);
+
+  return async () => {
+    for (const [file, text] of before) {
+      if (text === undefined) await fs.rm(path.join(worktree, file), { force: true });
+      else await fs.writeFile(path.join(worktree, file), text);
+    }
+
+    await repo.raw(['add', '-A', '--', ...before.keys()]);
+  };
+}
+
+/**
  * Applies the patches kept for `branch` to the index of `worktree`, oldest first, and commits each with `own`'s message
  * when it is `own`'s file. A committed patch is removed: that commit is what the checkout pushes, now or later. One
- * already on the branch is removed too, and one that does not apply stays, with what git said.
+ * already on the branch is removed too. One that does not apply is appended again when all it does is append, and
+ * otherwise stays, with what git said.
  */
 async function commitKept(input: { worktree: string; branch: DataBranch; files: readonly string[]; own?: OwnPatch }): Promise<Stuck[]> {
   const { worktree, branch, files, own } = input;
@@ -41,15 +109,23 @@ async function commitKept(input: { worktree: string; branch: DataBranch; files: 
   const stuck: Stuck[] = [];
 
   for (const file of files) {
+    // Take the patch back out if its commit fails, so the next send applies and commits it rather than finding it on the branch.
+    let undo = async (): Promise<void> => {
+      await repo.raw(['apply', '--index', '--reverse', '--binary', file]);
+    };
+
     try {
       await repo.raw(['apply', '--index', '--binary', file]);
     } catch (e) {
       // Its reverse applies only where every line it adds sits in its own context and every line it removes is gone.
       const isOnBranch = await repo.raw(['apply', '--check', '--reverse', '--binary', file]).then(() => true, () => false);
+      const appended = isOnBranch ? undefined : await appendAgain(worktree, await fs.readFile(file, 'utf8'));
 
       if (isOnBranch) await fs.rm(file, { force: true });
-      else stuck.push({ file, error: failureReason(e) });
-      continue;
+      else if (appended === undefined) stuck.push({ file, error: failureReason(e) });
+
+      if (appended === undefined) continue;
+      undo = appended;
     }
 
     const paths = (await repo.raw(['apply', '--numstat', '-z', file])).split('\0').flatMap((entry) => entry.split('\t').slice(2));
@@ -57,8 +133,7 @@ async function commitKept(input: { worktree: string; branch: DataBranch; files: 
     try {
       await commitSkippingHooks(repo, file === own?.file ? own.message : `[teamai] Publish pending ${branch} data`, paths, { identityFallback: true });
     } catch (e) {
-      // Take the patch back out, so the next send applies and commits it rather than finding it on the branch.
-      await repo.raw(['apply', '--index', '--reverse', '--binary', file]);
+      await undo();
       throw e;
     }
 

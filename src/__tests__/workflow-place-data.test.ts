@@ -347,23 +347,54 @@ describe('DataBranches.pushPending', () => {
     expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":3}\n');
   });
 
-  it('keeps a note that repeats a line the file holds elsewhere when origin changed the lines it follows', async () => {
+  it('appends a note that repeats a line the file holds elsewhere at the end of the file when origin changed the lines it follows', async () => {
     await append(NOTES, 'Mon: fixed CI.');
     await append(NOTES, 'No blockers.');
     await append(NOTES, 'Tue: paired.');
     await whileLocked(() => append(NOTES, 'No blockers.'));
     onAnotherMachine(NOTES, 'Mon: fixed CI.\nNo blockers.\nTue: paired on the flaky test.\n');
 
-    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.any(String) }]);
-    expect(await DataBranches.kept(config, 'teamai-reports')).toHaveLength(1);
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+    expect(onOrigin(NOTES)).toBe('Mon: fixed CI.\nNo blockers.\nTue: paired on the flaky test.\nNo blockers.\n');
+    expect(await DataBranches.kept(config, 'teamai-reports')).toEqual([]);
   });
 
-  it('keeps a note that appends a second copy of the line it follows when origin changed the lines before it', async () => {
+  it('appends a note that adds a second copy of the line it follows at the end of the file when origin changed the lines before it', async () => {
     await append(NOTES, 'Paired on the flaky test.');
     await whileLocked(() => append(NOTES, 'Paired on the flaky test.'));
     onAnotherMachine(NOTES, 'Mon:\nPaired on the flaky test.\n');
 
-    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.any(String) }]);
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+    expect(onOrigin(NOTES)).toBe('Mon:\nPaired on the flaky test.\nPaired on the flaky test.\n');
+    expect(await DataBranches.kept(config, 'teamai-reports')).toEqual([]);
+  });
+
+  it('lands both notes two steps opened at once appended to one file', async () => {
+    await append(NOTES, 'Mon: fixed CI.');
+    const open = async (attempt: string, line: string) => {
+      const opened = await openDataCheckout({ config, run: RUN, attempt: attempt as AttemptId, branch: 'teamai-reports' });
+      fs.appendFileSync(path.join(opened.dir, NOTES), `${line}\n`);
+      git(opened.dir, 'add', '--', NOTES);
+      return () => finishDataCheckout({ config, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at });
+    };
+    const first = await open('b001', 'Tue: paired.');
+    const second = await open('b002', 'Wed: shipped.');
+
+    expect(await first()).toEqual({});
+    expect(await second()).toEqual({});
+    expect(onOrigin(NOTES)).toBe('Mon: fixed CI.\nTue: paired.\nWed: shipped.\n');
+    expect(await DataBranches.kept(config, 'teamai-reports')).toEqual([]);
+  });
+
+  it('keeps a note whose patch changes a line origin changed too, rather than appending it', async () => {
+    await append(NOTES, 'Mon: fixed CI.');
+    const opened = await openDataCheckout({ config, run: RUN, attempt: 'c001' as AttemptId, branch: 'teamai-reports' });
+    fs.writeFileSync(path.join(opened.dir, NOTES), 'Mon: fixed CI and the flaky test.\n');
+    git(opened.dir, 'add', '--', NOTES);
+    onAnotherMachine(NOTES, 'Mon: fixed CI on Monday.\n');
+
+    expect(await finishDataCheckout({ config, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at })).toEqual({ message: expect.stringContaining('git apply --3way') });
+    expect(onOrigin(NOTES)).toBe('Mon: fixed CI on Monday.\n');
     expect(await DataBranches.kept(config, 'teamai-reports')).toHaveLength(1);
   });
 
