@@ -296,7 +296,7 @@ const PASS_MS = 30 * 60 * 1000;
  */
 export type FinishedStart =
   | { kind: 'started'; run: RunId; cwd: string }
-  | { kind: 'working'; run: RunId; cwd: string }
+  | { kind: 'working'; run: RunId; cwd: string; awaits?: RunState['awaits'] }
   | { kind: 'idle' }
   | { kind: 'failed'; failure: WorkflowFailure };
 
@@ -308,10 +308,18 @@ function holdsUntil(run: RunState): number {
 }
 
 /** The run of teamai-finished-sessions this data home started that has not ended and still holds it. */
-async function workingRun(config: LocalConfig, now: number): Promise<RunId | undefined> {
+/** A run of it that still holds the data home, and the driver it awaits when one started it for another driver. */
+type WorkingRun = Pick<Extract<FinishedStart, { kind: 'working' }>, 'run' | 'awaits'>;
+
+async function workingRun(config: LocalConfig, now: number): Promise<WorkingRun | undefined> {
   const run = (await readRuns(config)).findLast((one) => one.name === FINISHED_WORKFLOW && one.status === 'running' && holdsUntil(one) > now);
 
-  return run && RunIdSchema.parse(run.id);
+  if (!run) return undefined;
+  const working: WorkingRun = { run: RunIdSchema.parse(run.id) };
+
+  if (run.awaits) working.awaits = run.awaits;
+
+  return working;
 }
 
 /**
@@ -355,7 +363,7 @@ async function start(config: LocalConfig, { client, mode, awaits }: { client: Pi
   await endExpired(config, { client, cwd });
   const working = await workingRun(config, Date.now());
 
-  if (working) return { kind: 'working', run: working, cwd };
+  if (working) return { kind: 'working', cwd, ...working };
 
   if (!await hasWork(config, new Date().toISOString())) return { kind: 'idle' };
 

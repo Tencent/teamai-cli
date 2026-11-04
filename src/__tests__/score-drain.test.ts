@@ -833,6 +833,33 @@ steps:
     expect(drained.lines).not.toContain('✔ Nothing left to do here');
   });
 
+  it('says again, on the next drain, which driver its open run awaits, not that it works here', async () => {
+    const config = await finishedSessionsFor('acme-sandbox');
+    await drain();
+    capturedSession('second-session', 'unattended');
+
+    const again = await drain();
+
+    const ran = (await readRuns(config)).filter((one) => one.name === 'teamai-finished-sessions');
+    expect(ran).toHaveLength(1);
+    expect(again.lines).toContain(`ℹ ${ran[0]?.id} waits for driver acme-sandbox, which this machine does not run. To drive it here: teamai workflow resume ${ran[0]?.id} --driver local`);
+    expect(again.lines.join('\n')).not.toContain('is already working here');
+  });
+
+  it('no longer awaits a driver once a driver takes a lease of the run', async () => {
+    const config = await finishedSessionsFor('acme-sandbox');
+    await drain();
+    const ran = (await readRuns(config)).find((one) => one.name === 'teamai-finished-sessions');
+    if (!ran) throw new Error('no teamai-finished-sessions run');
+
+    const asked = data(await leaseNext(config, ran.id, { kind: 'local', machine: 'm1', workspace: root }, { canTakeLease: false }));
+    expect(asked).toHaveProperty('wait');
+    expect(await readRun(config, ran.id)).toMatchObject({ awaits: { driver: 'acme-sandbox' } });
+
+    expect(data(await leaseNext(config, ran.id, { kind: 'local', machine: 'm1', workspace: root }))).toHaveProperty('lease');
+    expect(await readRun(config, ran.id)).not.toHaveProperty('awaits');
+  });
+
   it('starts its run for any driver with workflows.driver none, awaiting none, and says which run it left', async () => {
     const config = await finishedSessionsFor('none');
 

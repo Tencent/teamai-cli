@@ -284,7 +284,9 @@ async function startHere(config: LocalConfig, { mode, awaits }: { mode: RunMode;
     case 'idle':
       return undefined;
     case 'working':
-      finished.working.push(started.run);
+      // A run that awaits a driver this machine does not run is not working here: say what it waits for.
+      if (started.awaits) finished.awaiting.push({ run: started.run, driver: started.awaits.driver });
+      else finished.working.push(started.run);
 
       return undefined;
     case 'failed':
