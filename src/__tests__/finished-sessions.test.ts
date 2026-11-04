@@ -22,6 +22,7 @@ import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { projectDataHome } from '../utils/partition.js';
 import { Marks } from '../scorers/marks.js';
 import { ScoreSubjects } from '../scorers/score-subjects.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { pinScorers } from '../scorers/cache.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
@@ -351,6 +352,32 @@ describe('the start of teamai-finished-sessions', () => {
       await FinishedSessions.start(config, { client, mode: 'attended' });
 
       expect(await readRun(config, first.run)).toMatchObject({ status: 'failed' });
+      expect(await ScoreSubjects.lapsed(config, new Date().toISOString())).toEqual([{ subject: `session:claude-code:${IDLE}`, scorers: ['quality'] }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends a run of a team copy that sets no timeout once 30 minutes passed, so the session it was judging is started again', async () => {
+    const shipped = fs.readFileSync(path.resolve('workflows/teamai-finished-sessions.yaml'), 'utf8');
+    const config = await team({ 'workflows/teamai-finished-sessions.yaml': shipped.replace(/^timeout: .*\n/mu, '') }, { scoring: { sessions: true } });
+    await syncScorersThenWorkflows(config);
+    capturedSession(IDLE, 'attended');
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const first = await FinishedSessions.start(config, { client, mode: 'attended' });
+    if (first.kind !== 'started') throw new Error(JSON.stringify(first));
+    const started = await readRun(config, first.run);
+    if (started === 'missing' || started === 'corrupt') throw new Error(started);
+    expect(started.definition.timeout).toBeUndefined();
+    const pins = await pinScorers(config, ['quality']);
+    const key = { scorer: 'quality', sourceHash: pins.quality?.sourceHash ?? '', subject: { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: IDLE } } };
+    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString() }) });
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 31 * 60 * 1000 });
+
+    try {
+      await FinishedSessions.start(config, { client, mode: 'attended' });
+
+      expect(await readRun(config, first.run)).toMatchObject({ status: 'cancelled' });
       expect(await ScoreSubjects.lapsed(config, new Date().toISOString())).toEqual([{ subject: `session:claude-code:${IDLE}`, scorers: ['quality'] }]);
     } finally {
       vi.useRealTimers();

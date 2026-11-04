@@ -26,7 +26,7 @@ import { durationMs } from '../workflow/parse.js';
 import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { readRuns, RunIdSchema, type RunId } from '../workflow/store.js';
-import type { WorkflowFailure } from '../workflow/types.js';
+import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPolicy } from './session-policy.js';
 import { SessionPublish } from './session-publish.js';
@@ -300,29 +300,33 @@ export type FinishedStart =
   | { kind: 'idle' }
   | { kind: 'failed'; failure: WorkflowFailure };
 
-/** The run of teamai-finished-sessions this data home started inside its timeout and that has not ended. */
+/** When a running teamai-finished-sessions run stops holding the data home: its own deadline, else `PASS_MS` after it started. */
+function holdsUntil(run: RunState): number {
+  const deadline = runDeadline(run);
+
+  return deadline === undefined ? Date.parse(run.createdAt) + PASS_MS : Date.parse(deadline);
+}
+
+/** The run of teamai-finished-sessions this data home started that has not ended and still holds it. */
 async function workingRun(config: LocalConfig, now: number): Promise<RunId | undefined> {
-  const run = (await readRuns(config)).findLast((one) => one.name === FINISHED_WORKFLOW && one.status === 'running'
-    && Date.parse(one.createdAt) + (one.definition.timeout ?? PASS_MS) > now);
+  const run = (await readRuns(config)).findLast((one) => one.name === FINISHED_WORKFLOW && one.status === 'running' && holdsUntil(one) > now);
 
   return run && RunIdSchema.parse(run.id);
 }
 
 /**
- * Ends each run of teamai-finished-sessions in `config` that passed its timeout with nothing driving it, through the
- * engine's own deadline, so the marks it held lapse and a later run starts them again.
+ * Ends each run of teamai-finished-sessions in `config` that no longer holds the data home with nothing driving it, so
+ * the marks it held lapse and a later run starts them again: through the engine's own deadline, or, for a team copy that
+ * sets no timeout, by cancelling it.
  */
-async function endExpired(config: LocalConfig, { client, cwd }: { client: Pick<WorkflowClient, 'next'>; cwd: string }): Promise<void> {
+async function endExpired(config: LocalConfig, { client, cwd }: { client: Pick<WorkflowClient, 'next' | 'cancel'>; cwd: string }): Promise<void> {
   const now = Date.now();
-
-  const expired = (await readRuns(config)).filter((run) => {
-    const deadline = run.name === FINISHED_WORKFLOW && run.status === 'running' ? runDeadline(run) : undefined;
-
-    return deadline !== undefined && Date.parse(deadline) <= now;
-  });
+  const expired = (await readRuns(config)).filter((run) => run.name === FINISHED_WORKFLOW && run.status === 'running' && holdsUntil(run) <= now);
 
   for (const run of expired) {
-    const answer = await client.next(run.id, { driver: driverIdentity('local', cwd), canTakeLease: false });
+    const answer = runDeadline(run) === undefined
+      ? await client.cancel(run.id)
+      : await client.next(run.id, { driver: driverIdentity('local', cwd), canTakeLease: false });
 
     if ('error' in answer) log.warn(`Run ${run.id} of ${FINISHED_WORKFLOW} passed its timeout and could not be ended, so the sessions it was judging wait for the next start: ${answer.error.message}`);
   }
@@ -346,7 +350,7 @@ async function hasWork(config: LocalConfig, now: string): Promise<boolean> {
  * agent evidence, whatever process calls it, from the directory whose teamai resolves to this data home. A run that
  * already works on this data home is answered instead, so two passes never archive one session twice.
  */
-async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start' | 'next'>; mode: RunMode }): Promise<FinishedStart> {
+async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start' | 'next' | 'cancel'>; mode: RunMode }): Promise<FinishedStart> {
   const cwd = SessionWork.scopeCwd(config);
   await endExpired(config, { client, cwd });
   const working = await workingRun(config, Date.now());
