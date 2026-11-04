@@ -261,6 +261,69 @@ export async function cleanUpSucceededRun(
 }
 
 /**
+ * Brings back each branch succeeded run `run`'s cleanup deleted, at the commit the run recorded on it, on origin and
+ * in `checkout`, before a retry reopens the run: publishing it checks each copy's branch on origin, and a step it runs
+ * again may start from one. A branch already at that commit stays; one at another commit is not moved. Answers the
+ * branches that are not back, and why. Run again, or after it stopped midway, it ends the same.
+ */
+export async function restoreDeletedBranches(run: RunState, checkout: string): Promise<RunLeftovers['failed']> {
+  const wanted = (run.leftovers?.by === 'success' ? run.leftovers.deleted : []).flatMap((branch) => {
+    const commit = branch === basePinBranch(run.id) ? run.base?.commit : run.copies?.[branch]?.commit;
+
+    return commit === undefined ? [] : [{ branch, commit }];
+  });
+
+  if (wanted.length === 0) return [];
+  const tips = await runBranches({ checkout, runId: run.id });
+
+  if ('error' in tips) return wanted.map(({ branch }) => ({ branch, reason: `in ${checkout}: ${tips.error}` }));
+  // A branch the run kept holds each commit, so origin has the ones this checkout lacks.
+  const fetched = tips.origin ? await fetchMissingCommits(checkout, { run: run.id, commits: wanted.map(({ commit }) => commit) }) : { missing: [] };
+  const failed: RunLeftovers['failed'] = [];
+  const pending: typeof wanted = [];
+
+  for (const { branch, commit } of wanted) {
+    const there = tips.origin?.get(branch);
+    const here = tips.local.get(branch);
+
+    if (fetched.missing.includes(commit)) {
+      failed.push({ branch, reason: `in ${checkout}: commit ${commit} is not there, and was not fetched from origin (${fetched.fetchError ?? 'no branch there holds it'})` });
+    } else if (there !== undefined && there !== commit) {
+      failed.push({ branch, reason: `on origin: it is at ${there}, not at commit ${commit} the run recorded, and teamai does not move it` });
+    } else if (here !== undefined && here !== commit) {
+      failed.push({ branch, reason: `in ${checkout}: it is at ${here}, not at commit ${commit} the run recorded, and teamai does not move it` });
+    } else pending.push({ branch, commit });
+  }
+
+  const toPush = tips.origin ? pending.filter(({ branch }) => !tips.origin?.has(branch)) : [];
+
+  if (toPush.length > 0) {
+    // An empty lease pushes each branch only while origin has none, so a branch another machine made meanwhile stays.
+    const leases = toPush.map(({ branch }) => `--force-with-lease=refs/heads/${branch}:`);
+    const pushed = await git(checkout, ['push', '--quiet', ...leases, 'origin', ...toPush.map(({ branch, commit }) => `${commit}:refs/heads/${branch}`)]);
+
+    if (pushed.code !== 0) {
+      const now = await runBranches({ checkout, runId: run.id });
+      const reason = sanitizeGitUrl(pushed.stderr.trim()) || 'git push failed';
+
+      for (const { branch, commit } of toPush) {
+        if ('error' in now || now.origin?.get(branch) !== commit) failed.push({ branch, reason: `on origin: ${reason}` });
+      }
+    }
+  }
+
+  for (const { branch, commit } of pending) {
+    if (tips.local.has(branch) || failed.some((item) => item.branch === branch)) continue;
+    // An empty old value creates the branch only while the checkout has none.
+    const created = await git(checkout, ['update-ref', `refs/heads/${branch}`, commit, '']);
+
+    if (created.code !== 0) failed.push({ branch, reason: `in ${checkout}: ${created.stderr.trim() || 'git update-ref failed'}` });
+  }
+
+  return failed;
+}
+
+/**
  * What settled run `run` left of its branches. `cleaned`: what the run kept and deleted as it succeeded, or what
  * `doctor --fix` removed past `workflows.retention`, at its current revision. `kept`: the copies it handed out and the
  * branches its pull requests use, which stay until `doctor --fix` passes the retention. Undefined while it runs, or when

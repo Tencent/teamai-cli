@@ -743,4 +743,79 @@ describe('a retry of a run that succeeded', () => {
     expect(await driving).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(await state(config, runId)).toMatchObject({ status: 'succeeded', leftovers: { by: 'success', failed: [] } });
   });
+
+  it('brings back the branches its cleanup deleted, so the run publishes its end again', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(CHOOSES);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
+    const change = `teamai/${runId}/change/p1`;
+    const tip = (await state(config, runId)).copies?.[change]?.commit;
+    expect(branches(origin, runId)).toEqual(['join/p1']);
+
+    expect(await retryStep(config, runId, {}, 'decide')).toMatchObject({ data: { reopened: true } });
+    expect(git(origin, ['rev-parse', `refs/heads/${change}`])).toBe(tip);
+    expect(git(cwd, ['rev-parse', `refs/heads/${change}`])).toBe(tip);
+
+    const again = await runLocalDriver(config, runId, cwd, { autoApprove: true });
+    expect(again).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
+    expect(again).not.toMatchObject({ data: { done: { notPublished: expect.anything() } } });
+  });
+
+  it('is refused while origin refuses a branch back, naming it, and reopens the run once it takes it', async () => {
+    const { config, cwd, origin, runId } = await fixture(CHOOSES);
+    expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const settled = await state(config, runId);
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\nwhile read old new ref; do case "$old" in 0000000000000000000000000000000000000000) echo "creating is not allowed" >&2; exit 1;; esac; done\n');
+    fs.chmodSync(hook, 0o755);
+
+    const refused = await retryStep(config, runId, {}, 'decide');
+    expect(refused).toEqual({ error: { code: 'branches_not_restored', message: expect.stringMatching(new RegExp(
+      `^Run ${runId} was not reopened: the branches its cleanup deleted, which the run needs again, did not all come back\\. Branch teamai/${runId}/change/p1 is not back on origin: .*creating is not allowed.*\\. Try again once that is fixed: teamai workflow retry ${runId} decide$`, 's',
+    )) } });
+    expect(await state(config, runId)).toEqual(settled);
+    expect(branches(origin, runId)).toEqual(['join/p1']);
+    expect(branches(cwd, runId)).toEqual(['join/p1']);
+
+    fs.rmSync(hook);
+    expect(await retryStep(config, runId, {}, 'decide')).toMatchObject({ data: { reopened: true } });
+    expect(branches(origin, runId)).toEqual(['change/p1', 'join/p1']);
+    expect((await state(config, runId)).leftovers).toBeUndefined();
+  });
+
+  it('brings nothing back when it is refused for another reason', async () => {
+    const { config, cwd, origin, runId } = await fixture(CHOOSES);
+    expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+
+    expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ error: { code: 'not_retryable' } });
+    expect(branches(origin, runId)).toEqual(['join/p1']);
+    expect(branches(cwd, runId)).toEqual(['join/p1']);
+  });
+
+  it('does not move a branch made again at another commit, and names it', async () => {
+    const { config, cwd, origin, runId } = await fixture(CHOOSES);
+    expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const change = `teamai/${runId}/change/p1`;
+    const other = git(cwd, ['rev-parse', 'main']);
+    git(cwd, ['push', '-q', 'origin', `${other}:refs/heads/${change}`]);
+
+    expect(await retryStep(config, runId, {}, 'decide')).toMatchObject({ error: {
+      code: 'branches_not_restored',
+      message: expect.stringContaining(`Branch ${change} is not back on origin: it is at ${other}, not at commit ${(await state(config, runId)).copies?.[change]?.commit} the run recorded, and teamai does not move it.`),
+    } });
+    expect(git(origin, ['rev-parse', `refs/heads/${change}`])).toBe(other);
+    expect((await state(config, runId)).status).toBe('succeeded');
+  });
+
+  it('reopens the run when a retry stopped after a branch came back on origin only', async () => {
+    const { config, cwd, origin, runId } = await fixture(CHOOSES);
+    expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const change = `teamai/${runId}/change/p1`;
+    const tip = (await state(config, runId)).copies?.[change]?.commit ?? '';
+    git(origin, ['update-ref', `refs/heads/${change}`, tip]);
+
+    expect(await retryStep(config, runId, {}, 'decide')).toMatchObject({ data: { reopened: true } });
+    expect(git(cwd, ['rev-parse', `refs/heads/${change}`])).toBe(tip);
+    expect(git(origin, ['rev-parse', `refs/heads/${change}`])).toBe(tip);
+  });
 });
