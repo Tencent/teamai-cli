@@ -887,11 +887,18 @@ function registryUnreachableMessage(result: CheckResult): string | null {
 }
 
 /**
+ * What a self-update attempt did. `failed` means the install itself failed:
+ * the difference matters to `teamai update`, which must not report success,
+ * and to the hook path, which discards the exit status anyway.
+ */
+export type UpdateOutcome = 'ok' | 'failed';
+
+/**
  * Perform the actual update (check + install based on policy). The CLI is
  * shared by the whole machine, so one scope decides: the user scope when there
  * is one, else `runningScope`, the scope the update runs in.
  */
-export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean }): Promise<void> {
+export async function doUpdate(runningScope: LocalConfig | null, options?: { force?: boolean }): Promise<UpdateOutcome> {
   const result = await checkForUpdate(options);
   const unreachable = registryUnreachableMessage(result);
 
@@ -900,7 +907,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   if (!result.available) {
     if (!unreachable) log.info(`Already up to date (v${result.current})`);
 
-    return;
+    return 'ok';
   }
 
   // Load configs for update policy. Team config is the default; local
@@ -921,7 +928,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     log.debug(`Auto-update skipped: ${reason}`);
 
-    return;
+    return 'ok';
   }
 
   // Refuse unsupported install layouts before prompting, so nobody confirms
@@ -946,7 +953,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     log.warn(message);
     log.persist(message);
 
-    return;
+    return 'ok';
   }
 
   const entry = fileURLToPath(import.meta.url);
@@ -964,7 +971,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     log.warn(message);
     log.persist(message);
 
-    return;
+    return 'ok';
   }
 
   if (!target.global) {
@@ -980,14 +987,14 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     log.warn(message);
     log.persist(message);
 
-    return;
+    return 'ok';
   }
 
   if (policy === 'prompt') {
     if (!isInteractive()) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
 
-      return;
+      return 'ok';
     }
 
     const confirmed = await askConfirmation(
@@ -997,7 +1004,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     if (!confirmed) {
       log.info('Update skipped');
 
-      return;
+      return 'ok';
     }
   }
 
@@ -1007,7 +1014,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   if (!locked) {
     log.warn('Another update is in progress, skipping');
 
-    return;
+    return 'ok';
   }
 
   try {
@@ -1079,9 +1086,13 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
     // no trace anywhere — the one failure the reporter cannot hand over.
     log.warn(message);
     log.persist(message);
+
+    return 'failed';
   } finally {
     await releaseLock();
   }
+
+  return 'ok';
 }
 
 // ─── Public API ─────────────────────────────────────────
@@ -1115,5 +1126,9 @@ export async function update(options: UpdateOptions): Promise<void> {
     return;
   }
 
-  await doUpdate(await resolveConfigForDir(), { force: true });
+  // The failure is already on stderr; without this, a script running
+  // `teamai update` would read a broken install as a successful update.
+  if (await doUpdate(await resolveConfigForDir(), { force: true }) === 'failed') {
+    process.exitCode = 1;
+  }
 }

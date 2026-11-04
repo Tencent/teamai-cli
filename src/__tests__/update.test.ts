@@ -691,6 +691,22 @@ describe('doUpdate', () => {
     expect(mockedLog.persist).toHaveBeenCalledWith(expected);
   });
 
+  it('reports a failed install to the caller', async () => {
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockImplementationOnce(() => {
+        throw new Error('npm ERR! code E404');
+      });
+
+    await expect(doUpdate(null)).resolves.toBe('failed');
+  });
+
+  it('reports a completed install as ok', async () => {
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+    await expect(doUpdate(null)).resolves.toBe('ok');
+  });
+
   // ─── Test: Already up to date ─────────────────────────
 
   it('should log up to date when no update available', async () => {
@@ -730,6 +746,38 @@ describe('checkForUpdate with corrupted state', () => {
 // ─── Test: update() entry point ─────────────────────────
 
 describe('update', () => {
+  it('exits non-zero when the install fails, so a script can tell', async () => {
+    const before = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      mockedExecSync
+        .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+        .mockImplementationOnce(() => {
+          throw new Error('npm ERR! code E404');
+        });
+
+      await update({});
+
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
+  it('leaves the exit code alone when the update succeeds', async () => {
+    const before = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+      await update({});
+
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
   it.each([{}, { check: true }, { dryRun: true }, { check: true, dryRun: true }])(
     'queries the registry despite a fresh negative cache (%j)', async (options) => {
       mockedLoadState.mockResolvedValue({
