@@ -3,6 +3,7 @@
  * whose steps say `scorers.start: workflow`; `--lapsed` lists what automatic judging starts again on this machine.
  */
 import { ATTEMPT_ENV } from '../launch-context.js';
+import { SessionWork } from '../session-flow/session-work.js';
 import type { LocalConfig } from '../types.js';
 import { scoredPasses } from '../workflow/judge-work.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -208,6 +209,9 @@ export const ScoreSubjects = {
 
         if (ci.kind === 'pending' && !await ScoreStage.isCiWaitOver(config, ci.head, now)) continue;
       }
+
+      // A session scorer the team removed would make plan refuse the whole rescore; its mark stays a lapse should it return.
+      if (key.subject.kind !== 'run' && (await SessionWork.pinsOf(config, key.subject, [key.scorer])).pins[key.scorer] === undefined) continue;
 
       add(Subject.format(key.subject), [key.scorer]);
     }

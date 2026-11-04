@@ -341,6 +341,22 @@ describe('score plan', () => {
     }
   });
 
+  it('starts a lapsed session again with the scorers the team still has, once one of them was removed', async () => {
+    const config = await team({}, { quality: scorer({ rate: 0 }), coverage: scorer({ rate: 0 }) });
+    const subject = 'session:claude-code:one';
+    const asked = await scoreRun(config, { subject, scorers: ['quality', 'coverage'], demand: 'named' });
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality","coverage"]', batch: 'true', demand: 'named' }, (await asked.next('plan')).ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality,coverage' }] } });
+    data(await cancelRun(config, asked.runId, await knownSecrets(config)));
+    fs.rmSync(path.join(config.repo.localPath, 'scorers', 'coverage.md'));
+    await syncScorersThenWorkflows(config);
+
+    const listed = await ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
+
+    expect(listed).toEqual({ ok: true, output: { list: [{ subject, scorers: ['quality'] }] } });
+    const { ctx } = await (await scoreRun(config, { subject, scorers: ['quality'] })).next('plan');
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'auto' }, ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+  });
+
   it('judges a session automatically with each scorer that judges sessions and samples it, and only those', async () => {
     const config = await team({}, { quality: scorer({ extra: 'sessions: true\n' }), coverage: scorer({ rate: 0, extra: 'sessions: true\n' }), tests: scorer() });
     const subject = 'session:claude-code:one';
@@ -1175,14 +1191,14 @@ describe('score subjects', () => {
     const pass = { kind: 'run' as const, subject: { runId, step: 'change', pass: 1 } };
     const session = { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: 'one' } };
     const facts = { now: NOW, readRun: async () => undefined };
-    await Marks.open(config, { run: 'r0000000000000001', demand: 'auto', groups: [{ group: 'clarity', keys: [{ scorer: 'clarity', subject: pass }] }, { group: 'q', keys: [{ scorer: 'q', subject: session, sourceHash: 'h' }] }] }, facts);
+    await Marks.open(config, { run: 'r0000000000000001', demand: 'auto', groups: [{ group: 'clarity', keys: [{ scorer: 'clarity', subject: pass }] }, { group: 'clarity', keys: [{ scorer: 'clarity', subject: session, sourceHash: 'h' }] }] }, facts);
     await Marks.close(config, [{ scorer: 'clarity', subject: pass }], { kind: 'waiting' }, facts);
     const lapsed = () => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
 
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'pending' });
-    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: 'session:claude-code:one', scorers: ['q'] }] } });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: 'session:claude-code:one', scorers: ['clarity'] }] } });
     mocks.ci.mockResolvedValue({ kind: 'read', status: 'passed' });
-    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: `run:${runId}:change:1`, scorers: ['clarity'] }, { subject: 'session:claude-code:one', scorers: ['q'] }] } });
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: `run:${runId}:change:1`, scorers: ['clarity'] }, { subject: 'session:claude-code:one', scorers: ['clarity'] }] } });
   });
 
   it('lists a pass whose CI is still pending once the ci step\'s --wait has passed, so the next run judges it without CI', async () => {
