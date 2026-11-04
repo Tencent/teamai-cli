@@ -332,3 +332,34 @@ describe('progress lines', () => {
     expect(await client.next(run, { driver })).toMatchObject({ data: { done: { outcome: 'succeeded', progress: [{ step: 'write', lines: ['Found 2 entries.', 'Generating drafts...'] }] } } });
   });
 });
+
+const MODULES = `schemaVersion: v1alpha1
+name: modules
+description: Describe each module, as many at once as the member asks for.
+inputs: { modules: [string], concurrency: number }
+steps:
+  - id: describe
+    for_each: { items: inputs.modules, max_parallel: "{{ inputs.concurrency }}" }
+    command: echo "$MODULE"
+    env: { MODULE: "{{ item }}" }
+`;
+
+describe('a for_each max_parallel template', () => {
+  it('leases at once as many items as the input it reads', async () => {
+    const { checkout, client } = await fixture({ modules: MODULES });
+    const run = await started(client, 'modules', checkout, { modules: ['api', 'cli', 'web'], concurrency: 2 });
+    const first = await nextLease(client, run);
+    const second = await client.next(run, { driver, running: [first.attempt] });
+    const third = await client.next(run, { driver, running: [first.attempt, LeaseSchema.parse('data' in second && 'lease' in second.data ? second.data.lease : {}).attempt] });
+
+    expect([first, second, third]).toMatchObject([{ step: 'describe[0]' }, { data: { lease: { step: 'describe[1]' } } }, { data: { wait: { reason: 'describe[0] is leased' } } }]);
+  });
+
+  it('refuses to start a run whose input renders it to anything but a whole number from 1', async () => {
+    const { checkout, client } = await fixture({ modules: MODULES });
+
+    expect(await client.start('modules', { inputs: { modules: ['api'], concurrency: 0 }, checkout, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' })).toEqual({
+      error: { code: 'invalid_inputs', message: 'Step "describe" for_each.max_parallel {{ inputs.concurrency }} renders 0, which is not a whole number from 1. Pass a whole number from 1 for the input it reads.' },
+    });
+  });
+});

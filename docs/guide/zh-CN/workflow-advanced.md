@@ -162,6 +162,34 @@ steps:
 
 驱动拿到的每一项都是普通租约，其 `step` 为 `build[0]`、`build[1]` 等。在 `running` 中列出未结租约的驱动，会在其他项运行时拿到下一项。`max_parallel` 限制同时处于已租出或运行中的项数。达到上限时，`next` 不再租出其他项，直到其中一项完成。
 
+`max_parallel` 也可以是读取一个数字输入的模板，由启动运行的人决定上限。读取其他内容的模板，例如步骤的输出或 `item`，或在 `{{ … }}` 外加了文字的模板，pull 会拒绝。
+
+```yaml
+schemaVersion: v1alpha1
+name: describe-modules
+description: Describe each module, as many at once as the member asks for.
+inputs:
+  modules: [string]
+  concurrency: number
+steps:
+  - id: describe
+    for_each: { items: inputs.modules, max_parallel: "{{ inputs.concurrency }}" }
+    command: 'echo "described $MODULE" >&2'
+    env: { MODULE: "{{ item }}" }
+```
+
+```text
+$ teamai workflow start describe-modules --driver local --inputs '{"modules":["api","cli"],"concurrency":2}'
+ℹ Run r3112e07f9a6d93ad started. If it stops before it ends, continue it with: teamai workflow resume r3112e07f9a6d93ad
+{"data":{"done":{"run":"r3112e07f9a6d93ad","outcome":"succeeded","progress":[{"step":"describe[0]","lines":["described api"]},{"step":"describe[1]","lines":["described cli"]}],"record":"published"},"cancelled":[]}}
+```
+
+传入 `"concurrency":0`，或任何不是从 1 开始的整数的值时，启动会在运行创建前被拒绝：
+
+```text
+{"error":{"code":"invalid_inputs","message":"Step \"describe\" for_each.max_parallel {{ inputs.concurrency }} renders 0, which is not a whole number from 1. Pass a whole number from 1 for the input it reads."}}
+```
+
 某一项失败不会停止其他项。所有项都完成后，该步骤才完成，任一项失败时该步骤失败。`output` 检查每一项的输出。
 
 `steps.<id>.results` 按项的顺序列出每一项的结果。每个条目有 `item`、`outcome`，该项有输出时还有 `outputs`：

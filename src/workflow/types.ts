@@ -170,8 +170,11 @@ export interface Budget {
 export interface ForEach {
   /** Expression source that gives the list. */
   items: string;
-  /** At most this many items are started and not yet settled. No limit when absent. */
-  maxParallel?: number;
+  /**
+   * At most this many items are started and not yet settled: a whole number from 1, or the source of a template that
+   * reads one number input, rendered when the step starts its items. No limit when absent.
+   */
+  maxParallel?: number | { template: string };
 }
 
 /**

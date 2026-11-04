@@ -847,6 +847,30 @@ describe('for_each', () => {
     ]);
   });
 
+  /** FAN with a number input `concurrency`, a plan step, and `max_parallel` as written. */
+  const fanWith = (maxParallel: string): string => FAN
+    .replace('  targets: [string]\n', '  targets: [string]\n  concurrency: number\n  label: string\n')
+    .replace('steps:\n', 'steps:\n  - id: plan\n    command: node plan.js\n    output: { width: number }\n')
+    .replace('    for_each: inputs.targets\n', `    needs: [plan]\n    for_each: { items: inputs.targets, max_parallel: ${maxParallel} }\n`);
+
+  it('reads a max_parallel template of a number input as written', () => {
+    const result = parse(fanWith('"{{ inputs.concurrency }}"'));
+
+    expect(result.ok ? result.definition.steps[1]?.forEach : result.diagnostics.map(formatDiagnostic)).toEqual({ items: 'inputs.targets', maxParallel: { template: '{{ inputs.concurrency }}' } });
+  });
+
+  it.each([
+    ['reads a step', '"{{ steps.plan.outputs.width }}"', 'template {{ steps.plan.outputs.width }}: a max_parallel template reads only a number input'],
+    ['reads item', '"{{ item }}"', 'template {{ item }}: a max_parallel template reads only a number input'],
+    ['reads a string input', '"{{ inputs.label }}"', 'template {{ inputs.label }}: a max_parallel template reads only a number input'],
+    ['adds text to the read', '"{{ inputs.concurrency }}0"', 'template {{ inputs.concurrency }}0: a max_parallel template is one {{ … }} and nothing else, so it renders a whole number'],
+    ['is text with no template', '"four"', 'template four: a max_parallel template is one {{ … }} and nothing else, so it renders a whole number'],
+  ])('rejects a max_parallel template that %s, which may not render a whole number from 1', (_what, value, problem) => {
+    expect(rejected(fanWith(value))).toEqual([
+      { message: `${FILE}:14: field "steps[1].for_each.max_parallel": step "build" for_each.max_parallel ${problem}`, code: 'bad_template' },
+    ]);
+  });
+
   it('rejects a read of the outputs of a for_each step, whose outputs are per item', () => {
     const content = `${FAN.replace('    env:\n', '    output: { ok: boolean }\n    env:\n')}  - id: report
     needs: [build]

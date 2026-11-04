@@ -8,11 +8,11 @@
 import { z } from 'zod';
 import type { JsonValue } from '../types.js';
 import {
-  evaluateExpression, expressionPaths, parseExpression, parseFields, resolvePath,
+  evaluateExpression, expressionPaths, parseExpression, parseFields, resolvePath, schemaAt,
   readsLikeExpression, type Expression, type ExpressionContext, type ExpressionPath, type PathField,
 } from './expression.js';
 import type { StepState } from './step-state.js';
-import type { WorkflowFailure, WorkflowStep } from './types.js';
+import type { OutputSchema, WorkflowFailure, WorkflowStep } from './types.js';
 import { isJsonObject } from '../types.js';
 
 /** A `{{ with.<name>… }}` read: a value the step's own `with` names. Only templates read it; an `if` cannot. */
@@ -263,9 +263,11 @@ export function stringsIn(value: unknown): string[] {
 
 /**
  * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, `answer`, `model` when it is not the
- * exact model, `env.<NAME>`, and `writes[<n>]`. Pull and the engine share this one list, so they agree on which fields are templates.
+ * exact model, `env.<NAME>`, `writes[<n>]`, and `for_each.max_parallel` when it is not a number. Pull and the engine share
+ * this one list, so they agree on which fields are templates.
  */
-export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'answer' | 'env' | 'with' | 'hitl' | 'model' | 'workspace' | 'writes'>): Array<{ what: string; text: string }> {
+export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'answer' | 'env' | 'with' | 'hitl' | 'model' | 'workspace' | 'writes' | 'forEach'>): Array<{ what: string; text: string }> {
+  const maxParallel = step.forEach?.maxParallel;
   const confined = step.workspace instanceof Object && 'confined' in step.workspace ? step.workspace.confined : undefined;
 
   return [
@@ -277,6 +279,7 @@ export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'answer' | 'e
     ...(confined !== undefined ? [{ what: 'workspace.confined', text: confined }] : []),
     ...Object.entries(step.env ?? {}).map(([name, text]) => ({ what: `env.${name}`, text })),
     ...(step.writes ?? []).map((text, index) => ({ what: `writes[${index}]`, text })),
+    ...(maxParallel instanceof Object ? [{ what: 'for_each.max_parallel', text: maxParallel.template }] : []),
   ];
 }
 
@@ -315,6 +318,26 @@ export function modelTemplateErrors(text: string, template: Template): TemplateE
 export function writesTemplateErrors(template: Template): TemplateError[] {
   return template.flatMap((part) => (isRead(part) && 'expression' in part && !expressionPaths(part.expression).every((read) => read.root === 'inputs')
     ? [{ source: part.source, message: 'a writes template reads only inputs' }] : []));
+}
+
+/**
+ * Why a `for_each.max_parallel` template `text`, parsed as `template`, may not render a whole number from 1: it is not one
+ * `{{ … }}` alone, or that read is not a number input of `inputs`. A read of an input `inputs` lacks is the read check's
+ * to report.
+ */
+export function maxParallelTemplateErrors(text: string, template: Template, inputs: Record<string, OutputSchema> | undefined): TemplateError[] {
+  const [read, ...rest] = template;
+
+  if (read === undefined || !isRead(read) || rest.length > 0) {
+    return [{ source: text, message: 'a max_parallel template is one {{ … }} and nothing else, so it renders a whole number' }];
+  }
+
+  const path = 'expression' in read && read.expression.kind === 'path' ? read.expression.path : undefined;
+  const declared = path?.root === 'inputs' && inputs ? schemaAt({ type: 'object', fields: inputs }, path.fields) : undefined;
+
+  if (path?.root === 'inputs' && inputs && declared === undefined) return [];
+
+  return declared?.type === 'number' ? [] : [{ source: read.source, message: 'a max_parallel template reads only a number input' }];
 }
 
 /** One expression a step evaluates, named by the field YAML writes it at. */

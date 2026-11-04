@@ -2,7 +2,7 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  confinedTemplateErrors, findTemplate, modelTemplateErrors, writesTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
+  confinedTemplateErrors, findTemplate, maxParallelTemplateErrors, modelTemplateErrors, writesTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, TeamPlace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
@@ -823,11 +823,14 @@ function parseBody(
       const promptModel = commandPair || workflowPair ? undefined : model;
       const promptWorkspace = confined && (promptPair || promptFilePair) ? workspace : undefined;
 
-      const templates = templatedTexts({ prompt, answer, env, with: withValues, hitl, model: promptModel, workspace: promptWorkspace, writes }).map(({ what, text }) => {
+      const forEach = forEachPair ? parseForEach(forEachPair.value ?? forEachPair.key, `${field}.for_each`, stepLabel, ctx) : undefined;
+
+      const templates = templatedTexts({ prompt, answer, env, with: withValues, hitl, model: promptModel, workspace: promptWorkspace, writes, forEach }).map(({ what, text }) => {
         const name = what.slice(what.indexOf('.') + 1);
 
         const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : what === 'answer' ? answerPair?.value : what === 'model' ? modelPair?.value
-          : what === 'workspace.confined' ? valueNode(workspacePair?.value, 'confined') : what.startsWith('writes[') ? writesNode(writesPair?.value, what) : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
+          : what === 'workspace.confined' ? valueNode(workspacePair?.value, 'confined') : what.startsWith('writes[') ? writesNode(writesPair?.value, what)
+            : what === 'for_each.max_parallel' ? valueNode(forEachPair?.value, 'max_parallel') : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
 
         return { what, field: `${field}.${what}`, node, text };
       });
@@ -853,6 +856,12 @@ function parseBody(
         if (parsed.ok && template.what.startsWith('writes[')) {
           for (const problem of writesTemplateErrors(parsed.template)) {
             diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} writes template ${problem.source}: ${problem.message}`), code: 'bad_template' });
+          }
+        }
+
+        if (parsed.ok && template.what === 'for_each.max_parallel') {
+          for (const problem of maxParallelTemplateErrors(template.text, parsed.template, inputs)) {
+            diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} for_each.max_parallel template ${problem.source}: ${problem.message}`), code: 'bad_template' });
           }
         }
 
@@ -904,8 +913,6 @@ function parseBody(
         if (!parsed) reject('must be an expression');
         else if (!parsed.ok) reject(`does not parse at column ${parsed.column}: ${parsed.message}`);
       }
-
-      const forEach = forEachPair ? parseForEach(forEachPair.value ?? forEachPair.key, `${field}.for_each`, stepLabel, ctx) : undefined;
 
       if (inGraph) {
         const nodes: Record<StepExpression['what'], Node | null | undefined> = {
@@ -1484,8 +1491,10 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
 
   const maxNode = map ? valueNode(map, 'max_parallel') : undefined;
   const max = scalarOf(maxNode, z.number());
+  // A template is checked with the step's other templates.
+  const template = max === undefined ? scalarOf(maxNode, z.string()) : undefined;
 
-  if (maxNode && (max === undefined || !Number.isInteger(max) || max < 1)) {
+  if (maxNode && template === undefined && (max === undefined || !Number.isInteger(max) || max < 1)) {
     reject(maxNode, `${field}.max_parallel`, `${label} for_each.max_parallel must be a whole number from 1`);
   }
 
@@ -1493,6 +1502,7 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
   const forEach: ForEach = { items };
 
   if (maxNode && max !== undefined) forEach.maxParallel = max;
+  else if (maxNode && template !== undefined) forEach.maxParallel = { template };
 
   return forEach;
 }

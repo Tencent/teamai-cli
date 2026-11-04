@@ -131,8 +131,8 @@ type CopyOpener = { kind: 'run' } | { kind: 'step'; path: string };
 
 /**
  * Describes `definition`, which runs the workflows in `workflows` by name, for a driver that declares `can`, under the
- * member's `allow` and this machine's `env`. A `for_each` with no `max_parallel` counts as `ceiling` wide, and so does a
- * run wider than it.
+ * member's `allow` and this machine's `env`. A `for_each` with no `max_parallel`, or a template one its inputs decide at
+ * start, counts as `ceiling` wide, and so does a run wider than it.
  */
 export function describeWorkflow(input: {
   definition: WorkflowDefinition; source: WorkflowSource; workflows: Record<string, WorkflowDefinition>; ceiling: number; can: DriverCan; allow: Allow; env: EnvFacts; base?: string;
@@ -312,7 +312,9 @@ export function describeWorkflow(input: {
 
       const level = Math.max(-1, ...(step.needs ?? []).map((need) => levels.get(need) ?? -1)) + 1;
       levels.set(step.id, level);
-      widths[level] = (widths[level] ?? 0) + (step.forEach ? (step.forEach.maxParallel ?? ceiling) * own : own);
+      const declared = step.forEach?.maxParallel;
+      const itemWidth = declared === undefined || declared instanceof Object ? ceiling : declared;
+      widths[level] = (widths[level] ?? 0) + (step.forEach ? itemWidth * own : own);
     }
 
     return Math.max(0, ...widths.map((width) => width ?? 0));

@@ -33,7 +33,7 @@ import {
   succeed, waitForAnswer, type ConfinedRunReport, type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, leaseDeadline, ownDeadline, spendAllowances, spentAllowances, startLimits, turnLimits } from './limits.js';
-import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
+import { addItems, afterStanding, expandItems, isItem, itemLimit, itemLimitMismatch, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { contractClone, deliverableOf, deliveryTarget, isIsolated, isPublishContract, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
@@ -1008,6 +1008,9 @@ function startWorkflowStep(
     const mismatch = inputsMismatch(child.definition.name, child.definition.inputs, rendered.value);
 
     if (mismatch) return { code: 'invalid_inputs', message: `step "${state.id}" with does not fit workflow "${child.definition.name}": ${mismatch}` };
+    const unfit = itemLimitMismatch(child.definition.steps, isRecord(rendered.value) ? rendered.value : undefined);
+
+    if (unfit) return { code: 'invalid_inputs', message: `step "${state.id}" with does not fit workflow "${child.definition.name}": ${unfit}` };
 
     // inputsMismatch has checked that the rendered value is an object.
     if (child.definition.inputs && isRecord(rendered.value)) {
@@ -1155,6 +1158,18 @@ function settleItems(
     return { outcome: 'failed', failure, settledAt: run.revision };
   }
 
+  // A start checks the template against its inputs, so only a changed run file fails here.
+  const limited = itemLimit(definition, scope.inputs);
+
+  if (!limited.ok) {
+    const failure = { code: 'invalid_inputs', message: limited.message };
+    stopWhere(run, isUnder(state.id), failure, run.revision, now);
+
+    return { outcome: 'failed', failure, settledAt: run.revision };
+  }
+
+  const maxParallel = limited.limit;
+
   for (;;) {
     const items = itemsOf(run, state);
     const after = itemsAfter(state.id, items.map((item) => item.item));
@@ -1164,7 +1179,6 @@ function settleItems(
     const standing = (index: number): ReturnType<typeof afterStanding> => afterStanding(dependencies(index));
     const dependents: number[][] = items.map(() => []);
     after.forEach((others, index) => others.forEach((other) => dependents[other]!.push(index)));
-    const maxParallel = definition.forEach?.maxParallel;
     let started = startedItems(items);
     let changed = false;
     const ready: Ready[] = [];
@@ -1474,6 +1488,9 @@ export async function createRun(
   const holdsSecret = secretMismatch(input.inputs, secrets);
 
   if (holdsSecret) return error('invalid_inputs', holdsSecret);
+  const unfit = itemLimitMismatch(input.definition.steps, input.inputs);
+
+  if (unfit) return error('invalid_inputs', unfit);
   const now = new Date().toISOString();
   const alias = await startingAlias(config, input.definition);
   const team = await TeamPin.capture(config);
