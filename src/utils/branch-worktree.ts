@@ -1025,7 +1025,7 @@ async function updateImpl(
     let isOriginFresh = isFetched;
 
     try {
-      if (!current) isOriginFresh = (await syncWorktree(spec, wt)).fetched;
+      if (!current) isOriginFresh = (await syncWorktree(spec, wt)).origin === 'fetched';
     } catch (e) {
       log.debug(`[${spec.logTag}] sync before write failed, writing onto the local copy: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1288,10 +1288,13 @@ async function restageSnapshotIndex(spec: BranchWorktreeSpec, git: SimpleGit, sh
   }
 }
 
-/** Whether a sync fetched origin's branch, and when it did not, why. */
-type OriginSync = { fetched: true } | { fetched: false; reason: string };
+/**
+ * What a sync learned of origin's branch: fetched; absent, as origin answered, so it has nothing to sync from; or
+ * unreachable, with why.
+ */
+type OriginSync = { origin: 'fetched' } | { origin: 'absent' } | { origin: 'unreachable'; reason: string };
 
-const FETCHED: OriginSync = { fetched: true };
+const FETCHED: OriginSync = { origin: 'fetched' };
 
 /**
  * Bring the worktree up to date with origin. The caller holds this branch's
@@ -1311,7 +1314,7 @@ const FETCHED: OriginSync = { fetched: true };
  *    `git stash` in another worktree of this repo is left alone. Stash-apply
  *    conflicts restore the original uncommitted files, never conflict markers.
  *
- * Answers whether the fetch reached origin, and when it did not, why.
+ * Answers what the fetch learned of origin's branch.
  */
 async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<OriginSync> {
   const git = createGitWithBlockTimeout(wt);
@@ -1324,7 +1327,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<Origi
   } catch (e) {
     log.debug(`[${spec.logTag}] fetch failed, using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
-    return { fetched: false, reason: failureReason(e) };
+    return await remoteBranchExists(spec, wt) === false ? { origin: 'absent' } : { origin: 'unreachable', reason: failureReason(e) };
   }
 
   // Counted while conflicted files are restored, which never moves HEAD; the
@@ -1412,8 +1415,9 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<Origi
  * created or synced: a reader uses what is there, and a caller that rewrites
  * it stops, as the checkout may not exist. Unfetched, with the cause, when
  * origin could not be fetched: the checkout is the local copy as it was, which
- * a reader uses, and a caller that acts on origin's state must not. Throws only CheckoutRefusedError,
- * when teamai will not use the checkout until the member acts. Only ever
+ * a reader uses, and a caller that acts on origin's state must not. Throws
+ * only CheckoutRefusedError, when teamai will not use the checkout until the
+ * member acts. Only ever
  * touches the orphan-branch worktree, never the active tree.
  */
 async function refreshImpl(
@@ -1455,7 +1459,7 @@ async function refreshImpl(
     }
   }
 
-  return synced.fetched ? { status: 'done' } : { status: 'unfetched', reason: synced.reason };
+  return synced.origin === 'unreachable' ? { status: 'unfetched', reason: synced.reason } : { status: 'done' };
 }
 
 /**

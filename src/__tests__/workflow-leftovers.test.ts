@@ -532,6 +532,21 @@ steps:
     expect(skipped).toEqual([expect.stringMatching(/^teamai-reports could not be fetched from origin \(.+\), so runs published there are not swept this time\. teamai doctor --fix tries again\.$/)]);
   });
 
+  it('sweeps without a warning about teamai-reports when origin has none', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    config.usageReportEnabled = false;
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const ended = await state(config, runId);
+    await sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt), checkout: cwd });
+    const warn = vi.spyOn(log, 'warn');
+
+    expect((await sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: cwd })).swept).toEqual([expect.objectContaining({ run: runId })]);
+
+    expect(branches(origin, runId)).toEqual([]);
+    expect(warn.mock.calls.map(([message]) => String(message)).filter((message) => message.includes('teamai-reports'))).toEqual([]);
+  });
+
   it('leaves a published run alone while another teamai process writes teamai-reports', async () => {
     const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
     shareTeam(config, root);
