@@ -201,6 +201,11 @@ a namespace every role activates: `rules/code-style.md` is replaced by
 `rules/common/code-style.md` would reach them alongside it. The same skill or
 agent name in two namespaces one member has active is an error naming both
 files; two namespace rules or claudemd files of one name are both delivered.
+
+Shared instructions live in `claudemd/`, or in `agentsmd/` when the team names
+that directory that way — the same rules apply under either name. A repo with
+both directories delivers a same-named file once, the `agentsmd/` copy first.
+
 A replacement must be usable to replace anything: a skill directory needs its
 `SKILL.md` (pull names one without it), and while an agent file does not parse
 the root agent stays installed. `teamai doctor` lists each replacement as a note.

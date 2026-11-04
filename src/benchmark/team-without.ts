@@ -39,6 +39,8 @@ const REMOVE = 'Remove it from the arm\'s team, push it, run teamai pull, and st
  */
 const REASONS: ReadonlyMap<string, (unchanged: Unchanged) => string | undefined> = new Map([
   ['skills', skillsReason], ['rules', rulesReason], ['agents', agentsReason], ['claudemd', claudemdReason], ['docs', docsReason],
+  // `agentsmd/` is the alternative shared-instruction source directory (#1682).
+  ['agentsmd', claudemdReason],
 ]);
 
 /**

@@ -80,7 +80,7 @@ arms:
 
 ### Leave team assets out
 
-`without` takes paths in the team repo, as git lists them: a skill, a rule, an agent, a `claudemd/` file, a doc, a whole namespace directory, or any other file, such as `hooks/hooks.yaml`:
+`without` takes paths in the team repo, as git lists them: a skill, a rule, an agent, a `claudemd/` (or `agentsmd/`) file, a doc, a whole namespace directory, or any other file, such as `hooks/hooks.yaml`:
 
 ```yaml
 arms:
@@ -99,7 +99,7 @@ The run plans every arm first, as pull would deliver to you, with your roles, pr
 | --- | --- |
 | A path the pulled revision does not have, or `teamai.yaml` | There is nothing to leave out, or no trial could install the team. |
 | A path inside another path it lists | List only the outer one. |
-| A path under `skills/`, `rules/`, `agents/`, `claudemd/` or `docs/` that pull delivers the same with or without | Leaving it out changes nothing. The message says why: a namespace your roles or projects do not receive, a shared skill they receive only through a tag you do not subscribe to, a skill you exclude, a rule tagged only with tags you do not subscribe to. |
+| A path under `skills/`, `rules/`, `agents/`, `claudemd/` (or `agentsmd/`), or `docs/` that pull delivers the same with or without | Leaving it out changes nothing. The message says why: a namespace your roles or projects do not receive, a shared skill they receive only through a tag you do not subscribe to, a skill you exclude, a rule tagged only with tags you do not subscribe to. |
 | A shared path a namespace you receive delivers in its place | The namespace copy still reaches the trial: the message says `list skills/ops/release too`. |
 
 A path anywhere else only has to exist. A `without` path removes a whole file: to leave out one entry inside a shared file, such as one MCP server, hook, env key or model alias, push a branch of the team repo without it and name the branch:

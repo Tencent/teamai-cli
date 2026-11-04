@@ -14,6 +14,7 @@ import {
 import { placedResourcePath } from '../push-namespaces.js';
 import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namespaces.js';
 import { loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
+import { existingSharedInstructionDirs } from '../shared-instruction-source.js';
 import { isRecallEnabled, type LocalConfig, type ResourceItem, type TeamaiConfig } from '../types.js';
 import { dirContentEqual, fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import type { BuildIndexOptions, IndexedSkills } from '../utils/search-index.js';
@@ -739,7 +740,7 @@ export async function resolveTeamAgents(
 export async function collectClaudemdFiles(
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
-): Promise<{ contents: string[]; overrides: NamespaceOverride[] }> {
+): Promise<{ contents: string[]; overrides: NamespaceOverride[]; paths: string[] }> {
   const repoPath = localConfig.repo.localPath;
   const own = await claudemdCandidates(repoPath, roleContext);
   const members = await deliveredMembers(localConfig);
@@ -747,15 +748,21 @@ export async function collectClaudemdFiles(
   // The workspace's own context activates every namespace a member does, so
   // its candidates hold every member's files, in the order of one scope.
   const contents: string[] = [];
+  // The source paths of the files the block carries, so a caller can say
+  // which files were delivered without re-deriving the rules (#1682).
+  const paths: string[] = [];
 
   for (const candidate of own.candidates) {
     if (!delivered.has(candidate.source)) continue;
     const content = await readFileSafe(candidate.value);
 
-    if (content) contents.push(content);
+    if (content) {
+      contents.push(content);
+      paths.push(candidate.source);
+    }
   }
 
-  return { contents, overrides };
+  return { contents, overrides, paths };
 }
 
 interface ClaudemdCandidates {
@@ -764,41 +771,55 @@ interface ClaudemdCandidates {
 }
 
 async function claudemdCandidates(repoPath: string, roleContext: RolePullContext | null): Promise<ClaudemdCandidates> {
-  const claudemdDir = path.join(repoPath, 'claudemd');
+  const sourceDirs = await existingSharedInstructionDirs(repoPath);
 
-  if (!await pathExists(claudemdDir)) return { candidates: [], overrides: [] };
+  if (sourceDirs.length === 0) return { candidates: [], overrides: [] };
 
   const mdFiles = async (dir: string): Promise<string[]> => (await listFiles(dir))
     .filter((f) => f.endsWith('.md'))
     .sort();
 
   const candidates: NamespaceCandidate<string>[] = [];
+  // The first source dir to offer a name wins it, so a repo that keeps both
+  // `claudemd/` and `agentsmd/` delivers one copy of each file, not two
+  // (#1682). `existingSharedInstructionDirs` returns the preferred dir first.
+  const claimed = new Set<string>();
 
-  for (const file of await mdFiles(claudemdDir)) {
-    candidates.push({ name: file, source: `claudemd/${file}`, namespace: null, value: path.join(claudemdDir, file) });
-  }
+  for (const sourceDir of sourceDirs) {
+    const sourceRoot = path.join(repoPath, sourceDir);
 
-  // Determine which namespace dirs to scan
-  let namespaceDirs: string[];
+    for (const file of await mdFiles(sourceRoot)) {
+      if (claimed.has(file)) continue;
+      claimed.add(file);
+      candidates.push({ name: file, source: `${sourceDir}/${file}`, namespace: null, value: path.join(sourceRoot, file) });
+    }
 
-  if (roleContext) {
-    namespaceDirs = roleContext.activeNamespaces.knowledge;
-  } else {
-    // No role configured → scan all subdirectories
-    namespaceDirs = await listDirs(claudemdDir);
-  }
+    // Determine which namespace dirs to scan
+    let namespaceDirs: string[];
 
-  for (const ns of namespaceDirs) {
-    const nsDir = path.join(claudemdDir, ns);
+    if (roleContext) {
+      namespaceDirs = roleContext.activeNamespaces.knowledge;
+    } else {
+      // No role configured → scan all subdirectories
+      namespaceDirs = await listDirs(sourceRoot);
+    }
 
-    if (!await pathExists(nsDir)) continue;
+    for (const ns of namespaceDirs) {
+      const nsDir = path.join(sourceRoot, ns);
 
-    for (const file of await mdFiles(nsDir)) {
-      candidates.push({ name: file, source: `claudemd/${ns}/${file}`, namespace: ns, value: path.join(nsDir, file) });
+      if (!await pathExists(nsDir)) continue;
+
+      for (const file of await mdFiles(nsDir)) {
+        const key = `${ns}/${file}`;
+
+        if (claimed.has(key)) continue;
+        claimed.add(key);
+        candidates.push({ name: file, source: `${sourceDir}/${ns}/${file}`, namespace: ns, value: path.join(nsDir, file) });
+      }
     }
   }
 
-  return { candidates, overrides: roleContext ? resolveRootOverrides(candidates, namespaceDirs) : [] };
+  return { candidates, overrides: roleContext ? resolveRootOverrides(candidates, roleContext.activeNamespaces.knowledge) : [] };
 }
 
 /** The overrides of `resolved` whose source is in `sources`, one per source: the last one listed. */

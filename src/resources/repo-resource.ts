@@ -205,34 +205,81 @@ export class RepoResourceHandler extends ResourceHandler {
     readonly type: ResourceType,
     readonly dir: string = type,
     readonly fileFilter?: (file: string) => boolean,
+    /**
+     * The source directories this resource may live in, when the repo can
+     * choose (the shared-instruction `claudemd/` or `agentsmd/`). Resolved
+     * per repo, so one handler serves both conventions (#1682). A repo that
+     * uses neither keeps the default `dir`.
+     */
+    readonly dirResolver?: (repoPath: string) => Promise<string[]>,
+    /**
+     * Every directory this resource may be authored in, whether or not the
+     * repo has one yet. A push must offer a NEW file in a directory main
+     * does not have, so the local scan cannot be limited to the directories
+     * the team repo already uses (#1682).
+     */
+    readonly allDirs?: readonly string[],
   ) {
     super();
+  }
+
+  /** The directories this resource is read from, in the repo's own order. */
+  async dirsIn(repoPath: string): Promise<string[]> {
+    if (!this.dirResolver) return [this.dir];
+    const resolved = await this.dirResolver(repoPath);
+
+    return resolved.length > 0 ? resolved : [this.dir];
   }
 
   async scanLocalForPush(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<ResourceItem[]> {
-    return scanRepoResourceForPush(this.type, this.dir, teamConfig, localConfig, this.fileFilter);
+    // The local copy may sit under either source directory, including one
+    // the team repo does not have yet — a first `agentsmd/` file must be
+    // pushable, so the scan cannot be limited to the directories main
+    // already uses (#1682).
+    const dirs = this.allDirs ?? await this.dirsIn(localConfig.repo.localPath);
+    const items: ResourceItem[] = [];
+
+    for (const dir of dirs) {
+      items.push(...await scanRepoResourceForPush(this.type, dir, teamConfig, localConfig, this.fileFilter));
+    }
+
+    return items;
   }
 
   async scanTeamForPull(
     _teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<ResourceItem[]> {
-    const dirPath = path.join(localConfig.repo.localPath, this.dir);
+    const items: ResourceItem[] = [];
+    // One entry per name, like pull delivers: a repo keeping both source
+    // directories holds two copies of a same-named file, but pull delivers
+    // one, so the count must not be two (#1682).
+    const claimed = new Set<string>();
 
-    if (!await pathExists(dirPath)) return [];
-    const files = await listRepoFilesRecursive(dirPath);
+    for (const dir of await this.dirsIn(localConfig.repo.localPath)) {
+      const dirPath = path.join(localConfig.repo.localPath, dir);
 
-    return files
-      .filter((file) => !this.fileFilter || this.fileFilter(file))
-      .map((file) => ({
-        name: file,
-        type: this.type,
-        sourcePath: path.join(dirPath, ...file.split('/')),
-        relativePath: `${this.dir}/${file}`,
-      }));
+      if (!await pathExists(dirPath)) continue;
+      const files = await listRepoFilesRecursive(dirPath);
+
+      for (const file of files) {
+        if (this.fileFilter && !this.fileFilter(file)) continue;
+
+        if (claimed.has(file)) continue;
+        claimed.add(file);
+        items.push({
+          name: file,
+          type: this.type,
+          sourcePath: path.join(dirPath, ...file.split('/')),
+          relativePath: `${dir}/${file}`,
+        });
+      }
+    }
+
+    return items;
   }
 
   async pushItem(
