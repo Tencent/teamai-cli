@@ -360,7 +360,7 @@ describe('the start of teamai-finished-sessions', () => {
 
   it('ends a run of a team copy that sets no timeout once 30 minutes passed, so the session it was judging is started again', async () => {
     const shipped = fs.readFileSync(path.resolve('workflows/teamai-finished-sessions.yaml'), 'utf8');
-    const config = await team({ 'workflows/teamai-finished-sessions.yaml': shipped.replace(/^timeout: .*\n/mu, '') }, { scoring: { sessions: true } });
+    const config = await team({ 'workflows/teamai-finished-sessions.yaml': shipped.replace(/^timeout: .*\r?\n/mu, '') }, { scoring: { sessions: true } });
     await syncScorersThenWorkflows(config);
     capturedSession(IDLE, 'attended');
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
