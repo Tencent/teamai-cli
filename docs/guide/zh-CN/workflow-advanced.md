@@ -1101,7 +1101,7 @@ $ teamai workflow resume redf22a69e4ae6652 --no-auto-approve         # 从现在
 | `--auto-approve` | 保留；`--no-auto-approve` 关闭它 | 不带过去 |
 | `--sandbox` | 保留 | 不带过去；列表和 `busy` 都会指出 `--sandbox`，`--next` 跳过这个运行 |
 
-`retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
+`retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问；重新打开已结束的运行时，其 `$TEAMAI_RUN_DIR` 已被删除，所以其中的 `workspace: { confined }` 步骤还会重置它 `needs` 中的步骤，由它们写入其目录），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
 
 历史保留在 passes 和 archive 中，因此 `length(steps.x.passes)` 也统计失败尝试。重试循环所有者会重置其迭代数；重试范围内的其他步骤则保留所有者的计数。重试保留顶层工作流的 round，耗尽最后一轮后重试仍可能再次 `loop_exhausted`。
 
@@ -1137,7 +1137,7 @@ teamai workflow resume [--next]
 - 第一次发布没有到达 `teamai-reports` 的运行也在本地继续。`resume` 会读取 `teamai-reports` 来确认，读不到时返回 `reports_unreachable`。
 - 本机没有的运行从 `teamai-reports` 认领，然后运行。
 - 已发布的运行只在本安装实例拥有它时继续。否则 `resume` 返回 `not_owner`，带 `owner`（`id`、`user`）和 `ownedAt`。
-- 认领一个已结束的运行，不会重新运行它的任何步骤。认领的安装实例成为该运行的所有者，所以在那里执行 `workflow retry` 只重新运行指定的步骤和依赖它的步骤。
+- 认领一个已结束的运行，不会重新运行它的任何步骤。认领的安装实例成为该运行的所有者，所以在那里执行 `workflow retry` 只重新运行指定的步骤、依赖它的步骤，以及其中 `workspace: { confined }` 步骤 `needs` 中的步骤。
 - `--claim` 从所有者那里接管已发布的运行，并替换本机的运行副本。本机有该运行的本地驱动正在运行时，它返回 `driver_running`，不认领任何内容。
 
 在该运行的业务仓库的检出目录中执行 `resume`。认领仍在运行的运行时，会用 `git ls-remote` 检查该运行的分支在这个检出目录的 `origin` 上，并且停在运行记录的提交上。它从不 fetch 到这个检出目录。已结束的运行不需要它的任何分支，所以即使合并后分支已被删除，认领也会成功，`resume` 会报告它的结束结果。如果重试重新打开了它，下一次 `resume` 会 fetch 它需要的分支。本机的工作流缓存与运行所用的工作流不同时，认领会在运行的团队提交上读取它们（团队仓库没有该提交时先 fetch），并在 stderr 输出 `[team commit <commit>] Synced N workflows`。你的缓存和团队仓库检出目录保持不变。
