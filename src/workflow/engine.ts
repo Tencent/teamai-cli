@@ -2891,7 +2891,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       failure = confinedProblem;
     }
 
-        if (outcome === 'success' && defined?.output && (!defined.interactive || report.outputs !== undefined)) {
+    if (outcome === 'success' && defined?.output && (!defined.interactive || report.outputs !== undefined)) {
       const outputProblem = outputMismatch(defined.output, report.outputs);
 
       if (outputProblem) {
