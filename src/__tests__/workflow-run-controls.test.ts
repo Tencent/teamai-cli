@@ -437,6 +437,26 @@ describe('retry after the run dir was removed', () => {
     expect(data(await f.next()).lease).toMatchObject({ step: 'evidence' });
   });
 
+  it('runs again what a second retried step reads in the run dir when the first retry already reopened the run', async () => {
+    const pair = (n: number) => `  - id: evidence${n}\n    needs: []\n    command: echo evidence\n    output: { dir: string }\n  - id: label${n}\n    needs: [evidence${n}]\n    command: echo label\n    env: { DIR: "{{ steps.evidence${n}.outputs.dir }}" }\n`;
+    const f = await fixture(`${pair(1)}${pair(2)}`.trimEnd());
+    const runDir = runScratchDir(f.config, f.id);
+    const first = data(await f.next()).lease;
+    const second = data(await leaseNext(f.config, f.id, driver, { ...hitl, running: [first.attempt] })).lease;
+
+    for (const [lease, group] of [[first, 'one'], [second, 'two']] as const) {
+      data(await reportAttempt(f.config, f.id, { attempt: lease.attempt, revision: lease.revision, driver, outcome: 'success', outputs: { dir: path.join(runDir, group) } }));
+    }
+    const label1 = data(await f.next()).lease;
+    const label2 = data(await leaseNext(f.config, f.id, driver, { ...hitl, running: [label1.attempt] })).lease;
+    await f.report(label1, 'failed');
+    await f.report(label2, 'failed');
+    expect(data(await f.next()).done.outcome).toBe('failed');
+
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'label1'))).toMatchObject({ retried: { runsAgain: ['evidence1'] }, reopened: true });
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'label2'))).toMatchObject({ retried: { runsAgain: ['evidence2'] }, reopened: false });
+  });
+
   it.each([
     ['reads that path only in if', '    if: steps.evidence.outputs.dir != \'\'', (runDir: string) => path.join(runDir, 'group')],
     ['reads a path outside the run dir', '    env: { DIR: "{{ steps.evidence.outputs.dir }}" }', (_runDir: string, root: string) => path.join(root, 'group')],

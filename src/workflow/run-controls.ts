@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { loadTeamConfig } from '../config.js';
@@ -571,8 +572,9 @@ function retryTarget(config: LocalConfig, run: RunState, step: string): { target
     return error('not_retryable', `Step "${step}" is ${target.status}; retry a leased or stopped step, or a HITL request to answer it again`);
   }
 
-  // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun.
-  const containers = retryContainers(run, target, run.status !== 'running' ? runScratchDir(config, run.id) : undefined);
+  // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun, and a retry that reopened it brings none back.
+  const runDir = runScratchDir(config, run.id);
+  const containers = retryContainers(run, target, run.status !== 'running' || !fs.existsSync(runDir) ? runDir : undefined);
 
   return Array.isArray(containers) ? { target, containers } : containers;
 }
