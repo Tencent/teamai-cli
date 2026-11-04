@@ -17,8 +17,8 @@ import { AgentSession } from '../../../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
 import { attemptEnv } from '../../attempt-marker.js';
-import { leaseNext, type ReportInput } from '../../engine.js';
-import { reconcileTakenCopies } from '../../handoff.js';
+import { leaseNext, type PersonHandoff, type ReportInput } from '../../engine.js';
+import { offeredToPerson, offerToPerson, reconcileTakenCopies } from '../../handoff.js';
 import { LeaseWireSchema, type LeaseWire } from '../../lease-wire.js';
 import { setsLimit, type DriverCan, type Missing } from '../../requirements.js';
 import { callerProvenance, respondProvenance, respondToHitl, type ResponseInput } from '../../run-controls.js';
@@ -117,12 +117,21 @@ const HitlRequestSchema = z.object({
 /** What the engine's `next` says the driver waits for. */
 /** What a step held for strict isolation misses, as `wait.held` names it. */
 const ISOLATION = 'isolation' satisfies Missing;
+const HITL = 'hitl' satisfies Missing;
 
 const WaitReplySchema = z.object({
   delivering: z.array(z.unknown()).optional().catch(undefined),
   reason: z.string().optional().catch(undefined),
-  held: z.array(z.object({ reason: z.string(), missing: z.array(z.string()) })).optional().catch(undefined),
+  held: z.array(z.object({ step: z.string(), reason: z.string(), missing: z.array(z.string()) })).optional().catch(undefined),
 }).catch({});
+
+/** What the driver says once it handed run `runId` to a person at `steps`, and the command that person runs. */
+function handedToPerson(runId: string, steps: readonly string[]): WorkflowEnvelope {
+  const resume = `teamai workflow resume ${runId} --claim`;
+  log.info(offeredToPerson(runId, steps, resume));
+
+  return { data: { handoff: { run: runId, steps: [...steps], resume } } };
+}
 
 /** Whether every step `next` held from this driver waits for a confined tool here that reaches its level or resolves its model. */
 function heldForConfined(held: ReadonlyArray<{ missing: readonly string[] }> | undefined): held is ReadonlyArray<{ reason: string; missing: string[] }> {
@@ -936,6 +945,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   // masks every value the drive has seen, so a value that changed while an attempt ran stays masked in what it reports.
   let env: WorkflowEnv | undefined;
   const seen: Record<string, string> = {};
+  // Nobody answers here, so the driver offers the run to a person; once it could not, the steps only a person can take fail.
+  let handoff: PersonHandoff | undefined = canHitl ? undefined : { kind: 'offers' };
 
   const report = async (body: ReportBody, lease: Lease): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config);
@@ -963,7 +974,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       const resolved = await resolveWorkflowEnv(config);
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
-      const next = await leaseNext(config, runId, driver, { running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, base, env: turn, alone: true, prepare: true });
+      const next = await leaseNext(config, runId, driver, { running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, handoff, base, env: turn, alone: true, prepare: true });
 
       if (signalled) continue;
       // A clone whose steps all settled is not needed any more.
@@ -1136,6 +1147,17 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
         if (confinedWait !== undefined) {
           return { error: { code: 'confined_pending', message: `Run ${runId} waits for a confined tool: ${confinedWait.replace(/\.$/u, '')}. Make one available here, then run teamai workflow resume ${runId}, or drive the run with a driver that offers one.` } };
+        }
+
+        // Nobody answers here, so the run goes to a person: offered on teamai-reports, its local state kept.
+        const people = handoff?.kind === 'offers' ? (wait.held ?? []).filter(({ missing }) => missing.includes(HITL)).map(({ step }) => step) : [];
+
+        if (people.length > 0) {
+          const unoffered = await offerToPerson(config, runId, cwd);
+
+          if (unoffered === undefined) return handedToPerson(runId, people);
+          handoff = { kind: 'unoffered', reason: unoffered };
+          continue;
         }
 
         const reason = wait.reason ?? 'the next step is not available';

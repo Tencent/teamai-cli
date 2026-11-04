@@ -79,6 +79,7 @@ const BodySchema = z.object({
   createdAt: z.string(),
   limitsFrom: LimitsFromSchema.optional(),
   updatedAt: z.string(),
+  retainedUntil: z.string().optional(),
   steps: z.array(withCommitIds(StepCheckpointSchema)),
 });
 
@@ -251,13 +252,13 @@ const RUN_RULES = {
   startedBy: 'publish', definition: 'rewrite', workflows: 'rewrite', admitted: 'drop', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
   checkout: 'drop', driveOptions: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', releasedTokens: 'publish',
-  stoppedAttempts: 'drop', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish',
+  stoppedAttempts: 'drop', publication: 'drop', leftovers: 'drop', createdAt: 'publish', limitsFrom: 'publish', updatedAt: 'publish', retainedUntil: 'publish',
 } satisfies FieldRules<RunState>;
 
 const STEP_RULES = {
   id: 'publish', pass: 'publish', passes: 'rewrite', answer: 'rewrite', item: 'publish', inputs: 'publish',
   iteration: 'publish', round: 'publish', status: 'publish', attempt: 'publish', lease: 'rewrite', outcome: 'publish',
-  outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
+  outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', delivery: 'publish', unenforced: 'publish',
   runMode: 'publish', expiresAt: 'publish', limitsFrom: 'publish', allowanceSpent: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',
@@ -265,7 +266,7 @@ const STEP_RULES = {
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {
-  pass: 'publish', attempt: 'publish', outcome: 'publish', outputs: 'publish', end: 'publish', results: 'publish',
+  pass: 'publish', attempt: 'publish', outcome: 'publish', outputs: 'publish', end: 'publish', results: 'publish', pr: 'publish',
   failure: 'rewrite', exitCode: 'publish', message: 'drop', tool: 'publish', model: 'publish', session: 'publish',
   tokens: 'publish', changes: 'publish', read: 'publish', agent: 'publish', used: 'publish', installId: 'publish', answer: 'rewrite',
   delivery: 'publish', unenforced: 'publish', runMode: 'publish', outcomes: 'publish', limit: 'publish', durationMs: 'publish', cost: 'publish',

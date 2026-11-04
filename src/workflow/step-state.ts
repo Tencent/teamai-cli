@@ -5,7 +5,7 @@ import { RunModeSchema } from '../launch-context.js';
 import { WorkOutcomeSchema } from '../outcomes.js';
 import { ACCESS_LEVELS, CONFINED_LEVELS, ConfinedUsageSchema, CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
-import { PrUrlSchema } from './pr-url.js';
+import { PrUrlSchema, type PrUrl } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
 import type { RunState, StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
@@ -127,11 +127,15 @@ export const OutcomeSchema = z.enum(['success', 'failed', 'timeout', 'skipped', 
 /** The outcome an expression reads of a settled step. */
 export type VisibleOutcome = z.infer<typeof OutcomeSchema>;
 
+/** The pull request a step with `deliver: pr` opened or took, which expressions read as `steps.<id>.pr`. */
+const PrSchema = z.object({ url: PrUrlSchema });
+
 const ResultsSchema = z.array(z.object({
   item: z.unknown().optional(),
   outcome: OutcomeSchema,
   outputs: z.unknown().optional(),
   branch: z.string().optional(),
+  pr: PrSchema.optional(),
 }));
 
 export type ItemResult = z.infer<typeof ResultsSchema>[number];
@@ -165,6 +169,7 @@ export const StepPassSchema = z.object({
   outputs: z.unknown().optional(),
   end: z.string().optional(),
   results: ResultsSchema.optional(),
+  pr: PrSchema.optional(),
   failure: FailureSchema.optional(),
   ...report,
   /** What the pass delivered once its agent succeeded, so a pass whose delivery failed or was cancelled is still the agent's success. */
@@ -211,6 +216,7 @@ const settledFields = {
   outputs: z.unknown().optional(),
   end: z.string().optional(),
   results: ResultsSchema.optional(),
+  pr: PrSchema.optional(),
   settledAt: z.number().int().default(0),
   attempt: z.string().optional(),
   /** Kept once the step settles, so a retry of a failed delivery delivers the same branch again. */
@@ -409,11 +415,11 @@ export function startDelivery(state: StepState, settlement: Settlement<Succeeded
   return become<DeliveringStep>(state, { status: 'delivering', ...settlement, delivery });
 }
 
-/** A delivered step settles as its agent left it, at the revision the agent's report settled it. */
-export function delivered(state: DeliveringStep): SucceededStep {
+/** A delivered step settles as its agent left it, at the revision the agent's report settled it, with the pull request it delivered. */
+export function delivered(state: DeliveringStep, pr: PrUrl): SucceededStep {
   const { id: _id, status: _status, ...settlement } = state;
 
-  return succeed(state, settlement);
+  return succeed(state, { ...settlement, pr: { url: pr } });
 }
 
 /** The failure codes only delivery gives a step, always after its agent succeeded. */

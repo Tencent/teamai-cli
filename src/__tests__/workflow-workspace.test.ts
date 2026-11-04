@@ -509,10 +509,11 @@ steps:
       expect.stringMatching(/\/fan-0\/p1$/),
       expect.stringMatching(/\/fan-1\/p1$/),
     ]);
-    const branch = join && 'changes' in join ? join.changes?.branch : undefined;
-    expect(git(['show', `${branch}:joined.txt`], workspace)).toBe('J');
-    expect(git(['show', `${branch}:left.txt`], workspace)).toBe('L');
-    expect(git(['show', `${branch}:right.txt`], workspace)).toBe('R');
+    // The run deleted join's branch once the fan branches held it, so read the commit join reported.
+    const joined = join && 'changes' in join ? join.changes?.to : undefined;
+    expect(git(['show', `${joined}:joined.txt`], workspace)).toBe('J');
+    expect(git(['show', `${joined}:left.txt`], workspace)).toBe('L');
+    expect(git(['show', `${joined}:right.txt`], workspace)).toBe('R');
   });
 
   it('says where a failed push left the commits, so pushing them from there works', async () => {

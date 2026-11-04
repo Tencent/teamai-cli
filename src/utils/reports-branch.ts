@@ -118,6 +118,7 @@ export async function readableReportsWorktree(
 
   switch (refreshed.status) {
     case 'done':
+    case 'unfetched':
       return reportsBranch.dir(localConfig);
     case 'busy':
       await reportsBranch.checkOwner(localConfig);

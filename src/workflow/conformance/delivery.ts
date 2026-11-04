@@ -90,3 +90,42 @@ export const workflowDeliveryConformanceScenarios: DeliveryConformanceScenario[]
     reported: REPORTED,
   },
 ];
+
+/**
+ * A fix-ci case for every driver, run against `fixCiConformanceWorkflow` with the delivery cases' fake provider: `patch`
+ * changes the copy only when the runner sets `FIX_CI_PATCH`, and the run ends by whether `fix` delivered a pull request.
+ * With `patch`, `fix` keeps as its `pr` the URL of the run's one receipt; without, it keeps none and the run has none.
+ */
+export interface FixCiConformanceScenario {
+  name: string;
+  patch: boolean;
+  end: 'fixed' | 'nothing-to-fix';
+}
+
+export const fixCiConformanceWorkflow = `schemaVersion: v1alpha1
+name: fix-ci
+description: Patch a failing branch in a copy, and deliver the patch only when it changed something.
+ends: { fixed: succeeded, nothing-to-fix: succeeded }
+steps:
+  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          workspace: continue
+          command: node -e "if (process.env.FIX_CI_PATCH) require('fs').writeFileSync('fix.txt', 'F')"
+  - id: nothing-to-fix
+    needs: [fix]
+    if: steps.fix.pr == null
+    end: nothing-to-fix
+  - id: fixed
+    needs: [fix]
+    if: steps.fix.pr != null
+    end: fixed
+`;
+
+export const fixCiConformanceScenarios: FixCiConformanceScenario[] = [
+  { name: 'a patch that changes the copy delivers one pull request, which fix.pr reads, and the run ends fixed', patch: true, end: 'fixed' },
+  { name: 'a patch that changes nothing opens no pull request, fix.pr reads null, and the run ends nothing-to-fix', patch: false, end: 'nothing-to-fix' },
+];

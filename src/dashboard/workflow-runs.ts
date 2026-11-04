@@ -25,7 +25,10 @@ import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { benchmarkRecordFile, BenchmarkRunRecordSchema } from '../benchmark/result.js';
 import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmark/table.js';
 import { locateStep } from '../workflow/engine.js';
-import { benchmarkRecordPath, buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
+import { benchmarkRecordPath, buildEndRecord, RECORDS_DIR, RunRecordFieldsSchema, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
+import { settledBranches, type SettledBranches } from '../workflow/leftovers.js';
+import { ownRunSweptAt, resolveRetention, type ResolvedRetention } from '../workflow/retention.js';
+import { loadTeamConfig } from '../config.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { PublishedRuns, type PublishedRun, type Taker } from '../workflow-published-runs.js';
 import { installOwner, isRunId, readRun, readRuns, runsDir } from '../workflow/store.js';
@@ -69,18 +72,15 @@ function webUrls(prs: unknown[] | undefined): string[] {
   });
 }
 
-const RecordSchema: z.ZodType<ReadRecord> = z.object({
-  run: z.string().refine(isRunId),
+const RecordSchema: z.ZodType<ReadRecord> = RunRecordFieldsSchema.extend({
   workflow: z.string(),
   alias: z.string().optional().catch(undefined),
   sourceHash: z.string().optional(),
   teamRevision: z.string().optional(),
   origin: RunOriginSchema.optional().catch(undefined),
   driver: z.object({ kind: z.string() }).optional(),
-  status: z.enum(['running', 'succeeded', 'failed', 'cancelled']),
   end: z.string().optional(),
   startedAt: z.string(),
-  endedAt: z.string().optional(),
   durationMs: z.number().optional(),
   stepCounts: z.object({ total: z.number(), succeeded: z.number(), failed: z.number(), skipped: z.number(), cancelled: z.number() }).optional(),
   username: z.string(),
@@ -93,7 +93,6 @@ const RecordSchema: z.ZodType<ReadRecord> = z.object({
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
     outcomes: z.array(z.unknown()).optional().catch(undefined),
   })).optional(),
-  prs: z.array(z.unknown()).optional().catch(undefined),
 });
 
 /** One run as a row of the page. */
@@ -162,8 +161,16 @@ interface StepRow {
   harnessChanges?: HarnessChange[];
 }
 
+type KeptRunBranches = Extract<SettledBranches, { state: 'kept' }> & { retention: ResolvedRetention; eligibleAt?: string };
+
+/**
+ * A settled local run's `teamai/<run>/…` branches (#1689), as `settledBranches` finds them. Kept branches carry the
+ * retention in effect and, unless it is `never`, from when `doctor --fix` removes all but the pull request ones.
+ */
+export type RunBranches = Exclude<SettledBranches, { state: 'kept' }> | KeptRunBranches;
+
 /** `benchmark` holds an ended benchmark run's tables, as the CLI prints them. */
-export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal; benchmark?: BenchmarkCells };
+export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; scoring: ScoringTotal; benchmark?: BenchmarkCells; branches?: RunBranches };
 
 /** A run handed over on teamai-reports: offered while `offer` is set, else held by its owner, who claimed it or resumed it. `isMine`: this install owns it. */
 export type HandoffRow = PublishedRun & { isMine: boolean };
@@ -414,19 +421,34 @@ function localDetail(run: RunState, row: LocalRunRow, judging: Judging, scoring:
   return { run: row, steps: withHarnessChanges(steps), scoring };
 }
 
+/** What `run` left of its branches, once it settled and left any. */
+async function branchesOf(config: LocalConfig, run: RunState): Promise<Pick<RunDetail, 'branches'>> {
+  const branches = settledBranches(run);
+
+  if (branches?.state !== 'kept') return branches ? { branches } : {};
+  const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
+  const kept: KeptRunBranches = { ...branches, retention };
+  const ends = ownRunSweptAt(run, retention);
+
+  if (ends !== undefined) kept.eligibleAt = new Date(ends).toISOString();
+
+  return { branches: kept };
+}
+
 /** A run of this machine with how judging stands for it here, or undefined when there is no such run. */
 async function localRunDetail(config: LocalConfig, runId: string): Promise<RunDetail | undefined> {
   const run = await readRun(config, runId);
 
   if (run === 'missing' || run === 'corrupt') return undefined;
 
-  const [records, judging, benchmark] = await Promise.all([
+  const [records, judging, benchmark, branches] = await Promise.all([
     runRecordStates(config, run.status === 'running' ? [] : [run]),
     RunJudging.of(config, [run], new Date().toISOString()).then((byRun) => byRun.get(runId)),
     benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
+    branchesOf(config, run),
   ]);
 
-  return { ...localDetail(run, localRow(run, records), judging?.passes ?? new Map(), await RunJudging.total(config, runId, judging)), ...benchmark };
+  return { ...localDetail(run, localRow(run, records), judging?.passes ?? new Map(), await RunJudging.total(config, runId, judging)), ...benchmark, ...branches };
 }
 
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */

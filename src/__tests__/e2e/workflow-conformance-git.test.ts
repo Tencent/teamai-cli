@@ -69,17 +69,35 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
       fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
       fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`);
       fs.writeFileSync(path.join(knowledge, 'workflows', `${scenario.workflowName}.yaml`), scenario.yaml);
+      for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
       git(root, 'init', '-q', '-b', 'main', knowledge);
       git(knowledge, 'add', '-A');
       git(knowledge, 'commit', '-qm', 'team');
       git(root, 'clone', '-q', '--bare', knowledge, team);
+
+      // The scenario's agent: it runs the prompt, up to the result instruction the driver appends, as a shell command.
+      const bin = path.join(root, 'bin');
+      const claude = path.join(bin, 'claude');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(claude, `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+const ran = spawnSync(String(args[args.indexOf('-p') + 1]).split('\\n\\n')[0], { shell: true, stdio: 'ignore' });
+process.stdout.write(JSON.stringify({ type: 'result', result: '' }) + '\\n');
+process.exit(ran.status ?? 1);
+`);
+      fs.chmodSync(claude, 0o755);
+      if (process.platform === 'win32') {
+        fs.copyFileSync(claude, `${claude}.cjs`);
+        fs.writeFileSync(`${claude}.cmd`, `@echo off\r\n"${process.execPath}" "${claude}.cjs" %*\r\n`);
+      }
 
       // An install is a HOME with teamai initialized against the team origin, which git maps from the forge URL init needs.
       const install = async (name: string): Promise<NodeJS.ProcessEnv> => {
         const home = path.join(root, name);
         fs.mkdirSync(home);
         fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = ${name}\n\temail = ${name}@example.com\n[url "file://${team}"]\n\tinsteadOf = ${TEAM_URL}\n`);
-        const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig') };
+        const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
         for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'], ['pull']]) {
           const result = await runCLI(command, root, env);
           expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -125,8 +143,11 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
 
       // A handoff run is not on this install yet: resume, or the first next, claims it before it drives.
       if (profile === 'local') {
-        const resumed = await call(['resume', runId], checkout, tester);
-        expect(resumed, JSON.stringify(resumed)).toMatchObject({ data: { done: { run: runId } } });
+        const resumed = await runCLI(['workflow', 'resume', runId, '--tools', 'default=claude'], checkout, tester);
+        expect(envelope(resumed.stdout), resumed.stderr).toMatchObject({ data: { done: { run: runId } } });
+        const merge = scenario.expectMergeBranch?.replace('<run>', runId);
+        if (merge) expect(resumed.stderr).toContain(`Run ${runId} left its changes on branch ${merge}. Bring them in with: git merge ${merge}`);
+        else expect(resumed.stderr).not.toContain('Bring them in with: git merge');
       } else {
         const client = cliConformanceClient((args) => call(args, checkout, tester));
         const driver = { ...profileDriver(profile), workspace: checkout };
@@ -142,6 +163,18 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
         const changes = changesOf(run, id);
         expect(git(origin, 'for-each-ref', '--format=%(objectname)', `refs/heads/${changes.branch}`), `${id} is pushed`).toBe(changes.to);
         for (const [file, text] of Object.entries(files)) expect(git(origin, 'show', `${changes.to}:${file}`)).toBe(text);
+      }
+      if (scenario.expectCopies) {
+        const copies = Object.entries(scenario.expectCopies).map(([branch, files]) => [branch.replace('<run>', runId), files] as const);
+        expect(Object.keys(run.copies ?? {}).toSorted(), 'the run records these copies and no other').toEqual(copies.map(([branch]) => branch).toSorted());
+        for (const [branch, files] of copies) {
+          for (const [file, text] of Object.entries(files)) expect(git(origin, 'show', `refs/heads/${branch}:${file}`), `${branch} holds ${file}`).toBe(text);
+        }
+      }
+      for (const id of refused ? [] : scenario.expectGone ?? []) {
+        const { branch } = changesOf(run, id);
+        expect(git(origin, 'for-each-ref', `refs/heads/${branch}`), `${id}'s branch is gone from origin`).toBe('');
+        expect(git(checkout, 'for-each-ref', `refs/heads/${branch}`), `${id}'s branch is gone from the checkout`).toBe('');
       }
       if (!refused && scenario.expectFailure) {
         const { step: id, names, codeIsNot } = scenario.expectFailure;

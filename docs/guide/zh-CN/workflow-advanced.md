@@ -170,7 +170,7 @@ steps:
 [{"item":{"id":"core","dir":"packages/core"},"outcome":"success"},{"item":{"id":"cli","dir":"packages/cli"},"outcome":"failed"}]
 ```
 
-某一项在工作区里运行时，对应条目还有 `branch`。`steps.<id>.branches` 按同样的顺序列出这些分支。
+某一项在工作区里运行时，对应条目还有 `branch`。`steps.<id>.branches` 按同样的顺序列出这些分支。设置了 `deliver: pr` 的步骤中，某一项交付了 pull request 时，对应条目还有 `pr`，形如 `{ url }`。
 
 带 `for_each` 的步骤没有自己的输出，不带 `for_each` 的步骤没有 results。读取其中任何一个，pull 都会拒绝，包括在工作流 outputs 和之前的 pass 中的读取。要读取某一项，请对 results 使用下标，例如 `steps.build.results[1].outcome`。
 
@@ -406,7 +406,7 @@ open-pr              teamai/<run>/open-pr/p1   从 5d6e7f8 开始并合并 tasks
 {"data":{"lease":{"run":"rd50c3422","step":"e2e","attempt":"a54df2231","revision":4,"pass":2,"command":"npm run test:e2e"},"cancelled":[]}}
 ```
 
-`steps.<id>.outcome`、`steps.<id>.end` 和 `steps.<id>.outputs` 读取最新的 pass。`steps.<id>.passes` 列出该步骤的每个 pass，当前 pass 完成后也包括在内。每个元素都有 `pass` 和 `outcome`，该 pass 有 `outputs` 和 `end` 时也带上它们。`for_each` 步骤的 pass 带 `results`，没有 `outputs`，读取上一个 pass 时也如此。在 `loop-review-and-fix` 中，工作流输出 `reviews` 返回每一次审查。
+`steps.<id>.outcome`、`steps.<id>.end` 和 `steps.<id>.outputs` 读取最新的 pass。`steps.<id>.passes` 列出该步骤的每个 pass，当前 pass 完成后也包括在内。每个元素都有 `pass` 和 `outcome`，该 pass 有 `outputs`、`end` 和 `pr` 时也带上它们。`for_each` 步骤的 pass 带 `results`，没有 `outputs`，读取上一个 pass 时也如此。在 `loop-review-and-fix` 中，工作流输出 `reviews` 返回每一次审查。
 
 步骤可以读取它所在范围内后面的步骤，即直接或间接依赖它的步骤。这种读取得到后面那个步骤的上一个 pass，在第 1 个 pass 上为 `null`，并且不会等待它。在这种读取中，`passes` 只列出之前的 pass。这里 `plan` 读取上一次决定的备注：
 
@@ -747,6 +747,7 @@ steps:
 | 步骤的 outcome、结局或输出 | `steps.check.outcome`、`steps.check.end`、`steps.review.outputs.files` |
 | 步骤的每个 pass | `steps.review.passes`、`steps.review.passes[0].outputs.verdict`。见[读取每一个 pass](#读取每一个-pass)。 |
 | `for_each` 步骤的 results | `steps.build.results`、`steps.build.results[0].outcome`、`steps.build.branches` |
+| 设置了 `deliver: pr` 的步骤交付的 pull request，或 `null` | `steps.fix.pr`、`steps.fix.pr.url`、`steps.build.results[0].pr.url`。见[交付 PR](workflow.md#交付-pr)。 |
 | `for_each` 实例的项 | `item`、`item.dir` |
 | 这次运行的 id，在它运行的每个工作流中都相同 | `run.id` |
 | 字符串 | `'failed'`。使用单引号。字符串里的单引号写两次：`'it''s'`。 |
@@ -890,7 +891,7 @@ steps:
 | `requires.isolation` | `none`、`worktree` 或 `sandbox`。有工作区的步骤至少是 `worktree`。 | 步骤照常运行，其 `unenforced` 列出 `isolation`。 |
 | `requires.strict` | `true` 让这一级的 `isolation` 和 `network` 成为下限：其下每个步骤至少得到它们，无论内层要求什么。严格的 `isolation: sandbox` 还会让步骤的每个进程都拿不到 `GITHUB_TOKEN`、`GH_TOKEN`、`GITLAB_TOKEN`、`GL_TOKEN`、`CI_JOB_TOKEN`、`SSH_AUTH_SOCK`、`GIT_ASKPASS` 和 `SSH_ASKPASS`，其下某个步骤的 `requires.env` 指定了其中之一时，pull 会拒绝它。使用 `--driver local` 时，本地驱动永远无法运行的启动会以 `requirement_unmet` 被拒绝。 | 步骤等待。严格的 sandbox 还需要 `can.env: true`。 |
 | `setup` | 驱动在它创建的每个工作区中、在步骤之前运行 `command`。setup 获得它的 `requires.env` 键；步骤只有自己也要求时才会获得。setup 以非零退出（`setup_failed`）、改动 git 会提交的文件（`setup_dirty`），或把自己某个键的值留在它写入的文件中（包括被忽略的文件，`setup_secret`）时，步骤不运行即失败，工作区被删除。步骤的 `timeout` 也约束 setup。 | 带工作区的步骤等待。 |
-| `timeout` | `500ms`、`30s`、`10m` 或 `2h`，写在步骤或工作流文件上。超时的步骤被停止，结果为 `timeout`。写在 workflow 步骤上时，会停止其中每个步骤。写在工作流文件上时，运行以 `failed` 结束，失败码为 `timeout`。重试会重新开始计时。 | 不是能力。每个驱动都会在租约上拿到 `expiresAt`。 |
+| `timeout` | `500ms`、`30s`、`10m`、`2h` 或 `1d`，写在步骤或工作流文件上。超时的步骤被停止，结果为 `timeout`。写在 workflow 步骤上时，会停止其中每个步骤。写在工作流文件上时，运行以 `failed` 结束，失败码为 `timeout`。重试会重新开始计时。 | 不是能力。每个驱动都会在租约上拿到 `expiresAt`。 |
 | `budget` | `{ tokens: N }`，写在工作流文件、workflow 步骤或带 `on_limit: end_turn` 的 prompt 步骤上。其下每个步骤的输入和输出 token 从它开始时计入：运行从开始时算起，workflow 步骤从每次开始时算起，例如循环的下一轮。重试会重新开始计算预算。超过 `N` 时，其中未结束的步骤停止，并以 `budget_exceeded` 失败。 | 预算内的非交互 prompt 步骤等待，它没有 token 的成功报告以 `budget_unmeasured` 失败。交互式 prompt 由人操作，照常运行；它的报告没有 token 时，其 `unenforced` 列出 `budget`。 |
 | `max_turns` | 限制 prompt 步骤的智能体轮数。本地驱动只把它传给无头 Claude。 | 步骤照常运行，其 `unenforced` 列出 `max_turns`。 |
 | `permissions` | prompt 步骤上的 `unattended`：它的工具无需询问就编辑文件和运行命令。只能在严格的 `isolation: sandbox` 之下使用，可以写在步骤本身、外层步骤、`defaults`，或运行其工作流的步骤上：没有它时，启动以 `unattended_unsandboxed` 被拒绝；[步骤打印的工作流](#运行步骤打印的工作流)没有它时，该步骤以 `invalid_output` 失败。见[无人值守的 prompt](#无人值守的-prompt)。 | 步骤等待。运行唯一的驱动没有 `can.unattended` 时，该步骤以 `tool_unavailable` 失败。 |
@@ -1068,9 +1069,11 @@ teamai workflow resume <run>
 | 有 default 的 choose | 选择 default，渠道 `auto_approve` | 失败 `hitl_required` |
 | 无 default 的 choose | 失败 `hitl_required` | 失败 `hitl_required` |
 
+终端前无人的本地驱动不会让必需审批或它无法回答的选择失败：该步骤等待，驱动把运行[交给人](workflow.md#运行需要人参与时)，发布到 `teamai-reports`。只有运行无法发布为待接手时才以 `hitl_required` 失败，消息会说明原因。其他没有 HITL 的驱动仍按上表处理。
+
 每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，对这次运行生效：运行会在本安装实例上记住它，`resume --no-auto-approve` 可以关闭它。没有 HITL 的驱动不能通过 JSON next 设置此覆盖。支持 HITL 的驱动忽略 `workflows.auto_approve`：用户为这次运行选择自动批准时，它在 `next` 中发送 `autoApprove: true`，终端中的本地驱动在传入 `--auto-approve` 时也这样做。此时可选 approve 和有 default 的 choose 按 `auto_approve: true` 一列回答；必需 approve 和无 default 的 choose 仍以 `hitl` 返回。本地驱动仅在有人值守的运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)）中、且 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
 
-`interactive: true` 要求 `prompt` 或 `prompt_file`。步骤会等待支持 HITL 的驱动。没有终端时，`--driver local` 以 `busy` 停止，原因中指出 `hitl`；请在终端中运行 `resume`。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
+`interactive: true` 要求 `prompt` 或 `prompt_file`。步骤会等待支持 HITL 的驱动。没有终端时，`--driver local` 会[把运行交给人](workflow.md#运行需要人参与时)，由人在终端中用 `resume <run> --claim` 继续。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
 
 ## 重试、取消和继续运行
 
@@ -1194,7 +1197,7 @@ teamai workflow resume [--next]
 
 `repository` 是业务仓库，从检出目录的 `origin` 读取，形如 `host/owner/repo`。之后的认领会保留它。`offered` 保留到被认领为止：每次认领都在更换所有者的同一次写入中去掉它。已结束的运行不会待接手，从没有 `origin` 的目录发布的运行也不会，因为 `--next` 按仓库接手运行。不支持待接手的 teamai 版本发布的运行不带这两个字段，`--next` 从不接手它。
 
-`teamai workflow resume --next` 像 `teamai pull` 一样 fetch `teamai-reports`，然后从最早待接手的运行开始逐个尝试。它跳过本安装实例发布的运行、`repository` 与本检出目录的 `origin` 不同的运行、调用方不能接手的运行、本机无人回答时剩余步骤需要人参与的运行，以及剩余步骤需要本机所缺之物的运行。无人值守的运行中无人回答，使用本地驱动且没有终端时也无人回答。本机可能缺少的东西：
+`teamai workflow resume --next` 像 `teamai pull` 一样 fetch `teamai-reports`，然后从最早待接手的运行开始逐个尝试。它跳过本安装实例发布的运行、`repository` 与本检出目录的 `origin` 不同的运行、调用方不能接手的运行、本机无人回答时现在就在等人的运行，以及剩余步骤需要本机所缺之物的运行。运行在等人，是指其发布状态中现在就绪的某个步骤是必需审批、`interactive` 步骤，或运行器的 `--auto-approve` 不回答的选择。以后才可能需要人的步骤不会挡住运行器：它接手运行，运行到这样的步骤时再交回。无人值守的运行中无人回答，使用本地驱动且没有终端时也无人回答。本机可能缺少的东西：
 
 | 剩余步骤 | 本机缺少的情况 | 列出的补救 |
 |---|---|---|
@@ -1214,7 +1217,7 @@ teamai workflow resume [--next]
 
 `--driver skill` 总是算作 agent 会话，还会跳过只有本地驱动能运行的运行（`needs_local_driver`）。这样被跳过的运行在列表中显示拒绝的代码，或显示为 `needs the local driver`。
 
-不带运行 id 的 `teamai workflow resume` 在同样的 fetch 之后，列出本检出目录所属业务仓库的待接手运行，以及本机仍在运行的运行，每个只列一次。`STATUS` 为 `running`、`needs a person`（由人用 `resume <run> --claim` 接管）、`cannot run here`（附本机缺少什么、怎样补上）、`needs the local driver`、`claimed`（另一个安装实例接手了你的运行）、`succeeded`、`failed` 或 `cancelled`（你的运行已在接手它的安装实例上结束，`--claim` 把它的结束状态带到本机），或其他拒绝的代码。没有 origin 的检出目录不列出待接手运行，因为 `--next` 在那里不接手任何运行。fetch 失败时，它给出警告，并列出上一次 fetch 看到的内容。
+不带运行 id 的 `teamai workflow resume` 在同样的 fetch 之后，列出本检出目录所属业务仓库的待接手运行，以及本机仍在运行的运行，每个只列一次。`STATUS` 为 `running`（剩余步骤可能需要人时附 `may need a person at <step>`）、`needs a person`（现在就绪的步骤需要人；由人用 `resume <run> --claim` 接管）、`cannot run here`（附本机缺少什么、怎样补上）、`needs the local driver`、`claimed`（另一个安装实例接手了你的运行）、`succeeded`、`failed` 或 `cancelled`（你的运行已在接手它的安装实例上结束，`--claim` 把它的结束状态带到本机），或其他拒绝的代码。没有 origin 的检出目录不列出待接手运行，因为 `--next` 在那里不接手任何运行。fetch 失败时，它给出警告，并列出上一次 fetch 看到的内容。
 
 | 代码 | 发生了什么 | 下一步 |
 |---|---|---|

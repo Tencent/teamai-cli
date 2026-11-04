@@ -118,7 +118,7 @@ steps:
 
     const refused = await runCLI(['workflow', 'start', 'slow', '--timeout', 'soon'], repo);
     expect(refused.code).toBe(1);
-    expect(envelope(refused.stdout)).toEqual({ error: { code: 'invalid_arguments', message: '--timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h' } });
+    expect(envelope(refused.stdout)).toEqual({ error: { code: 'invalid_arguments', message: '--timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d' } });
   });
 
   it('gives every step of a run, sub-workflows included, one $TEAMAI_RUN_DIR, and removes it when the run ends, whatever the end', async () => {

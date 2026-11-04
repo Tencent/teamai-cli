@@ -72,9 +72,9 @@ export function localStartLiteral(invocation: Invocation, name: string, options:
   return LiteralSchema.parse([`${invocation} workflow start ${name} --driver local`, ...toolsWords(options.tool)].join(' '));
 }
 
-/** Continues `run` with the local driver: shown to the person for their own terminal, never run by the agent. `tool`: its prompt tool. */
-export function resumeLiteral(invocation: Invocation, run: RunId, options: { tool?: string } = {}): Literal {
-  return LiteralSchema.parse([`${invocation} workflow resume ${run}`, ...toolsWords(options.tool)].join(' '));
+/** Continues `run` with the local driver: shown to the person for their own terminal, never run by the agent. `tool`: its prompt tool; `claim`: take it from the install that owns it. */
+export function resumeLiteral(invocation: Invocation, run: RunId, options: { tool?: string; claim?: true } = {}): Literal {
+  return LiteralSchema.parse([`${invocation} workflow resume ${run}`, ...toolsWords(options.tool), ...(options.claim ? ['--claim'] : [])].join(' '));
 }
 
 /**

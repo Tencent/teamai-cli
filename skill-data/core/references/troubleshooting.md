@@ -26,6 +26,11 @@ the same lock reclaims it, and a process exiting normally removes the locks it
 still holds. `teamai doctor` reports leftover lock files, and
 `teamai doctor --fix` removes the ones whose owner is provably dead.
 
+`teamai/<run>/…` branches are left by failed or cancelled workflow runs, or by a
+succeeded run that could not delete one. `teamai doctor --fix` removes them once
+`workflows.retention` (default `14d`) has passed since the run settled, and keeps
+pull request branches. Do not delete them by hand while the run may be retried.
+
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:

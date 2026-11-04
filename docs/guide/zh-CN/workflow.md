@@ -283,6 +283,66 @@ steps:
     command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
 ```
 
+### 在一份副本里工作的工作流
+
+工作流头部的 `workspace: new` 表示它的步骤无论在哪里运行，都在同一份副本里工作。它适合既要单独运行、又要在另一个工作流的副本里运行的工作流，例如一个评审：修复它发现的问题，再评审修复：
+
+```yaml
+schemaVersion: v1alpha1
+name: review-and-fix
+description: Review the branch, fix what the review finds, and review the fix.
+invoke: allow
+workspace: new
+steps:
+  - id: review
+    workspace: read-only
+    prompt: Review the change on this branch against main, and list what must change.
+    output: { verdict: pass | fix, findings: [string] }
+  - id: fix
+    needs: [review]
+    if: steps.review.outputs.verdict == 'fix'
+    prompt: "Fix these findings: {{ steps.review.outputs.findings }}"
+    loop: { back_to: review, max_iterations: 3 }
+```
+
+单独启动时，运行在 `teamai/<run>/_run` 上打开这份副本。`review` 读取它，`fix` 提交到它，下一次 `review` 能看到修复。你的检出目录不会改变。运行结束时会给出这条分支：
+
+```text
+$ teamai workflow start review-and-fix --driver local --tools default=claude
+ℹ Run r3f9a1c27d4e8b605 started. If it stops before it ends, continue it with: teamai workflow resume r3f9a1c27d4e8b605
+{"data":{"done":{"run":"r3f9a1c27d4e8b605","outcome":"succeeded","record":"published"},"cancelled":[]}}
+ℹ Run r3f9a1c27d4e8b605 left its changes on branch teamai/r3f9a1c27d4e8b605/_run. Bring them in with: git merge teamai/r3f9a1c27d4e8b605/_run
+```
+
+在编码会话中用 `--driver skill` 启动时，运行结束后 agent 会告诉你同一条分支和 `git merge` 命令。
+
+由一个有副本、或者位于副本里的步骤运行时，它的步骤沿用那份副本，不再打开别的副本。下面的 `fix` 提交到 `change` 的分支 `teamai/<run>/change/p1`，拉取请求里既有改动，也有对它的修复：
+
+```yaml
+schemaVersion: v1alpha1
+name: ship-reviewed
+description: Implement an issue, review and fix it, and deliver it for review.
+inputs: { issue: number }
+steps:
+  - id: change
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: implement
+          prompt: "Implement issue #{{ inputs.issue }}."
+        - id: check
+          needs: [implement]
+          workflow: review-and-fix
+```
+
+- 由一个外面没有副本的步骤运行时，这个步骤会打开一份，就像它自己写了 `workspace: new`。要得到拉取请求，就给这个步骤加 `deliver: pr`。头部不接受 `deliver`。
+- 头部只接受 `new`。运行这种工作流的步骤写了 `workspace: read-only` 时，pull 会拒绝：
+
+```text
+⚠ [workflows] workflows/nightly.yaml:6: field "steps[0].workspace": step "check" has workspace: read-only but runs workflow "review-and-fix", whose header says workspace: new, so its steps work in a copy; remove workspace from step "check" so it opens or continues one
+```
+
 ### 以团队角色运行步骤
 
 打开或沿用工作区的提示词步骤，可以用 `manifest/roles.yaml` 中你本人之外的角色运行。下例中，规划步骤知道规格撰写者知道的内容，评审步骤知道评审者知道的内容：
@@ -476,6 +536,42 @@ pull request 合入这条分支来源中最近一条已经交付过的分支，�
 
 循环中 `workspace: new` 步骤的每个 pass 都有自己的 `/p<pass>` 分支，因此各开一个 pull request。之前的 pull request 保持打开，这是有意为之。在同一条 `continue` 分支上循环的步骤只有一个 pull request。
 
+设置了 `deliver: pr` 的步骤，若其分支相对运行的基准提交没有新提交，仍然成功，但不开 pull request。后续步骤读取 `steps.<id>.pr` 区分这两种情况：步骤开出或接受了 pull request 时，它是 `{ url }`，否则是 `null`。下面的 `fix-ci` 在 `patch` 没有改动时以 `nothing-to-fix` 结束，有改动时给 pull request 加标签：
+
+```yaml
+schemaVersion: v1alpha1
+name: fix-ci
+description: Fix the failing e2e tests on this branch, and open a pull request only when something changed.
+ends: { fixed: succeeded, nothing-to-fix: succeeded }
+steps:
+  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          prompt: Run npm run test:e2e and fix what fails. Change nothing when every test passes.
+  - id: nothing-to-fix
+    needs: [fix]
+    if: steps.fix.pr == null
+    end: nothing-to-fix
+  - id: fixed
+    needs: [fix]
+    if: steps.fix.pr != null
+    env: { PR: "{{ steps.fix.pr.url }}" }
+    command: gh pr edit "$PR" --add-label ci-fix
+    end: fixed
+```
+
+```text
+$ teamai workflow start fix-ci --driver local
+{"data":{"done":{"run":"rbd14d10aae2a1430","outcome":"succeeded","end":"nothing-to-fix","record":"published"},"cancelled":[]}}
+$ teamai workflow start fix-ci --driver local
+{"data":{"done":{"run":"rdd649ecb3eeb7403","outcome":"succeeded","end":"fixed","prs":["https://github.com/fixture/app/pull/1"],"record":"published"},"cancelled":[]}}
+```
+
+设置了 `deliver: pr` 的 `workflow` 步骤也有 `pr`，它的工作流可以通过 `outputs` 把它传出去。`for_each` 步骤由每个 item 各自交付，因此 `pr` 在 `results` 的每个条目上，例如 `steps.build.results[0].pr.url`。循环的步骤上，`steps.<id>.pr` 是最新一个 pass 的，`steps.<id>.passes[n].pr` 是每个 pass 的。在没有 `deliver: pr` 的步骤上读取 `pr`，pull 会拒绝。
+
 开出或接受 pull request 之前，TeamAI 将交付的提交与运行的基准提交比较。修改 CI 配置（例如 `.github/workflows` 或 `.gitlab-ci.yml`）、hooks、任意层级的 `AGENTS.md` 或 `CLAUDE.md`，或任一工具的 agent、rule、MCP 文件，步骤会以 `protected_path` 失败，消息列出这些文件。这些路径就是工作区步骤从运行基准获得的 agent 文件，再加上 CI 和 hook 路径。删除和重命名也算，分支从前序步骤带来的修改也算。之后运行 `teamai workflow retry <run> <step>`，会在新的 pass 中重新运行这个步骤。如果修改只来自另一个步骤之后在共享分支上记录的提交，步骤改为以 `delivery_failed` 失败，重试也不会重新运行它。消息会说明如何只交付该步骤自己的提交，或如何在新分支上重新运行那条分支的步骤。
 
 其他交付失败会让步骤以 `delivery_failed` 失败。消息说明出了什么问题、工作保存在哪条分支，并给出重试命令。修复原因（例如 provider 的凭据）后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，或让驱动调用 `next`。重试会再次交付同一条分支，不会重新运行步骤。运行在开 pull request 期间被取消时，这个 pull request 无法收回。运行会列出它，步骤保持 cancelled。
@@ -485,6 +581,77 @@ pull request 合入这条分支来源中最近一条已经交付过的分支，�
 如果主机可能已打开请求，但 TeamAI 无法确认，步骤会以 `delivery_failed` 失败，且不记录 URL。运行消息中的重试命令。TeamAI 会先查找已有请求，再尝试打开请求。
 
 自己开 pull request 的驱动（例如在另一台机器上的驱动）把它作为 `changes.pr_url`，和步骤的其他 `changes` 一起上报。TeamAI 保留不含凭据、不超过 512 个字符的 `https` URL，并去掉 query 和 fragment。在 origin 自己的主机上，URL 必须是这条分支合入目标分支的已打开 pull request；TeamAI 无法向主机核对的 URL 会被丢弃，之后由交付自己查找已打开的 pull request。其他主机上的 URL（例如私有审查服务）原样保留。TeamAI 不保留的 URL 会被丢弃；没有交付使用的 URL 也会被丢弃：来自未设置 `deliver: pr` 的步骤、来自失败或被 released 的步骤，或分支相对运行基线没有变更时的 URL。report 仍会被接受，其信封列出 `"dropped":[{"field":"changes.pr_url","reason":"…"}]`，不包含 URL 本身。随后这条分支像其他驱动的分支一样交付。
+
+### 运行留下的分支
+
+运行成功后，会在本地和 `origin` 上删除每个 `teamai/<run>/…` 分支，只要它的提交已被一个保留下来的分支包含。它保留 pull request 的分支，以及最终副本：工作流头部写了 `workspace: new` 时是运行副本 `teamai/<run>/_run`，否则是最后一个有改动的步骤的分支。失败或取消的运行保留所有分支和 worktree，方便你查看它做了什么。
+
+```text
+# ship：left 和 right 各写一个分支，join 合并两者
+$ git branch --list 'teamai/*'          # join 结算时
+  teamai/r9ae70cdd87f258db/join/p1
+  teamai/r9ae70cdd87f258db/left/p1
+  teamai/r9ae70cdd87f258db/right/p1
+$ git branch --list 'teamai/*'          # 运行成功后
+  teamai/r9ae70cdd87f258db/join/p1
+```
+
+删不掉的分支（例如 origin 上受保护的分支，或 teamai 检查之后又被其他机器推送过的分支）会保留，运行给出警告：
+
+```text
+⚠ Branch teamai/<run>/build-1/p1 of run <run> was not deleted on origin: <reason>. teamai doctor --fix tries again.
+```
+
+运行结算后超过 `workflows.retention`，`teamai doctor --fix` 会移除它留下的内容：本地和 origin 上的分支、worktree、teamai 保存在 `refs/teamai/kept/` 下的提交，以及基准固定分支 `teamai/<run>/base`。pull request 的分支会保留。它也会找到其他机器发布到 `teamai-reports` 的运行，在其所有者保留到的时间再过一周后，删除它们在 origin 上的分支，这样所有者在那之前刚开始的 retry 有时间完成。再次运行的运行，或被其他成员接手但尚未结束的运行，会保留全部内容。没能移除的内容，下一次 `doctor --fix` 会再试。默认值为 `14d`，`never` 表示全部保留。这是一个[成员设置](reference.md#成员设置)，机器或工作区可以设置自己的值：
+
+```yaml
+# teamai.yaml
+workflows:
+  retention: 30d
+```
+
+```yaml
+# ~/.teamai/config.yaml
+workflows:
+  retention: 7d
+```
+
+```text
+$ teamai doctor
+ℹ Member settings:
+  workflows.retention: 7d, from the user config /home/ana/.teamai/config.yaml, also this machine's (the team says 30d)
+
+$ teamai doctor --fix
+ℹ Removed what 2 workflow run(s) left behind (workflows.retention 7d, from /home/ana/.teamai/config.yaml):
+ℹ   r9ae70cdd87f258db (settled 2026-10-27T19:39:13.771Z): teamai/r9ae70cdd87f258db/join/p1
+ℹ   rbcc5a67473d24a48 (settled 2026-10-27T19:39:16.700Z): teamai/rbcc5a67473d24a48/fail/p1, teamai/rbcc5a67473d24a48/left/p1, worktree /home/ana/app/.teamai/workflow-worktrees/teamai-rbcc5a67473d24a48-fail-p1-84c932947390
+```
+
+`doctor --fix` 只以 origin 当前的 `teamai-reports` 为准。origin 无法访问，或其他 teamai 进程正在写 `teamai-reports` 时，它不处理发布在那里的运行，并说明原因：
+
+```text
+⚠ teamai-reports could not be fetched from origin (fatal: unable to access 'https://git.example.com/team/app.git/': Could not resolve host: git.example.com), so runs published there are not swept this time. teamai doctor --fix tries again.
+```
+
+运行第一次结算时，teamai 会记下它留下的内容保留到何时：那次结算时间加上当时生效的保留期，记在运行和它在 `teamai-reports` 上的记录里，字段为 `retainedUntil`（`never` 时没有）。retry 之后运行再次结束，这个时间也不会变，所以保留期从运行第一次结束时算起。过了这个时间，retry 不再重新打开该运行，因为本机或其他机器上的 `doctor --fix` 可能已经移除了它的分支。请重新启动工作流：
+
+```text
+$ teamai workflow retry r1ddcd1ca66beb067 finish
+{"error":{"code":"run_expired","message":"Run r1ddcd1ca66beb067 was not reopened: workflows.retention kept what it left until 2026-10-27T09:12:40.118Z, counted from when it first ended, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start review"}}
+```
+
+其他机器发布的运行如果没有 `retainedUntil`（例如旧版 teamai 结算的运行），会留在 origin 上。之后设置更长的保留期或 `never`，本机较早的运行会保留得更久，但 retry 仍在它们的 `retainedUntil` 处停止。
+
+本机正在删除某个运行的分支时（`doctor --fix` 或运行成功时），对该运行的 retry 会返回 `busy`：`Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`。
+
+重试一个已成功的运行时，会先在 origin 和本地按运行记录的提交，恢复清理从任一处删除的该运行分支，因为运行还要用到它们。在认领了该运行的机器上也是如此。有分支未能恢复时，运行不会重新打开，返回会写明是哪个分支以及原因：
+
+```text
+$ teamai workflow retry r1ddcd1ca66beb067 decide
+{"error":{"code":"branches_not_restored","message":"Run r1ddcd1ca66beb067 was not reopened: not every branch the run recorded is back at the commit it recorded. Branch teamai/r1ddcd1ca66beb067/change/p1 is not back on origin: remote: creating teamai/* branches is not allowed\nTo https://git.example.com/team/app.git\n ! [remote rejected] f8cbcf2714e92aedb57f34f65896b0df926a1661 -> teamai/r1ddcd1ca66beb067/change/p1 (pre-receive hook declined)\nerror: failed to push some refs to 'https://git.example.com/team/app.git'. Try again once that is fixed: teamai workflow retry r1ddcd1ca66beb067 decide"}}
+```
+
+既不是时长也不是 `never` 的值会被跳过并给出警告，由下一级决定。TeamAI 从不删除 pull request 的分支：请在代码托管平台上开启合并后自动删除头分支的选项。
 
 ### 从 CI 启动
 
@@ -507,7 +674,7 @@ jobs:
       - run: npx teamai-cli workflow start ship-issue --driver local --tools default=claude --auto-approve --inputs '{"issue":${{ github.event.issue.number }}}'
 ```
 
-`--auto-approve` 对可选的 `approve` 请求回答 yes，对可选的 `choose` 请求选择默认值。无人值守的作业里没人能回答必需的请求，因此它所在的步骤以 `hitl_required` 失败，运行也随之失败。要从另一条分支启动运行（例如 CI 失败的分支），请按分支名检出它，例如在 `pull_request` 事件中使用 `ref: ${{ github.head_ref }}`。默认的 `pull_request` checkout 是 detached merge commit，`workflow start` 会拒绝它。TeamAI 不安装触发器，也不等待 CI 或合并。
+`--auto-approve` 对可选的 `approve` 请求回答 yes，对可选的 `choose` 请求选择默认值。无人值守的作业里没人能回答必需的请求，因此作业会在该步骤[把运行交给人](#运行需要人参与时)，并以 0 退出。要从另一条分支启动运行（例如 CI 失败的分支），请按分支名检出它，例如在 `pull_request` 事件中使用 `ref: ${{ github.head_ref }}`。默认的 `pull_request` checkout 是 detached merge commit，`workflow start` 会拒绝它。TeamAI 不安装触发器，也不等待 CI 或合并。
 
 ### 从 CI 接手交出的运行
 
@@ -559,7 +726,7 @@ teamai workflow resume <run> --tools default=claude --sandbox     # 装有 claud
 
 已发布的运行只有所有者能继续。在另一个已有该运行的安装实例上，`resume` 和 `publish` 都返回 `not_owner`，带上所有者的用户名和安装实例 id。同一成员的两个安装实例显示相同的用户名，靠安装实例 id 区分。要接管这个运行，执行 `teamai workflow resume <run> --claim`。认领会替换本机的运行副本，并释放其他机器持有的租约。此后原所有者不能再发布或继续这个运行，除非它再认领回来。
 
-要在编程会话中继续这个运行，由 agent 执行 `teamai workflow resume <run> --driver skill`，加 `--claim` 则从所有者那里接管。它以同样的方式认领运行，然后在会话的运行模式下用 skill 驱动运行它，选项与 skill 启动相同：`--parallel`、`--hitl` 或 `--auto-approve`，以及 `--no-judge`。不带这些选项时，一次只运行一个步骤，agent 在回答可选关卡前会先问你。在无人值守的运行中，它像 `--auto-approve` 那样回答可选关卡，并在认领之前拒绝剩余步骤需要人参与的运行（`unattended_denied`）；已经执行过的审批或交互步骤不再计入，除非循环可能再次执行它。已经结束的运行不需要任何人，所以从不因此被拒绝。无人值守的运行中会拒绝 `--hitl person`（`invalid_arguments`）：没有人会回答。它的第一个回合在工作流有 prompt 步骤或由会话评审时提出宿主问题，并重新派发另一台机器持有租约的步骤。必须用本地驱动运行的工作流会以 `teamai workflow resume <run>` 交还给你。接管运行由你决定，所以 agent 执行这两条命令前都会先问你。
+要在编程会话中继续这个运行，由 agent 执行 `teamai workflow resume <run> --driver skill`，加 `--claim` 则从所有者那里接管。它以同样的方式认领运行，然后在会话的运行模式下用 skill 驱动运行它，选项与 skill 启动相同：`--parallel`、`--hitl` 或 `--auto-approve`，以及 `--no-judge`。不带这些选项时，一次只运行一个步骤，agent 在回答可选关卡前会先问你。在无人值守的运行中，它像 `--auto-approve` 那样回答可选关卡；运行到只有人能处理的步骤时，它[把运行交给人](#运行需要人参与时)，会话随之停止。`invoke: ask` 的工作流会在认领之前被拒绝（`unattended_denied`）。无人值守的运行中会拒绝 `--hitl person`（`invalid_arguments`）：没有人会回答。它的第一个回合在工作流有 prompt 步骤或由会话评审时提出宿主问题，并重新派发另一台机器持有租约的步骤。必须用本地驱动运行的工作流会以 `teamai workflow resume <run>` 交还给你。接管运行由你决定，所以 agent 执行这两条命令前都会先问你。
 
 已发布的运行结束时，teamai 会发布它的结束状态，不带 `--sessions`。之后接手该运行的成员不会重新运行它的任何步骤。
 
@@ -660,7 +827,8 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 | 待接手的运行 | 无人值守的 `--next`（CI，或 `TEAMAI_MODE=unattended`） | 有人值守的 `--next` |
 |---|---|---|
 | 剩余步骤都不需要人参与 | 接手 | 接手 |
-| 剩余的某个步骤有必需审批、是 `interactive`，或是没有默认值的选择 | 跳过：列为 `needs a person` | 在终端中接手；没有终端（如 cron）时跳过 |
+| 剩余的某个步骤可能需要人参与（例如选择背后的 `pair`），但现在就绪的步骤都不需要 | 接手：列为 `may need a person at <step>`，运行到需要人的步骤时再交回 | 接手 |
+| 现在就绪的某个步骤是必需审批、`interactive`，或 `--auto-approve` 无法回答的选择（例如运行器在那里把它交回） | 跳过：列为 `needs a person` | 在终端中接手；没有终端（如 cron）时跳过 |
 | 剩余的某个步骤要求的 env 在本机没有值 | 跳过：列为 `cannot run here` | 跳过 |
 | 剩余的某个提示词步骤在本机没有工具：`--tools`、`workflows.tools` 和你的 AI 工具都没有指定，或指定的工具不在 `PATH` 上 | 跳过：列为 `cannot run here` | 跳过 |
 | 剩余的某个步骤需要沙箱（`requires: { isolation: sandbox, strict: true }`），而本机既没有传 `--sandbox` 也没有设置 `workflows.sandbox` | 跳过：列为 `cannot run here` | 跳过 |
@@ -670,11 +838,98 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 
 任何认领都会撤下运行的待接手状态：`--next`、在没有该运行的机器上执行 `resume <run>`、`resume <run> --claim`，或驱动的 `"claim": true`。你在发布它的机器上自己执行 `resume <run>` 也会撤下；再次发布即可重新留给运行器接手。因此不会有两个运行器驱动同一个运行。请在不再驱动该运行之后再发布，因为运行器可能立即接手。Dashboard 的[工作流运行页](dashboard.md#工作流运行workflow-runs)显示同样的这些运行。[把运行留给运行器接手](workflow-advanced.md#把运行留给运行器接手)说明 agent 会话适用的规则和每个错误。
 
+### 运行需要人参与时
+
+只有人才能继续的运行会交给人，而不是失败。例如 CI 作业启动 `release`，其中 `ship` 步骤等待必需审批：
+
+```yaml
+# workflows/release.yaml
+schemaVersion: v1alpha1
+name: release
+description: Build, then ship once a person approves.
+steps:
+  - id: build
+    command: echo build
+  - id: ship
+    needs: [build]
+    approve: { message: Ship it?, required: true }
+    command: ./scripts/ship.sh
+```
+
+作业运行 `build`，到达 `ship` 后把运行以待接手状态发布到 `teamai-reports`，并以 0 退出：
+
+```console
+$ teamai workflow start release --driver local                 # 在 CI 中
+ℹ Run r6aa0e2c0927ff266 started. If it stops before it ends, continue it with: teamai workflow resume r6aa0e2c0927ff266
+ℹ Step "ship" needs a person, so run r6aa0e2c0927ff266 is offered on teamai-reports. A person continues it with: teamai workflow resume r6aa0e2c0927ff266 --claim
+{"data":{"handoff":{"run":"r6aa0e2c0927ff266","steps":["ship"],"resume":"teamai workflow resume r6aa0e2c0927ff266 --claim"}}}
+```
+
+接手运行的运行器会跳过它，因为现在就绪的步骤需要人：
+
+```console
+$ teamai workflow resume --next --auto-approve                  # 运行器作业
+ℹ Left r6aa0e2c0927ff266 (release) offered for a person: only a person can answer the approval at ship
+{"data":{"idle":{"offered":1}}}
+```
+
+由人列出它，在终端中认领并回答：
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW  STATUS          OWNER                   WHERE
+r6aa0e2c0927ff266  release   needs a person  ci (install a2aa3589…)  offered on teamai-reports, only a person can answer the approval at ship: a person runs teamai workflow resume r6aa0e2c0927ff266 --claim
+$ teamai workflow resume r6aa0e2c0927ff266 --claim
+Step "ship": Ship it?
+Options: yes, no
+teamai workflow respond r6aa0e2c0927ff266 ship <option> --pass 1
+Choice, followed by an optional note: yes Looks good
+{"data":{"done":{"run":"r6aa0e2c0927ff266","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+`interactive` 步骤，以及 `--auto-approve` 无法回答的选择，也按同样方式处理。运行器也会这样把运行交回，所以它会接手一个需要人的步骤可能永远不会运行的运行。下面的 `ship-issue` 中，只有人选了 `pair` 才会运行 `pair`，而 `--auto-approve` 选的是 `give-up`：
+
+```yaml
+  - id: stuck
+    needs: [build]
+    choose: { message: Stuck?, options: [give-up, pair], default: give-up }
+  - id: pair
+    needs: [stuck]
+    if: steps.stuck.choice == 'pair'
+    approve: { message: Pair on the failing test now?, required: true }
+    command: ./scripts/open-pairing.sh
+```
+
+```console
+$ teamai workflow resume
+RUN                WORKFLOW    STATUS   OWNER                      WHERE
+rddf318b1e199572e  ship-issue  running  alice (install ebee2326…)  offered on teamai-reports, may need a person at pair: teamai workflow resume --next
+$ teamai workflow resume --next --auto-approve                  # 运行器作业
+✔ Claimed rddf318b1e199572e (ship-issue) from alice
+⚠ Step "stuck" chose "give-up" by auto_approve.
+{"data":{"done":{"run":"rddf318b1e199572e","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+无人值守地接手待接手运行的编程会话也以同样的方式交回运行。假设 alice 在 `build` 运行时发布了 `release`。会话认领它，运行 `build`，到 `ship` 时再次把运行设为待接手并释放它。它的 agent 报告 `person` 动作的 `message` 后停止，因为该回合没有 `then`：
+
+```console
+$ teamai workflow resume --next --driver skill                  # 无人值守的编程会话
+✔ Claimed rbb036bfacd4cec62 (release) from alice
+{"data":{"turn":{"run":"rbb036bfacd4cec62","status":"driving","actions":[],"running":[{"attempt":"ac15e3ddd","step":"build","phase":"running"}],…,"then":{"kind":"poll","run":"teamai workflow next rbb036bfacd4cec62 --driver skill --wait"}}}}
+…
+$ teamai workflow next rbb036bfacd4cec62 --driver skill
+{"data":{"turn":{"run":"rbb036bfacd4cec62","status":"driving","actions":[{"kind":"person","why":"offered","steps":["ship"],"message":"Step \"ship\" needs a person, so run rbb036bfacd4cec62 is offered on teamai-reports. A person continues it with: teamai workflow resume rbb036bfacd4cec62 --claim","run":["teamai workflow resume rbb036bfacd4cec62 --claim"]}],…}}}
+```
+
+之后运行器会跳过它，由人认领，与上文相同。
+
+运行无法发布为待接手时（例如对团队仓库没有推送权限、origin 无法访问，或检出目录没有 `origin`），该步骤和以前一样以 `hitl_required` 失败。消息会说明原因，运行留在那台机器上：在那里先运行 `teamai workflow retry <run> <step>`，再在终端中运行 `teamai workflow resume <run>`。TeamAI 不会通知任何人有运行在等待。请查看 `teamai workflow resume` 或 Dashboard。
+
 ## 运行记录
 
 开启[使用统计上报](reporting.md)时，每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。关闭后不发布任何记录，返回中也不带 `record`。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 
-记录只包含：run id、工作流名、定义里有别名时的 `alias`、`sourceHash`、可选的 `teamRevision`、`origin`（团队的定义，或[默认工作流](#默认工作流)及发布它的 teamai 版本）、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`）、[隔离运行](workflow-advanced.md#隔离运行)的 `isolated: true`，以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
+记录只包含：run id、工作流名、定义里有别名时的 `alias`、`sourceHash`、可选的 `teamRevision`、`origin`（团队的定义，或[默认工作流](#默认工作流)及发布它的 teamai 版本）、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、`retainedUntil`（所有者保留运行留下内容的截止时间）、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`）及其分支（`prBranches`）、[隔离运行](workflow-advanced.md#隔离运行)的 `isolated: true`，以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
 
 条目的 `agent` 是该 pass 实际运行时观察到的组合：步骤的 `agent:` 定义及工具如何拿到它（工具自己读取 agent 文件时为 `main`，指令拼接到提示词前时为 `prompt`）、工具及其版本、启动时请求的模型和 effort、工具报告的模型、检出最近一次 pull 的团队提交以及之后是否改过已下发的文件、项目提交、TeamAI 版本和驱动的 kind。没有观察到的值不写。`fingerprint` 对定义、工具、模型、effort 和团队提交做哈希，fingerprint 相同的两个 pass 记录下来的这些部分相同。模型或团队提交未知，或改过已下发的文件时，不写 `fingerprint`。没有任何观察的 pass，以及旧版 TeamAI 写的记录，只带定义的名称。步骤运行期间，如果该检出最近一次 pull 已完整下发到步骤启动的工具，该工具以及它在同一检出中启动的会话都会跳过会话开始时的 pull，步骤因此保持它记录的团队提交。
 
@@ -782,7 +1037,7 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 有人在场回答时，运行是有人值守的；在 CI 或云端 agent 中，运行是无人值守的。TeamAI 先看 `TEAMAI_MODE`（`attended` 或 `unattended`），再看 `CI`（已设置且不是 `0` 或 `false` 即为无人值守），都没有时按有人值守处理。`TEAMAI_MODE` 为其他值时，TeamAI 给出警告并忽略它。
 
-在无人值守的运行中，describe 不提问。它给出推荐选项的启动命令，并带上 `--auto-approve`，由 agent 根据自己的任务填写 `{inputs}`。需要人参与的工作流会被拒绝（`denied`），并说明原因：`invoke: ask`、`interactive` 步骤、必需审批、没有默认值的选择，或只有本地驱动能运行的路径。
+在无人值守的运行中，describe 不提问。它给出推荐选项的启动命令，并带上 `--auto-approve`，由 agent 根据自己的任务填写 `{inputs}`。`invoke: ask` 的工作流或只有本地驱动能运行的路径会被拒绝（`denied`），并说明原因。含 `interactive` 步骤、必需审批或没有默认值的选择的工作流照常启动，describe 会说明运行到这些步骤时会交给人。
 
 无论用哪种驱动，TeamAI 为步骤启动的每个进程（包括 setup）都会拿到这次运行的 `TEAMAI_MODE`。skill 驱动沿用启动时或 `resume --driver skill` 时解析出的模式；本地驱动在每次开始驱动时（`start` 或 `resume`）重新解析。
 

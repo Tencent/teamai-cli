@@ -46,6 +46,15 @@ export interface StepHitl {
   required: boolean;
 }
 
+/**
+ * Whether only a person can answer `hitl` for a driver without HITL: a required request, or a choice that auto-approve
+ * does not answer, as it answers only a choice with a default and only when `autoApprove`. An optional approval nobody
+ * answers is skipped instead.
+ */
+export function onlyPersonAnswers(hitl: Pick<StepHitl, 'kind' | 'required' | 'default'>, { autoApprove }: { autoApprove: boolean }): boolean {
+  return hitl.required || (hitl.kind === 'choose' && !(autoApprove && hitl.default !== undefined));
+}
+
 export interface WorkflowStep {
   id: string;
   /** Step ids this step waits for. Absent only on the first step, which is a root. */
@@ -343,6 +352,11 @@ export interface WorkflowDefinition {
   budget?: Budget;
   /** Runs in each workspace a driver creates for a step of this file, or of a workflow it runs that has no setup. */
   setup?: Setup;
+  /**
+   * `new`: the steps work in one copy. A run of this file opens it (the run copy); a step that runs it continues the copy
+   * it has or is in, and opens one, as with `workspace: new`, when it has none.
+   */
+  workspace?: 'new';
   steps: WorkflowStep[];
   /**
    * Read-only command steps that run once the run's steps end, whatever the outcome, a timeout or a cancel included.
@@ -528,6 +542,8 @@ export interface RunState {
   sessionContinuations?: SessionContinuation[];
   /** How this machine last published the run, or took it from another machine. Local run state only. */
   publication?: RunPublication;
+  /** What teamai removed of the run's branches once it settled, and what it kept. Local run state only. */
+  leftovers?: RunLeftovers;
   createdAt: string;
   /**
    * Where the workflow's `timeout` and `budget` count from once a retry reopened the run, so the reopened run gets a whole
@@ -535,6 +551,12 @@ export interface RunState {
    */
   limitsFrom?: LimitsFrom;
   updatedAt: string;
+  /**
+   * Until when what the run left is kept: the time it first settled plus the `workflows.retention` its owner had then. A
+   * later end does not change it. Past it a retry does not reopen the run, and `teamai doctor --fix` may remove what it
+   * left. Absent until the run first settles, under `never`, and on runs settled before it was recorded.
+   */
+  retainedUntil?: string;
 }
 
 /**
@@ -558,6 +580,26 @@ export interface DriveOptions {
   /** `false` after `resume --no-auto-approve`, which overrides `workflows.auto_approve` as the flag does. */
   autoApprove?: boolean;
   sandbox?: true;
+}
+
+/**
+ * Why a branch of a settled run stays: a pull request uses it, it holds the run's final copy, no branch that stays holds
+ * its tip, or the host has it checked out in the checkout, which keeps it there though origin deleted it.
+ */
+export type KeptBranchReason = 'pr' | 'final' | 'unmerged' | 'host';
+
+/**
+ * What teamai did with the `teamai/<run>/…` branches of a settled run, at run revision `revision`. `success`: the run
+ * succeeded and the branches a kept branch holds went. `retention`: `teamai doctor --fix` removed what the run left past
+ * `workflows.retention`. `failed` lists the deletions that did not go through, which `doctor --fix` tries again.
+ */
+export interface RunLeftovers {
+  by: 'success' | 'retention';
+  at: string;
+  revision: number;
+  kept: Array<{ branch: string; why: KeptBranchReason }>;
+  deleted: string[];
+  failed: Array<{ branch: string; reason: string }>;
 }
 
 /** What this machine knows of the run's snapshot on `teamai-reports`. */

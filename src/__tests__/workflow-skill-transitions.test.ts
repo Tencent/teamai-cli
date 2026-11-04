@@ -327,6 +327,24 @@ steps:
     deliver: pr
 `;
 
+const TIDY_IN_A_COPY = `schemaVersion: v1alpha1
+name: tidy
+description: Tidy the repository in one copy
+invoke: allow
+workspace: new
+steps:
+  - id: write
+    workspace: continue
+    command: node -e "require('fs').writeFileSync('tidy.txt', 'T')"
+`;
+
+// TIDY_IN_A_COPY, whose last step fails after the copy took a commit.
+const TIDY_FAILS = `${TIDY_IN_A_COPY}  - id: check
+    needs: [write]
+    workspace: continue
+    command: node -e "process.exit(1)"
+`;
+
 const PUBLISH = `schemaVersion: v1alpha1
 name: publish
 description: Build the package, then tell the team
@@ -395,32 +413,6 @@ const ANNOUNCE = `  - id: announce
 const GO_LIVE_AFTER_UI = `  - id: go-live
     needs: [ui]
     approve: { message: Deploy to production?, required: true }
-    command: node -e "process.exit(0)"
-`;
-
-// HANDED with invoke: allow and a required approval between the build and the prompt steps.
-const HANDED_GATED = HANDED.replace('description: Build, then write the API and the UI', 'description: Build, then write the API and the UI\ninvoke: allow')
-  .replace('  - id: api\n    needs: [build]', '  - id: go-live\n    needs: [build]\n    approve: { message: Go live?, required: true }\n    command: node -e "process.exit(0)"\n  - id: api\n    needs: [go-live]')
-  .replace('  - id: ui\n    needs: [build]', '  - id: ui\n    needs: [go-live]');
-
-// A review whose required approval sits in a workflow that never runs.
-const SKIPPED_REVIEW = `schemaVersion: v1alpha1
-name: skipping
-description: Ship, with a review that is switched off
-invoke: allow
-steps:
-  - id: prep
-    command: node -e "process.exit(0)"
-  - id: review
-    needs: [prep]
-    if: steps.prep.outcome == 'failed'
-    workflow:
-      steps:
-        - id: sign-off
-          approve: { message: Sign off?, required: true }
-          command: node -e "process.exit(0)"
-  - id: ship
-    needs: [prep]
     command: node -e "process.exit(0)"
 `;
 
@@ -542,6 +534,29 @@ async function dispatchTurn(made: Awaited<ReturnType<typeof harness>>, run: RunI
     if (dispatches(turn).length > 0) return turn;
   }
   throw new Error('no dispatch came up in ten polls');
+}
+
+/** Polls `run`, running a foreground next when a poll wakes, until a turn has no `then`: that turn. */
+async function lastTurn(made: Awaited<ReturnType<typeof harness>>, run: RunId) {
+  for (let poll = 0; poll < 10; poll += 1) {
+    let turn = await turnOf(await made.call({ kind: 'next', run, wait: true }));
+    if (turn.then?.kind === 'wake') turn = await turnOf(await made.call({ kind: 'next', run, wait: false }));
+    if (turn.then === undefined) return turn;
+  }
+  throw new Error('every turn of ten polls had a then');
+}
+
+/** Gives the checkout of `install` a GitHub origin that git rewrites to the bare repository it was cloned from, so a run published from it is offered. */
+function onGitHub(install: { checkout: string }): void {
+  const bare = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: install.checkout, encoding: 'utf8' }).trim();
+  execFileSync('git', ['remote', 'set-url', 'origin', 'https://github.com/acme/app.git'], { cwd: install.checkout });
+  execFileSync('git', ['config', `url.${bare}.insteadOf`, 'https://github.com/acme/app.git'], { cwd: install.checkout });
+}
+
+/** The state of `run` on the team origin's teamai-reports, as another machine would read it. */
+function publishedState(config: LocalConfig, run: RunId): unknown {
+  if (config.repo.kind !== 'git') throw new Error('the install has no team origin');
+  return JSON.parse(execFileSync('git', ['--git-dir', config.repo.remote, 'show', `teamai-reports:workflows/runs/${run}/state.json`], { encoding: 'utf8' }));
 }
 
 /** Starts REVIEW with `answers` and has its child review and report: the turn of the `next` after, in which the run is done. */
@@ -737,6 +752,30 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         await releaseLock(held);
       }
       expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: ['https://github.com/fixture/app/pull/1'] }]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run whose workflow header says workspace: new ends with done naming the branch its changes are on',
+    rows: ['D16'],
+    run: async () => {
+      const made = await harness({ tidy: TIDY_IN_A_COPY });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'tidy', answers: { confirmed: false }, inputs: undefined }));
+      expect((await polledToDone(made, run)).actions).toEqual([{ kind: 'done', outcome: 'succeeded', prs: [], branch: `teamai/${run}/_run` }]);
+      expect(execFileSync('git', ['show', `teamai/${run}/_run:tidy.txt`], { cwd: made.work, encoding: 'utf8' })).toBe('T');
+      return made.rows;
+    },
+  },
+  {
+    name: 'a run whose workflow header says workspace: new and that failed ends with done naming no branch to bring in',
+    rows: ['D16'],
+    run: async () => {
+      const made = await harness({ tidy: TIDY_FAILS });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'tidy', answers: { confirmed: false }, inputs: undefined }));
+      const [done] = (await polledToDone(made, run)).actions;
+      expect(done).toMatchObject({ kind: 'done', outcome: 'failed' });
+      expect(done).not.toHaveProperty('branch');
+      expect(execFileSync('git', ['show', `teamai/${run}/_run:tidy.txt`], { cwd: made.work, encoding: 'utf8' })).toBe('T');
       return made.rows;
     },
   },
@@ -981,12 +1020,12 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an unattended describe asks nothing: it denies a workflow that needs a person, and answers the recommended start under --auto-approve, which runs to done',
+    name: 'an unattended describe asks nothing: it denies an invoke: ask workflow, which nobody is there to agree to, and answers the recommended start under --auto-approve, which runs to done',
     rows: ['R17', 'R18', 'R10'],
     run: async () => {
-      const made = await harness({ release: RELEASE, check: CHECK }, { mode: 'unattended' });
-      expect(await made.call({ kind: 'describe', name: 'release' })).toMatchObject({ data: { describe: { ask: {
-        kind: 'denied', reason: expect.stringContaining('only a person can answer the approval at go-live'),
+      const made = await harness({ gated: GATED, check: CHECK }, { mode: 'unattended' });
+      expect(await made.call({ kind: 'describe', name: 'gated' })).toMatchObject({ data: { describe: { ask: {
+        kind: 'denied', reason: expect.stringContaining('the team asks that a person agree before it starts (invoke: ask)'),
       } } } });
       expect(await made.call({ kind: 'describe', name: 'check' })).toMatchObject({ data: { describe: { ask: { kind: 'start', start: 'teamai workflow start check --driver skill --auto-approve' } } } });
       const { run } = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }));
@@ -1205,8 +1244,8 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an unattended resume or takeover decides as describe does: a run that needs a person is refused, and any other runs with its optional gates auto-approved',
-    rows: ['R24', 'R19'],
+    name: 'an unattended resume or takeover takes a run whose steps left need a person, which it hands to one when it reaches them, and runs any other with its optional gates auto-approved',
+    rows: ['R19'],
     run: async () => {
       const made = await harness({ release: RELEASE, approved: APPROVED }, { mode: 'unattended' });
       const runOf = async (name: string): Promise<RunId> => {
@@ -1215,13 +1254,10 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         return RunIdSchema.parse(created.data.run);
       };
       const release = await runOf('release');
-      expect(await made.call({ kind: 'resume', run: release, claim: 'lacking', confirmed: false, answers: {} })).toEqual({ error: {
-        code: 'unattended_denied',
-        message: 'Workflow release needs a person, and this run is unattended (TEAMAI_MODE or CI says so): only a person can answer the approval at go-live. Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.',
-        next: null,
-      } });
-      expect(await made.call({ kind: 'takeover', run: release, confirmed: false })).toMatchObject({ error: { code: 'unattended_denied', next: null } });
-      expect(fs.existsSync(skillStatePath(made.config, release))).toBe(false);
+      expect(await turnOf(await made.call({ kind: 'resume', run: release, claim: 'lacking', confirmed: false, answers: {} }))).toMatchObject({ run: release });
+      expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, release), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve', mode: 'unattended' } });
+      const taken = await runOf('release');
+      expect(await turnOf(await made.call({ kind: 'takeover', run: taken, confirmed: false }))).toMatchObject({ run: taken });
       const approved = await runOf('approved');
       expect(await turnOf(await made.call({ kind: 'resume', run: approved, claim: 'lacking', confirmed: false, answers: {} }))).toMatchObject({ run: approved, actions: [] });
       expect(JSON.parse(fs.readFileSync(skillStatePath(made.config, approved), 'utf8'))).toMatchObject({ options: { hitl: 'auto-approve', mode: 'unattended' } });
@@ -1230,8 +1266,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   ...([
-    { announce: ANNOUNCE, cancel: false, rows: ['R19'], name: 'an unattended resume counts only the steps left: a run whose required approval already ran continues with its optional gates auto-approved' },
-    { announce: `${ANNOUNCE}    loop: { back_to: go-live, max_iterations: 2 }\n`, cancel: false, rows: ['R24'], name: 'an unattended resume still counts a required approval that ran when a loop can run it again' },
+    { announce: ANNOUNCE, cancel: false, rows: ['R19'], name: 'an unattended resume of a run whose required approval already ran continues with its optional gates auto-approved' },
     { announce: ANNOUNCE, cancel: true, rows: ['R19'], name: 'an unattended resume of a run that already ended needs no person: a run cancelled while its required approval\'s step ran readies as it ended' },
   ] as const).map(({ announce, cancel, rows, name }) => ({
     name,
@@ -1266,10 +1301,6 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'succeeded' })]) });
       }
       const resumed = await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} });
-      if (rows[0] === 'R24') {
-        expect(resumed).toMatchObject({ error: { code: 'unattended_denied', message: expect.stringContaining('the approval at go-live'), next: null } });
-        return made.rows;
-      }
       if (cancel) {
         expect(await turnOf(resumed)).toMatchObject({ run, status: 'done', actions: [{ kind: 'done', outcome: 'cancelled' }] });
         return made.rows;
@@ -1315,13 +1346,13 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an unattended start of a workflow that needs a person is refused as describe denies it, and no run is created',
+    name: 'an unattended start of an invoke: ask workflow is refused as describe denies it, and no run is created',
     rows: ['R25'],
     run: async () => {
-      const made = await harness({ release: RELEASE }, { mode: 'unattended' });
-      expect(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined })).toEqual({ error: {
+      const made = await harness({ gated: GATED }, { mode: 'unattended' });
+      expect(await made.call({ kind: 'start', name: 'gated', answers: { confirmed: true }, inputs: undefined })).toEqual({ error: {
         code: 'unattended_denied',
-        message: 'Workflow release needs a person, and this run is unattended (TEAMAI_MODE or CI says so): only a person can answer the approval at go-live. Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.',
+        message: 'Workflow gated needs a person, and this run is unattended (TEAMAI_MODE or CI says so): the team asks that a person agree before it starts (invoke: ask). Start it from a session a person attends, or set TEAMAI_MODE=attended where one does.',
         next: null,
       } });
       const runs = runsDir(made.config);
@@ -1330,43 +1361,70 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an unattended takeover of a run a session drives is refused when the steps left need a person, and that session stays its orchestrator',
-    rows: ['R24'],
+    name: 'an unattended session that reaches a required approval takes no lease for it: it offers the run on teamai-reports, names the step and the claim, and its turn ends the loop',
+    rows: ['R10', 'D30', 'D31'],
     run: async () => {
-      const made = await harness({ release: RELEASE });
-      const { run } = await turnOf(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl: 'person' }, inputs: undefined }));
-      const owner = (): unknown => JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8')).orchestrator;
-      const before = owner();
-      expect(await made.call({ kind: 'takeover', run, confirmed: false }, { mode: 'unattended', session: 'session-b' })).toMatchObject({ error: { code: 'unattended_denied', next: null } });
-      expect(owner()).toEqual(before);
+      const install = await sharedTeam({ release: RELEASE }).install('ci');
+      onGitHub(install);
+      const made = await harness({}, { install, mode: 'unattended' });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }));
+      const handed = await lastTurn(made, run);
+      expect(handed).toMatchObject({ status: 'driving', running: [], actions: [{
+        kind: 'person', why: 'offered', steps: ['go-live'],
+        message: `Step "go-live" needs a person, so run ${run} is offered on teamai-reports. A person continues it with: teamai workflow resume ${run} --claim`,
+        run: [`teamai workflow resume ${run} --claim`],
+      }] });
+      expect(publishedState(install.config, run)).toMatchObject({
+        owner: { user: 'ci' }, offered: { at: expect.any(String) },
+        steps: [{ id: 'notes', status: 'succeeded' }, { id: 'plan-review', status: 'succeeded' }, { id: 'go-live', status: 'waiting' }],
+      });
       return made.rows;
     },
   },
   {
-    name: 'an unattended resume --claim decides from the published run the claim installs, not this machine\'s older copy',
-    rows: ['R19'],
+    name: 'an unattended session dispatches no interactive step: it offers the run on teamai-reports at that step instead',
+    rows: ['D30', 'D31'],
     run: async () => {
-      const team = sharedTeam({ handed: HANDED_GATED });
-      const ci = await team.install('ci');
-      const { run } = await publishedMidStep(ci, 'handed');
-      // A member's session claims the run, the person answers go-live, and the member publishes it with api and ui left.
-      const member = await harness({}, { install: await team.install('member') });
-      await turnOf(await member.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} }));
-      await member.call({ kind: 'choose', run, choice: 'h1' });
-      const person = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
-      const goLive = async (): Promise<string | undefined> => {
-        const read = await readRun(member.config, run);
-        return typeof read === 'object' ? read.steps.find((step) => step.id === 'go-live')?.status : undefined;
-      };
-      for (let poll = 0; poll < 10 && await goLive() !== 'succeeded'; poll += 1) {
-        await respondToHitl(member.config, run, member.context.env.secrets, { step: 'go-live', choice: 'yes', pass: 1, provenance: person });
-        await member.call({ kind: 'next', run, wait: true });
-      }
-      expect(await publishRun(member.config, run, { checkout: member.work })).toMatchObject({ ok: true });
-      // CI's own copy still has go-live ahead; the published run does not.
-      const back = await harness({}, { install: ci, mode: 'unattended' });
-      expect(await turnOf(await back.call({ kind: 'resume', run, claim: 'any', confirmed: false, answers: {} }))).toMatchObject({ run });
-      return back.rows;
+      const install = await sharedTeam({ draft: DRAFT }).install('ci');
+      onGitHub(install);
+      const made = await harness({}, { install, mode: 'unattended' });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'draft', answers: { confirmed: false }, inputs: undefined }));
+      const chosenTurn = await turnOf(await made.call({ kind: 'choose', run, choice: 'h1' }));
+      expect(dispatches(chosenTurn)).toEqual([]);
+      expect(chosenTurn).toMatchObject({ running: [], actions: [{ kind: 'person', why: 'offered', steps: ['write'], run: [`teamai workflow resume ${run} --claim`] }] });
+      expect(chosenTurn.then).toBeUndefined();
+      expect(publishedState(install.config, run)).toMatchObject({ offered: { at: expect.any(String) }, steps: [{ id: 'write', status: 'pending' }] });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended session that cannot offer the run to a person fails the step only one can take hitl_required, saying why and how to continue',
+    rows: ['D30', 'D32'],
+    run: async () => {
+      // A team repository of the checkout itself has no teamai-reports to offer the run on.
+      const made = await harness({ release: RELEASE }, { mode: 'unattended' });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'release', answers: { confirmed: false, hitl: 'auto-approve' }, inputs: undefined }));
+      const message = new RegExp(`^Step "go-live" needs a person, and run ${run} could not be offered to one: .+\\. Its state is on this machine\\. Retry the step here, then resume the run where a person answers: teamai workflow retry ${run} go-live; then teamai workflow resume ${run}$`);
+      expect(await polledToDone(made, run)).toMatchObject({ status: 'done', actions: [{ kind: 'done', outcome: 'failed' }] });
+      expect(await readRun(made.config, run)).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ id: 'go-live', status: 'failed', failure: { code: 'hitl_required', message: expect.stringMatching(message) } })]) });
+      return made.rows;
+    },
+  },
+  {
+    name: 'an unattended resume, from the session that drives it, of an invoke: ask run is refused, as nobody is there to agree, and that session stays its orchestrator',
+    rows: ['R24'],
+    run: async () => {
+      const made = await harness({ gated: GATED });
+      const { run } = await turnOf(await made.call({ kind: 'start', name: 'gated', answers: { confirmed: true }, inputs: undefined }, { evidence: AGENT }));
+      const owner = (): unknown => JSON.parse(fs.readFileSync(skillStatePath(made.config, run), 'utf8')).orchestrator;
+      const before = owner();
+      expect(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: true, answers: {} }, { evidence: AGENT, mode: 'unattended' })).toEqual({ error: {
+        code: 'unattended_denied',
+        message: 'Workflow gated needs a person, and this run is unattended (TEAMAI_MODE or CI says so): the team asks that a person agree before it starts (invoke: ask). Continue it from a session a person attends, or set TEAMAI_MODE=attended where one does.',
+        next: null,
+      } });
+      expect(owner()).toEqual(before);
+      return made.rows;
     },
   },
   {
@@ -1405,38 +1463,16 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'an unattended resume does not count a required approval inside a workflow the run skipped',
+    name: 'an unattended resume --claim takes a published run whose steps left need a person: this install owns it now',
     rows: ['R19'],
-    run: async () => {
-      const made = await harness({ skipping: SKIPPED_REVIEW }, { mode: 'unattended' });
-      const { client } = made.context;
-      const created = await client.start('skipping', { checkout: made.work, caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'person' });
-      if (!('data' in created)) throw new Error(JSON.stringify(created));
-      const run = RunIdSchema.parse(created.data.run);
-      // CI's local driver runs `prep` and gives `ship` back, so the run waits with `review` skipped and its approval never asked.
-      const driver = { kind: 'local', machine: 'ci', workspace: made.work, can: { hitl: true, workspace: [...WORKSPACE_MODES] } };
-      for (const [step, outcome] of [['prep', 'success'], ['ship', 'released']] as const) {
-        const answer = await client.next(run, { driver });
-        const { lease } = z.object({ lease: z.object({ step: z.string(), attempt: z.string(), revision: z.number() }) }).parse('data' in answer ? answer.data : answer);
-        expect(lease.step).toBe(step);
-        expect(await client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome, driver })).not.toHaveProperty('error');
-      }
-      expect(await readRun(made.config, run)).toMatchObject({ status: 'running', steps: expect.arrayContaining([expect.objectContaining({ id: 'review', status: 'skipped' })]) });
-      expect(await turnOf(await made.call({ kind: 'resume', run, claim: 'lacking', confirmed: false, answers: {} }))).toMatchObject({ run });
-      return made.rows;
-    },
-  },
-  {
-    name: 'an unattended resume of a published run that needs a person is refused before the claim: the install that published it still owns it',
-    rows: ['R24'],
     run: async () => {
       const team = sharedTeam({ 'gated-handed': HANDED.replace('name: handed', 'name: gated-handed\ninvoke: allow') + GO_LIVE_AFTER_UI });
       const ci = await team.install('ci');
       const { run } = await publishedMidStep(ci, 'gated-handed');
       const made = await harness({}, { install: await team.install('member'), mode: 'unattended' });
-      expect(await made.call({ kind: 'resume', run, claim: 'any', confirmed: false, answers: {} })).toMatchObject({ error: { code: 'unattended_denied', next: null } });
-      expect(await readRun(made.config, run)).toBe('missing');
-      expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: true });
+      expect(await turnOf(await made.call({ kind: 'resume', run, claim: 'any', confirmed: false, answers: {} }))).toMatchObject({ run });
+      expect(await readRun(made.config, run)).toMatchObject({ status: 'running' });
+      expect(await publishRun(ci.config, run, { checkout: ci.checkout })).toMatchObject({ ok: false, error: { code: 'not_owner' } });
       return made.rows;
     },
   },
