@@ -300,6 +300,23 @@ const DAY = 86_400_000;
 
 const FAILS_LAST = NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)");
 
+/** A branch, and a step that delivers a pull request from its own branch once the file `ready` exists, and fails before. */
+function deliversOnce(ready: string): string {
+  return `schemaVersion: v1alpha1
+name: ship
+description: A branch, and a step that delivers once it is ready.
+steps:
+  - id: left
+    workspace: new
+    command: node -e "require('fs').writeFileSync('left.txt', 'L')"
+  - id: join
+    needs: [left]
+    workspace: new
+    deliver: pr
+    command: node -e "require('fs').writeFileSync('join.txt', 'J'); require('fs').existsSync('${ready}') || process.exit(1)"
+`;
+}
+
 /** Makes the fixture's team repository one with an origin, which teamai-reports and the run records go to. */
 function shareTeam(config: LocalConfig, root: string): void {
   const team = config.repo.localPath;
@@ -419,21 +436,9 @@ describe('doctor --fix past workflows.retention', () => {
     expect(branches(origin, runId)).toEqual(before);
   });
 
-  it('goes by until when the install that claimed a run keeps it, a grace period more, and keeps the pull request branch it delivered', async () => {
+  it('goes by until when the run was first kept, though the install that claimed it ended it later, a grace period more, and keeps the pull request branch it delivered', async () => {
     const ready = path.join(os.tmpdir(), `teamai-leftovers-ready-${process.pid}-${Date.now()}`);
-    const { config, cwd, root, origin, runId } = await fixture(`schemaVersion: v1alpha1
-name: ship
-description: A branch, and a step that delivers once it is ready.
-steps:
-  - id: left
-    workspace: new
-    command: node -e "require('fs').writeFileSync('left.txt', 'L')"
-  - id: join
-    needs: [left]
-    workspace: new
-    deliver: pr
-    command: node -e "require('fs').writeFileSync('join.txt', 'J'); require('fs').existsSync('${ready}') || process.exit(1)"
-`);
+    const { config, cwd, root, origin, runId } = await fixture(deliversOnce(ready));
     dirs.push(ready);
     shareTeam(config, root);
     fakeGh(path.join(root, 'gh'));
@@ -448,15 +453,16 @@ steps:
     const delivered = (await readRun(other.config, runId) as RunState).deliveries?.map((receipt) => receipt.branch);
     expect(delivered).toEqual([`teamai/${runId}/join/p2`]);
     const settled = Date.parse((await readRun(other.config, runId) as RunState).updatedAt);
+    const until = Date.parse(ended.updatedAt) + 14 * DAY;
     const before = branches(origin, runId);
 
     expect(Date.parse(ended.updatedAt)).toBeLessThan(settled);
 
-    await sweepLeftovers(config, null, { now: settled + 21 * DAY - 1, checkout: cwd });
+    await sweepLeftovers(config, null, { now: until + 7 * DAY - 1, checkout: cwd });
 
     expect(branches(origin, runId)).toEqual(before);
 
-    await sweepLeftovers(config, null, { now: settled + 21 * DAY, checkout: cwd });
+    await sweepLeftovers(config, null, { now: until + 7 * DAY, checkout: cwd });
 
     expect(branches(origin, runId)).toEqual(['join/p2']);
   });
@@ -643,13 +649,35 @@ describe('a run that settled longer ago than workflows.retention', () => {
     try {
       expect(await retryStep(config, runId, {}, 'join')).toEqual({ error: {
         code: 'run_expired',
-        message: `Run ${runId} was not reopened: it settled at ${ended.updatedAt}, and workflows.retention kept what it left until ${new Date(Date.parse(ended.updatedAt) + 14 * DAY).toISOString()}, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start ship`,
+        message: `Run ${runId} was not reopened: workflows.retention kept what it left until ${new Date(Date.parse(ended.updatedAt) + 14 * DAY).toISOString()}, counted from when it first ended, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start ship`,
       } });
     } finally {
       vi.useRealTimers();
     }
 
     expect(await state(config, runId)).toEqual(ended);
+  });
+
+  it('counts from when the run first ended, though a retry since ended it again', async () => {
+    const { config, cwd, root, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const ended = await state(config, runId);
+    const until = Date.parse(ended.updatedAt) + 14 * DAY;
+    config.usageReportEnabled = false;
+    vi.useFakeTimers({ toFake: ['Date'] });
+
+    try {
+      vi.setSystemTime(until - DAY);
+      expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true } });
+      expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+      expect((await state(config, runId)).retainedUntil).toBe(new Date(until).toISOString());
+
+      vi.setSystemTime(until);
+      expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ error: { code: 'run_expired' } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('publishes with its end until when it is kept, and nothing under workflows.retention never', async () => {
@@ -695,19 +723,23 @@ describe('a run that settled longer ago than workflows.retention', () => {
   });
 
   it('is swept from another machine by the record origin holds, though an interrupted write left an older one in its checkout', async () => {
-    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    const ready = path.join(os.tmpdir(), `teamai-leftovers-ready-${process.pid}-${Date.now()}`);
+    const { config, cwd, root, origin, runId } = await fixture(deliversOnce(ready));
+    dirs.push(ready);
     shareTeam(config, root);
+    fakeGh(path.join(root, 'gh'));
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
-    const first = Date.parse((await state(config, runId)).retainedUntil ?? '');
+    const until = Date.parse((await state(config, runId)).retainedUntil ?? '');
     const other = await otherInstall(config, root, origin);
     await sweepLeftovers(other.config, null, { now: Date.now(), checkout: other.cwd });
     fs.appendFileSync(path.join(getReportsDir(other.config), 'workflows', 'runs', `${runId}.json`), '\n');
+    fs.writeFileSync(ready, '');
     expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true } });
-    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
-    expect(Date.parse((await state(config, runId)).retainedUntil ?? '')).toBeGreaterThan(first);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
 
-    expect((await sweepLeftovers(other.config, null, { now: first + 7 * DAY, checkout: other.cwd })).swept).toEqual([]);
-    expect(branches(origin, runId)).toEqual(['join/p1', 'join/p2', 'left/p1']);
+    await sweepLeftovers(other.config, null, { now: until + 7 * DAY, checkout: other.cwd });
+
+    expect(branches(origin, runId)).toEqual(['join/p2']);
   });
 });
 

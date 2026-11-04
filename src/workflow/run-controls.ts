@@ -458,7 +458,7 @@ function retryRefusal(run: RunState, step: string, retention: ResolvedRetention,
 
   // Past it, doctor --fix on any machine may remove what the run needs, and no install coordinates a reopen with it.
   if (retainedUntil !== undefined && retainedUntil <= Date.parse(now)) {
-    return error('run_expired', `Run ${run.id} was not reopened: it settled at ${run.updatedAt}, and workflows.retention kept what it left until ${new Date(retainedUntil).toISOString()}, so teamai doctor --fix may have removed its branches. Start the workflow again: ${restartCommand(run)}`);
+    return error('run_expired', `Run ${run.id} was not reopened: workflows.retention kept what it left until ${new Date(retainedUntil).toISOString()}, counted from when it first ended, so teamai doctor --fix may have removed its branches. Start the workflow again: ${restartCommand(run)}`);
   }
 
   if (isIsolated(run)) {
@@ -580,7 +580,6 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       run.status = 'running';
       delete run.end;
       delete run.failure;
-      delete run.retainedUntil;
       // The branches its cleanup deleted are back, and the run's next end cleans up again.
       delete run.leftovers;
       await removeQueuedEndRecord(config, run.id);
