@@ -180,6 +180,15 @@ describe('DataBranches.pushPending', () => {
     expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":1}\n');
   });
 
+  it('creates no data branch on origin from a checkout that holds only the commit that started it', async () => {
+    git(sandbox, '--git-dir', remote, 'branch', '-D', 'teamai-reports');
+    git(config.repo.localPath, 'fetch', '-q', '--prune', 'origin');
+    await DataBranches.checkout('teamai-reports').ensure(config, { pushIfCreated: false });
+
+    expect(await DataBranches.pushPending(config)).toEqual([]);
+    expect(spawnSync('git', ['--git-dir', remote, 'rev-parse', '--verify', '-q', 'teamai-reports']).status).not.toBe(0);
+  });
+
   it('pushes nothing for an http team repo', async () => {
     expect(await DataBranches.pushPending({ ...config, repo: { ...config.repo, kind: 'http' } })).toEqual([]);
   });

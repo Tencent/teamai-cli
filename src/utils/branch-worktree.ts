@@ -128,6 +128,24 @@ async function nothingLeftToPush(git: SimpleGit, spec: BranchWorktreeSpec): Prom
   }
 }
 
+/**
+ * Whether the checkout holds a commit origin lacks besides the one that started the branch here: the commit a publish
+ * left behind. A checkout that only started the branch owes origin nothing. Anything unreadable means "push and find out".
+ */
+async function unpushedImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<boolean> {
+  const git = createGitWithBlockTimeout(worktreePath(spec, localConfig));
+
+  try {
+    // for-each-ref answers by its output, so a missing ref is not read as an error git printed nothing for.
+    const tracked = (await git.raw(['for-each-ref', '--format=%(refname)', `refs/remotes/origin/${spec.branch}`])).trim() !== '';
+    const subjects = (await git.raw(['log', '--format=%s', tracked ? `origin/${spec.branch}..HEAD` : 'HEAD'])).split('\n').filter(Boolean);
+
+    return subjects.some((subject) => subject !== spec.initCommitMessage);
+  } catch {
+    return true;
+  }
+}
+
 /** Whether origin has the branch; null when git could not ask it. */
 async function remoteBranchExists(spec: BranchWorktreeSpec, repoRoot: string): Promise<boolean | null> {
   const git = createGitWithBlockTimeout(repoRoot);
@@ -1486,6 +1504,8 @@ export interface BranchWorktree {
   ownsCheckout(localConfig: LocalConfig): Promise<boolean>;
   /** Whether this repository owns a side checkout with uncommitted changes. */
   isDirty(localConfig: LocalConfig): Promise<boolean>;
+  /** Whether the checkout, which must exist, holds a commit origin lacks besides the one that started the branch here. */
+  hasUnpushed(localConfig: LocalConfig): Promise<boolean>;
   /** Run an action while holding this branch's writer lock. */
   withLock(localConfig: LocalConfig, action: () => Promise<void>): Promise<void>;
   /** Retire this checkout while its writer lock is already held. */
@@ -1523,6 +1543,7 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
     ownsCheckout: (localConfig) => ownsCheckoutImpl(spec, localConfig),
     isDirty: (localConfig) => dirtyImpl(spec, localConfig),
+    hasUnpushed: (localConfig) => unpushedImpl(spec, localConfig),
     withLock: (localConfig, action) => withLockImpl(spec, localConfig, action),
     retireWhileLocked: (localConfig) => retireWhileLockedImpl(spec, localConfig),
     retire: (localConfig, whileLocked) => retireImpl(spec, localConfig, whileLocked),

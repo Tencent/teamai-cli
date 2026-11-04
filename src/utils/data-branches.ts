@@ -22,7 +22,7 @@ export const DataBranches = {
     const results: Array<{ branch: DataBranch; result: PublishResult }> = [];
 
     for (const branch of DATA_BRANCHES) {
-      if (await isGitRepo(CHECKOUTS[branch].dir(config))) results.push({ branch, result: await CHECKOUTS[branch].commitAndPush(config, `[teamai] Publish pending ${branch} data`, []) });
+      if (await isGitRepo(CHECKOUTS[branch].dir(config)) && await CHECKOUTS[branch].hasUnpushed(config)) results.push({ branch, result: await CHECKOUTS[branch].commitAndPush(config, `[teamai] Publish pending ${branch} data`, []) });
     }
 
     return results;
