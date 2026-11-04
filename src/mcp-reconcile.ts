@@ -1030,11 +1030,11 @@ function codexBlockRe(name: string): RegExp {
 
 /**
  * What follows the `[` of a `[mcp_servers.<name>]` header as TOML allows it to
- * be written: with spaces inside the brackets or a quoted name. A comment may
- * follow the closing bracket.
+ * be written: with spaces inside the brackets or either key quoted. A comment
+ * may follow the closing bracket.
  */
 function codexHeaderStart(name: string): string {
-  return String.raw`\s*mcp_servers\s*\.\s*${name}\s*`;
+  return String.raw`\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*${name}\s*`;
 }
 
 /**
