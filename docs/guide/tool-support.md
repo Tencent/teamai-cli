@@ -124,7 +124,7 @@ Notes:
 18. refused until teamai writes the hooks.events shape (#1224)
 19. the task tool starts each child as a new agent session (omp 18.12.6); not run
 20. runs from teamai's team-hook bridge, which can block a tool call; OMP's extension source
-21. bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run
+21. bare Pi starts no subagent, so its session answers h4 and teamai judges the run in the background through pi at best-effort; the subagent example extension adds one (since 0.24.0); not run
 22. runs from teamai's team-hook bridge, which can block a tool call; Pi's extension source
 23. no Stop hook reaches the dashboard
 24. sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run

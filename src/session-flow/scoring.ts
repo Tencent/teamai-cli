@@ -18,6 +18,7 @@ import { requiredIsolation, scorerIsolationSource, type RequiredIsolation } from
 import { scopeScoring } from '../scorers/settings.js';
 import { runLocalJudge } from '../scorers/judge.js';
 import { installedConfinedTools } from '../tool-launch/confined.js';
+import { CONFINED_TOOLS } from '../tool-launch/tools.js';
 import type { ConfinedTool } from '../tool-launch/tools.js';
 import { chooseJudgeModel, type JudgeModelChoice } from '../scorers/judge-model.js';
 import type { ScoreLabel, SessionLabelContext, SessionSubject } from '../scorers/label.js';
@@ -409,7 +410,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand): Pr
   const tools = installedConfinedTools([]);
 
   if (tools.length === 0) {
-    return failure('judge_tool_unavailable', 'No installed tool can run a scorer judge with every tool turned off. Install a supported version of Claude Code, Codex or OpenCode.');
+    return failure('judge_tool_unavailable', `No installed tool can run a scorer judge with every tool turned off. Install one teamai runs confined: ${CONFINED_TOOLS.join(', ')}.`);
   }
 
   const groups = judgeGroups(asked, await loadModelAliases(config), tools, demand.batch || batchesScorers({ team: scoring.batch }));

@@ -33,6 +33,7 @@ import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import * as cliPaths from '../utils/cli-path.js';
 import { whileLabelsLocked } from './helpers/label-lock.js';
+import { CONFINED_TOOLS } from '../tool-launch/tools.js';
 
 const SCORER = `---
 labels:
@@ -291,8 +292,9 @@ describe('teamai score --session', () => {
     vi.stubEnv('PATH', empty);
 
     expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] })).toEqual({
-      error: { code: 'judge_tool_unavailable', message: 'No installed tool can run a scorer judge with every tool turned off. Install a supported version of Claude Code, Codex or OpenCode.' },
+      error: { code: 'judge_tool_unavailable', message: `No installed tool can run a scorer judge with every tool turned off. Install one teamai runs confined: ${CONFINED_TOOLS.join(', ')}.` },
     });
+    expect(CONFINED_TOOLS).toEqual(expect.arrayContaining(['claude', 'codex', 'opencode', 'codebuddy', 'cursor', 'pi', 'agy']));
   });
 
   it('refuses a Codex id that is the end of two sessions\' ids, names both, and runs no judge', async () => {

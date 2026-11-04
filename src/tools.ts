@@ -1200,7 +1200,7 @@ export const TOOLS = {
       tokens: '✓t',
       aiBackend: '✓s',
       votesJudge: '?',
-      sessionJudge: { cell: '◐s', note: 'bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run' },
+      sessionJudge: { cell: '◐s', note: 'bare Pi starts no subagent, so its session answers h4 and teamai judges the run in the background through pi at best-effort; the subagent example extension adds one (since 0.24.0); not run' },
       agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Pi\'s extension source' },
     },
   },
