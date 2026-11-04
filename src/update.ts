@@ -251,15 +251,25 @@ export function restoreInterruptedBins(pkgDir: string, prefix: string): string[]
   return restored;
 }
 
+/** A manifest whose `bin` is the command name, or a map of name to entry. */
+const ManifestWithSingleBin = z.object({ name: z.string(), bin: z.string() });
+const ManifestWithBinMap = z.object({ bin: z.record(z.string(), z.string()) });
+
 /** Shims named in the restored manifest; `teamai` when it cannot be read. */
 function binNames(pkgDir: string): string[] {
   try {
-    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
-    const names: string[] = typeof manifest.bin === 'string'
-      ? [manifest.name]
-      : Object.keys(manifest.bin ?? {});
+    const raw: unknown = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
+    const single = ManifestWithSingleBin.safeParse(raw);
 
-    if (names.length > 0) return names;
+    if (single.success) return [single.data.name];
+
+    const mapped = ManifestWithBinMap.safeParse(raw);
+
+    if (mapped.success) {
+      const names = Object.keys(mapped.data.bin);
+
+      if (names.length > 0) return names;
+    }
   } catch { /* restored copy has no manifest: fall back to the package name */ }
 
   return ['teamai'];
