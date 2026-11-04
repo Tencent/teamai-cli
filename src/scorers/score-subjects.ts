@@ -131,13 +131,11 @@ async function unplannedOf(config: LocalConfig, run: RunState, install: string, 
   return list;
 }
 
-/** The passes settled here of each run past its 14 days, none of whose scorers has a mark left open or to start again. */
-async function expiredUnmarked(config: LocalConfig, runs: readonly RunState[], install: string, facts: MarkFacts): Promise<RunSubject[]> {
-  const aged = runs.filter((run) => Date.parse(run.updatedAt) + MARK_WINDOW_MS <= Date.parse(facts.now));
-  const passes = aged.flatMap((run) => scoredPasses(run, install));
-  const states = await Promise.all(passes.map(({ subject, scorers }) => Marks.states(config, scorers.map((scorer) => ({ scorer, subject: { kind: 'run' as const, subject } })), facts)));
+/** The passes settled here of each run past its 14 days with no mark `live` holds, whichever scorer it is for. */
+function expiredUnmarked(runs: readonly RunState[], install: string, { now, live }: { now: string; live: ReadonlySet<string> }): RunSubject[] {
+  const aged = runs.filter((run) => Date.parse(run.updatedAt) + MARK_WINDOW_MS <= Date.parse(now));
 
-  return passes.flatMap(({ subject }, at) => ((states[at] ?? []).some((state) => state.kind === 'open' || Marks.startsAgain(state)) ? [] : [subject]));
+  return aged.flatMap((run) => scoredPasses(run, install)).flatMap(({ subject }) => (live.has(Subject.format({ kind: 'run', subject })) ? [] : [subject]));
 }
 
 export const ScoreSubjects = {
@@ -181,7 +179,8 @@ export const ScoreSubjects = {
    */
   async lapsed(config: LocalConfig, now: string): Promise<string[]> {
     const facts = markFacts(config, now);
-    await removeSubjectEvidence(scoresDir(config), await Marks.closedPasses(config, facts));
+    const marked = await Marks.passes(config, facts);
+    await removeSubjectEvidence(scoresDir(config), marked.closed);
     const marks = await Marks.restartable(config, facts);
     const list = new Set<string>();
     const install = (await installOwner(config)).id;
@@ -194,7 +193,7 @@ export const ScoreSubjects = {
     }
 
     // A pass no scorer sampled has no mark, so closing marks never removes what was staged for it.
-    await removeSubjectEvidence(scoresDir(config), await expiredUnmarked(config, runs, install, facts));
+    await removeSubjectEvidence(scoresDir(config), expiredUnmarked(runs, install, { now, live: marked.live }));
 
     for (const { key, state } of marks) {
       if (state.kind === 'waiting' && key.subject.kind === 'run') {

@@ -416,8 +416,11 @@ export const Marks = {
   /** Whether automatic judging starts a mark in `state`: never marked, waiting for CI, or a lapse before the fourth. */
   startsAgain,
 
-  /** The passes with a mark, each of whose marks is closed or expired: none open, waiting for CI or to start again. */
-  async closedPasses(config: LocalConfig, facts: MarkFacts): Promise<RunSubject[]> {
+  /**
+   * The passes with a mark, `closed` those each of whose marks is closed or expired, and `live` the formatted subject of
+   * every pass with a mark still open, waiting for CI or to start again, whichever scorer it is for.
+   */
+  async passes(config: LocalConfig, facts: MarkFacts): Promise<{ closed: RunSubject[]; live: ReadonlySet<string> }> {
     const { newest } = await readLedger(config, facts.now);
     const passes = [...newest.values()].flatMap(({ key, line }) => (key.subject.kind === 'run' ? [{ key, line, pass: key.subject.subject }] : []));
     const states = await Promise.all(passes.map(async ({ key, line }) => (await derive(key, line, facts)).state));
@@ -425,7 +428,7 @@ export const Marks = {
     const live = new Set(passes.flatMap(({ key }, at) => (isLive(states[at]) ? [Subject.format(key.subject)] : [])));
     const byId = new Map(passes.map(({ key, pass }) => [Subject.format(key.subject), pass]));
 
-    return [...byId].flatMap(([id, pass]) => (live.has(id) ? [] : [pass]));
+    return { closed: [...byId].flatMap(([id, pass]) => (live.has(id) ? [] : [pass])), live };
   },
 
   /** The marks automatic judging starts again: lapses before the fourth, and marks waiting for CI, none expired. */

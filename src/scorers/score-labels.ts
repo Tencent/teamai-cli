@@ -311,7 +311,7 @@ async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: M
     if ((await Marks.close(attempt.config, [key], outcome, facts)).status === 'busy') return refused('busy', 'Another teamai process is writing the scoring marks of this data home. Run the step again.');
   }
 
-  await removeSubjectEvidence(scoresDir(attempt.config), await Marks.closedPasses(attempt.config, facts));
+  await removeSubjectEvidence(scoresDir(attempt.config), (await Marks.passes(attempt.config, facts)).closed);
 
   return { ok: true, closed: held.length };
 }

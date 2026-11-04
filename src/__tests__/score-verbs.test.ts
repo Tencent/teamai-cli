@@ -24,6 +24,7 @@ import { labelVersion } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { log } from '../utils/logger.js';
 import { Marks } from '../scorers/marks.js';
+import { markFacts } from '../scorers/score-plan.js';
 import { PassScoring } from '../scorers/pass-scoring.js';
 import { RunScorers } from '../scorers/run-scorers.js';
 import type { ConfinedRunReport } from '../workflow/step-state.js';
@@ -848,6 +849,19 @@ describe('score label and score write', () => {
     expect(fs.existsSync(copy ?? '')).toBe(true);
     await lapsed('2027-01-01T00:00:00.000Z');
     expect(fs.existsSync(copy ?? '')).toBe(false);
+  });
+
+  it('keep the evidence staged for a pass past its 14 days while a scorer its step does not list was asked for it', async () => {
+    const config = await team({ ship: SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]') }, { clarity: scorer(), coverage: scorer() });
+    const runId = await deliveredRun(config);
+    const run = await readRun(config, runId);
+    if (run === 'missing' || run === 'corrupt') throw new Error(run);
+    const copy = await stageEvidence(config, run, { runId, step: 'change', pass: 1 }, { checkout: config.projectRoot ?? '', untrustedEnv: process.env });
+    const asked = { scorer: 'coverage', subject: { kind: 'run' as const, subject: { runId, step: 'change', pass: 1 } } };
+
+    expect(await Marks.open(config, { run: 'r00000000000000c1', demand: 'named', groups: [{ group: 'coverage', keys: [asked] }] }, markFacts(config, '2026-12-31T23:00:00.000Z'))).toMatchObject({ status: 'done' });
+    await ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: '2027-01-01T00:00:00.000Z' });
+    expect(fs.existsSync(copy ?? '')).toBe(true);
   });
 
   it('label each scorer of a batch from the judge\'s answer, print no reasoning, and write them with what judged, closing their marks', async () => {
