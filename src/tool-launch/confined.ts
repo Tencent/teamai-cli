@@ -303,7 +303,8 @@ function records(stdout: string): Array<z.infer<typeof RecordSchema>> {
   });
 }
 
-function parseReply(text: string): JsonValue | undefined {
+/** The JSON value a reply holds, inside a fenced block or bare, or undefined when it holds none. */
+export function parseReply(text: string): JsonValue | undefined {
   try {
     const parsed = JsonValueSchema.safeParse(JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')));
 

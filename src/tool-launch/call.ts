@@ -24,6 +24,10 @@ export interface CallOptions {
   timeout?: number;
   /** The scope the call acts for, when the caller holds it. Without it, the scope of the working directory. */
   scope?: LocalConfig;
+  /** Where the tool runs: the working directory unless given. */
+  cwd?: string;
+  /** Stops the tool, as its timeout does. */
+  signal?: AbortSignal;
 }
 
 export interface ToolCaller {
@@ -123,7 +127,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
     return picking;
   };
 
-  const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS, scope }) => {
+  const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS, scope, cwd = process.cwd(), signal }) => {
       const { tool, executable } = await pick(scope);
       const { call } = launchAdapterOf(tool);
       log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
@@ -135,7 +139,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
 
         if (call.prompt === 'file') await fs.writeFile(promptFile, prompt);
         const args = call.args({ prompt, promptFile, lastMessageFile });
-        const run = await runTool({ executable, args, cwd: process.cwd(), env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false });
+        const run = await runTool({ executable, args, cwd, env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false, signal });
 
         if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);

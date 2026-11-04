@@ -135,7 +135,7 @@ export const readSessionRun = ForwardedSessionRunSchema.parse;
  * module whose AI call started it.
  */
 export type LaunchedBy =
-  | 'workflow' | 'confined'
+  | 'workflow' | 'confined' | 'answer'
   | 'codebase' | 'deep-enrich' | 'enrich-with-ai' | 'import-local' | 'iwiki-dual' | 'import-mr' | 'recall-promote' | 'quality-update' | 'votes-judge';
 
 /** A tool launched by a workflow step, in the checkout whose pull record has key `checkout`. */
