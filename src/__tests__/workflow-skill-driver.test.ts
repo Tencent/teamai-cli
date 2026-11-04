@@ -1085,6 +1085,69 @@ steps:
     }]) } } });
   });
 
+  it('a takeover in another tool releases the confined step a child of the earlier session was given, and leases it again under the new tool', async () => {
+    const harness = await skillHarness({ 'label-pass': LABEL_PASS('best-effort') });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const started = await harness.call({ kind: 'start', name: 'label-pass', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const ConfinedDispatch = z.object({ kind: z.literal('dispatch'), attempt: AttemptIdSchema, step: z.string(), needs: z.object({ confined: z.literal(true) }), reissued: z.string().optional() });
+    const confinedIn = (answer: unknown) => z.object({ data: z.object({ turn: z.object({ actions: z.array(z.unknown()) }) }) }).parse(answer).data.turn.actions.flatMap((action) => ConfinedDispatch.safeParse(action).data ?? []);
+    await harness.call({ kind: 'choose', run, choice: 'h1' });
+    const dispatched = async (session: string, tool: ToolId) => {
+      for (let poll = 0; poll < 10; poll += 1) {
+        await harness.call({ kind: 'next', run, wait: true }, { session, tool });
+        const [found] = confinedIn(await harness.call({ kind: 'next', run, wait: false }, { session, tool }));
+        if (found) return found;
+      }
+      throw new Error('the confined step was never dispatched');
+    };
+    const first = await dispatched('session-a', 'claude');
+    await harness.call({ kind: 'ack', run, attempt: first.attempt });
+
+    const taken = await harness.call({ kind: 'takeover', run, confirmed: false }, { session: 'session-b', tool: 'pi' });
+    expect(taken).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'settled', step: 'score[0].judge', outcome: 'released' }]) } } });
+    const again = await dispatched('session-b', 'pi');
+    expect(again).toMatchObject({ step: 'score[0].judge' });
+    expect(again.attempt).not.toBe(first.attempt);
+    expect(again).not.toHaveProperty('reissued');
+  });
+
+  it('records what a child judged a confined step with, by the session tool for a dispatch kept before the tool was', async () => {
+    const harness = await skillHarness({ 'label-pass': LABEL_PASS('best-effort') });
+    roots.push(harness.root);
+    unverifiedClaude(harness);
+    const started = await harness.call({ kind: 'start', name: 'label-pass', answers: { parallel: 1, confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    await harness.call({ kind: 'choose', run, choice: 'h1' });
+    const Dispatch = z.object({ kind: z.literal('dispatch'), attempt: AttemptIdSchema, step: z.string(), brief: z.string() });
+    let judge: z.infer<typeof Dispatch> | undefined;
+    for (let poll = 0; poll < 10 && !judge; poll += 1) {
+      await harness.call({ kind: 'next', run, wait: true });
+      const turn = z.object({ data: z.object({ turn: z.object({ actions: z.array(z.unknown()) }) }) }).parse(await harness.call({ kind: 'next', run, wait: false }));
+      [judge] = turn.data.turn.actions.flatMap((action) => Dispatch.safeParse(action).data ?? []);
+    }
+    if (!judge) throw new Error('the confined step was never dispatched');
+    await harness.call({ kind: 'ack', run, attempt: judge.attempt });
+    // A teamai before the dispatch kept its tool.
+    const Kept = z.object({ attempts: z.array(z.object({ dispatch: z.object({ tool: z.string().optional() }).passthrough().optional() }).passthrough()) }).passthrough();
+    const kept = Kept.parse(JSON.parse(fs.readFileSync(skillStatePath(harness.config, run), 'utf8')));
+    expect(kept.attempts.map((open) => open.dispatch?.tool)).toEqual(['claude']);
+    for (const open of kept.attempts) delete open.dispatch?.tool;
+    fs.writeFileSync(skillStatePath(harness.config, run), JSON.stringify(kept));
+    const file = /Write `([^`]+result\.json)`/u.exec(fs.readFileSync(judge.brief, 'utf8'))?.[1];
+    if (!file) throw new Error(`${judge.brief} names no result file`);
+    fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: { label: 'thorough' } }));
+    await harness.call({ kind: 'report', run, attempt: judge.attempt, role: 'agent', modelUnavailable: false });
+
+    const stored = await readRun(harness.config, run);
+    expect(typeof stored === 'object' && stored.steps.find((step) => step.id === 'score[0].judge')).toMatchObject({
+      tool: 'claude', session: 'session-a', confined: { tool: 'claude', isolation: 'best-effort', access: 'read' },
+    });
+  });
+
   it('keeps a declared tool in every start command describe offers, and in the describe command a refused start prints', async () => {
     const harness = await skillHarness({ review: REVIEW.replace('invoke: allow', 'invoke: ask'), check: CHECK }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: null });
     roots.push(harness.root);

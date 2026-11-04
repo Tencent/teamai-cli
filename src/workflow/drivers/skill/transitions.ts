@@ -59,7 +59,7 @@ export const TRANSITIONS = [
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s\'s tool, when unknown; else the tool := s\'s when the run has none and s is its owner or neither is known', next: 'unchanged', action: 'the input\'s row' },
   { id: 'S2', state: 'host, drive, done', input: 'an agent call from session s without `--takeover`', guard: 'owner o is not s, and both are known, however long o has been idle', effects: 'none', next: 'unchanged', action: 'error `orchestrator_active` with `idleSeconds`, the seconds since o\'s last call, next: the takeover literal' },
-  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
+  { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`, except a confined one whose dispatch names another tool than s works in, which write-ahead `released`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
   { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at `verified` while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
@@ -95,7 +95,7 @@ export const TRANSITIONS = [
   { id: 'D25', state: 'drive, done', input: 'a poll tick', guard: 'a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the events after the old `seen[s]`, no actions; `then: poll`' },
   { id: 'D26', state: 'drive', input: 'a poll tick', guard: 'the tick took D14, and D22 does not apply', effects: 'none', next: 'drive', action: '`then: wake` with the next literal, no actions' },
   { id: 'C1', state: 'preparing', input: 'runner: prepared', guard: 'job `command`', effects: 'run the command outside the lock with `{...stepEnvironment(env, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), the running teamai first on PATH, output masked into `output.log`', next: 'running', action: '' },
-  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined`', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
+  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined` with the session\'s tool', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
   { id: 'C3', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`; `pickChildModel` fails `model_unavailable`', effects: 'write-ahead `failed` with that failure', next: 'reporting', action: '' },
   { id: 'C4', state: 'preparing', input: 'runner: place busy, behind b', guard: '', effects: '`behind` := b', next: 'queued', action: '' },
   { id: 'C5', state: 'preparing', input: 'runner: needs a place', guard: 'request `host`, and no place an earlier attempt adopted for the branch passes the adopt checks', effects: 'the place to ask for: `name`, `branch`, `start`', next: 'placing', action: '`place` in each foreground turn until adopted' },
@@ -116,7 +116,7 @@ export const TRANSITIONS = [
   { id: 'P2', state: 'drive', input: 'report a', guard: 'a is unknown', effects: 'none', next: 'drive', action: 'error `unknown_attempt`, next: the next literal' },
   { id: 'P3', state: 'drive', input: 'report a', guard: 'a preparing, queued, placing, running, or stopping by its runner', effects: 'none', next: 'drive', action: 'error `not_dispatched`, next: the next literal' },
   { id: 'P4', state: 'drive', input: 'report a `--model-unavailable`', guard: 'a offered or dispatched, its dispatch printed `unavailable`', effects: 'write-ahead `failed` `model_unavailable` naming the model', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
-  { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
+  { id: 'P5', state: 'drive', input: 'report a', guard: 'a offered or dispatched, otherwise', effects: 'read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; a confined dispatch adds its confined run: the dispatch\'s tool, else the session\'s, at `best-effort` with `read` access, the model it asked for, and the session; write-ahead', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P6', state: 'drive, done', input: 'report a', guard: 'a stopping by the agent', effects: 'write-ahead `released`', next: 'reporting', action: 'P7 to P10; after P7 to P9, runner answer `reported`' },
   { id: 'P7', state: 'reporting', input: 'engine: reported, any status', guard: '', effects: 'drop a; add to settled', next: 'drive', action: 'event `settled`, with the failure the engine recorded, else the body\'s' },
   { id: 'P8', state: 'reporting', input: 'engine: `repeated_report`', guard: '', effects: 'as P7', next: 'drive', action: 'event `settled`' },
@@ -1159,19 +1159,45 @@ export function reportRow(state: SkillState, input: { attempt: AttemptId; modelU
     if (input.result.kind === 'output') body.outputs = input.result.output;
   }
 
+  if (open.dispatch.confined && !unavailable) body = { ...body, ...childConfinedRun(state, open.dispatch) };
+
   const { dispatch: _dispatch, ...rest } = open;
 
   return { row: unavailable ? 'P4' : 'P5', state: withAttempt(state, { ...rest, phase: 'reporting', body }), effects: [{ kind: 'send', attempt: open.attempt, body }] };
 }
 
 /**
+ * What a child of the session that worked a confined step ran, as its report carries it: the tool the dispatch recorded,
+ * else, for a dispatch kept before it was recorded, the session's; best-effort, reading its directory alone; the model
+ * the dispatch asked for; and the session. Nothing when no tool is known.
+ */
+function childConfinedRun(state: SkillState, dispatch: Dispatch): Pick<ReportBody, 'tool' | 'confined' | 'session'> {
+  const tool = dispatch.tool ?? state.orchestrator.tool ?? state.sessionJudge?.tool;
+
+  if (tool === undefined) return {};
+  const confined: NonNullable<ReportBody['confined']> = { tool, isolation: 'best-effort', access: 'read' };
+
+  if (dispatch.model.by !== 'definition') confined.model = dispatch.model.alias === undefined ? { requested: dispatch.model.name } : { requested: dispatch.model.name, alias: dispatch.model.alias };
+  const ran: Pick<ReportBody, 'tool' | 'confined' | 'session'> = { tool, confined };
+
+  if (state.orchestrator.session !== undefined) ran.session = state.orchestrator.session;
+
+  return ran;
+}
+
+/**
  * `state` driven from session `session`, working in `tool`, from `at` on. Every dispatch an earlier session was shown is
- * offered again, as reissued, since that session may have started its child. The new session is told only what the
- * earlier one was not.
+ * offered again, as reissued, since that session may have started its child, except a confined one given to a child of
+ * another tool: its lease names that tool, so it is released, and the next `next` leases it again under `tool`. The new
+ * session is told only what the earlier one was not.
  */
 function takenOver(state: SkillState, { session, tool, at }: { session: string | undefined; tool: ToolId | undefined; at: string }): SkillState {
   const attempts = state.attempts.map((open): AttemptState => {
     if (open.phase !== 'offered' && open.phase !== 'dispatched') return open;
+
+    if (open.dispatch.confined && tool !== undefined && (open.dispatch.tool ?? state.orchestrator.tool) !== tool) {
+      return { ...baseOf(open), phase: 'reporting', body: { attempt: open.attempt, revision: open.revision, driver: state.driver, outcome: 'released' } };
+    }
 
     return { ...open, phase: 'offered', reissued: true };
   });

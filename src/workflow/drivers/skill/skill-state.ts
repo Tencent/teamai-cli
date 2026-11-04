@@ -28,8 +28,12 @@ const ReportBodySchema = z.object({
   outputs: z.unknown().optional(),
   message: z.string().optional(),
   failure: FailureSchema.optional(),
-  /** What a confined run the runner started measured: its tool, model, tokens, time and cost, and the run itself. */
+  /**
+   * What a confined run measured: its tool, model, tokens, time and cost, and the run itself, for a run the runner
+   * started; its tool and the run, for one a child of the session worked, with that session.
+   */
   tool: z.string().optional(),
+  session: z.string().optional(),
   model: z.string().optional(),
   tokens: TokenUsageSchema.optional(),
   durationMs: z.number().int().nonnegative().optional(),
@@ -61,6 +65,8 @@ const DispatchSchema = z.object({
   isolation: z.literal('sandbox').optional(),
   /** The step is confined to `dir`: a fresh child that reads that directory and its brief, and nothing more, works it. */
   confined: z.literal(true).optional(),
+  /** The tool the child runs in, the session's when it was dispatched. A dispatch kept before it was recorded has none. */
+  tool: z.string().optional(),
   dir: z.string(),
   brief: z.string(),
   agent: z.string().optional(),

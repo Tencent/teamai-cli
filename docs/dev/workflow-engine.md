@@ -119,7 +119,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 |---|---|---|---|---|---|---|
 | S1 | host, drive, done | an agent call from session s | the owner is s, or either session is unknown | `lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s's tool, when unknown; else the tool := s's when the run has none and s is its owner or neither is known | unchanged | the input's row |
 | S2 | host, drive, done | an agent call from session s without `--takeover` | owner o is not s, and both are known, however long o has been idle | none | unchanged | error `orchestrator_active` with `idleSeconds`, the seconds since o's last call, next: the takeover literal |
-| S4 | host, drive, done | next `--takeover` from session s | | owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued` | unchanged | event `takeover`; the turn of a tick |
+| S4 | host, drive, done | next `--takeover` from session s | | owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`, except a confined one whose dispatch names another tool than s works in, which write-ahead `released` | unchanged | event `takeover`; the turn of a tick |
 | S5 | any | a runner call (`report --attempt a` with the marker `<run>/a`) | | no session check, no `lastCallAt` | unchanged | C rows |
 | S6 | host, drive, done | an agent `report --attempt a`, from any session | a is settled, or open offered, dispatched, reporting, or stopping by the agent | no session check, no `lastCallAt` | unchanged | the input's row |
 
@@ -167,7 +167,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | Row | State | Input | Guard | Effects | Next | Action |
 |---|---|---|---|---|---|---|
 | C1 | preparing | runner: prepared | job `command` | run the command outside the lock with `{...stepEnvironment(env, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), the running teamai first on PATH, output masked into `output.log` | running | |
-| C2 | preparing | runner: prepared | job `prompt` | `pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined` | offered | `dispatch` in each foreground turn until acked |
+| C2 | preparing | runner: prepared | job `prompt` | `pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined` with the session's tool | offered | `dispatch` in each foreground turn until acked |
 | C3 | preparing | runner: prepared | job `prompt`; `pickChildModel` fails `model_unavailable` | write-ahead `failed` with that failure | reporting | |
 | C4 | preparing | runner: place busy, behind b | | `behind` := b | queued | |
 | C5 | preparing | runner: needs a place | request `host`, and no place an earlier attempt adopted for the branch passes the adopt checks | the place to ask for: `name`, `branch`, `start` | placing | `place` in each foreground turn until adopted |
@@ -198,7 +198,7 @@ Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the eng
 | P2 | drive | report a | a is unknown | none | drive | error `unknown_attempt`, next: the next literal |
 | P3 | drive | report a | a preparing, queued, placing, running, or stopping by its runner | none | drive | error `not_dispatched`, next: the next literal |
 | P4 | drive | report a `--model-unavailable` | a offered or dispatched, its dispatch printed `unavailable` | write-ahead `failed` `model_unavailable` naming the model | reporting | P7 to P10; after P7 to P9, runner answer `reported` |
-| P5 | drive | report a | a offered or dispatched, otherwise | read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; write-ahead | reporting | P7 to P10; after P7 to P9, runner answer `reported` |
+| P5 | drive | report a | a offered or dispatched, otherwise | read `result.json`: an output gives `success` with it as outputs, a failure gives `failed` with it, none or an unreadable one gives `failed` `tool_failed`; a confined dispatch adds its confined run: the dispatch's tool, else the session's, at `best-effort` with `read` access, the model it asked for, and the session; write-ahead | reporting | P7 to P10; after P7 to P9, runner answer `reported` |
 | P6 | drive, done | report a | a stopping by the agent | write-ahead `released` | reporting | P7 to P10; after P7 to P9, runner answer `reported` |
 | P7 | reporting | engine: reported, any status | | drop a; add to settled | drive | event `settled`, with the failure the engine recorded, else the body's |
 | P8 | reporting | engine: `repeated_report` | | as P7 | drive | event `settled` |

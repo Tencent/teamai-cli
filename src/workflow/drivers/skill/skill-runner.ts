@@ -289,8 +289,10 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
 
+  const childTool = state.orchestrator.tool ?? context.tool;
+
   const picked = await pickChildModel({
-    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: state.orchestrator.tool ?? context.tool, agent, model, defaultModel,
+    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: childTool, agent, model, defaultModel,
   });
 
   if (!picked.ok) return failed(picked.failure, 'model');
@@ -308,6 +310,8 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
   const dispatch: Dispatch = { place, dir: workDir, brief, model: picked.model };
 
   if (confined) dispatch.confined = true;
+
+  if (confined && childTool !== undefined) dispatch.tool = childTool;
 
   if (interactive) dispatch.person = true;
 
