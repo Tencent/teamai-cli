@@ -19,7 +19,7 @@ import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartC
 import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
 import { driveRun, unsupportedDriver } from './workflow-drive.js';
-import { awaitsLine } from './default-driver.js';
+import { awaitsLine, awaitsOf, leftOpenLine, type DefaultDrive } from './default-driver.js';
 import { LOCAL_DRIVER, parseDriver, type Driver } from './workflow/driver-name.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -413,8 +413,11 @@ export interface ShortcutStart {
   /** What the person and the agent run in place of the shortcut, when an agent session's start is refused. */
   instead?: string;
   answer?: (config: LocalConfig, runId: string, driven: WorkflowEnvelope) => Promise<WorkflowEnvelope | undefined>;
-  /** The driver `workflows.driver` names, which this machine does not run: the run starts unassigned, awaiting it. */
-  awaits?: RunState['awaits'];
+  /**
+   * What `workflows.driver` decided, when no `--driver` was given: a driver this machine does not run, which the run
+   * starts unassigned awaiting, or `none`, which leaves it to any driver. Either is said with the run's id.
+   */
+  byDefault?: DefaultDrive;
 }
 
 /** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
@@ -509,11 +512,18 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
   const alone = asks(asked, 'local') ? localStrictCan(config, options) : undefined;
-  const { awaits } = shortcut;
+  const { byDefault } = shortcut;
+  const awaits = byDefault && awaitsOf(byDefault);
   const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person', awaits });
 
   if ('error' in started || !asks(asked, 'local')) {
-    if (awaits && 'data' in started) log.info(awaitsLine(String(started.data.run), awaits.driver));
+    if (byDefault && 'data' in started) {
+      const run = String(started.data.run);
+
+      if (byDefault.kind === 'awaits') log.info(awaitsLine(run, byDefault.driver));
+      else if (byDefault.kind === 'unassigned') log.info(leftOpenLine(run, name));
+    }
+
     writeEnvelope(started, secrets);
 
     return;

@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { loadTeamConfig } from './config.js';
-import { awaitsLine, awaitsOf, driveByDefault } from './default-driver.js';
+import { awaitsLine, awaitsOf, driveByDefault, leftOpenLine } from './default-driver.js';
 import { resolveWorkflowEnv } from './env-resolution.js';
 import type { RunMode } from './launch-context.js';
 import { scoringUnavailable } from './scorers/home.js';
@@ -537,7 +537,7 @@ function printLeft(result: DrainResult): void {
 
   for (const { run: runId, driver } of result.awaiting) log.info(awaitsLine(runId, driver));
 
-  for (const runId of result.unassigned) log.info(`Left open: run ${runId} of ${FINISHED_WORKFLOW}, which workflows.driver none leaves to any driver. A driver takes it with: teamai workflow next ${runId} --json '{"driver":{…}}'`);
+  for (const runId of result.unassigned) log.info(leftOpenLine(runId, FINISHED_WORKFLOW));
 }
 
 /** Prints what `result` did, one line per kind of work. */

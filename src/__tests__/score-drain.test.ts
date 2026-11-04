@@ -1100,6 +1100,20 @@ describe('teamai score of a subject the person names', () => {
     expect(await readRun(config, runId)).toMatchObject({ awaits: { driver: 'acme-sandbox' }, steps: expect.arrayContaining([expect.objectContaining({ id: 'plan', status: 'pending' })]) });
   });
 
+  it('says the run workflows.driver none leaves open is left to any driver, and how one takes it', async () => {
+    const { config } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nworkflows: { driver: none }\n' });
+    await syncScorersThenWorkflows(config);
+    claudeSession(SESSION, 'Added the retries.');
+
+    const started = await scored({ session: SESSION, source: 'claude-code', scorer: ['quality'] });
+
+    const runId = z.object({ data: z.object({ run: z.string() }) }).parse(started.envelope).data.run;
+    expect(vi.mocked(console.error).mock.calls.map((call) => call.map(String).join(' '))).toContain(
+      `ℹ Left open: run ${runId} of teamai-score, which workflows.driver none leaves to any driver. A driver takes it with: teamai workflow next ${runId} --json '{"driver":{…}}'`,
+    );
+    expect(await readRun(config, runId)).not.toHaveProperty('awaits');
+  });
+
   it('leaves workflow start without --driver unassigned, whatever workflows.driver names', async () => {
     const { config } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nworkflows: { driver: acme-sandbox }\n', 'workflows/mark.yaml': MARK });
     await syncScorersThenWorkflows(config);

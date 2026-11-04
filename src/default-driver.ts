@@ -59,3 +59,8 @@ export function awaitsOf(decided: DefaultDrive): RunState['awaits'] {
 export function awaitsLine(run: string, driver: DriverName): string {
   return `${run} waits for driver ${driver}, which this machine does not run. To drive it here: teamai workflow resume ${run} --driver local`;
 }
+
+/** What a command says of run `run` of `workflow`, which `workflows.driver: none` left open for any driver. */
+export function leftOpenLine(run: string, workflow: string): string {
+  return `Left open: run ${run} of ${workflow}, which workflows.driver none leaves to any driver. A driver takes it with: teamai workflow next ${run} --json '{"driver":{…}}'`;
+}
