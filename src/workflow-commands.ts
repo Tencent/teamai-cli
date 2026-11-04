@@ -32,7 +32,7 @@ import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflow
 import { planBenchmark, planStep, tryBenchmarkTask } from './benchmark/start.js';
 import { reportBenchmark } from './benchmark/report.js';
 import { runCheckStep } from './benchmark/trial.js';
-import type { WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
+import type { RunState, WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
 function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, string>): void {
@@ -97,6 +97,17 @@ async function endsFinishedSessionsRun(config: LocalConfig, envelope: WorkflowEn
 }
 
 /**
+ * Where the local driver of this machine drives `run` from: the workspace of its lease here, else of the local driver it
+ * last recorded here, so a driver that died is recognised and its leases taken back; else the current directory.
+ */
+function localWorkspace(run: RunState): string {
+  const { machine } = driverIdentity('local', process.cwd());
+  const leased = run.steps.flatMap((step) => (step.status === 'leased' ? [step.lease.driver] : []));
+
+  return [...leased, ...run.driver === undefined ? [] : [run.driver]].find((driver) => driver.kind === 'local' && driver.machine === machine)?.workspace ?? process.cwd();
+}
+
+/**
  * Drives run `runId` with the local driver through `drive`, then drives each teamai-score run its reports answered its
  * settled passes started, so their labels are written when `workflow start` or `resume` returns, attended or not; the
  * scored run's own steps and `finally` never wait for them.
@@ -116,7 +127,9 @@ async function withPassScoring(
 
   for (const { run, step, pass } of scoring.values()) {
     const subject = Subject.format({ kind: 'run', subject: { runId, step, pass } });
-    const said = PassScoring.said(subject, run, await runLocalDriver(config, run, process.cwd(), { tools: options.tools, toolPaths: options.toolPaths, sandbox: options.sandbox }));
+    const stored = await readRun(config, run);
+    const cwd = stored === 'missing' || stored === 'corrupt' ? process.cwd() : localWorkspace(stored);
+    const said = PassScoring.said(subject, run, await runLocalDriver(config, run, cwd, { tools: options.tools, toolPaths: options.toolPaths, sandbox: options.sandbox }));
 
     if (said.kind === 'pending') log.warn(said.line);
     else log.info(said.line);
@@ -897,12 +910,7 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
         : { error: { code: 'run_unreadable', message: `Run ${runId} could not be read` } };
     }
 
-    const local = driverIdentity('local', process.cwd());
-    const lease = stored.steps.find((step) => step.status === 'leased' && step.lease.driver.kind === 'local' && step.lease.driver.machine === local.machine);
-
-    const cwd = lease?.status === 'leased' ? lease.lease.driver.workspace
-      : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();
-
+    const cwd = localWorkspace(stored);
     const driving = { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox };
 
     return withPassScoring(loaded, run.data, driving, (scored) => drive(cwd, scored));

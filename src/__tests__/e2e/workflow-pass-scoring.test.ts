@@ -4,8 +4,10 @@
  * A `scorers.start: workflow` step, whose workflow scores its passes itself, gets none. An unattended drive labels its
  * pass the same way, so the drain it ends with judges no workflow pass.
  */
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { benchmarkFixture, envelope, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
@@ -47,6 +49,8 @@ fs.writeFileSync(path.join(project, 'review-session.jsonl'), [
 process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-claude', session_id: 'review-session' }) + '\\n');
 process.stdout.write(JSON.stringify({ type: 'result', session_id: 'review-session', usage: { input_tokens: 4, output_tokens: 2 } }) + '\\n');
 `;
+
+const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'index.js');
 
 const DoneSchema = z.object({ done: z.object({ run: z.string(), outcome: z.string() }) });
 const RunSchema = z.object({ id: z.string(), name: z.string(), startedBy: z.string().optional(), inputs: z.record(z.string(), z.unknown()).optional() }).passthrough();
@@ -99,6 +103,29 @@ describe('the scoring of a run\'s passes, through the real CLI', () => {
     })]);
     expect(fixture.judgeLaunches()).toHaveLength(1);
   }, 180_000);
+
+  it('labels the pass on a resume from another directory after the driver died while judging it', async () => {
+    const fixture = await reviewFixture('[quality]', 'attended');
+    const killed = path.join(fixture.tmp, 'judge-killed');
+    fs.writeFileSync(path.join(fixture.bin, 'claude'), CLAUDE.replace("if (process.argv.includes('--json-schema') || process.argv.includes('--version')) {",
+      `if (process.argv.includes('--json-schema') && !fs.existsSync(${JSON.stringify(killed)})) {
+  fs.writeFileSync(${JSON.stringify(killed)}, '');
+  process.kill(process.ppid, 'SIGKILL');
+  process.exit(0);
+}
+if (process.argv.includes('--json-schema') || process.argv.includes('--version')) {`), { mode: 0o755 });
+    await fixture.teamai(['workflow', 'start', 'review', '--driver', 'local']);
+    expect(fs.existsSync(killed)).toBe(true);
+    const parent = fixture.runIds().map((id) => RunSchema.parse(fixture.runFile(id))).find((run) => run.name === 'review');
+    const elsewhere = path.join(fixture.work, 'docs');
+    fs.mkdirSync(elsewhere, { recursive: true });
+
+    const resumed = spawnSync(process.execPath, [CLI, 'workflow', 'resume', parent?.id ?? '', '--driver', 'local'], { cwd: elsewhere, env: fixture.env, encoding: 'utf8', timeout: 120_000 });
+
+    expect(resumed.status, `${resumed.stdout}\n${resumed.stderr}`).toBe(0);
+    expect(scoreRuns(fixture)).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+    expect(labels(fixture)).toEqual([expect.objectContaining({ scorer: 'quality', label: 'good', subject: { runId: parent?.id, step: 'review', pass: 1 } })]);
+  }, 300_000);
 
   it('starts no teamai-score run for a step whose workflow scores its passes itself', async () => {
     const fixture = await reviewFixture('{ names: [quality], start: workflow }', 'attended');
