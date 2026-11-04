@@ -516,7 +516,7 @@ $ git branch --list 'teamai/*'          # 运行成功后
 ⚠ Branch teamai/<run>/build-1/p1 of run <run> was not deleted on origin: <reason>. teamai doctor --fix tries again.
 ```
 
-运行结算后超过 `workflows.retention`，`teamai doctor --fix` 会移除它留下的内容：本地和 origin 上的分支、worktree、teamai 保存在 `refs/teamai/kept/` 下的提交，以及基准固定分支 `teamai/<run>/base`。pull request 的分支会保留。它也会找到其他机器发布到 `teamai-reports` 的运行，并删除它们在 origin 上的分支。它以运行最后一次发布在那里的内容为准：再次运行的运行（例如被 retry 重新打开的），或被其他成员接手但尚未结束的运行，会保留全部内容，保留期从运行最后一次结算时算起。没能移除的内容，下一次 `doctor --fix` 会再试。默认值为 `14d`，`never` 表示全部保留。这是一个[成员设置](reference.md#成员设置)，机器或工作区可以设置自己的值：
+运行结算后超过 `workflows.retention`，`teamai doctor --fix` 会移除它留下的内容：本地和 origin 上的分支、worktree、teamai 保存在 `refs/teamai/kept/` 下的提交，以及基准固定分支 `teamai/<run>/base`。pull request 的分支会保留。它也会找到其他机器发布到 `teamai-reports` 的运行，在其所有者保留到的时间再过一周后，删除它们在 origin 上的分支，这样所有者在那之前刚开始的 retry 有时间完成。再次运行的运行，或被其他成员接手但尚未结束的运行，会保留全部内容。没能移除的内容，下一次 `doctor --fix` 会再试。默认值为 `14d`，`never` 表示全部保留。这是一个[成员设置](reference.md#成员设置)，机器或工作区可以设置自己的值：
 
 ```yaml
 # teamai.yaml
@@ -547,14 +547,16 @@ $ teamai doctor --fix
 ⚠ teamai-reports could not be fetched from origin (fatal: unable to access 'https://git.example.com/team/app.git/': Could not resolve host: git.example.com), so runs published there are not swept this time. teamai doctor --fix tries again.
 ```
 
-同理，如果运行的结束记录已在 `teamai-reports` 上，retry 会先在那里记下运行再次运行。这条记录无法送达时，运行不会被重新打开，也不会有任何改变。等 origin 接受推送后再 retry：
+运行结算时，teamai 会记下它留下的内容保留到何时：结算时间加上当时生效的保留期，记在运行和它在 `teamai-reports` 上的记录里，字段为 `retainedUntil`（`never` 时没有）。过了这个时间，retry 不再重新打开该运行，因为本机或其他机器上的 `doctor --fix` 可能已经移除了它的分支。请重新启动工作流：
 
 ```text
-$ teamai workflow retry rc2f58de53728f227 finish
-{"error":{"code":"reopen_not_published","message":"Run rc2f58de53728f227 was not reopened: its end is on teamai-reports, and the mark that it runs again did not reach teamai-reports (! refs/heads/teamai-reports:refs/heads/teamai-reports [remote rejected] (pre-receive hook declined); error: failed to push some refs to 'https://git.example.com/team/app.git'). Until it does, teamai doctor --fix on another machine may remove the branches the run needs. Retry once teamai-reports accepts pushes: teamai workflow retry rc2f58de53728f227 finish"}}
+$ teamai workflow retry r1ddcd1ca66beb067 finish
+{"error":{"code":"run_expired","message":"Run r1ddcd1ca66beb067 was not reopened: it settled at 2026-10-13T09:12:40.118Z, and workflows.retention kept what it left until 2026-10-27T09:12:40.118Z, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start review"}}
 ```
 
-本机的 `doctor --fix` 正在移除某个运行的分支时，对该运行的 retry 会返回 `busy`：`Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`。
+其他机器发布的运行如果没有 `retainedUntil`（例如旧版 teamai 结算的运行），会留在 origin 上。之后设置更长的保留期或 `never`，本机较早的运行会保留得更久，但 retry 仍在它们的 `retainedUntil` 处停止。
+
+本机正在删除某个运行的分支时（`doctor --fix` 或运行成功时），对该运行的 retry 会返回 `busy`：`Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`。
 
 既不是时长也不是 `never` 的值会被跳过并给出警告，由下一级决定。TeamAI 从不删除 pull request 的分支：请在代码托管平台上开启合并后自动删除头分支的选项。
 
@@ -834,7 +836,7 @@ $ teamai workflow next rbb036bfacd4cec62 --driver skill
 
 开启[使用统计上报](reporting.md)时，每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。关闭后不发布任何记录，返回中也不带 `record`。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 
-记录只包含：run id、工作流名、定义里有别名时的 `alias`、`sourceHash`、可选的 `teamRevision`、`origin`（团队的定义，或[默认工作流](#默认工作流)及发布它的 teamai 版本）、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、retry 重新打开一个结束已发布的运行时的 `reopenedAt`、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`）及其分支（`prBranches`）、[隔离运行](workflow-advanced.md#隔离运行)的 `isolated: true`，以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
+记录只包含：run id、工作流名、定义里有别名时的 `alias`、`sourceHash`、可选的 `teamRevision`、`origin`（团队的定义，或[默认工作流](#默认工作流)及发布它的 teamai 版本）、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、`retainedUntil`（所有者保留运行留下内容的截止时间）、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`）及其分支（`prBranches`）、[隔离运行](workflow-advanced.md#隔离运行)的 `isolated: true`，以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
 
 条目的 `agent` 是该 pass 实际运行时观察到的组合：步骤的 `agent:` 定义及工具如何拿到它（工具自己读取 agent 文件时为 `main`，指令拼接到提示词前时为 `prompt`）、工具及其版本、启动时请求的模型和 effort、工具报告的模型、检出最近一次 pull 的团队提交以及之后是否改过已下发的文件、项目提交、TeamAI 版本和驱动的 kind。没有观察到的值不写。`fingerprint` 对定义、工具、模型、effort 和团队提交做哈希，fingerprint 相同的两个 pass 记录下来的这些部分相同。模型或团队提交未知，或改过已下发的文件时，不写 `fingerprint`。没有任何观察的 pass，以及旧版 TeamAI 写的记录，只带定义的名称。步骤运行期间，如果该检出最近一次 pull 已完整下发到步骤启动的工具，该工具以及它在同一检出中启动的会话都会跳过会话开始时的 pull，步骤因此保持它记录的团队提交。
 
