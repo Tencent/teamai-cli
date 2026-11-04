@@ -502,17 +502,18 @@ function retryTarget(run: RunState, step: string): { target: StepState; containe
 }
 
 /**
- * Brings back, before a retry reopens succeeded run `runId`, the branches its cleanup deleted; answers why the run is
- * not reopened when one does not come back. A retry refused anyway brings nothing back: the change under the run lock
- * answers that refusal.
+ * Brings back, before a retry reopens succeeded run `runId`, the branches it recorded that a cleanup deleted, here or on
+ * the install it was claimed from; answers why the run is not reopened when one does not come back. A retry refused
+ * anyway brings nothing back: the change under the run lock answers that refusal.
  */
 async function restoreForRetry(config: LocalConfig, runId: string, step: string, retention: ResolvedRetention): Promise<WorkflowEnvelope | undefined> {
   const run = await readRun(config, runId);
 
-  if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded' || run.leftovers?.by !== 'success') return undefined;
+  if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded') return undefined;
 
   if (retryRefusal(run, step, retention, new Date().toISOString()) || !('target' in retryTarget(run, step))) return undefined;
-  const failed = await restoreRecordedBranches(run, run.driver?.workspace ?? process.cwd());
+  // A claim keeps no driver, and takes the run into the checkout it names.
+  const failed = await restoreRecordedBranches(run, run.driver?.workspace ?? run.checkout ?? process.cwd());
 
   if (failed.length === 0) return undefined;
   const why = failed.map(({ branch, reason }) => `Branch ${branch} is not back ${reason}.`).join(' ');

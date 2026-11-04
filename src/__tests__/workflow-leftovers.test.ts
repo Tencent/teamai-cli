@@ -836,6 +836,25 @@ describe('a retry of a run that succeeded', () => {
     expect(again).not.toMatchObject({ data: { done: { notPublished: expect.anything() } } });
   });
 
+  it('brings back the branches its cleanup deleted on the install that claimed the run since', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(CHOOSES);
+    shareTeam(config, root);
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
+    const change = `teamai/${runId}/change/p1`;
+    const tip = (await state(config, runId)).copies?.[change]?.commit;
+    expect(branches(origin, runId)).toEqual(['join/p1']);
+    const other = await otherInstall(config, root, origin);
+    expect(await claimRun(other.config, runId, { checkout: other.cwd })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+
+    expect(await retryStep(other.config, runId, {}, 'decide')).toMatchObject({ data: { reopened: true } });
+    expect(git(origin, ['rev-parse', `refs/heads/${change}`])).toBe(tip);
+
+    const again = await runLocalDriver(other.config, runId, other.cwd, { autoApprove: true });
+    expect(again).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
+    expect(again).not.toMatchObject({ data: { done: { notPublished: expect.anything() } } });
+  });
+
   it('is refused while origin refuses a branch back, naming it, and reopens the run once it takes it', async () => {
     const { config, cwd, origin, runId } = await fixture(CHOOSES);
     expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
