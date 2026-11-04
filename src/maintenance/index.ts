@@ -7,7 +7,7 @@ export type { PruneCandidate, PruneOptions } from './prune.js';
 
 export { annotateHotness, HOT_THRESHOLD, COLD_PENALTY } from './hot-cold.js';
 
-export { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, generateUpdateDraft } from './quality-update.js';
+export { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, DraftLearningUpdates } from './quality-update.js';
 
 export type { StaleEntry, QualityUpdateOptions } from './quality-update.js';
 

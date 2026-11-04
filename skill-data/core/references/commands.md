@@ -507,8 +507,18 @@ Generated: do not edit by hand. Regenerate with
     - `--threshold <n>` — Confidence threshold for pruning (default 0.15)
     - `--archive` — Move to archive/ instead of deleting
     - `--confidence-writeback` — Update frontmatter confidence scores
-    - `--update-quality` — Find stale docs/rules/skills and suggest updates
+    - `--update-quality` — Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. A person starts it from their own terminal. --dry-run only lists the entries
+    - `--json` — With --update-quality: print the run's JSON envelope instead of its text
     - `--dry-run` — Show what would be done without making changes
+    - `teamai recall maintenance stale` — A step of a teamai-draft-learning-updates run: list the docs, rules and skills recalled often but rarely adopted, as --update-quality --dry-run does, on stderr. Prints {"entries":[{"doc_id","path","type","recalled_count","upvoted_count","user_count"}]}.
+    - `teamai recall maintenance draft-context` — A step of a teamai-draft-learning-updates run: the content of one stale entry, and the learnings members adopted instead, as the prompt shows them. Prints {"content","related"}; related is empty when no learning was adopted. Fails when the entry cannot be read.
+      - `--path <file>` — The entry, as stale printed its path
+      - `--doc-id <id>` — The entry's doc_id, as stale printed it
+    - `teamai recall maintenance write-draft` — A step of a teamai-draft-learning-updates run: write a draft update of one stale entry beside it, as <entry>.draft.md. Prints {"draft"}, its path.
+      - `--path <file>` — The entry, as stale printed its path
+      - `--draft <text>` — The draft's content
+    - `teamai recall maintenance draft-report` — A step of a teamai-draft-learning-updates run: from the results of its draft step, what --update-quality prints: each entry it could not draft, and how to apply the drafts. Prints {"text","exit_code"}; exit_code is 1 when an entry could not be drafted.
+      - `--results <json>` — The draft step's results, as a JSON array
   - `teamai recall promote [learningId]` — Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted
     - `--category <cat>` — Target category: skills | rules | docs; skills use <learningId>/SKILL.md
     - `--dry-run` — Show what would be done without making changes

@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
-import { setVerbose, setSilent, log } from './utils/logger.js';
+import { setVerbose, setSilent, setStderrOnly, log } from './utils/logger.js';
 import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
@@ -1789,14 +1789,15 @@ recallCmd
     await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative, dryRun: globalOpts.dryRun });
   });
 
-recallCmd
+const maintenanceCmd = recallCmd
   .command('maintenance')
   .description('Automatic maintenance of team knowledge base')
   .option('--prune', 'Remove low-confidence learnings')
   .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', parseFloat)
   .option('--archive', 'Move to archive/ instead of deleting')
   .option('--confidence-writeback', 'Update frontmatter confidence scores')
-  .option('--update-quality', 'Find stale docs/rules/skills and suggest updates')
+  .option('--update-quality', 'Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. A person starts it from their own terminal. --dry-run only lists the entries')
+  .option('--json', 'With --update-quality: print the run\'s JSON envelope instead of its text')
   .option('--dry-run', 'Show what would be done without making changes')
   .action(async (localOpts) => {
     // The root program takes `--dry-run` wherever it is written, so this
@@ -1806,6 +1807,14 @@ recallCmd
 
     if (!cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.updateQuality) {
       log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
+
+      return;
+    }
+
+    // The other modes come first, as below. Its steps resolve the checkouts they read themselves.
+    if (cmdOpts.updateQuality && !cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.dryRun) {
+      const { runShortcut } = await import('./workflow-commands.js');
+      await runShortcut({ workflow: 'teamai-draft-learning-updates', inputs: {}, command: 'teamai recall maintenance --update-quality', json: cmdOpts.json === true });
 
       return;
     }
@@ -1876,39 +1885,63 @@ recallCmd
     }
 
     if (cmdOpts.updateQuality) {
-      const { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, generateUpdateDraft } = await import('./maintenance/index.js');
-      const { writeFile } = await import('./utils/fs.js');
-
-      const entries = await findStaleEntries(votesDir, {
-        docs: `${repoPath}/docs`,
-        rules: `${repoPath}/rules`,
-        skills: `${repoPath}/skills`,
-      });
-
-      reportStaleEntries(entries);
-
-      if (entries.length === 0 || cmdOpts.dryRun) return;
-
-      log.info('\nGenerating AI-powered update drafts...');
-
-      for (const entry of entries) {
-        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs, {
-          namespaces: learningsNamespaces,
-        });
-
-        const draft = await generateUpdateDraft(entry, related);
-
-        if (draft) {
-          const draftPath = `${entry.path}.draft.md`;
-          await writeFile(draftPath, draft);
-          log.success(`  Draft written: ${draftPath}`);
-        }
-      }
-
-      log.info('\nReview drafts, then rename .draft.md -> .md to apply updates.');
+      // Listing makes no AI call, so a dry run lists here and starts no run.
+      const { findStaleEntries, reportStaleEntries } = await import('./maintenance/index.js');
+      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }));
 
       return;
     }
+  });
+
+// The verbs a teamai-draft-learning-updates run's steps call.
+maintenanceCmd
+  .command('stale')
+  .description('A step of a teamai-draft-learning-updates run: list the docs, rules and skills recalled often but rarely adopted, as --update-quality --dry-run does, on stderr. Prints {"entries":[{"doc_id","path","type","recalled_count","upvoted_count","user_count"}]}.')
+  .action(async () => {
+    setStderrOnly(true);
+    const paths = await maintenanceVerbPaths({ dryRun: false });
+
+    if (!paths) return;
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath))}\n`);
+  });
+
+maintenanceCmd
+  .command('draft-context')
+  .description('A step of a teamai-draft-learning-updates run: the content of one stale entry, and the learnings members adopted instead, as the prompt shows them. Prints {"content","related"}; related is empty when no learning was adopted. Fails when the entry cannot be read.')
+  .requiredOption('--path <file>', 'The entry, as stale printed its path')
+  .requiredOption('--doc-id <id>', 'The entry\'s doc_id, as stale printed it')
+  .action(async (cmdOpts: { path: string; docId: string }) => {
+    setStderrOnly(true);
+    // The stale step refreshed the checkouts this run reads.
+    const paths = await maintenanceVerbPaths({ dryRun: true });
+
+    if (!paths) return;
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const namespaces = await safeDeliveredLearningsNamespaces(paths.config, 'recall maintenance');
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, namespaces))}\n`);
+  });
+
+maintenanceCmd
+  .command('write-draft')
+  .description('A step of a teamai-draft-learning-updates run: write a draft update of one stale entry beside it, as <entry>.draft.md. Prints {"draft"}, its path.')
+  .requiredOption('--path <file>', 'The entry, as stale printed its path')
+  .requiredOption('--draft <text>', 'The draft\'s content')
+  .action(async (cmdOpts: { path: string; draft: string }) => {
+    setStderrOnly(true);
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.writeDraft(cmdOpts.path, cmdOpts.draft))}\n`);
+  });
+
+maintenanceCmd
+  .command('draft-report')
+  .description('A step of a teamai-draft-learning-updates run: from the results of its draft step, what --update-quality prints: each entry it could not draft, and how to apply the drafts. Prints {"text","exit_code"}; exit_code is 1 when an entry could not be drafted.')
+  .requiredOption('--results <json>', 'The draft step\'s results, as a JSON array')
+  .action(async (cmdOpts: { results: string }) => {
+    setStderrOnly(true);
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(DraftLearningUpdates.report(DraftLearningUpdates.parseResults(cmdOpts.results)))}\n`);
   });
 
 recallCmd
@@ -2033,6 +2066,15 @@ recallCmd
  * reports or learnings lock cannot be taken, so the checkout cannot be checked,
  * and while a pull/push holds the sync lock, so neither is refreshed.
  */
+/** The maintenance paths of the scope a verb runs in, with its config, or undefined once the failure is said. */
+async function maintenanceVerbPaths(options: { dryRun: boolean }): Promise<(MaintenancePaths & { config: LocalConfig }) | undefined> {
+  const { autoDetectInit } = await import('./config.js');
+  const { localConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
+  const paths = await maintenancePathsOrExit(localConfig, options);
+
+  return paths && { ...paths, config: localConfig };
+}
+
 async function maintenancePathsOrExit(
   localConfig: LocalConfig,
   options: { dryRun?: boolean; holdsSyncLock?: boolean },
