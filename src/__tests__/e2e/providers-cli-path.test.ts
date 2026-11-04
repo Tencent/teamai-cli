@@ -95,6 +95,16 @@ describe('resolveCliPath against the real PATH', () => {
 });
 
 describe('the gh and cnb wrappers launch what they resolve', () => {
+  it.skipIf(process.platform !== 'win32')('launches the earlier PATH shim instead of a later native executable', () => {
+    writeShims('cnb');
+    const later = path.join(binDir, 'later');
+    fs.mkdirSync(later);
+    fs.copyFileSync(process.execPath, path.join(later, 'cnb.exe'));
+    process.env.PATH = `${binDir}${path.delimiter}${later}${path.delimiter}${originalPath ?? ''}`;
+
+    expect(cnbExec(['--version'])).toMatchObject({ status: 0, stdout: `${MARKER} 1.2.3` });
+  });
+
   it('ghExec does not fail silently', () => {
     writeShims('gh');
     expect(isGhInstalled()).toBe(true);

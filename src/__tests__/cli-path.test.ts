@@ -77,9 +77,19 @@ describe('resolveCliPath', () => {
     expect(pickWindowsCommand(out)).toBe('C:\\npm\\gh.cmd');
   });
 
-  it('prefers a native .exe over a .cmd or .bat of the same name, as PATHEXT does', () => {
-    expect(pickWindowsCommand('C:\\tools\\claude.cmd\r\nC:\\Program Files\\Claude\\claude.exe\r\n')).toBe('C:\\Program Files\\Claude\\claude.exe');
+  it('keeps PATH directory precedence before executable extension precedence', () => {
+    expect(pickWindowsCommand('C:\\tools\\claude.cmd\r\nC:\\Program Files\\Claude\\claude.exe\r\n')).toBe('C:\\tools\\claude.cmd');
+    expect(pickWindowsCommand('C:\\tools\\claude.bat\nC:\\other\\claude.cmd\n')).toBe('C:\\tools\\claude.bat');
+  });
+
+  it('prefers a native .exe over a .cmd or .bat in the same directory', () => {
     expect(pickWindowsCommand('C:\\tools\\claude.bat\nC:\\tools\\claude.exe\n')).toBe('C:\\tools\\claude.exe');
+    expect(pickWindowsCommand('C:\\TOOLS\\claude.cmd\nC:/tools/claude.exe\n')).toBe('C:/tools/claude.exe');
+  });
+
+  it('resolves a first-directory shim ahead of a later native executable', () => {
+    mockedExecFileSync.mockReturnValue('C:\\first\\gh\nC:\\first\\gh.cmd\nC:\\later\\gh.exe\n');
+    expect(resolveCliPath('gh', 'win32')).toBe('C:\\first\\gh.cmd');
   });
 
   it('trims the `where` lines and matches the extension case-insensitively', () => {

@@ -7,6 +7,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import path from 'node:path';
 
 /** CLI 探测超时（毫秒），防止 execFileSync 挂死。 */
 export const CLI_DETECT_TIMEOUT_MS = 5_000;
@@ -35,8 +36,15 @@ export function pickWindowsCommand(whereOutput: string): string | null {
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
+  const first = lines.find((line) => WIN_EXEC_EXTENSIONS.some((ext) => line.toLowerCase().endsWith(ext)));
+
+  if (first === undefined) return null;
+  // PATH directory order wins before extension priority within that directory.
+  const directory = path.win32.dirname(path.win32.normalize(first)).toLowerCase();
+  const candidates = lines.filter((line) => path.win32.dirname(path.win32.normalize(line)).toLowerCase() === directory);
+
   for (const ext of WIN_EXEC_EXTENSIONS) {
-    const hit = lines.find((line) => line.toLowerCase().endsWith(ext));
+    const hit = candidates.find((line) => line.toLowerCase().endsWith(ext));
 
     if (hit !== undefined) return hit;
   }
