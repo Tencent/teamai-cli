@@ -795,7 +795,7 @@ A required approval reaches only the person. The session shows it and gives them
 Optional approvals and choices are answered as the person picked at the start. The start question says what each one guards: the command, prompt step, workflow or end it comes before, or the steps that wait for it; for a choice, its options and default. A command shows its first line, cut after 80 characters. For example:
 
 ```text
-- Optional approval at contribute: before `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id…`.
+- Optional approval at contribute: before `teamai --env-args contribute --file @FILE --title @TITLE --namespace @NS --sessi…`.
 - The recommended start lets this session's agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.
 ```
 
@@ -1063,6 +1063,6 @@ steps:
     needs: [learning, approve]
     if: steps.approve.outcome == 'success'
     for_each: steps.learning.outputs.learnings
-    command: teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id "$SESSION"
+    command: teamai --env-args contribute --file @FILE --title @TITLE --namespace @NS --session-id @SESSION
     env: { FILE: "{{ item.file }}", TITLE: "{{ item.title }}", NS: "{{ item.namespace }}", SESSION: "{{ inputs.session }}" }
 ```
