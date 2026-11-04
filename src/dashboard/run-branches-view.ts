@@ -5,6 +5,7 @@ const KEPT_BECAUSE: Record<KeptBranchReason, string> = {
   pr: 'Pull request',
   final: 'Final copy',
   unmerged: 'Not held by a kept branch',
+  host: 'Checked out by the host',
 };
 
 /**

@@ -548,8 +548,11 @@ export interface DriveOptions {
   sandbox?: true;
 }
 
-/** Why a branch of a settled run stays: a pull request uses it, it holds the run's final copy, or no branch that stays holds its tip. */
-export type KeptBranchReason = 'pr' | 'final' | 'unmerged';
+/**
+ * Why a branch of a settled run stays: a pull request uses it, it holds the run's final copy, no branch that stays holds
+ * its tip, or the host has it checked out in the checkout, which keeps it there though origin deleted it.
+ */
+export type KeptBranchReason = 'pr' | 'final' | 'unmerged' | 'host';
 
 /**
  * What teamai did with the `teamai/<run>/…` branches of a settled run, at run revision `revision`. `success`: the run

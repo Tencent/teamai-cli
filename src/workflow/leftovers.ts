@@ -103,11 +103,11 @@ async function contains({ checkout, tip, holders }: { checkout: string; tip: str
 /**
  * Deletes `branches` on origin and in the checkout, each only while it is still at the tip `tips` examined: a branch
  * that moved since stays, as a failure `doctor --fix` tries again. A branch checked out in a worktree teamai made goes
- * with that worktree; one checked out where the host put it stays in the checkout, and is not a failure.
+ * with that worktree; one checked out where the host put it stays in the checkout, as `hostKept`, and is not a failure.
  */
 async function deleteBranches(
   { checkout, runId, branches, tips }: { checkout: string; runId: string; branches: string[]; tips: Tips },
-): Promise<Pick<RunLeftovers, 'deleted' | 'failed'>> {
+): Promise<Pick<RunLeftovers, 'deleted' | 'failed'> & { hostKept: string[] }> {
   const failed: RunLeftovers['failed'] = [];
 
   const onOrigin = branches.flatMap((branch) => {
@@ -164,7 +164,7 @@ async function deleteBranches(
     if (removed.code !== 0) failed.push({ branch, reason: `in ${checkout}: ${removed.stderr.trim() || 'git update-ref -d failed'}` });
   }
 
-  return { deleted: branches.filter((branch) => !hostKept.has(branch) && !failed.some((item) => item.branch === branch)), failed };
+  return { deleted: branches.filter((branch) => !hostKept.has(branch) && !failed.some((item) => item.branch === branch)), failed, hostKept: [...hostKept] };
 }
 
 function warnNotCleanedUp(runId: string, reason: string): void {
@@ -219,7 +219,11 @@ async function settleSucceeded(run: RunState, { checkout, now }: { checkout: str
     else kept.push({ branch, why: 'unmerged' });
   }
 
-  return { by: 'success', at: now, revision: run.revision, kept, ...await deleteBranches({ checkout, runId: run.id, branches: removable, tips }) };
+  const { deleted, failed, hostKept } = await deleteBranches({ checkout, runId: run.id, branches: removable, tips });
+
+  for (const branch of hostKept) kept.push({ branch, why: 'host' });
+
+  return { by: 'success', at: now, revision: run.revision, kept, deleted, failed };
 }
 
 /**

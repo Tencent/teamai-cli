@@ -987,6 +987,7 @@ export const dashboardMessages = {
   "Branches": "分支",
   "Final copy": "最终副本",
   "Not held by a kept branch": "未包含在保留的分支中",
+  "Checked out by the host": "宿主已检出",
   "Cleaned up when the run succeeded": "运行成功时已清理",
   "Removed by teamai doctor --fix, past workflows.retention": "已由 teamai doctor --fix 在超过 workflows.retention 后移除",
   "Kept": "保留",

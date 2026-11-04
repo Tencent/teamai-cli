@@ -274,7 +274,9 @@ steps:
     expect(branches(origin, runId)).toEqual(['join/p1']);
     expect(branches(cwd, runId)).toEqual(['join/p1', 'left/p1']);
     expect(warn).not.toHaveBeenCalled();
-    expect((await state(config, runId)).leftovers).toMatchObject({ deleted: [], failed: [] });
+    expect((await state(config, runId)).leftovers).toMatchObject({
+      kept: expect.arrayContaining([{ branch: `teamai/${runId}/left/p1`, why: 'host' }]), deleted: [], failed: [],
+    });
 
     shareTeam(config, root);
     expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
