@@ -492,6 +492,11 @@ export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running
   return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...stoppedLease(state), ...results && { results }, failure });
 }
 
+/** Whether `state` was ever leased: it holds an attempt, settled with one, or a pass of it did. */
+export function wasLeased(state: StepState): boolean {
+  return ('attempt' in state && state.attempt !== undefined) || (state.passes ?? []).some((pass) => pass.attempt !== undefined);
+}
+
 /** The current pass of a settled step, as `passes` keeps it once a loop runs the step again; undefined while it has not settled. */
 export function passOf(state: StepState): StepPass | undefined {
   if (!settled(state)) return undefined;

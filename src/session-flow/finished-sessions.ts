@@ -25,6 +25,7 @@ import { runDeadline } from '../workflow/limits.js';
 import { durationMs } from '../workflow/parse.js';
 import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
+import { wasLeased } from '../workflow/step-state.js';
 import { readRuns, RunIdSchema, type RunId } from '../workflow/store.js';
 import type { DriverName } from '../workflow/driver-name.js';
 import type { RunState, WorkflowFailure } from '../workflow/types.js';
@@ -319,7 +320,9 @@ async function workingRun(config: LocalConfig, now: number): Promise<Pick<Extrac
   const run = (await readRuns(config)).findLast((one) => one.name === FINISHED_WORKFLOW && one.status === 'running' && holdsUntil(one) > now);
 
   if (!run) return undefined;
-  const holder: RunHolder = run.awaits ? { kind: 'awaits', driver: run.awaits.driver } : run.driver ? { kind: 'driven' } : { kind: 'unassigned' };
+  // A driver that only asked for the run's next step, and took no lease, is recorded on it as well: only a lease drives it.
+  const isDriven = run.steps.some(wasLeased) || (run.archive ?? []).some((pass) => pass.attempt !== undefined);
+  const holder: RunHolder = run.awaits ? { kind: 'awaits', driver: run.awaits.driver } : isDriven ? { kind: 'driven' } : { kind: 'unassigned' };
 
   return { run: RunIdSchema.parse(run.id), holder };
 }

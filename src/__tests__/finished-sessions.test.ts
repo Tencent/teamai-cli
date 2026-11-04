@@ -323,6 +323,21 @@ describe('the start of teamai-finished-sessions', () => {
     expect(second).toEqual(first.kind === 'started' ? { ...first, kind: 'working', holder: { kind: 'unassigned' } } : first);
   });
 
+  it('says the run nobody took a lease of is unassigned, though a driver asked for its next step, and driven once one did', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const first = await FinishedSessions.start(config, { client, mode: 'attended' });
+    if (first.kind !== 'started') throw new Error(JSON.stringify(first));
+    const driver = { kind: 'external' as const, machine: 'm1', workspace: '/w' };
+
+    data(await leaseNext(config, first.run, driver, { canTakeLease: false }));
+    expect(await FinishedSessions.start(config, { client, mode: 'attended' })).toMatchObject({ kind: 'working', holder: { kind: 'unassigned' } });
+
+    expect(data(await leaseNext(config, first.run, driver))).toHaveProperty('lease');
+    expect(await FinishedSessions.start(config, { client, mode: 'attended' })).toMatchObject({ kind: 'working', holder: { kind: 'driven' } });
+  });
+
   it('starts a new run once the one before ended, though inside its timeout', async () => {
     const config = await team({}, { scoring: { sessions: true } });
     capturedSession(IDLE, 'attended');

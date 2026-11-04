@@ -14,7 +14,7 @@ import { findRunConfig } from '../workflow/run-location.js';
 import { workflowBatch } from '../workflow/scope.js';
 import { readRun } from '../workflow/store.js';
 import type { RunPass } from '../workflow/loop.js';
-import type { StepState } from '../workflow/step-state.js';
+import { wasLeased } from '../workflow/step-state.js';
 import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
 import { batchesScorers } from './batch.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
@@ -135,11 +135,6 @@ function refused(code: string, message: string): Refusal {
 
 /** The plan group a `score` item of a `teamai-score` instance judges: its subject, and its scorers, the mark's group. */
 const ScoreItemSchema = z.object({ subject: z.string(), scorers: z.string() });
-
-/** Whether `step` was ever leased: it holds an attempt, settled with one, or a pass of it did. */
-function wasLeased(step: StepState): boolean {
-  return ('attempt' in step && step.attempt !== undefined) || (step.passes ?? []).some((pass) => pass.attempt !== undefined);
-}
 
 /**
  * The subject and each scorer of each `judge` step of `run` that was leased, as `<subject>\n<scorer>`. A scorer, not the
