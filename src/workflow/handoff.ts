@@ -257,7 +257,7 @@ export async function publishRun(
     return ok(receipt(runId, 'unchanged', before.value));
   }
 
-  const pinned = await checkOrigin(checkout, withoutCleanedUp(stored), { side: 'publish' });
+  const pinned = await checkOrigin(checkout, stored, { side: 'publish', succeeded: stored.status === 'succeeded' });
 
   if (!pinned.ok) return pinned;
 
@@ -426,32 +426,24 @@ function receipt(runId: string, publication: PublishReceipt['publication'], snap
   return answer;
 }
 
-/**
- * Run `run` without the branches its success cleanup deleted at its current revision. A branch that stays holds their
- * commits, and a retry brings them back from the run's copies, so publishing the settled run checks only what stays.
- */
-function withoutCleanedUp(run: RunState): RunState {
-  if (run.status !== 'succeeded' || run.leftovers?.revision !== run.revision) return run;
-  const deleted = new Set(run.leftovers.deleted);
-  const { base, copies, ...kept } = run;
-  const checked: RunState = kept;
+/** Whether a branch on origin at one of `heads` contains `commit`, as far as `checkout` has both. */
+async function heldOnOrigin({ checkout, commit, heads }: { checkout: string; commit: string; heads: Iterable<string> }): Promise<boolean> {
+  for (const head of heads) if ((await git(checkout, ['merge-base', '--is-ancestor', commit, head])).code === 0) return true;
 
-  if (base && !deleted.has(basePinBranch(run.id))) checked.base = base;
-
-  if (copies) checked.copies = Object.fromEntries(Object.entries(copies).filter(([branch]) => !deleted.has(branch)));
-
-  return checked;
+  return false;
 }
 
 /**
  * Checks, with `ls-remote` on the origin of business checkout `checkout`, that every workspace of run `run` is on origin
  * at the commit the run recorded, and that its base is pinned as `teamai/<run>/base`, which a driver's fetch of the run's
- * branches brings in wherever the base came from. A publish pins a missing base; nothing else is pushed or fetched.
+ * branches brings in wherever the base came from. A publish pins a missing base; nothing else is pushed or fetched. A
+ * succeeded run's branch may be missing when its cleanup deleted it, which it does only while a branch that stays holds
+ * its commit: such a branch passes, and a retry brings it back from the run's copies.
  */
 async function checkOrigin(
   checkout: string,
   run: { id: string; base?: { commit: string }; copies?: Record<string, { commit?: string }> },
-  by: { side: 'publish' } | { side: 'claim'; publisher: HandoffOwner },
+  by: { side: 'publish'; succeeded: boolean } | { side: 'claim'; publisher: HandoffOwner },
 ): Promise<Result<void>> {
   const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
   const pin = basePinBranch(run.id);
@@ -495,6 +487,8 @@ async function checkOrigin(
           : `Branch ${branch} on the origin of ${checkout} is at ${actual}, and run ${run.id} recorded ${commit} when ${by.publisher.user} last published it. If ${by.publisher.user} continued the run since, ${by.publisher.user} can publish it again: teamai workflow publish ${run.id}. Moving ${branch} on origin back to ${commit} discards the commits on it past ${commit}; teamai does not move it.`,
       });
     }
+
+    if (branch !== pin && by.side === 'publish' && by.succeeded && await heldOnOrigin({ checkout, commit, heads: heads.values() })) continue;
 
     if (branch !== pin || by.side === 'claim') {
       return refused({

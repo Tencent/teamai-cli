@@ -241,7 +241,7 @@ steps:
     expect((await state(config, runId)).leftovers).toMatchObject({ failed: [{ branch: left }] });
   });
 
-  it('leaves a branch checked out where the host put it in the checkout, without a warning', async () => {
+  it('leaves a branch checked out where the host put it in the checkout, without a warning, and still publishes the run', async () => {
     const { config, cwd, root, origin, runId } = await fixture(NO_DELIVERY);
     const driver = { kind: 'remote', machine: 'host', workspace: cwd };
     const can = { workspace: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
@@ -275,6 +275,9 @@ steps:
     expect(branches(cwd, runId)).toEqual(['join/p1', 'left/p1']);
     expect(warn).not.toHaveBeenCalled();
     expect((await state(config, runId)).leftovers).toMatchObject({ deleted: [], failed: [] });
+
+    shareTeam(config, root);
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
   });
 });
 
