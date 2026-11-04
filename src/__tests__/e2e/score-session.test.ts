@@ -6,10 +6,11 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { encodeCwdClaude } from '../../session-flow/fs.js';
+import { executableOf, LAUNCH_ORDER } from '../../tool-launch/tools.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -77,7 +78,7 @@ describe('teamai score --session', () => {
 
     const home = path.join(root, 'home');
     fs.mkdirSync(home);
-    fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = tester\n\temail = tester@example.com\n[url "file://${team}"]\n\tinsteadOf = ${TEAM_URL}\n`);
+    fs.writeFileSync(path.join(home, '.gitconfig'), `[user]\n\tname = tester\n\temail = tester@example.com\n[url "${pathToFileURL(team).href}"]\n\tinsteadOf = ${TEAM_URL}\n`);
     const project = path.join(home, '.claude', 'projects', encodeCwdClaude(app));
     fs.mkdirSync(project, { recursive: true });
     const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
@@ -93,13 +94,20 @@ if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); 
 const transcript = fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8');
 fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-transcript.md'))}, transcript);
 fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-evidence.json'))}, fs.readFileSync('evidence.json'));
+if (transcript.includes('Added the retries.')) fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-full-evidence.json'))}, fs.readFileSync('evidence.json'));
 const label = transcript.includes('Added the retries.') ? 'shallow' : 'thorough';
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
 const at = process.argv.indexOf('--json-schema');
-const answer = { label, reasoning: 'It never ran the tests.' };
-console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.parse(process.argv[at + 1]).properties.answer ? { answer } : answer }));
+const given = at >= 0 ? JSON.parse(process.argv[at + 1]) : undefined;
+const schema = given?.properties.answer ?? given;
+const oneAnswer = (one) => ({ label: one?.properties.label.enum.includes('fit')
+  ? (transcript.includes('Added the retries.') ? 'fit' : 'missed') : label, reasoning: 'It never ran the tests.' });
+const answer = schema && !schema.properties.label
+  ? Object.fromEntries(Object.entries(schema.properties).map(([name, one]) => [name, oneAnswer(one)])) : oneAnswer(schema);
+console.log(JSON.stringify({ type: 'result', structured_output: given?.properties.answer ? { answer } : answer }));
 });\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'claude.cmd'), `@"${process.execPath}" "${path.join(bin, 'claude')}" %*\r\n`);
     env = { ...process.env, HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
     for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_SESSION_ID', 'CODEX_SESSION_ID', 'CODEBUDDY_SESSION_ID', 'COPILOT_AGENT_SESSION_ID', 'CURSOR_CONVERSATION_ID', 'CLAUDE_SESSION_ID', 'OPENCODE_SESSION_ID', 'TEAMAI_AGENT_SESSION_ID', 'PI_SESSION_ID', 'MUSE_SESSION_ID']) delete env[name];
     for (const command of [['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force'], ['pull']]) {
@@ -263,7 +271,19 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     expect(git(team, 'rev-parse', 'teamai-reports')).toBe(reportsNow);
   });
 
-  it('passes delivered and used skills through a real session-start hook and score CLI (#1469)', async () => {
+  it('reports unknown skills for a session without a delivery capture (#1469)', async () => {
+    const scored = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality'], app, env);
+    expect(scored.code, scored.stdout + scored.stderr).toBe(0);
+    const evidence = JSON.parse(fs.readFileSync(path.join(root, 'judged-evidence.json'), 'utf8')) as Record<string, unknown>;
+    expect(evidence.gaps).toContain('skills_unknown');
+    expect(evidence).not.toHaveProperty('skills');
+
+    const routing = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'teamai:routing:review-notes'], app, env);
+    expect(routing.code).toBe(1);
+    expect(routing.stderr).toContain('scorer_not_found');
+  });
+
+  it('keeps the session-start skill description after a later pull changes it (#1469)', async () => {
     const transcript = path.join(env.HOME ?? '', '.claude', 'projects', encodeCwdClaude(app), `${SESSION}.jsonl`);
     const hook = await runCLI(['hook-dispatch', 'session-start', '--tool', 'claude'], app, env,
       JSON.stringify({ cwd: app, session_id: SESSION, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-x', transcript_path: transcript }) + '\n');
@@ -276,6 +296,76 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
       skills: { available: [{ name: 'review-notes', description: 'Write review notes for a PR.' }], used: [] },
     });
     expect(evidence.gaps).not.toContain('skills_unknown');
+
+    const skill = path.join(knowledge, 'skills', 'review-notes', 'SKILL.md');
+    fs.writeFileSync(skill, '---\ndescription: The replacement description.\n---\nReview a PR.\n');
+    git(knowledge, 'add', '-A');
+    git(knowledge, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'change skill description');
+    git(knowledge, 'push', team, 'main');
+    const pulled = await runCLI(['pull'], app, env);
+    expect(pulled.code, pulled.stdout + pulled.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(env.HOME ?? '', '.claude', 'skills', 'review-notes', 'SKILL.md'), 'utf8'))
+      .toContain('The replacement description.');
+
+    const rescored = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality'], app, env);
+    expect(rescored.code, rescored.stdout + rescored.stderr).toBe(0);
+    const laterEvidence = JSON.parse(fs.readFileSync(path.join(root, 'judged-evidence.json'), 'utf8')) as Record<string, unknown>;
+    expect(laterEvidence.skills).toEqual(evidence.skills);
+  });
+
+  it('keeps captured skills in a custom scorer control while removing the agent skill use (#1469)', async () => {
+    const transcript = path.join(env.HOME ?? '', '.claude', 'projects', encodeCwdClaude(app), `${SESSION}.jsonl`);
+    const hook = await runCLI(['hook-dispatch', 'session-start', '--tool', 'claude'], app, env,
+      JSON.stringify({ cwd: app, session_id: SESSION, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-x', transcript_path: transcript }) + '\n');
+    expect(hook.code, hook.stdout + hook.stderr).toBe(0);
+    const original = fs.readFileSync(transcript, 'utf8');
+    fs.appendFileSync(transcript, JSON.stringify({ type: 'assistant', uuid: 'skill-use', parentUuid: 'u2', cwd: app,
+      sessionId: SESSION, timestamp: new Date(Date.now() + 1_000).toISOString(),
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'call-skill', name: 'Skill', input: { skill: 'review-notes' } }] } }) + '\n');
+    const scorer = path.join(app, 'scorers', 'ops', 'routing-review-notes.md');
+    fs.mkdirSync(path.dirname(scorer), { recursive: true });
+    fs.writeFileSync(scorer, '---\nlabels:\n  - { value: fit, score: 1, description: The session needed and loaded review-notes. }\n'
+      + '  - { value: missed, score: 0, description: The session needed review-notes but did not load it. }\npassingScore: 1\n---\n'
+      + 'Judge review-notes against skills.available and skills.used in evidence.json.\n');
+
+    try {
+      const scored = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', './scorers/ops/routing-review-notes.md'], app, env);
+      expect(scored.code, scored.stdout + scored.stderr).toBe(0);
+      expect(envelope(scored.stdout).data).toMatchObject({ label: { label: 'fit' }, control: { label: 'missed', passed: false } });
+      const fullEvidence = JSON.parse(fs.readFileSync(path.join(root, 'judged-full-evidence.json'), 'utf8')) as Record<string, unknown>;
+      expect(fullEvidence.skills).toMatchObject({ used: ['review-notes'] });
+      const controlEvidence = JSON.parse(fs.readFileSync(path.join(root, 'judged-evidence.json'), 'utf8')) as Record<string, unknown>;
+      expect(controlEvidence.skills).toMatchObject({ available: [expect.objectContaining({ name: 'review-notes' })], used: [] });
+      expect(controlEvidence.gaps).not.toContain('skills_unknown');
+      expect(scored.stderr).not.toContain('may not judge the work');
+    } finally {
+      fs.writeFileSync(transcript, original);
+    }
+  });
+
+  it('distinguishes a capture with no delivered skills from unknown skills (#1469)', async () => {
+    const emptySession = '7c1e0000-0000-4000-8000-000000000002';
+    const project = path.join(env.HOME ?? '', '.claude', 'projects', encodeCwdClaude(app));
+    const transcript = path.join(project, `${emptySession}.jsonl`);
+    fs.writeFileSync(transcript, fs.readFileSync(path.join(project, `${SESSION}.jsonl`), 'utf8').replaceAll(SESSION, emptySession));
+    fs.rmSync(path.join(knowledge, 'skills', 'review-notes'), { recursive: true });
+    git(knowledge, 'add', '-A');
+    git(knowledge, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'remove team skill');
+    git(knowledge, 'push', team, 'main');
+    const pulled = await runCLI(['pull'], app, env);
+    expect(pulled.code, pulled.stdout + pulled.stderr).toBe(0);
+    const hook = await runCLI(['hook-dispatch', 'session-start', '--tool', 'claude'], app, env,
+      JSON.stringify({ cwd: app, session_id: emptySession, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-x', transcript_path: transcript }) + '\n');
+    expect(hook.code, hook.stdout + hook.stderr).toBe(0);
+
+    const scored = await runCLI(['score', '--session', emptySession, '--source', 'claude-code', '--scorer', 'review-quality'], app, env);
+    expect(scored.code, scored.stdout + scored.stderr).toBe(0);
+    const evidence = JSON.parse(fs.readFileSync(path.join(root, 'judged-evidence.json'), 'utf8')) as Record<string, unknown>;
+    expect(evidence.skills).toEqual({ available: [], used: [] });
+    expect(evidence.gaps).not.toContain('skills_unknown');
+    const routing = await runCLI(['score', '--session', emptySession, '--source', 'claude-code', '--scorer', 'teamai:routing:review-notes'], app, env);
+    expect(routing.code).toBe(1);
+    expect(routing.stderr).toContain('scorer_not_found');
   });
 
   it('leaves open the judge of a scorer whose model no tool here runs, and exits judge_pending with the label the other scorer got', async () => {
@@ -287,7 +377,9 @@ console.log(JSON.stringify({ type: 'result', structured_output: at >= 0 && JSON.
     git(knowledge, 'push', '-q', team, 'main');
     expect((await runCLI(['pull'], app, env)).code).toBe(0);
     // Only the fake Claude judges here, so no tool here runs style's model.
-    const claudeOnly = { ...env, PATH: [path.join(root, 'bin'), '/usr/bin', '/bin'].join(path.delimiter) };
+    const agents = LAUNCH_ORDER.flatMap((tool) => ['', '.exe', '.cmd', '.bat'].map((ext) => `${executableOf(tool)}${ext}`));
+    const claudeOnly = { ...env, PATH: [path.join(root, 'bin'), ...(env.PATH ?? '').split(path.delimiter)
+      .filter((dir) => !agents.some((name) => fs.existsSync(path.join(dir, name))))].join(path.delimiter) };
 
     const scored = await runCLI(['score', '--session', SESSION, '--source', 'claude-code', '--scorer', 'review-quality', '--scorer', 'style'], app, claudeOnly);
 
