@@ -46,7 +46,8 @@ skill driver, judge step leased
 
 The lease keeps the `ConfinedLease` (level, tools) it was granted with. A report is accepted when its tool is one of
 the lease's tools and its isolation is at least the lease's level (the level is a minimum: a local judge may reach
-`verified` on a `best-effort` lease). A mismatch fails the step with a structured failure. A lease granted before this
+`verified` on a `best-effort` lease). A success that names no confined run, or a mismatch, fails the step with a
+structured failure. A lease granted before this
 change has no stored terms and is not checked. A best-effort judge never reports `verified`.
 
 ### Default driver
@@ -81,11 +82,12 @@ The finished-sessions hook, `teamai score --drain` and `teamai score` decide thr
 parseDriver(name) -> local | skill | none | { external: name }
 drivesHere(config, name) -> Promise<boolean>        // local: yes; anything else: no, until definitions are resolved
 driveByDefault(config) -> Promise<{ kind: drive | awaits, driver: name } | { kind: unassigned }>   // unassigned: none
-driveRun(config, run, name)                         // the one way --drain and score drive a run; the hook passes --driver <name>
+driveRun(config, run, name)                         // workflow-drive.ts: the one way start, --drain and score drive a run; the hook passes --driver <name>
 ```
 
-The `awaits` line is built in one place. A driver that takes a lease of the run clears `awaits`. A later drain that
-finds the run still open says which driver it awaits.
+The `awaits` line is built in one place. A driver that takes a lease of the run clears `awaits`; one that asks and is
+given none leaves it. A later drain that finds the run still open says who has it: the driver it awaits, none while it
+is left to any driver, or a driver that took it.
 
 When this machine does not drive the default, the run starts unassigned with `awaits: { driver }` in its run state,
 which every machine sees, and the command prints:
@@ -98,12 +100,13 @@ which every machine sees, and the command prints:
 
 | Root run ended with | Mark |
 |---|---|
-| a judge attempt that ran (stopped, cancelled, failed, or running at the end) | one more lapse, as today |
-| no judge attempt that ran (never leased, or only released) | `lapsed`, same count |
+| a judge attempt that ran for the mark's scorer (stopped, cancelled, failed, or running at the end) | one more lapse, as today |
+| no judge attempt that ran for it (never leased, or only released) | `lapsed`, same count |
 | a missing or unreadable root run | one more lapse, as today |
 
-A mark keeps the time it first opened across restarts. Restarts that count no lapse stop 14 days after it, and a
-named request starts the window again. Such a restart spends no daily-limit slot: its `open` line carries a marker
+Whether a judge ran is asked of the scorer, not of the group the mark was planned in: a scorer already labelled leaves
+the judged group smaller. A mark keeps the time it first opened across restarts. Restarts that count no lapse stop 14
+days after it, by when the mark is read, and a named request starts the window again. Such a restart spends no daily-limit slot: its `open` line carries a marker
 that both the limit check and the day's count skip.
 
 ### Labels a stage decided
@@ -145,9 +148,10 @@ another driver could judge. The `judge: here | driver` input is removed from `te
 ### Retrying a step after its run ended
 
 `$TEAMAI_RUN_DIR` is removed when a run ends. Retrying `score[0].label` after it failed then read a directory that no
-longer exists. When a retry reopens an ended run, it also runs again, in the same container, the steps whose output
-fields the retried step uses in its templates (not reads that appear only in `if`) when those fields hold a path inside
-the removed run directory. `workflow retry` prints what else it runs.
+longer exists. A retry also runs again the steps whose output fields the retried step uses in its templates (not reads
+that appear only in `if`) when those fields hold a path inside the run directory that no longer exists, in its own
+workflow or one around it. It checks each path, so a second retry still finds what a step run since did not bring back.
+`workflow retry` prints what else it runs.
 
 ```
 workflow retry <run> score[0].label     # after the run ended
