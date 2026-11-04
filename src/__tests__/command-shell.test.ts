@@ -1,6 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startGroupedCommand } from '../tool-launch/process-stop.js';
 import { runShellCommand } from '../workflow/shell-command.js';
@@ -20,6 +22,15 @@ afterEach(() => {
 });
 
 describe('a team command reads "$NAME" from its env, on Windows too', () => {
+  it('lets Git access a local file URL from a team command', async () => {
+    const cwd = workdir();
+    const repo = path.join(cwd, 'team repo.git');
+    execFileSync('git', ['init', '--bare', '--quiet', repo]);
+    const ran = await runShellCommand({ command: `git ls-remote "${pathToFileURL(repo).href}"`, cwd, env: { ...process.env } });
+
+    expect(ran.exit, ran.output).toEqual({ kind: 'exited', code: 0 });
+  });
+
   it('in a check or benchmark judge', async () => {
     const cwd = workdir();
     const ran = await runShellCommand({ command: PRINT_VALUE, cwd, env: { ...process.env, VALUE } });
