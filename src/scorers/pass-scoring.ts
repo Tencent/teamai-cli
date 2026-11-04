@@ -51,8 +51,11 @@ const ScoreRunOutputsSchema = z.object({
   labels: z.array(z.object({ outputs: z.object({ labels: z.array(ScoredLabelSchema).default([]), written: z.array(z.string()).nullish() }).default({ labels: [] }) })).default([]),
 }).default({ labels: [] });
 
-/** A label of a group whose write stored nothing is no label. */
+/** A label, or a wait for CI, of a group whose write stored nothing is neither. */
 const UNWRITTEN: Pick<ScoredLabel, 'label' | 'code'> = { label: '', code: 'score_step_failed' };
+
+/** The codes only a successful write makes true: a stored label, and a mark left waiting for CI. */
+const NEEDS_WRITE = new Set(['', 'ci_pending']);
 
 /** What teamai-score's `done` `outputs` gave each scorer, or why this teamai cannot read them. */
 export type ScoredLabels = { ok: true; labels: ScoredLabel[] } | { ok: false; reason: string };
@@ -66,7 +69,7 @@ function labelsOf(outputs: Record<string, JsonValue> | undefined): ScoredLabels 
     return { ok: false, reason: issue === undefined ? 'invalid' : `outputs.${issue.path.join('.')}: ${issue.message}` };
   }
 
-  return { ok: true, labels: parsed.data.labels.flatMap(({ outputs: group }) => group.labels.map((entry) => (entry.code === '' && !group.written ? { ...entry, ...UNWRITTEN } : entry))) };
+  return { ok: true, labels: parsed.data.labels.flatMap(({ outputs: group }) => group.labels.map((entry) => (NEEDS_WRITE.has(entry.code) && !group.written ? { ...entry, ...UNWRITTEN } : entry))) };
 }
 
 const DoneSchema = z.object({ done: z.object({ outcome: z.string(), outputs: z.record(z.string(), z.json()).optional() }) });

@@ -150,12 +150,14 @@ function itemOf(ran: RunState, prefix: string, index: number): Item {
  */
 function addEntries(into: Finished, judged: Judgeable, { entries, unwritten }: Extract<Item, { kind: 'ended' }>, planned: readonly string[]): void {
   const labelled = entries.filter((entry) => entry.code === '').map((entry) => entry.scorer);
-  const unstored = unwritten === undefined ? [] : [...labelled, ...planned.filter((name) => !entries.some((entry) => entry.scorer === name))];
+  // A wait for CI is a mark the write leaves waiting, so it holds only once the write succeeded, as a label does.
+  const waiting = entries.filter((entry) => entry.code === 'ci_pending').map((entry) => entry.scorer);
+  const unstored = unwritten === undefined ? [] : [...labelled, ...waiting, ...planned.filter((name) => !entries.some((entry) => entry.scorer === name))];
 
   if (unwritten !== undefined && unstored.length > 0) into.failed.push({ scorers: unstored, subject: judged.subject, code: 'score_step_failed', why: unwritten });
   else if (labelled.length > 0) into.judged.push({ source: judged.kind === 'run' ? 'workflow' : 'session', scorers: labelled });
 
-  if (entries.some((entry) => entry.code === 'ci_pending')) into.ciPending[kindOf(judged)] += 1;
+  if (unwritten === undefined && waiting.length > 0) into.ciPending[kindOf(judged)] += 1;
 
   for (const code of new Set(entries.map((entry) => entry.code).filter((one) => one !== '' && one !== 'ci_pending'))) {
     into.failed.push({ scorers: entries.filter((entry) => entry.code === code).map((entry) => entry.scorer), subject: judged.subject, code });

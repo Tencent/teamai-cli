@@ -216,6 +216,16 @@ describe('PassScoring.said', () => {
     });
   });
 
+  it('says score_step_failed for a label or a wait for CI that the write step did not store, and keeps a judge\'s own failure code', () => {
+    const groups = [
+      { item: { scorers: 'quality,delivered,depth' }, outcome: 'failed', outputs: { labels: [{ scorer: 'quality', label: 'good', code: '' }, { scorer: 'delivered', label: '', code: 'ci_pending' }, { scorer: 'depth', label: '', code: 'judge_failed' }], written: null } },
+    ];
+
+    expect(PassScoring.said('run:r1:review:1', run, done(groups))).toEqual({
+      kind: 'scored', line: `run:r1:review:1: quality score_step_failed, delivered score_step_failed, depth judge_failed (teamai-score run ${run}).`,
+    });
+  });
+
   it('says no scorer sampled a pass whose run planned no group, or whose group broke before it labelled', () => {
     expect(PassScoring.said('run:r1:review:1', run, done([]))).toEqual({ kind: 'scored', line: `run:r1:review:1: no scorer sampled it (teamai-score run ${run}).` });
     expect(PassScoring.said('run:r1:review:1', run, done([{ item: {}, outcome: 'failed' }])).line).toContain('no scorer sampled it');

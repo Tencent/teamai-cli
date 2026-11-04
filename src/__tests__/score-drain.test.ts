@@ -653,6 +653,7 @@ steps:
     const groups = [
       { subject: `session:claude-code:${SESSION}`, scorers: 'quality', labels: { labels: [{ scorer: 'quality', code: '' }] } },
       { subject: `session:claude-code:${STEP_SESSION}`, scorers: 'depth', labels: 'not labels' },
+      { subject: `session:claude-code:${SESSION}`, scorers: 'delivered', labels: { labels: [{ scorer: 'delivered', code: 'ci_pending' }] } },
     ];
     // As the shipped teamai-score runs when another process holds the label store: label gives the label, write refuses it.
     const { config } = await team({ 'workflows/teamai-finished-sessions.yaml': `schemaVersion: v1alpha1
@@ -695,7 +696,8 @@ steps:
     const drained = await drain();
 
     expect(drained.code, drained.lines.join('\n')).toBe(1);
-    expect(drained.lines.filter((printed) => /Judged|Nothing left/u.test(printed))).toEqual([]);
+    expect(drained.lines.filter((printed) => /Judged|Nothing left|Left open/u.test(printed))).toEqual([]);
+    expect(drained.lines).toContainEqual(expect.stringMatching(new RegExp(`^✖ delivered on claude-code session ${SESSION}: score_step_failed \\(step rescore\\.score\\[2\\]\\.write failed: `, 'u')));
     expect(drained.lines).toContainEqual(expect.stringMatching(new RegExp(`^✖ depth on claude-code session ${STEP_SESSION}: score_step_failed \\(step rescore\\.score\\[1\\]\\.label failed: .+\\)\\. A failed judgment is final`, 'u')));
     expect(drained.lines).toContainEqual(expect.stringMatching(new RegExp(`^✖ quality on claude-code session ${SESSION}: score_step_failed \\(step rescore\\.score\\[0\\]\\.write failed: command exited with status 1: busy: Another teamai process holds the label store, so no label was written\\. Run the step again\\)\\. A failed judgment is final`, 'u')));
   });
