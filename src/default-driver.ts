@@ -10,9 +10,7 @@ import path from 'node:path';
 import { loadMemberSettings, loadTeamConfig, ownMemberSettings } from './config.js';
 import { getDataHome, getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { warnOnce } from './utils/warn-once.js';
-import { DriverNameSchema, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
-
-const LOCAL = DriverNameSchema.parse('local');
+import { LOCAL_DRIVER, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
 
 /** What a start decides by default: drive the run here, leave it awaiting a driver this machine does not run, or leave it to any driver. */
 export type DefaultDrive = { kind: 'drive' | 'awaits'; driver: DriverName } | { kind: 'unassigned' };
@@ -60,7 +58,7 @@ export async function driveByDefault(config: LocalConfig): Promise<DefaultDrive>
   const { driver } = await resolveDefaultDriver(config);
 
   if (driver === 'none') return { kind: 'unassigned' };
-  const name = driver === 'local' ? LOCAL : driver.external;
+  const name = driver === 'local' ? LOCAL_DRIVER : driver.external;
 
   return { kind: await drivesHere(config, name) ? 'drive' : 'awaits', driver: name };
 }

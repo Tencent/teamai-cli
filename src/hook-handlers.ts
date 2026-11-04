@@ -15,6 +15,7 @@ import path from 'node:path';
 import type { ResolvedEntry } from './namespaced-entries.js';
 import { stdinString, type HookHandler, type HookStdin } from './hook-dispatch.js';
 import type { GlobalOptions, LocalConfig, WebhookPayload } from './types.js';
+import type { DriverName } from './workflow/driver-name.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
@@ -409,7 +410,7 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepar
 }
 
 /** Start `workflow resume <run> --driver <driver>` in `cwd` with `env`, a process this one does not wait for. */
-async function spawnDetachedResume(run: string, { driver, cwd, env }: { driver: string; cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
+async function spawnDetachedResume(run: string, { driver, cwd, env }: { driver: DriverName; cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
   const { resolveCliEntry } = await import('./builtin-hooks.js');
   const { spawn } = await import('node:child_process');
   spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', run, '--driver', driver], { cwd, detached: true, stdio: 'ignore', windowsHide: true, env })

@@ -19,7 +19,7 @@ import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartC
 import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
 import { awaitsLine } from './default-driver.js';
-import { DriverNameSchema, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
+import { LOCAL_DRIVER, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type RunId } from './workflow/store.js';
@@ -36,7 +36,6 @@ import { reportBenchmark } from './benchmark/report.js';
 import { runCheckStep } from './benchmark/trial.js';
 import type { RunState, WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
-const LOCAL_DRIVER = DriverNameSchema.parse('local');
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
 function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, string>): void {
@@ -419,9 +418,11 @@ export interface ShortcutStart {
 
 /** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
 export async function startWorkflow(name: string, options: StartOptions, shortcut: ShortcutStart = {}): Promise<WorkflowEnvelope | undefined> {
-  if (refusedNested(await nestedStart(process.env, process.cwd()), options.driver === 'skill')) return undefined;
+  const asked = askedDriver(options.driver);
 
-  if (options.driver === 'skill') {
+  if (refusedNested(await nestedStart(process.env, process.cwd()), asks(asked, 'skill'))) return undefined;
+
+  if (asks(asked, 'skill')) {
     const { driver: _skill, timeout, ...rest } = options;
     const timeoutMs = timeout === undefined ? undefined : durationMs(timeout);
 
@@ -479,8 +480,10 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
     return;
   }
 
-  if (options.driver !== undefined && !drivesLocally(options.driver)) {
-    writeEnvelope({ error: unsupportedDriver(options.driver) }, secrets);
+  const refusedAsked = refusedDriver(asked, ['local']);
+
+  if (refusedAsked) {
+    writeEnvelope({ error: refusedAsked }, secrets);
 
     return;
   }
@@ -504,11 +507,11 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
 
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
-  const alone = options.driver === 'local' ? localStrictCan(config, options) : undefined;
+  const alone = asks(asked, 'local') ? localStrictCan(config, options) : undefined;
   const awaits = shortcut.awaits && { driver: shortcut.awaits };
   const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person', awaits });
 
-  if ('error' in started || options.driver !== 'local') {
+  if ('error' in started || !asks(asked, 'local')) {
     if (awaits && 'data' in started) log.info(awaitsLine(String(started.data.run), awaits.driver));
     writeEnvelope(started, secrets);
 
@@ -610,11 +613,37 @@ const JsonReportOptionsSchema = z.object({
   json: z.string().optional(),
 });
 
-/** The driver `--driver <name>` names, or undefined for a name that names none. */
-function drivenAs(name: string): Driver | undefined {
+/** What `--driver <name>` asks a run command for: no driver, the driver `name` stands for, or a name that stands for none. */
+type AskedDriver = { kind: 'unset' } | { kind: 'driver'; driver: Driver; name: string } | { kind: 'unknown'; name: string };
+
+/** `--driver`, parsed once where a run command takes it. */
+function askedDriver(name: string | undefined): AskedDriver {
+  if (name === undefined) return { kind: 'unset' };
   const parsed = parseDriver(name);
 
-  return parsed.ok ? parsed.driver : undefined;
+  return parsed.ok ? { kind: 'driver', driver: parsed.driver, name } : { kind: 'unknown', name };
+}
+
+/** Whether `--driver` names `driver`. */
+function asks(asked: AskedDriver, driver: 'local' | 'skill'): boolean {
+  return asked.kind === 'driver' && asked.driver === driver;
+}
+
+/** The refusal of a `--driver` that names none of `takes`, the drivers the command runs; undefined without one. */
+function refusedDriver(asked: AskedDriver, takes: ReadonlyArray<'local' | 'skill'>): WorkflowFailure | undefined {
+  switch (asked.kind) {
+    case 'unset':
+      return undefined;
+    case 'unknown':
+      return unsupportedDriver(asked.name);
+    case 'driver':
+      return takes.some((driver) => asks(asked, driver)) ? undefined : unsupportedDriver(asked.name);
+    default: {
+      const unhandled: never = asked;
+
+      return unhandled;
+    }
+  }
 }
 
 /**
@@ -626,9 +655,6 @@ export async function driveRun(config: LocalConfig, run: string, name: DriverNam
 
   return { error: unsupportedDriver(name) };
 }
-
-/** Whether `--driver <name>` names the local driver, the only one besides `skill` that `start` and `resume` take. */
-const drivesLocally = (name: string): boolean => drivenAs(name) === 'local';
 
 /** The refusal of a `--driver` that is neither `local` nor `skill`. */
 function unsupportedDriver(driver: string): WorkflowFailure {
@@ -880,15 +906,17 @@ type ResumeOptions = {
  * the oldest one teamai-reports offers.
  */
 export async function workflowResume(runId: string | undefined, options: ResumeOptions): Promise<void> {
-  if (refusedNested(nestedCall(process.env), options.driver === 'skill')) return;
+  const asked = askedDriver(options.driver);
+
+  if (refusedNested(nestedCall(process.env), asks(asked, 'skill'))) return;
 
   if (options.next || runId === undefined) {
-    await resumeOffered(runId, options);
+    await resumeOffered(runId, options, asked);
 
     return;
   }
 
-  if (options.driver === 'skill') {
+  if (asks(asked, 'skill')) {
     const { driver: _skill, ...rest } = options;
     await workflowSkill({ kind: 'resume', run: runId, options: rest });
 
@@ -904,8 +932,10 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
     return;
   }
 
-  if (options.driver !== undefined && !drivesLocally(options.driver)) {
-    writeEnvelope({ error: unsupportedDriver(options.driver) }, collectEnvSecrets());
+  const refusedAsked = refusedDriver(asked, ['local']);
+
+  if (refusedAsked) {
+    writeEnvelope({ error: refusedAsked }, collectEnvSecrets());
 
     return;
   }
@@ -966,11 +996,11 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
 }
 
 /** `workflow resume` without a run id: lists the runs this checkout can resume, or with `--next` takes the oldest offered one. */
-async function resumeOffered(runId: string | undefined, options: ResumeOptions): Promise<void> {
+async function resumeOffered(runId: string | undefined, options: ResumeOptions, asked: AskedDriver): Promise<void> {
   setStderrOnly(true);
-  const isSkill = options.driver === 'skill';
+  const isSkill = asks(asked, 'skill');
   const answer = isSkill ? refuseSkill : refuse;
-  const refusal = resumeOfferedRefusal(runId, options);
+  const refusal = resumeOfferedRefusal(runId, options, asked);
 
   if (refusal) {
     answer({ error: refusal });
@@ -1028,7 +1058,7 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
 }
 
 /** Why `workflow resume` without a run id refuses its command line, before it reads anything. */
-function resumeOfferedRefusal(runId: string | undefined, options: ResumeOptions): WorkflowFailure | undefined {
+function resumeOfferedRefusal(runId: string | undefined, options: ResumeOptions, asked: AskedDriver): WorkflowFailure | undefined {
   if (runId !== undefined) {
     return { code: 'invalid_arguments', message: `--next takes the oldest run teamai-reports offers, so it takes no run id. To continue run ${runId}: teamai workflow resume ${runId}` };
   }
@@ -1039,11 +1069,7 @@ function resumeOfferedRefusal(runId: string | undefined, options: ResumeOptions)
       : { code: 'invalid_arguments', message: '--claim takes over the run you name: teamai workflow resume <run> --claim' };
   }
 
-  const driver = options.driver === undefined ? undefined : drivenAs(options.driver);
-
-  if (options.driver !== undefined && driver !== 'local' && driver !== 'skill') return unsupportedDriver(options.driver);
-
-  return undefined;
+  return refusedDriver(asked, ['local', 'skill']);
 }
 
 /**
