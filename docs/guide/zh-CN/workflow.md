@@ -558,6 +558,13 @@ $ teamai workflow retry r1ddcd1ca66beb067 finish
 
 本机正在删除某个运行的分支时（`doctor --fix` 或运行成功时），对该运行的 retry 会返回 `busy`：`Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`。
 
+重试一个已成功的运行时，会先在 origin 和本地按运行记录的提交恢复其清理删除的分支，因为运行还要用到它们。有分支未能恢复时，运行不会重新打开，返回会写明是哪个分支以及原因：
+
+```text
+$ teamai workflow retry r1ddcd1ca66beb067 decide
+{"error":{"code":"branches_not_restored","message":"Run r1ddcd1ca66beb067 was not reopened: the branches its cleanup deleted, which the run needs again, did not all come back. Branch teamai/r1ddcd1ca66beb067/change/p1 is not back on origin: remote: creating teamai/* branches is not allowed\nTo https://git.example.com/team/app.git\n ! [remote rejected] f8cbcf2714e92aedb57f34f65896b0df926a1661 -> teamai/r1ddcd1ca66beb067/change/p1 (pre-receive hook declined)\nerror: failed to push some refs to 'https://git.example.com/team/app.git'. Try again once that is fixed: teamai workflow retry r1ddcd1ca66beb067 decide"}}
+```
+
 既不是时长也不是 `never` 的值会被跳过并给出警告，由下一级决定。TeamAI 从不删除 pull request 的分支：请在代码托管平台上开启合并后自动删除头分支的选项。
 
 ### 从 CI 启动
