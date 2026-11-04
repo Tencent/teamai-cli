@@ -1335,7 +1335,7 @@ export const TOOLS = {
     agents: NONE,
     mcp: NONE,
     hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
-    sessions: 'none',
+    sessions: ['hermes'],
     launch: 'hermes',
     autoCompact: 'none',
     skillAllowedTools: false,

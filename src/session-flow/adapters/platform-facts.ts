@@ -28,7 +28,7 @@ export interface SessionPlatformFacts {
   nativeTools: ReadonlySet<string>;
   legacyIdWithoutWorkspace: boolean;
   sqliteRegistrationOnWindows: boolean;
-  idFormat: 'uuid' | 'opencode';
+  idFormat: 'uuid' | 'opencode' | 'hermes';
   /** The tool resumes only from a store TeamAI cannot write, so its sessions are read and never written. */
   readOnly?: true;
 }
@@ -240,6 +240,19 @@ export const SESSION_PLATFORM_FACTS = {
     legacyIdWithoutWorkspace: false,
     sqliteRegistrationOnWindows: false,
     idFormat: 'uuid',
+    readOnly: true,
+  },
+  hermes: {
+    // Hermes Agent stores every profile's sessions in <Hermes home>/state.db; source identifies the surface.
+    store: { in: 'tool-home', home: 'hermes', dir: '.' },
+    resume: (id) => `hermes -c ${id}`,
+    thinking: true, images: false,
+    nativeTools: new Set([
+      'terminal', 'read_file', 'write_file', 'patch', 'search_files', 'delegate_task',
+    ]),
+    legacyIdWithoutWorkspace: false,
+    sqliteRegistrationOnWindows: false,
+    idFormat: 'hermes',
     readOnly: true,
   },
 } satisfies Record<string, SessionPlatformFacts>;
