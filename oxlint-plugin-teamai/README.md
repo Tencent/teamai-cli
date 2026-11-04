@@ -8,6 +8,7 @@ This repository's own lint rules. `npm run lint` loads them through `jsPlugins` 
 | `teamai/learnings-root` | Manual learnings-root joins outside their owner. |
 | `teamai/configured-tool-paths` | Manual configured skill, rules, and instruction-file joins outside `src/locate.ts`. |
 | `teamai/launch-env` | Launch environment literals outside `src/launch-context.ts`. |
+| `teamai/launch-through-workflows` | Launching an AI tool outside a workflow driver: an import of `src/tool-launch/call.ts` or `run.ts`, or of `runConfined` from `confined.ts`, from outside `src/workflow/` and `src/tool-launch/`. Run the AI work as a workflow step (`docs/designs/ai-through-workflows.md`). Tests and type-only imports are exempt. `BASELINE` lists today's callers and may only shrink; a listed file that stops launching is reported until its entry is removed. |
 | `teamai/workflow-boundaries` | Workflow entry-point violations and transitive skill-to-local dependencies. |
 | `teamai/no-provider-merge` | Merge operations in providers and delivery, and forbidden delivery/snapshot dependencies. |
 | `teamai/windows-tests` | POSIX constructs in the current `WINDOWS_TESTS` selection. |

@@ -95,6 +95,7 @@
     "teamai/configured-tool-paths": "error",
     "teamai/config-load-options": "error",
     "teamai/launch-env": "error",
+    "teamai/launch-through-workflows": "error",
     "teamai/workflow-boundaries": "error",
     "teamai/no-provider-merge": "error",
     "teamai/windows-tests": "error",
