@@ -1105,7 +1105,7 @@ $ teamai list workflows
 
 例外是你接收的两个命名空间都定义了的名字：它没有可运行版本，启动它会以 `workflow_namespace_conflict` 拒绝，并指出两个文件。
 
-`teamai-share-learnings` 用它的六个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session`（或别名为 `teamai-share-session` 的团队工作流）要声明同样的六个输入，类型也相同，用不到的也要声明：
+`teamai-share-learnings` 用它的五个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session`（或别名为 `teamai-share-session` 的团队工作流）要声明同样的五个输入，类型也相同，用不到的也要声明：
 
 ```yaml
 schemaVersion: v1alpha1
@@ -1113,7 +1113,7 @@ name: teamai-share-session
 alias: wrap-up
 description: Publish this session our way.
 invoke: ask
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, demand: auto | named }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], demand: auto | named }
 steps:
   - id: archive
     command: ./scripts/archive-session.sh "$SESSION"
@@ -1129,9 +1129,9 @@ steps:
 ⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "teamai-share-session" declares as another type than teamai's default teamai-share-session
 ```
 
-枚举值的顺序不限：`judge: driver | here` 与 `here | driver` 是同一类型。
+枚举值的顺序不限：`demand: named | auto` 与 `auto | named` 是同一类型。
 
-保留这六个输入，或者同时替换 `teamai-share-learnings`。
+保留这五个输入，或者同时替换 `teamai-share-learnings`。
 
 把 `teamai-share-session` 作为步骤运行的团队工作流要传 `demand`：本人或 agent 点名要评这个会话时传 `named`，每个评分器都评它；`teamai-finished-sessions` 传 `auto`，按抽样评。没传的，pull 拒绝：
 
@@ -1147,7 +1147,7 @@ steps:
 
 ```text
 teamai-share-learnings
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string] }
 
 learning         interactive：会话的 agent 和本人一起运行 `teamai skill get share`
                  → { learnings: [{ title, file, namespace }, …] }，没什么可分享时为 []
@@ -1157,7 +1157,7 @@ share-session    用相同输入和 demand: named 运行 teamai-share-session：
   publish        只在 publish: true 时运行
                  → teamai session push --scrub --session <session> --source <source>
   score          scorers 不为空时运行 → 对该会话运行 teamai-score，最多 30 分钟
-                 （timeout: 30m，continue_on_failure: true）；judge 照收但不起作用
+                 （timeout: 30m，continue_on_failure: true）
 ```
 
 `learning` 和 `share-session` 互不等待。`scorers: []` 时不运行任何评审。每次 `teamai contribute` 都把它的经验记为该会话的产出，所以分享了三条经验的会话在仪表盘上三条都会显示。定义文件是已安装包中的 `workflows/teamai-share-learnings.yaml` 和 `workflows/teamai-share-session.yaml`。
@@ -1170,7 +1170,6 @@ agent 运行 describe，它为调用它的会话给每个输入提议一个 `val
 | `source` | `"claude-code"` | This session's tool, as teamai session list names it. |
 | `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing. |
 | `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
-| `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
 | `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as teamai-finished-sessions does. |
 
 带 `--confirmed` 启动运行的 agent 可以替本人保留 `publish: true`，teamai 无法核实本人是否选过。
@@ -1183,17 +1182,14 @@ agent 运行 describe，它为调用它的会话给每个输入提议一个 `val
 | | `off`；或 `auto`，会话空闲 6 小时后反正会发布 | `false` |
 | `scorers` | 有人值守的评分策略为 `ask` | 设置了 `sessions: true` 且抽样选中该会话的评分器，与 `auto` 下 `teamai-finished-sessions` 选中的相同 |
 | | `off` 或 `auto` | `[]` |
-| | `judge: driver`，且某评分器要求 `verified` 隔离 | 不提议该评分器，`why` 说明是哪个文件要求的 |
 | `publish`、`scorers` | teamai 不读取其会话的工具 | `false`、`[]` |
-| `judge` | 本机装有 teamai 能运行的评审工具（claude、codex、opencode、codebuddy） | `here` |
-| | 没有，例如只装了 Cursor 的机器 | `driver` |
 | `session`、`source` | describe 找不到 agent 会话 | 不提议：由本人给出 |
 
 启动前，本人可以保留、修改或清空每个值。几个例子：
 
 ```text
 # 一次很长的调试会话结束，摩擦提醒触发。Claude Code，默认策略
-agent   proposes teamai-share-learnings {"session":"7c1e…","source":"claude-code","publish":true,"scorers":[],"judge":"here"}
+agent   proposes teamai-share-learnings {"session":"7c1e…","source":"claude-code","publish":true,"scorers":[]}
 person  go ahead
 agent   learning   → two learnings the person picked:
                      "Delay the payments readiness probe until the cache warms"   (namespace payments)
@@ -1209,7 +1205,7 @@ agent   starts teamai-share-session {…,"publish":true,"scorers":[]}  → publi
 
 # 机器上只有 Cursor，加一个抽样没选中的评分器
 person  score this session with style
-agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[],"judge":"driver"}
+agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[]}
 person  add style
 agent   starts with "scorers":["style"] → score: a fresh subagent judges style, best-effort
 
@@ -1254,8 +1250,8 @@ cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/t
 
 | 你的 `workflows/teamai-share-learnings.yaml` | describe 提议 |
 |---|---|
-| 五个输入不变，步骤或提示词不同 | 全部五个 |
-| 新增 `ticket: string` | 那五个；`ticket` 由本人给出 |
+| 四个输入不变，步骤或提示词不同 | 全部四个 |
+| 新增 `ticket: string` | 那四个；`ticket` 由本人给出 |
 | 只保留 `session` 和 `source` | 这两个 |
 | 把 `session` 改名为 `sessionId`，或把 `scorers` 改为 `string` | 除它之外的全部 |
 | 设置 `invoke: deny` | 不提议：摩擦提醒恢复为 `teamai skill get share` |
@@ -1263,7 +1259,7 @@ cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/t
 在会话处理的工单上为每条分享的经验留言：保留默认工作流，加一个输入，
 
 ```yaml
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, ticket: string }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], ticket: string }
 ```
 
 再在 `contribute` 之后加一个步骤：

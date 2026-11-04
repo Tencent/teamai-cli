@@ -2,9 +2,8 @@ schemaVersion: v1alpha1
 name: teamai-share-session
 description: Share this session with the team - publish its transcript, scrubbed, and score it with the team's scorers. Use when the person asks to publish or archive the session, or to score or judge it.
 invoke: ask
-# judge is accepted and ignored for one release: teamai-share-learnings and team files still pass it.
 # demand: named when a person or an agent asks for this session, auto from a background pass, which samples it.
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, demand: auto | named }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], demand: auto | named }
 steps:
   - id: publish
     if: inputs.publish

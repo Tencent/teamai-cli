@@ -1105,7 +1105,7 @@ For one name, the first runnable version wins: the project's team file, then the
 
 The exception is a name that two namespaces you receive both define: it has no runnable version, and a start of it is refused with `workflow_namespace_conflict`, naming both files.
 
-`teamai-share-learnings` runs `teamai-share-session` with its six inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same six with the same types, even the ones it ignores:
+`teamai-share-learnings` runs `teamai-share-session` with its five inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same five with the same types, even the ones it ignores:
 
 ```yaml
 schemaVersion: v1alpha1
@@ -1113,7 +1113,7 @@ name: teamai-share-session
 alias: wrap-up
 description: Publish this session our way.
 invoke: ask
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, demand: auto | named }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], demand: auto | named }
 steps:
   - id: archive
     command: ./scripts/archive-session.sh "$SESSION"
@@ -1129,9 +1129,9 @@ With other inputs, such as only `session` and `source`, or one of another type, 
 ⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "teamai-share-session" declares as another type than teamai's default teamai-share-session
 ```
 
-An enum's values may come in any order: `judge: driver | here` is the same type as `here | driver`.
+An enum's values may come in any order: `demand: named | auto` is the same type as `auto | named`.
 
-Keep the six inputs, or replace `teamai-share-learnings` too.
+Keep the five inputs, or replace `teamai-share-learnings` too.
 
 A team workflow that runs `teamai-share-session` as a step passes `demand`: `named` when a person or an agent asks for the session, so every scorer judges it, `auto` from `teamai-finished-sessions`, which samples it. Pull refuses one that does not:
 
@@ -1147,7 +1147,7 @@ A team workflow that runs `teamai-share-session` as a step passes `demand`: `nam
 
 ```text
 teamai-share-learnings
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+inputs: { session: string, source: string, publish: boolean, scorers: [string] }
 
 learning         interactive: the session's agent runs `teamai skill get share` with the person
                  → { learnings: [{ title, file, namespace }, …] }, [] when nothing is worth sharing
@@ -1157,7 +1157,7 @@ share-session    runs teamai-share-session with the same inputs and demand: name
   publish        on publish: true only
                  → teamai session push --scrub --session <session> --source <source>
   score          when scorers is not empty → runs teamai-score on the session, for at most 30 minutes
-                 (timeout: 30m, continue_on_failure: true); judge is accepted and ignored
+                 (timeout: 30m, continue_on_failure: true)
 ```
 
 `learning` and `share-session` do not wait for each other. `scorers: []` runs no judge. Each `teamai contribute` records its learning as an outcome of the session, so a session that shared three learnings shows all three in the dashboard. The files are `workflows/teamai-share-learnings.yaml` and `workflows/teamai-share-session.yaml` in the installed package.
@@ -1170,7 +1170,6 @@ The agent runs describe, which proposes a `value` and a `why` for each input, fo
 | `source` | `"claude-code"` | This session's tool, as teamai session list names it. |
 | `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. It publishes once the run starts, with no other approval. Set it false to skip publishing. |
 | `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
-| `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
 | `demand` | `"named"` | This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as teamai-finished-sessions does. |
 
 An agent that starts the run with `--confirmed` can keep `publish: true` for you, and teamai cannot check that you chose it.
@@ -1183,17 +1182,14 @@ The proposal follows the team's [publish policy](sharing.md#sessions) and [scori
 | | `off`; or `auto`, which publishes the session once it has been idle 6 hours anyway | `false` |
 | `scorers` | attended scoring policy `ask` | the scorers with `sessions: true` that sample this session, the same ones `teamai-finished-sessions` picks under `auto` |
 | | `off` or `auto` | `[]` |
-| | `judge: driver`, and a scorer that requires `verified` isolation | that scorer is left out, and `why` names the file that asks for it |
 | `publish`, `scorers` | a tool teamai reads no sessions from | `false`, `[]` |
-| `judge` | a judge tool teamai runs is installed (claude, codex, opencode, codebuddy) | `here` |
-| | none is, such as on a Cursor-only machine | `driver` |
 | `session`, `source` | describe finds no agent session | no value: the person gives them |
 
 The person keeps, changes or empties each value before the start. Some runs:
 
 ```text
 # A long debugging session ends: the friction reminder fires. Claude Code, default policies
-agent   proposes teamai-share-learnings {"session":"7c1e…","source":"claude-code","publish":true,"scorers":[],"judge":"here"}
+agent   proposes teamai-share-learnings {"session":"7c1e…","source":"claude-code","publish":true,"scorers":[]}
 person  go ahead
 agent   learning   → two learnings the person picked:
                      "Delay the payments readiness probe until the cache warms"   (namespace payments)
@@ -1209,7 +1205,7 @@ agent   starts teamai-share-session {…,"publish":true,"scorers":[]}  → publi
 
 # A Cursor-only machine, with a scorer sampling did not pick
 person  score this session with style
-agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[],"judge":"driver"}
+agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[]}
 person  add style
 agent   starts with "scorers":["style"] → score: a fresh subagent judges style, best-effort
 
@@ -1254,8 +1250,8 @@ describe still proposes values for the inputs that keep their name and type from
 
 | Your `workflows/teamai-share-learnings.yaml` | describe proposes |
 |---|---|
-| The same five inputs, other steps or prompts | all five |
-| Adds `ticket: string` | the five; the person gives `ticket` |
+| The same four inputs, other steps or prompts | all four |
+| Adds `ticket: string` | the four; the person gives `ticket` |
 | Keeps only `session` and `source` | those two |
 | Renames `session` to `sessionId`, or makes `scorers` a `string` | all but that one |
 | Sets `invoke: deny` | nothing: the friction reminder goes back to `teamai skill get share` |
@@ -1263,7 +1259,7 @@ describe still proposes values for the inputs that keep their name and type from
 Comment on the ticket the session worked on, once per shared learning: keep the default, add an input,
 
 ```yaml
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, ticket: string }
+inputs: { session: string, source: string, publish: boolean, scorers: [string], ticket: string }
 ```
 
 and add a step after `contribute`:

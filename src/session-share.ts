@@ -1,13 +1,11 @@
 /**
  * What teamai proposes to share one attended session with its default workflows `teamai-share-learnings` and
- * `teamai-share-session` (#1388): whether to publish the session, which scorers judge it, and who judges. The Stop
+ * `teamai-share-session` (#1388): whether to publish the session, and which scorers judge it. The Stop
  * hook's friction reminder offers `teamai-share-learnings` and records the offer it made from these values, and
  * `workflow start --describe` proposes them, each with why, as the inputs of either workflow.
  */
 import { loadLocalConfigForScope, loadTeamConfig } from './config.js';
 import type { SessionRun } from './launch-context.js';
-import { requiredIsolation, scorerIsolationSource, type IsolationSetting } from './scorers/isolation.js';
-import { installedConfinedTools } from './tool-launch/confined.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
@@ -34,16 +32,12 @@ interface Proposal<T> {
   why: string;
 }
 
-/** Who judges the session: teamai's own judge on this machine, or the session's agent. */
-type Judge = 'here' | 'driver';
-
 /** What teamai proposes for each input of the input contract the share workflows have, for one session. */
 interface SessionShareOffer {
   session: Proposal<string>;
   source: Proposal<string>;
   publish: Proposal<boolean>;
   scorers: Proposal<string[]>;
-  judge: Proposal<Judge>;
   demand: Proposal<'named'>;
 }
 
@@ -73,42 +67,14 @@ function publishProposal(policy: SessionPolicies['attended']): Proposal<boolean>
   }
 }
 
-/** The files that ask a scorer's judge for verified isolation, by the sources `requiredIsolation` names. */
-function filesOf(sources: readonly string[]): string {
-  return listOf(sources.map((source) => source.replace(/ isolation$/, '')));
-}
-
 /**
- * The open scorers of `sampled`, without those whose required isolation is verified when `judge` is the session's
- * agent, which judges only best-effort. `judge` is asked only when a scorer needs verified isolation.
+ * The open scorers of `sampled`. One that asks for verified isolation is proposed too: a driver that offers no verified
+ * judge leaves its run open for one that does.
  */
-function scorersProposal(sampled: readonly SessionScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
-  const verifiedBy = (one: SessionScorer) => {
-    const required = requiredIsolation([...team, { source: scorerIsolationSource(one.scorer, one.pin.relativePath), value: one.definition.isolation }]);
+function scorersProposal(sampled: readonly SessionScorer[]): Proposal<string[]> {
+  if (sampled.length > 0) return { value: sampled.map(({ scorer }) => scorer), why: [SCORERS_WHY, samplingWhy(sampled), '[] skips scoring.'].join(' ') };
 
-    return required.level === 'verified' && judge() === 'driver' ? required.setBy : undefined;
-  };
-
-  const proposed: SessionScorer[] = [];
-  const leftOut = new Map<string, { sources: readonly string[]; scorers: string[] }>();
-
-  for (const one of sampled) {
-    const sources = verifiedBy(one);
-
-    if (sources === undefined) {
-      proposed.push(one);
-      continue;
-    }
-
-    const key = sources.join('\0');
-    leftOut.set(key, { sources, scorers: [...leftOut.get(key)?.scorers ?? [], one.scorer] });
-  }
-
-  const left = [...leftOut.values()].map(leftOutWhy);
-
-  if (proposed.length > 0) return { value: proposed.map(({ scorer }) => scorer), why: [SCORERS_WHY, samplingWhy(proposed), ...left, '[] skips scoring.'].join(' ') };
-
-  return { value: [], why: [SCORERS_WHY, `None proposed: ${left.length > 0 ? left.join(' ') : 'no scorer samples this session.'}`, NAME_ANY].join(' ') };
+  return { value: [], why: [SCORERS_WHY, 'None proposed: no scorer samples this session.', NAME_ANY].join(' ') };
 }
 
 /** That `proposed`, one scorer or more, sample this session, with their sampling rates. */
@@ -120,49 +86,23 @@ function samplingWhy(proposed: readonly SessionScorer[]): string {
   return `${listOf(proposed.map(({ scorer, definition }) => `${scorer} (samplingRate ${definition.samplingRate})`))} sample this session.`;
 }
 
-/** That `scorers` are left out for the session's agent, because the files of `sources` ask for verified isolation. */
-function leftOutWhy({ sources, scorers }: { sources: readonly string[]; scorers: readonly string[] }): string {
-  return `${listOf(scorers)} ${scorers.length > 1 ? 'are' : 'is'} left out: ${filesOf(sources)} ${sources.length > 1 ? 'ask' : 'asks'} for verified isolation, which this session's agent cannot give.`;
-}
-
-/** How the offer finds the judge tools installed here: asked once, and only when needed, since each tool missing costs shell lookups. */
-type JudgeTools = () => readonly string[];
-
 interface OfferOptions {
   now?: string;
-  judgeTools?: JudgeTools;
 }
 
 /**
- * What teamai proposes to share session `sessionId` of `tool` in this scope at `now`, with the judge left to compute:
- * publishing while the attended publish policy is `ask`, the open scorers that sample it while the attended scoring
- * policy is `ask`, and teamai's own judge when one of `judgeTools` is installed here, else the session's agent. A tool
+ * What teamai proposes to share session `sessionId` of `tool` in this scope at `now`: publishing while the attended
+ * publish policy is `ask`, and the open scorers that sample it while the attended scoring policy is `ask`. A tool
  * teamai reads no sessions from gets neither publishing nor scorers, since `session push` and `score` cannot read its
  * session.
  */
-async function propose(
-  config: LocalConfig,
-  { tool, sessionId }: { tool: string; sessionId: string },
-  { now = new Date().toISOString(), judgeTools = () => installedConfinedTools([]) }: OfferOptions,
-): Promise<Omit<SessionShareOffer, 'judge' | 'demand'> & { judge: () => Proposal<Judge> }> {
-  let found: Proposal<Judge> | undefined;
-
-  const judge = (): Proposal<Judge> => {
-    if (found) return found;
-    const [installed] = judgeTools();
-    found = installed
-      ? { value: 'here', why: `${installed} is installed here, so teamai's own judge scores it.` }
-      : { value: 'driver', why: 'No judge tool teamai runs is installed here, so this session\'s agent judges, best-effort.' };
-
-    return found;
-  };
-
+async function propose(config: LocalConfig, { tool, sessionId }: { tool: string; sessionId: string }, { now = new Date().toISOString() }: OfferOptions): Promise<Omit<SessionShareOffer, 'demand'>> {
   const platform = AgentSession.platformForTool(tool);
   const session = { value: sessionId, why: 'The session to share: this one.' };
 
   if (platform === undefined) {
     return {
-      session, source: { value: tool, why: 'This session\'s tool.' }, judge,
+      session, source: { value: tool, why: 'This session\'s tool.' },
       publish: { value: false, why: `${PUBLISH_WHY} Not proposed: teamai reads no sessions from ${tool}.` },
       scorers: { value: [], why: `${SCORERS_WHY} None proposed: teamai reads no sessions from ${tool}.` },
     };
@@ -172,20 +112,20 @@ async function propose(
   const publish = publishProposal(SessionPolicy.publish(config, team).policies.attended);
   const source = { value: platform, why: 'This session\'s tool, as teamai session list names it.' };
 
-  if (!scoring.ok) return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: ${scoring.reason} ${NAME_ANY}` } };
+  if (!scoring.ok) return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: ${scoring.reason} ${NAME_ANY}` } };
   const policy = scoring.sessions.policies.attended;
 
   switch (policy.policy) {
     case 'ask': {
       const sampled = await SessionWork.sampledScorers(config, { platform, sessionId }, markFacts(config, now));
 
-      return { session, source, publish, judge, scorers: scorersProposal(sampled, { judge: () => judge().value, team: scoring.isolation }) };
+      return { session, source, publish, scorers: scorersProposal(sampled) };
     }
 
     case 'off':
-      return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${SessionPolicy.setBy(policy.source)}) is off. ${NAME_ANY}` } };
+      return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${SessionPolicy.setBy(policy.source)}) is off. ${NAME_ANY}` } };
     case 'auto':
-      return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle 6 hours. ${NAME_ANY}` } };
+      return { session, source, publish, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle 6 hours. ${NAME_ANY}` } };
     default: {
       const unhandled: never = policy.policy;
 
@@ -198,7 +138,7 @@ async function propose(
 async function offer(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<SessionShareOffer> {
   const proposed = await propose(config, session, options);
 
-  return { ...proposed, judge: proposed.judge(), demand: DEMAND };
+  return { ...proposed, demand: DEMAND };
 }
 
 /**
@@ -207,8 +147,7 @@ async function offer(config: LocalConfig, session: { tool: string; sessionId: st
  * a session teamai launched, one that runs unattended, one in a workflow place, where no start is allowed, one that
  * drives a skill-driven run not done yet in this machine's data homes, its own share run included, and where teamai-share-learnings resolves to no
  * definition, to one whose `invoke` is deny, or to one that cannot start, such as with a team teamai-share-session of
- * other inputs. The values are those of the scope a start would run in. It looks for
- * judge tools only when a sampled scorer needs verified isolation.
+ * other inputs. The values are those of the scope a start would run in.
  */
 async function reminderOffer(
   config: LocalConfig,
@@ -243,7 +182,6 @@ const CONTRACT = {
   source: { type: 'string' },
   publish: { type: 'boolean' },
   scorers: { type: 'array', items: { type: 'string' } },
-  judge: { type: 'enum', values: ['here', 'driver'] },
   demand: { type: 'enum', values: ['auto', 'named'] },
 } as const satisfies Record<keyof SessionShareOffer, OutputSchema>;
 

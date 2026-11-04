@@ -76,6 +76,20 @@ export interface ConfinedJudge {
   level: ConfinedLevel;
 }
 
+/**
+ * The confined runs this driver offers a run the session's `tool` drives, as describe and resume judge it: the
+ * background runner's at `verified` when that tool's confined judge verifies here, else a fresh child's in that tool at
+ * `best-effort`; none when the session names no tool.
+ */
+export async function sessionOffers(tool: string | undefined): Promise<NonNullable<DriverCan['confined']>> {
+  if (tool === undefined) return [];
+  const judge = await sessionToolJudge(tool);
+
+  return judge?.level === 'verified' && isConfinedTool(judge.tool)
+    ? [{ level: 'verified', access: confinedAccess(judge.tool), tools: [judge.tool] }]
+    : [{ level: 'best-effort', access: 'read', tools: [tool] }];
+}
+
 /** The confined judge of the session's `tool` on this machine: a tool teamai runs confined whose executable is on PATH. */
 export async function sessionToolJudge(tool: string | undefined): Promise<ConfinedJudge | undefined> {
   if (tool === undefined || !isConfinedTool(tool)) return undefined;

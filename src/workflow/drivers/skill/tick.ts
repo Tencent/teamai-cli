@@ -11,7 +11,7 @@ import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
-import { canFor, confinedCan, HOST_PROFILES, sessionToolJudge, type ConfinedJudge, type HostChoice } from './host-profiles.js';
+import { canFor, confinedCan, HOST_PROFILES, sessionOffers, sessionToolJudge, type ConfinedJudge, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
@@ -379,7 +379,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
 
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
-      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined), tool: context.tool,
+      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: { ...canFor(undefined), confined: await sessionOffers(context.tool) }, tool: context.tool,
     });
 
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;

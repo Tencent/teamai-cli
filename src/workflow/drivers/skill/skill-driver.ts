@@ -19,7 +19,7 @@ import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attemp
 import { inProcessClient, invokeDeniedMessage, type ResumeClaim, type WorkflowClient } from '../../protocol.js';
 import type { WorkflowFailure } from '../../types.js';
 import { AttemptIdSchema, RunIdSchema, runsDir, takeRunLock, type AttemptId, type LockTaken, type RunId, type RunLock } from '../../store.js';
-import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
+import { canFor, HOST_CHOICES, sessionOffers, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
 import { askFor, attendedReason, ceilingOf, checkStartAnswers, localPromptTool, localReason, neededAnswers, needsTool, type HitlMode } from './preflight.js';
@@ -463,7 +463,7 @@ const ANSWERABLE_START_REFUSALS: ReadonlySet<string> = new Set(['invalid_inputs'
 
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
-  const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, tool: context.tool });
+  const described = await context.client.describe(call.name, { ceiling, can: { ...canFor(undefined), confined: await sessionOffers(context.tool) }, checkout: context.cwd, tool: context.tool });
 
   if ('error' in described) return { error: { ...described.error, next: null } };
   const { description, judging, undeliverable } = described;

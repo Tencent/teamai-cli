@@ -20,7 +20,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const CLI = path.join(ROOT, 'dist', 'index.js');
 const SESSION = '7c1e0000-0000-4000-8000-000000001388';
 const TITLES = ['Retry the pod readiness probe', 'pnpm needs --frozen-lockfile in CI'];
-const SHARE_INPUTS = { session: SESSION, source: 'claude-code', publish: false, scorers: [], judge: 'driver' };
+const SHARE_INPUTS = { session: SESSION, source: 'claude-code', publish: false, scorers: [] };
 
 const EnvelopeSchema = z.object({ data: z.record(z.string(), z.unknown()).optional(), error: z.object({ code: z.string(), message: z.string() }).optional() });
 const DescribeSchema = z.object({ describe: z.object({ ask: z.object({ question: z.object({ options: z.array(z.object({ start: z.string() })).nonempty() }) }) }) });

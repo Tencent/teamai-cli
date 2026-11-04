@@ -50,7 +50,6 @@ describe('describe of teamai-share-learnings and teamai-share-session', () => {
         name: 'scorers', type: { type: 'array', items: { type: 'string' } }, value: [],
         why: 'Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it.',
       },
-      { name: 'judge', type: { type: 'enum', values: ['here', 'driver'] }, value: expect.stringMatching(/^(here|driver)$/), why: expect.stringMatching(/judge/) },
     ]);
   });
 
@@ -60,18 +59,16 @@ describe('describe of teamai-share-learnings and teamai-share-session', () => {
       { name: 'source', type: { type: 'string' }, why: 'No agent session found: give the session and its tool.' },
       { name: 'publish', type: { type: 'boolean' } },
       { name: 'scorers', type: { type: 'array', items: { type: 'string' } } },
-      { name: 'judge', type: { type: 'enum', values: ['here', 'driver'] } },
     ]);
   });
 
   it('fills the contract inputs a team override keeps by name and type, and leaves the others to the person', async () => {
-    const inputs = await proposedInputs({ 'teamai-share-learnings': override('sessionId: string, source: string, scorers: string, judge: driver | here, ticket: string') });
+    const inputs = await proposedInputs({ 'teamai-share-learnings': override('sessionId: string, source: string, scorers: string, ticket: string') });
 
     expect(inputs).toEqual([
       { name: 'sessionId', type: { type: 'string' } },
       { name: 'source', type: { type: 'string' }, value: 'claude-code', why: 'This session\'s tool, as teamai session list names it.' },
       { name: 'scorers', type: { type: 'string' } },
-      { name: 'judge', type: { type: 'enum', values: ['driver', 'here'] }, value: expect.stringMatching(/^(here|driver)$/), why: expect.any(String) },
       { name: 'ticket', type: { type: 'string' } },
     ]);
   });

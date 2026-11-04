@@ -174,7 +174,7 @@ steps:
     onTestFinished(() => fs.rmSync(harness.root, { recursive: true, force: true }));
     const started = await harness.call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: undefined }, { session: SESSION });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
-    const offerTo = (sessionId: string) => SessionShare.reminderOffer(harness.config, { tool: 'claude', sessionId, cwd: harness.work, run: { runMode: 'attended' } }, { judgeTools: () => [] });
+    const offerTo = (sessionId: string) => SessionShare.reminderOffer(harness.config, { tool: 'claude', sessionId, cwd: harness.work, run: { runMode: 'attended' } });
 
     expect(await offerTo(SESSION)).toBeUndefined();
     expect(await offerTo('another-session')).toEqual({ publish: true, scorers: [] });
@@ -203,7 +203,7 @@ steps:
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
     const inProject: LocalConfig = { ...user, scope: 'project', projectRoot: project, dataHome: path.join(project, '.teamai') };
 
-    expect(await SessionShare.reminderOffer(inProject, { tool: 'claude', sessionId: SESSION, cwd: project, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
+    expect(await SessionShare.reminderOffer(inProject, { tool: 'claude', sessionId: SESSION, cwd: project, run: { runMode: 'attended' } })).toBeUndefined();
   });
 
   it('is nothing outside any project while the session drives a run of a project on this machine', async () => {
@@ -224,6 +224,6 @@ steps:
     const started = await harness.call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: undefined }, { session: SESSION });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
 
-    expect(await SessionShare.reminderOffer(user, { tool: 'claude', sessionId: SESSION, cwd: home, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
+    expect(await SessionShare.reminderOffer(user, { tool: 'claude', sessionId: SESSION, cwd: home, run: { runMode: 'attended' } })).toBeUndefined();
   });
 });
