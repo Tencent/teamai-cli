@@ -91,20 +91,15 @@ function samples(pins: Readonly<Record<string, PinnedScorer>>, name: string, sub
   return definition !== undefined && (all || isSampled(name, subject, definition.samplingRate));
 }
 
-/**
- * Whether `score subjects --lapsed` takes a pass: not one the engine judges itself (`sampling: all` without `start:
- * workflow`), and of an ended run or one whose teamai-score run the scoring module started.
- */
-async function isLeftToLapsed(config: LocalConfig, pass: { all: boolean; start: string | undefined; ended: boolean; subject: RunSubject }): Promise<boolean> {
-  if (pass.all && pass.start !== 'workflow') return false;
-
+/** Whether `score subjects --lapsed` takes a pass: of an ended run or one whose teamai-score run the scoring module started. */
+async function isLeftToLapsed(config: LocalConfig, pass: { ended: boolean; subject: RunSubject }): Promise<boolean> {
   return pass.ended || PassScoring.started(config, pass.subject);
 }
 
 /**
  * The passes of `run` that no teamai-score run planned, for a scorer that samples them: a pass whose scoring the scoring
  * module started but whose run never planned it, and, once `run` ended, any other pass, such as one of a `start:
- * workflow` step that no step of its workflow scored. A pass the engine judges itself (`sampling: all`) is left to it.
+ * workflow` step that no step of its workflow scored.
  */
 async function unplannedOf(config: LocalConfig, run: RunState, install: string, facts: MarkFacts): Promise<LapsedSubject[]> {
   const definitionOf = stepDefinitions(run);
@@ -118,7 +113,7 @@ async function unplannedOf(config: LocalConfig, run: RunState, install: string, 
     const own = definitionOf(subject.step)?.scorers;
     const all = own?.sampling === 'all';
 
-    if (!await isLeftToLapsed(config, { all, start: own?.start, ended, subject })) continue;
+    if (!await isLeftToLapsed(config, { ended, subject })) continue;
     const states = await Marks.states(config, scorers.map((scorer) => ({ scorer, subject: { kind: 'run' as const, subject } })), facts);
     const unmarked = scorers.filter((_, at) => states[at]?.kind === 'unmarked');
 

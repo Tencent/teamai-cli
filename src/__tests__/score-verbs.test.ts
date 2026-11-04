@@ -1208,6 +1208,16 @@ describe('score subjects', () => {
     expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject: `run:${runId}:review:1`, scorers: ['quality', 'coverage'] }] } });
   });
 
+  it('lists a pass of a step that samples all whose teamai-score run the scoring module started and nothing planned', async () => {
+    const config = await team({ review: `${REVIEW.replace('scorers: [quality, coverage]', 'scorers: { names: [quality], sampling: all }')}  - id: later\n    needs: [review]\n    prompt: Do the rest.\n` }, { quality: scorer({ rate: 0 }) });
+    const runId = await reviewedRun(config);
+    const secrets = await knownSecrets(config);
+    const started = await PassScoring.start(config, runId, { client: { start: (name, options) => startRun(config, name, options.inputs, { secrets, startedBy: 'cli' }) }, mode: 'attended' });
+
+    expect(started.runs).toHaveLength(1);
+    expect(await ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW })).toEqual({ ok: true, output: { list: [{ subject: `run:${runId}:review:1`, scorers: ['quality'] }] } });
+  });
+
   it('lists a start: workflow pass with no scoring step only once its run ended, and not past the run\'s 14 days', async () => {
     const config = await team({ own: REVIEW.replace('name: review', 'name: own').replace('scorers: [quality, coverage]', 'scorers: { names: [quality], start: workflow }') }, { quality: scorer() });
     const ownRun = String(data(await startRun(config, 'own', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
