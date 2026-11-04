@@ -48,8 +48,8 @@ const SKILL_IMPORTS = {
   // skill-data root the host question's reference is under.
   'src/tools.ts': { names: ['isToolId', 'TOOLS', 'isAgentToolId', 'ToolId'] },
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
-  // The confined tools of this machine, what each can do there, and the confined run the background runner starts.
-  'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess'] },
+  // The confined tools of this machine, what each can do there, and the level the session's tool reaches here.
+  'src/tool-launch/confined.ts': { names: ['isConfinedTool', 'confinedAccess', 'confinedToolLevel'] },
   // The level a confined run reaches and what its tool can do there.
   'src/tool-launch/confined-level.ts': { typeOnly: true },
   // What describe proposes for the inputs of teamai's default share workflows, for the calling session.

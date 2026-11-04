@@ -1,5 +1,6 @@
 /** The host question the agent answers once per run with prompt steps, and what the skill driver declares on every `next`. */
-import { confinedAccess, isConfinedTool } from '../../../tool-launch/confined.js';
+import { confinedAccess, confinedToolLevel, isConfinedTool } from '../../../tool-launch/confined.js';
+import type { ConfinedLevel } from '../../../tool-launch/confined-level.js';
 import type { DriverCan } from '../../requirements.js';
 import type { SkillState } from './skill-state.js';
 
@@ -55,17 +56,30 @@ export function canFor(host: HostChoice | undefined): Required<DriverCan> {
 }
 
 /**
- * The confined runs the skill driver offers on `next`: the session tool's own at `verified` while this machine judges
- * the run with it, which the background runner starts; else a fresh child in the run's tool at `best-effort` while the
- * session judges the run; else none, as after `--no-judge`, under `h4`, or once judging is off. A child reads its
- * directory and nothing more.
+ * The confined runs the skill driver offers on `next`: the session tool's own at the level this machine judges the run
+ * with it, which the background runner starts; else a fresh child in the run's tool at `best-effort` while the session
+ * judges the run; else none, as after `--no-judge`, or once judging is off. A child reads its directory and nothing more.
  */
 export function confinedCan(state: Pick<SkillState, 'judging' | 'sessionJudge' | 'orchestrator'>): NonNullable<DriverCan['confined']> {
   if (state.judging) {
-    const { tool } = state.judging;
+    const { tool, level } = state.judging;
 
-    return [{ level: 'verified', access: isConfinedTool(tool) ? confinedAccess(tool) : 'full', tools: [tool] }];
+    return [{ level, access: isConfinedTool(tool) ? confinedAccess(tool) : 'full', tools: [tool] }];
   }
 
   return state.sessionJudge ? [{ level: 'best-effort', access: 'read', tools: [state.orchestrator.tool ?? state.sessionJudge.tool] }] : [];
+}
+
+/** A tool this machine runs confined, and the level it reaches here. */
+export interface ConfinedJudge {
+  tool: string;
+  level: ConfinedLevel;
+}
+
+/** The confined judge of the session's `tool` on this machine: a tool teamai runs confined whose executable is on PATH. */
+export async function sessionToolJudge(tool: string | undefined): Promise<ConfinedJudge | undefined> {
+  if (tool === undefined || !isConfinedTool(tool)) return undefined;
+  const probed = await confinedToolLevel(tool);
+
+  return probed && { tool, level: probed.isolation };
 }

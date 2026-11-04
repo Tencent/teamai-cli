@@ -191,8 +191,12 @@ const SkillStateSchema = z.object({
    */
   orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine(isToolId).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
-  /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
-  judging: z.object({ tool: z.string() }).optional(),
+  /**
+   * Present while this driver judges the run's scored steps with the confined judge of `tool`, which the background
+   * runner starts, at `level`: `verified`, or `best-effort` on a host that starts no child agent. A state from before
+   * the level was kept judged at `verified`.
+   */
+  judging: z.object({ tool: z.string(), level: ConfinedRunReportSchema.shape.isolation.default('verified') }).optional(),
   /**
    * Present when the session itself judges the run's scored steps once the run is done, as no verified judge of `tool`,
    * the session's tool at the start, is here. The session judges with the run's tool, `orchestrator.tool`, else `tool`.
@@ -258,7 +262,7 @@ export function scoringSkillState(scored: SkillState, run: RunId, at: string): S
     version: 1, run, driver, invocation, options, host, orchestrator: { ...orchestrator, lastCallAt: at }, attempts: [], scoring: [], scores: scored.run, seq: 0, events: [], seen: {}, settled: [],
   };
 
-  if (judging) state.judging = { tool: judging.tool };
+  if (judging) state.judging = { tool: judging.tool, level: judging.level };
 
   if (sessionJudge) state.sessionJudge = sessionJudge;
 
@@ -271,7 +275,7 @@ function judgingState(judge: JudgedBy | undefined): Pick<SkillState, 'judging' |
 
   switch (judge.kind) {
     case 'here':
-      return { judging: { tool: judge.tool } };
+      return { judging: { tool: judge.tool, level: 'verified' } };
     case 'session':
       return { sessionJudge: { tool: judge.tool } };
     default: {

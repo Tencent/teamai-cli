@@ -15,7 +15,7 @@ import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
 import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
-import type { HostChoice, HostProfile } from './host-profiles.js';
+import type { ConfinedJudge, HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
 import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
@@ -54,7 +54,7 @@ export const TRANSITIONS = [
   { id: 'R24', state: 'any', input: 'R19\'s input, or `next --takeover` with skill.json here', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what in the run\'s own definition needs a person, as R17\'s, for a run still running (one that ended needs nobody to ready it as it ended); read before the claim or the takeover, from the published run a `--claim` would install, else this machine\'s copy, so R20 and R21 come after it', effects: 'none', next: 'unchanged', action: 'error `unattended_denied` with that reason, next null; the run and its skill state stay as they were: nothing is claimed or taken over' },
   { id: 'R26', state: 'any', input: 'R24\'s input, with skill.json here that R19 does not replace', guard: 'run mode `unattended`, R8 and R24 do not apply, and the skill.json\'s run mode is `attended`', effects: 'its run mode becomes `unattended`, and its HITL mode that of `--hitl` or `--auto-approve`, else `auto-approve`', next: 'unchanged', action: 'the S row of the call' },
   { id: 'R12', state: 'host', input: 'tick', guard: '', effects: 'none', next: 'host', action: '`choose about:host decide:agent`' },
-  { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`, or `none` for a run without a prompt step, which asked it only for its judge; on `h4`, which starts no child agent, drop `sessionJudge`', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
+  { id: 'R13', state: 'host', input: 'next `--choice h`', guard: '', effects: 'host := `HOST_PROFILES[h]`, or `none` for a run without a prompt step, which asked it only for its judge; on `h4`, which starts no child agent, `sessionJudge` becomes `judging` at `best-effort` when the session\'s tool runs confined here (`sessionToolJudge`), else is dropped', next: 'drive', action: 'the turn of a tick, with event `judging-off` `no_child_agent` when it dropped `sessionJudge`' },
   { id: 'R14', state: 'host', input: 'report, next `--ack` or `--adopt`', guard: '', effects: 'none', next: 'host', action: 'error `choice_pending`, next: the next literal' },
   { id: 'R15', state: 'drive, done', input: 'next `--choice h`', guard: '', effects: 'none', next: 'unchanged', action: 'error `unknown_choice`, next: the next literal' },
   { id: 'S1', state: 'host, drive, done', input: 'an agent call from session s', guard: 'the owner is s, or either session is unknown', effects: '`lastCallAt` := now; the tool := the one the call declares with `--tools`; else owner := s, working in s\'s tool, when unknown; else the tool := s\'s when the run has none and s is its owner or neither is known', next: 'unchanged', action: 'the input\'s row' },
@@ -62,7 +62,7 @@ export const TRANSITIONS = [
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`, except a confined one whose dispatch names another tool than s works in, which write-ahead `released`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at `verified` while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at the level `judging` keeps while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued or placing', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
   { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
@@ -671,8 +671,11 @@ export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillS
   return { row: 'J9', state: withEvent(judged, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } }) };
 }
 
-/** R13: the agent's answer to the host question; R15 when the run asks none now. */
-export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile }): Moved<'R13'> | Answered<'R15'> {
+/**
+ * R13: the agent's answer to the host question; R15 when the run asks none now. `judge`: the confined judge of the
+ * session's tool on this machine, which judges the run in the background on a host that starts no child agent.
+ */
+export function chooseRow(state: SkillState, input: { choice: HostChoice; profile: HostProfile; judge?: ConfinedJudge }): Moved<'R13'> | Answered<'R15'> {
   if (state.host.kind !== 'pending') return { row: 'R15', answer: { kind: 'error', refusal: { code: 'unknown_choice', run: state.run } } };
 
   // A run without a prompt step asked only for its judge, so its commands run as on any host.
@@ -680,11 +683,16 @@ export function chooseRow(state: SkillState, input: { choice: HostChoice; profil
     ...state, host: state.host.hasPromptStep ? { kind: 'chosen', id: input.choice, children: input.profile.children, places: input.profile.places } : { kind: 'none' },
   };
 
-  // The session judges in a fresh subagent, which a host that starts no child agent cannot give it.
+  // The session judges in a fresh subagent, which a host that starts no child agent cannot give it: the background
+  // runner judges instead, at best-effort, when the session's tool runs confined here.
   if (input.choice !== 'h4' || chosen.sessionJudge === undefined) return { row: 'R13', state: chosen };
-  const { sessionJudge: _sessionJudge, ...rest } = chosen;
+  const { sessionJudge, ...rest } = chosen;
 
-  return { row: 'R13', state: withEvent(rest, { kind: 'judging-off', failure: { code: 'no_child_agent', message: 'This host starts no child agent, so this session does not judge the run: another driver judges its scored steps.' } }) };
+  if (input.judge) return { row: 'R13', state: { ...rest, judging: { tool: input.judge.tool, level: 'best-effort' } } };
+  const tool = chosen.orchestrator.tool ?? sessionJudge.tool;
+  const message = `This host starts no child agent, and ${tool} does not run confined on this machine, so this session does not judge the run: a driver that offers a confined judge, such as the local driver where a judge tool is installed, judges its scored steps.`;
+
+  return { row: 'R13', state: withEvent(rest, { kind: 'judging-off', failure: { code: 'no_child_agent', message } }) };
 }
 
 /** K1 to K3: the ack of the dispatch of `attempt`; R14 while the host question waits. */

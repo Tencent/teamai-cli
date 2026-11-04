@@ -11,7 +11,7 @@ import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
 import { engineReply, reportReply, respondReply, startedOf } from './engine-replies.js';
-import { canFor, confinedCan, HOST_PROFILES, type HostChoice } from './host-profiles.js';
+import { canFor, confinedCan, HOST_PROFILES, sessionToolJudge, type ConfinedJudge, type HostChoice } from './host-profiles.js';
 import { writeJob } from './job.js';
 import {
   ackLiteral, adoptLiteral, chooseHostLiteral, nextLiteral, pollLiteral, reportLiteral, respondLiteral, resumeLiteral, skillResumeLiteral, skillResumeNextLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
@@ -516,7 +516,7 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
     case 'resume':
       return undefined;
     case 'choose':
-      return chooseRow(state, { choice: call.choice, profile: HOST_PROFILES[call.choice] });
+      return chooseRow(state, { choice: call.choice, profile: HOST_PROFILES[call.choice], judge: await sessionJudgeOn(state, call.choice) });
     case 'ack':
       return ackRow(state, call.attempt);
     case 'adopt':
@@ -533,6 +533,11 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
       return unhandled;
     }
   }
+}
+
+/** The confined judge of the session's tool, probed only when `choice` is a host that starts no child agent for a session judge. */
+async function sessionJudgeOn(state: SkillState, choice: HostChoice): Promise<ConfinedJudge | undefined> {
+  return choice === 'h4' && state.sessionJudge ? sessionToolJudge(state.orchestrator.tool ?? state.sessionJudge.tool) : undefined;
 }
 
 /**

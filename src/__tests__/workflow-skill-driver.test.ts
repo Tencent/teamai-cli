@@ -1171,12 +1171,24 @@ steps:
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
-  it('a session whose host has no child agent does not judge its run: choosing h4 turns judging off', async () => {
+  it('a session whose host has no child agent judges its run in the background, at best-effort, on its tool on PATH', async () => {
+    const scoring: { label?: RunId } = {};
+    const harness = await skillHarness({ review: REVIEW, 'label-pass': LABEL_PASS('best-effort') }, { scorers: { 'review-quality': REVIEW_QUALITY }, client: scoringStarted(scoring) });
+    roots.push(harness.root);
+    fakeConfinedClaude(harness.root, { label: 'thorough' }, { version: '0.0.1' });
+    const { run, chosen } = await reviewed(harness, 'attended', { host: 'h4' });
+    expect(JSON.stringify(chosen)).not.toContain('judging-off');
+    expect(await eventsUntil(harness, run, 'judged')).toContainEqual({ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' });
+    const judged = scoring.label === undefined ? undefined : await readRun(harness.config, scoring.label);
+    expect(typeof judged === 'object' && judged.steps.find((step) => step.id === 'score[0].judge')).toMatchObject({ confined: { tool: 'claude', isolation: 'best-effort' } });
+  });
+
+  it('a session whose host has no child agent, and whose tool is not on PATH, does not judge its run: choosing h4 turns judging off', async () => {
     const harness = await skillHarness({ review: REVIEW }, { scorers: { 'review-quality': REVIEW_QUALITY } });
     roots.push(harness.root);
-    unverifiedClaude(harness);
+    vi.stubEnv('PATH', path.join(harness.root, 'empty-bin'));
     const { chosen, turn: done } = await reviewed(harness, 'attended', { host: 'h4' });
-    expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.any(String) } }]) } } });
+    expect(chosen).toMatchObject({ data: { turn: { events: expect.arrayContaining([{ kind: 'judging-off', failure: { code: 'no_child_agent', message: expect.stringContaining('claude') } }]) } } });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
   });
 
@@ -1185,6 +1197,9 @@ steps:
     const gated = 'schemaVersion: v1alpha1\nname: gated\ndescription: Build, scored\ninvoke: allow\nsteps:\n  - id: built\n    workflow: build\n    scorers: [review-quality]\n';
     const harness = await skillHarness({ build, gated }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: 'pi' });
     roots.push(harness.root);
+    // No pi on PATH, which would judge the run in the background.
+    const withoutPi = (process.env.PATH ?? '').split(path.delimiter).filter((dir) => !['pi', 'pi.cmd', 'pi.exe'].some((name) => fs.existsSync(path.join(dir, name))));
+    vi.stubEnv('PATH', withoutPi.join(path.delimiter));
     const started = await harness.call({ kind: 'start', name: 'gated', answers: { confirmed: false }, inputs: undefined });
     expect(started).toMatchObject({ data: { turn: { actions: [{ kind: 'choose', about: 'host' }] } } });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));

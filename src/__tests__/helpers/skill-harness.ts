@@ -28,14 +28,14 @@ export function untilStopped(stopped: () => void): CommandRun {
 }
 
 /**
- * Puts on PATH a `claude` whose confined profile verifies, and that answers every confined run with `reply`, stating
- * `costUsd` when given, or exits `exitCode` without an answer.
+ * Puts on PATH a `claude` whose confined profile verifies, unless `version` names one whose profile does not, and that
+ * answers every confined run with `reply`, stating `costUsd` when given, or exits `exitCode` without an answer.
  */
-export function fakeConfinedClaude(root: string, reply: unknown, { exitCode = 0, costUsd }: { exitCode?: number; costUsd?: number } = {}): void {
+export function fakeConfinedClaude(root: string, reply: unknown, { exitCode = 0, costUsd, version = '2.1.308' }: { exitCode?: number; costUsd?: number; version?: string } = {}): void {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
-if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+if (process.argv.includes('--version')) { console.log('${version} (Claude Code)'); process.exit(); }
 process.stdin.resume(); process.stdin.on('end', () => {
 if (${exitCode} !== 0) process.exit(${exitCode});
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));

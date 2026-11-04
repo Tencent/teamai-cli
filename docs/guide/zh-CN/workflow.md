@@ -509,7 +509,7 @@ teamai workflow start judge-change --driver local
 - `<dir>` 可以是模板，读取输入、`item` 和该步骤所需步骤的输出。它在步骤被租用时渲染，相对路径位于 `$TEAMAI_RUN_DIR` 下。目录在它之外、是符号链接，或没有可读的 `confined.json` 时，步骤以 `confined_invalid` 失败，并说明怎么修。
 - `confined.json` 是 `{ "level": "verified" | "best-effort", "prefer": "<tool>", "schema": "<file>" }`。`verified` 只在 TeamAI 检查过其受限启动的工具版本上运行，例如 Claude Code 2.1.308、Codex 0.163.0 或 OpenCode 2.1.2；`best-effort` 可在 TeamAI 能受限启动的任何工具上运行，例如 Cursor。`prefer` 最先尝试。`schema` 是该目录里的一个 JSON Schema 文件，回答要符合它。级别由写证据的步骤决定：工作流文件不能设置或降低它。
 - 该步骤只运行一个提示，一次。pull 拒绝把 `workspace: { confined }` 用在命令步骤或 `workflow` 步骤上，也拒绝它与 `for_each`、`scorers`、`requires.env`、`agent`、`tool`、`session`、`role`、`interactive` 或 `deliver` 同时出现。它可以设置 `model`：本机没有一个达到其级别的工具能解析该模型时，步骤保持待处理。
-- 本地 driver 运行它。只剩这类步骤而本机没有工具能运行时，它以 `confined_pending` 停下，并说明缺什么；让那个工具可用后，运行 `teamai workflow resume`。在编程会话中，会话所用工具在本机达到 `verified` 时，skill driver 在后台用它运行该步骤，否则交给只读这个目录的新子 agent，以 `best-effort` 运行。使用 `--no-judge`，或宿主不能启动子 agent 时，该步骤等待其他 driver。
+- 本地 driver 运行它。只剩这类步骤而本机没有工具能运行时，它以 `confined_pending` 停下，并说明缺什么；让那个工具可用后，运行 `teamai workflow resume`。在编程会话中，会话所用工具在本机达到 `verified` 时，skill driver 在后台用它运行该步骤，否则交给只读这个目录的新子 agent，以 `best-effort` 运行。宿主不能启动子 agent 时，若会话所用工具在 PATH 上，它在后台用该工具以 `best-effort` 运行该步骤。使用 `--no-judge`，或在这样的宿主上而该工具不在 PATH 上时，该步骤等待其他 driver。
 - 该步骤记录 `confined`：工具、工具报告的模型和 effort、TeamAI 测得的隔离级别、工具拥有的访问权限，以及用量。记录中的工具不在租约提供的工具里，或隔离级别低于该步骤的级别时，步骤以 `confined_report_mismatch` 失败。
 
 ## 交付 PR
@@ -1058,7 +1058,7 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 ### 评审
 
-当步骤列出[评分器](scorers.md)，且本机安装了会话所用工具的受限评审器时，TeamAI 在后台评审每个被评分的 pass，会话把标签告诉本人。本机没有会话所用工具的已验证评审器时（例如 Cursor），每个 pass 的 teamai-score 运行中的评审步骤交给会话，会话在新的子 agent 中以 `best-effort` 隔离评审它。评分器要求 `verified` 的任务保持打开，留给其他 driver；会话的宿主不能启动子 agent 时，全部任务都这样留下。如果不想在本机评审这些步骤，本人选择不评审的启动选项（`--no-judge`）。负责编排的 agent 从不在自己的上下文中评审。
+当步骤列出[评分器](scorers.md)，且本机安装了会话所用工具的受限评审器时，TeamAI 在后台评审每个被评分的 pass，会话把标签告诉本人。本机没有会话所用工具的已验证评审器时（例如 Cursor），每个 pass 的 teamai-score 运行中的评审步骤交给会话，会话在新的子 agent 中以 `best-effort` 隔离评审它。评分器要求 `verified` 的任务保持打开，留给其他 driver。会话的宿主不能启动子 agent 时，若会话所用工具在 PATH 上，TeamAI 在后台用该工具以 `best-effort` 评审，否则全部任务都保持打开。如果不想在本机评审这些步骤，本人选择不评审的启动选项（`--no-judge`）。负责编排的 agent 从不在自己的上下文中评审。
 
 ### 限制
 
