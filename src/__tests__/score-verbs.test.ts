@@ -1509,6 +1509,23 @@ describe('score label and score write read what the run recorded', () => {
     expect(stored?.judge).not.toHaveProperty('batched');
   });
 
+  it('write records the access the judge\'s confined run reported, not the one its tool\'s profile gives', async () => {
+    const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const { run, evidence, scorers } = await plannedGroup(config, subject, { scorers: ['quality'] });
+    const written = await ScoreVerbs.evidence({ subject, scorers }, evidence.ctx);
+    await run.report(evidence, written);
+    const judge = await run.next('score[0].judge');
+    await run.report(judge, { ok: true, output: { answer: { label: 'good', reasoning: 'ok' } } }, { confined: { ...JUDGED, access: 'answer' } });
+    const label = await run.next('score[0].label');
+    const dir = z.object({ dir: z.string() }).parse(written.ok ? written.output : {}).dir;
+    await run.report(label, await ScoreVerbs.label({ evidence: dir, answer: '{"label":"good","reasoning":"ok"}', judge: 'success' }, label.ctx));
+    await ScoreVerbs.write({ evidence: dir }, (await run.next('score[0].write')).ctx);
+
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', judge: { kind: 'model', tool: 'claude', access: 'answer' } }]);
+  });
+
   it('label gives judge_answer_invalid for an answer that is not JSON', async () => {
     const { label, dir } = await judgedGroup({ label: 'good', reasoning: 'ok' });
 
