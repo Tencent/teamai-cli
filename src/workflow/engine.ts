@@ -67,12 +67,13 @@ import type {
   WorkflowEnvelope,
   AdmittedWorkflow,
   Finalizing,
+  LeasedConfined,
   WorkflowFailure,
   WorkflowStep,
 } from './types.js';
 import { hasAction, onlyPersonAnswers, stepWorkflow } from './types.js';
 import { describeWorkflow } from './describe.js';
-import { CostSchema } from '../tool-launch/confined-level.js';
+import { CONFINED_LEVELS, CostSchema } from '../tool-launch/confined-level.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 
 /**
@@ -2052,6 +2053,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           if (options.runMode) granted.runMode = options.runMode;
 
           if (unenforced.length > 0) granted.unenforced = unenforced;
+
+          if (confined?.kind === 'grant') granted.confined = { level: confined.lease.level, tools: confined.lease.tools };
           const step = lease(state, offering({ ...granted, ...turnTerms(run, state, definition, terms.terms, now, now) }, plan.session));
           rememberCopy(run, plan, driver);
 
@@ -2107,7 +2110,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         const unenforced = unionUnenforced(leased.lease.unenforced ?? [], terms.terms.unenforced);
         // The driver's `can` may have changed since, so the turn's terms are decided again, as of the first lease. A lease
         // issued before teamai recorded when keeps its deadline.
-        const { limits: _held, expiresAt: heldUntil, ...held } = leased.lease;
+        const { limits: _held, expiresAt: heldUntil, confined: _terms, ...held } = leased.lease;
         const since = held.leasedAt;
         const turn = since ? turnTerms(run, leased, located.step, terms.terms, since, now) : leaseTerms(heldUntil, terms.terms.limits);
         const renewed: StepLease = { ...held };
@@ -2115,6 +2118,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         if (unenforced.length > 0) renewed.unenforced = unenforced;
 
         if (options.runMode) renewed.runMode = options.runMode;
+
+        // The report is checked against the terms decided now, as the lease answers with them.
+        if (confined?.kind === 'grant') renewed.confined = { level: confined.lease.level, tools: confined.lease.tools };
         leased.lease = offering({ ...renewed, ...turn }, offered?.session);
 
         // A turn with none of its timeout left times out as any lease past its deadline does.
@@ -2803,6 +2809,24 @@ function admitInto(run: RunState, path: string, field: string, output: AdmittedW
   return undefined;
 }
 
+/**
+ * Why the confined run a report names is not one `terms`, the lease's, allow: a tool the lease did not name, or an
+ * isolation below its level, which is a minimum. A lease issued before teamai kept its terms is not checked.
+ */
+function confinedMismatch(step: string, terms: LeasedConfined | undefined, ran: ConfinedRunReport | undefined): WorkflowFailure | undefined {
+  if (!terms || !ran) return undefined;
+
+  if (!terms.tools.includes(ran.tool)) {
+    return { code: 'confined_report_mismatch', message: `Step "${step}" was leased to run confined on ${terms.tools.join(', ')}, and its report says ${ran.tool} ran it, so what judged it is not what was leased. Retry the step with a driver that runs it on a tool it offers.` };
+  }
+
+  if (CONFINED_LEVELS.indexOf(ran.isolation) < CONFINED_LEVELS.indexOf(terms.level)) {
+    return { code: 'confined_report_mismatch', message: `Step "${step}" was leased to run confined at ${terms.level}, and its report says it ran at ${ran.isolation}, below that level. Retry the step with a driver that runs it at ${terms.level}.` };
+  }
+
+  return undefined;
+}
+
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput, secrets?: Record<string, string>): Promise<WorkflowEnvelope> {
   const install = await installOwner(config);
   const reported = report.prUrl === undefined ? undefined : sanitizePrUrl(report.prUrl);
@@ -2855,7 +2879,15 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       failure = { code: 'budget_unmeasured', message };
     }
 
-    if (outcome === 'success' && defined?.output && (!defined.interactive || report.outputs !== undefined)) {
+    const confinedProblem = outcome === 'released' ? undefined : confinedMismatch(step.id, step.lease.confined, report.confined);
+
+    if (confinedProblem) {
+      outcome = 'failed';
+      message = confinedProblem.message;
+      failure = confinedProblem;
+    }
+
+        if (outcome === 'success' && defined?.output && (!defined.interactive || report.outputs !== undefined)) {
       const outputProblem = outputMismatch(defined.output, report.outputs);
 
       if (outputProblem) {

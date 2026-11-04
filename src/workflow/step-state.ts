@@ -7,7 +7,7 @@ import { ACCESS_LEVELS, CONFINED_LEVELS, ConfinedUsageSchema, CostSchema } from 
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { PrUrlSchema, type PrUrl } from './pr-url.js';
 import { LimitSchema, TurnLimitsSchema, UnenforcedSchema } from './requirements.js';
-import type { RunState, StepLease, WorkflowFailure } from './types.js';
+import type { LeasedConfined, RunState, StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
 /** The tokens an attempt spent, as its driver reports them. */
@@ -49,10 +49,14 @@ export type SessionContinuation = z.infer<typeof SessionContinuationSchema>;
 
 const LeaseSessionSchema = SessionRefSchema.extend({ earlier: z.array(SessionRefSchema).optional() });
 
+/** What a confined lease's report is checked against: the tools it named and the level it asked for, at least. */
+const LeasedConfinedSchema = z.object({ level: z.enum(CONFINED_LEVELS), tools: z.array(z.string().min(1)).min(1) }) satisfies z.ZodType<LeasedConfined>;
+
 const LeaseSchema: z.ZodType<StepLease> = z.object({
   attempt: z.string(), revision: z.number(), driver: DriverSchema, session: LeaseSessionSchema.optional(),
   unenforced: z.array(UnenforcedSchema).optional(), expiresAt: z.string().optional(), leasedAt: z.string().optional(), runMode: RunModeSchema.optional(),
   limits: TurnLimitsSchema.optional(),
+  confined: LeasedConfinedSchema.optional(),
 });
 
 export const ChangesSchema = z.object({

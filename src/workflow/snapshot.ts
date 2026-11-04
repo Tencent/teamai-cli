@@ -292,7 +292,7 @@ const PRIVATE_ANSWER_RULES = { ...ANSWER_RULES, note: 'drop' } satisfies FieldRu
 const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldRules<WorkflowFailure>;
 
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
-const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', leasedAt: 'drop', runMode: 'drop', limits: 'drop' } satisfies FieldRules<StepLease>;
+const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', leasedAt: 'drop', runMode: 'drop', limits: 'drop', confined: 'drop' } satisfies FieldRules<StepLease>;
 
 // An isolated run, the only one with a clone, is never published. A team copy is delivered only where it ran: another
 // machine reads its branch as a run branch, which the project's origin does not have, so its delivery fails.
