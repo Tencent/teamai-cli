@@ -234,13 +234,18 @@ export async function cleanUpSucceededRun(
   config: LocalConfig,
   { runId, checkout, secrets, notPublished }: { runId: string; checkout: string; secrets: Record<string, string>; notPublished: HandoffError | undefined },
 ): Promise<void> {
+  // A run with no base and no copy never wrote a branch. Checked before the lock too, so the end of a run that cleans up
+  // nothing never holds the lock a retry of that run takes.
+  const needsCleanup = (run: RunState | 'missing' | 'corrupt'): run is RunState => run !== 'missing' && run !== 'corrupt' && run.status === 'succeeded'
+    && (run.base !== undefined || run.copies !== undefined)
+    && !(run.leftovers?.revision === run.revision && run.leftovers.failed.length === 0);
+
+  if (!needsCleanup(await readRun(config, runId))) return;
+
   await withCleanupLock(config, runId, async () => {
     const run = await readRun(config, runId);
 
-    // A run with no base and no copy never wrote a branch.
-    if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded' || (run.base === undefined && run.copies === undefined)) return;
-
-    if (run.leftovers?.revision === run.revision && run.leftovers.failed.length === 0) return;
+    if (!needsCleanup(run)) return;
 
     if (notPublished) {
       if (notPublished.code !== 'not_owner') warnNotCleanedUp(runId, 'its end did not reach teamai-reports');
