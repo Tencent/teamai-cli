@@ -65,7 +65,7 @@ import {
   pathExists,
   expandHome,
 } from './utils/fs.js';
-import { parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
+import { isPlainJson, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
@@ -3010,7 +3010,7 @@ async function reconcileTargets(
     };
 
     const judge = await judgeIn(resolved);
-    // A file an earlier teamai created that hides a later one, holding only teamai's servers, is left (#993).
+    // A plain-JSON file an earlier teamai created that hides a later one, holding only teamai's servers, is left (#993).
     const leaving = removeAll ? null : await leaveFormerMcpFile(resolved, manifest[manifestKey] ?? [], judge);
     const target = leaving ? { ...resolved, file: leaving.next } : resolved;
     const records = [...manifest[manifestKey] ?? [], ...leaving?.adopted ?? []];
@@ -4045,9 +4045,10 @@ export async function deleteEmptiedMcpFile(file: string, serverKey: string | Mcp
 /**
  * The later file of `target`'s user lookup order to write to instead of the
  * mapped file, which every teamai before #993 created, when that file is the
- * one the tool reads and holds nothing but teamai's servers: no other key,
- * and every server recorded for it or equal to a team render (`judge`),
- * which it then adopts. Otherwise null, and the file stays chosen.
+ * one the tool reads, is plain JSON, and holds nothing but teamai's servers:
+ * no other key, and every server recorded for it or equal to a team render
+ * (`judge`), which it then adopts. Comments, trailing commas and JSON5 stay
+ * chosen. Otherwise null, and the file stays chosen.
  */
 async function leaveFormerMcpFile(
   target: McpTarget,
@@ -4072,6 +4073,10 @@ async function leaveFormerMcpFile(
   }
 
   if (!next) return null;
+  const raw = await readFileSafe(former);
+
+  // Comments, trailing commas and JSON5 are the member's text, so this file stays the one the tool reads.
+  if (raw !== null && !isPlainJson(raw)) return null;
   const [serverKey] = mcpKeyOf(target);
   const doc = await readJsonDoc(former, serverKey, { syntax: target.syntax });
 
@@ -4090,8 +4095,9 @@ async function leaveFormerMcpFile(
 
 /**
  * Delete `former`, once `removeFromOtherFiles` took teamai's servers out of it
- * and it holds nothing (#993), so the tool reads `target.file`. Reported
- * once: the file is gone after. Whether it deleted it.
+ * and it holds nothing but plain JSON (#993), so the tool reads `target.file`.
+ * Comments, trailing commas and JSON5 stay. Reported once: the file is gone
+ * after. Whether it deleted it.
  */
 async function deleteLeftMcpFile(
   target: McpTarget,
@@ -4106,6 +4112,9 @@ async function deleteLeftMcpFile(
     || await sameMcpFile(former, target.file)) return false;
   const [serverKey] = mcpKeyOf(target);
   const raw = await readFileSafe(former);
+
+  // Comments, trailing commas and JSON5 stay after the servers leave.
+  if (raw !== null && !isPlainJson(raw)) return false;
   const doc = await readJsonDoc(former, serverKey, { syntax: target.syntax });
 
   if (!options.dryRun && (raw === null || !doc || Object.keys(doc.servers).length > 0

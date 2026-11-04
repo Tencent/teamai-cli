@@ -64,6 +64,61 @@ describe('MCP reconcile with a commented config file', () => {
     expect(Object.keys(Object(Object(servers)[key]))).toContain('team-server');
   });
 
+  const codebuddyFormer = (): string => path.join(homeDir, '.codebuddy', 'mcp.json');
+  const codebuddyLater = (): string => path.join(homeDir, '.codebuddy.json');
+  const memberNote = '// member: remember why this server is configured';
+
+  /** Installs the team server into `~/.codebuddy/mcp.json`, the file an earlier teamai created. */
+  async function installCodebuddyTeamServer(): Promise<void> {
+    await fse.outputFile(codebuddyFormer(), '{\n  "mcpServers": {}\n}\n');
+    const { teamConfig, localConfig } = configFor('codebuddy');
+    await reconcileMcpForConfig(teamConfig, localConfig);
+  }
+
+  it('keeps a commented CodeBuddy mcp.json that holds only the team server when a later lookup file exists', async () => {
+    await installCodebuddyTeamServer();
+    const installed = await fse.readFile(codebuddyFormer(), 'utf8');
+    await fse.writeFile(codebuddyFormer(), `${memberNote}\n${installed}`);
+    await fse.writeFile(codebuddyLater(), '{\n  "mcpServers": { "mine": { "command": "x" } }\n}\n');
+    const { teamConfig, localConfig } = configFor('codebuddy');
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+
+    const kept = await fse.readFile(codebuddyFormer(), 'utf8');
+    expect(kept).toContain(memberNote);
+    expect(kept).toContain('team-server');
+    expect(await fse.readFile(codebuddyLater(), 'utf8')).not.toContain('team-server');
+  });
+
+  it('keeps the comment in a CodeBuddy mcp.json after the team server leaves it', async () => {
+    await installCodebuddyTeamServer();
+    const installed = await fse.readFile(codebuddyFormer(), 'utf8');
+    await fse.writeFile(codebuddyFormer(), `${memberNote}\n${installed}`);
+    await fse.writeFile(codebuddyLater(), '{\n  "mcpServers": { "mine": { "command": "x" } }\n}\n');
+    await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers: []\n');
+    const { teamConfig, localConfig } = configFor('codebuddy');
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+
+    const kept = await fse.readFile(codebuddyFormer(), 'utf8');
+    expect(kept).toContain(memberNote);
+    expect(kept).not.toContain('team-server');
+    expect(await fse.readFile(codebuddyLater(), 'utf8')).not.toContain('team-server');
+  });
+
+  it('moves a plain CodeBuddy mcp.json that holds only the team server into .codebuddy.json and deletes it', async () => {
+    await installCodebuddyTeamServer();
+    await fse.writeFile(codebuddyLater(), '{\n  "mcpServers": { "mine": { "command": "x" } }\n}\n');
+    const { teamConfig, localConfig } = configFor('codebuddy');
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+
+    expect(await fse.pathExists(codebuddyFormer())).toBe(false);
+    const moved = await fse.readFile(codebuddyLater(), 'utf8');
+    expect(moved).toContain('team-server');
+    expect(moved).toContain('"mine"');
+  });
+
   it('leaves a commented Claude ~/.claude.json alone: Claude Code 2.1.316 refuses it', async () => {
     const target = path.join(homeDir, '.claude.json');
     const text = '{\n  // note\n  "mcpServers": {}\n}\n';
