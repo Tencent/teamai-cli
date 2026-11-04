@@ -360,6 +360,8 @@ describe('runMigration', () => {
     const artifacts = [
       `.sync-lock.${uuid}.tmp`, '.sync-lock.sentinel', `.sync-lock.sentinel.reclaim-${uuid}`,
       `.sync-lock.sentinel.${uuid}.tmp`, `.update-lock.new-${uuid}`,
+      `.sync-lock.sentinel.steal-${uuid}`, `.sync-lock.sentinel.steal-${uuid}.${uuid}.tmp`,
+      `.update-lock.sentinel.steal-${uuid}.steal-${uuid}`,
     ];
     for (const name of [...artifacts, '.update-lock.backup']) {
       await fse.writeFile(path.join(legacyDir, name), '{}');
