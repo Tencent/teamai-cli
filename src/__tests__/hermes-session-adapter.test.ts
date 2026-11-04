@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   sqlite3: 'sqlite3',
+  commands: [] as string[][],
   sql: [] as string[],
   sessions: [] as unknown[],
   messages: [] as unknown[],
@@ -13,6 +14,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../session-flow/sqlite.js', () => ({ findSqlite3: () => mocks.sqlite3 || null }));
 vi.mock('../utils/exec.js', () => ({
   execCommand: async (_command: string, args: string[]) => {
+    mocks.commands.push(args);
+    if (args[1]?.startsWith('.backup ')) return { code: 0, stdout: '', stderr: '', signal: null };
     const sql = args[2]!;
     mocks.sql.push(sql);
 
@@ -30,6 +33,7 @@ const roots: string[] = [];
 
 beforeEach(() => {
   mocks.sqlite3 = 'sqlite3';
+  mocks.commands.length = 0;
   mocks.sql.length = 0;
   mocks.sessions = [];
   mocks.messages = [];
@@ -53,16 +57,16 @@ function fixture(): { adapter: HermesAdapter; home: string; cwd: string; id: str
   }];
   mocks.messages = [
     { id: 1, role: 'user', content: 'Inspect it', tool_call_id: null, tool_calls: null, tool_name: null,
-      timestamp: 1_793_761_201, finish_reason: null, reasoning: null },
+      timestamp: 1_793_761_201, finish_reason: null, reasoning: null, reasoning_content: null },
     { id: 2, role: 'assistant', content: null, tool_call_id: null, tool_name: null,
       tool_calls: JSON.stringify([{ id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }]),
-      timestamp: 1_793_761_202, finish_reason: null, reasoning: 'Need the source' },
+      timestamp: 1_793_761_202, finish_reason: null, reasoning: 'Need the source', reasoning_content: null },
     { id: 3, role: 'tool', content: 'source', tool_call_id: 'call-1', tool_calls: null, tool_name: 'read_file',
-      timestamp: 1_793_761_203, finish_reason: null, reasoning: null },
+      timestamp: 1_793_761_203, finish_reason: null, reasoning: null, reasoning_content: null },
     { id: 4, role: 'assistant', content: JSON.stringify([{ type: 'text', text: 'Done' }]), tool_call_id: null,
-      tool_calls: null, tool_name: null, timestamp: 1_793_761_204, finish_reason: 'stop', reasoning: null },
+      tool_calls: null, tool_name: null, timestamp: 1_793_761_204, finish_reason: 'stop', reasoning: null, reasoning_content: null },
     { id: 5, role: 'system', content: 'hidden', tool_call_id: null, tool_calls: null, tool_name: null,
-      timestamp: 1_793_761_205, finish_reason: null, reasoning: null },
+      timestamp: 1_793_761_205, finish_reason: null, reasoning: null, reasoning_content: null },
   ];
 
   return { adapter: new HermesAdapter(home), home, cwd, id };
@@ -77,8 +81,12 @@ describe('HermesAdapter', () => {
       sessionId: id, title: 'Fix the parser', cwd, platform: 'hermes', messageCount: 5,
       filePath: path.join(home, 'state.db'),
     })]);
-    expect(mocks.sql[0]).toContain("LOWER(source) IN ('acp', 'cli', 'desktop', 'oneshot', 'tui')");
-    expect(mocks.sql[0]).not.toContain('telegram');
+    expect(mocks.sql[0]).toContain("LOWER(source) IN ('acp', 'cli', 'desktop', 'gui', 'oneshot', 'tui')");
+    expect(mocks.sql[0]).toContain("LOWER(source) = 'local'");
+    expect(mocks.sql[0]).toContain("LOWER(created_source) IN ('acp', 'cli', 'gui', 'oneshot', 'tui')");
+    expect(mocks.sql[0]).not.toContain("created_source) IN ('telegram'");
+    expect(mocks.commands[0]![0]).toMatch(/^file:.*state\.db\?mode=ro$/);
+    expect(mocks.commands[0]![1]).toMatch(/^\.backup ".*state\.db"$/);
 
     const session = await adapter.readSession({ sessionId: id, projectPath: cwd });
     expect(session.metadata?.model).toBe('anthropic/claude-sonnet');
@@ -91,7 +99,25 @@ describe('HermesAdapter', () => {
       { type: 'tool_result', callId: 'call-1', content: 'source', isError: false },
     ]);
     expect(session.messages[3]!.content).toEqual([{ type: 'text', text: 'Done' }]);
-    expect(mocks.sql.at(-1)).toContain('active = 1 ORDER BY timestamp, id');
+    expect(mocks.sql.at(-1)).toContain('(active = 1 OR compacted = 1) ORDER BY id');
+  });
+
+  it('keeps compacted turns in row order and falls back to provider reasoning content', async () => {
+    const { adapter, cwd, id } = fixture();
+    mocks.messages = [
+      { id: 17, role: 'user', content: 'Earlier turn', tool_call_id: null, tool_calls: null, tool_name: null,
+        timestamp: 200, finish_reason: null, reasoning: null, reasoning_content: null },
+      { id: 18, role: 'assistant', content: 'Answer', tool_call_id: null, tool_calls: null, tool_name: null,
+        timestamp: 150, finish_reason: 'stop', reasoning: null, reasoning_content: 'Provider thought' },
+    ];
+
+    const session = await adapter.readSession({ sessionId: id, projectPath: cwd });
+
+    expect(session.messages.map((message) => message.messageId)).toEqual(['17', '18']);
+    expect(session.messages[1]!.content).toEqual([
+      { type: 'thinking', text: 'Provider thought' },
+      { type: 'text', text: 'Answer' },
+    ]);
   });
 
   it('matches a symlinked cwd and rejects unsafe non-Hermes ids', async () => {

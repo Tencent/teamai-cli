@@ -248,7 +248,7 @@ export const SESSION_PLATFORM_FACTS = {
     resume: (id) => `hermes -c ${id}`,
     thinking: true, images: false,
     nativeTools: new Set([
-      'bash', 'read_file', 'write_file', 'edit_file', 'grep', 'glob', 'web_search', 'web_fetch', 'task',
+      'terminal', 'read_file', 'write_file', 'patch', 'search_files', 'delegate_task',
     ]),
     legacyIdWithoutWorkspace: false,
     sqliteRegistrationOnWindows: false,

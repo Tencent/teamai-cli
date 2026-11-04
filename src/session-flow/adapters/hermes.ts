@@ -2,6 +2,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef } from './base.js';
 import { resolveRealCwd } from '../fs.js';
@@ -12,8 +13,10 @@ import { findSqlite3 } from '../sqlite.js';
 import { execCommand, type ExecResult } from '../../utils/exec.js';
 import { JsonValueSchema } from '../../types.js';
 
-const CODING_SOURCES = ['acp', 'cli', 'desktop', 'oneshot', 'tui'] as const;
+const CODING_SOURCES = ['acp', 'cli', 'desktop', 'gui', 'oneshot', 'tui'] as const;
+const LOCAL_CODING_SOURCES = ['acp', 'cli', 'gui', 'oneshot', 'tui'] as const;
 const SOURCE_SQL = CODING_SOURCES.map((source) => `'${source}'`).join(', ');
+const LOCAL_SOURCE_SQL = LOCAL_CODING_SOURCES.map((source) => `'${source}'`).join(', ');
 
 const SessionRow = z.object({
   id: z.string(), source: z.string(), model: z.string().nullable(), cwd: z.string().nullable(),
@@ -24,7 +27,7 @@ const SessionRow = z.object({
 const MessageRow = z.object({
   id: z.number(), role: z.string(), content: z.string().nullable(), tool_call_id: z.string().nullable(),
   tool_calls: z.string().nullable(), tool_name: z.string().nullable(), timestamp: z.number(),
-  finish_reason: z.string().nullable(), reasoning: z.string().nullable(),
+  finish_reason: z.string().nullable(), reasoning: z.string().nullable(), reasoning_content: z.string().nullable(),
 });
 
 const StoredToolCall = z.object({
@@ -101,7 +104,9 @@ function messagesOf(rows: MessageRow[]): Message[] {
     } else if (row.role === 'assistant') {
       const content: ContentBlock[] = [];
 
-      if (row.reasoning) content.push({ type: 'thinking', text: row.reasoning });
+      const reasoning = row.reasoning ?? row.reasoning_content;
+
+      if (reasoning) content.push({ type: 'thinking', text: reasoning });
       const text = textOf(row.content);
 
       if (text) content.push({ type: 'text', text });
@@ -149,10 +154,14 @@ export class HermesAdapter extends AgentAdapter {
 
     try {
       const copied = path.join(copy, 'state.db');
-      await fs.promises.copyFile(this.db, copied);
-      await fs.promises.copyFile(`${this.db}-wal`, `${copied}-wal`).catch((cause: unknown) => {
-        if (!(cause instanceof Error && 'code' in cause && cause.code === 'ENOENT')) throw cause;
-      });
+      const source = `${pathToFileURL(this.db).href}?mode=ro`;
+      const target = copied.replaceAll('\\', '/').replaceAll('"', '""');
+      const backup = await execCommand(sqlite3, [source, `.backup "${target}"`], { timeoutMs: 30_000 });
+
+      if (backup.code !== 0) {
+        throw new Error(`sqlite3 could not snapshot ${this.db}: ${backup.stderr.trim() || `exit ${backup.code}`}`);
+      }
+
       result = await execCommand(sqlite3, ['-json', copied, sql], { timeoutMs: 30_000 });
     } finally {
       await fs.promises.rm(copy, { recursive: true, force: true });
@@ -174,7 +183,9 @@ export class HermesAdapter extends AgentAdapter {
 
     const raw = await this.query(
       'SELECT id, source, model, cwd, title, started_at, ended_at, last_activity_at, message_count ' +
-      `FROM sessions WHERE LOWER(source) IN (${SOURCE_SQL})${id} ORDER BY COALESCE(last_activity_at, ended_at, started_at) DESC;`,
+      `FROM sessions WHERE (LOWER(source) IN (${SOURCE_SQL}) OR ` +
+      `(LOWER(source) = 'local' AND LOWER(created_source) IN (${LOCAL_SOURCE_SQL})))${id} ` +
+      'ORDER BY COALESCE(last_activity_at, ended_at, started_at) DESC;',
     );
 
     return raw.flatMap((value) => {
@@ -186,8 +197,8 @@ export class HermesAdapter extends AgentAdapter {
 
   private async messages(sessionId: string): Promise<MessageRow[]> {
     const raw = await this.query(
-      'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning ' +
-      `FROM messages WHERE session_id = '${sessionId}' AND active = 1 ORDER BY timestamp, id;`,
+      'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning, reasoning_content ' +
+      `FROM messages WHERE session_id = '${sessionId}' AND (active = 1 OR compacted = 1) ORDER BY id;`,
     );
 
     return raw.flatMap((value) => {
@@ -223,8 +234,10 @@ export class HermesAdapter extends AgentAdapter {
     }
 
     const messages = messagesOf(await this.messages(row.id));
-    const createdAt = iso(row.started_at)!;
-    const updatedAt = iso(row.last_activity_at ?? row.ended_at ?? row.started_at)!;
+    const createdAt = iso(row.started_at);
+    const updatedAt = iso(row.last_activity_at ?? row.ended_at ?? row.started_at);
+
+    if (!createdAt || !updatedAt) throw new Error(`Hermes session ${row.id} has invalid timestamps.`);
 
     const session: Session = {
       sessionId: row.id, title: row.title || fallbackTitle(row.id), cwd: row.cwd, platform: 'hermes',
