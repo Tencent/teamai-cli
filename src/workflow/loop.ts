@@ -268,7 +268,9 @@ export function archiveUnder(run: RunState, path: string): void {
     if (!under(state.id)) continue;
     const current = passOf(state);
 
-    for (const pass of [...state.passes ?? [], ...(current ? [current] : [])]) (run.archive ??= []).push({ step: state.id, ...pass, within });
+    const item = state.item === undefined ? {} : { item: state.item };
+
+    for (const pass of [...state.passes ?? [], ...(current ? [current] : [])]) (run.archive ??= []).push({ step: state.id, ...pass, within, ...item });
   }
 
   run.steps = run.steps.filter((state) => !under(state.id));

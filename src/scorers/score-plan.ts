@@ -137,17 +137,25 @@ function refused(code: string, message: string): Refusal {
 const ScoreItemSchema = z.object({ subject: z.string(), scorers: z.string() });
 
 /**
- * The subject and each scorer of each `judge` step of `run` that was leased, as `<subject>\n<scorer>`. A scorer, not the
- * group: a mark keeps the group it was planned in, which a scorer already labelled leaves larger than the one judged.
+ * The subject and each scorer of each plan group of `run` whose `judge` step was leased, in a pass it still holds or
+ * one a retry archived, as `<subject>\n<scorer>`. A scorer, not the group: a mark keeps the group it was planned in,
+ * which a scorer already labelled leaves larger than the one judged.
  */
 function judgedScorers(run: RunState): Set<string> {
-  return new Set(run.steps.flatMap((step) => {
-    const group = ScoreItem.groupOf(step.id, 'judge');
+  const archive = run.archive ?? [];
 
-    if (group === undefined || !wasLeased(step)) return [];
-    const item = ScoreItemSchema.safeParse(run.steps.find((each) => each.id === group)?.item);
+  const leased = [
+    ...run.steps.flatMap((step) => (wasLeased(step) ? [step.id] : [])),
+    ...archive.flatMap((pass) => (pass.attempt === undefined ? [] : [pass.step])),
+  ];
 
-    return item.success ? item.data.scorers.split(',').map((scorer) => `${item.data.subject}\n${scorer}`) : [];
+  const groups = new Set(leased.flatMap((id) => ScoreItem.groupOf(id, 'judge') ?? []));
+  const items = [...run.steps, ...archive].flatMap((each) => (groups.has('id' in each ? each.id : each.step) ? [each.item] : []));
+
+  return new Set(items.flatMap((item) => {
+    const group = ScoreItemSchema.safeParse(item);
+
+    return group.success ? group.data.scorers.split(',').map((scorer) => `${group.data.subject}\n${scorer}`) : [];
   }));
 }
 

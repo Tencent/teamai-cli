@@ -17,7 +17,7 @@ import type { LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
-import { cancelRun } from '../workflow/run-controls.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { ScoreAnswer } from '../scorers/score-answer.js';
 import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
@@ -598,6 +598,25 @@ describe('marks of a score run that ended', () => {
     await judged.next('score[0].judge');
     data(await cancelRun(config, judged.runId, await knownSecrets(config)));
     expect(await states()).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
+  it.each(['score[0]', 'score'])('counts a lapse for a judge attempt that ran before a retry of %s, which moved it to the archive', async (retried) => {
+    const config = await team({ review: REVIEW }, { quality: scorer() });
+    const runId = await reviewedRun(config);
+    const subject = `run:${runId}:review:1`;
+    const key: MarkKey = { scorer: 'quality', subject: { kind: 'run', subject: { runId, step: 'review', pass: 1 } } };
+    const run = await scoreRun(config, { subject, scorers: ['quality'] });
+    const plan = await run.next('plan');
+    await run.report(plan, await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'auto' }, { ...plan.ctx, now: new Date().toISOString() }));
+    const evidence = await run.next('score[0].evidence');
+    await run.report(evidence, await ScoreVerbs.evidence({ subject, scorers: 'quality' }, evidence.ctx));
+    await run.next('score[0].judge');
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    data(await retryStep(config, run.runId, await knownSecrets(config), retried));
+    data(await cancelRun(config, run.runId, await knownSecrets(config)));
+
+    expect(await Marks.states(config, [key], markFacts(config, new Date().toISOString()))).toEqual([{ kind: 'lapsed', lapses: 1 }]);
   });
 
   it('counts a lapse once the judge of a teamai-score another workflow runs was leased', async () => {

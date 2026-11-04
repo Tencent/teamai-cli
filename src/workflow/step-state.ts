@@ -189,6 +189,8 @@ export const ArchivedPassSchema = StepPassSchema.extend({
   step: z.string(),
   /** The step whose new pass archived this one, and that step's pass when it did. */
   within: z.object({ step: z.string(), pass: z.number().int() }).optional(),
+  /** The item of the fan-out instance the pass belongs to, which the instance's id alone does not say once it is gone. */
+  item: z.unknown().optional(),
 });
 
 export type ArchivedPass = z.infer<typeof ArchivedPassSchema>;
