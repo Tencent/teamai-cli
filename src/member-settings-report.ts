@@ -314,7 +314,7 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
   const publishing = SessionPolicy.publish(ctx.localConfig, ctx.teamConfig).policies;
   const retention = await resolveRetention(ctx.localConfig, ctx.teamConfig);
-  const defaultDriver = await resolveDefaultDriver(ctx.localConfig);
+  const defaultDriver = await resolveDefaultDriver(ctx.localConfig, ctx.teamConfig);
 
   const levelsFor = (key: string): MemberSettingSource[] => {
     const parts = reportPathParts(key);

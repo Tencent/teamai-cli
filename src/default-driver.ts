@@ -6,11 +6,10 @@
  * without `--driver` they start a run unassigned, which a driver outside teamai relies on. `driveRun` in
  * workflow-commands.ts drives a run this machine drives; this module loads no driver, so the hooks can decide.
  */
-import path from 'node:path';
-import { loadMemberSettings, loadTeamConfig, ownMemberSettings } from './config.js';
-import { getDataHome, getTeamaiHomeDir, type LocalConfig } from './types.js';
-import { warnOnce } from './utils/warn-once.js';
+import { loadTeamConfig } from './config.js';
+import type { LocalConfig, TeamaiConfig } from './types.js';
 import { LOCAL_DRIVER, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
+import { resolveKeptSetting, type KeptValue } from './workflow/kept-setting.js';
 import type { RunState } from './workflow/types.js';
 
 /** What a start decides by default: drive the run here, leave it awaiting a driver this machine does not run, or leave it to any driver. */
@@ -19,34 +18,21 @@ export type DefaultDrive = { kind: 'drive' | 'awaits'; driver: DriverName } | { 
 /** A default driver, the name it is written as, and the file that set it: none for `local` when no level sets one. */
 export interface ResolvedDefaultDriver { driver: Exclude<Driver, 'skill'>; text: string; file?: string }
 
-/** The first level of `config`'s scope whose `workflows.driver` names a driver a default may be, else `local`. */
-export async function resolveDefaultDriver(config: LocalConfig): Promise<ResolvedDefaultDriver> {
-  const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
-  const scopeFile = config.scope === 'user' ? machineFile : path.join(getDataHome(config), 'config.yaml');
-
-  const levels = [
-    { file: scopeFile, value: () => Promise.resolve(ownMemberSettings(config).workflows?.driver) },
-    ...config.scope === 'user' ? [] : [{ file: machineFile, value: async () => (await loadMemberSettings(machineFile)).workflows?.driver }],
-    { file: path.join(config.repo.localPath, 'teamai.yaml'), value: async () => (await loadTeamConfig(config.repo.localPath))?.workflows?.driver },
-  ];
-
-  for (const { file, value } of levels) {
-    const written = await value();
-
-    if (written === undefined) continue;
+/** The first level of `config`'s scope, with `team` its team's teamai.yaml, whose `workflows.driver` names a driver a default may be, else `local`. */
+export async function resolveDefaultDriver(config: LocalConfig, team: Pick<TeamaiConfig, 'workflows'> | null): Promise<ResolvedDefaultDriver> {
+  const resolved = await resolveKeptSetting(config, team, 'driver', (written, file): KeptValue<Exclude<Driver, 'skill'>> => {
     const parsed = parseDriver(written);
 
-    if (parsed.ok && parsed.driver !== 'skill') {
-      const { driver } = parsed;
-
-      return { driver, text: driver === 'local' || driver === 'none' ? driver : driver.external, file };
-    }
-
+    if (parsed.ok && parsed.driver !== 'skill') return { ok: true, value: parsed.driver };
     const reason = parsed.ok ? 'the skill driver needs a coding session, so it drives only a run started with --driver skill' : parsed.reason;
-    warnOnce(`Ignoring workflows.driver in ${file}: ${reason}.`);
-  }
 
-  return { driver: 'local', text: 'local' };
+    return { ok: false, warning: `Ignoring workflows.driver in ${file}: ${reason}.` };
+  });
+
+  if (!resolved) return { driver: 'local', text: 'local' };
+  const { value: driver, file } = resolved;
+
+  return { driver, text: driver === 'local' || driver === 'none' ? driver : driver.external, file };
 }
 
 /** Whether this machine drives runs for driver `name`: only `local`, until driver definitions are resolved from `config`'s member and team. */
@@ -56,7 +42,7 @@ export async function drivesHere(_config: LocalConfig, name: DriverName): Promis
 
 /** What a start in `config`'s scope does without `--driver`, from `workflows.driver`. */
 export async function driveByDefault(config: LocalConfig): Promise<DefaultDrive> {
-  const { driver } = await resolveDefaultDriver(config);
+  const { driver } = await resolveDefaultDriver(config, await loadTeamConfig(config.repo.localPath));
 
   if (driver === 'none') return { kind: 'unassigned' };
   const name = driver === 'local' ? LOCAL_DRIVER : driver.external;

@@ -6,10 +6,9 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { loadMemberSettings, ownMemberSettings } from '../config.js';
-import { getDataHome, getTeamaiHomeDir, type LocalConfig, type TeamaiConfig } from '../types.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
 import type { RunState } from './types.js';
-import { warnOnce } from '../utils/warn-once.js';
+import { resolveKeptSetting } from './kept-setting.js';
 import { durationMs } from './parse.js';
 
 export const DEFAULT_RETENTION = '14d';
@@ -58,22 +57,13 @@ export function ownRunSweptAt(run: Pick<RunState, 'retainedUntil' | 'updatedAt'>
 
 /** The retention for `config`'s scope, warning once of each level whose value is neither a duration nor `never`. */
 export async function resolveRetention(config: LocalConfig, team: Pick<TeamaiConfig, 'workflows'> | null): Promise<ResolvedRetention> {
-  const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
-  const scopeFile = config.scope === 'user' ? machineFile : path.join(getDataHome(config), 'config.yaml');
+  const resolved = await resolveKeptSetting(config, team, 'retention', (written, file) => {
+    const retention = parseRetention(written);
 
-  const levels = [
-    { file: scopeFile, value: ownMemberSettings(config).workflows?.retention },
-    ...config.scope === 'user' ? [] : [{ file: machineFile, value: (await loadMemberSettings(machineFile)).workflows?.retention }],
-    { file: path.join(config.repo.localPath, 'teamai.yaml'), value: team?.workflows?.retention },
-  ];
+    return retention ? { ok: true, value: retention } : { ok: false, warning: `Ignoring workflows.retention in ${file}: ${JSON.stringify(written)} is not a duration such as 14d, or never.` };
+  });
 
-  for (const { file, value } of levels) {
-    if (value === undefined) continue;
-    const retention = parseRetention(value);
-
-    if (retention) return { ...retention, file };
-    warnOnce(`Ignoring workflows.retention in ${file}: ${JSON.stringify(value)} is not a duration such as 14d, or never.`);
-  }
+  if (resolved) return { ...resolved.value, file: resolved.file };
 
   const fallback = parseRetention(DEFAULT_RETENTION);
 
