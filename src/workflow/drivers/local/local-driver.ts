@@ -32,7 +32,7 @@ import {
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, refuseDirtyAdoptedCommand, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, StartedRunSchema, unreadablePlace, type StartedRun } from '../../protocol.js';
-import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
+import { memberTools, type MemberTool } from '../../../tool-launch/member-tools.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { confinedOffers, type ConfinedOffer } from '../../../tool-launch/confined.js';

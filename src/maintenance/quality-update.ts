@@ -377,7 +377,8 @@ export async function generateUpdateDraft(
 
   if (!currentContent) return null;
 
-  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
+  const { callTool } = await import('../tool-launch/call.js');
+  const { isOverrideInvalid } = await import('../tool-launch/member-tools.js');
 
   const learningContext = relatedLearnings.length > 0
     ? `\n\nThe following learnings were actually adopted by team members (these represent what the team found more useful):\n\n${relatedLearnings.map((l, i) => `--- Learning ${i + 1} ---\n${l}`).join('\n\n')}`

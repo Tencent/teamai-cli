@@ -5,7 +5,8 @@ import path from 'node:path';
 import matter from 'gray-matter';
 import { z } from 'zod';
 
-import { callTool, isOverrideInvalid } from './tool-launch/call.js';
+import { callTool } from './tool-launch/call.js';
+import { isOverrideInvalid } from './tool-launch/member-tools.js';
 import { createGit } from './utils/git.js';
 import { stripFrontmatter } from './utils/frontmatter.js';
 import { log } from './utils/logger.js';

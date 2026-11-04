@@ -3,7 +3,8 @@ import { writeFile, mkdir } from 'node:fs/promises';
 
 import { z } from 'zod';
 
-import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
+import { callToolParallel } from './tool-launch/call.js';
+import { isOverrideInvalid } from './tool-launch/member-tools.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import type { CodeFact } from './wiki-engine/adapters/index.js';

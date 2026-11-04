@@ -20,7 +20,8 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: vi.fn(),
 }));
 
-import { CallError, callTool, callToolParallel } from '../tool-launch/call.js';
+import { callTool, callToolParallel } from '../tool-launch/call.js';
+import { CallError } from '../tool-launch/member-tools.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { runHiddenDeepEnrich } from '../deep-enrich.js';
 import { autoDetectInit } from '../config.js';

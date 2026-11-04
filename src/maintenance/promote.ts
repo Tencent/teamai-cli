@@ -204,7 +204,8 @@ Remove anecdotal context. State the constraint as an absolute standard.`,
 Remove personal narrative. Write as objective technical documentation.`,
   };
 
-  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
+  const { callTool } = await import('../tool-launch/call.js');
+  const { isOverrideInvalid } = await import('../tool-launch/member-tools.js');
 
   try {
     const prompt = `You are a technical knowledge engineer promoting a team learning into formal knowledge.
@@ -330,7 +331,8 @@ function inferCategoryByKeywords(content: string, title: string): 'skills' | 'ru
  * Falls back to keyword-based inference if AI is unavailable.
  */
 async function inferCategory(content: string, title: string): Promise<'skills' | 'rules' | 'docs'> {
-  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
+  const { callTool } = await import('../tool-launch/call.js');
+  const { isOverrideInvalid } = await import('../tool-launch/member-tools.js');
 
   try {
     const prompt = `Classify the following team knowledge entry into exactly ONE category. Reply with ONLY the category name (no explanation):

@@ -4,7 +4,8 @@ import readline from 'node:readline';
 
 import { z } from 'zod';
 
-import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
+import { callToolParallel } from './tool-launch/call.js';
+import { isOverrideInvalid } from './tool-launch/member-tools.js';
 import { listFilesRecursive, readFileSafe, writeFile, expandHome, ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { assertSafePath, defaultAllowedRoots } from './utils/path-safety.js';

@@ -6,7 +6,8 @@ import { z } from 'zod';
 
 import { pathExists } from './utils/fs.js';
 import { lenientList } from './utils/json.js';
-import { CallError, callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
+import { callTool, callToolParallel } from './tool-launch/call.js';
+import { CallError, isOverrideInvalid } from './tool-launch/member-tools.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 

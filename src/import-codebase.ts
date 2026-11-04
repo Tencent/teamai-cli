@@ -13,7 +13,7 @@ import { log } from './utils/logger.js';
 import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
-import { isOverrideInvalid } from './tool-launch/call.js';
+import { isOverrideInvalid } from './tool-launch/member-tools.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
 const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as const;

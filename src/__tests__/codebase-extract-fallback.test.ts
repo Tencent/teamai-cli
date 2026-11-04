@@ -16,7 +16,8 @@ vi.mock('../tool-launch/call.js', async (importOriginal) => ({
   }),
 }));
 
-import { CallError, callToolParallel } from '../tool-launch/call.js';
+import { callToolParallel } from '../tool-launch/call.js';
+import { CallError } from '../tool-launch/member-tools.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { repoIdentity } from '../utils/git.js';
 import { codebaseCmd } from '../codebase-cmd.js';

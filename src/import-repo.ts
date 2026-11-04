@@ -17,7 +17,7 @@ import { touchCacheEntry } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
 import { assertTeamwikiWritable, lockTeamwiki, resolveTeamwiki } from './utils/teamwiki-root.js';
-import { isOverrideInvalid } from './tool-launch/call.js';
+import { isOverrideInvalid } from './tool-launch/member-tools.js';
 import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 
 // ─── Types ──────────────────────────────────────────────

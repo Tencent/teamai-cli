@@ -49,7 +49,7 @@ import { repoName } from './utils/repo-attribution.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { routerTemplate, indexTemplate, HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
 import type { DomainGroup, IndexStats } from './wiki-engine/adapters/templates.js';
-import { isOverrideInvalid } from './tool-launch/call.js';
+import { isOverrideInvalid } from './tool-launch/member-tools.js';
 
 export interface ExtractCodebaseOptions {
   path?: string;

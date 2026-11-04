@@ -7,7 +7,8 @@ import YAML from 'yaml';
 import matter from 'gray-matter';
 
 import { findPromotionCandidates, executePromotion } from '../maintenance/promote.js';
-import { CallError, callTool } from '../tool-launch/call.js';
+import { callTool } from '../tool-launch/call.js';
+import { CallError } from '../tool-launch/member-tools.js';
 import type { UserVotesV2 } from '../types.js';
 
 vi.mock('../tool-launch/call.js', async (importOriginal) => ({
