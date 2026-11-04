@@ -1128,8 +1128,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
           continue;
         }
 
-        // A wait for a call that could not take a lease says nothing about what is left; ask again with room.
-        if (!canTakeLease) continue;
+        // A wait for a call that could not take a lease says nothing about what is left; ask again with room. A driver
+        // that handed back a confined lease never has room again, so it stops on that.
+        if (!canTakeLease && handedBack === undefined) continue;
 
         const confinedWait = handedBack ?? (heldForConfined(wait.held) ? wait.held.map((item) => item.reason.replace(/\.$/u, '')).join('; ') : undefined);
 

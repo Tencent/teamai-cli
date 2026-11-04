@@ -73,6 +73,26 @@ console.log(JSON.stringify({ type: 'result', result: ${JSON.stringify(JSON.strin
     });
     expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'evidence', status: 'succeeded' }, { id: 'judge', status: 'pending' }] });
   });
+
+  it('leaves the step pending, and stops, when the tool it was leased for no longer resolves its model at launch', async () => {
+    const { config, workspace, runId } = await workflowFixture(judged({ level: 'best-effort' }));
+    const resolveTool = cursorOnly(path.dirname(workspace), { verdict: 'pass' });
+    const reason = 'Step "judge" runs confined on cursor, and none of them resolves its model here. Alias fast names no model of cursor.';
+    vi.spyOn(await import('../workflow/confined-step.js'), 'runConfinedStep').mockResolvedValue({ kind: 'unresolved', reason });
+    const engine = await import('../workflow/engine.js');
+    const real = engine.leaseNext;
+    let asked = 0;
+    vi.spyOn(engine, 'leaseNext').mockImplementation(async (...args) => {
+      asked += 1;
+      if (asked > 100) throw new Error('The driver kept asking for work after it handed the confined lease back.');
+      return real(...args);
+    });
+
+    expect(await runLocalDriver(config, runId, workspace, { toolPaths, resolveTool })).toEqual({
+      error: { code: 'confined_pending', message: `Run ${runId} waits for a confined tool: ${reason.replace(/\.$/u, '')}. Make one available here, then run teamai workflow resume ${runId}, or drive the run with a driver that offers one.` },
+    });
+    expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'evidence', status: 'succeeded' }, { id: 'judge', status: 'pending' }] });
+  });
 });
 
 describe('local workflow driver and a lease from a newer teamai', () => {
