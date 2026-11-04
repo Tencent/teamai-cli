@@ -9,6 +9,8 @@ import { trialsOf } from '../benchmark/plan.js';
 import { planBenchmark } from '../benchmark/start.js';
 import { benchmarkRecord, type BenchmarkRecord } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
+import { TrialVerdicts } from '../benchmark/verdicts.js';
+import { LabelStore } from '../scorers/label-store.js';
 import type { BenchmarkSuiteFiles } from '../workflow/conformance-interpreter.js';
 import { leaseNext, reconcileRun, reportAttempt } from '../workflow/engine.js';
 import { stepDefinitions } from '../workflow/scope.js';
@@ -16,7 +18,7 @@ import type { DriverCan } from '../workflow/requirements.js';
 import { cancelRun } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
-import { benchmarkRunConfig, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun } from './helpers/benchmark-fixture.js';
+import { benchmarkRunConfig, PLANNED_BENCHMARK, RUN_START, RUN_TEAM, settleBaselines, startBenchmarkRun } from './helpers/benchmark-fixture.js';
 
 const driver: DriverIdentity = { kind: 'external', machine: 'ci', workspace: '/work' };
 const can: DriverCan = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, tools: ['claude'], end_turn: true };
@@ -501,6 +503,60 @@ describe('benchmark run judges', () => {
     expect(pins[CORRECTNESS]?.sourceHash).not.toBe(pins['teamai:correctness:t02']?.sourceHash);
     expect(stepDefinitions(run)(PROMPT)?.scorers).toEqual({ names: [CORRECTNESS], sampling: 'all', start: 'workflow' });
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+});
+
+/** The planned benchmark with the shipped workflow's steps that list each trial pass and label it with teamai-score. */
+const SCORED_BENCHMARK = `${PLANNED_BENCHMARK}  - id: subjects
+    needs: [trials]
+    command: teamai score subjects --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [string] }
+  - id: score
+    needs: [subjects]
+    for_each: steps.subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    continue_on_failure: true
+`;
+
+describe('benchmark run verdicts', () => {
+  it('leave a trial unscored when its score step labelled it and the write failed, though an earlier write stored that label', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-benchmark-plan-'));
+    dirs.push(root);
+    const config = benchmarkRunConfig(root);
+    const started = await startBenchmarkRun(config, CRITERIA_SUITE, { body: SCORED_BENCHMARK });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const subject = `run:${runId}:${PROMPT}:1`;
+    const outputs: Record<string, unknown> = {
+      subjects: { list: [subject] },
+      plan: { groups: [{ subject, hand: '', scorers: CORRECTNESS, model: '', ci: false, protected: false }] },
+      evidence: { dir: root, rubric: 'Judge it.', schema: path.join(root, 'answer.schema.json'), delivers: false },
+      judge: { answer: { label: 'correct', reasoning: 'The test passes.' } },
+      label: { labels: [{ scorer: CORRECTNESS, label: 'correct', code: '' }] },
+    };
+    const judging: DriverCan = { ...can, confined: [{ level: 'verified', access: 'read', tools: ['claude'] }], workspace: [...can.workspace ?? [], 'team'] };
+    for (;;) {
+      const answer = await leaseNext(config, runId, driver, { can: judging, prepare: true });
+      const lease = LeaseSchema.safeParse(answer);
+      if (!lease.success) break;
+      const { step, attempt, revision } = lease.data.data.lease;
+      const id = step.split('.').at(-1) ?? step;
+      await reportAttempt(config, runId, id === 'write'
+        ? { attempt, revision, outcome: 'failed', driver, failure: { code: 'command_failed', message: 'Another teamai process is writing the score labels.' } }
+        : { attempt, revision, outcome: 'success', driver, tool: 'claude', outputs: outputs[id] ?? {} });
+    }
+    await LabelStore.append(config, [{ label: {
+      scorer: CORRECTNESS, rubric: { sourceHash: 'rubric-1' }, label: 'correct', score: 1, passed: true, scoredAt: '2026-11-03T10:00:00.000Z', source: 'workflow',
+      subject: { runId, step: PROMPT, pass: 1 }, judge: { kind: 'model', tool: 'claude', model: { reported: 'claude-x' }, isolation: 'verified', access: 'read' },
+    }, reasoning: 'The test passes.' }]);
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    const planned = planOfRun(run);
+    if ('failure' in planned) throw new Error(planned.failure.message);
+    expect(await TrialVerdicts.of(config, run, planned.found)).toEqual([{ scorer: CORRECTNESS, step: PROMPT, pass: 1, outcome: { kind: 'unscored', because: 'run_ended' } }]);
   });
 });
 

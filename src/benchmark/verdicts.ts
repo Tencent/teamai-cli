@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { LabelStore } from '../scorers/label-store.js';
-import type { ScoreLabel } from '../scorers/label.js';
+import { labelVersion, type ScoreLabel } from '../scorers/label.js';
 import { LABEL_CODES } from '../scorers/score-labels.js';
 import type { LocalConfig } from '../types.js';
 import { stepDefinitions } from '../workflow/scope.js';
@@ -35,11 +35,24 @@ const LabelEntrySchema = z.object({ scorer: z.string(), label: z.string(), code:
 
 type ScoredEntry = Omit<z.infer<typeof LabelEntrySchema>, 'scorer'>;
 
-/** One item of a `teamai-score` step: the subject it labelled and, when it succeeded, the entries of every group. */
+/** What one group of a `teamai-score` item gave: its entries, and the version of each label its write stored, if it did. */
+const GroupOutputsSchema = z.object({ labels: z.array(LabelEntrySchema), written: z.array(z.string()).nullish() });
+
+/** One item of a `teamai-score` step: the subject it labelled, the entries of every group, and the labels they stored. */
 const ScoredItemSchema = z.object({
   item: z.string(),
-  outputs: z.object({ labels: z.array(z.object({ outputs: z.object({ labels: z.array(LabelEntrySchema) }).optional() })) }).optional(),
-}).transform(({ item, outputs }) => ({ item, entries: (outputs?.labels ?? []).flatMap((group) => group.outputs?.labels ?? []) }));
+  outputs: z.object({ labels: z.array(z.object({ outputs: GroupOutputsSchema.optional() })) }).optional(),
+}).transform(({ item, outputs }) => {
+  const groups = (outputs?.labels ?? []).flatMap((group) => (group.outputs ? [group.outputs] : []));
+
+  return { item, entries: groups.flatMap((group) => group.labels), written: groups.flatMap((group) => group.written ?? []) };
+});
+
+/** What a `teamai-score` step gave a subject: the entry of each scorer, and the version of each label its writes stored. */
+interface Scored {
+  entries: Map<string, ScoredEntry>;
+  written: Set<string>;
+}
 
 function runsTeamaiScore(step: WorkflowStep | undefined): boolean {
   const child = step ? stepWorkflow(step) : undefined;
@@ -54,18 +67,20 @@ function scoreResults(run: RunState): unknown[] {
   return run.steps.flatMap((state) => ('results' in state && runsTeamaiScore(definitionOf(state.id)) ? state.results ?? [] : []));
 }
 
-/** The entries of every scorer that a `teamai-score` step of `run` labelled, by subject and then scorer. */
-function scoredEntries(run: RunState): Map<string, Map<string, ScoredEntry>> {
-  const bySubject = new Map<string, Map<string, ScoredEntry>>();
+/** What the `teamai-score` steps of `run` gave each subject they labelled. */
+function scoredEntries(run: RunState): Map<string, Scored> {
+  const bySubject = new Map<string, Scored>();
 
   for (const result of scoreResults(run)) {
     const scored = ScoredItemSchema.safeParse(result);
 
     if (!scored.success) continue;
-    const entries = bySubject.get(scored.data.item) ?? new Map<string, ScoredEntry>();
+    const kept = bySubject.get(scored.data.item) ?? { entries: new Map<string, ScoredEntry>(), written: new Set<string>() };
 
-    for (const { scorer, label, code } of scored.data.entries) entries.set(scorer, { label, code });
-    bySubject.set(scored.data.item, entries);
+    for (const { scorer, label, code } of scored.data.entries) kept.entries.set(scorer, { label, code });
+
+    for (const version of scored.data.written) kept.written.add(version);
+    bySubject.set(scored.data.item, kept);
   }
 
   return bySubject;
@@ -95,13 +110,11 @@ export const TrialVerdicts = {
       const step = `${prefix}${trial.step}`;
       const state = run.steps.find(({ id }) => id === step);
       const pass = state?.pass ?? 1;
-      const entries = scored.get(`run:${run.id}:${step}:${pass}`);
+      const subject = scored.get(`run:${run.id}:${step}:${pass}`);
 
       return (definitionOf(step)?.scorers?.names ?? []).map((scorer) => {
-        const entry = entries?.get(scorer);
-
-        const stored = labels.find((label) => label.source === 'workflow' && label.scorer === scorer && label.label === entry?.label
-          && label.subject.runId === run.id && label.subject.step === step && label.subject.pass === pass);
+        const entry = subject?.entries.get(scorer);
+        const stored = labels.find((label) => label.scorer === scorer && subject?.written.has(labelVersion(label)) === true);
 
         return { scorer, step, pass, ...verdictOf(entry, stored) };
       });
