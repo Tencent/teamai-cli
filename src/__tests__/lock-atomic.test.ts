@@ -16,6 +16,11 @@ import { acquireLock, releaseLock, sweepHeldLocksOnExit, listZombieLocks, remove
 let tmpDir: string;
 let lockPath: string;
 
+// Owner tokens of processes that died holding the reclaim sentinel, or a claim
+// to remove it. acquireLock writes randomUUID() tokens.
+const DEAD_RECLAIMER = '11111111-1111-4111-8111-111111111111';
+const DEAD_CLAIMANT = '22222222-2222-4222-8222-222222222222';
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lock-'));
   lockPath = path.join(tmpDir, '.test-lock');
@@ -79,6 +84,26 @@ describe('acquireLock (real fs)', () => {
     fs.writeFileSync(lockPath, 'not-json-not-a-pid');
     expect(await acquireLock(lockPath)).toBe(false);
     expect(fs.readFileSync(lockPath, 'utf-8')).toBe('not-json-not-a-pid');
+  });
+
+  it('takes over the sentinel a dead reclaimer left, and reclaims the stale lock', async () => {
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' }));
+    fs.writeFileSync(`${lockPath}.sentinel`, JSON.stringify({ pid: 999998, owner: DEAD_RECLAIMER, startedAt: 'x' }));
+    expect(await acquireLock(lockPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
+    expect(fs.readdirSync(tmpDir)).toEqual(['.test-lock']);
+    await releaseLock(lockPath);
+  });
+
+  it('takes over a dead reclaimer\'s sentinel when the process taking it over died too', async () => {
+    const sentinel = `${lockPath}.sentinel`;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' }));
+    fs.writeFileSync(sentinel, JSON.stringify({ pid: 999998, owner: DEAD_RECLAIMER, startedAt: 'x' }));
+    fs.writeFileSync(`${sentinel}.steal-${DEAD_RECLAIMER}`, JSON.stringify({ pid: 999997, owner: DEAD_CLAIMANT, startedAt: 'x' }));
+    expect(await acquireLock(lockPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
+    expect(fs.readdirSync(tmpDir)).toEqual(['.test-lock']);
+    await releaseLock(lockPath);
   });
 
   it('grants the lock to exactly one of many concurrent reclaimers of a STALE lock', async () => {
@@ -147,6 +172,54 @@ describe('acquireLock never takes over a lock another live process may hold (#76
       readFile.mockRestore();
     }
     expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('other');
+  });
+
+  it('under the reclaim sentinel, does not rename over a lock re-created while the old owner\'s pid was checked', async () => {
+    // The second pass reads the old owner's lock; before its pid check, that
+    // owner releases and exits, and another process creates a fresh lock.
+    const deadPid = 999999;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: deadPid, owner: 'old', startedAt: 'x' }));
+    const realKill = process.kill.bind(process);
+    let deadPidChecks = 0;
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid !== deadPid) return realKill(pid, signal);
+      deadPidChecks += 1;
+      if (deadPidChecks === 2) {
+        fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, owner: 'other', startedAt: 'x' }));
+      }
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    });
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      kill.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('other');
+  });
+
+  it('does not take a live sentinel another reclaimer created after a dead one was confirmed', async () => {
+    // Both a lock holder and a reclaimer died. Right after this process confirms
+    // the dead sentinel, another reclaimer replaces it with its own live one.
+    const deadLock = JSON.stringify({ pid: 999999, owner: 'dead-lock', startedAt: 'x' });
+    const deadSentinel = JSON.stringify({ pid: 999998, owner: DEAD_RECLAIMER, startedAt: 'x' });
+    const liveSentinel = JSON.stringify({ pid: process.pid, owner: 'other', startedAt: 'x' });
+    const sentinel = `${lockPath}.sentinel`;
+    fs.writeFileSync(lockPath, deadLock);
+    fs.writeFileSync(sentinel, deadSentinel);
+    const realReadFile = fse.readFile.bind(fse);
+    let sentinelReads = 0;
+    const readFile = vi.spyOn(fse, 'readFile').mockImplementation(async (...args: Parameters<typeof fse.readFile>) => {
+      const content = await realReadFile(...args);
+      if (args[0] === sentinel && ++sentinelReads === 2) fs.writeFileSync(sentinel, liveSentinel);
+      return content;
+    });
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      readFile.mockRestore();
+    }
+    expect(fs.readFileSync(sentinel, 'utf-8')).toBe(liveSentinel);
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe(deadLock);
   });
 
   it('does not reclaim a lock whose owner is alive but belongs to another user (EPERM)', async () => {
@@ -292,35 +365,47 @@ describe('acquireLock filesystem failures (#999)', () => {
     }
   });
 
-  it('rejects a reclaim-sentinel rename failure and preserves the stale lock', async () => {
+  it('rejects a dead-sentinel removal failure and preserves the stale lock', async () => {
     const dead = JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' });
+    const deadSentinel = JSON.stringify({ pid: 999998, owner: DEAD_RECLAIMER, startedAt: 'x' });
+    const sentinel = `${lockPath}.sentinel`;
     fs.writeFileSync(lockPath, dead);
-    fs.writeFileSync(`${lockPath}.sentinel`, dead);
-    const error = Object.assign(new Error('EPERM: cannot rename sentinel'), { code: 'EPERM' });
-    const rename = vi.spyOn(fse, 'rename').mockRejectedValueOnce(error);
+    fs.writeFileSync(sentinel, deadSentinel);
+    const error = Object.assign(new Error('EPERM: cannot remove sentinel'), { code: 'EPERM' });
+    const realRemove = fse.remove.bind(fse);
+    const remove = vi.spyOn(fse, 'remove').mockImplementation(async (file: string) => {
+      if (file === sentinel) throw error;
+      await realRemove(file);
+    });
     try {
       await expect(acquireLock(lockPath)).rejects.toMatchObject({ cause: error });
-      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(dead);
-      expect(fs.readFileSync(`${lockPath}.sentinel`, 'utf-8')).toBe(dead);
     } finally {
-      rename.mockRestore();
+      remove.mockRestore();
     }
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe(dead);
+    expect(fs.readFileSync(sentinel, 'utf-8')).toBe(deadSentinel);
+    expect(fs.readdirSync(tmpDir).filter((f) => f.includes('.steal-'))).toEqual([]);
   });
 
-  it('still backs off when another reclaimer removes the stale sentinel first', async () => {
+  it('still backs off when another reclaimer removes the dead sentinel first', async () => {
     const dead = JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' });
+    const sentinel = `${lockPath}.sentinel`;
     fs.writeFileSync(lockPath, dead);
-    fs.writeFileSync(`${lockPath}.sentinel`, dead);
-    const rename = vi.spyOn(fse, 'rename').mockImplementationOnce(async () => {
-      fs.rmSync(`${lockPath}.sentinel`);
-      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    fs.writeFileSync(sentinel, JSON.stringify({ pid: 999998, owner: DEAD_RECLAIMER, startedAt: 'x' }));
+    const realReadFile = fse.readFile.bind(fse);
+    let sentinelReads = 0;
+    const readFile = vi.spyOn(fse, 'readFile').mockImplementation(async (...args: Parameters<typeof fse.readFile>) => {
+      const content = await realReadFile(...args);
+      if (args[0] === sentinel && ++sentinelReads === 2) fs.rmSync(sentinel);
+      return content;
     });
     try {
       expect(await acquireLock(lockPath)).toBe(false);
-      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(dead);
     } finally {
-      rename.mockRestore();
+      readFile.mockRestore();
     }
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe(dead);
+    expect(fs.readdirSync(tmpDir).filter((f) => f.includes('.steal-'))).toEqual([]);
   });
 
   it('rejects a stale-lock replacement failure and releases its reclaim sentinel', async () => {
