@@ -846,6 +846,19 @@ steps:
     expect(again.lines.join('\n')).not.toContain('is already working here');
   });
 
+  it('says again, on the next drain, that its open run is left to any driver while no driver has taken it', async () => {
+    const config = await finishedSessionsFor('none');
+    await drain();
+    capturedSession('second-session', 'unattended');
+
+    const again = await drain();
+
+    const ran = (await readRuns(config)).filter((one) => one.name === 'teamai-finished-sessions');
+    expect(ran).toHaveLength(1);
+    expect(again.lines).toContain(`ℹ Left open: run ${ran[0]?.id} of teamai-finished-sessions, which workflows.driver none leaves to any driver. A driver takes it with: teamai workflow next ${ran[0]?.id} --json '{"driver":{…}}'`);
+    expect(again.lines.join('\n')).not.toContain('is already working here');
+  });
+
   it('no longer awaits a driver once a driver takes a lease of the run', async () => {
     const config = await finishedSessionsFor('acme-sandbox');
     await drain();

@@ -320,7 +320,7 @@ describe('the start of teamai-finished-sessions', () => {
     const second = await FinishedSessions.start(config, { client, mode: 'attended' });
 
     expect(first).toMatchObject({ kind: 'started' });
-    expect(second).toEqual(first.kind === 'started' ? { ...first, kind: 'working' } : first);
+    expect(second).toEqual(first.kind === 'started' ? { ...first, kind: 'working', holder: { kind: 'unassigned' } } : first);
   });
 
   it('starts a new run once the one before ended, though inside its timeout', async () => {

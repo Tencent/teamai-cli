@@ -26,6 +26,7 @@ import { durationMs } from '../workflow/parse.js';
 import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
 import { readRuns, RunIdSchema, type RunId } from '../workflow/store.js';
+import type { DriverName } from '../workflow/driver-name.js';
 import type { RunState, WorkflowFailure } from '../workflow/types.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPolicy } from './session-policy.js';
@@ -291,12 +292,18 @@ async function backgroundScopes(cwd: string): Promise<LocalConfig[]> {
 const PASS_MS = 30 * 60 * 1000;
 
 /**
- * What a start of teamai-finished-sessions did in a data home: started a run, found one already working on it, or found
+ * Who has an open run: a driver that took it, none yet while it awaits the driver `workflows.driver` names, or none yet
+ * while it is left to any driver.
+ */
+export type RunHolder = { kind: 'driven' } | { kind: 'awaits'; driver: DriverName } | { kind: 'unassigned' };
+
+/**
+ * What a start of teamai-finished-sessions did in a data home: started a run, found one already holding it, or found
  * nothing for a run to do. `cwd` is the directory a driver of the run works from.
  */
 export type FinishedStart =
   | { kind: 'started'; run: RunId; cwd: string }
-  | { kind: 'working'; run: RunId; cwd: string; awaits?: RunState['awaits'] }
+  | { kind: 'working'; run: RunId; cwd: string; holder: RunHolder }
   | { kind: 'idle' }
   | { kind: 'failed'; failure: WorkflowFailure };
 
@@ -307,19 +314,14 @@ function holdsUntil(run: RunState): number {
   return deadline === undefined ? Date.parse(run.createdAt) + PASS_MS : Date.parse(deadline);
 }
 
-/** The run of teamai-finished-sessions this data home started that has not ended and still holds it. */
-/** A run of it that still holds the data home, and the driver it awaits when one started it for another driver. */
-type WorkingRun = Pick<Extract<FinishedStart, { kind: 'working' }>, 'run' | 'awaits'>;
-
-async function workingRun(config: LocalConfig, now: number): Promise<WorkingRun | undefined> {
+/** The run of teamai-finished-sessions this data home started that has not ended and still holds it, and who has it. */
+async function workingRun(config: LocalConfig, now: number): Promise<Pick<Extract<FinishedStart, { kind: 'working' }>, 'run' | 'holder'> | undefined> {
   const run = (await readRuns(config)).findLast((one) => one.name === FINISHED_WORKFLOW && one.status === 'running' && holdsUntil(one) > now);
 
   if (!run) return undefined;
-  const working: WorkingRun = { run: RunIdSchema.parse(run.id) };
+  const holder: RunHolder = run.awaits ? { kind: 'awaits', driver: run.awaits.driver } : run.driver ? { kind: 'driven' } : { kind: 'unassigned' };
 
-  if (run.awaits) working.awaits = run.awaits;
-
-  return working;
+  return { run: RunIdSchema.parse(run.id), holder };
 }
 
 /**
