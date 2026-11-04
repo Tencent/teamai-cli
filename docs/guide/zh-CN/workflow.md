@@ -541,6 +541,21 @@ $ teamai doctor --fix
 ℹ   rbcc5a67473d24a48 (settled 2026-10-27T19:39:16.700Z): teamai/rbcc5a67473d24a48/fail/p1, teamai/rbcc5a67473d24a48/left/p1, worktree /home/ana/app/.teamai/workflow-worktrees/teamai-rbcc5a67473d24a48-fail-p1-84c932947390
 ```
 
+`doctor --fix` 只以 origin 当前的 `teamai-reports` 为准。origin 无法访问，或其他 teamai 进程正在写 `teamai-reports` 时，它不处理发布在那里的运行，并说明原因：
+
+```text
+⚠ teamai-reports could not be fetched from origin (fatal: unable to access 'https://git.example.com/team/app.git/': Could not resolve host: git.example.com), so runs published there are not swept this time. teamai doctor --fix tries again.
+```
+
+同理，如果运行的结束记录已在 `teamai-reports` 上，retry 会先在那里记下运行再次运行。这条记录无法送达时，运行不会被重新打开，也不会有任何改变。等 origin 接受推送后再 retry：
+
+```text
+$ teamai workflow retry rc2f58de53728f227 finish
+{"error":{"code":"reopen_not_published","message":"Run rc2f58de53728f227 was not reopened: its end is on teamai-reports, and the mark that it runs again did not reach teamai-reports (! refs/heads/teamai-reports:refs/heads/teamai-reports [remote rejected] (pre-receive hook declined); error: failed to push some refs to 'https://git.example.com/team/app.git'). Until it does, teamai doctor --fix on another machine may remove the branches the run needs. Retry once teamai-reports accepts pushes: teamai workflow retry rc2f58de53728f227 finish"}}
+```
+
+本机的 `doctor --fix` 正在移除某个运行的分支时，对该运行的 retry 会返回 `busy`：`Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`。
+
 既不是时长也不是 `never` 的值会被跳过并给出警告，由下一级决定。TeamAI 从不删除 pull request 的分支：请在代码托管平台上开启合并后自动删除头分支的选项。
 
 ### 从 CI 启动

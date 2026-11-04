@@ -541,6 +541,21 @@ $ teamai doctor --fix
 ℹ   rbcc5a67473d24a48 (settled 2026-10-27T19:39:16.700Z): teamai/rbcc5a67473d24a48/fail/p1, teamai/rbcc5a67473d24a48/left/p1, worktree /home/ana/app/.teamai/workflow-worktrees/teamai-rbcc5a67473d24a48-fail-p1-84c932947390
 ```
 
+`doctor --fix` trusts `teamai-reports` only as origin holds it now. When origin cannot be reached, or another teamai process is writing `teamai-reports`, it leaves the runs published there alone and says why:
+
+```text
+⚠ teamai-reports could not be fetched from origin (fatal: unable to access 'https://git.example.com/team/app.git/': Could not resolve host: git.example.com), so runs published there are not swept this time. teamai doctor --fix tries again.
+```
+
+For the same reason, a retry of a run whose end is already on `teamai-reports` first records there that the run runs again. When that record cannot get there, the run is not reopened, and nothing changes. Retry once origin accepts the push:
+
+```text
+$ teamai workflow retry rc2f58de53728f227 finish
+{"error":{"code":"reopen_not_published","message":"Run rc2f58de53728f227 was not reopened: its end is on teamai-reports, and the mark that it runs again did not reach teamai-reports (! refs/heads/teamai-reports:refs/heads/teamai-reports [remote rejected] (pre-receive hook declined); error: failed to push some refs to 'https://git.example.com/team/app.git'). Until it does, teamai doctor --fix on another machine may remove the branches the run needs. Retry once teamai-reports accepts pushes: teamai workflow retry rc2f58de53728f227 finish"}}
+```
+
+While `doctor --fix` on this machine removes a run's branches, a retry of that run answers `busy` with `Cleanup of run <run> is removing its branches, so it was not reopened. Try again shortly: teamai workflow retry <run> <step>`.
+
 A value that is neither a duration nor `never` is skipped with a warning, and the next level decides. TeamAI never deletes a pull request branch: turn on your provider's option to delete a head branch once it is merged.
 
 ### Start from CI
