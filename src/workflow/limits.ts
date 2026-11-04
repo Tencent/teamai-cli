@@ -2,7 +2,7 @@
  * The limits of a run: the deadlines of the run, its steps and their leases, and the tokens its workflows spend
  * against their budgets. Both count from where the run or the workflow step recorded that its limits start.
  */
-import { isItem } from './fan-out.js';
+import { isItem, keptResults } from './fan-out.js';
 import { isUnder, passesWithin, runPasses } from './loop.js';
 import type { Limit, TurnLimits } from './requirements.js';
 import { stepDefinitions, topScope, type GrantedAllowance, type Scope } from './scope.js';
@@ -178,7 +178,7 @@ export function expire(run: RunState, now: string): WorkflowResult | undefined {
     if (state.status === 'running') stopWhere(run, isUnder(state.id), { code: 'timeout', message: `Cancelled: ${failure.message}` }, run.revision, now);
     else if (state.status === 'leased') stopAttempt(run, state, now);
 
-    if (state.status === 'running' || state.status === 'leased') timeOut(state, failure, run.revision);
+    if (state.status === 'running' || state.status === 'leased') timeOut(state, failure, run.revision, keptResults(run, state, stepDefinitions(run)(state.id)));
   }
 
   return undefined;

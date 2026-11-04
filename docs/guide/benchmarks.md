@@ -392,8 +392,8 @@ you:    ok, but ask me at optional approvals
 agent:  drafts the task with you: the bug as you first described it, the check, the test the solution brought
 agent:  Propose benchmarks/fix-auth/tasks/refresh-race.yaml to the team as a pull request?
 you:    yes
-step:   teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
-        ✔ Pull Request created: https://github.com/acme/team/pull/77
+step:   copies the file to benchmarks/fix-auth/tasks/refresh-race.yaml in a fresh clone of the team repo
+        pull request https://github.com/acme/team/pull/77 from teamai/session-to-task/benchmarks/fix-auth/refresh-race
 ```
 
 The pull request adds one file:
@@ -455,6 +455,16 @@ start     HEAD         proposal
 | "Same, but answer optional approvals automatically" | teamai answers yes |
 
 The approval is optional because the pull request is reviewed anyway: a wrong task costs a review, not a broken suite. Nothing offers this workflow on its own; ask for it, or let the generated `teamai-session-to-task` skill point your agent at it. A team file `workflows/teamai-session-to-task.yaml` replaces it, and describe still fills the inputs it keeps by name, as strings.
+
+A task is proposed on a branch of its own, named for its suite and id, so asking again goes on where the first run left off:
+
+```text
+draft id       on the team repo
+refresh-race   pull request 77, from teamai/session-to-task/benchmarks/fix-auth/refresh-race
+refresh-race   drafted again, by you or a teammate: the same branch, and pull request 77 updated
+refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no pull request
+../escape      not a task file name: the check step fails before any approval or clone
+```
 
 ### Check tasks in the team repo's CI
 
@@ -558,12 +568,13 @@ Each trial prompt runs with [`permissions: unattended`](workflow-advanced.md#una
 | `workflows.sandbox: true` in config | Declares it for every process, as [Requirements and limits](workflow-advanced.md#requirements-and-limits) describes. |
 | neither | The run is refused at start with `requirement_unmet`: the trials require a strict sandbox. |
 | `--member-aliases` | Your own `~/.teamai/models/aliases.yaml` wins over the team's `models/aliases.yaml`, and the table shows `member` as the source of each model your file decided. |
+| `--task <id>`, `--arm <name>` | Run only these tasks and arms. Each repeats. See [Run some tasks and arms](#run-some-tasks-and-arms). |
 | `--fail-on-regression` | Also exit 1 when an arm's pass rate dropped. See [Fail on a regression](#fail-on-a-regression). |
 
 | `benchmark run` exits | When |
 | --- | --- |
 | 0 | The run succeeded and its report was written, whatever the trials' results. |
-| 1 | The suite or the start was refused, the run timed out or was cancelled, the report failed or was cancelled, or `--fail-on-regression` found a drop. |
+| 1 | The suite or the start was refused, the run timed out or was cancelled, or a `finally` step failed or was cancelled: the report, or the `regression` gate when `--fail-on-regression` found a drop. |
 
 A record still waiting for publication never changes the exit code.
 
@@ -583,11 +594,24 @@ The local driver runs each trial as fresh clone, team assets, setup, the arm's t
 | Lanes | One trial at a time, unless the suite sets [`parallel`](#parallel-lanes). |
 | Timeout | The suite's `timeout` is the whole run's. Setup, the tool and the check all stop at it: the trial they ran for counts as `error`, and the trials still open settle `not_run`. Keep it below your CI job's limit, or the job is killed before it prints the table. |
 | A hung trial | Without [`trial.timeout`](#trial-limits), a tool that never returns runs until the suite's timeout, and every trial after it settles `not_run`. |
-| Judges | A task with `successCriteria`, and the suite's scorers, are judged before the run ends, on the install that ran the trials. Start refuses a suite that needs a judge on a machine that cannot judge. |
+| Judges | A task with `successCriteria`, and the suite's scorers, are judged by the run's own `score` step, after the trials and before `report`. Start refuses a suite that needs a judge on a machine with no judge tool that runs its scorers' model at the isolation they ask for. |
 | Control commands | A trial's steps exist only once the run's `plan` step reported. Until then, `teamai workflow cancel <run> <step>` on a trial step answers `step_not_found`. A benchmark run is [isolated](workflow-advanced.md#isolated-runs): `workflow retry`, `publish` and `--claim` refuse it, `publish` and `--claim` with `isolated_run`, and retry names `teamai benchmark run <suite>`. |
 | Stopped | `teamai workflow resume <run>` continues it, with the `--sandbox` the run started with. |
 
 A start that cannot run refuses with a message that says what to do, and makes no run. When your user-scope teamai install also reaches the team, or the team is served over HTTP, the run cannot pin the team a trial gets, and refuses with `team_ref_blocked`, saying what to change.
+
+### Run some tasks and arms
+
+```console
+$ teamai benchmark run fix-auth --sandbox --task expired-token --arm claude --arm strong
+```
+
+The run has the baseline of `expired-token` and the trials of `claude` and `strong` on it, and its record and table list only them. `--fail-on-regression` then compares it only with a run of the same tasks and arms. The dashboard never takes such a run as the suite's current version while the suite has a run of all its tasks and arms. A name the suite does not have is refused before any run starts:
+
+```console
+$ teamai benchmark run fix-auth --sandbox --task expierd-token
+{"error":{"code":"invalid_arguments","message":"Suite \"fix-auth\" has no task \"expierd-token\". Its tasks: expired-token, login-copy, old-bug."}}
+```
 
 ### Parallel lanes
 
@@ -607,20 +631,40 @@ schemaVersion: v1alpha1
 name: teamai-benchmark
 description: Run a benchmark suite. Every arm works the same tasks in fresh clones, judged by checks it never sees.
 invoke: deny
-inputs: { suite: string, aliases: string }
+inputs: { suite: string, aliases: string, tasks: [string], arms: [string], fail_on_regression: boolean }
 steps:
   - id: plan
-    command: teamai benchmark plan "$SUITE" --aliases "$ALIASES"
-    env: { SUITE: "{{ inputs.suite }}", ALIASES: "{{ inputs.aliases }}" }
+    command: teamai benchmark plan "$SUITE" --aliases "$ALIASES" --tasks "$TASKS" --arms "$ARMS"
+    env: { SUITE: "{{ inputs.suite }}", ALIASES: "{{ inputs.aliases }}", TASKS: "{{ inputs.tasks }}", ARMS: "{{ inputs.arms }}" }
     output: { definition: workflow, plan: json }
   - id: trials
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
+  # Judges every trial with the scorers as of the run's start, a criteria task's teamai:correctness:<task> included. Reading
+  # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  - id: subjects
+    needs: [trials]
+    if: steps.trials.outcome != 'skipped'
+    command: teamai score subjects --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [string] }
+  - id: score
+    needs: [subjects]
+    for_each: steps.subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    timeout: 2h
+    continue_on_failure: true
 finally:
   - id: report
     command: teamai benchmark report
-    output: { text: string, table: json }
+    env: { COMPARE: "{{ inputs.fail_on_regression }}" }
+    output: { text: string, table: json, regression: dropped | held | no_comparable | off }
+  - id: regression
+    needs: [report]
+    if: steps.report.outputs.regression == 'dropped'
+    command: exit 1
 outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 ```
 
@@ -628,9 +672,11 @@ outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }
 | --- | --- | --- |
 | `teamai benchmark plan <suite>` | The `plan` step | Freezes the team revision you pulled, fetches every commit a trial reads, and prints the trials as a workflow, with one clone per baseline and trial. |
 | `teamai benchmark check --baseline\|--trial` | A step in each clone | Writes `check.add`, puts `protect` back for a trial, runs the task's check, and prints its result. |
-| `teamai benchmark report` | The `finally` step | Classifies the trials, writes the record, and prints the results. |
+| `teamai score subjects --run <run> --step trials` | The `subjects` step | Lists the trials' scored passes that settled on this machine. |
+| [`teamai-score`](scorers.md#the-teamai-score-workflow) | The `score` step, once per subject | Judges the trial with the scorers as of the run's start. |
+| `teamai benchmark report` | The `report` `finally` step | Classifies the trials, writes the record, and prints the results. With `COMPARE=true`, also compares the record, as [Fail on a regression](#fail-on-a-regression) says. |
 
-`trials` runs what `plan` printed: see [Run a workflow a step printed](workflow-advanced.md#run-a-workflow-a-step-printed). `report` runs after the trials whatever happened to them, as [finally steps](workflow-advanced.md#finally-steps) do. `benchmark run --member-aliases` passes `aliases` as `member`, else as `team`.
+`trials` runs what `plan` printed: see [Run a workflow a step printed](workflow-advanced.md#run-a-workflow-a-step-printed). `report` runs after the trials whatever happened to them, as [finally steps](workflow-advanced.md#finally-steps) do. `benchmark run --member-aliases` passes `aliases` as `member`, else as `team`. `--task` and `--arm` pass `tasks` and `arms`, else `[]`, which plans every task and arm. `--fail-on-regression` passes `fail_on_regression` as `true`, else `false`. `report` reads each trial's labels from the `score` step's results in the run file, since a `finally` step cannot read `steps`.
 
 To change it, push your own `workflows/teamai-benchmark.yaml`, or `workflows/<namespace>/teamai-benchmark.yaml` for members of one role or project. It replaces teamai's for whoever receives it, as any [default workflow](workflow.md#override-a-default) does, and `benchmark run` says so:
 
@@ -638,11 +684,26 @@ To change it, push your own `workflows/teamai-benchmark.yaml`, or `workflows/<na
 ℹ Running the team's workflows/ops/teamai-benchmark.yaml, which replaces teamai's benchmark workflow.
 ```
 
-Yours must take input `suite`, and input `aliases` to run with `--member-aliases`; `benchmark run` refuses it otherwise. Keep `plan`'s step id and `report` as a `finally` step. Dropping `strict: true` lets trials run without the credentials being kept from them, and with each tool's own permission settings rather than unattended: a tool that may not edit fails its trials, and the report opens with a line that says so. When two namespaces you receive both have a `teamai-benchmark.yaml`, `benchmark run` refuses with `workflow_namespace_conflict`, naming both files, and never falls back to teamai's.
+Yours must take input `suite`, input `aliases` to run with `--member-aliases`, inputs `tasks` and `arms` to run with `--task` and `--arm`, and input `fail_on_regression` to run with `--fail-on-regression`; `benchmark run` refuses it otherwise, naming the input. Keep `plan`'s step id and `report` as a `finally` step. Dropping `strict: true` lets trials run without the credentials being kept from them, and with each tool's own permission settings rather than unattended: a tool that may not edit fails its trials, and the report opens with a line that says so. When two namespaces you receive both have a `teamai-benchmark.yaml`, `benchmark run` refuses with `workflow_namespace_conflict`, naming both files, and never falls back to teamai's.
+
+You may change `score`'s `timeout`, or drop `subjects` and `score` to run without judging. Every trial a judge would decide then ends `unscored`:
+
+```yaml fragment
+# workflows/teamai-benchmark.yaml: the trials, never judged
+steps:
+  # plan, as teamai's
+  - id: trials
+    needs: [plan]
+    workflow: { from: plan }
+    requires: { isolation: sandbox, strict: true }
+  # no subjects or score step
+finally:
+  # report and regression, as teamai's
+```
 
 ## Results
 
-When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`. For this suite with a third task, `old-bug`, whose check already passes:
+When the run ends, `benchmark run` prints the results on stderr. The JSON envelope on stdout carries the same text in `data.done.outputs.text`, and the numbers in `data.done.outputs.table`, whose `verdicts` give each judged trial's verdict per scorer: `labelled` with its label, or `unscored` with `because`, the judge's failure code, or `run_ended` when no label came. For this suite with a third task, `old-bug`, whose check already passes:
 
 ```text
 | Arm | Tool | Model (source) | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
@@ -736,11 +797,37 @@ The results are not the run's status: a run whose trials all failed still succee
 ## Fail on a regression
 
 ```console
-$ teamai benchmark run fix-auth --sandbox --fail-on-regression
+$ teamai benchmark run fix-auth --sandbox --fail-on-regression > done.json
 Arm "claude" passed 4/9 paired trials, against 8/9 in run r1c0d9e2f4b6a8c7d: a drop of 44 points, with a 95% interval of -73 to -16 points.
+$ echo $?
+1
+$ jq -c .data.done.finally done.json
+[{"id":"regression","outcome":"failed"}]
 ```
 
-`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and the run exits 1 when an arm's pass rate dropped by more than chance. Records still waiting on this machine are not compared. With no such run, it prints a notice and leaves the exit code alone. It needs the local driver: with `--driver skill` the coding session drives the run after the command returns, so the command refuses the flag.
+`--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and an arm dropped when its pass rate dropped by more than chance. Records still waiting on this machine are not compared.
+
+| `report` output `regression` | When | The `regression` step |
+| --- | --- | --- |
+| `dropped` | An arm dropped. The text names each one, as above. | Runs `exit 1` and fails: `benchmark run` exits 1. |
+| `held` | No arm dropped. The text names the run it compared with. | Skipped. |
+| `no_comparable` | No such run. The text says so. | Skipped. |
+| `off` | `fail_on_regression` is `false`: nothing was compared. | Skipped. |
+
+The gate is a step of the run, so the run's driver ends it there whoever started it. teamai's `teamai-benchmark` is `invoke: deny`, so start it with `--driver local`: a `--driver skill` start answers `invoke_denied`, unless your team's copy sets `invoke: allow`. `workflow start teamai-benchmark` with `"fail_on_regression":true` runs the same gate. Its exit code follows the run's outcome, which a `finally` step does not change, so read `done.finally`.
+
+The gate is the team's to change. To warn of a drop instead of failing the job, replace the `regression` step and keep the rest as teamai's:
+
+```yaml
+# workflows/teamai-benchmark.yaml: a drop warns in the CI log, and the job still passes
+finally:
+  # report, as teamai's
+  - id: regression
+    needs: [report]
+    if: steps.report.outputs.regression == 'dropped'
+    command: echo "::warning title=Benchmark regression::$TEXT"
+    env: { TEXT: "{{ steps.report.outputs.text }}" }
+```
 
 To turn a scorer's repeated failures into a PR that changes the team's assets and adds one regression task each, proven on every tool before and after, see [Self-improvement](self-improvement.md).
 
@@ -800,7 +887,7 @@ Set `TEAM_REPO`, `GITLAB_TOKEN` (reads the team repo) and `ANTHROPIC_API_KEY` as
 A benchmark run is an ordinary workflow run, so any driver runs it through `workflow next --prepare` and `workflow report`, as [Clone workspaces in your own driver](workflow-advanced.md#clone-workspaces-in-your-own-driver) describes:
 
 ```text
-teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team"}' --timeout 45m
+teamai workflow start teamai-benchmark --inputs '{"suite":"fix-auth","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}' --timeout 45m
 teamai workflow next <run> --prepare --json '{"driver":{..., "can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"unattended":true,"end_turn":true}}}'
   -> a command lease (plan, check, report): run lease.command in lease.cwd, or in your checkout without one, with TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>
   -> a prompt lease: launch lease.tool in lease.cwd on lease.prompt, with lease.model, in its unattended mode for lease.permissions, held to lease.limits
@@ -815,4 +902,4 @@ teamai workflow report <run> --json '{..., "tool":"claude", "durationMs":84000, 
 | `report` | For a prompt: `tool`, `durationMs` measured around the tool launch, and `cost` only when the tool stated one. |
 | Limits | Hold the tool to `lease.limits`. When one stopped it, report `outcome: "success"` with `limit`: `timeout`, `budget` or `max_turns`, and list in `unenforced` a `budget` or `max_turns` you could not hold it to. |
 | Timeout | `benchmark run` passes the suite's `timeout` as `--timeout`; a direct `workflow start teamai-benchmark` must pass it too, or `plan` fails. |
-| Judges | While the suite's scorers still judge, `next` answers `wait` with `judging`: run `teamai score --next` on the install that ran the trials. |
+| Judges | A trial's judge is a step of a `teamai-score` run, leased like any other and [confined to a directory](workflow-advanced.md#confined-steps-in-your-own-driver): offer `can.confined`, or it waits with `wait.held[].missing` naming `confined`. |

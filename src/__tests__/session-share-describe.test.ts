@@ -10,7 +10,8 @@ afterEach(() => {
 });
 
 const SESSION_CALL = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: '7c1e-session', tool: 'claude' } as const;
-const NO_SESSION = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: undefined, tool: undefined } as const;
+// It names its tool, which the judge step of teamai-score runs on, but no session.
+const NO_SESSION = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: undefined, tool: 'claude' } as const;
 
 /** A team override of teamai-share-learnings with `inputs` and one step that reads none of them. */
 const override = (inputs: string) => `schemaVersion: v1alpha1
@@ -34,7 +35,10 @@ async function proposedInputs(workflows: Record<string, string>, caller: typeof 
 
 describe('describe of teamai-share-learnings and teamai-share-session', () => {
   it('proposes a value and why for each input of the contract, for the calling session, for both defaults', async () => {
-    expect(await proposedInputs({}, SESSION_CALL, 'teamai-share-session')).toEqual(await proposedInputs({}));
+    expect(await proposedInputs({}, SESSION_CALL, 'teamai-share-session')).toEqual([...await proposedInputs({}), {
+      name: 'demand', type: { type: 'enum', values: ['auto', 'named'] }, value: 'named',
+      why: 'This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as a background pass does.',
+    }]);
     expect(await proposedInputs({})).toEqual([
       { name: 'session', type: { type: 'string' }, value: '7c1e-session', why: 'The session to share: this one.' },
       { name: 'source', type: { type: 'string' }, value: 'claude-code', why: 'This session\'s tool, as teamai session list names it.' },

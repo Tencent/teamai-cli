@@ -16,7 +16,9 @@ import { LeaseWireSchema } from '../../workflow/lease-wire.js';
 import { benchmarkFixture, envelope, FIX_SUITE, startFixBenchmark, type BenchmarkFixture, type Envelope } from '../helpers/benchmark-fixture.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'index.js');
-const CAN = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], unattended: true };
+const CAN = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], unattended: true,
+  confined: [{ level: 'verified', access: 'read', tools: ['claude'] }],
+};
 const CRITERIA_TASK = `schemaVersion: v1alpha1
 title: Fix the answer
 prompt: Make answer.js export 42.
@@ -74,7 +76,13 @@ function byHand(fixture: BenchmarkFixture, run: string, identity = { kind: 'exte
     const settled = ran.code !== 0 ? { outcome: 'failed' } : { outcome: 'success', ...(lease.output !== undefined ? { outputs: JSON.parse(ran.stdout) } : {}) };
     return send({ driver: identity, attempt: lease.attempt, revision: lease.revision, ...settled });
   };
-  /** Takes and runs every command lease until `next` answers a prompt lease, or else what it answered. */
+  const judged: string[] = [];
+  /** Answers a lease confined to `dir` with a correct label, as a confined run of claude would, after reading the diff there. */
+  const judge = async (lease: Lease, dir: string): Promise<void> => {
+    judged.push(fs.readFileSync(path.join(dir, 'diff.patch'), 'utf8'));
+    await send({ driver: identity, attempt: lease.attempt, revision: lease.revision, outcome: 'success', outputs: { answer: { label: 'correct', reasoning: 'It exports 42.' } }, confined: { tool: 'claude', isolation: 'verified', access: 'read' } });
+  };
+  /** Takes and runs every command lease, and judges every confined one, until `next` answers a prompt lease, or else what it answered. */
   const commandsUntil = async (wanted: 'prompt' | 'done'): Promise<Envelope> => {
     for (let polls = 0; polls < 60; polls += 1) {
       const answer = await next();
@@ -86,13 +94,16 @@ function byHand(fixture: BenchmarkFixture, run: string, identity = { kind: 'exte
         continue;
       }
       const { lease } = parsed.data.data;
-      if (lease.command === undefined) return answer;
-      await command(lease);
+      if (lease.confined) await judge(lease, lease.confined.dir);
+      else if (lease.command === undefined) return answer;
+      else await command(lease);
     }
     throw new Error(`run ${run} did not reach a ${wanted}`);
   };
   return {
     identity, next, report, send, command,
+    /** The diff each confined judge read, in the order they were leased. */
+    judged,
     /** The trial's prompt lease, once the driver ran the plan and the baselines before it. */
     prompt: async (): Promise<Lease> => LeasedSchema.parse(await commandsUntil('prompt')).data.lease,
     /** What `next` answers once the driver ran every command lease left: the run's end, or a lease it cannot run. */
@@ -193,29 +204,21 @@ describe('two calls on one trial copy', () => {
     expect(fixture.trialRootEntries()).toEqual([]);
   }, 120_000);
 
-  it("gives score --next nothing to judge while the trial's report still collects its evidence, so the judge reads all of it", async () => {
+  it("leaves the trial to the run's own judge while its report still collects its evidence, so the judge reads all of it", async () => {
     const fixture = await fixtureWith({ tasks: { fix: CRITERIA_TASK } });
     const run = await startFixBenchmark(fixture);
     const driver = byHand(fixture, run);
     const lease = await driver.prompt();
     fs.writeFileSync(path.join(lease.cwd, 'answer.js'), 'module.exports = 42;\n');
     const held = holdGit(fixture, ' --no-ext-diff --no-textconv ');
-    const judge = { kind: 'external', machine: 'judge', workspace: fixture.work };
-    const scoreNext = async (): Promise<Envelope> => envelope(await fixture.teamai(['score', '--next', '--json', JSON.stringify({ driver: { ...judge, can: { judge: { isolation: 'verified', tools: ['claude'] } } } })]));
-
     const reporting = driver.send(driver.report(lease));
     await until(() => held.entered() === 1, 'the report collects the evidence');
-    const early = await scoreNext();
     held.release();
     const reported = await reporting;
-    const leased = z.object({ data: z.object({ lease: z.object({ ref: z.string() }) }) }).parse(await scoreNext());
-    const labelled = envelope(await fixture.teamai(['score', '--lease', leased.data.lease.ref, '--json', JSON.stringify({ driver: judge })]));
     const done = await driver.finish();
 
-    expect(early).toEqual({ data: { idle: { open: 0, leased: 0 } } });
     expect(reported).toMatchObject({ data: { accepted: true } });
-    expect(labelled).toMatchObject({ data: { label: { label: 'correct', passed: true } } });
-    expect(fixture.judgeLaunches()).toEqual([expect.objectContaining({ diff: expect.stringContaining('+module.exports = 42;') })]);
+    expect(driver.judged).toEqual([expect.stringContaining('+module.exports = 42;')]);
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(RecordSchema.parse(fixture.benchmarkRecord(run)).trials).toEqual([expect.objectContaining({ result: 'passed' })]);
   }, 120_000);
@@ -242,7 +245,7 @@ describe('two calls on one trial copy', () => {
     expect(again).toMatchObject({ data: { accepted: true } });
     expect(check).toMatchObject({ step: 'trials.r1.fix.claude.check', cwd: lease.cwd });
     expect(checked).toMatchObject({ data: { accepted: true } });
-    expect(await driver.next()).toMatchObject({ data: { wait: { judging: 1 } } });
+    expect(LeasedSchema.parse(await driver.next()).data.lease.step).toBe('subjects');
     const steps = RunSchema.parse(fixture.runFile(run)).steps;
     expect(steps.find((step) => step.id === 'trials.r1.fix.claude.check')).toMatchObject({ status: 'succeeded', outputs: { result: 'passed' } });
     expect(fixture.trialRootEntries()).toEqual([]);

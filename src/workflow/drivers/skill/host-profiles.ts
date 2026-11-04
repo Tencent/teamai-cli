@@ -1,7 +1,7 @@
 /** The host question the agent answers once per run with prompt steps, and what the skill driver declares on every `next`. */
-import type { JudgeAccess } from '../../../scorers/label.js';
-import { isJudgeTool, judgeAccess } from '../../../scorers/judge.js';
+import { confinedAccess, isConfinedTool } from '../../../tool-launch/confined.js';
 import type { DriverCan } from '../../requirements.js';
+import type { SkillState } from './skill-state.js';
 
 export const HOST_CHOICES = ['h1', 'h2', 'h3', 'h4'] as const;
 
@@ -19,7 +19,9 @@ export interface HostProfile {
    * works in an interactive step with the agent. No host meters a child's tokens or turns to the CLI, and teamai scopes
    * team env only in the processes it starts, so prompt steps get none. A coding session never bypasses its person's
    * permissions, so no profile runs a prompt unattended. No host promises that the child it starts loads what teamai
-   * delivered for a step's role rather than the member's own assets, so no profile takes a step with a role.
+   * delivered for a step's role rather than the member's own assets, so no profile takes a step with a role. A profile
+   * that names the directory a step works in takes a step in the team workspace: its command runs in the runner, and
+   * its prompt in a child TeamAI places in the team clone.
    */
   can: Required<DriverCan>;
 }
@@ -27,21 +29,21 @@ export interface HostProfile {
 export const HOST_PROFILES: Record<HostChoice, HostProfile> = {
   h1: {
     label: 'Children that work in a directory TeamAI names, several at once', children: 'parallel', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   h2: {
     label: 'Children that work in a directory TeamAI names, one at a time', children: 'serial', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   h3: {
     label: 'Children that work in a worktree your host makes for them, several at once', children: 'parallel', places: 'host',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
   // The session works each step itself, beside its own checkout, so it takes no step in a worktree: those wait for the
   // person's terminal, where the local driver runs them.
   h4: {
     label: 'No child agent: you work each step yourself, one at a time', children: 'serial', places: 'teamai',
-    can: { hitl: true, workspace: ['read-only'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: { hitl: true, workspace: ['read-only'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false, confined: [] },
   },
 };
 
@@ -52,17 +54,18 @@ export function canFor(host: HostChoice | undefined): Required<DriverCan> {
   return HOST_PROFILES[host ?? 'h1'].can;
 }
 
-/** The confined judge a driver offers `score --next`. */
-export interface JudgeOffer {
-  isolation: 'verified';
-  access: JudgeAccess;
-  tools: [string];
-}
-
 /**
- * What the skill driver declares on `score --next`: the confined judge of the session tool, which describe found
- * verified, and what that judge can do. A tool with no judge profile declares `full`, as a judge that does not say counts.
+ * The confined runs the skill driver offers on `next`: the session tool's own at `verified` while this machine judges
+ * the run with it, which the background runner starts; else a fresh child in the run's tool at `best-effort` while the
+ * session judges the run; else none, as after `--no-judge`, under `h4`, or once judging is off. A child reads its
+ * directory and nothing more.
  */
-export function judgeCan(tool: string): JudgeOffer {
-  return { isolation: 'verified', access: isJudgeTool(tool) ? judgeAccess(tool) : 'full', tools: [tool] };
+export function confinedCan(state: Pick<SkillState, 'judging' | 'sessionJudge' | 'orchestrator'>): NonNullable<DriverCan['confined']> {
+  if (state.judging) {
+    const { tool } = state.judging;
+
+    return [{ level: 'verified', access: isConfinedTool(tool) ? confinedAccess(tool) : 'full', tools: [tool] }];
+  }
+
+  return state.sessionJudge ? [{ level: 'best-effort', access: 'read', tools: [state.orchestrator.tool ?? state.sessionJudge.tool] }] : [];
 }

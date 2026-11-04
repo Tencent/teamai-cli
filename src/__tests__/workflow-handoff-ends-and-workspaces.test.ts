@@ -7,7 +7,7 @@ import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { updateReports } from '../utils/reports-branch.js';
 import * as workflowCache from '../workflow/cache.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun, resumeRun } from '../workflow/handoff.js';
 import { pendingRecords, publishPendingRecords } from '../workflow/records.js';
@@ -771,7 +771,7 @@ steps:
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
     fs.writeFileSync(path.join(alice.config.repo.localPath, 'workflows', 'build.yaml'), BUILD.replace('echo two', 'echo edited'));
-    await syncWorkflowDefinitions(alice.config);
+    await syncScorersThenWorkflows(alice.config);
     const runId = await start(alice);
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
 
@@ -806,7 +806,7 @@ steps:
     const acme = team();
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
-    const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' };
+    const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here', demand: 'named' };
     const startClose = async (): Promise<string> => {
       const started = await startRun(alice.config, 'teamai-share-session', inputs, { secrets: await knownSecrets(alice.config) });
       if ('error' in started) throw new Error(started.error.message);
@@ -855,7 +855,7 @@ steps:
         additionalRoles: [],
         dataHome: path.join(root, name, 'data'),
       };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout, driver: { kind: 'local', machine: name, workspace: checkout } };
     };
     const alice = await member('alice');
@@ -867,7 +867,7 @@ steps:
     git(seed, 'commit', '-qam', 'change build');
     git(seed, 'push', '-q', origin, 'main');
     git(bob.checkout, 'pull', '-q', '--ff-only');
-    await syncWorkflowDefinitions(bob.config);
+    await syncScorersThenWorkflows(bob.config);
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
     expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { lease: { step: 'two', command: 'echo two' } } });

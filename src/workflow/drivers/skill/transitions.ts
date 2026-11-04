@@ -4,8 +4,12 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
+import type { JsonValue } from '../../../types.js';
+import type { ScoredLabels } from '../../../scorers/engine-hooks.js';
 import type { ToolId } from '../../../tools.js';
-import type { Judging, PersonHandoff, RunReadied, RunVersion } from '../../protocol.js';
+import type { Judging, PersonHandoff, RunReadied, RunVersion, StartedRun } from '../../protocol.js';
+import type { ConfinedStepEnd } from '../../confined-step.js';
+import type { ConfinedLease } from '../../lease-wire.js';
 import type { EnvScope } from '../../requirements.js';
 import type { StepModel } from '../../step-model.js';
 import type { AttemptId, RunId } from '../../store.js';
@@ -13,7 +17,7 @@ import type { OutputSchema, WorkflowFailure } from '../../types.js';
 import type { ChildResult } from './child-brief.js';
 import type { HostChoice, HostProfile } from './host-profiles.js';
 import type { HitlMode, StartAnswer, StartCheck } from './preflight.js';
-import type { AttemptState, Dispatch, Gate, Judge, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
+import type { AttemptState, Dispatch, Gate, PlaceAsk, ReportBody, SkillState, StopReason, TurnEvent, UnansweredHost } from './skill-state.js';
 import type { Waiting } from './turn.js';
 
 export interface TransitionRow {
@@ -33,12 +37,13 @@ export const TRANSITIONS = [
   { id: 'R4', state: 'none', input: 'describe', guard: 'R27 does not apply, and nothing to ask', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the one start literal, and the facts to tell the person' },
   { id: 'R16', state: 'none', input: 'describe', guard: '`deliveryProblem` answers for the checkout: a `deliver: pr` step the definition cannot deliver (`bad_delivery`), or a detached HEAD (`no_base_branch`)', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with its message, no literal' },
   { id: 'R23', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1 and R16 do not apply, and the definition has a local route, as R2\'s', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with the local route\'s reason, no literal: nobody is there to run the local driver' },
-  { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R23 do not apply, and `attendedReason` names what needs a person before the run starts: `invoke: ask`. A step only a person can take needs none: D28 hands the run to one when it reaches it', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
+  { id: 'R17', state: 'none', input: 'describe', guard: 'run mode `unattended`, R1, R16 and R23 do not apply, and `attendedReason` names what needs a person before the run starts: `invoke: ask`. A step only a person can take needs none: D30 hands the run to one when it reaches it', effects: 'none', next: 'none', action: 'describe `ask.kind: denied` with that reason, no literal' },
   { id: 'R18', state: 'none', input: 'describe', guard: 'run mode `unattended`, and R1, R16, R23, R17 and R27 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: start` with the start of R3\'s recommended option under `--auto-approve`; `{inputs}` kept and `inputs` listed when the workflow has inputs' },
   { id: 'R27', state: 'none', input: 'describe', guard: 'the session names no tool, the definition has a step whose model or judging needs one (`needsTool`), and R1, R16, R2, R23 and R17 do not apply', effects: 'none', next: 'none', action: 'describe `ask.kind: tool` with the reason, the describe literal with `--tools default=\'{tool}\'` for the agent to fill, and the ids of the tools teamai knows' },
-  { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'the definition has a local route or a benchmark trial; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
-  { id: 'R25', state: 'none', input: 'start `--driver skill`', guard: 'run mode `unattended`, R8 does not apply, and `attendedReason` names what needs a person, as R17\'s', effects: 'none', next: 'none', action: 'error `unattended_denied` with that reason, next null: no run is created' },
-  { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`, and R8 and R25 do not apply', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
+  { id: 'R29', state: 'none', input: 'start `--driver skill`', guard: '`invoke: deny` and the caller has agent evidence, as R1\'s', effects: 'none', next: 'none', action: 'error `invoke_denied` with the reason, next null: no run is created' },
+  { id: 'R8', state: 'none', input: 'start `--driver skill`, or R19\'s input', guard: 'R29 does not apply, and the definition has a local route or a benchmark trial; for R19\'s input, the run\'s own definition, once R20 and R21 do not apply, or, in run mode `unattended`, as the run stands before the claim', effects: 'none', next: 'none', action: 'error `needs_local_driver` with the reason, next null; for R19\'s input it names the person\'s `teamai workflow resume <run>` literal, and the run stays readied here, or, unattended, as it was: nothing is claimed' },
+  { id: 'R25', state: 'none', input: 'start `--driver skill`', guard: 'run mode `unattended`, R29 and R8 do not apply, and `attendedReason` names what needs a person, as R17\'s', effects: 'none', next: 'none', action: 'error `unattended_denied` with that reason, next null: no run is created' },
+  { id: 'R9', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `confirm-needed`, and R29, R8 and R25 do not apply', effects: 'none', next: 'none', action: 'error `confirm_needed`, next: the describe literal' },
   { id: 'R10', state: 'none', input: 'start `--driver skill`', guard: '`checkStartAnswers` answers `ok`', effects: '`WorkflowClient.start`; write skill.json: identity `{skill, machine, run checkout}`, invocation, options (`--parallel`, the HITL mode, the caller\'s run mode), host `pending` when the definition has a prompt step or the session judges the run, with whether it has a prompt step, owner := the caller\'s session, working in the tool its `--tools default=<tool>` names, else the one its host names; judging on with the session tool when describe judges here, or `sessionJudge` with it when describe judges by the session, and the start has no `--no-judge`', next: 'host when it has a prompt step or the session judges it, else drive', action: 'the turn of a tick' },
   { id: 'R11', state: 'none', input: 'next, report `--driver skill`', guard: 'this machine has no skill.json for the run', effects: 'none', next: 'none', action: 'error `not_skill_run`, next: the `resume <run> --driver skill` literal, with `--tools default=\'{tool}\'` for a session with no tool to fill' },
   { id: 'R28', state: 'any', input: 'R19\'s input', guard: 'R19 would take the run, R8 and R24 do not apply, and the session names no tool while the run has a step whose model or judging needs one (`needsTool`)', effects: 'remove the skill.json kept here, which the published run the resume installed made stale', next: 'unchanged', action: 'error `tool_needed`, next: the `resume <run> --driver skill --tools default=\'{tool}\'` literal with the options and `--confirmed` of the call, whose slot the agent fills with its tool' },
@@ -57,47 +62,51 @@ export const TRANSITIONS = [
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at `verified` while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued or placing', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
   { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
   { id: 'D5', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a stopping or reporting', effects: 'none', next: 'drive', action: '' },
   { id: 'D6', state: 'drive', input: 'reply lease', guard: 'executor command', effects: 'phase preparing; spawn runner job `command`', next: 'drive', action: 'event `started`' },
-  { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and D8 does not apply', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
+  { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and neither D8 nor D28 applies', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D8', state: 'drive', input: 'reply lease', guard: 'executor prompt, workspace `new` or `continue`, and a host that makes places (h3)', effects: 'phase preparing with request `host`; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
+  { id: 'D28', state: 'drive', input: 'reply lease', guard: 'executor prompt, confined to a directory, while `judging`', effects: 'phase preparing, `runs: here`; spawn runner', next: 'drive', action: 'event `started`' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
   { id: 'D10', state: 'drive', input: 'reply hitl', guard: 'a required approval', effects: 'journal the gate: `seq` := seq + 1, unless it is the gate journalled already', next: 'drive', action: '`person why:approval` with the person\'s literals; waiting `<step> waits for the person\'s answer`' },
   { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
   { id: 'D12', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `recommend`', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:agent`' },
   { id: 'D13', state: 'drive', input: 'reply wait', guard: 'it lists `delivering`', effects: 'none', next: 'drive', action: 'waiting `delivering` in each turn that ticked, polls\' included; `then: poll`' },
   { id: 'D14', state: 'drive', input: 'reply wait', guard: 'it lists `held`, and no attempt is open', effects: 'none', next: 'drive', action: '`person why:handoff` with the person\'s `teamai workflow resume <run>` literal, with `--tools default=<session tool>` when `localPromptTool` names one; waiting `held`; no `then`' },
+  { id: 'D29', state: 'drive', input: 'reply wait, before its row', guard: 'it lists `held`, no attempt is open, and each held step misses only `confined` or `model`, which this driver\'s offers never give for the run', effects: '`WorkflowClient.giveUp` of the held steps, which cancels the nearest step above each that sets `continue_on_failure`; when it cancels, engine `next` again as D1; when it refuses, D14', next: 'drive', action: '' },
   { id: 'D15', state: 'drive', input: 'reply wait', guard: '', effects: 'none', next: 'drive', action: 'waiting' },
   { id: 'D27', state: 'drive', input: 'reply wait, after its row', guard: 'it lists `held`, and no reply of this tick came to a `next` that took no lease', effects: 'engine `next` as D1, with `canTakeLease: false`, since the engine answers a held step before a gate; H5, then D10 to D12 for a gate, take its reply', next: 'drive', action: '' },
-  { id: 'D28', state: 'drive', input: 'reply wait, before D13 to D15', guard: 'run mode `unattended`, it lists steps held for `hitl`, and no attempt or judge is open', effects: '`WorkflowClient.offer`: publish the run on teamai-reports, offered, from the run\'s checkout', next: 'drive', action: 'D29 or D30 by the offer\'s answer' },
-  { id: 'D29', state: 'drive', input: 'D28\'s offer answered `offers`', guard: '', effects: 'none', next: 'drive', action: '`person why:offered` naming those steps and the person\'s `teamai workflow resume <run> --claim` literal; waiting held; no `then`' },
-  { id: 'D30', state: 'drive', input: 'D28\'s offer answered `unoffered`', guard: '', effects: 'engine `next` as D1, with `handoff: unoffered` and the reason, so each of those steps fails `hitl_required` saying why the run could not be offered', next: 'drive', action: 'the reply\'s row' },
+  { id: 'D30', state: 'drive', input: 'reply wait, before D13 to D15', guard: 'run mode `unattended`, it lists steps held for `hitl`, and no attempt or score run is open', effects: '`WorkflowClient.offer`: publish the run on teamai-reports, offered, from the run\'s checkout', next: 'drive', action: 'D31 or D32 by the offer\'s answer' },
+  { id: 'D31', state: 'drive', input: 'D30\'s offer answered `offers`', guard: '', effects: 'none', next: 'drive', action: '`person why:offered` naming those steps and the person\'s `teamai workflow resume <run> --claim` literal; waiting held; no `then`' },
+  { id: 'D32', state: 'drive', input: 'D30\'s offer answered `unoffered`', guard: '', effects: 'engine `next` as D1, with `handoff: unoffered` and the reason, so each of those steps fails `hitl_required` saying why the run could not be offered', next: 'drive', action: 'the reply\'s row' },
   { id: 'D16', state: 'drive', input: 'reply done', guard: '', effects: '`seq` := seq + 1, so every session has the end to see; keep with the end the run file\'s version, read after, when the end is out and its status and receipts agree with the end; `branch` from that read, when the end is `succeeded`', next: 'done', action: '`done {outcome, failure, prs, branch, judging, score}`' },
   { id: 'D17', state: 'drive', input: 'reply error', guard: '', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'D18', state: 'drive', input: 'a foreground call', guard: 'it spawned runners', effects: 'release the lock; wait up to `WAIT_GRACE_MS` for them, re-taking the lock per check', next: 'drive', action: '' },
   { id: 'D19', state: 'any', input: 'a foreground call', guard: 'the lock is not free within `TICK_LOCK_WAIT_MS` (`report`: `WAIT_BOUND_MS`)', effects: 'none', next: 'unchanged', action: 'error `driver_running`, next: the same literal' },
   { id: 'D20', state: 'host, drive, done', input: 'a foreground call, after its tick', guard: '', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the turn: the host question, or every `stop`, then every unacked dispatch, then every `place`, then the gate\'s `choose` or `person`; events after the old `seen[s]`; `then: poll` until the run is done and no attempt or judge is open' },
   { id: 'D21', state: 'host, drive, done', input: 'a poll tick', guard: 'the lock was busy, or nothing below applies, and the bound is not reached', effects: 'release; sleep `WAIT_POLL_MS`; tick again', next: 'unchanged', action: '' },
-  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, a place is not adopted, a `stop` is not reported, or the gate was journalled after `seen[s]`', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
+  { id: 'D22', state: 'host, drive, done', input: 'a poll tick', guard: 'the host question is unanswered, a dispatch is unacked, a place is not adopted, a `stop` is not reported, of this run or, for the dispatch and the `stop`, of a run `scoring` lists, or the gate was journalled after `seen[s]`', effects: 'none', next: 'unchanged', action: '`then: wake` with the next literal, no actions' },
   { id: 'D23', state: 'done', input: 'a poll tick', guard: '`seen[s]` is below seq, and no attempt is open', effects: '`seen[s]` := seq', next: 'done', action: '`done` with its events; `then: poll` while a judge is open' },
   { id: 'D24', state: 'host, drive, done', input: 'a poll tick', guard: 'the bound is reached, and D25 does not apply', effects: 'none', next: 'unchanged', action: '`then: poll`, no actions' },
   { id: 'D25', state: 'drive, done', input: 'a poll tick', guard: 'a `settled` or `stopped` event came after `seen[s]`, and neither D22 nor D23 applies', effects: '`seen[s]` := seq', next: 'unchanged', action: 'the events after the old `seen[s]`, no actions; `then: poll`' },
   { id: 'D26', state: 'drive', input: 'a poll tick', guard: 'the tick took D14, and D22 does not apply', effects: 'none', next: 'drive', action: '`then: wake` with the next literal, no actions' },
   { id: 'C1', state: 'preparing', input: 'runner: prepared', guard: 'job `command`', effects: 'run the command outside the lock with `{...stepEnvironment(env, envScope).env, ...lease.env, TEAMAI_WORKFLOW_ATTEMPT}` (`process.env` for a lease without `envScope`), the running teamai first on PATH, output masked into `output.log`', next: 'running', action: '' },
-  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
+  { id: 'C2', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`', effects: '`pickChildModel`; `writeChildBrief`, which for a confined lease names its directory, the only one the child reads, and marks the dispatch `confined`', next: 'offered', action: '`dispatch` in each foreground turn until acked' },
   { id: 'C3', state: 'preparing', input: 'runner: prepared', guard: 'job `prompt`; `pickChildModel` fails `model_unavailable`', effects: 'write-ahead `failed` with that failure', next: 'reporting', action: '' },
   { id: 'C4', state: 'preparing', input: 'runner: place busy, behind b', guard: '', effects: '`behind` := b', next: 'queued', action: '' },
   { id: 'C5', state: 'preparing', input: 'runner: needs a place', guard: 'request `host`, and no place an earlier attempt adopted for the branch passes the adopt checks', effects: 'the place to ask for: `name`, `branch`, `start`', next: 'placing', action: '`place` in each foreground turn until adopted' },
   { id: 'C6', state: 'preparing', input: 'runner: adopt refused', guard: 'request `adopt dir`', effects: '`refused` := why; the engine still leases a', next: 'placing', action: '`place` with `refused`' },
   { id: 'C7', state: 'preparing', input: 'runner: prepare or setup failed', guard: '', effects: 'write-ahead `failed` with its failure', next: 'reporting', action: '' },
   { id: 'C8', state: 'running', input: 'runner: the command exited', guard: '', effects: 'write-ahead: `success` on exit 0, else `failed`; outputs, exit code, masked tail', next: 'reporting', action: '' },
-  { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, or its command exiting', guard: '', effects: 'stop the setup or command and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
+  { id: 'C9', state: 'stopping by its runner', input: 'runner: its check every `RUNNER_POLL_MS` and at `expiresAt`, its setup ending, its command exiting, or its confined run ending', guard: '', effects: 'stop the setup, command or confined run and every process it started (`tool-launch/process-stop.ts`); write-ahead `released`', next: 'reporting', action: '' },
   { id: 'C10', state: 'preparing, running', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; spawn the same job again (prepare is idempotent; a command restarts in its prepared place)', next: 'unchanged', action: 'event `restarted`' },
   { id: 'C11', state: 'stopping by its runner', input: 'tick: its `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its setup or command left; write-ahead `released`', next: 'reporting', action: '' },
+  { id: 'C12', state: 'preparing', input: 'runner: prepared', guard: 'attempt `runs: here`', effects: '`runConfinedStep` outside the lock, on the first of the lease\'s tools that resolves its model, in its directory, with no team env and no session kept', next: 'running', action: '' },
+  { id: 'C13', state: 'running', input: 'runner: the confined run ended', guard: '', effects: 'write-ahead: `success` with the reply as outputs and what the run measured, else `failed` with its failure; `released` when no tool of the lease resolves its model here', next: 'reporting', action: '' },
   { id: 'K1', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a offered', effects: 'phase dispatched', next: 'drive', action: 'the turn of a tick' },
   { id: 'K2', state: 'drive', input: 'next `--ack dispatch.a`', guard: 'a dispatched', effects: 'none', next: 'drive', action: 'the turn of a tick' },
   { id: 'K3', state: 'drive, done', input: 'next `--ack dispatch.a`', guard: 'a neither offered nor dispatched', effects: 'none', next: 'unchanged', action: 'error `unknown_offer`, next: the next literal' },
@@ -119,14 +128,12 @@ export const TRANSITIONS = [
   { id: 'H3', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers `agent_in_path`: a required approval', effects: 'none', next: 'drive', action: 'error `agent_in_path`, next: the poll literal' },
   { id: 'H4', state: 'drive', input: 'respond `--driver skill`', guard: 'the engine answers another error', effects: 'none', next: 'drive', action: 'error with the engine\'s code, next: the next literal' },
   { id: 'H5', state: 'drive', input: 'reply, before its row', guard: 'a gate is journalled, and the reply is done, a wait that holds nothing, or another gate: the person answered it in their terminal or the dashboard', effects: 'clear the gate', next: 'drive', action: '' },
-  { id: 'J1', state: 'drive, done', input: 'tick', guard: 'judging is on', effects: '`score --next {driver: identity + can.judge of the session tool, run, running: the open judge ref, canTakeLease: no judge open; false in a runner\'s check}`', next: 'unchanged', action: '' },
-  { id: 'J2', state: 'drive, done', input: 'score reply: a lease', guard: 'judging is on, and no judge is open', effects: 'the judge is open; spawn its runner, keyed by the attempt in its ref', next: 'unchanged', action: 'event `judging`' },
-  { id: 'J3', state: 'drive, done', input: 'judge runner: labelled', guard: 'its judge is open', effects: 'drop the judge', next: 'unchanged', action: 'event `judged` per scorer' },
-  { id: 'J4', state: 'drive, done', input: 'judge runner: failed', guard: 'its judge is open', effects: 'judging := off; its lease lapses back to the queue', next: 'unchanged', action: 'event `judging-off` with the failure' },
-  { id: 'J5', state: 'drive, done', input: 'tick: the open judge\'s `runner.lock` is free', guard: 'it was spawned more than `WAIT_GRACE_MS` ago', effects: 'stop the process group its judge left; judging := off; its lease lapses back to the queue', next: 'unchanged', action: 'event `judging-off` `judge_runner_gone`' },
-  { id: 'J6', state: 'drive, done', input: 'score reply: an error', guard: 'the error is not `busy`', effects: 'judging := off', next: 'unchanged', action: 'event `judging-off` with the error' },
-  { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and a judge is', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
-  { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open', effects: 'none', next: 'done', action: '`done`, no `then`' },
+  { id: 'J7', state: 'drive, done', input: 'a `next` or report answer that lists `started`', guard: 'judging is on, or the session judges', effects: 'add to `scoring` each run it lists that `scoring` lacks', next: 'unchanged', action: 'event `judging` per run added' },
+  { id: 'J8', state: 'drive, done', input: 'a call\'s tick', guard: '`scoring` lists a run', effects: 'tick each run `scoring` lists under its own lock, as a call ticks it, a busy lock skipping it this tick; its first tick writes its skill.json from this one: identity, invocation, options, host, session and judging, with `scores` naming this run, so its turns lead back here', next: 'unchanged', action: 'the dispatches and stops of those runs join this run\'s turn, and a poll wakes for them' },
+  { id: 'J9', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that run is done, and no attempt of it is open', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judged` per scorer its `done` outputs list, with the label or the code; event `judging-off` with its failure when it did not succeed' },
+  { id: 'J10', state: 'drive, done', input: 'J8: the tick of a run `scoring` lists', guard: 'that tick answered an error, or a done whose outputs the scoring module cannot read (`scoredLabels`)', effects: 'drop it from `scoring`', next: 'unchanged', action: 'event `judging-off` with the error' },
+  { id: 'X1', state: 'done', input: 'next', guard: 'no attempt is open, and `scoring` lists a run', effects: 'none', next: 'done', action: '`done` with `judging`; `then: poll`' },
+  { id: 'X2', state: 'done', input: 'next', guard: 'no attempt or judge is open, and `scoring` lists no run', effects: 'none', next: 'done', action: '`done`, no `then`' },
   { id: 'X4', state: 'done', input: 'next', guard: 'an attempt is still open: the engine cancelled it with the run', effects: 'none', next: 'done', action: 'every `stop`, then `done`; `then: poll`' },
   { id: 'X5', state: 'done', input: 'tick', guard: 'the run file shows a version other than the one kept with the end, or a create still unresolved, or none was kept', effects: 'keep the run file\'s version with the end; engine `next` as D1, with `canTakeLease: false`', next: 'done', action: '' },
   { id: 'X6', state: 'done', input: 'reply, before its row', guard: 'the reply is not `done`, or is a `done` whose outcome, failure or PRs differ from the kept end (`canonicalJson`), or that is not out: the engine reopened the run, as `workflow retry` does, another driver ended it again, or the end still has to reach `teamai-reports`', effects: 'drop `done`', next: 'drive', action: 'the reply\'s row; the tick goes on as in drive' },
@@ -139,10 +146,11 @@ export type RowId = typeof TRANSITIONS[number]['id'];
 export type ReadLease = { attempt: AttemptId; step: string; revision: number; expiresAt?: string } & (
   | { executor: 'command'; command: string; env: Record<string, string>; envScope?: EnvScope }
   /**
-   * `writes`: the step commits to a branch, in a workspace `new` or `continue`. `interactive`: the person works in the step.
-   * `readOnly`: the step set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
+   * `writes`: the step commits to a branch, in a workspace `new` or `continue` or the team workspace. `team`: in the team
+   * workspace, whose clone TeamAI makes, never a host. `interactive`: the person works in the step. `readOnly`: the step
+   * set `workspace: read-only`. `isolation`: the step requires a sandbox, which no skill host enforces.
    */
-  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: OutputSchema }
+  | { executor: 'prompt'; prompt: string; place: Dispatch['place']; writes: boolean; team?: true; interactive?: true; readOnly?: true; isolation?: 'sandbox'; agent?: string; model?: string | StepModel; defaultModel?: string; output?: OutputSchema; confined?: ConfinedLease }
 );
 
 /** A gate as the engine asks it. */
@@ -158,20 +166,14 @@ export type EngineReply =
   | { kind: 'wait'; reason: string; delivering: string[]; held: NonNullable<Waiting['held']> }
   | { kind: 'hitl'; gate: AskedGate }
   /** `out`: the end reached `teamai-reports`, or another install owns the run and publishes it. */
-  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; out: boolean }
+  | { kind: 'done'; outcome: NonNullable<SkillState['done']>['outcome']; failure?: WorkflowFailure; prs: string[]; outputs?: Record<string, JsonValue>; out: boolean }
   | { kind: 'error'; error: WorkflowFailure };
-
-/** What `score --next` answered: a lease, read as the judge it opens; nothing to take; or an error. */
-export type ScoreReply = { kind: 'lease'; judge: Omit<Judge, 'spawnedAt'> } | { kind: 'idle' } | { kind: 'error'; error: WorkflowFailure };
 
 /** What the engine answered the agent's answer to a gate: the answer it recorded, or an error. */
 export type RespondReply = { kind: 'answered'; step: string; pass: number; choice: string; channel: string; agent: boolean } | { kind: 'error'; error: WorkflowFailure };
 
 /** What the engine answered a sent report: the step it settled, with the failure it recorded, or an error. */
 export type ReportReply = { kind: 'reported'; outcome: Extract<TurnEvent, { kind: 'settled' }>['outcome']; failure?: WorkflowFailure } | { kind: 'error'; error: WorkflowFailure };
-
-/** What the open judge's runner learned: the label of each scorer, or why the judge gave none. */
-export type JudgeAnswer = { kind: 'judged'; labels: Array<{ scorer: string; label: string }> } | { kind: 'failed'; failure: WorkflowFailure };
 
 /**
  * What describe knows before the rows choose how to start. `denied`: why an agent session may not start the workflow.
@@ -206,7 +208,7 @@ export function judgedBy(judging: Judging): JudgedBy | undefined {
 
 /** What a start knows before the rows decide it. `judge`: who judges the run on this machine, when describe found one and the start keeps judging. */
 /** `attended`: what in the definition needs a person, in an unattended run, as `attendedReason` says. */
-export interface StartInput { name: string; check: StartCheck; local?: string; attended?: string; prompts: boolean; judge?: JudgedBy }
+export interface StartInput { name: string; check: StartCheck; denied?: string; local?: string; attended?: string; prompts: boolean; judge?: JudgedBy }
 
 /** What the shell does for a row, beyond saving its state. `applyEffects` applies each kind, in order. */
 export type Effect =
@@ -215,7 +217,9 @@ export type Effect =
   /** Stops what the command of `attempt` left running when its runner died, before anything else runs in its place. */
   | { kind: 'stop-left'; attempt: AttemptId }
   /** Saves the state, which holds `body` as the report of `attempt`, then sends it. */
-  | { kind: 'send'; attempt: AttemptId; body: ReportBody };
+  | { kind: 'send'; attempt: AttemptId; body: ReportBody }
+  /** Gives up `steps`, held steps this driver can never take, so the run goes on without them. */
+  | { kind: 'give-up'; steps: string[] };
 
 /** A call the skill driver refuses, with what its message names. */
 export type Refusal =
@@ -388,7 +392,9 @@ export function describeRow(input: DescribeInput): DescribeRow {
 }
 
 /** The start row `input` matches: the refusal of a start that may not run here, or the run to start. */
-export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusal } | { row: 'R25'; error: WorkflowFailure } | { row: 'R10'; start: StartRun } {
+export function startRow(input: StartInput): { row: 'R8' | 'R9'; refusal: Refusal } | { row: 'R29' | 'R25'; error: WorkflowFailure } | { row: 'R10'; start: StartRun } {
+  if (input.denied !== undefined) return { row: 'R29', error: { code: 'invoke_denied', message: input.denied } };
+
   if (input.local !== undefined) return { row: 'R8', refusal: { code: 'needs_local_driver', name: input.name, reason: input.local } };
 
   if (input.attended !== undefined) return { row: 'R25', error: { code: 'unattended_denied', message: input.attended } };
@@ -547,11 +553,11 @@ export function reportCallRow(state: SkillState, attempt: AttemptId): { row: 'S6
   return { row: 'S6' };
 }
 
-/** The row of `next` once the engine answered `done`: X4 while an attempt is open, else X1 while a judge is, else X2. */
+/** The row of `next` once the engine answered `done`: X4 while an attempt is open, else X1 while a scoring run is, else X2. */
 export function doneRow(state: SkillState): { row: 'X1' | 'X2' | 'X4' } | undefined {
   if (!state.done) return undefined;
 
-  return { row: state.attempts.length > 0 ? 'X4' : state.judging?.open ? 'X1' : 'X2' };
+  return { row: state.attempts.length > 0 ? 'X4' : state.scoring.length > 0 ? 'X1' : 'X2' };
 }
 
 /** The most attempts `state` keeps open at once: `--parallel`, and one under a serial host. */
@@ -620,66 +626,49 @@ export function reopenedRow(state: SkillState, input: { reply: EngineReply; same
   return { row: 'X6', state: rest };
 }
 
-/** J1: the `score --next` of a tick while judging is on and the host is chosen. A runner's check takes no judge work. */
-export function judgeTickRow(state: SkillState, role: 'call' | 'runner'): { row: 'J1'; request: { tool: string; running: string[]; canTakeLease: boolean } } | undefined {
-  if (!state.judging || state.host.kind === 'pending') return undefined;
-  const { tool, open } = state.judging;
+/** J7: `started` lists runs this run's passes started, which this driver drives while it judges here or the session does. */
+export function startedRow(state: SkillState, started: readonly StartedRun[]): Moved<'J7'> | undefined {
+  if (!state.judging && !state.sessionJudge) return undefined;
+  const added = started.filter(({ run }) => !state.scoring.some((scoring) => scoring.run === run));
 
-  return { row: 'J1', request: { tool, running: open ? [open.ref] : [], canTakeLease: role === 'call' && !open } };
+  if (added.length === 0) return undefined;
+  const scoring = [...state.scoring, ...added.map(({ run, step, scorers }) => ({ run, step, scorers }))];
+
+  return { row: 'J7', state: added.reduce((shown, { run, step, scorers }) => withEvent(shown, { kind: 'judging', step, scorers, run }), { ...state, scoring }) };
 }
 
-/** J2 and J6: what `score --next` answered while judging is on. */
-export function scoreReplyRow(state: SkillState, input: { reply: ScoreReply; at: string }): MovedWithEffects<'J2' | 'J6'> | undefined {
-  const { judging } = state;
-  const { reply, at } = input;
+/** J8: a call's tick drives the runs `scoring` lists. */
+export function scoringTickRow(state: SkillState): { row: 'J8'; runs: RunId[] } | undefined {
+  return state.scoring.length > 0 ? { row: 'J8', runs: state.scoring.map(({ run }) => run) } : undefined;
+}
 
-  if (!judging) return undefined;
+/**
+ * J9 and J10: run `run`, which `scoring` lists, as J8's tick of it left it: done, with `labels`, what the scoring module
+ * read its outputs to give each scorer, or answering `error`.
+ */
+export function scoredRow(state: SkillState, input: { run: RunId; ticked: SkillState; labels: ScoredLabels; error?: WorkflowFailure }): Moved<'J9' | 'J10'> | undefined {
+  const scoring = state.scoring.find(({ run }) => run === input.run);
 
-  switch (reply.kind) {
-    case 'lease': {
-      if (judging.open) return undefined;
-      const open: Judge = { ...reply.judge, spawnedAt: at };
-      const opened: SkillState = { ...state, judging: { ...judging, open } };
+  if (!scoring) return undefined;
+  const left: SkillState = { ...state, scoring: state.scoring.filter(({ run }) => run !== input.run) };
 
-      return {
-        row: 'J2', state: withEvent(opened, { kind: 'judging', step: open.step, scorers: open.scorers, ref: open.ref }), effects: [{ kind: 'spawn', attempt: open.attempt }],
-      };
-    }
+  if (input.error) return { row: 'J10', state: withEvent(left, { kind: 'judging-off', failure: { code: input.error.code, message: input.error.message } }) };
+  const { done, attempts } = input.ticked;
 
-    case 'idle':
-      return undefined;
-    case 'error':
-      return reply.error.code === 'busy' ? undefined : { row: 'J6', state: judgingOff(state, reply.error), effects: [] };
-    default: {
-      const unhandled: never = reply;
+  if (!done || attempts.length > 0) return undefined;
 
-      return unhandled;
-    }
+  if (!input.labels.ok) {
+    const message = `Run ${input.run}, which scores step ${scoring.step}, answered outputs this teamai cannot read (${input.labels.reason}). Update teamai.`;
+
+    return { row: 'J10', state: withEvent(left, { kind: 'judging-off', failure: { code: 'run_unreadable', message } }) };
   }
-}
 
-/** J5: the open judge's `runner.lock` is free, and it was spawned more than `graceMs` before `at`. */
-export function judgeFreeRow(state: SkillState, input: { at: string; graceMs: number }): MovedWithEffects<'J5'> | undefined {
-  const open = state.judging?.open;
+  const judged = input.labels.labels.reduce((shown, { scorer, label, code }) => withEvent(shown, label ? { kind: 'judged', step: scoring.step, scorer, label } : { kind: 'judged', step: scoring.step, scorer, label: '', code }), left);
 
-  if (!open || Date.parse(input.at) - Date.parse(open.spawnedAt) <= input.graceMs) return undefined;
-  const failure = { code: 'judge_runner_gone', message: `The judge of step ${open.step} stopped before it answered, so this run judges nothing more here. Its lease lapses back to the queue for another driver.` };
+  if (done.outcome === 'succeeded') return { row: 'J9', state: judged };
+  const failure = done.failure ?? { code: 'scoring_run_ended', message: `Run ${input.run}, which scores step ${scoring.step}, ended ${done.outcome} before it labelled the pass.` };
 
-  return { row: 'J5', state: judgingOff(state, failure), effects: [{ kind: 'stop-left', attempt: open.attempt }] };
-}
-
-/** J3 and J4: what the runner of the open judge, keyed by `attempt`, learned. */
-export function judgeAnsweredRow(state: SkillState, input: { attempt: AttemptId; answer: JudgeAnswer }): Moved<'J3' | 'J4'> | undefined {
-  const { judging } = state;
-  const open = judging?.open;
-
-  if (!judging || open?.attempt !== input.attempt) return undefined;
-  const { answer } = input;
-
-  if (answer.kind === 'failed') return { row: 'J4', state: judgingOff(state, answer.failure) };
-  const dropped: SkillState = { ...state, judging: { tool: judging.tool } };
-
-  return { row: 'J3', state: answer.labels.reduce((shown, { scorer, label }) => withEvent(shown, { kind: 'judged', step: open.step, scorer, label }), dropped) };
+  return { row: 'J9', state: withEvent(judged, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } }) };
 }
 
 /** R13: the agent's answer to the host question; R15 when the run asks none now. */
@@ -745,8 +734,8 @@ function choicePending(state: SkillState): Answered<'R14'> {
  * is the turn a row decides for its call.
  */
 export function replyRow(state: SkillState, input: { reply: EngineReply; at: string; version?: RunVersion }):
-  | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
-  | (MovedWithEffects<'D28'> & { waiting: Waiting; offer: string[] })
+  | (MovedWithEffects<'D6' | 'D7' | 'D8' | 'D28' | 'D10' | 'D11' | 'D12' | 'D13' | 'D14' | 'D15' | 'D16'> & TickTurn)
+  | (MovedWithEffects<'D30'> & { waiting: Waiting; offer: string[] })
   | Answered<'D17', Relayed>
   | undefined {
   if (state.done) return undefined;
@@ -756,23 +745,26 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
     case 'lease': {
       const { lease } = engine;
       const { attempt, step: id, revision, expiresAt } = lease;
-      const hosted = lease.executor === 'prompt' && lease.writes && state.host.kind === 'chosen' && state.host.places === 'host';
+      const hosted = lease.executor === 'prompt' && lease.writes && !lease.team && state.host.kind === 'chosen' && state.host.places === 'host';
+      const runsHere = lease.executor === 'prompt' && lease.confined !== undefined && state.judging !== undefined;
 
       const attemptState: AttemptState = { attempt, step: id, revision, spawnedAt: at, phase: 'preparing' };
 
       if (expiresAt !== undefined) attemptState.expiresAt = expiresAt;
 
       if (hosted) attemptState.request = { kind: 'host' };
+
+      if (runsHere) attemptState.runs = 'here';
       const preparing = withAttempt(state, attemptState);
 
-      return { row: lease.executor === 'command' ? 'D6' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
+      return { row: lease.executor === 'command' ? 'D6' : runsHere ? 'D28' : hosted ? 'D8' : 'D7', state: withEvent(preparing, { kind: 'started', step: id, attempt }), effects: [{ kind: 'spawn', attempt, job: { lease: engine.raw } }] };
     }
 
     case 'wait': {
       const people = engine.held.filter(({ missing }) => missing.includes('hitl')).map(({ step }) => step);
 
-      if (state.options.mode === 'unattended' && people.length > 0 && state.attempts.length === 0 && !state.judging?.open) {
-        return { row: 'D28', state, effects: [], waiting: { reason: engine.reason, held: engine.held }, offer: people };
+      if (state.options.mode === 'unattended' && people.length > 0 && state.attempts.length === 0 && state.scoring.length === 0) {
+        return { row: 'D30', state, effects: [], waiting: { reason: engine.reason, held: engine.held }, offer: people };
       }
 
       if (engine.held.length > 0 && state.attempts.length === 0) {
@@ -805,6 +797,8 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
 
       if (engine.outcome === 'succeeded' && input.version?.branch !== undefined) done.branch = input.version.branch;
 
+      if (engine.outputs) done.outputs = engine.outputs;
+
       if (input.version && agrees(input.version, engine)) done.version = input.version;
 
       return { row: 'D16', effects: [], state: { ...state, seq: state.seq + 1, done } };
@@ -821,23 +815,38 @@ export function replyRow(state: SkillState, input: { reply: EngineReply; at: str
 }
 
 /**
- * D29 and D30: what D28's offer of the run to a person at `steps` answered. D29's turn names them and ends the loop;
- * D30 asks the engine again with the reason it could not, which fails each of them.
+ * D31 and D32: what D30's offer of the run to a person at `steps` answered. D31's turn names them and ends the loop;
+ * D32 asks the engine again with the reason it could not, which fails each of them.
  */
-export function offeredRow(input: { steps: string[]; offered: PersonHandoff }): { row: 'D29'; turn: TurnAnswer } | { row: 'D30'; handoff: PersonHandoff } {
+export function offeredRow(input: { steps: string[]; offered: PersonHandoff }): { row: 'D31'; turn: TurnAnswer } | { row: 'D32'; handoff: PersonHandoff } {
   const { steps, offered } = input;
 
   switch (offered.kind) {
     case 'offers':
-      return { row: 'D29', turn: { kind: 'turn', events: 'unseen', after: 'none', quiet: false, offered: steps } };
+      return { row: 'D31', turn: { kind: 'turn', events: 'unseen', after: 'none', quiet: false, offered: steps } };
     case 'unoffered':
-      return { row: 'D30', handoff: offered };
+      return { row: 'D32', handoff: offered };
     default: {
       const unhandled: never = offered;
 
       return unhandled;
     }
   }
+}
+
+/** The capabilities a skill driver declares once for a run, so a step held for them alone is never leased to it. */
+const FIXED_FOR_RUN = new Set(['confined', 'model']);
+
+/**
+ * D29: a wait that holds only steps this driver can never take, with no attempt open. Its confined offers and their
+ * tools stay as they were for the run, so such a step would wait out its timeout.
+ */
+export function giveUpRow(state: SkillState, reply: EngineReply): MovedWithEffects<'D29'> | undefined {
+  if (reply.kind !== 'wait' || reply.held.length === 0 || state.attempts.length > 0) return undefined;
+
+  if (!reply.held.every((held) => held.missing.length > 0 && held.missing.every((missing) => FIXED_FOR_RUN.has(missing)))) return undefined;
+
+  return { row: 'D29', state, effects: [{ kind: 'give-up', steps: reply.held.map((held) => held.step) }] };
 }
 
 /** D27: a wait that holds a step says nothing of a gate, which only a `next` that takes no lease answers. */
@@ -934,15 +943,15 @@ export function turnRow(state: SkillState, input: { session: string | undefined;
  * The row of a poll tick: the turn it answers (D22 to D26), or D21, which sleeps and ticks again. `busy`: the lock was
  * busy, so nothing ticked; `ticked`: what the tick left, when one ran.
  */
-export function pollRow(state: SkillState, input: { session: string | undefined; busy: boolean; boundReached: boolean; ticked: TickTurn }):
+export function pollRow(state: SkillState, input: { session: string | undefined; busy: boolean; boundReached: boolean; ticked: TickTurn; scoringWaits: boolean }):
   | { row: 'D21' }
   | (Moved<'D22' | 'D23' | 'D24' | 'D25' | 'D26'> & { turn: TurnAnswer; waiting?: Waiting }) {
-  const { session, busy, boundReached, ticked } = input;
+  const { session, busy, boundReached, ticked, scoringWaits } = input;
   const waiting = ticked.waiting ? { waiting: ticked.waiting } : {};
   const seen = state.seen[seenBy(session)] ?? 0;
   const unseenGate = state.gate !== undefined && state.gate.seq > seen;
 
-  if (!busy && (waitsForAgent(state) || unseenGate)) return { row: 'D22', state, turn: { kind: 'turn', events: 'none', after: 'wake', quiet: true } };
+  if (!busy && (waitsForAgent(state) || scoringWaits || unseenGate)) return { row: 'D22', state, turn: { kind: 'turn', events: 'none', after: 'wake', quiet: true } };
 
   if (ticked.turn?.after === 'none') return { row: 'D26', state, turn: { kind: 'turn', events: 'none', after: 'wake', quiet: true }, ...waiting };
 
@@ -959,13 +968,25 @@ export function pollRow(state: SkillState, input: { session: string | undefined;
   return { row: 'D21' };
 }
 
-/** C1: the command of `attempt` runs in its prepared place. */
-export function preparedRow(state: SkillState, attempt: AttemptId): Moved<'C1'> | undefined {
-  const open = openAttempt(state, attempt);
+/** `row` C1: the command of `attempt` runs in its prepared place; C12: its confined run starts. */
+export function preparedRow<TRow extends 'C1' | 'C12'>(state: SkillState, input: { attempt: AttemptId; row: TRow }): Moved<TRow> | undefined {
+  const open = openAttempt(state, input.attempt);
 
   if (open?.phase !== 'preparing') return undefined;
 
-  return { row: 'C1', state: withAttempt(state, { ...open, phase: 'running' }) };
+  return { row: input.row, state: withAttempt(state, { ...open, phase: 'running' }) };
+}
+
+/** C13: the confined run of `attempt` ended: its report, or `released` when no tool of its lease resolves its model here. */
+export function confinedEndedRow(state: SkillState, input: { attempt: AttemptId; ended: ConfinedStepEnd }): MovedWithEffects<'C13'> | undefined {
+  const { attempt, ended } = input;
+  const open = openAttempt(state, attempt);
+
+  if (open?.phase !== 'running') return undefined;
+  const id = { attempt, revision: open.revision, driver: state.driver };
+  const body: ReportBody = ended.kind === 'ran' ? { ...id, ...ended.report } : { ...id, outcome: 'released', message: ended.reason };
+
+  return { row: 'C13', state: withAttempt(state, { ...open, phase: 'reporting', body }), effects: [{ kind: 'send', attempt, body }] };
 }
 
 /** C2: the prompt of `attempt` is offered to the agent as `dispatch`. */
@@ -1168,13 +1189,6 @@ function takenOver(state: SkillState, { session, tool, at }: { session: string |
   if (from !== undefined) event.from = from;
 
   return withEvent({ ...state, attempts, orchestrator, seen: { ...state.seen, [seenBy(session)]: told } }, event);
-}
-
-/** `state` with judging off for `failure`: nothing more is judged here, and an open judge's lease lapses. */
-function judgingOff(state: SkillState, failure: WorkflowFailure): SkillState {
-  const { judging: _judging, ...rest } = state;
-
-  return withEvent(rest, { kind: 'judging-off', failure: { code: failure.code, message: failure.message } });
 }
 
 /**

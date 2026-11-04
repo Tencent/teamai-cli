@@ -83,6 +83,8 @@ export interface WorkflowScenario extends ScenarioBase {
   workflows?: Record<string, string>;
   /** Variables in the environment of every teamai process the scenario runs. */
   env?: Record<string, string>;
+  /** Other files of the team repo, by path in it, such as `models/aliases.yaml`. */
+  teamFiles?: Record<string, string>;
 }
 
 export interface BenchmarkScenario extends ScenarioBase {
@@ -103,10 +105,13 @@ export const DRIVER_PROFILES = {
   session: { kind: 'session', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
   /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
   external: { kind: 'external', can: { workspace: ['read-only', 'new', 'continue'] } },
-  /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next`. */
+  /** The skill driver, `workflow ... --driver skill`, as it declares itself on every `next` while a verified Claude judges its run. */
   skill: {
     kind: 'skill',
-    can: { hitl: true, workspace: ['read-only', 'new', 'continue'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false },
+    can: {
+      hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false,
+      confined: [{ level: 'verified', access: 'read', tools: ['claude'] }],
+    },
   },
   /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
   'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
@@ -144,6 +149,8 @@ export type ConformanceOperation =
   }
   | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
+  /** Writes files under the run's `$TEAMAI_RUN_DIR`, as a step that hands another its files there would. Needs a runner with `runDir`. */
+  | { kind: 'runFiles'; files: Record<string, string> }
   | { kind: 'files'; lease?: string; expect: Record<string, string | null> }
   /**
    * Starts another run of `workflow`, the scenario's own when omitted, as `workflow start` with `driver` and `--confirmed`
@@ -234,7 +241,7 @@ export function inProcessConformanceClient(
     start: (name, { env, confirmed, checkout } = {}) => {
       const caller = { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true, mode: resolveRunMode({ ...process.env, ...env }) };
 
-      return client.start(name, checkout !== undefined ? { checkout, caller } : { caller });
+      return client.start(name, checkout !== undefined ? { checkout, caller, startedBy: 'person' } : { caller, startedBy: 'person' });
     },
     next: (runId, body, options) => client.next(runId, body, options),
     report: (runId, body, options) => client.report(runId, body, options),
@@ -256,6 +263,8 @@ export interface ConformanceRunner {
   expect: ConformanceExpect;
   /** The git checkout the run starts in and the bare origin it pushes to, for scenarios that check places. */
   place?: { checkout: string; origin: string };
+  /** The run's `$TEAMAI_RUN_DIR`, for scenarios that write files there. */
+  runDir?: (runId: string) => Promise<string>;
 }
 
 async function readOrNull(file: string): Promise<string | null> {
@@ -285,6 +294,7 @@ export function speaksAsDriverUnderTest(scenario: ConformanceScenario): boolean 
         return operation.as !== undefined && standsForDriverUnderTest(operation.as) && !('json' in operation);
       case 'host':
       case 'edit':
+      case 'runFiles':
       case 'files':
       case 'start':
       case 'retry':
@@ -315,16 +325,17 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
 
   const placeOf = (name: string | undefined): string => {
-    const place = runner.place;
+    if (name !== undefined) {
+      const cwd = leases.get(name)?.cwd;
 
-    if (!place) throw new Error('A scenario that checks places needs a runner with a place');
+      if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
 
-    if (name === undefined) return place.checkout;
-    const cwd = leases.get(name)?.cwd;
+      return cwd;
+    }
 
-    if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
+    if (!runner.place) throw new Error('A scenario that checks the checkout needs a runner with a place');
 
-    return cwd;
+    return runner.place.checkout;
   };
 
   const refusal = scenario.refusedBy?.[profile];
@@ -426,6 +437,18 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
       case 'edit':
         for (const [file, text] of Object.entries(operation.files)) await fs.writeFile(path.join(placeOf(operation.lease), file), text);
         break;
+      case 'runFiles': {
+        if (!runner.runDir) throw new Error('A scenario that writes run files needs a runner with a runDir');
+        const dir = await runner.runDir(runId);
+
+        for (const [file, text] of Object.entries(operation.files)) {
+          await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+          await fs.writeFile(path.join(dir, file), text);
+        }
+
+        break;
+      }
+
       case 'files':
         for (const [file, text] of Object.entries(operation.expect)) {
           expect(await readOrNull(path.join(placeOf(operation.lease), file)), file).toEqual(text);
@@ -583,155 +606,4 @@ export async function driveByProtocol(input: {
   }
 
   throw new Error(`Run ${runId} did not end within 20 calls`);
-}
-
-/**
- * One step of a judge lease scenario. `take` and `renew` are `score --next`: `take` lists nothing in running, or the
- * lease it took last with `running`; `renew` lists that lease, and `canTakeLease: false` asks it to take nothing.
- * `next` is a workflow next that lists that lease in its running, which leaves the run as it was. `at` sets the clock.
- */
-export type JudgeConformanceOperation =
-  | { kind: 'take'; at: string; running?: true; expect: ScenarioJson }
-  | { kind: 'renew'; at: string; canTakeLease?: false; expect: ScenarioJson }
-  | { kind: 'next'; expect: ScenarioJson }
-  | { kind: 'report'; expect: ScenarioJson }
-  | { kind: 'submit'; expect: ScenarioJson }
-  | { kind: 'idle'; at: string; expect: ScenarioJson };
-
-/** A run of workflow `judged` whose scored pass a driver runs to its end, then the judge work of that pass. */
-export interface JudgeConformanceScenario {
-  name: string;
-  yaml: string;
-  /** The scorer files by name. */
-  scorers: Record<string, string>;
-  operations: JudgeConformanceOperation[];
-  /** The profiles designed to refuse judge work, each with what its first `score --next` answers, where the scenario ends. */
-  refusedBy?: Partial<Record<JudgeProfile, ScenarioJson>>;
-}
-
-/** The drivers every judge scenario runs as. */
-export const JUDGES_UNDER_TEST = ['external', 'skill', 'skill-no-judge'] as const;
-
-export type JudgeProfile = typeof JUDGES_UNDER_TEST[number];
-
-/** The judge a profile declares in `driver.can.judge`. */
-type JudgeDeclaration = { isolation: 'verified'; access?: 'read'; tools: string[] };
-
-const CLAUDE_JUDGE: JudgeDeclaration = { isolation: 'verified', tools: ['claude'] };
-
-/**
- * The drivers a judge scenario speaks as: the workflow driver profile `as` runs the scored pass, then asks
- * `score --next` for judge work with the judge it declares, if any. `ownRun` names the run, so it takes that run's
- * judge work only.
- */
-export const JUDGE_PROFILES: Record<JudgeProfile, { as: DriverProfile; judge?: JudgeDeclaration; ownRun: boolean }> = {
-  /** A program that judges any pass of the install with a verified Claude Code. */
-  external: { as: 'external', judge: CLAUDE_JUDGE, ownRun: false },
-  /** The skill driver, which judges its own run with the confined judge of its session's tool, found verified here, which only reads. */
-  skill: { as: 'skill', judge: { ...CLAUDE_JUDGE, access: 'read' }, ownRun: true },
-  /** The skill driver of a run that does not judge here: it declares no judge. */
-  'skill-no-judge': { as: 'skill', ownRun: true },
-};
-
-/** What a runner of judge scenarios provides: its clients, the revision its run file holds, and the clock its calls read. */
-export interface JudgeConformanceRunner {
-  client: Pick<ConformanceClient, 'start' | 'next' | 'report'> & {
-    scoreNext: (body: ScenarioJson) => Promise<WorkflowEnvelope>;
-    /** Settles judge lease `ref` with `body`, as `teamai score --lease <ref> --submit` does. */
-    submit: (ref: string, body: ScenarioJson) => Promise<WorkflowEnvelope>;
-  };
-  readRevision(runId: string): Promise<number>;
-  /** Sets the time every later call reads. */
-  setClock(at: string): Promise<void>;
-  expect: ConformanceExpect;
-}
-
-function dataOf(envelope: WorkflowEnvelope): Extract<WorkflowEnvelope, { data: unknown }>['data'] {
-  if ('error' in envelope) throw new Error(envelope.error.message);
-
-  return envelope.data;
-}
-
-const LeasedSchema = z.object({ attempt: z.string(), revision: z.number() });
-const JudgeLeaseSchema = z.object({ ref: z.string() });
-
-/** Runs one judge scenario as `profile`: its driver runs the scored pass to the run's end, then takes the judge work. */
-export async function runJudgeConformanceScenario(scenario: JudgeConformanceScenario, runner: JudgeConformanceRunner, profile: JudgeProfile): Promise<void> {
-  const { client, expect } = runner;
-  const judging = JUDGE_PROFILES[profile];
-  const driver = profileDriver(judging.as);
-  await runner.setClock('2026-10-22T11:00:00.000Z');
-  const runId = String(dataOf(await client.start('judged')).run);
-  const work = LeasedSchema.parse(dataOf(await client.next(runId, { driver: { ...driver, can: DRIVER_PROFILES[judging.as].can } })).lease);
-  dataOf(await client.report(runId, { ...work, driver, outcome: 'success', outputs: { reviewed: true } }));
-  expect(await client.next(runId, { driver })).toMatchObject({ data: { done: {} } });
-
-  const request = (fields: { running: string[]; canTakeLease?: false }) => {
-    const body: ScenarioJson = {};
-    body.driver = { ...driver, can: judging.judge ? { judge: { ...judging.judge } } : {} };
-
-    if (judging.ownRun) body.run = runId;
-    body.running = fields.running;
-
-    if (fields.canTakeLease !== undefined) body.canTakeLease = fields.canTakeLease;
-
-    return body;
-  };
-
-  const refusal = scenario.refusedBy?.[profile];
-
-  /** The answer of `score --next`, or undefined once `profile` refused it as the scenario says. */
-  const scoreNext = async (body: ScenarioJson): Promise<WorkflowEnvelope | undefined> => {
-    const answer = await client.scoreNext(body);
-
-    if (!refusal) return answer;
-    expect(answer, `${profile} is refused judge work`).toMatchObject(refusal);
-
-    return undefined;
-  };
-
-  let ref = '';
-
-  for (const operation of scenario.operations) {
-    let answer: WorkflowEnvelope | undefined;
-
-    switch (operation.kind) {
-      case 'take':
-        await runner.setClock(operation.at);
-        answer = await scoreNext(request({ running: operation.running ? [ref] : [] }));
-        break;
-      case 'renew':
-        await runner.setClock(operation.at);
-        answer = await scoreNext(request(operation.canTakeLease === false ? { running: [ref], canTakeLease: false } : { running: [ref] }));
-        break;
-      case 'idle':
-        await runner.setClock(operation.at);
-        answer = await scoreNext(request({ running: [] }));
-        break;
-      case 'next': {
-        const before = await runner.readRevision(runId);
-        answer = await client.next(runId, { driver, running: [ref] });
-        expect(await runner.readRevision(runId), 'the run as it was').toEqual(before);
-        break;
-      }
-
-      case 'report':
-        answer = await client.report(runId, { attempt: ref, revision: 1, driver, outcome: 'success' });
-        break;
-      case 'submit':
-        answer = await client.submit(ref, { driver: { ...driver }, outcome: 'success', answer: { label: 'good', reasoning: 'done' } });
-        break;
-      default: {
-        const unhandled: never = operation;
-        throw new Error(`unknown judge conformance operation ${JSON.stringify(unhandled)}`);
-      }
-    }
-
-    if (!answer) return;
-    expect(answer).toMatchObject(operation.expect);
-
-    if (operation.kind === 'take') ref = JudgeLeaseSchema.parse(dataOf(answer).lease).ref;
-  }
-
-  if (refusal) throw new Error(`The scenario says ${profile} is refused judge work, but it made no score --next`);
 }

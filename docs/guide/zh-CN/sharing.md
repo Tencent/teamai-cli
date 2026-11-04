@@ -428,42 +428,32 @@ profiles:
 teamai models switch tokenhub
 ```
 
-## 把一个文件推送到确切路径
+## 从工作流步骤提议文件
 
-`teamai push --file <本地文件> --path <团队路径>` 把一个文件按字节原样提议到一个团队路径，作为拉取请求。团队 clone 里的其他改动都不会加入，也不会改写或移动它：
+带 `workspace: { team: { branch } }` 的步骤在团队仓库的全新克隆里运行，`deliver: pr` 把它在那里的改动作为一个拉取请求提议。这个工作流按字节原样提议一个评分器文件：
 
-```console
-$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
-✔ Pull Request created: https://github.com/acme/team/pull/77
-
-$ teamai push --file ./review.md --path scorers/review.md
-✔ Pull Request created: https://github.com/acme/team/pull/78
-
-$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml   # the same bytes again
-ℹ No changes to push: benchmarks/fix-auth/tasks/refresh-race.yaml already holds these bytes on main.
-
-$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/refresh-race.yaml
-✖ benchmarks/fix-auth/refresh-race.yaml is not a benchmark task path. A task goes in benchmarks/<suite>/tasks/<task>.yaml or benchmarks/<namespace>/<suite>/tasks/<task>.yaml.
-
-$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/missing/tasks/refresh-race.yaml
-✖ benchmarks/missing/suite.yaml does not exist, so benchmarks/missing/tasks/refresh-race.yaml belongs to no suite. Pick a suite the team repo has under benchmarks/.
-
-$ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml --role web
-✖ --path names the destination, so it cannot be combined with --skill, --role, --project, --shared, --all or --carried.
+```yaml
+schemaVersion: v1alpha1
+name: propose-scorer
+description: Propose one scorer file to the team as a pull request, on a branch of its own.
+inputs: { file: string, name: string }
+steps:
+  - id: propose
+    workspace: { team: { branch: "teamai/scorers/{{ inputs.name }}" } }
+    deliver: pr
+    command: mkdir -p scorers && cp "$FILE" "scorers/$NAME.md"
+    env: { FILE: "{{ inputs.file }}", NAME: "{{ inputs.name }}" }
 ```
 
-[teamai-session-to-task](benchmarks.md#把会话变成任务) 就是这样提议它起草的任务文件。
+```text
+teamai workflow start propose-scorer --driver local --inputs '{"file":"/tmp/review.md","name":"review"}'
+  第一次运行                       从 teamai/scorers/review 打开 "propose-scorer: scorers/review.md"
+  改了 /tmp/review.md 再运行       更新那个拉取请求
+  main 已有相同字节                什么也不推送，不打开拉取请求
+  name 为 "../review"              在克隆之前失败：git 无法用它命名分支
+```
 
-| 参数 | 结果 |
-| --- | --- |
-| `--file` 和 `--path` | 从默认分支新建分支，把该文件推送到该路径，不再询问，并像 `push` 一样开拉取请求。团队 clone 的文件、index 和分支保持原样。 |
-| 只给其中一个 | 拒绝：两者必须一起用。 |
-| 同时给 `--skill`、`--role`、`--project`、`--shared`、`--all` 或 `--carried` | 拒绝，如上。 |
-| 同时给 `--branch` | 推送到该分支（不能是默认分支）。该分支已有打开的拉取请求时，会以默认分支加上这个文件重建它，并更新那个拉取请求，而不是新开一个：修改文件后再运行同一条命令即可。重建后只含这个文件，之前推送到该分支的其他文件会离开该拉取请求。远端已有但没有打开的拉取请求的分支会被拒绝，其提交保持不变。 |
-| `--path` 不在 `skills/`、`rules/`、`scorers/`、`benchmarks/` 或 teamai 拉取的其他目录下、含 `..`，或经过团队仓库中的符号链接 | 拒绝。 |
-| `--path` 在 `benchmarks/` 下 | 必须是默认分支上某个套件的任务。 |
-
-单仓库模式下，拉取请求包含 `.teamai/<path>`，你的 checkout 的文件、index 和 `HEAD` 保持原样。
+提交必须是 `teamai pull` 会接受的；拒绝哪些改动见[团队工作区](workflow.md#团队工作区)。[teamai-session-to-task](benchmarks.md#把会话变成任务) 就是这样提议它起草的任务文件。
 
 ## 团队包
 
@@ -490,7 +480,7 @@ pull 之后跑 `teamai packages`。
 
 ## 会话
 
-无人值守的运行现在默认发布自己的会话。在 CI、云虚拟机或托管任务中，[`teamai score --drain`](scorers.md#无人值守任务结束前运行-drain) 会把本机记录为无人值守的已捕获会话，以及在这里驱动的工作流运行的步骤会话，脱敏后归档到 `teamai-reports`。本地驱动在无人值守运行结束时执行它。要保持原来的行为，设置 `unattended: off`：
+无人值守的运行现在默认发布自己的会话。在 CI、云虚拟机或托管任务中，[`teamai score --drain`](scorers.md#无人值守任务结束前运行-drain) 会通过一次 `teamai-finished-sessions` 运行，把本机记录为无人值守的已捕获会话，以及在这里驱动的工作流运行的步骤会话，脱敏后归档到 `teamai-reports`。本地驱动在无人值守运行结束时执行它。要保持原来的行为，设置 `unattended: off`：
 
 ```yaml
 # teamai.yaml
@@ -505,7 +495,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由评判已结束会话的后台任务完成。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
+有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员在启动时确认一次。带 `--confirmed` 启动运行的 agent 可以替成员确认，teamai 无法核实。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由会话启动时开始的 [`teamai-finished-sessions`](scorers.md#teamai-finished-sessions) 运行完成，该运行也评判已结束的会话。在结束前手动推送过的会话，在那次推送之后又有活动时会被再次归档。发布总会脱敏，同时改写本机路径（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)）。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
 
 成员的 `config.yaml` 优先，按模式分别生效。它没有写的模式沿用 `teamai.yaml`：
 

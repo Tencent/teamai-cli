@@ -63,7 +63,49 @@ teamai dashboard --port 8080
 
 在交出运行的那个安装上，下一步改为 `teamai workflow resume <run>`，在那里把它收回。待接手的本机运行，或现在由其他安装持有的本机运行，会在状态下方注明。**运行器需要**（需要人工的运行上为**其机器需要**）列出剩余步骤的 `requires.env` 键和提示词步骤：照[其作业](workflow.md#从-ci-接手交出的运行)那样在运行器上配好。**本机缺少**是本机缺的那部分，与 `teamai workflow resume` 列为 `cannot run here` 的一致。状态栏统计待接手的运行和需要人工的运行。页面本身不认领任何运行：命令在接手运行的机器上启动驱动。
 
-页面显示运行记录会发布的内容，以及每个步骤的实时状态和等待中 HITL 请求的选项。输入、`for_each` 条目、输出、提示词、HITL 消息和本地路径都留在运行文件里。HITL 问题请在运行的驱动提问处阅读。运行详情显示每个 pass 的产出：它分支上的 commit、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验。每个 pass 标出它的 Harness，例如 `claude · claude-sonnet-5-5 · review 步骤角色 · 3bb7751`。Harness 与同一步骤上一个 pass 不同的 pass 会写明改了什么，例如 `review` 第 2 个 pass 下的 `模型已变: claude-sonnet-5-5 → claude-opus-5-5`。每个 pass 的评分显示标签，不是评审模型判定时还显示判定它的阶段，例如 `delivered: partial  合并请求 CI`。运行的评审次数不计入这些标签。已结算的本机运行的**分支**显示它的[分支](workflow.md#运行留下的分支)去向：成功的运行列出保留的分支及原因（`拉取请求`、`最终副本`）、已删除的分支，以及删不掉、由 `teamai doctor --fix` 再次尝试的分支。失败或取消的运行列出保留以供检查的分支，以及按 `workflows.retention` 从何时起 `doctor --fix` 会移除它们，并给出设置它的文件。已结束的[基准测试](benchmarks.md)运行的详情显示它的结果、用量和任务 × arm 表格，与 CLI 打印的一致。
+页面显示运行记录会发布的内容，以及每个步骤的实时状态和等待中 HITL 请求的选项。输入、`for_each` 条目、输出、提示词、HITL 消息和本地路径都留在运行文件里。HITL 问题请在运行的驱动提问处阅读。运行详情显示每个 pass 的产出：它分支上的 commit、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验。每个 pass 标出它的 Harness，例如 `claude · claude-sonnet-5-5 · review 步骤角色 · 3bb7751`。Harness 与同一步骤上一个 pass 不同的 pass 会写明改了什么，例如 `review` 第 2 个 pass 下的 `模型已变: claude-sonnet-5-5 → claude-opus-5-5`。本机运行中被跳过的步骤会在状态下方显示原因，例如 `Step "label" was skipped: its if is false: steps.check.outcome == 'failed'` 或 `Step "ship" was skipped: it needs "test", which failed.`。每个 pass 的评分显示标签、分数和判定来源：`评审模型`、`评分器检查`、`合并请求 CI`、`受保护路径` 或 `人工标注`，例如 `delivered: partial · 分数 0.5  合并请求 CI`。运行的评审次数统计每个评审模型标签（批量评审的 Token 只算一次）和每次失败的评审及其消耗的 Token，不计入由阶段判定的标签。已结算的本机运行的**分支**显示它的[分支](workflow.md#运行留下的分支)去向：成功的运行列出保留的分支及原因（`拉取请求`、`最终副本`）、已删除的分支，以及删不掉、由 `teamai doctor --fix` 再次尝试的分支。失败或取消的运行列出保留以供检查的分支，以及按 `workflows.retention` 从何时起 `doctor --fix` 会移除它们，并给出设置它的文件。已结束的[基准测试](benchmarks.md)运行的详情显示它的结果、用量和任务 × arm 表格，与 CLI 打印的一致。
+
+在本机运行中，本机负责评审的 pass 还会列出每个没有标签的评分器及原因：
+
+```text
+review-quality: good · 分数 1  评审模型
+test-coverage: bad · 分数 0  人工标注
+style: 已失败 · judge_answer_invalid
+  评审答案不符合评分器的答案 schema，因此没有写入标签。检查评分器的标签定义，然后重新评审。
+  teamai score --run raa1e5b63a680fc90 --step review --pass 1 --scorer style
+docs: 评审中，所在运行 r8fd8dc67cfd476f5 开始于 2026/11/3 13:04:43
+naming: 未被抽样，抽样率 0%
+评分运行: rd9b944dbf01dff5a 已成功 · r8fd8dc67cfd476f5 运行中
+```
+
+| 状态 | 含义 | 怎么办 |
+|---|---|---|
+| 尚未评审 | 评分器抽中了这个 pass，但还没有 `teamai-score` 运行接手。 | 等运行结束。`start: workflow` 的步骤要等它的工作流运行 `teamai score subjects` 时才评审。 |
+| 未被抽样，抽样率 20% | 评分器的 `samplingRate` 没有抽中这个 pass。 | 无需处理，或用显示的命令照样评审。 |
+| 评审中，所在运行 `<run>` | 这个 `teamai-score` 运行持有该评分器，且尚未结束。 | 打开该运行，看它在等哪个步骤。 |
+| 等待 CI | 合并请求的 CI 尚未完成。等待不算中断。 | 无需处理：CI 完成后，下一次 `teamai-finished-sessions` 会评审它。 |
+| 已中断 3/4 · 到期 `<time>` | 评分运行结束时没有给出标签，已发生这么多次。 | 无需处理：下一次 `teamai-finished-sessions` 会重新评审，直到第四次中断或到期。也可以用显示的命令立即评审。 |
+| 已失败 · `<code>` | 这次评审以该错误码结束，自动评审不会再处理它。下方的说明给出原因。 | 修复说明中的原因，然后运行显示的命令。 |
+| 已过期 | 运行最后一次变更后 14 天内未被评审。 | 用显示的命令评审。 |
+
+该命令以 `named` 需求启动 `teamai-score`，会重新打开已失败或已过期的评分器。请在你自己的终端运行。pass 的每个评分运行都能打开自己的详情，尽管本机运行列表不显示 `teamai-score` 这类 `private` 运行。
+
+本机运行下方的**本机评审情况**说明评审是否跟得上：
+
+```text
+本周标签 3 · 33% 通过   本周评审 Token 1,992   评审中 1 · 1 尚未评审
+等待 CI 1               已中断 1 · 0 已过期     已失败 1 · judge_answer_invalid 1
+判定来源  评审模型 1  合并请求 CI 1  人工标注 1
+每日会话评审次数  daily_limit 10   0  3  0  6  0  10  2
+缺少的标签
+运行           轮次       评分器     原因
+ship           change #1  delivered  等待 CI
+review-change  review #1  style      已失败 · judge_answer_invalid   teamai score --run raa1e5b63a680fc90 --step review --pass 1 --scorer style
+```
+
+- 标签和评审 Token 统计本机最近 7 天写下的所有标签，包括基准测试的标签。失败的评审没有写入标签，因此它的 Token 不计入。
+- 各状态统计本机运行列表中各 pass 的评分器。**缺少的标签**最多列出其中 25 个，最新的运行在前，不含未被抽样的评分器。
+- **每日会话评审次数**按本地日期统计本机的会话评审次数，并与 `daily_limit` 对比。达到上限的日期显示为琥珀色。有人点名要求评审的会话也计数，但永远不会被拒绝。
 
 等待中的 approve 或 choose 请求可以在运行详情里回答。回答和 CLI 走同一个 `respond` 操作，渠道为 `dashboard`，`agent: false`，因此可以回答必需审批。在 agent 会话中启动的仪表盘记录为 `agent: true`，与从该 shell 回答相同，不能回答必需审批。回答带上页面显示的 pass：如果该请求期间已被回答或替换，页面会显示拒绝原因并刷新。其他网站无法提交回答。不带 `Origin` 请求头的请求（如普通 `curl`）也会被拒绝。这只表明回答来自浏览器，并不能阻止自行设置该请求头的本地脚本。
 
@@ -204,7 +246,7 @@ test-quality    80% · 5 labels      1 can become a task · 0 covered           
 数字的计算方式：
 
 - 通过率是通过的 trial 数除以计划的 trial 数，与运行自己的表一致。
-- 合并统计的数字、任务表和领先者只统计套件当前版本的运行：即最新一次运行的套件文件。**每次运行的通过率** 也会画出更早的运行，位于一条 `套件已改动` 虚线之后。
+- 合并统计的数字、任务表和领先者只统计套件当前版本的运行：即最新一次运行了全部任务和 arm 的运行的套件文件，所以 `--task` 或 `--arm` 的运行不会取代它。**每次运行的通过率** 也会画出更早的运行，位于一条 `套件已改动` 虚线之后。
 - 一个 arm 由它的名称、工具、模型、effort、团队资产、工作流和角色确定。带角色的 arm 在名字下方显示角色，例如 `review 角色`。其中一项改变时，更早的运行是另一条线，标为 `较早的配置`。
 - 带角色的 arm 还会显示该角色在生产中的通过率：角色相同的评分器标签，按评分器页面当前的时间窗口和度量统计，附带 95% 区间，并像按角色分组一样标明该角色是作为工作流步骤自己的角色（`步骤`）、成员的角色（`成员`）还是`两者`运行。`review` 为 2/2 时，旁边显示 `生产中: 100% 1/1 · 95% 21%–100% · 无法区分 · 步骤 · review-quality · 30 天 评分器 ↗`。显示`无法区分`、通过率不加粗时，表示该区间与 arm 的区间重叠：这些标签无法区分生产与基准测试。点击 **评分器 ↗** 会打开按角色分组、选中 `review` 的评分器页面。没有标签的角色显示 `该角色没有标签`。
 - **各 arm 的通过率** 还会按每次运行自己的表的算法，统计这些运行中该 arm 的偏差和未验证的 trial。偏差是指 prompt 运行时用的工具、模型、团队修订或角色与它的 arm 不同的 trial。

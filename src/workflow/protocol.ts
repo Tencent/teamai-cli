@@ -6,17 +6,16 @@ import type { ReportedAgent } from '../agent-observation.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { driverIdentity, sameDriver } from '../driver-identity.js';
 import type { WorkflowEnv } from '../env-resolution.js';
-import { scoringUnavailable } from '../scorers/home.js';
-import type { PinnedScorer } from '../scorers/pin.js';
-import { isJudgeTool, judgeToolLevel } from '../scorers/judge.js';
+import { scoringUnavailable, startedByPasses, verifiedScorers } from '../scorers/engine-hooks.js';
+import { confinedToolLevel, isConfinedTool } from '../tool-launch/confined.js';
 import { resolveRunMode, type RunMode } from '../launch-context.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 import type { JsonValue, LocalConfig } from '../types.js';
-import { nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
+import { attemptEnv, nestedWorkflowError, type AgentEvidence } from './attempt-marker.js';
 import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
 import { describeWorkflow, type WorkflowDescription } from './describe.js';
-import { LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
-import { carriedRun, claimOffered, offerToPerson, reconcileTakenCopies, resumeRun } from './handoff.js';
+import { ConfinedLeaseSchema, LeaseIdSchema, LeaseWireSchema } from './lease-wire.js';
+import { carriedRun, claimOffered, offerToPerson, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type PersonHandoff, type ReportInput } from './engine.js';
 import {
   abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparedCopyTeam, preparePlace, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
@@ -24,16 +23,25 @@ import {
   type StepEnd,
 } from './place/place.js';
 import { cancelRun, respondProvenance, respondToHitl, retryStep, type CallerProvenance, type Via } from './run-controls.js';
-import { nextJudgeLease, parseJudgeRequest, runJudgeLease, verifiedScorers } from './scoring.js';
+import { isUnder } from './loop.js';
 import { stepDefinitions } from './scope.js';
 import { StepModelSchema } from './step-model.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, withRunLock, type AttemptId, type RunId, type RunLock } from './store.js';
 import type { DriverCan } from './requirements.js';
 import { isWorkflowError, type DriverIdentity, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowFailure } from './types.js';
-import { cloneBranchOf, deliveryProblem, runCopyToMerge, stepRoleOf } from './workspace.js';
+import { cloneBranchOf, confinedOf, deliveryProblem, runCopyToMerge, stepRoleOf } from './workspace.js';
 import { headCommit } from './worktree.js';
 
 export type { PersonHandoff };
+
+/**
+ * A run that a pass a report settled started, which the driver of the reported run drives as it drives that run: its
+ * recorded driver is that run's, so its `next` is no claim. Every report answers each such run that has not ended, so
+ * a driver that lost one finds it again on its next report.
+ */
+export const StartedRunSchema = z.object({ run: RunIdSchema, step: z.string(), pass: z.number().int().positive(), scorers: z.array(z.string()) });
+
+export type StartedRun = z.infer<typeof StartedRunSchema>;
 
 /**
  * Who sent an answer: a process, with the driver UI its `--json` payload declares the person answered in, or the run's
@@ -92,8 +100,11 @@ export interface WorkflowClient {
    * inside a workflow attempt starts none, `nested_workflow`, and an agent one only a workflow whose `invoke` lets it:
    * `invoke_denied` for `deny`, and `confirm_needed` for `ask` without `confirmed`. `alone`: what the local driver,
    * the run's only driver, gives strict requirements; a step it could never take refuses the start, `requirement_unmet`.
+   * The run records an agent as its starter when `caller` has agent evidence, else `startedBy`: `cli` for one of the
+   * CLI's own automatic starts, `person` for a start a person asked for. `driver`: the driver the run is recorded for
+   * from its start.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy: 'person' | 'cli'; driver?: DriverIdentity; instead?: string }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -117,6 +128,13 @@ export interface WorkflowClient {
   /** Stops the run or the named step. */
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
   /**
+   * Gives up held steps the calling driver can never take: cancels, for each, the nearest step above it that sets
+   * `continue_on_failure`, so the run goes on without it. Only a step confined to a directory is given up, since its
+   * driver's confined offers stay as they were for the run. `not_cancellable`, and nothing cancelled, when one is not
+   * confined or has no such step above it.
+   */
+  giveUp(runId: string, steps: readonly string[]): Promise<WorkflowEnvelope>;
+  /**
    * Readies run `runId` for a driver of this machine as `workflow resume` does, under the caller's run `lock`, and brings
    * the branches of a run taken over to the commits it recorded. `claim` says which runs it takes from teamai-reports,
    * as {@link ResumeClaim} reads, or `none`, no run. A lease this machine's
@@ -131,15 +149,6 @@ export interface WorkflowClient {
   carried(runId: RunId, options: { published: boolean; claim: boolean; ceiling: number; can: DriverCan }): Promise<{ description: WorkflowDescription; status: RunStatus } | undefined>;
   /** Why `caller` may not continue run `runId`, by a resume or a takeover, as `resumeRefusal` decides it. */
   resumeRefusal(runId: RunId, options: { caller: InvokeCaller; published: boolean }): Promise<WorkflowFailure | undefined>;
-  /** Takes or renews judge work, as `teamai score --next` does with `body` as its payload. */
-  // oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; parseJudgeRequest parses it
-  scoreNext(body: unknown): Promise<WorkflowEnvelope>;
-  /**
-   * Judges lease `ref` with the confined judge of the tool it was leased for, as `teamai score --lease <ref>` does with
-   * `body` as its payload, and records the judge tool's process group in the directory `group`.
-   */
-  // oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; runJudgeLease parses it
-  judge(ref: string, body: unknown, options: { group: string }): Promise<WorkflowEnvelope>;
 }
 
 /**
@@ -190,9 +199,10 @@ export interface InvokeCaller {
 
 /**
  * What a caller asks of a workflow: to start a run; to continue run `run`, by `workflow resume` or a takeover; or to
- * claim it with a `next` payload, which has no field for the person's yes.
+ * claim it with a `next` payload, which has no field for the person's yes. A start a shortcut command makes may say, in
+ * `instead`, what the person and the agent run in its place, for an `invoke: deny` refusal.
  */
-export type InvokeAct = { kind: 'start' } | { kind: 'continue'; run: RunId } | { kind: 'claim'; run: RunId };
+export type InvokeAct = { kind: 'start'; instead?: string } | { kind: 'continue'; run: RunId } | { kind: 'claim'; run: RunId };
 
 /** What shows an agent runs the calling process, as the clause the `invoke` refusals end their first sentence with. */
 function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string {
@@ -215,7 +225,8 @@ function agentClause(evidence: Exclude<AgentEvidence, { kind: 'none' }>): string
 export function invokeDeniedMessage(name: string, evidence: Exclude<AgentEvidence, { kind: 'none' }>, act: InvokeAct): string {
   switch (act.kind) {
     case 'start':
-      return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`;
+      return `Workflow "${name}" has invoke: deny, so no coding agent starts it, with any driver, and ${agentClause(evidence)}. ${act.instead
+        ?? `The person can start it from their own terminal with teamai workflow start ${name} --driver local. To let agents start it, the team sets invoke: allow, or invoke: ask for a start after the person agrees, in workflows/${name}.yaml.`}`;
     case 'continue':
     case 'claim':
       return `Workflow "${name}" has invoke: deny, so no coding agent continues it, with any driver, and ${agentClause(evidence)}. The person can continue it from their own terminal with teamai workflow resume ${act.run}. To let agents continue it, the team sets invoke: allow, or invoke: ask for a resume after the person agrees, in workflows/${name}.yaml.`;
@@ -314,15 +325,23 @@ export async function resumeRefusal(
 }
 
 /** The failure a call answers when the cache holds no unambiguous runnable version of workflow or alias `name`. */
+/**
+ * Starts `name` as one of the CLI's own automatic starts, in run mode `mode`: with no agent evidence, so no agent gave its
+ * inputs, and recorded as started by `cli`, which hand labels and policy overrides never trust as a person.
+ */
+export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: { inputs: unknown; checkout?: string; driver?: DriverIdentity; mode: RunMode }): Promise<WorkflowEnvelope> {
+  return client.start(name, { ...options, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli' });
+}
+
 export function workflowNotFound(name: string): WorkflowFailure {
   return { code: 'workflow_not_found', message: `Workflow or alias ${name} has no unambiguous runnable version` };
 }
 
 /**
- * Who judges a run's scored steps as the skill driver drives it: no step is scored; the confined judge of `tool`, the
- * session's tool, here; the session itself with `tool` once the run is done, at best-effort, since this machine has no
- * verified judge of it, for `reason`, leaving open the work of the `verified` scorers that ask for more; or nobody on
- * this machine, for `reason`.
+ * Who judges a run's scored steps, and runs its confined prompt steps, as the skill driver drives it: no step is scored
+ * or confined; the confined tool of `tool`, the session's tool, here; the session itself with `tool`, at best-effort,
+ * in a fresh child, since this machine has no verified confined run of it, for `reason`, leaving open the work of the
+ * `verified` scorers that ask for more; or nobody on this machine, for `reason`.
  */
 /** A workflow as `describe` answers it: what it does, who judges it here, and why it cannot deliver, when it cannot. */
 export type DescribedWorkflow = { description: WorkflowDescription; judging: Judging; undeliverable?: WorkflowFailure };
@@ -334,29 +353,32 @@ export type Judging =
   | { kind: 'elsewhere'; reason: string };
 
 /**
- * Who judges `description`'s scored steps on this machine: the confined judge of `tool`, the session, or nobody. `pinned`:
- * the scorers a run pinned, when it has started.
+ * Who judges `description`'s scored steps on this machine: the confined judge of `tool`, the session, or nobody. The
+ * scorers of `run`, once it has started, are read at its team pin, and only when this line needs them.
  */
-async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined, pinned?: Record<string, PinnedScorer>): Promise<Judging> {
-  if (description.facts.scored.length === 0) return { kind: 'none' };
-  const unavailable = scoringUnavailable(config);
+async function judgingOf(config: LocalConfig, description: WorkflowDescription, tool: string | undefined, run?: RunState): Promise<Judging> {
+  const { scored, confined } = description.facts;
+
+  if (scored.length === 0 && confined.length === 0) return { kind: 'none' };
+  const unavailable = scored.length > 0 ? scoringUnavailable(config) : undefined;
 
   if (unavailable) return { kind: 'elsewhere', reason: unavailable };
 
   if (tool === undefined) return { kind: 'elsewhere', reason: 'This coding session names no tool.' };
-  const level = isJudgeTool(tool) ? await judgeToolLevel(tool) : undefined;
+  const level = isConfinedTool(tool) ? await confinedToolLevel(tool) : undefined;
 
   if (level?.isolation === 'verified') return { kind: 'here', tool };
 
-  const reason = !isJudgeTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`
+  const reason = !isConfinedTool(tool) ? `The coding session's tool, ${tool}, has no confined judge teamai runs`
     : level ? `${tool} ${level.version || '(version unknown)'} has no verified judge profile` : `The ${tool} executable is not on PATH`;
 
-  const scorers = [...new Set(description.facts.scored.flatMap((step) => step.scorers))];
-  const verified = await verifiedScorers(config, scorers, pinned);
+  const scorers = [...new Set(scored.flatMap((step) => step.scorers))];
+  const verified = await verifiedScorers(config, scorers, run);
 
   if (!verified.ok) return { kind: 'elsewhere', reason: `${reason}. ${verified.reason}` };
 
-  if (verified.scorers.length === scorers.length) {
+  // A confined step whose confined.json asks for best-effort is still the session's to run.
+  if (confined.length === 0 && verified.scorers.length === scorers.length) {
     return { kind: 'elsewhere', reason: `${reason}, and ${verified.scorers.join(', ')} ${verified.scorers.length > 1 ? 'ask' : 'asks'} for verified isolation.` };
   }
 
@@ -455,6 +477,14 @@ export function unreadablePlace(run: RunId): WorkflowFailure {
   return { code: 'workspace_base', message: `Run ${run} leased a place this teamai cannot read. Update teamai.` };
 }
 
+/** The directory a confined lease reads alone, where it is prepared: no place of the checkout is made, set up or snapshotted for it. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the skill driver passes the lease of an envelope it has not parsed; ConfinedLeaseSchema parses it here
+function confinedDirOf(raw: unknown): string | undefined {
+  const lease = z.object({ confined: ConfinedLeaseSchema }).safeParse(raw);
+
+  return lease.success ? lease.data.confined.dir : undefined;
+}
+
 /** The lease `raw` names, as the run leases it now. */
 // oxlint-disable-next-line teamai/no-unknown-parameters -- the skill driver passes the lease of an envelope it has not parsed; LeaseWireSchema parses it here
 async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Promise<Leased | { kind: 'failed'; failure: WorkflowFailure }> {
@@ -544,6 +574,9 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return described;
     },
     prepare: async (lock, raw) => {
+      const dir = confinedDirOf(raw);
+
+      if (dir !== undefined) return { kind: 'prepared', dir };
       const leased = await leasedPlace(config, lock, raw);
 
       return leased.kind === 'leased' ? placeLeased(config, lock, leased) : leased;
@@ -576,15 +609,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return request.kind === 'adopt' ? { ...ask, refused: placed.failure.message } : ask;
     },
     setup: (run, attempt, mode, signal) => runPlaceSetup({ config, run, attempt, mode, env, signal }),
-    start: async (name, { inputs, checkout, caller, timeout, alone }) => {
-      const cached = await loadCachedWorkflow(config, name);
-      const refused = invokeRefusal(cached?.definition, caller, { kind: 'start' });
-
-      if (refused) return { error: refused };
-      const base = checkout === undefined ? undefined : await headCommit(checkout);
-
-      return startRun(config, name, inputs ?? {}, { secrets: env.secrets, runMode: caller.mode, checkout, base, timeout, alone });
-    },
+    start: (name, options) => startNamed({ config, secrets: env.secrets }, name, options),
     runVersion: async (runId) => {
       const run = await readRun(config, runId);
 
@@ -611,7 +636,9 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const run = RunIdSchema.safeParse(runId);
       const prepare = options?.prepare;
 
-      if (prepare === undefined || !run.success) return withIgnored(await lease(), parsed.ignored);
+      const started = { config, runId, secrets: env.secrets };
+
+      if (prepare === undefined || !run.success) return withIgnored(await withStarted(started, withAttemptEnv(config, runId, next.runMode, await lease())), parsed.ignored);
 
       return withIgnored(await withRunLock(config, run.data, async (lock) => {
         const answer = prepare === true ? await prepareLeased({ config, lock, driver, env, answer: await leaseNext(config, runId, driver, { ...next, env, prepare: true }) })
@@ -620,7 +647,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         // A clone whose steps all settled is not needed any more.
         await sweepClones(config, lock.run);
 
-        return answer;
+        return withStarted(started, withAttemptEnv(config, runId, next.runMode, answer));
       }, { waitMs: 0 }), parsed.ignored);
     },
     report: async (runId, body, options) => {
@@ -646,6 +673,36 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
     },
     retry: (runId, step) => retryStep(config, runId, env.secrets, step),
     cancel: (runId, step) => cancelRun(config, runId, env.secrets, step),
+    giveUp: async (runId, steps) => {
+      const run = await readRun(config, runId);
+
+      if (run === 'missing' || run === 'corrupt') return { error: { code: 'run_unreadable', message: `Run ${runId} cannot be read, so no held step was given up` } };
+      const definitionOf = stepDefinitions(run);
+      const above = new Map<string, string>();
+
+      for (const step of steps) {
+        const definition = definitionOf(step);
+        // The nearest one first: a longer path that holds the step sits deeper.
+        const surviving = run.steps.map((state) => state.id).filter((id) => isUnder(id)(step)).sort((left, right) => right.length - left.length).find((id) => definitionOf(id)?.continueOnFailure);
+
+        if (!definition || confinedOf(definition) === undefined || surviving === undefined) {
+          return { error: { code: 'not_cancellable', message: `Step "${step}" of run ${runId} is not a confined step under one that sets continue_on_failure, so the run waits for a driver that can take it` } };
+        }
+
+        above.set(surviving, step);
+      }
+
+      const cancelled: string[] = [];
+
+      for (const [surviving, step] of above) {
+        const answer = await cancelRun(config, runId, env.secrets, surviving, `Cancelled: no driver of this run can take step "${step}", which is confined to a directory, and continue_on_failure lets the run go on without it`);
+
+        if ('error' in answer) return answer;
+        cancelled.push(surviving);
+      }
+
+      return { data: { cancelled } };
+    },
     resume: async (runId, { lock, claim, checkout, ceiling, can, tool }) => {
       if (claim === 'none' && await readRun(config, runId) === 'missing') return { kind: 'not-here' };
       const resumed = await readiedHere(config, runId, claim, checkout);
@@ -693,7 +750,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
         definition: run.definition, source: DefaultWorkflows.sourceOfRun(run), workflows: run.workflows ?? {}, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts,
       });
 
-      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, status: run.status, judging: await judgingOf(config, description, tool, run.scorers) };
+      return { kind: 'ready', installed: resumed.value?.ownership === 'claimed', description, settled: settledSteps(run), status: run.status, judging: await judgingOf(config, description, tool, run) };
     },
     carried: async (runId, { published, claim, ceiling, can }) => {
       const carried = await carriedRun(config, runId, { published, claim });
@@ -704,13 +761,23 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return { description: describeWorkflow({ definition, source, workflows, ceiling, can, allow: config.workflows?.allow ?? {}, env: env.facts }), status };
     },
     resumeRefusal: (runId, { caller, published }) => resumeRefusal(config, runId, caller, { published }),
-    scoreNext: async (body) => {
-      const request = parseJudgeRequest(body);
-
-      return isRefusal(request) ? { error: { code: 'invalid_json', message: request } } : nextJudgeLease(config, request);
-    },
-    judge: (ref, body, { group }) => runJudgeLease(config, ref, body, { group }),
   };
+}
+
+const CommandLeaseSchema = z.object({ attempt: z.string(), command: z.string(), env: z.record(z.string(), z.string()).optional() }).passthrough();
+
+/**
+ * A command lease with the env every process of its attempt gets, after the step's own, so a command any driver runs
+ * with `lease.env` alone finds its attempt and `$TEAMAI_RUN_DIR`, and changes no run. The mode is the one the driver
+ * sent, else this process's, as for setup.
+ */
+function withAttemptEnv(config: LocalConfig, runId: string, mode: RunMode | undefined, answer: WorkflowEnvelope): WorkflowEnvelope {
+  if (!('data' in answer)) return answer;
+  const lease = CommandLeaseSchema.safeParse(answer.data.lease);
+
+  if (!lease.success) return answer;
+
+  return { data: { ...answer.data, lease: { ...lease.data, env: { ...lease.data.env, ...attemptEnv(config, runId, lease.data.attempt, mode ?? resolveRunMode(process.env)) } } } };
 }
 
 function noCheckout(run: string, attempt: string): WorkflowFailure {
@@ -774,6 +841,9 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
     return { error: failure };
   };
 
+  const confined = confinedDirOf(named.data);
+
+  if (confined !== undefined) return { data: { ...answer.data, lease: { ...named.data, cwd: confined } } };
   const leased = await leasedPlace(config, lock, answer.data.lease);
   const placed = leased.kind === 'leased' ? await placeLeased(config, lock, leased, adopt) : leased;
 
@@ -800,13 +870,47 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
   return { data: { ...answer.data, lease } };
 }
 
+/** `WorkflowClient.start`: starts workflow `name` when its `invoke` lets `caller` start it. */
+async function startNamed({ config, secrets }: { config: LocalConfig; secrets: Record<string, string> }, name: string, options: Parameters<WorkflowClient['start']>[1]): Promise<WorkflowEnvelope> {
+  const { inputs, checkout, caller, timeout, alone, startedBy, driver, instead } = options;
+  const cached = await loadCachedWorkflow(config, name);
+  const refused = invokeRefusal(cached?.definition, caller, { kind: 'start', instead });
+
+  if (refused) return { error: refused };
+  const base = checkout === undefined ? undefined : await headCommit(checkout);
+
+  return startRun(config, name, inputs ?? {}, {
+    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', driver, checkout, base, timeout, alone,
+  });
+}
+
+/** Reports an attempt as `placedReport` does, with the runs its settled passes started (`withStarted`). Every driver reports through it. */
+export async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
+  return withStarted(input, await placedReport(input));
+}
+
+/**
+ * `answer` with `started`: the runs the settled passes of run `runId` started and that have not ended, which the driver
+ * that asked drives. A report settles a prompt step's pass, and a `next` a `workflow` step's, so both answer it.
+ */
+async function withStarted({ config, runId, secrets }: { config: LocalConfig; runId: string; secrets: Record<string, string> }, answer: WorkflowEnvelope): Promise<WorkflowEnvelope> {
+  if (!('data' in answer)) return answer;
+  const run = await readRun(config, runId);
+
+  if (run === 'missing' || run === 'corrupt') return answer;
+  const mode = run.runMode ?? resolveRunMode(process.env);
+  const started = await startedByPasses(config, runId, { client: { start: (name, options) => startNamed({ config, secrets }, name, options) }, mode });
+
+  return started.length === 0 ? answer : { data: { ...answer.data, started } };
+}
+
 /**
  * Reports an attempt, after finishing the place `prepare` gave it, under the run's lock, and removes that place once the
- * engine answers `cleanup`. Every driver reports through it. An attempt without a place is reported as it is. A report
+ * engine answers `cleanup`. An attempt without a place is reported as it is. A report
  * the run would refuse is sent as it is, and a cancelled one leaves the place as prepare found it; so does a
  * `released` attempt.
  */
-export async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
+async function placedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
   const { config, runId, report, secrets, lock } = input;
   const attempt = AttemptIdSchema.safeParse(report.attempt);
   const run = RunIdSchema.safeParse(runId);

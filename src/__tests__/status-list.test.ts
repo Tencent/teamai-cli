@@ -27,8 +27,8 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { list, status } from '../status.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
@@ -263,20 +263,20 @@ describe('teamai list / status resource coverage', () => {
     const workflow = (name: string, extra = '') => `schemaVersion: v1alpha1\nname: ${name}\ndescription: Review it.\n${extra}steps:\n  - id: review\n    command: node review.js\n`;
     await fse.outputFile(path.join(repoPath, 'workflows', 'review-and-fix.yaml'), workflow('review-and-fix', 'alias: fix\n'));
     await fse.outputFile(path.join(repoPath, 'workflows', 'broken.yaml'), 'schemaVersion: v1alpha1\nname: broken\n');
-    await syncWorkflowDefinitions(localConfig);
+    await syncScorersThenWorkflows(localConfig);
 
     await list('workflows', { source: 'repo' });
     expect(lines).toEqual([
-      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  teamai-share-session  (default)', '',
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-finished-sessions  (default)', '  teamai-score  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  teamai-share-session  (default)', '',
     ]);
 
     await fse.outputFile(path.join(repoPath, 'workflows', 'teamai-share-session.yaml'), workflow('teamai-share-session', 'alias: share-session\n'));
-    await syncWorkflowDefinitions(localConfig);
+    await syncScorersThenWorkflows(localConfig);
     lines.length = 0;
 
     await list('workflows', { source: 'repo' });
     expect(lines).toEqual([
-      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  share-session (teamai-share-session)  (team)', '',
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-finished-sessions  (default)', '  teamai-score  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  share-session (teamai-share-session)  (team)', '',
     ]);
   });
 
@@ -286,7 +286,7 @@ describe('teamai list / status resource coverage', () => {
     await fse.outputFile(path.join(repoPath, 'scorers', 'quality.md'), scorer);
     await fse.outputFile(path.join(repoPath, 'scorers', 'tests.md'), scorer);
     await fse.outputFile(path.join(repoPath, 'scorers', 'scoring.yaml'), 'batch: true\n');
-    await syncWorkflowDefinitions(localConfig);
+    await syncScorersThenWorkflows(localConfig);
 
     await status({});
 

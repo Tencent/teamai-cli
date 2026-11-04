@@ -1,11 +1,12 @@
 import fs from 'node:fs';
+import { formatUnknownScorer, syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { stepWorkflow } from '../workflow/types.js';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
-import { formatUnknownScorer, loadCachedWorkflow, syncWorkflowDefinitions } from '../workflow/cache.js';
+import { loadCachedWorkflow } from '../workflow/cache.js';
 import type { SyncWorkflowResult } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
@@ -102,7 +103,7 @@ describe('workflow cache', () => {
     const revision = repository.commit('add workflow through linked path');
     repository.push();
 
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(revision);
   });
@@ -114,19 +115,19 @@ describe('workflow cache', () => {
     const firstRevision = repository.commit('add workflow');
     repository.push();
 
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(firstRevision);
 
     writeWorkflow(config, 'build', `${VALID}\n# local edit\n`);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
 
     const localRevision = repository.commit('edit workflow locally');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
 
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(localRevision);
   });
 
@@ -136,11 +137,11 @@ describe('workflow cache', () => {
     writeWorkflow(config, 'build', VALID);
     const pushed = repository.commit('add workflow');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     fs.writeFileSync(path.join(config.repo.localPath, 'README.md'), 'unrelated\n');
     repository.commit('unrelated local commit');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(pushed);
     const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
@@ -156,7 +157,7 @@ describe('workflow cache', () => {
     writeWorkflow(config, 'build', VALID);
     const pushed = repository.commit('add workflow');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(pushed);
 
     const tree = git(config.repo.localPath, 'write-tree');
@@ -165,7 +166,7 @@ describe('workflow cache', () => {
     git(config.repo.localPath, 'push', '--force', '--set-upstream', 'origin', 'main');
     fs.writeFileSync(path.join(config.repo.localPath, 'README.md'), 'unrelated\n');
     repository.commit('unrelated local commit');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
   });
@@ -178,12 +179,12 @@ describe('workflow cache', () => {
     writeWorkflow(config, trackedName, VALID.replace('name: build', `name: ${trackedName}`));
     const teamRevision = repository.commit('initialize team');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, trackedName))?.teamRevision).toBe(teamRevision);
 
     writeWorkflow(config, 'build', VALID);
 
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
   });
@@ -194,7 +195,7 @@ describe('workflow cache', () => {
     writeWorkflow(config, 'build', VALID);
     const teamRevision = repository.commit('add workflow');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(teamRevision);
 
     writeWorkflow(config, 'build', `${VALID}\n# personal revision\n`);
@@ -204,7 +205,7 @@ describe('workflow cache', () => {
     git(config.repo.localPath, 'remote', 'add', 'personal', personal);
     git(config.repo.localPath, 'push', '--set-upstream', 'personal', 'main');
 
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect(git(config.repo.localPath, 'rev-parse', 'HEAD')).toBe(personalRevision);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
@@ -225,11 +226,11 @@ steps:
     const revision = repository.commit('add prompt workflow');
     repository.push();
 
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(revision);
 
     fs.writeFileSync(path.join(config.repo.localPath, 'prompts', 'review.md'), 'Review the local edit.\n');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
   });
 
@@ -252,7 +253,7 @@ steps:
 `);
     const firstRevision = repository.commit('add workflows');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     const first = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in first) throw new Error(first.error.message);
@@ -276,7 +277,7 @@ steps:
 `);
     repository.commit('change child and break parent');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(firstRevision);
     const currentChildRevision = (await loadCachedWorkflow(config, 'check'))?.teamRevision;
@@ -296,12 +297,12 @@ steps:
     writeWorkflow(config, 'build', VALID);
     const pushed = repository.commit('add workflow');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     writeWorkflow(config, 'build', 'schemaVersion: [\n');
     repository.commit('break workflow');
     repository.push();
-    expect((await syncWorkflowDefinitions(config)).kept).toEqual(['build']);
+    expect((await syncScorersThenWorkflows(config)).kept).toEqual(['build']);
 
     const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
@@ -316,7 +317,7 @@ steps:
     writeWorkflow(config, 'build', VALID);
     repository.commit('add workflow');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeDefined();
 
     writeWorkflow(config, 'build', 'schemaVersion: [\n');
@@ -326,7 +327,7 @@ steps:
     git(config.repo.localPath, 'checkout', '-B', 'main', rewritten);
     git(config.repo.localPath, 'push', '--force', '--set-upstream', 'origin', 'main');
 
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
     const kept = await loadCachedWorkflow(config, 'build');
 
     expect(synced.kept).toEqual(['build']);
@@ -340,14 +341,14 @@ steps:
     writeWorkflow(config, 'build', VALID);
     repository.commit('add workflow');
     repository.push();
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const [cacheFile] = cacheFiles(config);
     const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as Record<string, unknown>;
     cached.teamRevision = 'not-a-commit';
     fs.writeFileSync(cacheFile, `${JSON.stringify(cached)}\n`);
     writeWorkflow(config, 'build', 'schemaVersion: [\n');
 
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
 
     expect(synced.kept).toEqual(['build']);
     expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
@@ -377,7 +378,7 @@ ${output}  - id: leaf
     if: ${JSON.stringify(read)}
     command: echo summary
 `);
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
     expect(synced.invalid).not.toEqual([]);
     expect(synced.cached).toEqual([]);
   });
@@ -412,11 +413,11 @@ ${site === 'an output' ? `      outputs:\n        value: ${read}\n` : ''}      s
 ${site === 'an if' ? `          if: ${JSON.stringify(read)}\n` : ''}          command: echo summary
 `;
     writeWorkflow(config, 'build', body.replace('          for_each: "[]"\n', '').replace('        - id: leaf\n', '        - id: leaf\n          for_each: "[]"\n'));
-    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['build']);
+    expect((await syncScorersThenWorkflows(config)).cached).toEqual(['build']);
     const valid = await loadCachedWorkflow(config, 'build');
     expect(valid).not.toBeNull();
     writeWorkflow(config, 'build', body);
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
     expect(synced.invalid).toEqual([expect.objectContaining({ message: expect.stringContaining(message) })]);
     expect(synced.invalid[0]).not.toHaveProperty('code');
     expect(synced.kept).toEqual(['build']);
@@ -441,7 +442,7 @@ steps:
     if: steps.build.passes[0].results[0].outputs.ok && all(steps.build.passes, .results[0].outputs.ok)
     command: echo summary
 `);
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
     expect(synced.invalid).toEqual([]);
     expect(synced.cached).toEqual(['build']);
   });
@@ -465,7 +466,7 @@ steps:
     if: steps.build.passes[0].results[0].outputs.${field}
     command: echo summary
 `);
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
     if (field === 'ok') {
       expect(synced.invalid).toEqual([]);
       expect(synced.cached).toEqual(['build']);
@@ -487,14 +488,14 @@ steps:
   - id: review
     prompt_file: prompts/review.md
 `);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const first = await loadCachedWorkflow(config, 'build');
     expect(first?.definition.steps[0]).toMatchObject({ promptFile: 'prompts/review.md', prompt: 'first prompt' });
 
     const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     fs.writeFileSync(promptFile, 'second prompt');
-    const changed = await syncWorkflowDefinitions(config);
+    const changed = await syncScorersThenWorkflows(config);
     const second = await loadCachedWorkflow(config, 'build');
     expect(second?.sourceHash).not.toBe(first?.sourceHash);
     expect(changed.cached).toContain('build');
@@ -504,7 +505,7 @@ steps:
     if (typeof run !== 'object') throw new Error('run was not stored');
     expect(run.definition.steps[0]).toMatchObject({ prompt: 'first prompt', promptFile: 'prompts/review.md' });
 
-    const invalid = await syncWorkflowDefinitions(config);
+    const invalid = await syncScorersThenWorkflows(config);
     expect(invalid.kept).toEqual(['build']);
     expect((await loadCachedWorkflow(config, 'build'))?.definition.steps[0]?.prompt).toBe('second prompt');
   });
@@ -526,7 +527,7 @@ steps:
     prompt_file: prompts/ops/note.md
 `);
 
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
 
     const cached = await loadCachedWorkflow(config, 'build');
     expect(cached?.definition.steps[0]).toMatchObject({ prompt: 'ops prompt' });
@@ -547,7 +548,7 @@ steps:
     prompt_file: prompts/prompt.md
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual([]);
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
@@ -571,7 +572,7 @@ steps:
     prompt_file: .git/config
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual([]);
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
@@ -583,7 +584,7 @@ steps:
     writeWorkflow(config, 'build', VALID);
     writeWorkflow(config, 'broken', 'schemaVersion: v1alpha1\nname: nope\ndescription: x\nsteps: []\n');
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual(['build']);
     expect(result.unrunnable).toEqual(['workflows/broken.yaml']);
@@ -597,14 +598,14 @@ steps:
   it('keeps the last valid version when a file becomes invalid', async () => {
     const config = testConfig();
     writeWorkflow(config, 'build', VALID);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const first = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in first) throw new Error(first.error.message);
     const before = await readRun(config, String(first.data.run));
     if (typeof before !== 'object') throw new Error('run was not stored');
 
     writeWorkflow(config, 'build', 'schemaVersion: [\n');
-    const again = await syncWorkflowDefinitions(config);
+    const again = await syncScorersThenWorkflows(config);
 
     expect(again.kept).toEqual(['build']);
     expect(again.cached).not.toContain('build');
@@ -622,10 +623,10 @@ steps:
   it('keeps a runnable cache when dry-run sees a deleted source file', async () => {
     const config = testConfig();
     writeWorkflow(config, 'build', VALID);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     fs.rmSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'));
 
-    await syncWorkflowDefinitions(config, { dryRun: true });
+    await syncScorersThenWorkflows(config, { dryRun: true });
 
     const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     expect(started).toMatchObject({ data: { name: 'build', status: 'running' } });
@@ -640,7 +641,7 @@ steps:
     fs.writeFileSync(path.join(outside, 'build.yaml'), VALID.replace('command: node compile.js', 'command: node outside-dir.js'));
     fs.symlinkSync(outside, workflows);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual([]);
     expect(cachedText(config)).not.toContain('outside-dir.js');
@@ -651,15 +652,15 @@ steps:
   it('drops every cached workflow once the workflows directory is a symlink', async () => {
     const config = testConfig();
     writeWorkflow(config, 'build', VALID);
-    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['build']);
+    expect((await syncScorersThenWorkflows(config)).cached).toEqual(['build']);
     const workflows = path.join(config.repo.localPath, 'workflows');
     const outside = path.join(path.dirname(config.repo.localPath), 'outside-workflows');
     fs.renameSync(workflows, outside);
     fs.symlinkSync(outside, workflows);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
-    expect(result).toEqual({ cached: [], kept: [], invalid: [], unrunnable: [], scorers: { cached: [], invalid: [], verified: [] }, unknownScorers: [], aliasConflicts: [] });
+    expect(result).toEqual({ cached: [], kept: [], invalid: [], unrunnable: [], settled: [], scorers: { cached: [], invalid: [], verified: [] }, unknownScorers: [], aliasConflicts: [] });
     expect(await startRun(config, 'build', {}, { secrets: await knownSecrets(config) })).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
@@ -670,7 +671,7 @@ steps:
     fs.writeFileSync(outside, body);
     fs.symlinkSync(outside, path.join(config.repo.localPath, 'workflows', 'build.yaml'));
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).not.toContain('build');
     expect(result.invalid).toEqual([]);
@@ -683,11 +684,11 @@ steps:
   it('drops the last valid version when a revision uses a key this version does not know', async () => {
     const config = testConfig();
     writeWorkflow(config, 'build', VALID);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect(await loadCachedWorkflow(config, 'build')).not.toBeNull();
 
     writeWorkflow(config, 'build', VALID.replace('command: node compile.js', 'command: node compile.js\n    future_option: 10m'));
-    const synced = await syncWorkflowDefinitions(config);
+    const synced = await syncScorersThenWorkflows(config);
 
     expect(synced.unrunnable).toContain('workflows/build.yaml');
     expect(synced.kept).not.toContain('build');
@@ -717,8 +718,8 @@ steps:
 
     const first = checkout('a', 'echo main-command');
     const second = checkout('b', 'echo second-command');
-    await syncWorkflowDefinitions(first);
-    await syncWorkflowDefinitions(second);
+    await syncScorersThenWorkflows(first);
+    await syncScorersThenWorkflows(second);
 
     const started = await startRun(first, 'build', {}, { secrets: await knownSecrets(first) });
     if ('error' in started) throw new Error(started.error.message);
@@ -726,7 +727,7 @@ steps:
     expect(leased).toMatchObject({ data: { lease: { command: 'echo main-command' } } });
 
     writeWorkflow(first, 'build', 'schemaVersion: [\n');
-    const kept = await syncWorkflowDefinitions(first);
+    const kept = await syncScorersThenWorkflows(first);
     expect(kept.kept).toEqual(['build']);
     const afterInvalid = await startRun(first, 'build', {}, { secrets: await knownSecrets(first) });
     if ('error' in afterInvalid) throw new Error(afterInvalid.error.message);
@@ -734,7 +735,7 @@ steps:
     expect(stillFirst).toMatchObject({ data: { lease: { command: 'echo main-command' } } });
 
     fs.rmSync(path.join(second.repo.localPath, 'workflows', 'build.yaml'));
-    await syncWorkflowDefinitions(second);
+    await syncScorersThenWorkflows(second);
     const afterDelete = await startRun(first, 'build', {}, { secrets: await knownSecrets(first) });
     expect(afterDelete).toMatchObject({ data: { name: 'build', status: 'running' } });
   });
@@ -751,7 +752,7 @@ steps:
     command: node test.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -772,7 +773,7 @@ steps:
     command: node test.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -799,7 +800,7 @@ steps:
     command: node lint.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -821,7 +822,7 @@ steps:
     command: node test.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:8: field "steps[1].needs": step "test" needs must be a list of step ids',
@@ -841,7 +842,7 @@ steps:
 `;
     // Stand in for the cache an older teamai wrote under the linear rules: same file, no needs.
     writeWorkflow(config, 'build', linear.replace('  - id: test\n', '  - id: test\n    needs: [compile]\n'));
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const cacheFile = cacheFiles(config).find((file) => file.endsWith(`${path.sep}build.json`));
     if (!cacheFile) throw new Error('cache missing');
     const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as { definition: { steps: Array<{ needs?: string[] }> } };
@@ -849,7 +850,7 @@ steps:
     fs.writeFileSync(cacheFile, JSON.stringify(cached));
     writeWorkflow(config, 'build', linear);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid).toEqual([expect.objectContaining({ code: 'missing_needs', field: 'steps[1].needs' })]);
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
@@ -872,7 +873,7 @@ steps:
 ${steps}
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map((diagnostic) => `${diagnostic.field}: ${diagnostic.message}`)).toEqual([
       'steps[1].prompt: prompt must be a non-empty string',
@@ -895,7 +896,7 @@ steps:
     end: droped
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -916,7 +917,7 @@ steps:
     end: dropped
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -940,7 +941,7 @@ steps:
     end: dropped
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -966,7 +967,7 @@ steps:
     command: node test.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -987,7 +988,7 @@ steps:
     output: string
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:9: field "steps[0].output": step "stop" has no action, so it carries only id, needs, if, end, approve, choose, loop, and break',
@@ -1006,7 +1007,7 @@ steps:
     end: dropped
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:5: field "ends.dropped": ends must map each end name to succeeded or failed',
@@ -1028,10 +1029,10 @@ steps:
     end: dropped
 `;
     writeWorkflow(config, 'build', valid);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     writeWorkflow(config, 'build', valid.replace('end: dropped', 'end: droped'));
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.kept).toEqual(['build']);
     expect(await loadCachedWorkflow(config, 'build')).toMatchObject({
@@ -1052,7 +1053,7 @@ steps:
     command: node label.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1077,7 +1078,7 @@ steps:
     command: node label.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1107,7 +1108,7 @@ steps:
     command: node fix.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1132,12 +1133,12 @@ steps:
     command: node notify.js
 `;
     writeWorkflow(config, 'build', body);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     writeWorkflow(config, 'build', body
       .replace('command: node publish.js', 'if: false\n    command: node publish.js')
       .replace('command: node notify.js', "if: \"!(1 == 1) || ''\"\n    command: node notify.js"));
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:9: field "steps[1].if": step "publish" if is always false, so the step never runs',
@@ -1160,7 +1161,7 @@ steps:
     command: node label.js "{{inputs.title}}"
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1180,7 +1181,7 @@ steps:
       TITLE: fixed
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1202,7 +1203,7 @@ steps:
       BAD-NAME: two
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1238,7 +1239,7 @@ steps:
       SAME: "{{ inputs.title = 'x' }}"
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1290,7 +1291,7 @@ steps:
     needs: [build]
     prompt_file: prompts/review.md
 `);
-    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['build', 'review']);
+    expect((await syncScorersThenWorkflows(config)).cached).toEqual(['build', 'review']);
     fs.writeFileSync(promptFile, 'Review {{ length(steps.build.results) }} builds.');
     writeWorkflow(config, 'build', body(
       "{{ filter(steps.build.results, .outcome == 'failed') }}",
@@ -1305,7 +1306,7 @@ steps:
     prompt: "Explain {{ items | length }} and {{ name }} in this Jinja template."
 `);
 
-    const accepted = await syncWorkflowDefinitions(config);
+    const accepted = await syncScorersThenWorkflows(config);
 
     expect(accepted.invalid.map(formatDiagnostic)).toEqual([]);
     expect(accepted.cached).toEqual(['build', 'jinja', 'review']);
@@ -1313,7 +1314,7 @@ steps:
     expect((await loadCachedWorkflow(config, 'jinja'))?.definition.steps[0]?.prompt).toBe('Explain {{ items | length }} and {{ name }} in this Jinja template.');
 
     fs.writeFileSync(promptFile, 'Review {{ length(steps.build.result) }} builds.');
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/review.yaml:12: field "steps[1].prompt_file": step "review" prompt_file template {{ length(steps.build.result) }}: "steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr',
@@ -1336,7 +1337,7 @@ steps:
   - id: review
     prompt_file: prompts/review.md
 `);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     // Stand in for the cache an older teamai wrote: the braces reached the agent as written.
     const cacheFile = cacheFiles(config).find((file) => file.endsWith(`${path.sep}build.json`));
     if (!cacheFile) throw new Error('cache missing');
@@ -1344,7 +1345,7 @@ steps:
     fs.writeFileSync(cacheFile, fs.readFileSync(cacheFile, 'utf8').replace('Review the issue.', text));
     fs.writeFileSync(promptFile, text);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:6: field "steps[0].prompt_file": step "review" prompt_file reads inputs.issue, which is not an input the workflow declares',
@@ -1382,7 +1383,7 @@ steps:
     prompt_file: prompts/quote.md
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([]);
     expect(result.cached).toEqual(['fan']);
@@ -1414,7 +1415,7 @@ steps:
     with: [1]
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1439,7 +1440,7 @@ steps:
   - id: review
     prompt_file: prompts/review.md
 `);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     // Stand in for the cache an older teamai wrote: it did not know with, so the braces reached the agent as written.
     const cacheFile = cacheFiles(config).find((file) => file.endsWith(`${path.sep}build.json`));
     if (!cacheFile) throw new Error('cache missing');
@@ -1447,7 +1448,7 @@ steps:
     fs.writeFileSync(cacheFile, fs.readFileSync(cacheFile, 'utf8').replace('Review the issue.', text));
     fs.writeFileSync(promptFile, text);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:6: field "steps[0].prompt_file": step "review" prompt_file reads with.task, but the step has no with',
@@ -1475,7 +1476,7 @@ steps:
     command: node ship.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:13: field "steps[1].if": step "ship" if reads inputs.shipp, which is not an input the workflow declares',
@@ -1486,7 +1487,7 @@ steps:
   it('reports a dot in a step id or a field name and drops the version that has one', async () => {
     const config = testConfig();
     writeWorkflow(config, 'build', VALID);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     writeWorkflow(config, 'build', `schemaVersion: v1alpha1
 name: build
 description: Compile the project.
@@ -1499,7 +1500,7 @@ steps:
       result.ok: boolean
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:5: field "inputs": field name "issue.number" cannot contain "."; a path reads "." as a separator',
@@ -1524,14 +1525,14 @@ steps:
       DRY: true
 `;
     writeWorkflow(config, 'build', body);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.definition.steps[0]?.env).toEqual({ RETRIES: '3', DRY: 'true' });
     writeWorkflow(config, 'build', `${body}      EMPTY:
       LIST: [a]
       MAP: { a: 1 }
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:10: field "steps[0].env.EMPTY": step "label" env.EMPTY must be a string, number, or boolean',
@@ -1553,7 +1554,7 @@ steps:
     prompt: "Fix {{ inputs.issue }}."
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:5: field "inputs.issue": unknown output type "integer"',
@@ -1587,7 +1588,7 @@ steps:
     command: node classify.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.unrunnable).toEqual(['workflows/check.yaml', 'workflows/list.yaml']);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -1631,7 +1632,7 @@ steps:
         title: "{{ inputs.titel }}"
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:7: field "steps[0].with": step "plan" with is not allowed on a command step; pass values through env:',
@@ -1666,7 +1667,7 @@ steps:
           with:
             note: "plan {{ steps.plan.outcome }}"
 `);
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const first = await loadCachedWorkflow(config, 'build');
     const inline = first?.definition.steps[1] && stepWorkflow(first.definition.steps[1]);
     expect(inline?.kind === 'inline' && inline.workflow.steps[0]).toMatchObject({
@@ -1675,14 +1676,14 @@ steps:
     });
 
     fs.writeFileSync(promptFile, 'Fix {{ steps.free.outcome }}.');
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:14: field "steps[1].workflow.steps[0].prompt_file": step "fix" prompt_file reads steps.free, which is not a step it needs, or one the step that runs its workflow needs, directly or through their needs',
     ]);
 
     fs.writeFileSync(promptFile, 'Fix it.');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     expect((await loadCachedWorkflow(config, 'build'))?.sourceHash).not.toBe(first?.sourceHash);
   });
 
@@ -1719,7 +1720,7 @@ steps:
           command: node classify.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map((diagnostic) => [formatDiagnostic(diagnostic), diagnostic.code])).toEqual([
       ['workflows/build.yaml:13: field "steps[1].workflow.outputs.text": output "text" must be a path that reads a step, such as steps.<id>.outputs.<field>', undefined],
@@ -1755,7 +1756,7 @@ steps:
                 command: node note.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:21: field "steps[2].workflow.steps[1].workflow.steps[0].if": step "note" if reads steps.free, which is not a step it needs, or one the step that runs its workflow needs, directly or through their needs',
@@ -1792,7 +1793,7 @@ steps:
           command: node comment.js
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map((diagnostic) => [formatDiagnostic(diagnostic), diagnostic.code])).toEqual([
       ['workflows/build.yaml:17: field "steps[2].workflow.inputs": step "check" runs an inline workflow, which declares no inputs; its steps read the enclosing workflow\'s inputs', undefined],
@@ -1809,7 +1810,7 @@ steps:
  * child or a cycle among cached copies, fails the test that wrote it.
  */
 async function syncAndStart(config: LocalConfig): Promise<SyncWorkflowResult> {
-  const result = await syncWorkflowDefinitions(config);
+  const result = await syncScorersThenWorkflows(config);
   for (const name of [...result.cached, ...result.kept]) {
     expect(await startRun(config, name, {}, { secrets: await knownSecrets(config) }), name).not.toMatchObject({ error: { code: expect.stringMatching(/^workflow_(recursion|not_found)$/) } });
   }
@@ -1958,13 +1959,41 @@ steps:
     const result = await syncAndStart(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/ship.yaml:7: field "steps[0].with": step "check" with does not pass input "title", which workflow "check" declares',
+      'workflows/ship.yaml:7: field "steps[0].with": step "check" with does not pass input "title", which workflow "check" declares as string',
       'workflows/ship.yaml:9: field "steps[0].with.titel": step "check" with.titel is not an input workflow "check" declares',
-      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "issue", which workflow "check" declares',
-      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "title", which workflow "check" declares',
+      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "issue", which workflow "check" declares as number',
+      'workflows/ship.yaml:12: field "steps[1].with": step "bare" with does not pass input "title", which workflow "check" declares as string',
       'workflows/ship.yaml:17: field "steps[2].with.issue": step "compile" with.issue is not an input workflow "build" declares',
     ]);
     expect(result.cached).toEqual(['build', 'check']);
+  });
+
+  it('names an input a step does not pass by the type its workflow declares, however it nests', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'check', `schemaVersion: v1alpha1
+name: check
+description: Classify the issues.
+inputs:
+  labels: [string]
+  owner: { name: string, level: low | high }
+steps:
+  - id: classify
+    command: node classify.js
+`);
+    writeWorkflow(config, 'ship', `schemaVersion: v1alpha1
+name: ship
+description: Ship the issues.
+steps:
+  - id: check
+    workflow: check
+`);
+
+    const result = await syncAndStart(config);
+
+    expect(result.invalid.map(formatDiagnostic)).toEqual([
+      'workflows/ship.yaml:6: field "steps[0].with": step "check" with does not pass input "labels", which workflow "check" declares as [string]',
+      'workflows/ship.yaml:6: field "steps[0].with": step "check" with does not pass input "owner", which workflow "check" declares as { name: string, level: low | high }',
+    ]);
   });
 
   it('reports a read of an output the workflow a step runs does not declare, and drops the parent that read it', async () => {
@@ -2351,7 +2380,7 @@ steps:
         - id: lint
           command: npm run lint
 `);
-    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['build']);
+    expect((await syncScorersThenWorkflows(config)).cached).toEqual(['build']);
     writeWorkflow(config, 'build', `schemaVersion: v1alpha1
 name: build
 description: Build it.
@@ -2368,7 +2397,7 @@ steps:
     model: fast
 `);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual([]);
     expect(result.invalid.map(formatDiagnostic)).toEqual([
@@ -2404,7 +2433,7 @@ steps:
     fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'broken.md'), '---\npassingScore: 1\n---\nJudge.\n');
     writeWorkflow(config, 'ship', SCORED);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual(['ship']);
     expect(result.invalid).toEqual([]);
@@ -2436,7 +2465,7 @@ steps:
     writeWorkflow(config, 'review', cloneStep('review'));
     writeWorkflow(config, 'audit', cloneStep('old-review').replace('name: review', 'name: audit'));
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached.toSorted()).toEqual(['audit', 'review']);
     expect(result.invalid).toEqual([]);
@@ -2450,7 +2479,7 @@ steps:
     writeWorkflow(config, 'defaulted', `schemaVersion: v1alpha1\nname: defaulted\ndescription: Review in a clean clone.\ndefaults:\n  role: old-review\nsteps:\n${clone}`);
     writeWorkflow(config, 'enclosed', `schemaVersion: v1alpha1\nname: enclosed\ndescription: Review in a clean clone.\nsteps:\n  - id: outer\n    role: old-review\n    workflow:\n      steps:\n${clone.replace(/^/gm, '        ').trimEnd()}\n`);
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([]);
     expect(result.cached.toSorted()).toEqual(['defaulted', 'enclosed']);
@@ -2463,7 +2492,7 @@ steps:
     writeWorkflow(config, 'continued', cloneStep('old-review').replace('name: review', 'name: continued')
       .replace('    prompt: Review the change.\n', '    workflow:\n      steps:\n        - id: look\n          role: old-review\n          workspace: continue\n          prompt: Review the change.\n'));
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([]);
     expect(result.cached).toEqual(['continued']);
@@ -2478,7 +2507,7 @@ steps:
     writeWorkflow(config, 'look', 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change.\nsteps:\n  - id: look\n    role: old-review\n    workspace: continue\n    prompt: Review the change.\n');
     writeWorkflow(config, 'defaulted-look', 'schemaVersion: v1alpha1\nname: defaulted-look\ndescription: Look at the change.\ndefaults:\n  role: old-review\nsteps:\n  - id: look\n    workspace: continue\n    prompt: Review the change.\n');
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([]);
     expect(result.cached.toSorted()).toEqual(['again', 'continued', 'defaulted-look', 'look']);
@@ -2490,7 +2519,7 @@ steps:
     fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
     writeWorkflow(config, 'look', 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change.\nsteps:\n  - id: look\n    role: old-review\n    workspace: continue\n    prompt: Review the change.\n');
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual([]);
     expect(result.invalid.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
@@ -2507,7 +2536,7 @@ steps:
     writeWorkflow(config, 'both', `schemaVersion: v1alpha1\nname: both\ndescription: Review twice.\ndefaults:\n  role: auditor\nsteps:\n${clone}  - id: again\n    needs: [review]\n    workspace: new\n    prompt: Review it again.\n`);
     writeWorkflow(config, 'enclosed', 'schemaVersion: v1alpha1\nname: enclosed\ndescription: Audit the change.\nsteps:\n  - id: outer\n    role: auditor\n    workflow:\n      steps:\n        - id: review\n          workspace: new\n          prompt: Review the change.\n');
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual([]);
     expect(result.invalid.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
@@ -2524,7 +2553,7 @@ steps:
     writeWorkflow(config, 'review', `${cloneStep('review').replace('    prompt: Review the change.\n', '')}    workflow: look\n`);
     writeWorkflow(config, 'look', 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change as a spec writer.\nsteps:\n  - id: look\n    role: spec\n    workspace: continue\n    prompt: Write the spec.\n');
 
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
 
     expect(result.cached).toEqual(['look']);
     expect(result.invalid.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([{

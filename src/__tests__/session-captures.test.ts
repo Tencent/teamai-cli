@@ -311,7 +311,7 @@ describe('session captures (#1178)', () => {
     const { config, project, rev, skill } = checkout();
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
 
-    for (const by of ['workflow', 'scorer']) await SessionCaptures.atStart(config, 'claude', start(project), { TEAMAI_LAUNCHED_BY: by });
+    for (const by of ['workflow', 'confined']) await SessionCaptures.atStart(config, 'claude', start(project), { TEAMAI_LAUNCHED_BY: by });
     // A skill driver's command steps and runners carry only its attempt marker.
     await SessionCaptures.atStart(config, 'claude', start(project), { TEAMAI_WORKFLOW_ATTEMPT: 'r0123456789abcdef/a0000000a' });
 

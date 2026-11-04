@@ -85,3 +85,30 @@ export function routingScorer(skill: AvailableSkill): RoutingQuestion {
 export function routingScorers(skills: readonly AvailableSkill[]): RoutingQuestion[] {
   return skills.flatMap((skill) => skill.namespaceUnknown ? [] : [routingScorer(skill)]);
 }
+
+/** Why the parsed routing name `parsed` names no question among `available`, as `routingQuestionOf` says it. */
+function unroutedWhy(parsed: { skill: string } | undefined, available: readonly AvailableSkill[] | undefined): string {
+  if (available === undefined) return 'The session\'s captures record no delivered team skills, so no routing question can name one.';
+
+  if (available.length === 0) return 'The session\'s checkout held no team skills.';
+
+  if (parsed && available.some(({ name, namespaceUnknown }) => namespaceUnknown && name === parsed.skill)) {
+    return `Its delivery record cannot tell the namespace of team skill ${parsed.skill}, so judging it could judge another skill of the same name: it has no routing question.`;
+  }
+
+  return `It names no team skill in this session's skills.available: ${available.filter(({ namespaceUnknown }) => !namespaceUnknown).map(routingScorerName).join(', ')}.`;
+}
+
+/**
+ * The routing question `value` names among `available`, the team skills a session's captures delivered (undefined
+ * when they record none), or why it names none of them. It resolves whatever `skill_routing` says.
+ */
+export function routingQuestionOf(value: string, available: readonly AvailableSkill[] | undefined): { ok: true; question: RoutingQuestion } | { ok: false; why: string } {
+  const parsed = parseRoutingScorer(value);
+  const skill = parsed && available !== undefined ? routingSkillOf(parsed, available) : undefined;
+
+  if (skill === undefined) return { ok: false, why: unroutedWhy(parsed, available) };
+  const question = routingScorer(skill);
+
+  return question.scorer === value ? { ok: true, question } : { ok: false, why: `It names ${question.scorer}.` };
+}

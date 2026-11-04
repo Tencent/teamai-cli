@@ -185,7 +185,8 @@ const reportsBranchMocks = vi.hoisted(() => ({
   updateReports: vi.fn().mockResolvedValue({ status: 'published' }),
   readReportsOriginFile: vi.fn().mockResolvedValue(null),
 }));
-vi.mock('../utils/reports-branch.js', () => ({
+vi.mock('../utils/reports-branch.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../utils/reports-branch.js')>(),
   updateReports: (...args: unknown[]) => reportsBranchMocks.updateReports(...args),
   readReportsOriginFile: (...args: unknown[]) => reportsBranchMocks.readReportsOriginFile(...args),
 }));
@@ -199,7 +200,9 @@ vi.mock('../project-agent-root.js', () => ({
 
 // No scope scores finished sessions unless a test says so; a detached process is never started for real.
 const mockBackgroundPassScopes = vi.fn().mockResolvedValue([]);
-vi.mock('../score-sessions.js', () => ({ backgroundPassScopes: mockBackgroundPassScopes }));
+const mockStartFinished = vi.fn();
+vi.mock('../session-flow/finished-sessions.js', () => ({ FinishedSessions: { backgroundScopes: mockBackgroundPassScopes, start: mockStartFinished } }));
+vi.mock('../env-resolution.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../env-resolution.js')>()), resolveWorkflowEnv: vi.fn().mockResolvedValue({}) }));
 const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn(() => ({ on: vi.fn().mockReturnThis(), unref: vi.fn() })) }));
 vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawn: mockSpawn }));
 
@@ -207,6 +210,7 @@ import { buildAdoptedSummary, buildHandlerRegistry, filterHandlersForConfig } fr
 import { createDispatcher } from '../hook-dispatch.js';
 import { GIT_HOOK_EVENTS } from '../git-hook.js';
 import type { JsonValue, LocalConfig } from '../types.js';
+import { log } from '../utils/logger.js';
 
 /** The scope hook-dispatch resolved for the hook's cwd, handed to every handler. */
 const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [] };
@@ -520,35 +524,67 @@ describe('hook-handlers registry', () => {
     return registered.handler;
   }
 
-  it('session-start pull starts score-sessions detached once the late usage report settles, when a scope scores sessions (#1179)', async () => {
+  it('session-start pull starts teamai-finished-sessions in each scope that scores or publishes sessions, and drives it detached with no agent evidence, once the late usage report settles', async () => {
     const handler = sessionStartPull();
     const cwd = fs.realpathSync.native(os.tmpdir());
-    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
+    const user = { ...scope, dataHome: '/data/user' };
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope, user]);
+    mockStartFinished.mockResolvedValueOnce({ kind: 'started', run: 'r1111111111111111', cwd: '/data/project' })
+      .mockResolvedValueOnce({ kind: 'working', run: 'r2222222222222222', cwd: '/data/user' });
+    mockSpawn.mockClear();
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'the-agent-session');
+    vi.stubEnv('TEAMAI_WORKFLOW_ATTEMPT', 'r3333333333333333/a00000001');
 
-    await handler.execute({ cwd }, 'claude', scope);
+    try {
+      await handler.execute({ cwd }, 'claude', scope);
+    } finally {
+      vi.unstubAllEnvs();
+    }
 
     expect(mockBackgroundPassScopes).toHaveBeenCalledWith(cwd);
-    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd, detached: true, stdio: 'ignore' }));
-    expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockSpawn.mock.invocationCallOrder.at(-1) ?? 0);
+    expect(mockStartFinished.mock.calls.map(([config]) => config)).toEqual([scope, user]);
+    expect(mockSpawn.mock.calls).toEqual([[process.execPath, [expect.any(String), 'workflow', 'resume', 'r1111111111111111', '--driver', 'local'], expect.objectContaining({ cwd: '/data/project', detached: true, stdio: 'ignore' })]]);
+    const env: unknown = mockSpawn.mock.calls.at(0)?.at(2);
+    expect(env).toMatchObject({ env: expect.not.objectContaining({ CLAUDE_CODE_SESSION_ID: expect.anything() }) });
+    expect(env).toMatchObject({ env: expect.not.objectContaining({ TEAMAI_WORKFLOW_ATTEMPT: expect.anything() }) });
+    expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockStartFinished.mock.invocationCallOrder.at(0) ?? 0);
   });
 
-  it('session-start pull scores the sessions of the directory it runs in when the payload names none (#1179)', async () => {
+  it('session-start pull drives no run of teamai-finished-sessions that did not start, and says why only in debug output', async () => {
     const handler = sessionStartPull();
-    mockBackgroundPassScopes.mockResolvedValueOnce([scope]);
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope, { ...scope, dataHome: '/data/user' }]);
+    mockStartFinished.mockResolvedValueOnce({ kind: 'failed', failure: { code: 'workflow_not_found', message: 'No workflow named teamai-finished-sessions.' } })
+      .mockRejectedValueOnce(new Error('EACCES: permission denied'));
     mockSpawn.mockClear();
+    vi.mocked(log.debug).mockClear();
+
+    await handler.execute({ cwd: fs.realpathSync.native(os.tmpdir()) }, 'claude', scope);
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(vi.mocked(log.debug).mock.calls.map(([said]) => said)).toEqual(expect.arrayContaining([
+      'hook-dispatch: teamai-finished-sessions did not start: workflow_not_found: No workflow named teamai-finished-sessions.',
+      'hook-dispatch: teamai-finished-sessions did not start: EACCES: permission denied',
+    ]));
+    expect(vi.mocked(log.warn)).not.toHaveBeenCalledWith(expect.stringContaining('teamai-finished-sessions'));
+  });
+
+  it('session-start pull reaches the scopes of the directory it runs in when the payload names none (#1179)', async () => {
+    const handler = sessionStartPull();
+    mockBackgroundPassScopes.mockResolvedValueOnce([]);
 
     await handler.execute({}, 'claude', scope);
 
     expect(mockBackgroundPassScopes).toHaveBeenLastCalledWith(process.cwd());
-    expect(mockSpawn).toHaveBeenCalledWith(process.execPath, [expect.any(String), 'score-sessions'], expect.objectContaining({ cwd: process.cwd() }));
   });
 
-  it('session-start pull starts no score-sessions when no scope scores sessions (#1179)', async () => {
+  it('session-start pull starts nothing when no scope scores or publishes sessions (#1179)', async () => {
     const handler = sessionStartPull();
     mockSpawn.mockClear();
+    mockStartFinished.mockClear();
 
     await handler.execute({ cwd: fs.realpathSync.native(os.tmpdir()) }, 'claude', scope);
 
+    expect(mockStartFinished).not.toHaveBeenCalled();
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 

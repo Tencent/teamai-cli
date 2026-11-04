@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, driveByProtocol, inProcessConformanceClient, profileDriver } from '../workflow/conformance-interpreter.js';
 import { workflowGitConformanceScenarios, type GitConformanceName } from '../workflow/conformance/git.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
@@ -103,10 +103,10 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         workflows: { tools: { default: 'claude' }, max_parallel: 1 },
       });
       const config = install('tester', checkout, knowledge);
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       // Without a handoff the other machine's driver reports into the same install.
       const starter = scenario.handoff ? install('elsewhere', elsewhere, path.join(root, 'other', 'team-repo')) : config;
-      if (starter !== config) await syncWorkflowDefinitions(starter);
+      if (starter !== config) await syncScorersThenWorkflows(starter);
       // Started in the other machine's checkout, as workflow start there records it.
       const started = await startRun(starter, scenario.workflowName, {}, { secrets: await knownSecrets(starter), checkout: elsewhere, base: { ref: 'main', commit: git(elsewhere, 'rev-parse', 'HEAD') } });
       if ('error' in started) throw new Error(started.error.message);

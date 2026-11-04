@@ -54,7 +54,7 @@ async function fixture(workflow: string, inputs: Record<string, unknown> = {}): 
     additionalRoles: [], projectRoot: cwd, dataHome: path.join(root, 'data'), workflows: { tools: {}, max_parallel: 1 },
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'ship.yaml'), workflow);
-  await syncWorkflowDefinitions(config);
+  await syncWorkflowDefinitions(config, {});
   const started = await startRun(config, 'ship', inputs, { checkout: cwd, base: { ref: 'main', commit: git(cwd, ['rev-parse', 'HEAD']) }, secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, cwd, root, origin, runId: String(started.data.run) };
@@ -349,7 +349,7 @@ async function otherInstall(config: LocalConfig, root: string, origin: string): 
   git(cwd, ['remote', 'set-url', 'origin', 'https://github.com/fixture/app.git']);
   git(cwd, ['config', `url.${origin}.insteadOf`, 'https://github.com/fixture/app.git']);
   const other: LocalConfig = { ...config, projectRoot: cwd, dataHome: path.join(home, 'data'), repo: { ...config.repo, localPath: team } };
-  await syncWorkflowDefinitions(other);
+  await syncWorkflowDefinitions(other, {});
   return { config: other, cwd };
 }
 

@@ -4,7 +4,7 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
-import { CheckRunSchema } from '../workflow/check.js';
+import { CheckRunSchema } from './check.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
 
@@ -26,6 +26,25 @@ const LabelSchema = z.object({
 
 const LABEL_COUNT = 'must list 2 to 20 labels: at least one that passes and one that fails';
 
+/** What may decide a delivered pass before its judge, in the order the decisions apply. */
+export const STAGES = ['check', 'ci', 'protected'] as const;
+
+export type Stage = (typeof STAGES)[number];
+
+const StagesSchema = z.array(z.string(), { error: 'must list some of check, ci and protected' }).transform((listed, ctx): Stage[] => {
+  const stages: Stage[] = [];
+
+  for (const value of listed) {
+    const stage = STAGES.find((known) => known === value);
+
+    if (stage === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `lists "${value}"; a scorer takes some of check, ci and protected` });
+    else if (stages.includes(stage)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `lists "${value}" twice` });
+    else stages.push(stage);
+  }
+
+  return stages;
+});
+
 const FrontmatterSchema = z.object({
   labels: z.array(LabelSchema, { error: LABEL_COUNT }).min(2, LABEL_COUNT).max(20, LABEL_COUNT),
   passingScore: number('must be a number'),
@@ -40,6 +59,8 @@ const FrontmatterSchema = z.object({
   sessions: z.boolean({ error: 'must be true or false' }).optional(),
   /** Runs on what a `deliver: pr` step delivered before the judge (#1247), as a benchmark task's check runs (#1180). */
   check: CheckRunSchema.optional(),
+  /** The stages that may decide this scorer before its judge; absent, all three. `check` applies only with a `check`. */
+  stages: StagesSchema.optional(),
 }).strict().superRefine((scorer, ctx) => {
   const seen = new Set<string>();
   scorer.labels.forEach((label, index) => {

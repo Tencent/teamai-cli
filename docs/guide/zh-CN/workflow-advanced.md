@@ -212,6 +212,38 @@ step "publish" has items that run after each other in a cycle: core -> cli -> co
 
 `for_each` 与 `loop`、`end` 或 `break` 一起使用时，pull 会拒绝。要再次运行某一项的工作，请把循环放进该项运行的工作流里。
 
+## 让步骤失败而不让工作流失败
+
+`continue_on_failure: true` 让步骤失败、超时或被取消时不会让它所在的工作流失败。该步骤仍读作 `failed` 或 `cancelled`，依赖它的步骤照常处理：需要它的步骤只有在 `if` 读取它时才会运行。在 `for_each` 步骤上，某一项失败会让该步骤失败，但不会让运行失败；该步骤超时或被取消时，会保留已结束各项的 `results`。运行工作流的步骤也可以使用它。`finally` 步骤不能使用。
+
+```yaml
+schemaVersion: v1alpha1
+name: review-packages
+description: Review each package on the model it names; a review that fails does not fail the run.
+inputs:
+  packages: [{ dir: string, model: string }]
+outputs:
+  reviews: steps.review.results
+steps:
+  - id: review
+    for_each: inputs.packages
+    continue_on_failure: true
+    prompt: "List the problems in the changes under {{ item.dir }}."
+    model: "{{ item.model }}"
+    output:
+      problems: [string]
+  - id: summarize
+    needs: [review]
+    if: length(filter(steps.review.results, .outcome == 'success')) > 0
+    prompt: "Summarize these reviews for the pull request: {{ steps.review.results }}"
+```
+
+```text
+teamai workflow start review-packages --inputs '{"packages":[{"dir":"packages/core","model":"strong"},{"dir":"packages/cli","model":""}]}'
+```
+
+`review[0]` 使用模型别名 `strong` 运行，`review[1]` 的模型渲染为空，因此使用工具的默认模型。某个评审失败时，`summarize` 仍会基于另一个评审运行，运行成功，`reviews` 中包含每一项。
+
 ## 先到达的结局生效
 
 驱动再次调用 `next` 之前，多个上报可能到达两个结局。此时 `next` 采用先到达的那个结局，与步骤在文件中的顺序无关。
@@ -643,6 +675,47 @@ teamai workflow start review-parts --driver local --inputs '{"parts":[{"path":"w
 
 某个步骤打开克隆或运行 `workflow: { from }` 时，运行就是隔离的。它只在启动它的机器上运行：`workflow publish` 和 `--claim` 以 `isolated_run` 拒绝它，`workflow retry` 拒绝它并给出启动新运行的命令。它的记录带 `isolated: true`，使用统计上报开启时仍会到达 `teamai-reports`，并且不计入任何工作流总量。
 
+### 私有工作流
+
+`private: true` 让工作流的步骤所做的事留在运行它们的机器上，该工作流作为另一个工作流的步骤运行时也是如此。它作用于该工作流自己的步骤，以及这些步骤运行的工作流中的步骤，从不作用于运行它的步骤，也不作用于该步骤周围的任何步骤。
+
+```yaml
+schemaVersion: v1alpha1
+name: triage-notes
+description: Read the incident notes here, and return only a severity.
+private: true
+inputs:
+  notes: string
+outputs:
+  severity: steps.read.outputs.severity
+steps:
+  - id: read
+    prompt: "Read the incident notes in {{ inputs.notes }} and rate the incident's severity."
+    output:
+      severity: low | high
+      reasoning: string
+```
+
+```yaml
+schemaVersion: v1alpha1
+name: incident
+description: Rate an incident from its private notes, then open an issue.
+inputs:
+  notes: string
+steps:
+  - id: rate
+    workflow: triage-notes
+    with:
+      notes: "{{ inputs.notes }}"
+  - id: open
+    needs: [rate]
+    command: gh issue create --title "Incident" --label "severity:$SEVERITY" --body "See the incident channel."
+    env:
+      SEVERITY: "{{ steps.rate.outputs.severity }}"
+```
+
+私有步骤的会话从不归档到 `teamai-reports`，发布的运行也不带它的任何输出：`rate` 发布 `triage-notes` 声明的 `severity`，`reasoning` 留在本机。私有步骤尚未结束时，`workflow publish` 和 `--claim` 以 `private_open` 拒绝该运行；它结束后两者都可以。从私有工作流启动的运行不发布运行记录，因此不计入任何工作流总量，也不出现在 Workflow Runs 页面上。它只在启动它的机器上运行：`workflow publish` 和 `--claim` 以 `isolated_run` 拒绝它。
+
 ## 表达式参考
 
 `if` 是一个表达式。它能读取哪些步骤、哪些值为真，见 [工作流](workflow.md)。
@@ -676,6 +749,7 @@ steps:
 | `for_each` 步骤的 results | `steps.build.results`、`steps.build.results[0].outcome`、`steps.build.branches` |
 | 设置了 `deliver: pr` 的步骤交付的 pull request，或 `null` | `steps.fix.pr`、`steps.fix.pr.url`、`steps.build.results[0].pr.url`。见[交付 PR](workflow.md#交付-pr)。 |
 | `for_each` 实例的项 | `item`、`item.dir` |
+| 这次运行的 id，在它运行的每个工作流中都相同 | `run.id` |
 | 字符串 | `'failed'`。使用单引号。字符串里的单引号写两次：`'it''s'`。 |
 | 数字 | `3`、`-1`、`1.5`。小数点前要有数字：写 `0.5`，不写 `.5`。 |
 | 布尔值或 null | `true`、`false`、`null` |
@@ -849,7 +923,7 @@ workflows:
 | `driver.can` 键 | 驱动 |
 |---|---|
 | `hitl` | 让人回答 HITL 请求并在交互步骤中工作。 |
-| `workspace` | 接受这些工作区模式的租约：`read-only`、`new`、`continue`、`clone`。克隆步骤只通过 [`next --prepare`](#在自己的驱动里使用克隆工作区) 租出。 |
+| `workspace` | 接受这些工作区模式的租约：`read-only`、`new`、`continue`、`clone`、`team`（在[团队工作区](workflow.md#团队工作区)中运行的步骤，例如 `teamai-score` 的 `publish`）。克隆步骤只通过 [`next --prepare`](#在自己的驱动里使用克隆工作区) 租出。 |
 | `env` | `true`：自己解析 `lease.envScope.provide`，移除 `lease.envScope.withhold`，并且不把值交给运行步骤的程序。`"commands"`：只对命令步骤和 setup 这样做，所以带 `requires.env` 的提示词步骤会等待。由智能体运行步骤的驱动不要声明它；如果命令由驱动自己启动，可以发送 `"commands"`。0.28.0 之前的 teamai 对 `"commands"` 返回 `invalid_json`。 |
 | `setup` | 在它创建的每个工作区以及 setup 未完成的工作区中，用 `lease.setup.envScope` 运行 `lease.setup.command`，并以上述失败码让步骤失败。工作流声明了 `setup` 时，每个带工作区的租约都携带 `setup`。 |
 | `tokens` | 报告每个成功的非交互 prompt 步骤的 token。 |
@@ -860,8 +934,9 @@ workflows:
 | `end_turn` | 在 `lease.limits` 处结束 prompt 的这一轮，并报告它停在的 `limit` 和 `durationMs`。 |
 | `unattended` | 对租约带 `permissions: "unattended"` 的 prompt，以其工具自己的无需询问即可编辑和运行命令的模式启动它；工具没有这种模式时让步骤失败，而不是照常启动。 |
 | `role` | 接受[以团队角色运行](#以团队角色运行步骤)的步骤（通过 `--prepare` 取得、租约带 `role`），并在 teamai 为该角色交付的克隆或 worktree 副本中运行它。 |
+| `confined` | 接受[限定在一个目录里的提示步骤](workflow.md#限定在一个目录里的提示步骤)：一组提供，每个为 `{ "level", "access", "tools" }`，即它在 `level`（`verified` 或 `best-effort`）下以 `access`（`read` 或 `full`）受限启动的工具，按尝试顺序排列。见[在自己的驱动里运行受限步骤](#在自己的驱动里运行受限步骤)。 |
 
-省略的键表示驱动做不到。隔离是尽力而为，除非 `strict: true` 让它成为下限。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns`、`network`、`unattended` 或 `role`，其 `isolation` 为 `none`：编程会话绝不绕过使用者自己的权限。
+省略的键表示驱动做不到。隔离是尽力而为，除非 `strict: true` 让它成为下限。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns`、`network`、`unattended` 或 `role`，其 `isolation` 为 `none`：编程会话绝不绕过使用者自己的权限。它只在评审该运行时声明 `confined`：本机有会话所用工具的受限评审器时，以 `verified` 提供该工具，否则以 `best-effort` 提供它，交给新的子 agent。
 
 ### 无人值守的 prompt
 
@@ -1029,7 +1104,7 @@ $ teamai workflow resume redf22a69e4ae6652 --no-auto-approve         # 从现在
 | `--auto-approve` | 保留；`--no-auto-approve` 关闭它 | 不带过去 |
 | `--sandbox` | 保留 | 不带过去；列表和 `busy` 都会指出 `--sandbox`，`--next` 跳过这个运行 |
 
-`retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
+`retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问；重新打开已结束的运行时，其 `$TEAMAI_RUN_DIR` 已被删除，所以其中的 `workspace: { confined }` 步骤还会重置它 `needs` 中的步骤以及这些步骤所需的步骤，由它们写入其目录），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。交付 pull request 失败的步骤保留原来的 pass，只重新运行交付。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
 
 历史保留在 passes 和 archive 中，因此 `length(steps.x.passes)` 也统计失败尝试。重试循环所有者会重置其迭代数；重试范围内的其他步骤则保留所有者的计数。重试保留顶层工作流的 round，耗尽最后一轮后重试仍可能再次 `loop_exhausted`。
 
@@ -1065,7 +1140,7 @@ teamai workflow resume [--next]
 - 第一次发布没有到达 `teamai-reports` 的运行也在本地继续。`resume` 会读取 `teamai-reports` 来确认，读不到时返回 `reports_unreachable`。
 - 本机没有的运行从 `teamai-reports` 认领，然后运行。
 - 已发布的运行只在本安装实例拥有它时继续。否则 `resume` 返回 `not_owner`，带 `owner`（`id`、`user`）和 `ownedAt`。
-- 认领一个已结束的运行，不会重新运行它的任何步骤。认领的安装实例成为该运行的所有者，所以在那里执行 `workflow retry` 只重新运行指定的步骤和依赖它的步骤。
+- 认领一个已结束的运行，不会重新运行它的任何步骤。认领的安装实例成为该运行的所有者，所以在那里执行 `workflow retry` 只重新运行指定的步骤、依赖它的步骤，以及其中 `workspace: { confined }` 步骤 `needs` 中的步骤和这些步骤所需的步骤。
 - `--claim` 从所有者那里接管已发布的运行，并替换本机的运行副本。本机有该运行的本地驱动正在运行时，它返回 `driver_running`，不认领任何内容。
 
 在该运行的业务仓库的检出目录中执行 `resume`。认领仍在运行的运行时，会用 `git ls-remote` 检查该运行的分支在这个检出目录的 `origin` 上，并且停在运行记录的提交上。它从不 fetch 到这个检出目录。已结束的运行不需要它的任何分支，所以即使合并后分支已被删除，认领也会成功，`resume` 会报告它的结束结果。如果重试重新打开了它，下一次 `resume` 会 fetch 它需要的分支。本机的工作流缓存与运行所用的工作流不同时，认领会在运行的团队提交上读取它们（团队仓库没有该提交时先 fetch），并在 stderr 输出 `[team commit <commit>] Synced N workflows`。你的缓存和团队仓库检出目录保持不变。
@@ -1197,22 +1272,33 @@ TeamAI 为准备 attempt 记录的内容只保存在本机：路径和文件指�
 teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"end_turn":true}},"running":[]}'
 ```
 
-带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。以团队角色运行的克隆还需要 `can.role`。
+带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。以团队角色运行的克隆还需要 `can.role`。[限定在一个目录里](#在自己的驱动里运行受限步骤)的步骤不需要位置：`--prepare` 返回带 `cwd`（即它的 `confined.dir`）的租约，不为它在 checkout 中创建、设置或快照任何东西。
 
 对每个租约，驱动：
 
-1. 运行每个进程时带上 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，这样从中发出的 `teamai` 调用不会改变任何运行，并去掉 `lease.envScope.withhold` 里的名字。它在 `cwd` 中运行命令租约（例如 `teamai benchmark check`），没有 `cwd` 的租约则在它自己的工作区中运行，并把命令打印的 JSON 作为 `outputs` 报告。
+1. 运行每个进程时带上 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，这样从中发出的 `teamai` 调用不会改变任何运行，并去掉 `lease.envScope.withhold` 里的名字。命令租约的 `env` 已经带有 `TEAMAI_WORKFLOW_ATTEMPT`、`TEAMAI_RUN_DIR` 和 `TEAMAI_MODE`，所以 [`teamai-score`](scorers.md) 的 `teamai score` 步骤在任何驱动下都能运行。它在 `cwd` 中运行命令租约（例如 `teamai benchmark check`），没有 `cwd` 的租约则在它自己的工作区中运行，并把命令打印的 JSON 作为 `outputs` 报告。
 2. 在 `cwd` 中以 `lease.prompt` 启动 prompt 租约的 `lease.tool`，按原样使用 `lease.model`，并从工具启动起让它遵守 `lease.limits`。
 3. 报告 prompt 时带上 `tool`、工具报告的 `model`、`session` 和 `tokens`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`（`{"amount":0.12,"unit":"USD"}`）。某个限制停止了工具时，报告带 `outcome: "success"` 和 `limit`：`timeout`、`budget` 或 `max_turns`；驱动无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。`limit` 是租约没有设置的限制时，报告返回 `invalid_report`；带有 `changes` 或 `read`（由 teamai 从克隆中填写）的报告也一样。
 
 `src/__tests__/e2e/benchmark-driver-contract.test.ts` 用这份约定检查运行 [benchmark](benchmarks.md#在自己的驱动里运行) 的驱动。
 
-## 在自己的驱动里评审
+## 在自己的驱动里运行受限步骤
 
-```text
-teamai score --next --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"judge":{"isolation":"best-effort","tools":["claude"]}}},"running":[]}'
+提供受限 Claude 的脚本在 `evidence` 成功后接下 [`judge-change`](workflow.md#限定在一个目录里的提示步骤) 的 `judge` 步骤，在 `confined.dir` 中运行它，并报告回复：
+
+```console
+$ teamai workflow next r245b… --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work/app","can":{"workspace":["read-only"],"confined":[{"level":"best-effort","access":"read","tools":["claude"]}]}}}'
+{"data":{"lease":{"attempt":"afd63…","revision":2,"run":"r245b…","step":"judge","pass":1,"prompt":"Read change.diff. Answer pass when the change does one thing and tests it, else fail.","output":{"type":"object","fields":{"verdict":{"type":"enum","values":["pass","fail"]}}},"confined":{"dir":"/home/ana/.teamai/workflows/runs/r245b…/scratch/evidence","level":"best-effort","tools":["claude"]},"cwd":"/home/ana/.teamai/workflows/runs/r245b…/scratch/evidence"},"cancelled":[]}}
+$ teamai workflow report r245b… --json '{"attempt":"afd63…","revision":2,"outcome":"success","driver":{…},"outputs":{"verdict":"fail"},"confined":{"tool":"claude","isolation":"best-effort","access":"read","model":{"reported":"claude-sonnet-4-6"}}}'
+{"data":{"accepted":true,"revision":3,"step":{"id":"judge","status":"succeeded","outcome":"success"}}}
 ```
 
-评审任务来自 `teamai score --next`，从不来自 `workflow next`。见[评分器](scorers.md#任意-driver)。
+[限定在一个目录里](workflow.md#限定在一个目录里的提示步骤)的步骤只租给 `can.confined` 中有不低于其级别的提供的驱动。它的租约带 `confined`：`dir`、`level`、`tools`（达到该级别的各提供中的工具，按顺序排列，`prefer` 在最前），以及 `confined.json` 指定了 schema 时的 `schema`。这些工具在本机都解析不了该步骤的模型时，步骤等待，`wait.held[].missing` 列出 `model`；没有提供达到其级别时列出 `confined`。
+
+驱动在 `tools` 中第一个能解析 `lease.model` 的工具上运行 `lease.prompt`，以 `dir` 作为工具的工作目录和唯一可读的根目录，不带任何团队 env，也不保留会话。它把回答作为 `outputs` 报告，TeamAI 按步骤的 `output` 检查它，并按这次运行的测量报告 `confined`：`tool`、`isolation`、`access`，以及工具报告了时的 `model`、`effort` 和 `usage`。找不到工具运行的驱动报告 `outcome: "released"`。`src/workflow/conformance/confined.ts` 中的 `confinedConformanceScenarios` 检查这些租用规则。
+
+## 在自己的驱动里评审
+
+评审任务和其他运行一样：driver 驱动回答在 `started` 中列出的每个 teamai-score 运行，其评审步骤是[受限步骤](#在自己的驱动里运行受限步骤)。见[评分器](scorers.md#任意-driver)。
 
 无人值守的 driver 以 `teamai score --drain` 结束。它评判本机能评判的工作，发布运行记录、标签和会话，并输出留给其他 driver 的工作。本地驱动在无人值守运行结束时执行它（无人值守会话的发布和评判都设为 `off` 时除外）：先在 stdout 输出运行的 `done` 信封，再在 stderr 输出 drain 的各行。退出状态仍是运行本身的结果，drain 失败时也一样。见[无人值守任务结束前运行 drain](scorers.md#无人值守任务结束前运行-drain)。

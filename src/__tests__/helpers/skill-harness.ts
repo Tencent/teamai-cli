@@ -3,16 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { onTestFinished, vi } from 'vitest';
+import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { RunMode } from '../../launch-context.js';
 import { memberTools } from '../../tool-launch/call.js';
 import { getUserConfigPath, TeamaiConfigBaseSchema, type LocalConfig } from '../../types.js';
 import type { ToolId } from '../../tools.js';
 import type { AgentEvidence } from '../../workflow/attempt-marker.js';
-import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { inProcessClient, type WorkflowClient } from '../../workflow/protocol.js';
 import { runSkillCall, skillContext, type CommandRun, type Runners, type SkillCall, type SkillContext } from '../../workflow/drivers/skill/skill-driver.js';
-import { takeRunLock } from '../../workflow/store.js';
+import { RunIdSchema, takeRunLock, type RunId } from '../../workflow/store.js';
 import { fakeGh } from './fake-gh.js';
 
 function git(cwd: string, ...args: string[]): string {
@@ -27,10 +28,10 @@ export function untilStopped(stopped: () => void): CommandRun {
 }
 
 /**
- * Puts on PATH a `claude` whose confined judge profile verifies, and that labels every pass `label`, or exits
- * `exitCode` without an answer.
+ * Puts on PATH a `claude` whose confined profile verifies, and that answers every confined run with `reply`, stating
+ * `costUsd` when given, or exits `exitCode` without an answer.
  */
-export function fakeJudge(root: string, label: string, exitCode = 0): void {
+export function fakeConfinedClaude(root: string, reply: unknown, { exitCode = 0, costUsd }: { exitCode?: number; costUsd?: number } = {}): void {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
@@ -38,9 +39,14 @@ if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); 
 process.stdin.resume(); process.stdin.on('end', () => {
 if (${exitCode} !== 0) process.exit(${exitCode});
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: { label: ${JSON.stringify(label)}, reasoning: 'It read the change.' } }));
+console.log(JSON.stringify({ type: 'result', structured_output: ${JSON.stringify(reply)}${costUsd === undefined ? '' : `, total_cost_usd: ${costUsd}`} }));
 });\n`, { mode: 0o755 });
   vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+}
+
+/** Puts on PATH a confined `claude` that labels every pass `label`, or exits `exitCode` without an answer. */
+export function fakeJudge(root: string, label: string, exitCode = 0): void {
+  fakeConfinedClaude(root, { label, reasoning: 'It read the change.' }, { exitCode });
 }
 
 /**
@@ -73,7 +79,7 @@ const COMMAND_EXIT_MS = 10_000;
  * one that runs until it is stopped. A runner that throws `Crash` is gone, as a killed one is; any other error fails the next sleep.
  */
 function memoryRunners(command: Runners['command']): {
-  runners: Runners; track(runners: Runners): Runners; settingUp(client: WorkflowClient): WorkflowClient; judging(client: WorkflowClient): WorkflowClient; now: () => Date; advance(ms: number): void; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
+  runners: Runners; track(runners: Runners): Runners; settingUp(client: WorkflowClient): WorkflowClient; now: () => Date; advance(ms: number): void; bind(context: SkillContext): void; hold(held: boolean): void; crash(run: string, attempt: string): boolean;
 } {
   let clock = Date.now();
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -166,16 +172,6 @@ function memoryRunners(command: Runners['command']): {
         const running = client.setup(run, attempt, mode, signal).finally(() => commands.delete(running));
         commands.set(running, `The setup of ${run}/${attempt}`);
         return running;
-      },
-    }),
-    /** Wraps the client a test ends with, so a settle waits for a judge it runs, as it waits for a real command. */
-    judging: (client) => ({
-      ...client,
-      judge: (ref, body, options) => {
-        const judged = client.judge(ref, body, options);
-        const running = judged.finally(() => commands.delete(running));
-        commands.set(running, `The judge of ${ref}`);
-        return judged;
       },
     }),
     crash: (run, attempt) => {
@@ -306,7 +302,7 @@ export function sharedTeam(workflows: Record<string, string>): { install(name: s
         git(dir, 'config', 'user.email', `${name}@example.invalid`);
       }
       const config: LocalConfig = { repo: { kind: 'git', localPath: clone, remote: origin }, username: name, scope: 'user', additionalRoles: [], dataHome: path.join(home, 'data') };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout };
     },
   };
@@ -335,7 +331,7 @@ async function ownInstall(root: string, workflows: Record<string, string>, optio
     additionalRoles: [], dataHome: path.join(root, 'data'), ...(options.scoring ? { scoring: options.scoring } : {}),
   };
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(repo, 'workflows', `${name}.yaml`), yaml);
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   return { config, checkout: work };
 }
 
@@ -363,7 +359,7 @@ export async function skillHarness(workflows: Record<string, string>, options: H
   const client = scheduler.settingUp(inProcessClient({ config, env }));
   const rows: string[] = [];
   const context: SkillContext = {
-    config, toolPaths, env, client: scheduler.judging(options.client ? options.client(client) : client), session: options.session ?? 'session-a', tool: options.tool === null ? undefined : options.tool ?? 'claude', aiTools: production.aiTools, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
+    config, toolPaths, env, client: options.client ? options.client(client) : client, session: options.session ?? 'session-a', tool: options.tool === null ? undefined : options.tool ?? 'claude', aiTools: production.aiTools, invocation: 'teamai', evidence: options.evidence ?? { kind: 'none' }, mode: options.mode ?? 'attended', cwd: work,
     now: scheduler.now, runners: scheduler.track(options.runners ? options.runners(scheduler.runners) : scheduler.runners),
     locks: { take: (run, body, waitMs) => takeRunLock(config, run, body, { waitMs }) },
     trace: (row) => { rows.push(row); },
@@ -380,4 +376,62 @@ export async function skillHarness(workflows: Record<string, string>, options: H
     /** Makes `call` as the session, or with another session, agent evidence, run mode, lock, config, session tool or working directory in its context. */
     call: (call: SkillCall, overrides: Partial<Pick<SkillContext, 'session' | 'evidence' | 'mode' | 'locks' | 'config' | 'tool' | 'cwd'>> = {}) => runSkillCall(call, { ...context, ...overrides }),
   };
+}
+
+// Labels one pass as teamai-score does: a plan, then per group its evidence, a judge confined to it, the label and its write.
+export const LABEL_PASS = (level: 'verified' | 'best-effort') => `schemaVersion: v1alpha1
+name: label-pass
+description: Label one pass
+invoke: allow
+steps:
+  - id: plan
+    command: node -e "process.stdout.write(JSON.stringify({groups:['review-quality']}))"
+    output: { groups: [string] }
+  - id: score
+    needs: [plan]
+    for_each: steps.plan.outputs.groups
+    continue_on_failure: true
+    workflow:
+      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels }
+      steps:
+        - id: evidence
+          command: node -e "const p=require('path'),fs=require('fs'),d=p.join(process.env.TEAMAI_RUN_DIR,'evidence');fs.mkdirSync(d);fs.writeFileSync(p.join(d,'confined.json'),JSON.stringify({level:'${level}'}))"
+        - id: judge
+          needs: [evidence]
+          workspace: { confined: evidence }
+          prompt: Judge the change.
+          output: { label: string }
+        - id: label
+          needs: [judge]
+          command: node -e "process.stdout.write(JSON.stringify({labels:[{scorer:process.env.SCORER,label:process.env.LABEL,code:''}]}))"
+          env: { SCORER: "{{ item }}", LABEL: "{{ steps.judge.outputs.label }}" }
+          output: { labels: [{ scorer: string, label: string, code: string }] }
+        - id: write
+          needs: [label]
+          command: node -e "process.stdout.write(JSON.stringify({labels:['v1']}))"
+          output: { labels: [string] }
+outputs: { labels: steps.score.results }
+`;
+
+const ReportedDriverSchema = z.object({ driver: z.object({ kind: z.string(), machine: z.string(), workspace: z.string() }) });
+
+/**
+ * A client whose answers to the reports of run `review` list, in `started`, a run of `label-pass` for its pass, as the
+ * engine lists the run a settled scored pass started: started on the first report, for the driver that reported.
+ */
+export function scoringStarted(made: { label?: RunId }) {
+  return (client: WorkflowClient): WorkflowClient => ({
+    ...client,
+    report: async (run, body, options) => {
+      const answer = await client.report(run, body, options);
+      if (!('data' in answer) || run === made.label) return answer;
+      if (made.label === undefined) {
+        const { driver } = ReportedDriverSchema.parse(body);
+        const created = await client.start('label-pass', { caller: { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' }, startedBy: 'cli', driver, checkout: driver.workspace });
+        if (!('data' in created)) throw new Error(JSON.stringify(created));
+        made.label = RunIdSchema.parse(created.data.run);
+      }
+      return { data: { ...answer.data, started: [{ run: made.label, step: 'review', pass: 1, scorers: ['review-quality'] }] } };
+    },
+  });
 }

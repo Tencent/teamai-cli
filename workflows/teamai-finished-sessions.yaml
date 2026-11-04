@@ -1,0 +1,41 @@
+schemaVersion: v1alpha1
+name: teamai-finished-sessions
+description: Archive and score this machine's finished sessions, as the team's session policies say.
+invoke: deny
+private: true
+# A background pass ends after 30 minutes; what it cancels is a lapse the next start takes.
+timeout: 30m
+inputs:
+  # policy: sessions.publish decides
+  publish: policy | always | never
+  # []: scoring.sessions decides
+  scorers: [string]
+steps:
+  - id: sessions
+    # A session idle this long counts as finished. Only a run a person started may pass inputs other than policy and [].
+    command: teamai session list --finished --idle 6h --publish "$PUBLISH" --scorers "$SCORERS" --json
+    env: { PUBLISH: "{{ inputs.publish }}", SCORERS: "{{ inputs.scorers }}" }
+    # demand: named when the inputs name the scorers, so daily_limit counts the session but never refuses it
+    output: { list: [{ session: string, source: string, publish: boolean, scorers: [string], demand: string }] }
+  - id: share
+    needs: [sessions]
+    if: length(steps.sessions.outputs.list) > 0
+    for_each: steps.sessions.outputs.list
+    workflow: teamai-share-session
+    with: { session: "{{ item.session }}", source: "{{ item.source }}", publish: "{{ item.publish }}", scorers: "{{ item.scorers }}", judge: here, demand: "{{ item.demand }}" }
+    continue_on_failure: true
+  - id: lapsed
+    # After share, whatever it did: a mark share opened is then closed, or held by this run, so no subject is judged twice.
+    needs: [sessions, share]
+    if: steps.sessions.outcome != 'cancelled' && steps.share.outcome != 'cancelled'
+    command: teamai score subjects --lapsed
+    # passes and sessions whose teamai-score run ended without a label or a settle, and passes no run scored,
+    # each with the scorers to start it for: those its marks hold, named or not, and none its policy would add now
+    output: { list: [{ subject: string, scorers: [string] }] }
+  - id: rescore
+    needs: [lapsed]
+    if: length(steps.lapsed.outputs.list) > 0
+    for_each: steps.lapsed.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item.subject }}", scorers: "{{ item.scorers }}", label: '', batch: false, demand: auto }
+    continue_on_failure: true

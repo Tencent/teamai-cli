@@ -10,7 +10,7 @@ import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import * as reportsBranch from '../utils/reports-branch.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { leaseNext, reportAttempt, resumableSessions, startRun } from '../workflow/engine.js';
 import { claimOffered, claimRun, publishRun, resumeRun, settledSteps } from '../workflow/handoff.js';
 import { pendingRecords, queueRunRecord } from '../workflow/records.js';
@@ -372,7 +372,7 @@ steps:
         additionalRoles: [],
         dataHome: path.join(root, name, 'data'),
       };
-      await syncWorkflowDefinitions(config);
+      await syncScorersThenWorkflows(config);
       return { config, checkout, driver: { kind: 'local', machine: name, workspace: checkout } };
     };
     const alice = await member('alice');

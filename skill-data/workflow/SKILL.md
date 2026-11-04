@@ -103,6 +103,8 @@ On `h4` you are the child, so no child starts and nothing runs in the background
 
 A dispatch whose `needs.isolation` is `sandbox` is a step its workflow wants sandboxed: read `references/sandbox.md` before step 1.
 
+A dispatch whose `needs.confined` is true is a step answered from `dir` alone: read `references/judging.md` before step 1.
+
 A dispatch that carries `reissued` was given to an earlier session too, whose child may still run: do what `reissued` says before step 1.
 
 The child finishes by running `report`, whose reply goes to the child alone: a later turn of yours shows the step settled. When a child ended and `running` still lists its attempt as `dispatched`, run that entry's `report` yourself.
@@ -117,7 +119,7 @@ Done when the turn carries a `dispatch` for its `attempt`.
 
 ## Done
 
-The `done` action carries the `outcome`, the pull requests the run opened in `prs`, the `branch` the run left its changes on when it worked in a copy of its own, and the `failure` when there is one. Tell the person the outcome and each pull request; for a `branch`, that branch and that `git merge <branch>` brings its changes in; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says. When `done` carries `score`, judge the run's scored steps yourself, as `references/judging.md` says.
+The `done` action carries the `outcome`, the pull requests the run opened in `prs`, the `branch` the run left its changes on when it worked in a copy of its own, and the `failure` when there is one. Tell the person the outcome and each pull request; for a `branch`, that branch and that `git merge <branch>` brings its changes in; for a failure, its message and the step it names. The steps are over. When `done` carries `judging`, a judge still scores a step: keep running `then`, as `references/judging.md` says.
 
 ## Errors
 

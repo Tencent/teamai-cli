@@ -41,6 +41,8 @@ export type ExpressionPath =
   | { root: 'inputs'; fields: PathField[]; column: number }
   /** The item a `for_each` step instance runs for. */
   | { root: 'item'; fields: PathField[]; column: number }
+  /** The id of the root run, which a sub-workflow shares. */
+  | { root: 'run'; fields: ['id']; column: number }
   | { root: 'steps'; step: string; field: 'outcome' | 'end' | 'outputs' | 'passes' | 'results' | 'branches' | 'choice' | 'note' | 'pr'; fields: PathField[]; column: number };
 
 /** `<`, `<=`, `>` and `>=` compare two numbers; with anything else they are false. */
@@ -134,6 +136,8 @@ export interface ExpressionContext {
   steps: Record<string, ExpressionStep>;
   /** The item of the `for_each` the expression is evaluated for. */
   item?: unknown;
+  /** The root run the expression is evaluated in. */
+  run?: { id: string };
   /** The element a predicate is evaluated for. */
   element?: JsonValue;
 }
@@ -281,8 +285,14 @@ function parsePath(token: { text: string; column: number }): ExpressionPath {
 
   if (root === 'inputs' || root === 'item') return { root, fields: segments, column: token.column };
 
+  if (root === 'run') {
+    if (segments.length !== 1 || segments[0] !== 'id') throw new ExpressionError(token.column, `"${token.text}" is not readable; an expression reads only run.id of the run`);
+
+    return { root, fields: ['id'], column: token.column };
+  }
+
   if (root !== 'steps') {
-    throw new ExpressionError(token.column, `"${root}" is not readable; an expression reads only inputs, steps and item`);
+    throw new ExpressionError(token.column, `"${root}" is not readable; an expression reads only inputs, steps, item and run.id`);
   }
 
   const [step, field, ...fields] = segments;
@@ -739,7 +749,7 @@ export function resolvePath(path: ExpressionPath, context: ExpressionContext): J
 /** Reads a path as `resolvePath` does, but anything missing along the way is undefined, so a null that is there stays apart. */
 export function pathValue(path: ExpressionPath, context: ExpressionContext): JsonValue | undefined {
   const step = path.root === 'steps' && Object.hasOwn(context.steps, path.step) ? context.steps[path.step] : undefined;
-  const root = path.root === 'inputs' ? context.inputs : path.root === 'item' ? context.item : step?.[path.field];
+  const root = path.root === 'inputs' ? context.inputs : path.root === 'item' ? context.item : path.root === 'run' ? context.run : step?.[path.field];
 
   // SAFETY: a context holds JSON: inputs, items and outputs are parsed JSON, and the rest of a step is strings, numbers, and lists and objects of them
   return readFields(root as JsonValue | undefined, path.fields);

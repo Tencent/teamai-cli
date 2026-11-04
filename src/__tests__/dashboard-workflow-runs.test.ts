@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { answerFromDashboard, listLocalRuns, listReportedRuns, workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { HttpError } from '../dashboard/http.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
 import { readRun, runsDir } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
@@ -34,7 +34,7 @@ async function waitingRun(hitl = 'approve: { message: "Ship {{ inputs.ticket }}?
     '  - id: build', '    command: echo build-secret-command',
     '  - id: ship', '    needs: [build]', `    ${hitl}`, '    prompt: Deliver {{ inputs.ticket }} as prompt-secret-text',
   ].join('\n'));
-  expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+  expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
   const started = await startRun(config, 'ship', { ticket: 'TICKET-SECRET-42' }, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   const id = String(started.data.run);
@@ -147,13 +147,30 @@ describe('dashboard workflow runs', () => {
     expect((await run.state()).steps.find((step) => step.id === 'ship')).toMatchObject({ status: 'waiting' });
   });
 
+  it('leaves out a run of a private workflow, and still lists the other local runs', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/judge.yaml'), [
+      'schemaVersion: v1alpha1', 'name: judge', 'description: Judge on this machine only.', 'private: true', 'steps:', '  - id: label', '    command: echo label',
+    ].join('\n'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/build.yaml'), [
+      'schemaVersion: v1alpha1', 'name: build', 'description: Build.', 'steps:', '  - id: compile', '    command: echo compile',
+    ].join('\n'));
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
+    for (const name of ['judge', 'build']) {
+      const started = await startRun(config, name, {}, { secrets: {} });
+      if ('error' in started) throw new Error(started.error.message);
+    }
+    expect((await listLocalRuns(config)).map((row) => row.workflow)).toEqual(['build']);
+  });
+
   it('says whether a run ran the team\'s definition or teamai\'s default, and which teamai shipped the default', async () => {
     const team = await waitingRun();
     expect((await listLocalRuns(team.config))[0]?.origin).toEqual({ source: 'team' });
 
     const config = scope('self');
     fs.mkdirSync(config.repo.localPath, { recursive: true });
-    const started = await startRun(config, 'teamai-share-session', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here' }, { secrets: {} });
+    const started = await startRun(config, 'teamai-share-session', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here', demand: 'named' }, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
     const [row] = await listLocalRuns(config);
     expect(row).toMatchObject({ workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
@@ -166,7 +183,7 @@ describe('dashboard workflow runs', () => {
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows/review-and-fix.yaml'), [
       'schemaVersion: v1alpha1', 'name: review-and-fix', 'alias: fix', 'description: Review the change, then fix it.', 'steps:', '  - id: review', '    command: echo review',
     ].join('\n'));
-    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
     const started = await startRun(config, 'fix', {}, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
 
@@ -186,7 +203,7 @@ describe('dashboard workflow runs', () => {
     ].join('\n'));
     write('review-and-fix', 'fix');
     write('fix');
-    await syncWorkflowDefinitions(config);
+    await syncScorersThenWorkflows(config);
     const started = await startRun(config, 'review-and-fix', {}, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
 

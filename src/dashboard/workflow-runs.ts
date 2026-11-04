@@ -19,7 +19,8 @@ import { RunOriginSchema, type RunOrigin } from '../default-workflows.js';
 import { agentHarnessOf, harnessChanges, readRecordedAgent, type AgentHarness, type HarnessChange } from '../agent-observation.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
-import { LabelStore, type PassScore } from '../scorers/label-store.js';
+import { LabelStore, type PassScore, type ScoringTotal } from '../scorers/label-store.js';
+import { RunJudging, type PassJudging } from '../scorers/run-judging.js';
 import { WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
 import { benchmarkRecordFile, BenchmarkRunRecordSchema } from '../benchmark/result.js';
 import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmark/table.js';
@@ -141,11 +142,17 @@ interface StepRow {
   step: string;
   pass: number;
   status: string;
+  /** Why a skipped step of a run of this machine was skipped, when the engine said. */
+  message?: string;
   tokens?: TokenUsage;
   answer?: { choice: string; channel: string };
   gate?: Gate;
   /** The labels scorers gave this pass. */
   scores?: PassScore[];
+  /** For a pass this machine judges, each scorer without a label and why. */
+  unlabelled?: PassJudging['unlabelled'];
+  /** The teamai-score runs of this pass on this machine, oldest first. */
+  scoreRuns?: PassJudging['scoreRuns'];
   /** What this pass delivered (#1387): the outcomes the page can read, a pull request only on https. */
   outcomes?: WorkOutcome[];
   /** What the pass ran as, when its record observed a tool. */
@@ -153,9 +160,6 @@ interface StepRow {
   /** What changed in `harness` since the previous pass of the step that recorded one, when anything did. */
   harnessChanges?: HarnessChange[];
 }
-
-/** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
-type ScoringTotal = Awaited<ReturnType<typeof LabelStore.scoringTotal>>;
 
 type KeptRunBranches = Extract<SettledBranches, { state: 'kept' }> & { retention: ResolvedRetention; eligibleAt?: string };
 
@@ -223,18 +227,21 @@ function rowOf(record: ReadRecord): RunRow {
   return row;
 }
 
-/** A pass's label as the page shows it; `decidedBy` only when a stage before the judge decided it. */
-function scoreCell({ scorer, label, passed, decidedBy }: PassScore): PassScore {
-  const cell: PassScore = { scorer, label, passed };
+/** What the page shows of judging, by `${step}#${pass}`: the labels, and on this machine why the others have none. */
+type Judging = ReadonlyMap<string, Pick<PassJudging, 'scores'> & Partial<PassJudging>>;
 
-  if (decidedBy) cell.decidedBy = decidedBy;
+/** Adds to `row` its pass's labels, and on this machine why its other scorers have none and its score runs. */
+function addJudging(row: StepRow, judging: Judging): void {
+  const pass = judging.get(`${row.step}#${row.pass}`);
 
-  return cell;
+  if (pass?.scores.length) row.scores = pass.scores;
+
+  if (pass?.unlabelled?.length) row.unlabelled = pass.unlabelled;
+
+  if (pass?.scoreRuns?.length) row.scoreRuns = pass.scoreRuns;
 }
 
-function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, PassScore[]> | undefined, gate?: Gate): StepRow {
-  const passScores = scores?.get(`${entry.step}#${entry.pass}`);
-
+function stepRow(entry: StepEntry, status: string, judging: Judging, gate?: Gate): StepRow {
   const outcomes = entry.outcomes?.flatMap((outcome) => {
     const parsed = WorkOutcomeSchema.safeParse(outcome);
 
@@ -250,7 +257,7 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
 
   if (gate) row.gate = gate;
 
-  if (passScores) row.scores = passScores.map(scoreCell);
+  addJudging(row, judging);
 
   if (outcomes?.length) row.outcomes = outcomes;
 
@@ -311,14 +318,21 @@ function newestFirst<T extends { startedAt: string }>(rows: T[]): T[] {
   return rows.sort((left, right) => right.startedAt.localeCompare(left.startedAt));
 }
 
+/** The runs Local runs lists: every running one, then the newest settled ones, none of a private workflow. */
+export async function listedRuns(config: LocalConfig): Promise<RunState[]> {
+  // A private workflow's runs, such as one per judged pass, would bury the runs a person started.
+  const runs = (await readRuns(config)).filter((run) => !run.definition.private).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const running = runs.filter((run) => run.status === 'running');
+
+  return [...running, ...runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length))];
+}
+
 /** This machine's runs in the scope: every running one, then the newest settled ones. */
 export async function listLocalRuns(config: LocalConfig): Promise<LocalRunRow[]> {
-  const runs = (await readRuns(config)).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  const running = runs.filter((run) => run.status === 'running');
-  const settled = runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length));
-  const records = await runRecordStates(config, settled);
+  const runs = await listedRuns(config);
+  const records = await runRecordStates(config, runs.filter((run) => run.status !== 'running'));
 
-  return [...running, ...settled].map((run) => localRow(run, records));
+  return runs.map((run) => localRow(run, records));
 }
 
 function recordsDir(config: LocalConfig): string {
@@ -379,7 +393,14 @@ async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> 
   }
 }
 
-function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
+/** `row` with why its step was skipped, when the engine said. */
+function withSkipReason(row: StepRow, state: RunState['steps'][number] | undefined): StepRow {
+  if (state?.status === 'skipped' && state.message !== undefined) row.message = state.message;
+
+  return row;
+}
+
+function localDetail(run: RunState, row: LocalRunRow, judging: Judging, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
   const live = new Map(run.steps.map((state) => [`${state.id}#${state.pass ?? 1}`, state]));
   const record = localRecord(run);
 
@@ -394,7 +415,7 @@ function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string
 
     if (answer) answered.answer = answer;
 
-    return stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), scores, gate);
+    return withSkipReason(stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), judging, gate), state);
   });
 
   return { run: row, steps: withHarnessChanges(steps), scoring };
@@ -414,25 +435,27 @@ async function branchesOf(config: LocalConfig, run: RunState): Promise<Pick<RunD
   return { branches: kept };
 }
 
+/** A run of this machine with how judging stands for it here, or undefined when there is no such run. */
+async function localRunDetail(config: LocalConfig, runId: string): Promise<RunDetail | undefined> {
+  const run = await readRun(config, runId);
+
+  if (run === 'missing' || run === 'corrupt') return undefined;
+
+  const [records, judging, benchmark, branches] = await Promise.all([
+    runRecordStates(config, run.status === 'running' ? [] : [run]),
+    RunJudging.of(config, [run], new Date().toISOString()).then((byRun) => byRun.get(runId)),
+    benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
+    branchesOf(config, run),
+  ]);
+
+  return { ...localDetail(run, localRow(run, records), judging?.passes ?? new Map(), await RunJudging.total(config, runId, judging)), ...benchmark, ...branches };
+}
+
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */
 export async function workflowRunDetail(config: LocalConfig, source: 'local' | 'reported', runId: string): Promise<RunDetail | undefined> {
   if (!isRunId(runId)) return undefined;
 
-  if (source === 'local') {
-    const run = await readRun(config, runId);
-
-    if (run === 'missing' || run === 'corrupt') return undefined;
-
-    const [records, scores, scoring, benchmark, branches] = await Promise.all([
-      runRecordStates(config, run.status === 'running' ? [] : [run]),
-      LabelStore.ofRuns(config, [runId], { published: false }),
-      LabelStore.scoringTotal(config, runId, 'local'),
-      benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
-      branchesOf(config, run),
-    ]);
-
-    return { ...localDetail(run, localRow(run, records), scores.get(runId), scoring), ...benchmark, ...branches };
-  }
+  if (source === 'local') return localRunDetail(config, runId);
 
   if (usesBranchWorktree(config)) {
     // The history refreshes the checkout; a detail only checks it is this repository's.
@@ -450,7 +473,7 @@ export async function workflowRunDetail(config: LocalConfig, source: 'local' | '
     benchmarkOf(path.join(getReportsDir(config), benchmarkRecordPath(runId))),
   ]);
 
-  const passes = scores.get(runId);
+  const passes = new Map([...scores.get(runId) ?? []].map(([key, labels]) => [key, { scores: labels }]));
 
   return {
     run: reportedRow(record),

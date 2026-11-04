@@ -2,18 +2,38 @@ schemaVersion: v1alpha1
 name: teamai-benchmark
 description: Run a benchmark suite. Every arm works the same tasks in fresh clones, judged by checks it never sees.
 invoke: deny
-inputs: { suite: string, aliases: string }
+inputs: { suite: string, aliases: string, tasks: [string], arms: [string], fail_on_regression: boolean }
 steps:
   - id: plan
-    command: teamai benchmark plan "$SUITE" --aliases "$ALIASES"
-    env: { SUITE: "{{ inputs.suite }}", ALIASES: "{{ inputs.aliases }}" }
+    command: teamai benchmark plan "$SUITE" --aliases "$ALIASES" --tasks "$TASKS" --arms "$ARMS"
+    env: { SUITE: "{{ inputs.suite }}", ALIASES: "{{ inputs.aliases }}", TASKS: "{{ inputs.tasks }}", ARMS: "{{ inputs.arms }}" }
     output: { definition: workflow, plan: json }
   - id: trials
     needs: [plan]
     workflow: { from: plan }
     requires: { isolation: sandbox, strict: true }
+  # Judges every trial with the scorers it pinned, a criteria task's teamai:correctness:<task> included. Reading
+  # trials keeps a failed trial from stopping the others being judged. Without these two steps nothing judges a trial.
+  - id: subjects
+    needs: [trials]
+    if: steps.trials.outcome != 'skipped'
+    command: teamai score subjects --run "$RUN" --step trials
+    env: { RUN: "{{ run.id }}" }
+    output: { list: [string] }
+  - id: score
+    needs: [subjects]
+    for_each: steps.subjects.outputs.list
+    workflow: teamai-score
+    with: { subject: "{{ item }}", scorers: [], label: "", batch: false, demand: named }
+    timeout: 2h
+    continue_on_failure: true
 finally:
   - id: report
     command: teamai benchmark report
-    output: { text: string, table: json }
+    env: { COMPARE: "{{ inputs.fail_on_regression }}" }
+    output: { text: string, table: json, regression: dropped | held | no_comparable | off }
+  - id: regression
+    needs: [report]
+    if: steps.report.outputs.regression == 'dropped'
+    command: exit 1
 outputs: { text: steps.report.outputs.text, table: steps.report.outputs.table }

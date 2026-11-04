@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
-import { loadCachedWorkflow, syncWorkflowDefinitions } from '../workflow/cache.js';
+import { loadCachedWorkflow } from '../workflow/cache.js';
 import { parseWorkflow } from '../workflow/parse.js';
 
 const dirs: string[] = [];
@@ -52,7 +53,7 @@ describe('workflow invoke and alias', () => {
   it('flags an alias another workflow also uses, or takes as its name, and keeps every workflow runnable by name', async () => {
     const config = fixture();
     put(config, 'a', 'alias: shared'); put(config, 'b', 'alias: shared'); put(config, 'c', 'alias: d'); put(config, 'd', '');
-    const result = await syncWorkflowDefinitions(config);
+    const result = await syncScorersThenWorkflows(config);
     expect(result.cached).toEqual(['a', 'b', 'c', 'd']);
     expect(result.aliasConflicts).toEqual([
       expect.objectContaining({ file: 'workflows/a.yaml', field: 'alias', code: 'alias_conflict', message: 'alias "shared" is also the alias of workflows/b.yaml, so it starts neither; start them by name' }),

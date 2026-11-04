@@ -13,6 +13,8 @@ import { mergeRequirements, type InEffect, type Setup } from './requirements.js'
 
 /** A workflow inside a run: the top-level one, or the sub-workflow a step runs. */
 export interface Scope {
+  /** The id of the root run, which every workflow inside it reads as `run.id`. */
+  runId: string;
   /** What every step path inside it starts with: '' at the top, `<workflow step path>.` inside a sub-workflow. */
   prefix: string;
   definition: WorkflowDefinition | InlineWorkflow;
@@ -59,7 +61,7 @@ function allowancesOf(scope: Scope, state: StepState, step: WorkflowStep): Pick<
 
 export function topScope(run: RunState): Scope {
   return {
-    prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
+    runId: run.id, prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
     requires: mergeRequirements(run.definition.defaults?.requires),
     ...budgetOf(false, run.definition.budget), ...setupOf(run.definition.setup), allowances: [],
   };
@@ -74,7 +76,7 @@ export function finallyScope(run: RunState): Scope {
   const steps = run.definition.finally ?? [];
 
   return {
-    prefix: '', definition: { steps }, inputs: run.inputs, outer: expressionSteps(top, statesIn(run, top)), loops: stepLoops(steps),
+    runId: run.id, prefix: '', definition: { steps }, inputs: run.inputs, outer: expressionSteps(top, statesIn(run, top)), loops: stepLoops(steps),
     requires: top.requires, budgeted: false, allowances: [],
   };
 }
@@ -106,7 +108,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
 
   if (runs?.kind === 'inline') {
     return {
-      prefix: `${state.id}.`, definition: runs.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
+      runId: scope.runId, prefix: `${state.id}.`, definition: runs.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
       loops: stepLoops(runs.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
       requires: mergeRequirements(scope.requires, step.requires),
       ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step)), ...setupOf(scope.setup), ...allowancesOf(scope, state, step),
@@ -116,7 +118,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
   const definition = workflowRunBy(run, step, scope.prefix);
 
   return definition && isWorkflowFile(definition) ? {
-    prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
+    runId: scope.runId, prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
     requires: mergeRequirements(scope.requires, step.requires, definition.defaults?.requires),
     ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step), definition.budget), ...setupOf(definition.setup ?? scope.setup),
@@ -149,6 +151,55 @@ export function stepDefinitions(run: Pick<RunState, 'definition' | 'workflows' |
 
     return step;
   };
+}
+
+/**
+ * Whether the step at a path is private: a step of a workflow file with `private: true`, or of any workflow such a step
+ * runs. A private workflow never makes the step that runs it private, nor anything around that step.
+ */
+export function privateSteps(run: Pick<RunState, 'definition' | 'workflows' | 'admitted'>): (path: string) => boolean {
+  return (path) => {
+    let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
+    let prefix = '';
+
+    for (const segment of path.split('.')) {
+      if (!workflow) return false;
+
+      if (isWorkflowFile(workflow) && workflow.private) return true;
+      const { id } = parseStepPath(segment)[0] ?? { id: segment };
+      const step: WorkflowStep | undefined = workflow.steps.find((item) => item.id === id);
+      workflow = step && workflowRunBy(run, step, prefix);
+      prefix = `${prefix}${segment}.`;
+    }
+
+    return false;
+  };
+}
+
+/** `defaults.scorers.batch` in effect at a step: that of the workflow file it is in, else of the one around that. */
+export function workflowBatch(run: RunState, step: string): boolean | undefined {
+  let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
+  let batch = run.definition.defaults?.scorers?.batch;
+  let prefix = '';
+
+  for (const segment of step.split('.').slice(0, -1)) {
+    const id = parseStepPath(segment)[0]?.id ?? segment;
+    const parent: WorkflowStep | undefined = workflow?.steps.find((candidate) => candidate.id === id);
+    workflow = parent && workflowRunBy(run, parent, prefix);
+
+    // A workflow file, named or admitted, sets its own; an inline workflow keeps the one around it.
+    if (workflow && isWorkflowFile(workflow)) batch = workflow.defaults?.scorers?.batch ?? batch;
+    prefix = `${prefix}${segment}.`;
+  }
+
+  return batch;
+}
+
+/** The first step of a private workflow in `run` that has not settled, whose work exists only on this machine until it does. */
+export function openPrivateStep(run: RunState): string | undefined {
+  const isPrivate = privateSteps(run);
+
+  return run.steps.find((step) => isPrivate(step.id) && !settled(step))?.id;
 }
 
 /** For each `run.steps` array, its instances by the prefix of the scope they are directly inside. */
@@ -221,7 +272,7 @@ function itemOf(scope: Scope, state: StepState | undefined): Pick<Scope, 'item'>
 
 /** What an expression or template in a scope reads; for `reader`, what that step instance reads. */
 export function contextOf(scope: Scope, states: StepState[], reader?: StepState): TemplateContext {
-  return { inputs: scope.inputs, steps: expressionSteps(scope, states, reader), ...itemOf(scope, reader) };
+  return { inputs: scope.inputs, steps: expressionSteps(scope, states, reader), run: { id: scope.runId }, ...itemOf(scope, reader) };
 }
 
 /**

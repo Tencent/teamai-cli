@@ -3504,6 +3504,15 @@ export const LEARNINGS_BRANCH = 'teamai-learnings';
 /** Worktree directory name that checks out the learnings orphan branch. */
 export const LEARNINGS_WORKTREE_DIRNAME = 'learnings-wt';
 
+/** The orphan branches teamai keeps team data on, which a workflow step with `deliver: publish` publishes to. */
+export const DATA_BRANCHES = [REPORTS_BRANCH, LEARNINGS_BRANCH] as const;
+
+export type DataBranch = typeof DATA_BRANCHES[number];
+
+export function isDataBranch(branch: string): branch is DataBranch {
+  return DATA_BRANCHES.some((data) => data === branch);
+}
+
 /** Worktree directory (under .teamai) used to stage knowledge PRs off the active tree. */
 export const KNOWLEDGE_WORKTREE_DIRNAME = 'knowledge-wt';
 

@@ -1,12 +1,13 @@
-import { ATTEMPT_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
+import { ATTEMPT_ENV, RUN_DIR_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
+import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { isRunId } from './store.js';
+import { isRunId, runScratchDir } from './store.js';
 import type { WorkflowFailure } from './types.js';
 import { git, worktreeCheckout } from './worktree.js';
 
-/** What every process of an attempt of `run` gets: the attempt marker, and the run's mode. */
-export function attemptEnv(run: string, attempt: string, mode: RunMode): Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV, string> {
-  return { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode };
+/** What every process of an attempt of `run` gets: the attempt marker, the run's mode, and the run's directory. */
+export function attemptEnv(config: LocalConfig, run: string, attempt: string, mode: RunMode): Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV | typeof RUN_DIR_ENV, string> {
+  return { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode, [RUN_DIR_ENV]: runScratchDir(config, run) };
 }
 
 /** Whether `env` marks its process as the runner of `attempt` of `run`. */
@@ -32,6 +33,16 @@ export function agentEvidence(env: NodeJS.ProcessEnv): AgentEvidence {
   const variable = AGENT_SESSION_ENV.find((name) => env[name]);
 
   return variable ? { kind: 'session', variable } : { kind: 'none' };
+}
+
+/**
+ * `env` without what `agentEvidence` reads, for a process the CLI starts itself to drive a run of its own: the attempt
+ * marker and run directory, and every agent session variable, which a hook inherits from the session it runs in.
+ */
+export function withoutAgentEvidence(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const removed = new Set<string>([ATTEMPT_ENV, RUN_DIR_ENV, ...AGENT_SESSION_ENV]);
+
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !removed.has(name)));
 }
 
 /**

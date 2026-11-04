@@ -12,14 +12,14 @@ vi.mock('node:os', async (importOriginal) => {
 
 import { readSessionSharing } from '../dashboard/session-sharing.js';
 import type { RunMode } from '../launch-context.js';
-import { Drain } from '../score-drain.js';
+import { SessionPublish } from '../session-flow/session-publish.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { SessionCaptures } from '../session-flow/captures.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 
@@ -157,14 +157,12 @@ describe('the session sharing read model', () => {
     });
   });
 
-  it('counts an unattended session as archived once an unattended drain published it', async () => {
-    vi.stubEnv('PATH', ['/usr/bin', '/bin'].join(path.delimiter));
+  it('counts an unattended session as archived once teamai-finished-sessions published it', async () => {
     const config = await team();
     captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
 
-    const drained = await Drain.run([config], { mode: 'unattended' });
+    await SessionPublish.recordArchived(config, { platform: 'claude-code', sessionId: UNATTENDED_OPEN }, new Date().toISOString());
 
-    expect(drained.capturedArchived).toBe(1);
     expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: new Date().toISOString() })).toMatchObject({
       captured: { unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 1 } },
     });
@@ -173,10 +171,10 @@ describe('the session sharing read model', () => {
   it('counts pending labels, and names the drain of the run mode whose sessions wait for it', async () => {
     const config = await team();
     captured(UNATTENDED_OPEN, 'unattended', { idleFor: HOUR });
-    await LabelStore.append(config, {
+    await LabelStore.append(config, [{ label: {
       scorer: 'quality', rubric: { sourceHash: 'h1' }, label: 'good', score: 1, passed: true,
       source: 'session', subject: { platform: 'claude-code', sessionId: ATTENDED_FINISHED }, judge: { kind: 'human' }, scoredAt: NOW,
-    }, 'Did the work.');
+    }, reasoning: 'Did the work.' }]);
 
     expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
       pendingLabels: 1,
@@ -218,7 +216,7 @@ describe('the session sharing read model', () => {
       source: 'session', subject: { platform: 'claude-code', sessionId: ATTENDED_FINISHED }, judge: { kind: 'human' }, scoredAt: NOW,
     } as const;
     const config = await team();
-    await LabelStore.append(config, label, 'Did the work.');
+    await LabelStore.append(config, [{ label, reasoning: 'Did the work.' }]);
 
     expect(await readSessionSharing(config, { env: {}, platform: 'linux', now: NOW })).toMatchObject({ next: [{ mode: 'attended', command: 'teamai score --drain' }] });
     expect(await readSessionSharing({ ...config, repo: { ...config.repo, kind: 'http' } }, { env: {}, platform: 'linux', now: NOW })).toMatchObject({ pendingLabels: 1, next: [] });
@@ -300,7 +298,7 @@ function data(envelope: WorkflowEnvelope): Record<string, unknown> {
 
 /** Runs the review workflow in `config` to its end in `runMode`, its step settled by `report` as an external driver would. */
 async function settledRun(config: LocalConfig, runMode: RunMode, report: Record<string, unknown>): Promise<void> {
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   const runId = String(data(await startRun(config, 'review', {}, { secrets: {}, runMode, checkout })).run);

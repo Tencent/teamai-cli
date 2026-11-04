@@ -16,7 +16,7 @@ import { SetupSchema, type Setup } from '../workflow/requirements.js';
 import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
 import { definedFields } from '../utils/defined-fields.js';
-import { CheckRunSchema, isRelativePath, RepoPathSchema, segmentPattern } from '../workflow/check.js';
+import { CheckRunSchema, isRelativePath, RepoPathSchema, segmentPattern } from '../scorers/check.js';
 import { RoleIdSchema } from '../roles.js';
 import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.js';
 import { RunSubjectSchema, SessionSubjectSchema } from '../scorers/label.js';

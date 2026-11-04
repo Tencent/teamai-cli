@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { knownSecrets } from '../env-resolution.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverCan } from '../workflow/requirements.js';
@@ -50,7 +50,7 @@ async function started(yaml: string, inputs: unknown): Promise<{ config: LocalCo
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data'),
   };
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const run = await startRun(config, 'review', inputs, { secrets: await knownSecrets(config), base: BASE });
   if ('error' in run) throw new Error(run.error.message);
   return { config, runId: String(run.data.run) };

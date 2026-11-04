@@ -20,11 +20,12 @@ const StepTreeSchema: z.ZodType<StepTree> = z.lazy(() => z.object({
 }));
 const RunFileSchema = z.object({
   runMode: z.string().optional(),
+  teamPin: z.object({ revision: z.string() }).passthrough().optional(),
   steps: z.array(z.object({ id: z.string(), end: z.string().optional() }).passthrough()),
   admitted: z.object({
     plan: z.object({
       output: z.object({
-        definition: z.object({ teamRevision: z.string() }).passthrough(),
+        definition: z.object({ definition: z.object({}).passthrough(), workflows: z.record(z.string(), z.unknown()).optional() }).strict(),
         plan: z.object({ baselineTeamRevision: z.string(), trials: z.array(z.unknown()) }).passthrough(),
       }),
       definition: z.object({ steps: z.array(StepTreeSchema) }).passthrough(),
@@ -72,7 +73,7 @@ describe('benchmark on the local driver', () => {
     fixtures.push(fixture);
     const teamHead = execFileSync('git', ['--git-dir', fixture.teamOrigin, 'rev-parse', 'main'], { encoding: 'utf8' }).trim();
 
-    const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team"}', '--timeout', '10m']);
+    const started = await fixture.teamai(['workflow', 'start', 'teamai-benchmark', '--inputs', '{"suite":"fix","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false}', '--timeout', '10m']);
     const run = String(envelope(started).data?.run);
     const driver = { kind: 'ci', machine: 'ci', workspace: fixture.work, can: { workspace: ['read-only', 'new', 'continue', 'clone'] } };
     const next = await driveCommands(fixture, run, { driver });
@@ -82,7 +83,7 @@ describe('benchmark on the local driver', () => {
     const pulled = await fixture.teamai(['pull']);
 
     expect(started.code, said(started)).toBe(0);
-    expect(stored.admitted?.plan.output.definition.teamRevision).toBe(teamHead);
+    expect(stored.teamPin?.revision).toBe(teamHead);
     // The fixture's CLI inherits this process's CI and TEAMAI_MODE.
     expect(stored.runMode).toBe(resolveRunMode(process.env));
     expect(stored.admitted?.plan.output.plan).toMatchObject({

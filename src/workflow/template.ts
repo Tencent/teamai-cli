@@ -1,6 +1,6 @@
 /**
  * Workflow templates inside prompt text, `env` values and every string inside a `with` value: a `{{ … }}` that starts
- * with `inputs.`, `steps.`, `with.` or, where an item is bound, `item`, after any "!" or "(", or that calls `length`,
+ * with `inputs.`, `steps.`, `with.`, `run.` or, where an item is bound, `item`, after any "!" or "(", or that calls `length`,
  * `any`, `all` or `filter` on one of those, or any function on a step field. It reads one path, or evaluates an
  * expression as an `if` does. Any other `{{ … }}` is plain text, so prompts about GitHub Actions, Jinja, Vue or an
  * Ansible loop stay as written.
@@ -11,7 +11,8 @@ import {
   evaluateExpression, expressionPaths, parseExpression, parseFields, resolvePath,
   readsLikeExpression, type Expression, type ExpressionContext, type ExpressionPath, type PathField,
 } from './expression.js';
-import type { WorkflowStep } from './types.js';
+import type { StepState } from './step-state.js';
+import type { WorkflowFailure, WorkflowStep } from './types.js';
 import { isJsonObject } from '../types.js';
 
 /** A `{{ with.<name>… }}` read: a value the step's own `with` names. Only templates read it; an `if` cannot. */
@@ -65,8 +66,8 @@ function syntax(paths: string): Syntax {
   return { template, recognized: new RegExp(`(?<!\\$)${template.source}`, 'g'), path: new RegExp(`^(?:${paths})`) };
 }
 
-/** `inputs.`, `steps.` or `with.`, then anything up to the closing braces. */
-const PATHS = String.raw`(?:inputs|steps|with)\.[^{}]*?`;
+/** `inputs.`, `steps.`, `with.` or `run.`, then anything up to the closing braces. */
+const PATHS = String.raw`(?:inputs|steps|with|run)\.[^{}]*?`;
 
 /**
  * `item` is a root only where an item is bound: in the templates of a `for_each` step and of the workflow each item
@@ -90,7 +91,7 @@ const BRACES = new RegExp(`(?<!\\$)${ANY_BRACES.source}`, 'g');
 /** `\{{`: a literal `{{`. Only the backslash is dropped, and nothing after it is read as a template. */
 const ESCAPED = '\\{{';
 
-const WITH_MESSAGE = 'with is read only as one path, such as with.<name>; an expression reads only inputs, steps and item';
+const WITH_MESSAGE = 'with is read only as one path, such as with.<name>; an expression reads only inputs, steps, item and run.id';
 
 /**
  * A template-like `{{ … }}` in `text` as written, if any; used to reject one where text is never rendered, such as
@@ -223,6 +224,22 @@ export function renderText(template: Template, context: TemplateContext): string
   return template.map((part) => (isRead(part) ? textOf(valueOf(part, context)) : part)).join('');
 }
 
+/**
+ * `text`, the template at `what` of the step `state` is leased for, rendered from `context`, what the step reads when
+ * it is leased. Pull rejects a template that does not parse, so a failure here means the run file was changed.
+ */
+export function renderLeaseText(context: TemplateContext, state: Pick<StepState, 'id'>, { what, text }: { what: string; text: string }): string | WorkflowFailure {
+  const parsed = parseTemplate(text, Object.hasOwn(context, 'item'));
+
+  if (!parsed.ok) {
+    const [problem] = parsed.errors;
+
+    return { code: 'invalid_template', message: `step "${state.id}" ${what} template ${problem?.source}: ${problem?.message}` };
+  }
+
+  return renderText(parsed.template, context);
+}
+
 /** Renders a whole value: a template that is exactly one `{{ … }}` keeps the JSON value it reads; anything else is text. */
 export function renderValue(template: Template, context: TemplateContext): JsonValue {
   const only = template.length === 1 ? template[0] : undefined;
@@ -245,15 +262,47 @@ export function stringsIn(value: unknown): string[] {
 }
 
 /**
- * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, and `env.<NAME>`.
- * Pull and the engine share this one list, so they agree on which fields are templates.
+ * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, `model` when it is not the
+ * exact model, and `env.<NAME>`. Pull and the engine share this one list, so they agree on which fields are templates.
  */
-export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'env' | 'with' | 'hitl'>): Array<{ what: string; text: string }> {
+export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'env' | 'with' | 'hitl' | 'model' | 'workspace'>): Array<{ what: string; text: string }> {
+  const confined = step.workspace instanceof Object && 'confined' in step.workspace ? step.workspace.confined : undefined;
+
   return [
     ...(step.hitl ? [{ what: `${step.hitl.kind}.message`, text: step.hitl.message }] : []),
     ...Object.entries(step.with ?? {}).flatMap(([name, value]) => stringsIn(value).map((text) => ({ what: `with.${name}`, text }))),
     ...(step.prompt !== undefined ? [{ what: 'prompt', text: step.prompt }] : []),
+    ...(step.model !== undefined && !(step.model instanceof Object) ? [{ what: 'model', text: step.model }] : []),
+    ...(confined !== undefined ? [{ what: 'workspace.confined', text: confined }] : []),
     ...Object.entries(step.env ?? {}).map(([name, text]) => ({ what: `env.${name}`, text })),
+  ];
+}
+
+/** What a template the lease renders, a `model` or a confined directory, may read; pull checks that each step it reads is one the step needs. */
+function isLeaseRead(path: ExpressionPath): boolean {
+  return path.root === 'inputs' || path.root === 'item' || (path.root === 'steps' && path.field === 'outputs');
+}
+
+/** The sources of the reads in `template` that a lease cannot render from what the step is leased with. */
+function unleasedReads(template: Template): string[] {
+  return template.flatMap((part) => (isRead(part) && 'expression' in part && !expressionPaths(part.expression).every(isLeaseRead) ? [part.source] : []));
+}
+
+/** Why a confined directory, parsed as `template`, cannot render: a read of anything but an input, the item, or a step's outputs. */
+export function confinedTemplateErrors(template: Template): TemplateError[] {
+  return unleasedReads(template).map((source) => ({ source, message: 'a confined directory template reads only inputs, item and the outputs of steps the step needs' }));
+}
+
+/**
+ * Why a step's `model`, parsed as `template`, cannot render an alias or a model name: a read of anything but an input,
+ * the item, or a step's outputs, or literal text a model cannot hold. A `with` read is `withReadProblems`' to report.
+ */
+export function modelTemplateErrors(text: string, template: Template): TemplateError[] {
+  const literal = template.filter((part) => !isRead(part)).join('');
+
+  return [
+    ...(/\s|\{\{/.test(literal) ? [{ source: text, message: 'text outside a template cannot hold a space or {{, and {{ item }} is a template only where for_each binds an item' }] : []),
+    ...unleasedReads(template).map((source) => ({ source, message: 'a model template reads only inputs, item and the outputs of steps the step needs' })),
   ];
 }
 

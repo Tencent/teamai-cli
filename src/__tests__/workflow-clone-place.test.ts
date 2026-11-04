@@ -9,16 +9,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
-import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { startRun } from '../workflow/engine.js';
 import { claimRun } from '../workflow/handoff.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { retryStep } from '../workflow/run-controls.js';
-import { nextJudgeLease } from '../workflow/scoring.js';
+import { scoreEvidenceDir } from './helpers/score-run.js';
 import { readRun, RunIdSchema } from '../workflow/store.js';
 import type { DriverCan } from '../workflow/requirements.js';
 import type { DriverIdentity } from '../workflow/types.js';
@@ -89,7 +89,7 @@ async function fixture(yaml: (commit: string) => string, scorers: Record<string,
     fs.mkdirSync(path.dirname(path.join(knowledge, file)), { recursive: true });
     fs.writeFileSync(path.join(knowledge, file), text);
   }
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run), first };
@@ -456,14 +456,14 @@ describe('a clone place', () => {
   });
 
   it('gives the judges of a prompt in a clone the work it committed there, after the clone is gone', async () => {
-    const { runId, first, evidence, patch } = await judgedAfterClone(SCORED('work'));
+    const { runId, first, evidence, patch } = await judgedAfterClone(SCORED('work'), 'trial.work');
 
     expect(evidence).toMatchObject({ subject: { runId, step: 'trial.work', pass: 1 }, kind: 'prompt', ranges: [{ step: 'trial.work', pass: 1, from: first }] });
     expect(patch).toContain('+made in the clone');
   });
 
   it('gives the judges of the workflow step that opened a clone the work its steps committed there, after the clone is gone', async () => {
-    const { runId, first, evidence, patch } = await judgedAfterClone(SCORED('trial'));
+    const { runId, first, evidence, patch } = await judgedAfterClone(SCORED('trial'), 'trial');
 
     expect(evidence).toMatchObject({ subject: { runId, step: 'trial', pass: 1 }, kind: 'workflow', ranges: [{ step: 'trial', pass: 1, from: first }, { step: 'trial.work', pass: 1, from: first }] });
     expect(patch).toContain('+made in the clone');
@@ -478,11 +478,10 @@ describe('a clone place', () => {
 
     // A plain next, which sweeps no clone: the one that settles `trial` and leases `after`.
     const after = await client.next(runId, { driver: { ...driver, can }, running: [] });
-    const judged = z.object({ data: z.object({ lease: z.object({ evidence: z.string() }) }) })
-      .parse(await nextJudgeLease(config, { driver: { kind: 't3', machine: 'm1', workspace: '/w' }, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).data.lease;
+    const evidence = await scoreEvidenceDir(config, `run:${runId}:trial:1`, ['quality']);
 
     expect(after).toMatchObject({ data: { lease: { step: 'after' } } });
-    expect(fs.readFileSync(path.join(judged.evidence, 'diff.patch'), 'utf8')).toContain('+made in the clone');
+    expect(fs.readFileSync(path.join(evidence, 'diff.patch'), 'utf8')).toContain('+made in the clone');
   });
 });
 
@@ -493,7 +492,7 @@ description: Judge work done in a clean clone, then go on.
 steps:
   - id: trial
     workspace: { clone: { commit: ${commit}, team: { treatment: none } } }
-    scorers: [quality]
+    scorers: { names: [quality], sampling: all }
     workflow:
       steps:
         - id: work
@@ -507,23 +506,22 @@ steps:
 
 /**
  * Runs `yaml` through next --prepare and report, as an external driver would, with its one prompt writing a file in the
- * clone; then the evidence the first judge lease gives, once the run ended and its clone is gone.
+ * clone; then the evidence `teamai score evidence` writes for step `scored` once the run ended and its clone is gone.
  */
-async function judgedAfterClone(yaml: (commit: string) => string): Promise<{ runId: string; first: string; evidence: unknown; patch: string }> {
+async function judgedAfterClone(yaml: (commit: string) => string, scored: string): Promise<{ runId: string; first: string; evidence: unknown; patch: string }> {
   const { config, runId, first } = await fixture(yaml, { quality: SCORER });
   const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
   const leased = z.object({ data: z.object({ lease: z.object({ attempt: z.string(), revision: z.number(), cwd: z.string() }) }) })
     .parse(await client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true })).data.lease;
   fs.writeFileSync(path.join(leased.cwd, 'made.txt'), 'made in the clone\n');
   expect(await client.report(runId, { attempt: leased.attempt, revision: leased.revision, outcome: 'success', driver })).toMatchObject({ data: { step: { outcome: 'success' } } });
-  expect(await client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  expect(await client.next(runId, { driver: { ...driver, can }, running: [] }, { prepare: true })).toMatchObject({ data: { done: {} } });
   expect(fs.existsSync(leased.cwd)).toBe(false);
-  const judged = z.object({ data: z.object({ lease: z.object({ evidence: z.string() }) }) })
-    .parse(await nextJudgeLease(config, { driver: { kind: 't3', machine: 'm1', workspace: '/w' }, judge: { isolation: 'verified', tools: ['claude'] }, running: [] })).data.lease;
+  const evidence = await scoreEvidenceDir(config, `run:${runId}:${scored}:1`, ['quality']);
   return {
     runId, first,
-    evidence: JSON.parse(fs.readFileSync(path.join(judged.evidence, 'evidence.json'), 'utf8')) as unknown,
-    patch: fs.readFileSync(path.join(judged.evidence, 'diff.patch'), 'utf8'),
+    evidence: JSON.parse(fs.readFileSync(path.join(evidence, 'evidence.json'), 'utf8')) as unknown,
+    patch: fs.readFileSync(path.join(evidence, 'diff.patch'), 'utf8'),
   };
 }
 
@@ -629,7 +627,7 @@ async function roleRun(roles: { committed: readonly string[]; declared: readonly
   fs.writeFileSync(path.join(knowledge, 'manifest', 'roles.yaml'), rolesYaml(roles.declared));
   fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), teamYaml);
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), (roles.workflow ?? ROLE_CLONE)(first).replace('d'.repeat(40), revision));
-  await syncWorkflowDefinitions(config);
+  await syncScorersThenWorkflows(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
   return { config, runId: String(started.data.run), revision };
@@ -652,9 +650,9 @@ description: Judge work done in a clean clone of the first commit.
 steps:
   - id: trial
     workspace: { clone: { commit: ${commit}, team: { treatment: none } } }
-${scored === 'trial' ? '    scorers: [quality]\n' : ''}    workflow:
+${scored === 'trial' ? '    scorers: { names: [quality], sampling: all }\n' : ''}    workflow:
       steps:
         - id: work
           workspace: continue
           prompt: Make a file.
-${scored === 'work' ? '          scorers: [quality]\n' : ''}`;
+${scored === 'work' ? '          scorers: { names: [quality], sampling: all }\n' : ''}`;

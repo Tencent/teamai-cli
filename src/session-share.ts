@@ -7,11 +7,12 @@
 import { loadLocalConfigForScope, loadTeamConfig } from './config.js';
 import type { SessionRun } from './launch-context.js';
 import { requiredIsolation, scorerIsolationSource, type IsolationSetting } from './scorers/isolation.js';
-import { installedJudgeTools } from './scorers/judge.js';
+import { installedConfinedTools } from './tool-launch/confined.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
-import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
+import { SessionWork, type SessionScorer } from './session-flow/session-work.js';
+import { markFacts } from './scorers/score-plan.js';
 import { getDataHome, type LocalConfig, type SessionShareOffered } from './types.js';
 import { nestedStart } from './workflow/attempt-marker.js';
 import { loadWorkflowTree, resolveStart } from './workflow/cache.js';
@@ -43,11 +44,13 @@ interface SessionShareOffer {
   publish: Proposal<boolean>;
   scorers: Proposal<string[]>;
   judge: Proposal<Judge>;
+  demand: Proposal<'named'>;
 }
 
 const PUBLISH_WHY = 'Archive this session\'s transcript, scrubbed, for the team.';
 const SCORERS_WHY = 'Scorers that judge this session now.';
 const NAME_ANY = 'Name any scorer to judge with it.';
+const DEMAND = { value: 'named', why: 'This session asks to be judged, so every scorer named judges it, sampled or not, and it counts toward daily_limit. auto samples it, as a background pass does.' } as const;
 
 /** `items` as an English list: `a`, `a and b`, `a, b and c`. */
 function listOf(items: readonly string[]): string {
@@ -79,17 +82,17 @@ function filesOf(sources: readonly string[]): string {
  * The open scorers of `sampled`, without those whose required isolation is verified when `judge` is the session's
  * agent, which judges only best-effort. `judge` is asked only when a scorer needs verified isolation.
  */
-function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
-  const verifiedBy = (one: SampledScorer) => {
+function scorersProposal(sampled: readonly SessionScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
+  const verifiedBy = (one: SessionScorer) => {
     const required = requiredIsolation([...team, { source: scorerIsolationSource(one.scorer, one.pin.relativePath), value: one.definition.isolation }]);
 
     return required.level === 'verified' && judge() === 'driver' ? required.setBy : undefined;
   };
 
-  const proposed: SampledScorer[] = [];
+  const proposed: SessionScorer[] = [];
   const leftOut = new Map<string, { sources: readonly string[]; scorers: string[] }>();
 
-  for (const one of sampled.filter(({ state }) => state.kind === 'open')) {
+  for (const one of sampled) {
     const sources = verifiedBy(one);
 
     if (sources === undefined) {
@@ -109,7 +112,7 @@ function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { j
 }
 
 /** That `proposed`, one scorer or more, sample this session, with their sampling rates. */
-function samplingWhy(proposed: readonly SampledScorer[]): string {
+function samplingWhy(proposed: readonly SessionScorer[]): string {
   const [only, ...more] = proposed;
 
   if (only !== undefined && more.length === 0) return `${only.scorer} samples this session (samplingRate ${only.definition.samplingRate}).`;
@@ -140,8 +143,8 @@ interface OfferOptions {
 async function propose(
   config: LocalConfig,
   { tool, sessionId }: { tool: string; sessionId: string },
-  { now = new Date().toISOString(), judgeTools = () => installedJudgeTools([]) }: OfferOptions,
-): Promise<Omit<SessionShareOffer, 'judge'> & { judge: () => Proposal<Judge> }> {
+  { now = new Date().toISOString(), judgeTools = () => installedConfinedTools([]) }: OfferOptions,
+): Promise<Omit<SessionShareOffer, 'judge' | 'demand'> & { judge: () => Proposal<Judge> }> {
   let found: Proposal<Judge> | undefined;
 
   const judge = (): Proposal<Judge> => {
@@ -174,7 +177,7 @@ async function propose(
 
   switch (policy.policy) {
     case 'ask': {
-      const sampled = await SessionWork.sampledScorers(config, { platform, sessionId }, now);
+      const sampled = await SessionWork.sampledScorers(config, { platform, sessionId }, markFacts(config, now));
 
       return { session, source, publish, judge, scorers: scorersProposal(sampled, { judge: () => judge().value, team: scoring.isolation }) };
     }
@@ -195,7 +198,7 @@ async function propose(
 async function offer(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<SessionShareOffer> {
   const proposed = await propose(config, session, options);
 
-  return { ...proposed, judge: proposed.judge() };
+  return { ...proposed, judge: proposed.judge(), demand: DEMAND };
 }
 
 /**
@@ -241,6 +244,7 @@ const CONTRACT = {
   publish: { type: 'boolean' },
   scorers: { type: 'array', items: { type: 'string' } },
   judge: { type: 'enum', values: ['here', 'driver'] },
+  demand: { type: 'enum', values: ['auto', 'named'] },
 } as const satisfies Record<keyof SessionShareOffer, OutputSchema>;
 
 function isContractInput(name: string): name is keyof SessionShareOffer {

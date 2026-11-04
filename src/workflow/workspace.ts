@@ -8,12 +8,11 @@ import type { JsonValue } from '../types.js';
 import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
 import { isUnder, passesWithin, runPasses, type RunPass } from './loop.js';
-import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
+import { contextOf, localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
-import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
+import { renderLeaseText, renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
 import { passOf, type Delivery, type StepState } from './step-state.js';
 import { ClonePlaceSchema, type ClonePlace } from './clone.js';
-import { parseTemplate, renderText } from './template.js';
 import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type TeamPlace, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
 
 export type WorkspaceMode = typeof WORKSPACE_MODES[number];
@@ -62,9 +61,15 @@ const CopyContractOptions = [
 
 export const CopyContractSchema = z.discriminatedUnion('mode', CopyContractOptions) satisfies z.ZodType<CopyContract>;
 
-export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.string().min(1) });
+/** `publish`: the step publishes what it stages to `branch`, a teamai data branch, as `deliver: publish` does. */
+export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.string().min(1), publish: z.literal(true).optional() });
 
 export const WorkspaceContractSchema = z.discriminatedUnion('mode', [...CopyContractOptions, TeamContractSchema]) satisfies z.ZodType<WorkspaceContract>;
+
+/** Whether `contract` publishes what its step stages to a data branch, so it makes no copy a driver works in. */
+export function isPublishContract(contract: WorkspaceContract): boolean {
+  return contract.mode === 'team' && contract.publish === true;
+}
 
 export interface SessionRef {
   tool: string;
@@ -120,7 +125,10 @@ export function resolveMode(step: WorkflowStep, ancestors: readonly WorkflowStep
     case 'continue':
       return step.workspace;
     default:
-      return 'clone' in step.workspace ? 'clone' : 'team';
+      if ('clone' in step.workspace) return 'clone';
+
+      // A step confined to a directory opens no copy and changes nothing.
+      return 'team' in step.workspace ? 'team' : 'read-only';
   }
 
   if (step.command !== undefined && step.prompt === undefined && step.promptFile === undefined) return 'read-only';
@@ -161,6 +169,13 @@ export function contractClone(contract: WorkspaceContract | undefined): ClonePla
   return contract?.mode === 'new' || contract?.mode === 'continue' ? contract.clone : undefined;
 }
 
+/** The directory `step` is confined to, as written, or undefined when it is not confined to one. */
+export function confinedOf(step: WorkflowStep): string | undefined {
+  const place = placeOf(step);
+
+  return place && 'confined' in place ? place.confined : undefined;
+}
+
 /** The team repo branch `step` commits to, or undefined when it runs in no team workspace. */
 function teamOf(step: WorkflowStep): TeamPlace | undefined {
   const place = placeOf(step);
@@ -177,9 +192,12 @@ export function isIsolated(run: Pick<RunState, 'definition' | 'workflows'>): boo
   return someStep(run, (step) => cloneOf(step) !== undefined || stepWorkflow(step)?.kind === 'from');
 }
 
-/** Whether a step of `run`, or of a workflow it runs, works in the team workspace, whose clone only the machine that ran it has. */
+/**
+ * Whether a step of `run`, or of a workflow it runs, works in the team workspace, whose clone only the machine that ran it
+ * has. A step that publishes to a data branch leaves nothing behind that another machine would need.
+ */
 export function worksInTeam(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
-  return someStep(run, (step) => teamOf(step) !== undefined);
+  return someStep(run, (step) => teamOf(step) !== undefined && step.deliver !== 'publish');
 }
 
 /** Whether `matches` holds for a step of `run`, of a workflow it runs inline, or of one it admitted. */
@@ -854,6 +872,9 @@ export function planWorkspace(
 ): WorkspacePlan {
   const { ancestors } = splitLevels(levelsTo(run, state.id), state.id);
   const mode = resolveMode(definition, ancestors.map((ancestor) => ancestor.step));
+
+  // It reads only its directory, so it runs in no copy, whatever the steps around it open, and resumes no session.
+  if (confinedOf(definition) !== undefined) return { mode };
   // A role template that gives no role id fails the step before any role it would run with is compared.
   const levels = roleLevelsOf(run, state.id);
 
@@ -877,7 +898,7 @@ export function planWorkspace(
 
   const team = teamOf(definition);
 
-  if (team) return planTeam(run, state, request, { team, session, handback });
+  if (team) return planTeam(run, state, request, { scope, team, session, handback, publish: definition.deliver === 'publish' });
 
   if (mode === 'clone') return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" opens a clone this teamai cannot read` } };
 
@@ -1059,19 +1080,21 @@ function planClone(run: RunState, state: StepState, request: WorkspaceRequest, i
 const GIT_BRANCH = /^(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)))(?![-./])[\w./-]*[\w-]$/;
 
 /**
- * The contract of a step in the team workspace: `team.branch` rendered with the run's inputs, else the run's own branch
- * of the step. Only a driver that provides `team` takes it, and a step the copy's owner did not lease waits for it.
+ * The contract of a step in the team workspace: `team.branch` rendered from what the step reads when it is leased, its
+ * workflow's inputs and the outputs of the steps it needs, else the run's own branch of the step. Only a driver that
+ * provides `team` takes it, and a step the copy's owner did not lease waits for it.
  */
-function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { team: TeamPlace; session: { session?: LeaseSession }; handback: boolean }): WorkspacePlan {
-  const { team, session, handback } = input;
+function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { scope: Scope; team: TeamPlace; session: { session?: LeaseSession }; handback: boolean; publish: boolean }): WorkspacePlan {
+  const { scope, team, session, handback, publish } = input;
   const mode = 'team';
-  const parsed = team.branch === undefined ? undefined : parseTemplate(team.branch, false);
 
-  if (parsed && !parsed.ok) return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" workspace team branch ${team.branch} is not a template teamai reads` } };
-  const branch = parsed ? renderText(parsed.template, { inputs: run.inputs ?? {}, steps: {} }) : branchName(run.id, state.id, state.pass ?? 1);
+  const branch = team.branch === undefined ? branchName(run.id, state.id, state.pass ?? 1)
+    : renderLeaseText(contextOf(scope, statesIn(run, scope), state), state, { what: 'workspace team branch', text: team.branch });
+
+  if (branch instanceof Object) return { mode, fail: branch };
 
   if (!GIT_BRANCH.test(branch)) {
-    return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs that make workspace team branch a branch name.` } };
+    return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs and step outputs that make workspace team branch a branch name.` } };
   }
 
   if (!handback && !(request.modes ?? []).includes('team')) {
@@ -1084,7 +1107,7 @@ function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, in
     return { mode, defer: { reason: `step "${state.id}" commits to team branch ${branch}, which another driver of this run holds` } };
   }
 
-  return { mode, ...session, contract: { mode, branch } };
+  return { mode, ...session, contract: publish ? { mode, branch, publish } : { mode, branch } };
 }
 
 /**

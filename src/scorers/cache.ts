@@ -91,6 +91,15 @@ export async function loadCachedScorer(config: LocalConfig, name: string): Promi
   return { ...rest, definition: parsed.definition };
 }
 
+/** Whether one of the scorers `names`, as cached here, runs a check on what a pass delivered. */
+export async function anyScorerChecks(config: LocalConfig, names: readonly string[]): Promise<boolean> {
+  for (const name of names) {
+    if ((await loadCachedScorer(config, name))?.definition.check) return true;
+  }
+
+  return false;
+}
+
 /** The names of the scorers with a valid cached version, sorted. */
 export async function cachedScorerNames(config: LocalConfig): Promise<string[]> {
   const files = await fs.readdir(cacheDir(config)).catch(() => []);
