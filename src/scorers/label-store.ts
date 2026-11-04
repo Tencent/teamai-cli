@@ -333,8 +333,8 @@ export const LabelStore = {
 
   /**
    * The labels of workflow runs `runIds` by run and `${step}#${pass}`, from this machine and, with `published`, from the
-   * reports checkout as it is. Per pass and scorer, a hand label beats a model label, and of those the newest across
-   * rubric versions is shown.
+   * reports checkout as it is. Per pass and scorer, a hand label beats a model or stage label, and of those the newest
+   * across rubric versions is shown.
    */
   async ofRuns(config: LocalConfig, runIds: readonly string[], options: { published: boolean }): Promise<Map<string, Map<string, PassScore[]>>> {
     const wanted = new Set(runIds);
@@ -344,9 +344,8 @@ export const LabelStore = {
       ...options.published ? await publishedLabels(config) : [],
     ]);
 
-    const outranks = (label: ScoreLabel, other: ScoreLabel): boolean => (label.judge.kind === other.judge.kind
-      ? label.scoredAt > other.scoredAt
-      : label.judge.kind === 'human');
+    const isHand = (label: ScoreLabel) => label.judge.kind === 'human';
+    const outranks = (label: ScoreLabel, other: ScoreLabel): boolean => (isHand(label) === isHand(other) ? label.scoredAt > other.scoredAt : isHand(label));
 
     const byRun = new Map<string, Map<string, RunLabel[]>>();
 

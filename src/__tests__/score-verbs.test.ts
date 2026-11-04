@@ -1463,14 +1463,6 @@ describe('score verbs refuse what they cannot act on', () => {
   });
 });
 
-/** A claude on PATH, which the stage-decided label names as the judge that would have run. */
-function claudeOnPath(): void {
-  const bin = path.join(root, 'bin');
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
-}
-
 describe('score label and score write read what the run recorded', () => {
   /** A group of `quality` on the reviewed pass, its evidence written and its judge step answered `answer`, at its label step. */
   async function judgedGroup(answer: unknown, startedBy: StartedBy = 'cli') {
@@ -1533,19 +1525,19 @@ describe('score label and score write read what the run recorded', () => {
 describe('labels a stage decided', () => {
   const clarityOnly = SHIP.replace('{ names: [clarity, delivered], batch: true }', '[clarity]');
 
-  it('give the scorer\'s best failing label, decided by protected paths, with the judge that would have run', async () => {
+  it('give the scorer\'s best failing label, decided by protected paths, naming the stage and no judge tool', async () => {
     const config = await team({ ship: clarityOnly }, { clarity: scorer() });
-    claudeOnPath();
     const runId = await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' });
     mocks.ci.mockResolvedValue({ kind: 'unsupported' });
-    const { answers } = await walk(config, `run:${runId}:change:1`);
+    const { answers, runId: scoreRunId, ended } = await walk(config, `run:${runId}:change:1`);
 
     expect(answers.has('score[0].judge')).toBe(false);
     expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: 'bad', code: '' }] } });
-    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'clarity', label: 'bad', passed: false, decidedBy: 'protected', judge: { kind: 'model', tool: 'claude', isolation: 'best-effort' } }]);
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'clarity', label: 'bad', passed: false, decidedBy: 'protected', judge: { kind: 'stage' } }]);
+    expect(await ScoreAnswer.of(config, scoreRunId, ended, ['clarity'])).toMatchObject({ data: { label: { scorer: 'clarity', judge: { kind: 'stage' }, decidedBy: 'protected' } } });
   });
 
-  it('give judge_tool_unavailable when a stage decided and no judge tool here runs the scorer', async () => {
+  it('record the label a stage decided where no judge tool is installed', async () => {
     const config = await team({ ship: clarityOnly }, { clarity: scorer() });
     const runId = await deliveredRun(config, { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' });
     mocks.ci.mockResolvedValue({ kind: 'unsupported' });
@@ -1558,7 +1550,7 @@ describe('labels a stage decided', () => {
     const label = await run.next('score[0].label');
     vi.stubEnv('PATH', '/usr/bin:/bin');
 
-    expect(await ScoreVerbs.label({ evidence: dir, answer: '', judge: '' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: '', code: 'judge_tool_unavailable' }] } });
+    expect(await ScoreVerbs.label({ evidence: dir, answer: '', judge: '' }, label.ctx)).toEqual({ ok: true, output: { labels: [{ scorer: 'clarity', label: 'bad', code: '' }] } });
   });
 
   it('give ci_pending while CI has not finished, and leave the mark waiting for it', async () => {

@@ -341,10 +341,10 @@ A CI failure, as `teamai score --run r3f9… --scorer delivered` publishes it:
 {"scorer":"delivered","label":"partial","score":0.5,"passed":false,"source":"workflow",
  "subject":{"runId":"r3f9…","step":"change","pass":1},"decidedBy":"ci",
  "evidenceHash":"sha256:8ddbddc64a7180bc866ce3fc0da3e5ad940854e7855a51b0318851f932737ba1",
- "judge":{"kind":"model","tool":"claude",…},…}
+ "judge":{"kind":"stage"},…}
 ```
 
-`evidenceHash` identifies the evidence the label read. Two labels of one pass with the same hash read the same work, so if their labels differ, the rubric or the judge changed, not the work. What the stage found (the check's exit code, the CI result) is kept only in the local reasoning file the command prints. The label has no `usage`, since no judge ran.
+`evidenceHash` identifies the evidence the label read. Two labels of one pass with the same hash read the same work, so if their labels differ, the rubric or the judge changed, not the work. What the stage found (the check's exit code, the CI result) is kept only in the local reasoning file the command prints. Its judge is `{"kind":"stage"}`: no judge ran, so the label names no judge tool and has no `usage`. Labels earlier releases wrote name the judge that would have run, with `kind: model`, and read as decided by the stage just the same.
 
 A check that cannot run, such as a command this machine does not have or one that times out, writes no label. Fix the check, then score the pass again:
 

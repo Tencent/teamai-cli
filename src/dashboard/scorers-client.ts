@@ -45,7 +45,7 @@ let scorerQuery={window:scorerWindows.includes(savedWindow)?savedWindow:'30',sco
 function resetScorers(){scorerCommitDraft='';scorerArms=null;scorerData=null;scorerError='';scorerLoading=false;scorerHtml='';scorerQuery={...scorerQuery,scorer:'',cohort:'',commit:'',group:'',failing:''};}
 const pct=rate=>rate==null?'—':number(Math.round(rate*100))+'%';
 const short=hash=>e(String(hash||'').slice(0,7));
-function judgeText(j){ if(j.kind==='human')return label('Hand label'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.isReported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
+function judgeText(j){ if(j.kind==='human')return label('Hand label'); if(j.kind==='stage')return label('Decided by a stage'); return '<span data-verbatim>'+e(j.tool)+'</span> / '+(j.model?'<span data-verbatim>'+e(j.model.id)+'</span>'+(j.model.isReported?'':' <small>'+label('requested')+'</small>')+(j.model.alias?' <small data-verbatim>'+e(j.model.alias)+'</small>':''):label('model not recorded')); }
 function runModeText(mode){ return mode==='attended'?label('Attended'):mode==='unattended'?label('Unattended'):label('Not recorded'); }
 function rubricText(c){ return label('Rubric')+' <span title="'+e(c.rubric.sourceHash)+'" data-verbatim>'+short(c.rubric.sourceHash)+'</span>'+(c.rubric.teamRevision?' · '+label('Team revision')+' <span title="'+e(c.rubric.teamRevision)+'" data-verbatim>'+short(c.rubric.teamRevision)+'</span>':' · <span class="amber">'+label('No team revision')+'</span>'); }
 function cohortText(c){ return rubricText(c)+' · '+(c.source==='session'?label('Session labels'):label('Workflow labels'))+' · '+runModeText(c.runMode)+' · '+judgeText(c.judge); }
@@ -138,7 +138,7 @@ function agreementCell(a){
  return meter(a.agree/a.paired)+' '+pct(a.agree/a.paired)+'<small>'+number(a.agree)+' / '+number(a.paired)+' '+label('paired')+'</small>';
 }
 const verdict=(value,passed)=>'<span class="label-value '+(passed?'good':'amber')+'" data-verbatim>'+e(value)+'</span> <small>'+(passed?label('passed'):label('failed'))+'</small>';
-const sameJudge=(a,b)=>a.kind===b.kind&&(a.kind==='human'||(a.tool===b.tool&&(a.model?a.model.id:'')===(b.model?b.model.id:'')&&(a.model?a.model.isReported:true)===(b.model?b.model.isReported:true)));
+const sameJudge=(a,b)=>a.kind===b.kind&&(a.kind==='human'||a.kind==='stage'||(a.tool===b.tool&&(a.model?a.model.id:'')===(b.model?b.model.id:'')&&(a.model?a.model.isReported:true)===(b.model?b.model.isReported:true)));
 function agreementPanel(sel){
  const a=sel.agreement, c=sel.cohort;
  if(c.source!=='session'&&!a.handLabelled)return '';

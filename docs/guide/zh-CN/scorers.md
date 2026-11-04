@@ -341,10 +341,10 @@ Judge whether the change is easy to read.
 {"scorer":"delivered","label":"partial","score":0.5,"passed":false,"source":"workflow",
  "subject":{"runId":"r3f9…","step":"change","pass":1},"decidedBy":"ci",
  "evidenceHash":"sha256:8ddbddc64a7180bc866ce3fc0da3e5ad940854e7855a51b0318851f932737ba1",
- "judge":{"kind":"model","tool":"claude",…},…}
+ "judge":{"kind":"stage"},…}
 ```
 
-`evidenceHash` 标识标签读取的证据。同一轮执行的两个标签哈希相同，说明读取的是同一份工作；如果标签不同，变化的是评分标准或评审者，而不是工作。阶段发现的内容（检查的退出码、CI 结果）只保存在命令输出中指明的本地 reasoning 文件里。由于没有评审者运行，标签没有 `usage`。
+`evidenceHash` 标识标签读取的证据。同一轮执行的两个标签哈希相同，说明读取的是同一份工作；如果标签不同，变化的是评分标准或评审者，而不是工作。阶段发现的内容（检查的退出码、CI 结果）只保存在命令输出中指明的本地 reasoning 文件里。它的 judge 是 `{"kind":"stage"}`：没有评审者运行，因此标签不记录评审工具，也没有 `usage`。早期版本写入的标签以 `kind: model` 记录本应运行的评审者，同样按阶段判定读取。
 
 无法运行的检查（例如本机没有该命令，或运行超时）不写入标签。修复检查后，再次为该轮评分：
 

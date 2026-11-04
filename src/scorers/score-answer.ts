@@ -138,7 +138,7 @@ function outcomesOf(run: RunState, scorers: readonly string[], stored: readonly 
 /** What the answer of teamai score carries of one label it wrote. */
 type LabelAnswer = Pick<ScoreLabel, 'scorer' | 'subject' | 'label' | 'score' | 'passed'> & {
   labelId: string;
-  judge: { kind: 'human' } | { kind: 'model'; tool: string };
+  judge: { kind: 'human' } | { kind: 'stage' } | { kind: 'model'; tool: string };
   decidedBy?: string;
   reasoning?: string;
 };
@@ -164,7 +164,7 @@ function answerOf(config: LocalConfig, label: ScoreLabel): LabelAnswer {
   log.info(`${label.scorer}: ${verdict}. Reasoning: ${reasoning}`);
 
   if (!label.passed) log.info(shareFailedLabelHint(reasoning, label.source === 'session' ? label.subject.sessionId : undefined));
-  answer.judge = { kind: 'model', tool: label.judge.tool };
+  answer.judge = label.judge.kind === 'stage' ? { kind: 'stage' } : { kind: 'model', tool: label.judge.tool };
   answer.reasoning = reasoning;
 
   if (label.source === 'workflow' && label.decidedBy) answer.decidedBy = label.decidedBy;

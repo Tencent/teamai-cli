@@ -639,6 +639,7 @@ export const dashboardMessages = {
   "Could not load this run.": "无法加载此运行。",
   "Scorers": "评分器",
   "Hand label": "人工标注",
+  "Decided by a stage": "由阶段判定",
   "requested": "仅请求",
   "model not recorded": "未记录模型",
   "Rubric": "评分标准",
