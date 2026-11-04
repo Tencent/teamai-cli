@@ -42,7 +42,10 @@ beforeEach(() => {
   config = { repo: { localPath: clone, remote }, username: 'tester', scope: 'user', additionalRoles: [], dataHome: path.join(sandbox, 'data') };
 });
 
-afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }));
+afterEach(() => {
+  fs.rmSync(sandbox, { recursive: true, force: true });
+  attempts = 0;
+});
 
 const onOrigin = (file: string): string | undefined => {
   const shown = spawnSync('git', ['--git-dir', remote, 'show', `teamai-reports:${file}`], { encoding: 'utf8' });
@@ -61,6 +64,26 @@ async function publish(files: Record<string, string>, before?: () => void) {
   before?.();
   const finished = await finishDataCheckout({ config, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at });
   return { opened, finished };
+}
+
+const NOTES = 'standups/tester/2026-11.md';
+let attempts = 0;
+
+/** Opens the place of step `note` for a new attempt, has it append `line` to `file` as share-standup does, and finishes it. */
+async function append(file: string, line: string) {
+  attempts += 1;
+  const opened = await openDataCheckout({ config, run: RUN, attempt: `a${String(attempts).padStart(3, '0')}` as AttemptId, branch: 'teamai-reports' });
+  fs.mkdirSync(path.dirname(path.join(opened.dir, file)), { recursive: true });
+  fs.appendFileSync(path.join(opened.dir, file), `${line}\n`);
+  git(opened.dir, 'add', '--', file);
+  return finishDataCheckout({ config, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at });
+}
+
+async function whileLocked<T>(action: () => Promise<T>): Promise<T> {
+  const lock = path.join(path.dirname(config.repo.localPath), '.reports-lock');
+  await DataBranches.checkout('teamai-reports').refresh(config);
+  expect(await acquireLock(lock)).toBe(true);
+  return action().finally(() => releaseLock(lock));
 }
 
 describe('the place of a deliver: publish step', () => {
@@ -240,6 +263,41 @@ describe('DataBranches.pushPending', () => {
 
     expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.stringMatching(/no longer applies; it is kept in .+data-branches\/teamai-reports\/pending\.$/) }]);
     expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":0}\n{"tester":2}\n');
+  });
+
+  it('lands, in order, two notes appended to one file while another teamai process held the branch', async () => {
+    await append(NOTES, 'NOTE-ONE');
+    await whileLocked(async () => {
+      await append(NOTES, 'NOTE-TWO');
+      await append(NOTES, 'NOTE-THREE');
+    });
+
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+    expect(onOrigin(NOTES)).toBe('NOTE-ONE\nNOTE-TWO\nNOTE-THREE\n');
+  });
+
+  it('lands a note kept while another teamai process held the branch before a later note appended to the same file', async () => {
+    await append(NOTES, 'NOTE-ONE');
+    await whileLocked(() => append(NOTES, 'NOTE-TWO'));
+
+    expect(await append(NOTES, 'NOTE-THREE')).toEqual({});
+    expect(onOrigin(NOTES)).toBe('NOTE-ONE\nNOTE-TWO\nNOTE-THREE\n');
+    expect(git(sandbox, '--git-dir', remote, 'log', '-1', '--format=%s', 'teamai-reports')).toBe('[teamai] note: tester');
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+  });
+
+  it('lands a note appended offline after an earlier one origin could not take, and keeps no patch for what it committed', async () => {
+    const away = `${remote}.away`;
+    await append(NOTES, 'NOTE-ONE');
+    fs.renameSync(remote, away);
+
+    expect(await append(NOTES, 'NOTE-TWO')).toMatchObject({ message: expect.stringMatching(/Run teamai score --push to publish it\.$/) });
+    expect(await append(NOTES, 'NOTE-THREE')).toMatchObject({ message: expect.stringMatching(/Run teamai score --push to publish it\.$/) });
+    expect(await DataBranches.kept(config, 'teamai-reports')).toEqual([]);
+    fs.renameSync(away, remote);
+
+    expect(await DataBranches.sendPending(config)).toEqual([]);
+    expect(onOrigin(NOTES)).toBe('NOTE-ONE\nNOTE-TWO\nNOTE-THREE\n');
   });
 
   it('pushes nothing for an http team repo', async () => {

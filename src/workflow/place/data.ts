@@ -5,7 +5,8 @@
  * reached origin meanwhile, as every other teamai-reports writer does. A step stages only the member's own files: those
  * whose second path segment, less its extension, is the member's username, such as `scores/<member>/2026-11.jsonl` or
  * `votes/<member>.yaml`. A place that cannot be made, or a publish that cannot land, leaves the data pending and the step
- * succeeds. What the step staged and could not land is kept as a patch that `DataBranches.pushPending` sends later.
+ * succeeds. What the step staged is kept as a patch behind the others kept for that branch, all committed there in order;
+ * one that did not land stays kept for `DataBranches.pushPending`.
  *
  *   <runsDir>/<run>/data/<attempt>/    the checkout, made again by every prepare and removed once the step finished
  */
@@ -14,6 +15,7 @@ import path from 'node:path';
 import { usesBranchWorktree, type DataBranch, type LocalConfig } from '../../types.js';
 import { failureReason, gitRoot, type PublishResult } from '../../utils/branch-worktree.js';
 import { DataBranches } from '../../utils/data-branches.js';
+import { commitSkippingHooks, createGit } from '../../utils/git.js';
 import { runsDir, type AttemptId, type RunId } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
 import type { DataAt } from './record.js';
@@ -34,8 +36,8 @@ export async function removeDataCheckout(config: LocalConfig, dir: string): Prom
 
 /**
  * Makes the checkout `step` of `run` runs in for `attempt`: origin's tip of `branch` as the member's persistent checkout
- * fetched it just now, else as it last did, else the branch this machine made and has not pushed yet. Without any, the
- * step runs in an empty directory and its data stays pending.
+ * fetched it just now, else as it last did, with the commits that checkout holds and origin does not yet, then the patches
+ * kept for `branch`. Without any tip, the step runs in an empty directory and its data stays pending.
  */
 export async function openDataCheckout(input: { config: LocalConfig; run: RunId; attempt: AttemptId; branch: DataBranch }): Promise<{ dir: string; at: DataAt }> {
   const { config, branch } = input;
@@ -59,22 +61,40 @@ export async function openDataCheckout(input: { config: LocalConfig; run: RunId;
   }
 
   const repo = gitRoot(config);
-  let base = '';
 
-  for (const ref of [`refs/remotes/origin/${branch}`, `refs/heads/${branch}`]) {
+  const tipOf = async (ref: string): Promise<string> => {
     const found = await git(repo, ['rev-parse', '--verify', '-q', `${ref}^{commit}`]);
 
-    if (found.code === 0) {
-      base = found.stdout.trim();
-      break;
-    }
-  }
+    return found.code === 0 ? found.stdout.trim() : '';
+  };
+
+  const [origin, local] = await Promise.all([tipOf(`refs/remotes/origin/${branch}`), tipOf(`refs/heads/${branch}`)]);
+  const holdsOrigin = local !== '' && (origin === '' || (await git(repo, ['merge-base', '--is-ancestor', origin, local])).code === 0);
+  const base = holdsOrigin ? local : origin;
 
   if (base === '') return unavailable(`neither origin nor this machine has ${branch} yet`);
   await fs.mkdir(path.dirname(dir), { recursive: true });
   const added = await git(repo, ['worktree', 'add', '-q', '--detach', '--', dir, base]);
 
-  return added.code === 0 ? { dir, at: { kind: 'checkout', base } } : unavailable(`git could not check out ${branch}: ${said(added)}`);
+  return added.code === 0 ? { dir, at: { kind: 'checkout', base: await withKept({ config, branch, dir, base }) } } : unavailable(`git could not check out ${branch}: ${said(added)}`);
+}
+
+/**
+ * Commits on the checkout at `dir` the patches kept for `branch` that apply there, oldest first, so the step sees its
+ * pending data and what it stages is cut after it. Answers the commit the step's changes are read against, `base` when
+ * none applied.
+ */
+async function withKept({ config, branch, dir, base }: { config: LocalConfig; branch: DataBranch; dir: string; base: string }): Promise<string> {
+  let applied = false;
+
+  for (const file of await DataBranches.kept(config, branch)) {
+    if ((await git(dir, ['apply', '--index', '--binary', file])).code === 0) applied = true;
+  }
+
+  if (!applied) return base;
+  await commitSkippingHooks(createGit(dir), `[teamai] Pending ${branch} data`, undefined, { identityFallback: true });
+
+  return (await git(dir, ['rev-parse', 'HEAD'])).stdout.trim();
 }
 
 /** The member a path of a data branch belongs to: its second segment, less the extension of a file at that depth. */
@@ -140,35 +160,24 @@ export async function finishDataCheckout(input: { config: LocalConfig; dir: stri
     // The checkout is <runs>/<run>/data/<attempt>; the time first keeps patches in the order they were made.
     const name = `${String(Date.now()).padStart(15, '0')}-${path.basename(path.dirname(path.dirname(dir)))}-${path.basename(dir)}`;
 
-    return await land({ config, step, branch, files: entries.filter((_, index) => index % 2 === 1), patch: { name, text: patch.stdout } });
+    return await land({ config, step, branch, patch: { name, text: patch.stdout } });
   } finally {
     await removeDataCheckout(config, dir);
   }
 }
 
 /**
- * Applies `patch`, which changes `files`, to the member's persistent checkout of `branch`, and pushes it. A patch that
- * did not land is kept for the next send; one committed here and not pushed is then found on the checkout and dropped.
+ * Keeps `patch` behind the patches kept for `branch`, then commits them all, in order, to the member's persistent checkout
+ * of it and pushes. A patch that did not land stays kept for the next send.
  */
-async function land(input: { config: LocalConfig; step: string; branch: DataBranch; files: string[]; patch: { name: string; text: string } }): Promise<{ message?: string }> {
-  const { config, step, branch, files, patch } = input;
-  let conflict: string | undefined;
+async function land(input: { config: LocalConfig; step: string; branch: DataBranch; patch: { name: string; text: string } }): Promise<{ message?: string }> {
+  const { config, step, branch, patch } = input;
+  const file = await DataBranches.keep(config, branch, { name: patch.name, patch: patch.text });
+  const { result, stuck } = await DataBranches.send(config, branch, { file, message: `[teamai] ${step}: ${config.username}` });
+  const conflict = stuck.find((kept) => kept.file === file);
+  const why = conflict !== undefined ? `${branch} on origin changed what it staged: ${conflict.error}` : pendingReason(result, branch);
 
-  const published = await DataBranches.checkout(branch).update(config, async (worktree) => {
-    const applied = await git(worktree, ['apply', '--index', '--binary', '-'], { input: patch.text });
-
-    if (applied.code === 0) return { files, message: `[teamai] ${step}: ${config.username}` };
-    conflict = said(applied);
-
-    return null;
-  });
-
-  const why = conflict !== undefined ? `${branch} on origin changed what it staged: ${conflict}` : pendingReason(published, branch);
-
-  if (why === undefined) return {};
-  await DataBranches.keep(config, branch, { name: patch.name, patch: patch.text });
-
-  return pending(step, why);
+  return why === undefined ? {} : pending(step, why);
 }
 
 /** Why a publish leaves its data on this machine, or undefined when origin has it. */
