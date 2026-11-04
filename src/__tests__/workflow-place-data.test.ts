@@ -79,6 +79,16 @@ async function append(file: string, line: string) {
   return finishDataCheckout({ config, dir: opened.dir, step: 'note', branch: 'teamai-reports', at: opened.at });
 }
 
+/** Another machine of this member sets `file` on origin to `text`. */
+function onAnotherMachine(file: string, text: string): void {
+  const other = path.join(sandbox, 'other');
+  if (!fs.existsSync(other)) git(sandbox, 'clone', '-q', '--branch', 'teamai-reports', remote, other);
+  git(other, 'pull', '-q', '--ff-only');
+  fs.writeFileSync(path.join(other, file), text);
+  git(other, 'commit', '-qam', 'another machine');
+  git(other, 'push', '-q', 'origin', 'teamai-reports');
+}
+
 async function whileLocked<T>(action: () => Promise<T>): Promise<T> {
   const lock = path.join(path.dirname(config.repo.localPath), '.reports-lock');
   await DataBranches.checkout('teamai-reports').refresh(config);
@@ -316,6 +326,26 @@ describe('DataBranches.pushPending', () => {
     expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.any(String) }]);
     expect(onOrigin('votes/bob.yaml')).toBe('up: 1\n');
     expect(onOrigin('scores/bob/2026-11.jsonl')).toBe('{"bob":3}\n');
+  });
+
+  it('keeps a note that repeats a line the file holds elsewhere when origin changed the lines it follows', async () => {
+    await append(NOTES, 'Mon: fixed CI.');
+    await append(NOTES, 'No blockers.');
+    await append(NOTES, 'Tue: paired.');
+    await whileLocked(() => append(NOTES, 'No blockers.'));
+    onAnotherMachine(NOTES, 'Mon: fixed CI.\nNo blockers.\nTue: paired on the flaky test.\n');
+
+    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.any(String) }]);
+    expect(await DataBranches.kept(config, 'teamai-reports')).toHaveLength(1);
+  });
+
+  it('keeps a note that appends a second copy of the line it follows when origin changed the lines before it', async () => {
+    await append(NOTES, 'Paired on the flaky test.');
+    await whileLocked(() => append(NOTES, 'Paired on the flaky test.'));
+    onAnotherMachine(NOTES, 'Mon:\nPaired on the flaky test.\n');
+
+    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.any(String) }]);
+    expect(await DataBranches.kept(config, 'teamai-reports')).toHaveLength(1);
   });
 
   it('pushes nothing for an http team repo', async () => {
