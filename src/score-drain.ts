@@ -250,24 +250,30 @@ async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finis
 
   if (unavailable) log.warn(unavailable);
   const decided = await driveByDefault(config);
-  const started = await startHere(config, { mode, awaits: 'awaits' in decided ? { driver: decided.awaits } : undefined }, finished);
+  const started = await startHere(config, { mode, awaits: decided.kind === 'awaits' ? { driver: decided.driver } : undefined }, finished);
 
   if (!started) return finished;
 
-  if ('awaits' in decided) {
-    finished.awaiting.push({ run: started.run, driver: decided.awaits });
+  switch (decided.kind) {
+    case 'awaits':
+      finished.awaiting.push({ run: started.run, driver: decided.driver });
 
-    return finished;
-  }
+      return finished;
+    case 'unassigned':
+      finished.unassigned.push(started.run);
 
-  if ('unassigned' in decided) {
-    finished.unassigned.push(started.run);
+      return finished;
+    case 'drive':
+      break;
+    default: {
+      const unhandled: never = decided;
 
-    return finished;
+      return unhandled;
+    }
   }
 
   const team = await loadTeamConfig(config.repo.localPath);
-  const driven = await driveRun(config, started.run, decided.drive, { cwd: started.cwd, options: { toolPaths: team?.toolPaths } });
+  const driven = await driveRun(config, started.run, decided.driver, { cwd: started.cwd, options: { toolPaths: team?.toolPaths } });
   const ran = await readRun(config, started.run);
 
   if (ran === 'missing' || ran === 'corrupt') finished.broke.push(`Run ${started.run} of ${FINISHED_WORKFLOW} could not be read after it was driven (${ran}).`);

@@ -80,7 +80,7 @@ The finished-sessions hook, `teamai score --drain` and `teamai score` decide thr
 ```
 parseDriver(name) -> local | skill | none | { external: name }
 drivesHere(config, name) -> Promise<boolean>        // local: yes; anything else: no, until definitions are resolved
-driveByDefault(config) -> Promise<{ drive: name } | { awaits: name } | { unassigned: true }>   // unassigned: none
+driveByDefault(config) -> Promise<{ kind: drive | awaits, driver: name } | { kind: unassigned }>   // unassigned: none
 driveRun(config, run, name)                         // the one way --drain and score drive a run; the hook passes --driver <name>
 ```
 

@@ -202,7 +202,7 @@ vi.mock('../project-agent-root.js', () => ({
 const mockBackgroundPassScopes = vi.fn().mockResolvedValue([]);
 const mockStartFinished = vi.fn();
 vi.mock('../session-flow/finished-sessions.js', () => ({ FinishedSessions: { backgroundScopes: mockBackgroundPassScopes, start: mockStartFinished } }));
-const mockDriveByDefault = vi.fn().mockResolvedValue({ drive: 'local' });
+const mockDriveByDefault = vi.fn().mockResolvedValue({ kind: 'drive', driver: 'local' });
 vi.mock('../default-driver.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../default-driver.js')>()), driveByDefault: mockDriveByDefault }));
 vi.mock('../env-resolution.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../env-resolution.js')>()), resolveWorkflowEnv: vi.fn().mockResolvedValue({}) }));
 const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn(() => ({ on: vi.fn().mockReturnThis(), unref: vi.fn() })) }));
@@ -577,7 +577,7 @@ describe('hook-handlers registry', () => {
     const handler = sessionStartPull();
     const user = { ...scope, dataHome: '/data/user' };
     mockBackgroundPassScopes.mockResolvedValueOnce([scope, user]);
-    mockDriveByDefault.mockResolvedValueOnce({ awaits: 'acme-sandbox' }).mockResolvedValueOnce({ unassigned: true });
+    mockDriveByDefault.mockResolvedValueOnce({ kind: 'awaits', driver: 'acme-sandbox' }).mockResolvedValueOnce({ kind: 'unassigned' });
     mockStartFinished.mockResolvedValueOnce({ kind: 'started', run: 'r1111111111111111', cwd: '/data/project' })
       .mockResolvedValueOnce({ kind: 'started', run: 'r2222222222222222', cwd: '/data/user' });
     mockStartFinished.mockClear();

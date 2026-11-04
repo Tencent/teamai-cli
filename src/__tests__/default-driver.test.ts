@@ -73,13 +73,13 @@ describe('driveByDefault', () => {
   it('drives here on the local driver when no level sets workflows.driver', async () => {
     const config = await workspace('');
 
-    expect(await driveByDefault(config)).toEqual({ drive: 'local' });
+    expect(await driveByDefault(config)).toEqual({ kind: 'drive', driver: 'local' });
   });
 
   it('awaits the driver the team sets, which this machine does not run', async () => {
     const config = await workspace('', 'workflows: { driver: acme-sandbox }\n');
 
-    expect(await driveByDefault(config)).toEqual({ awaits: 'acme-sandbox' });
+    expect(await driveByDefault(config)).toEqual({ kind: 'awaits', driver: 'acme-sandbox' });
   });
 
   it('takes the member\'s machine setting over the team\'s, and the workspace\'s own over both', async () => {
@@ -87,14 +87,14 @@ describe('driveByDefault', () => {
     const machine = await workspace('', 'workflows: { driver: acme }\n');
     const own = await workspace('workflows: { driver: beta }\n', 'workflows: { driver: acme }\n');
 
-    expect(await driveByDefault(machine)).toEqual({ drive: 'local' });
-    expect(await driveByDefault(own)).toEqual({ awaits: 'beta' });
+    expect(await driveByDefault(machine)).toEqual({ kind: 'drive', driver: 'local' });
+    expect(await driveByDefault(own)).toEqual({ kind: 'awaits', driver: 'beta' });
   });
 
   it('leaves the run to any driver with none', async () => {
     const config = await workspace('workflows: { driver: none }\n', 'workflows: { driver: acme }\n');
 
-    expect(await driveByDefault(config)).toEqual({ unassigned: true });
+    expect(await driveByDefault(config)).toEqual({ kind: 'unassigned' });
   });
 
   it.each([
@@ -108,7 +108,7 @@ describe('driveByDefault', () => {
 
     const { value: decided, warnings } = await warned(() => driveByDefault(config));
 
-    expect(decided).toEqual({ awaits: 'gamma' });
+    expect(decided).toEqual({ kind: 'awaits', driver: 'gamma' });
     expect(warnings).toEqual([`Ignoring workflows.driver in ${machineFile()}: ${why}.`]);
   });
 });

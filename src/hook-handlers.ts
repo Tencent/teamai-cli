@@ -430,7 +430,7 @@ async function startFinishedSessions(config: LocalConfig): Promise<void> {
 
   try {
     const decided = await driveByDefault(config);
-    const awaits = 'awaits' in decided ? { driver: decided.awaits } : undefined;
+    const awaits = decided.kind === 'awaits' ? { driver: decided.driver } : undefined;
     const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode: resolveRunMode(process.env), awaits });
 
     switch (started.kind) {
@@ -442,7 +442,7 @@ async function startFinishedSessions(config: LocalConfig): Promise<void> {
       case 'idle':
         return;
       case 'started':
-        if ('drive' in decided) await spawnDetachedResume(started.run, { driver: decided.drive, cwd: started.cwd, env: withoutAgentEvidence(process.env) });
+        if (decided.kind === 'drive') await spawnDetachedResume(started.run, { driver: decided.driver, cwd: started.cwd, env: withoutAgentEvidence(process.env) });
         else if (awaits) log.debug(`hook-dispatch: ${awaitsLine(started.run, awaits.driver)}`);
 
         return;

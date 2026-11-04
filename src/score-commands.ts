@@ -301,11 +301,11 @@ async function startScore(start: ScoreStart, driver: string | undefined): Promis
   const { named } = start;
   const inputs = { subject: Subject.format(named.subject), scorers: start.scorers, label: start.label ?? '', batch: start.batch, demand: 'named' };
   const decided = driver === undefined ? await driveByDefault(named.config) : undefined;
-  const chosen = decided === undefined ? driver : 'drive' in decided ? decided.drive : undefined;
+  const chosen = decided === undefined ? driver : decided.kind === 'drive' ? decided.driver : undefined;
 
   await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
     scope: named.config,
-    awaits: decided && 'awaits' in decided ? decided.awaits : undefined,
+    awaits: decided?.kind === 'awaits' ? decided.driver : undefined,
     instead: insteadOf(start, driver),
     answer: async (config, runId, driven) => {
       const answered = await ScoreAnswer.of(config, runId, driven, start.scorers);

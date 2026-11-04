@@ -15,7 +15,7 @@ import { DriverNameSchema, parseDriver, type Driver, type DriverName } from './w
 const LOCAL = DriverNameSchema.parse('local');
 
 /** What a start decides by default: drive the run here, leave it awaiting a driver this machine does not run, or leave it to any driver. */
-export type DefaultDrive = { drive: DriverName } | { awaits: DriverName } | { unassigned: true };
+export type DefaultDrive = { kind: 'drive' | 'awaits'; driver: DriverName } | { kind: 'unassigned' };
 
 /** A default driver, the name it is written as, and the file that set it: none for `local` when no level sets one. */
 export interface ResolvedDefaultDriver { driver: Exclude<Driver, 'skill'>; text: string; file?: string }
@@ -59,10 +59,10 @@ export async function drivesHere(_config: LocalConfig, name: DriverName): Promis
 export async function driveByDefault(config: LocalConfig): Promise<DefaultDrive> {
   const { driver } = await resolveDefaultDriver(config);
 
-  if (driver === 'none') return { unassigned: true };
+  if (driver === 'none') return { kind: 'unassigned' };
   const name = driver === 'local' ? LOCAL : driver.external;
 
-  return await drivesHere(config, name) ? { drive: name } : { awaits: name };
+  return { kind: await drivesHere(config, name) ? 'drive' : 'awaits', driver: name };
 }
 
 /** What a command says of run `run`, which it started awaiting driver `driver`. */
