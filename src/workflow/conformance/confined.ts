@@ -56,6 +56,25 @@ function evidence(confined: string): ConformanceOperation[] {
   ];
 }
 
+/** `JUDGE` whose evidence step builds its directory from files an earlier step left under `$TEAMAI_RUN_DIR`. */
+const JUDGE_PREPARED = JUDGE.replace('    model: confined-judge\n', '').replace('  - id: evidence\n    command: ./evidence.sh\n', '  - id: prepare\n    command: ./prepare.sh\n  - id: evidence\n    needs: [prepare]\n    command: ./evidence.sh\n');
+
+/** Runs JUDGE_PREPARED until `step` fails and the run ends, then retries `step` and expects `prepare` to run again. */
+function retriedAfterEnd(step: 'evidence' | 'judge'): ConformanceOperation[] {
+  const failed: ConformanceOperation = { kind: 'report', lease: step, body: { outcome: 'failed' }, expect: { data: { step: { id: step, status: 'failed' } } } };
+
+  return [
+    { kind: 'next', saveAs: 'prepare', expect: { data: { lease: { step: 'prepare' } } } },
+    { kind: 'report', lease: 'prepare', body: { outcome: 'success' }, expect: { data: { step: { id: 'prepare', status: 'succeeded' } } } },
+    ...step === 'evidence'
+      ? [{ kind: 'next', saveAs: 'evidence', expect: { data: { lease: { step: 'evidence' } } } } satisfies ConformanceOperation, failed]
+      : [...evidence('{"level":"verified"}'), { kind: 'next', saveAs: 'judge', can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'judge' } } } } satisfies ConformanceOperation, failed],
+    { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+    { kind: 'retry', step, expect: { data: { retried: { step }, reopened: true } } },
+    { kind: 'next', saveAs: 'prepare2', expect: { data: { lease: { step: 'prepare', pass: 2 } } } },
+  ];
+}
+
 export const confinedConformanceScenarios: ConformanceScenario[] = [
   {
     name: 'workspace confined: a prepared lease runs in its directory, and no place of the checkout is made for it',
@@ -110,6 +129,20 @@ export const confinedConformanceScenarios: ConformanceScenario[] = [
       status: 'running',
       steps: [{ id: 'plan', status: 'succeeded' }, { id: 'score' }, { id: 'score[0]' }, { id: 'score[0].evidence', status: 'succeeded', pass: 2 }, { id: 'score[0].judge', status: 'leased', pass: 2 }],
     },
+  },
+  {
+    name: 'workspace confined: a retry of the step after its run ended runs again the steps its directory\'s writer needs too',
+    workflowName: 'judge',
+    yaml: JUDGE_PREPARED,
+    operations: retriedAfterEnd('judge'),
+    expectState: { status: 'running', steps: [{ id: 'prepare', status: 'leased', pass: 2 }, { id: 'evidence', status: 'pending' }, { id: 'judge', status: 'pending' }] },
+  },
+  {
+    name: 'workspace confined: a retry of the directory\'s writer after its run ended runs again the steps it needs too',
+    workflowName: 'judge',
+    yaml: JUDGE_PREPARED,
+    operations: retriedAfterEnd('evidence'),
+    expectState: { status: 'running', steps: [{ id: 'prepare', status: 'leased', pass: 2 }, { id: 'evidence', status: 'pending' }, { id: 'judge', status: 'pending' }] },
   },
   {
     name: 'workspace confined: a retry of the step while its run runs keeps the directory, and runs again only the step',

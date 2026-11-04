@@ -131,7 +131,7 @@ A `command` is never filled in. Pass values to it through `env`, which only a co
 
 The command gets these variables on top of its usual environment, so a value such as `$(touch pwned)` stays plain text. Names must match `^[A-Za-z_][A-Za-z0-9_]*$`. A YAML number or boolean is passed as its text. A template inside `command`, `env` on a prompt step, or an `if` or template that reads an input the workflow does not declare makes the file invalid. A template that does not parse or reads something it may not read also leaves the workflow with nothing to run, even when an older version was valid. So does a `.` in a step id or a field name.
 
-Every process a step of the run starts, in a workflow it runs too, gets `TEAMAI_RUN_DIR`: one directory for the whole run, under the TeamAI data directory and outside the checkout. It exists while the run runs and is removed when the run ends, however it ends, so steps can hand each other files there. A retry that reopens the run makes it again, empty, and a `workspace: { confined }` step it runs again takes the steps it `needs` with it, so they write its directory again.
+Every process a step of the run starts, in a workflow it runs too, gets `TEAMAI_RUN_DIR`: one directory for the whole run, under the TeamAI data directory and outside the checkout. It exists while the run runs and is removed when the run ends, however it ends, so steps can hand each other files there. A retry that reopens the run makes it again, empty, and a `workspace: { confined }` step it runs again takes the steps it `needs`, and the steps those need, with it, so they write its directory again.
 
 ```yaml
 schemaVersion: v1alpha1

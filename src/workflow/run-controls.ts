@@ -293,19 +293,23 @@ interface RetryContainer {
   resetStops: boolean;
 }
 
-/** The steps a confined `state` needs, one of which writes its directory under `$TEAMAI_RUN_DIR`; none for another step. */
-function confinedWriters(scope: Scope, states: StepState[], state: StepState): StepState[] {
+/**
+ * The steps `state` needs when it is confined, or when it is one of those itself (`isWriter`): together they write the
+ * confined directory under `$TEAMAI_RUN_DIR`, from files the earlier ones left there. None for another step.
+ */
+function confinedWriters(input: { scope: Scope; states: StepState[]; state: StepState; isWriter: boolean }): StepState[] {
+  const { scope, states, state, isWriter } = input;
   const definition = scope.definition.steps.find((step) => step.id === localId(scope, state));
 
-  if (!(definition?.workspace instanceof Object && 'confined' in definition.workspace)) return [];
-  const needs = new Set(definition.needs);
+  if (!isWriter && !(definition?.workspace instanceof Object && 'confined' in definition.workspace)) return [];
+  const needs = new Set(definition?.needs);
 
   return states.filter((other) => needs.has(localId(scope, other)));
 }
 
 /**
  * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. When the run
- * settled, its `$TEAMAI_RUN_DIR` is gone, so a confined step that runs again takes the steps it needs with it.
+ * settled, its `$TEAMAI_RUN_DIR` is gone, so a confined step that runs again takes the steps it needs, and theirs, with it.
  */
 function retryContainers(run: RunState, target: StepState, scratchRemoved: boolean): RetryContainer[] | WorkflowEnvelope {
   const containers: RetryContainer[] = [];
@@ -319,7 +323,7 @@ function retryContainers(run: RunState, target: StepState, scratchRemoved: boole
     let states: StepState[];
     let runner: StepState | undefined;
     let dependencies: (state: StepState) => StepState[];
-    let writers: (state: StepState) => StepState[] = () => [];
+    let writers: (state: StepState, isWriter: boolean) => StepState[] = () => [];
     let reads: RunReads | undefined;
 
     if (isItem(child)) {
@@ -346,14 +350,20 @@ function retryContainers(run: RunState, target: StepState, scratchRemoved: boole
         return states.filter((other) => ids.has(localId(scope, other)));
       };
 
-      if (scratchRemoved) writers = (state) => confinedWriters(scope, states, state);
+      if (scratchRemoved) writers = (state, isWriter) => confinedWriters({ scope, states, state, isWriter });
     }
 
     const cone = new Set([child]);
+    const written = new Set<StepState>();
 
     for (let changed = true; changed;) {
       changed = false;
-      const written = new Set([...cone].flatMap(writers));
+
+      for (const writer of [...cone].flatMap((state) => writers(state, written.has(state)))) {
+        if (written.has(writer)) continue;
+        written.add(writer);
+        changed = true;
+      }
 
       for (const state of states) {
         if (cone.has(state) || !(written.has(state) || dependencies(state).some((need) => cone.has(need)))) continue;
