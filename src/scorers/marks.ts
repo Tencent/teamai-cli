@@ -250,16 +250,16 @@ async function isExpired(key: MarkKey, requestedAt: string | undefined, { now, r
 }
 
 /**
- * An open mark while its run goes on. Once the run ended before a judge attempt of the group ran, and within 14 days of
- * when the mark first opened, a lapse that counts none; once it ended otherwise or is gone, one more lapse.
+ * An open mark while its run goes on. Once the run ended before a judge attempt of the scorer ran, and while `now` is within
+ * 14 days of when the mark first opened, a lapse that counts none; once it ended otherwise or is gone, one more lapse.
  */
-async function openOrLapsed(line: Extract<Line, { state: 'open' }>, readRun: ReadRun): Promise<Derived> {
+async function openOrLapsed(line: Extract<Line, { state: 'open' }>, { now, readRun }: MarkFacts): Promise<Derived> {
   const run = await readRun(line.run);
 
   if (run?.ended === false) return { state: { kind: 'open', at: line.at, run: line.run, group: line.group, demand: line.demand }, restart: restartOf(line) };
   const firstOpenedAt = line.firstOpenedAt ?? line.at;
 
-  if (run !== undefined && !run.judgeRan(line.subject, line.scorer) && Date.parse(run.changedAt) < Date.parse(firstOpenedAt) + MARK_WINDOW_MS) {
+  if (run !== undefined && !run.judgeRan(line.subject, line.scorer) && Date.parse(now) < Date.parse(firstOpenedAt) + MARK_WINDOW_MS) {
     return { state: { kind: 'lapsed', lapses: line.lapses }, restart: { ...restartOf(line), firstOpenedAt, uncounted: true } };
   }
 
@@ -280,7 +280,7 @@ function failedFields({ code, usage }: { code: JudgeFailureCode; usage?: Confine
 }
 
 /** The mark `line` leaves, before its window. */
-async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<Derived> {
+async function markOf(line: Line | undefined, facts: MarkFacts): Promise<Derived> {
   switch (line?.state) {
     case undefined:
       return { state: { kind: 'unmarked' }, restart: FRESH };
@@ -293,7 +293,7 @@ async function markOf(line: Line | undefined, { readRun }: MarkFacts): Promise<D
     case 'carried':
       return { state: { kind: 'lapsed', lapses: line.lapses }, restart: restartOf(line) };
     case 'open':
-      return openOrLapsed(line, readRun);
+      return openOrLapsed(line, facts);
 
     default: {
       const unhandled: never = line;

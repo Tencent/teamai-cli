@@ -229,6 +229,15 @@ describe('Marks', () => {
     expect(await states(later(21))).toEqual([{ kind: 'lapsed', lapses: 0 }]);
   });
 
+  it('counts a run that ended unjudged within the 14 days as a lapse when it is read after them', async () => {
+    const config = scope();
+    const reader = runs();
+    await launch(config, [session('review')], NOW, { reader });
+    reader.unjudged('score-1', later(1));
+
+    expect(await Marks.states(config, [session('review')], { now: later(30), readRun: reader.readRun })).toEqual([{ kind: 'lapsed', lapses: 1 }]);
+  });
+
   it('counts a lapse as before when the run that launched the mark is gone', async () => {
     const config = scope();
     const reader = runs();
