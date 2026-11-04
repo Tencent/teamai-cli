@@ -12,7 +12,8 @@ import { claimRun, publishRun } from '../workflow/handoff.js';
 import { retryStep } from '../workflow/run-controls.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
 import { runCopyToMerge } from '../workflow/workspace.js';
-import { getReportsDir } from '../types.js';
+import { getReportsDir, REPORTS_LOCK_FILENAME } from '../types.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { fakeGh } from './helpers/fake-gh.js';
 import type { LocalConfig } from '../types.js';
@@ -446,6 +447,47 @@ steps:
     await sweepLeftovers(other.config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: other.cwd });
 
     expect(branches(origin, runId)).toEqual(before);
+  });
+
+  it('leaves a published run alone, with one warning, when teamai-reports cannot be fetched', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const ended = await state(config, runId);
+    const other = await otherInstall(config, root, origin);
+    expect(await claimRun(other.config, runId, { checkout: other.cwd })).toMatchObject({ ok: true });
+    expect(await retryStep(other.config, runId, {}, 'join')).toMatchObject({ data: { reopened: true } });
+    const before = branches(origin, runId);
+    fs.renameSync(config.repo.remote, `${config.repo.remote}.offline`);
+    const warn = vi.spyOn(log, 'warn');
+
+    expect(await sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: cwd })).toMatchObject({ swept: [] });
+
+    expect(branches(origin, runId)).toEqual(before);
+    const skipped = warn.mock.calls.map(([message]) => String(message)).filter((message) => message.includes('teamai-reports'));
+    expect(skipped).toEqual([expect.stringMatching(/^teamai-reports could not be fetched from origin \(.+\), so runs published there are not swept this time\. teamai doctor --fix tries again\.$/)]);
+  });
+
+  it('leaves a published run alone while another teamai process writes teamai-reports', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const ended = await state(config, runId);
+    const before = branches(origin, runId);
+    const lock = path.join(path.dirname(getReportsDir(config)), REPORTS_LOCK_FILENAME);
+    expect(await acquireLock(lock)).toBe(true);
+    const warn = vi.spyOn(log, 'warn');
+
+    try {
+      expect(await sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: cwd })).toMatchObject({ swept: [] });
+    } finally {
+      await releaseLock(lock);
+    }
+
+    expect(branches(origin, runId)).toEqual(before);
+    expect(warn).toHaveBeenCalledWith(`teamai-reports is being written by another teamai process (${lock} is held), so runs published there are not swept this time. teamai doctor --fix tries again.`);
   });
 
   it('keeps every run with workflows.retention never', async () => {

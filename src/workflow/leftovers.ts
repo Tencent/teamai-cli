@@ -328,16 +328,45 @@ async function readSweptRecord(file: string): Promise<{ value: SweptRecord } | {
   }
 }
 
-/** Refreshes teamai-reports from origin, which the run records and snapshots a sweep reads are on; false when it could not. */
+/**
+ * Refreshes teamai-reports from origin, which the run records and snapshots a sweep reads are on. True only once origin
+ * was fetched now: a readable copy as it was is not origin's word that a run settled, so the sweep leaves published runs
+ * alone otherwise, with a warning that names why.
+ */
 async function refreshReports(config: LocalConfig): Promise<boolean> {
   if (!usesBranchWorktree(config)) return true;
-  const { readableReportsWorktree } = await import('../utils/reports-branch.js');
+  const { refreshReportsWorktree } = await import('../utils/reports-branch.js');
+  let refreshed: Awaited<ReturnType<typeof refreshReportsWorktree>>;
 
-  return readableReportsWorktree(config).then(() => true, (cause: unknown) => {
-    log.warn(`teamai-reports was not refreshed (${causeText(cause)}), so runs published there are not swept: what they show may be out of date.`);
+  try {
+    refreshed = await refreshReportsWorktree(config, { pushIfCreated: false });
+  } catch (cause) {
+    log.warn(`teamai-reports could not be refreshed (${causeText(cause)}), so runs published there are not swept this time. teamai doctor --fix tries again.`);
 
     return false;
-  });
+  }
+
+  switch (refreshed.status) {
+    case 'done':
+      return true;
+    case 'unfetched':
+      log.warn(`teamai-reports could not be fetched from origin (${refreshed.reason}), so runs published there are not swept this time. teamai doctor --fix tries again.`);
+
+      return false;
+    case 'busy':
+      log.warn(`teamai-reports is being written by another teamai process (${refreshed.lockPath} is held), so runs published there are not swept this time. teamai doctor --fix tries again.`);
+
+      return false;
+    case 'failed':
+      log.warn(`teamai-reports could not be refreshed (${refreshed.reason}), so runs published there are not swept this time. teamai doctor --fix tries again.`);
+
+      return false;
+    default: {
+      const unhandled: never = refreshed;
+
+      return unhandled;
+    }
+  }
 }
 
 /** The settled run records on teamai-reports, as this machine last refreshed it. */

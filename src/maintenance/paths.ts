@@ -62,6 +62,7 @@ export class SyncLockedError extends Error {
 function assertCheckoutReady(checkout: 'learnings' | 'reports', refreshed: RefreshResult): void {
   switch (refreshed.status) {
     case 'done':
+    case 'unfetched':
       return;
     case 'busy':
       throw new CheckoutLockedError(checkout, refreshed.lockPath);
