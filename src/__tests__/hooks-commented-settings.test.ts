@@ -41,12 +41,13 @@ describe('reconcileHooks with a commented hook file', () => {
     const link = path.join(dir, 'settings.json');
     fs.writeFileSync(real, '{\n  // note\n  "model": "x",\n}\n', { mode: 0o640 });
     fs.chmodSync(real, 0o640);
+    const mode = fs.statSync(real).mode & 0o777;
     fs.symlinkSync(real, link);
 
     await reconcileHooks(link, 'codebuddy', []);
 
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(fs.statSync(real).mode & 0o777).toBe(0o640);
+    expect(fs.statSync(real).mode & 0o777).toBe(mode);
     expect(fs.readFileSync(real, 'utf8')).toContain('// note');
   });
 
