@@ -20,33 +20,42 @@ function keptDir(config: LocalConfig, branch: DataBranch): string {
   return path.join(getDataHome(config), 'data-branches', branch, 'pending');
 }
 
-/** The lines `patch` adds, by file, or undefined for a binary patch, whose content cannot be read that way. */
-function addedLines(patch: string): Map<string, string[]> | undefined {
+type FileChange = { added: string[]; removed: string[] };
+
+/** The lines `patch` adds and removes, by file, or undefined for a binary patch, whose content cannot be read that way. */
+function changedLines(patch: string): Map<string, FileChange> | undefined {
   if (patch.includes('\nGIT binary patch\n')) return undefined;
-  const added = new Map<string, string[]>();
-  let file: string | undefined;
+  const changed = new Map<string, FileChange>();
+  let change: FileChange | undefined;
 
   for (const line of patch.split('\n')) {
-    if (line.startsWith('+++ ')) file = line.startsWith('+++ b/') ? line.slice('+++ b/'.length) : undefined;
-    else if (file !== undefined && line.startsWith('+')) added.set(file, [...added.get(file) ?? [], line.slice(1)]);
+    if (line.startsWith('diff --git ')) change = undefined;
+    else if (line.startsWith('+++ b/')) {
+      change = { added: [], removed: [] };
+      changed.set(line.slice('+++ b/'.length), change);
+    } else if (change !== undefined && line.startsWith('+')) change.added.push(line.slice(1));
+    else if (change !== undefined && line.startsWith('-')) change.removed.push(line.slice(1));
   }
 
-  return added;
+  return changed;
 }
 
-/** Whether every line `patch` adds is already in its file at `worktree`, as when its producer published it again since. */
+/**
+ * Whether the whole of `patch` is already in its files at `worktree`, every line it adds there and every line it removes
+ * gone, as when its producer published it again since.
+ */
 async function isOnBranch(worktree: string, patch: string): Promise<boolean> {
-  const added = addedLines(patch);
+  const changed = changedLines(patch);
 
-  if (added === undefined) return false;
+  if (changed === undefined) return false;
 
-  for (const [file, lines] of added) {
+  for (const [file, { added, removed }] of changed) {
     const text = await fs.readFile(path.join(worktree, file), 'utf8').catch(() => undefined);
 
     if (text === undefined) return false;
     const present = new Set(text.split('\n'));
 
-    if (!lines.every((line) => present.has(line))) return false;
+    if (!added.every((line) => present.has(line)) || removed.some((line) => present.has(line))) return false;
   }
 
   return true;

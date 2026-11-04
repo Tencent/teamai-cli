@@ -227,6 +227,21 @@ describe('DataBranches.pushPending', () => {
     expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":1}\n{"tester":2}\n');
   });
 
+  it('keeps what a busy publish staged to remove a line when origin changed that file so it no longer applies', async () => {
+    const lock = path.join(path.dirname(config.repo.localPath), '.reports-lock');
+    await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n{"tester":2}\n' });
+    expect(await acquireLock(lock)).toBe(true);
+    await publish({ 'scores/tester/2026-11.jsonl': '{"tester":1}\n' }).finally(() => releaseLock(lock));
+    const other = path.join(sandbox, 'other');
+    git(sandbox, 'clone', '-q', '--branch', 'teamai-reports', remote, other);
+    fs.writeFileSync(path.join(other, 'scores', 'tester', '2026-11.jsonl'), '{"tester":0}\n{"tester":2}\n');
+    git(other, 'commit', '-qam', 'another machine');
+    git(other, 'push', '-q', 'origin', 'teamai-reports');
+
+    expect(await DataBranches.sendPending(config)).toEqual([{ branch: 'teamai-reports', message: expect.stringMatching(/no longer applies; it is kept in .+data-branches\/teamai-reports\/pending\.$/) }]);
+    expect(onOrigin('scores/tester/2026-11.jsonl')).toBe('{"tester":0}\n{"tester":2}\n');
+  });
+
   it('pushes nothing for an http team repo', async () => {
     expect(await DataBranches.pushPending({ ...config, repo: { ...config.repo, kind: 'http' } })).toEqual([]);
   });
