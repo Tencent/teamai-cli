@@ -1050,7 +1050,7 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 可选审批和选择按本人在启动时选的方式回答。启动问题会说明每一个守着什么：它之前的命令、prompt 步骤、工作流或 end，或者等它的步骤；选择则说明它的选项和默认值。命令只显示第一行，超过 80 个字符的部分会截掉。例如：
 
 ```text
-- Optional approval at contribute: before `teamai --env-args contribute --file @FILE --title @TITLE --namespace @NS --sessi…`.
+- Optional approval at contribute: before `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id…`.
 - The recommended start lets this session's agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.
 ```
 
@@ -1318,6 +1318,6 @@ steps:
     needs: [learning, approve]
     if: steps.approve.outcome == 'success'
     for_each: steps.learning.outputs.learnings
-    command: teamai --env-args contribute --file @FILE --title @TITLE --namespace @NS --session-id @SESSION
+    command: teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id "$SESSION"
     env: { FILE: "{{ item.file }}", TITLE: "{{ item.title }}", NS: "{{ item.namespace }}", SESSION: "{{ inputs.session }}" }
 ```
