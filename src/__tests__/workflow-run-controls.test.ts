@@ -437,7 +437,7 @@ describe('retry after the run dir was removed', () => {
     expect(data(await f.next()).lease).toMatchObject({ step: 'evidence' });
   });
 
-  it('runs again what a second retried step reads in the run dir when the first retry already reopened the run', async () => {
+  it('runs again what a second retried step reads in the run dir when the first retry reopened the run and a step ran since', async () => {
     const pair = (n: number) => `  - id: evidence${n}\n    needs: []\n    command: echo evidence\n    output: { dir: string }\n  - id: label${n}\n    needs: [evidence${n}]\n    command: echo label\n    env: { DIR: "{{ steps.evidence${n}.outputs.dir }}" }\n`;
     const f = await fixture(`${pair(1)}${pair(2)}`.trimEnd());
     const runDir = runScratchDir(f.config, f.id);
@@ -454,6 +454,10 @@ describe('retry after the run dir was removed', () => {
     expect(data(await f.next()).done.outcome).toBe('failed');
 
     expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'label1'))).toMatchObject({ retried: { runsAgain: ['evidence1'] }, reopened: true });
+    const again = data(await f.next()).lease;
+    fs.mkdirSync(path.join(runDir, 'one'), { recursive: true });
+    data(await reportAttempt(f.config, f.id, { attempt: again.attempt, revision: again.revision, driver, outcome: 'success', outputs: { dir: path.join(runDir, 'one') } }));
+
     expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'label2'))).toMatchObject({ retried: { runsAgain: ['evidence2'] }, reopened: false });
   });
 

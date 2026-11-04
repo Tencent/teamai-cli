@@ -330,24 +330,25 @@ function confinedWriters(input: { scope: Scope; states: StepState[]; state: Step
 }
 
 /**
- * Whether `value`, or a string inside it, is an absolute path inside `dir`. Compared as written: `dir` was removed,
- * so it has no real path to resolve.
+ * Whether `value`, or a string inside it, is an absolute path inside `dir` that is gone. Compared as written: `dir` may
+ * be removed, so it has no real path to resolve.
  */
-function holdsPathIn(value: JsonValue | undefined, dir: string): boolean {
-  if (Array.isArray(value)) return value.some((entry) => holdsPathIn(entry, dir));
+function holdsGonePathIn(value: JsonValue | undefined, dir: string): boolean {
+  if (Array.isArray(value)) return value.some((entry) => holdsGonePathIn(entry, dir));
 
-  if (isJsonObject(value)) return Object.values(value).some((entry) => holdsPathIn(entry, dir));
+  if (isJsonObject(value)) return Object.values(value).some((entry) => holdsGonePathIn(entry, dir));
   const text = z.string().safeParse(value).data;
 
   if (text === undefined || !path.isAbsolute(text)) return false;
   const relative = path.relative(dir, text);
 
-  return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`);
+  return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !fs.existsSync(text);
 }
 
 /**
- * The steps whose outputs `state`'s templates render where they hold a path inside `runDir`, the `$TEAMAI_RUN_DIR`
- * its run's end removed. A read only in `if` renders nothing, so it brings no step.
+ * The steps whose outputs `state`'s templates render where they hold a path inside `runDir`, the run's
+ * `$TEAMAI_RUN_DIR`, that is gone: its run's end removed it, and a step that ran since a retry reopened the run brought
+ * back only its own. A read only in `if` renders nothing, so it brings no step.
  */
 function runDirProducers(input: { scope: Scope; states: StepState[]; state: StepState; runDir: string }): StepState[] {
   const { scope, states, state, runDir } = input;
@@ -365,18 +366,18 @@ function runDirProducers(input: { scope: Scope; states: StepState[]; state: Step
   });
 
   const producers = new Set(reads.flatMap((read) => (
-    read.root === 'steps' && read.field === 'outputs' && read.step !== id && holdsPathIn(pathValue(read, context), runDir) ? [read.step] : []
+    read.root === 'steps' && read.field === 'outputs' && read.step !== id && holdsGonePathIn(pathValue(read, context), runDir) ? [read.step] : []
   )));
 
   return states.filter((other) => producers.has(localId(scope, other)));
 }
 
 /**
- * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. When the run
- * settled, its `$TEAMAI_RUN_DIR`, `removedRunDir`, is gone, so a confined step that runs again takes the steps it needs,
- * and a step that runs again takes the steps whose outputs its templates read as paths there, and theirs, with it.
+ * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. A step that runs
+ * again takes the steps whose outputs its templates read as paths in the run's `$TEAMAI_RUN_DIR` that are gone, and
+ * theirs, with it; once the run dir is gone, or such a path is, a confined step that runs again takes the steps it needs.
  */
-function retryContainers(run: RunState, target: StepState, removedRunDir: string | undefined): RetryContainer[] | WorkflowEnvelope {
+function retryContainers(run: RunState, target: StepState, runDir: { path: string; isGone: boolean }): RetryContainer[] | WorkflowEnvelope {
   const containers: RetryContainer[] = [];
   let child = target;
 
@@ -415,9 +416,11 @@ function retryContainers(run: RunState, target: StepState, removedRunDir: string
         return states.filter((other) => ids.has(localId(scope, other)));
       };
 
-      if (removedRunDir !== undefined) {
-        writers = (state, isWriter) => [...confinedWriters({ scope, states, state, isWriter }), ...runDirProducers({ scope, states, state, runDir: removedRunDir })];
-      }
+      writers = (state, isWriter) => {
+        const producers = runDirProducers({ scope, states, state, runDir: runDir.path });
+
+        return [...runDir.isGone || isWriter || producers.length > 0 ? confinedWriters({ scope, states, state, isWriter }) : [], ...producers];
+      };
     }
 
     const cone = new Set([child]);
@@ -574,7 +577,7 @@ function retryTarget(config: LocalConfig, run: RunState, step: string): { target
 
   // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun, and a retry that reopened it brings none back.
   const runDir = runScratchDir(config, run.id);
-  const containers = retryContainers(run, target, run.status !== 'running' || !fs.existsSync(runDir) ? runDir : undefined);
+  const containers = retryContainers(run, target, { path: runDir, isGone: run.status !== 'running' || !fs.existsSync(runDir) });
 
   return Array.isArray(containers) ? { target, containers } : containers;
 }
