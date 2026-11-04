@@ -673,7 +673,7 @@ A team `workflows/teamai-score.yaml` replaces teamai's for whoever receives it. 
         - id: judge
           prompt: |
             Judge this change for our team, strictly. The rubric is in {{ steps.evidence.outputs.rubric }}.
-            Answer with the schema in {{ steps.evidence.outputs.schema }}.
+            Reply with {"answer": <the answer>}, where the answer matches the schema in {{ steps.evidence.outputs.schema }}.
 ```
 
 Pull refuses a file that changes what a label means, and teamai's default runs instead:
