@@ -1389,7 +1389,7 @@ export async function startRun(
   name: string,
   // oxlint-disable-next-line teamai/no-unknown-parameters -- the parse boundary: start's inputs as the CLI or a driver sent them, checked here first
   inputs: unknown,
-  { secrets, ...options }: { secrets: Record<string, string>; runMode?: RunMode; startedBy?: StartedBy; driver?: DriverIdentity; base?: RunState['base']; checkout?: string; timeout?: number; alone?: DriverCan },
+  { secrets, ...options }: { secrets: Record<string, string>; runMode?: RunMode; startedBy?: StartedBy; awaits?: RunState['awaits']; driver?: DriverIdentity; base?: RunState['base']; checkout?: string; timeout?: number; alone?: DriverCan },
 ): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
 
@@ -1436,7 +1436,7 @@ export async function startRun(
  */
 export async function createRun(
   config: LocalConfig,
-  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'startedBy' | 'definition' | 'workflows' | 'base' | 'checkout' | 'timeout'>
+  { secrets, driver, alone, ...input }: Pick<RunState, 'name' | 'inputs' | 'sourceHash' | 'teamRevision' | 'runMode' | 'startedBy' | 'awaits' | 'definition' | 'workflows' | 'base' | 'checkout' | 'timeout'>
     & Required<Pick<RunState, 'origin'>> & { secrets: Record<string, string>; driver?: DriverIdentity; alone?: DriverCan },
 ): Promise<WorkflowEnvelope> {
   const workflows = input.workflows ?? {};
@@ -1466,6 +1466,7 @@ export async function createRun(
     runMode: input.runMode,
     origin: input.origin,
     startedBy: input.startedBy,
+    awaits: input.awaits,
     driver,
     definition: input.definition,
     workflows: Object.keys(workflows).length > 0 ? workflows : undefined,

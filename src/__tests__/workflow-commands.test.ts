@@ -207,6 +207,17 @@ describe('workflow next, report, start and resume without --driver skill', () =>
   });
 });
 
+describe('workflow start and resume --driver', () => {
+  it.each(['acme-sandbox', 'fleet', 'none', 'acme sandbox'])('refuses --driver %s, which no driver of this machine is', async (named) => {
+    state.config = testConfig();
+    const refused = { error: { code: 'unsupported_driver', message: `Driver "${named}" is not available. Use --driver local or --driver skill.` } };
+
+    expect(await capture(() => workflowStart('mark', { driver: named }))).toEqual(refused);
+    expect(await capture(() => workflowResume('r00000000', { driver: named }))).toEqual(refused);
+    expect(await capture(() => workflowResume(undefined, { driver: named, next: true }))).toEqual(refused);
+  });
+});
+
 describe('workflow start --inputs', () => {
   function inputsConfig(): LocalConfig {
     const config = testConfig();

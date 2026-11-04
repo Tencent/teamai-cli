@@ -101,9 +101,9 @@ export interface WorkflowClient {
    * the run's only driver, gives strict requirements; a step it could never take refuses the start, `requirement_unmet`.
    * The run records an agent as its starter when `caller` has agent evidence, else `startedBy`: `cli` for one of the
    * CLI's own automatic starts, `person` for a start a person asked for. `driver`: the driver the run is recorded for
-   * from its start.
+   * from its start. `awaits`: the driver `workflows.driver` names, which this machine does not run.
    */
-  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy: 'person' | 'cli'; driver?: DriverIdentity; instead?: string }): Promise<WorkflowEnvelope>;
+  start(name: string, options: { inputs?: unknown; checkout?: string; caller: InvokeCaller; timeout?: number; alone?: DriverCan; startedBy: 'person' | 'cli'; driver?: DriverIdentity; awaits?: RunState['awaits']; instead?: string }): Promise<WorkflowEnvelope>;
   /**
    * Asks the run what to do. With `prepare`, a lease comes with `cwd`, its place in the checkout the run started from,
    * made under the run's lock, and a prepare that fails settles the attempt `failed` with its own code.
@@ -328,7 +328,7 @@ export async function resumeRefusal(
  * Starts `name` as one of the CLI's own automatic starts, in run mode `mode`: with no agent evidence, so no agent gave its
  * inputs, and recorded as started by `cli`, which hand labels and policy overrides never trust as a person.
  */
-export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: { inputs: unknown; checkout?: string; driver?: DriverIdentity; mode: RunMode }): Promise<WorkflowEnvelope> {
+export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: { inputs: unknown; checkout?: string; driver?: DriverIdentity; awaits?: RunState['awaits']; mode: RunMode }): Promise<WorkflowEnvelope> {
   return client.start(name, { ...options, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli' });
 }
 
@@ -878,7 +878,7 @@ async function prepareLeased(input: { config: LocalConfig; lock: RunLock; driver
 
 /** `WorkflowClient.start`: starts workflow `name` when its `invoke` lets `caller` start it. */
 async function startNamed({ config, secrets }: { config: LocalConfig; secrets: Record<string, string> }, name: string, options: Parameters<WorkflowClient['start']>[1]): Promise<WorkflowEnvelope> {
-  const { inputs, checkout, caller, timeout, alone, startedBy, driver, instead } = options;
+  const { inputs, checkout, caller, timeout, alone, startedBy, driver, awaits, instead } = options;
   const cached = await loadCachedWorkflow(config, name);
   const refused = invokeRefusal(cached?.definition, caller, { kind: 'start', instead });
 
@@ -886,7 +886,7 @@ async function startNamed({ config, secrets }: { config: LocalConfig; secrets: R
   const base = checkout === undefined ? undefined : await headCommit(checkout);
 
   return startRun(config, name, inputs ?? {}, {
-    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', driver, checkout, base, timeout, alone,
+    secrets, runMode: caller.mode, startedBy: caller.evidence.kind === 'none' ? startedBy : 'agent', awaits, driver, checkout, base, timeout, alone,
   });
 }
 

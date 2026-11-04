@@ -18,6 +18,8 @@ import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retryStep } from './workflow/run-controls.js';
 import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
+import { awaitsLine } from './default-driver.js';
+import { DriverNameSchema, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema, type RunId } from './workflow/store.js';
@@ -33,6 +35,8 @@ import { planBenchmark, planStep, tryBenchmarkTask } from './benchmark/start.js'
 import { reportBenchmark } from './benchmark/report.js';
 import { runCheckStep } from './benchmark/trial.js';
 import type { RunState, WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
+
+const LOCAL_DRIVER = DriverNameSchema.parse('local');
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
 function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, string>): void {
@@ -409,6 +413,8 @@ export interface ShortcutStart {
   /** What the person and the agent run in place of the shortcut, when an agent session's start is refused. */
   instead?: string;
   answer?: (config: LocalConfig, runId: string, driven: WorkflowEnvelope) => Promise<WorkflowEnvelope | undefined>;
+  /** The driver `workflows.driver` names, which this machine does not run: the run starts unassigned, awaiting it. */
+  awaits?: DriverName;
 }
 
 /** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
@@ -473,7 +479,7 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
     return;
   }
 
-  if (options.driver !== undefined && options.driver !== 'local') {
+  if (options.driver !== undefined && !drivesLocally(options.driver)) {
     writeEnvelope({ error: unsupportedDriver(options.driver) }, secrets);
 
     return;
@@ -499,9 +505,11 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
   const alone = options.driver === 'local' ? localStrictCan(config, options) : undefined;
-  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person' });
+  const awaits = shortcut.awaits && { driver: shortcut.awaits };
+  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person', awaits });
 
   if ('error' in started || options.driver !== 'local') {
+    if (awaits && 'data' in started) log.info(awaitsLine(String(started.data.run), awaits.driver));
     writeEnvelope(started, secrets);
 
     return;
@@ -519,7 +527,7 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
 
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
   const local = { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox };
-  const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => runLocalDriver(config, runId, process.cwd(), scored));
+  const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => driveRun(config, runId, LOCAL_DRIVER, { cwd: process.cwd(), options: scored }));
   const answered = await shortcut.answer?.(config, runId, driven);
 
   if (answered) writeEnvelope(answered, secrets);
@@ -601,6 +609,26 @@ const JsonReportOptionsSchema = z.object({
   modelUnavailable: z.boolean().optional().refine((given) => !given, '--model-unavailable needs --driver skill'),
   json: z.string().optional(),
 });
+
+/** The driver `--driver <name>` names, or undefined for a name that names none. */
+function drivenAs(name: string): Driver | undefined {
+  const parsed = parseDriver(name);
+
+  return parsed.ok ? parsed.driver : undefined;
+}
+
+/**
+ * Drives run `run` of `config` here as driver `name`, which `drivesHere` said this machine drives: the local driver from
+ * `cwd`. The one way `teamai score` and `teamai score --drain` drive a run.
+ */
+export async function driveRun(config: LocalConfig, run: string, name: DriverName, { cwd, options }: { cwd: string; options: LocalDriverOptions }): Promise<WorkflowEnvelope> {
+  if (name === 'local') return runLocalDriver(config, run, cwd, options);
+
+  return { error: unsupportedDriver(name) };
+}
+
+/** Whether `--driver <name>` names the local driver, the only one besides `skill` that `start` and `resume` take. */
+const drivesLocally = (name: string): boolean => drivenAs(name) === 'local';
 
 /** The refusal of a `--driver` that is neither `local` nor `skill`. */
 function unsupportedDriver(driver: string): WorkflowFailure {
@@ -869,7 +897,7 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
     return;
   }
 
-  if (options.driver !== undefined && options.driver !== 'local') {
+  if (options.driver !== undefined && !drivesLocally(options.driver)) {
     writeEnvelope({ error: unsupportedDriver(options.driver) }, collectEnvSecrets());
 
     return;
@@ -1004,7 +1032,9 @@ function resumeOfferedRefusal(runId: string | undefined, options: ResumeOptions)
       : { code: 'invalid_arguments', message: '--claim takes over the run you name: teamai workflow resume <run> --claim' };
   }
 
-  if (options.driver !== undefined && options.driver !== 'local' && options.driver !== 'skill') return unsupportedDriver(options.driver);
+  const driver = options.driver === undefined ? undefined : drivenAs(options.driver);
+
+  if (options.driver !== undefined && driver !== 'local' && driver !== 'skill') return unsupportedDriver(options.driver);
 
   return undefined;
 }

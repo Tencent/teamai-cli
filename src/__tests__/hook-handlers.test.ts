@@ -202,6 +202,8 @@ vi.mock('../project-agent-root.js', () => ({
 const mockBackgroundPassScopes = vi.fn().mockResolvedValue([]);
 const mockStartFinished = vi.fn();
 vi.mock('../session-flow/finished-sessions.js', () => ({ FinishedSessions: { backgroundScopes: mockBackgroundPassScopes, start: mockStartFinished } }));
+const mockDriveByDefault = vi.fn().mockResolvedValue({ drive: 'local' });
+vi.mock('../default-driver.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../default-driver.js')>()), driveByDefault: mockDriveByDefault }));
 vi.mock('../env-resolution.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../env-resolution.js')>()), resolveWorkflowEnv: vi.fn().mockResolvedValue({}) }));
 const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn(() => ({ on: vi.fn().mockReturnThis(), unref: vi.fn() })) }));
 vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:child_process')>()), spawn: mockSpawn }));
@@ -569,6 +571,27 @@ describe('hook-handlers registry', () => {
     expect(env).toMatchObject({ env: expect.not.objectContaining({ CLAUDE_CODE_SESSION_ID: expect.anything() }) });
     expect(env).toMatchObject({ env: expect.not.objectContaining({ TEAMAI_WORKFLOW_ATTEMPT: expect.anything() }) });
     expect(mockSettleLateUsageReport.mock.invocationCallOrder.at(-1)).toBeLessThan(mockStartFinished.mock.invocationCallOrder.at(0) ?? 0);
+  });
+
+  it('session-start pull starts teamai-finished-sessions awaiting the driver workflows.driver names, and drives it here only on a driver this machine runs', async () => {
+    const handler = sessionStartPull();
+    const user = { ...scope, dataHome: '/data/user' };
+    mockBackgroundPassScopes.mockResolvedValueOnce([scope, user]);
+    mockDriveByDefault.mockResolvedValueOnce({ awaits: 'acme-sandbox' }).mockResolvedValueOnce({ unassigned: true });
+    mockStartFinished.mockResolvedValueOnce({ kind: 'started', run: 'r1111111111111111', cwd: '/data/project' })
+      .mockResolvedValueOnce({ kind: 'started', run: 'r2222222222222222', cwd: '/data/user' });
+    mockStartFinished.mockClear();
+    mockSpawn.mockClear();
+    vi.mocked(log.debug).mockClear();
+
+    await handler.execute({ cwd: fs.realpathSync.native(os.tmpdir()) }, 'claude', scope);
+
+    expect(mockStartFinished).toHaveBeenNthCalledWith(1, scope, expect.objectContaining({ awaits: { driver: 'acme-sandbox' } }));
+    expect(mockStartFinished).toHaveBeenNthCalledWith(2, user, expect.not.objectContaining({ awaits: expect.anything() }));
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(vi.mocked(log.debug).mock.calls.map(([said]) => said)).toContain(
+      'hook-dispatch: r1111111111111111 waits for driver acme-sandbox, which this machine does not run. To drive it here: teamai workflow resume r1111111111111111 --driver local',
+    );
   });
 
   it('session-start pull drives no run of teamai-finished-sessions that did not start, and says why only in debug output', async () => {

@@ -10,6 +10,7 @@ import type { LeaseSession } from './workspace.js';
 import type { ConfinedLease } from './lease-wire.js';
 import type { StepModel } from './step-model.js';
 import type { ClonePlace } from './clone.js';
+import type { DriverName } from './driver-name.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
 export interface DriverIdentity {
@@ -483,6 +484,8 @@ export interface RunState {
   origin?: RunOrigin;
   /** Who started the run. A claim keeps it. Absent on runs started before it was recorded. */
   startedBy?: StartedBy;
+  /** The driver `workflows.driver` started the run for, which the machine that started it does not run. Absent on a run started for no driver in particular. */
+  awaits?: { driver: DriverName };
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;

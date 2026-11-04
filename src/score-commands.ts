@@ -12,6 +12,7 @@ import { log, setStderrOnly } from './utils/logger.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 import { startWorkflow } from './workflow-commands.js';
+import { driveByDefault } from './default-driver.js';
 import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 
 export interface ScoreOptions {
@@ -291,17 +292,20 @@ function insteadOf(start: ScoreStart, driver: string | undefined): string {
 }
 
 /**
- * Starts teamai-score for the subject a person named, with `demand: named`, on the local driver unless `driver` names
- * another; `none` leaves the run to any driver's `workflow next`. The local driver drives it to its end, or until only a
- * judge step no tool here can run is left, and the answer is the labels the run wrote.
+ * Starts teamai-score for the subject a person named, with `demand: named`, on the driver `driver` names, else on the
+ * one `workflows.driver` names, else on the local driver; `none` leaves the run to any driver's `workflow next`, and a
+ * driver this machine does not run leaves it awaiting that driver. The local driver drives it to its end, or until only
+ * a judge step no tool here can run is left, and the answer is the labels the run wrote.
  */
 async function startScore(start: ScoreStart, driver: string | undefined): Promise<void> {
   const { named } = start;
   const inputs = { subject: Subject.format(named.subject), scorers: start.scorers, label: start.label ?? '', batch: start.batch, demand: 'named' };
-  const chosen = driver ?? 'local';
+  const decided = driver === undefined ? await driveByDefault(named.config) : undefined;
+  const chosen = decided === undefined ? driver : 'drive' in decided ? decided.drive : undefined;
 
   await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
     scope: named.config,
+    awaits: decided && 'awaits' in decided ? decided.awaits : undefined,
     instead: insteadOf(start, driver),
     answer: async (config, runId, driven) => {
       const answered = await ScoreAnswer.of(config, runId, driven, start.scorers);

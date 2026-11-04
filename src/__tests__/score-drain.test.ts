@@ -23,6 +23,7 @@ import { LabelStore } from '../scorers/label-store.js';
 import { scoreCommand, type ScoreOptions } from '../score-commands.js';
 import { Drain } from '../score-drain.js';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -30,6 +31,8 @@ import { log } from '../utils/logger.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import * as cliPaths from '../utils/cli-path.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
+import { projectRun } from '../workflow/snapshot.js';
+import { readRun, readRuns } from '../workflow/store.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import { workflowResume, workflowStart } from '../workflow-commands.js';
 
@@ -792,6 +795,56 @@ steps:
     expect(again.lines).toContain(`ℹ Left open: run ${runId} of teamai-finished-sessions is already working here. Run teamai score --drain again once it ends.`);
   });
 
+  /** A team whose teamai.yaml sets `workflows.driver: <driver>`, and whose teamai-finished-sessions has one command step, with an unattended session captured. */
+  async function finishedSessionsFor(driver: string): Promise<LocalConfig> {
+    const { config } = await team({
+      'teamai.yaml': `team: acme\nrepo: https://example.com/acme/team.git\nworkflows: { driver: ${driver} }\n`,
+      'workflows/teamai-finished-sessions.yaml': `schemaVersion: v1alpha1
+name: teamai-finished-sessions
+description: Stands in for the shipped one.
+invoke: deny
+private: true
+inputs:
+  publish: policy | always | never
+  scorers: [string]
+steps:
+  - id: mark
+    command: echo marked
+`,
+    });
+    await syncScorersThenWorkflows(config);
+    capturedSession(SESSION, 'unattended');
+    vi.stubEnv('CI', 'true');
+    return config;
+  }
+
+  it('starts its run awaiting the driver workflows.driver names, drives none of it here, and says how to drive it here', async () => {
+    const config = await finishedSessionsFor('acme-sandbox');
+
+    const drained = await drain();
+
+    const [ran, ...others] = (await readRuns(config)).filter((one) => one.name === 'teamai-finished-sessions');
+    expect(others).toEqual([]);
+    expect(ran).toMatchObject({ status: 'running', awaits: { driver: 'acme-sandbox' }, steps: [{ id: 'mark', status: 'pending' }] });
+    if (!ran) throw new Error('no teamai-finished-sessions run');
+    expect(projectRun(ran, {})).toMatchObject({ ok: true, value: { awaits: { driver: 'acme-sandbox' } } });
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain(`ℹ ${ran?.id} waits for driver acme-sandbox, which this machine does not run. To drive it here: teamai workflow resume ${ran?.id} --driver local`);
+    expect(drained.lines).not.toContain('✔ Nothing left to do here');
+  });
+
+  it('starts its run for any driver with workflows.driver none, awaiting none, and says which run it left', async () => {
+    const config = await finishedSessionsFor('none');
+
+    const drained = await drain();
+
+    const ran = (await readRuns(config)).find((one) => one.name === 'teamai-finished-sessions');
+    expect(ran).toMatchObject({ status: 'running', steps: [{ id: 'mark', status: 'pending' }] });
+    expect(ran?.awaits).toBeUndefined();
+    expect(drained.code, drained.lines.join('\n')).toBe(0);
+    expect(drained.lines).toContain(`ℹ Left open: run ${ran?.id} of teamai-finished-sessions, which workflows.driver none leaves to any driver. A driver takes it with: teamai workflow next ${ran?.id} --json '{"driver":{…}}'`);
+  });
+
   it.each<[string, ScoreOptions]>([
     ['--push', { push: true }],
     ['--scorer', { scorer: ['quality'] }],
@@ -990,6 +1043,33 @@ describe('teamai score of a subject the person names', () => {
 
     expect(await scored({ push: true })).toEqual({ envelope: { data: { published: false } }, code: 0 });
     expect(said.mock.calls.flat().join('\n')).not.toContain('What workflow steps published to teamai-reports stays pending');
+  });
+
+  it('starts the run awaiting the driver workflows.driver names, which this machine does not run, and says how to drive it here', async () => {
+    const { config } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nworkflows: { driver: acme-sandbox }\n' });
+    await syncScorersThenWorkflows(config);
+    claudeSession(SESSION, 'Added the retries.');
+
+    const started = await scored({ session: SESSION, source: 'claude-code', scorer: ['quality'] });
+
+    expect(started).toMatchObject({ envelope: { data: { name: 'teamai-score', status: 'running' } }, code: 0 });
+    const runId = z.object({ data: z.object({ run: z.string() }) }).parse(started.envelope).data.run;
+    expect(vi.mocked(console.error).mock.calls.map((call) => call.map(String).join(' '))).toContain(
+      `ℹ ${runId} waits for driver acme-sandbox, which this machine does not run. To drive it here: teamai workflow resume ${runId} --driver local`,
+    );
+    expect(await readRun(config, runId)).toMatchObject({ awaits: { driver: 'acme-sandbox' }, steps: expect.arrayContaining([expect.objectContaining({ id: 'plan', status: 'pending' })]) });
+  });
+
+  it('leaves workflow start without --driver unassigned, whatever workflows.driver names', async () => {
+    const { config } = await team({ 'teamai.yaml': 'team: acme\nrepo: https://example.com/acme/team.git\nworkflows: { driver: acme-sandbox }\n', 'workflows/mark.yaml': MARK });
+    await syncScorersThenWorkflows(config);
+
+    const started = await driveLocally(() => workflowStart('mark', {}));
+
+    const runId = z.object({ data: z.object({ run: z.string() }) }).parse(started.envelope).data.run;
+    expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'mark', status: 'pending' }] });
+    expect(await readRun(config, runId)).not.toHaveProperty('awaits');
+    expect(started.lines.join('\n')).not.toContain('waits for driver');
   });
 
   it('names, in an agent session, the teamai score of a session the person runs and what the agent runs', async () => {

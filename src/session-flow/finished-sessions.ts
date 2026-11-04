@@ -350,7 +350,7 @@ async function hasWork(config: LocalConfig, now: string): Promise<boolean> {
  * agent evidence, whatever process calls it, from the directory whose teamai resolves to this data home. A run that
  * already works on this data home is answered instead, so two passes never archive one session twice.
  */
-async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start' | 'next' | 'cancel'>; mode: RunMode }): Promise<FinishedStart> {
+async function start(config: LocalConfig, { client, mode, awaits }: { client: Pick<WorkflowClient, 'start' | 'next' | 'cancel'>; mode: RunMode; awaits?: RunState['awaits'] }): Promise<FinishedStart> {
   const cwd = SessionWork.scopeCwd(config);
   await endExpired(config, { client, cwd });
   const working = await workingRun(config, Date.now());
@@ -359,7 +359,7 @@ async function start(config: LocalConfig, { client, mode }: { client: Pick<Workf
 
   if (!await hasWork(config, new Date().toISOString())) return { kind: 'idle' };
 
-  const answer = await startAsCli(client, FINISHED_WORKFLOW, { inputs: { publish: 'policy', scorers: [] }, checkout: cwd, mode });
+  const answer = await startAsCli(client, FINISHED_WORKFLOW, { inputs: { publish: 'policy', scorers: [] }, checkout: cwd, mode, awaits });
 
   if ('error' in answer) return { kind: 'failed', failure: answer.error };
   const run = RunIdSchema.safeParse(answer.data.run);

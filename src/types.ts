@@ -784,8 +784,8 @@ export const TeamaiConfigBaseSchema = z.object({
    * written, so a value this teamai cannot use never fails the file; `doctor` reports it.
    */
   sessions: z.unknown().optional(),
-  /** `workflows.retention`, the team's default for its members: kept as written, so a wrong value never fails the file. */
-  workflows: z.object({ retention: z.unknown().optional() }).optional().catch(undefined),
+  /** `workflows.retention` and `workflows.driver`, the team's defaults for its members: kept as written, so a wrong value never fails the file. */
+  workflows: z.object({ retention: z.unknown().optional(), driver: z.unknown().optional() }).optional().catch(undefined),
   /**
    * Language of the agent-facing texts teamai injects: the built-in
    * teamai-recall rule, the todowrite-hint, and the mr-hint.
@@ -892,6 +892,8 @@ export const MemberWorkflowSettingsSchema = z.object({
   allow: AllowSchema.optional(),
   /** How long `doctor --fix` leaves what a settled run left behind: a duration or never. Kept as written; `resolveRetention` reads it. */
   retention: z.unknown().optional(),
+  /** The driver `teamai score`, `teamai score --drain` and the finished-sessions hook start their runs for. Kept as written; `driveByDefault` reads it. */
+  driver: z.unknown().optional(),
 });
 
 export type MemberWorkflowSettings = z.infer<typeof MemberWorkflowSettingsSchema>;
