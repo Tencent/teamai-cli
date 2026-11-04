@@ -85,7 +85,7 @@ const HostRequestSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('adopt'), dir: z.string() }),
 ]) satisfies z.ZodType<HostPlaceRequest>;
 
-const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int(), receipts: z.number().int(), creating: z.boolean() });
+const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int(), receipts: z.number().int(), creating: z.boolean(), branch: z.string().optional() });
 const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
 
 /**
@@ -207,10 +207,12 @@ const SkillStateSchema = z.object({
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
   /**
-   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them, and `outputs` the run's declared outputs, as its `done` gave them. `version`: what the run
-   * file said when the end was kept, so a tick asks the engine again only once it moved.
+   * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them, and `outputs` the run's
+   * declared outputs, as its `done` gave them. `branch`: the branch the run left its changes on, from the run file read
+   * as the end came. `version`: what the run file said when the end was kept, so a tick asks the engine again only once
+   * it moved.
    */
-  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), outputs: z.record(z.string(), z.json()).optional(), version: RunVersionSchema.optional() }).optional(),
+  done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), outputs: z.record(z.string(), z.json()).optional(), branch: z.string().optional(), version: RunVersionSchema.optional() }).optional(),
 });
 
 export type SkillState = z.infer<typeof SkillStateSchema>;

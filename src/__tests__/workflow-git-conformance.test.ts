@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import { workflowGitConformanceScenarios, type GitConformanceName } from '../wor
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
+import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adapter.js';
 import { inProcessClient } from '../workflow/protocol.js';
 import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
@@ -44,6 +45,15 @@ function valueOf(run: RunState, name: GitConformanceName): string {
   return field === 'commit' ? changes.to : changes.branch;
 }
 
+/** The scenario's agent: it runs a prompt as a shell command in the step's place. */
+const promptAsCommand: LocalToolAdapter = {
+  run: async (_tool, input) => {
+    const ran = spawnSync(input.prompt, { shell: true, cwd: input.cwd });
+    return { started: true, exitCode: ran.status ?? 1 };
+  },
+  runInteractive: async () => ({ started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'no scenario is interactive' } }),
+};
+
 function asWord(value: string): RegExp {
   return new RegExp(`(^|[^\\w/.-])${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\w/-])`);
 }
@@ -72,6 +82,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
       const knowledge = path.join(root, 'knowledge');
       fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
       fs.writeFileSync(path.join(knowledge, 'workflows', `${scenario.workflowName}.yaml`), scenario.yaml);
+      for (const [name, yaml] of Object.entries(scenario.workflows ?? {})) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), yaml);
       const team = path.join(root, 'team.git');
       if (scenario.handoff) {
         git(root, 'init', '-q', '-b', 'main', knowledge);
@@ -89,7 +100,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         additionalRoles: [],
         projectRoot,
         dataHome: path.join(root, `data-${name}`),
-        workflows: { tools: {}, max_parallel: 1 },
+        workflows: { tools: { default: 'claude' }, max_parallel: 1 },
       });
       const config = install('tester', checkout, knowledge);
       await syncScorersThenWorkflows(config);
@@ -130,7 +141,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         fs.chmodSync(hook, 0o755);
       }
 
-      if (profile === 'local') await runLocalDriver(config, runId, checkout);
+      if (profile === 'local') await runLocalDriver(config, runId, checkout, { adapter: promptAsCommand });
       else {
         const client = inProcessConformanceClient(inProcessClient({ config, env: await resolveWorkflowEnv(config) }));
         const driver = { ...profileDriver(profile), workspace: checkout };
@@ -147,6 +158,18 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
         const changes = changesOf(run, id);
         expect(git(origin, 'for-each-ref', '--format=%(objectname)', `refs/heads/${changes.branch}`), `${id} is pushed`).toBe(changes.to);
         for (const [file, text] of Object.entries(files)) expect(git(origin, 'show', `${changes.to}:${file}`)).toBe(text);
+      }
+      if (scenario.expectCopies) {
+        const copies = Object.entries(scenario.expectCopies).map(([branch, files]) => [branch.replace('<run>', runId), files] as const);
+        expect(Object.keys(run.copies ?? {}).toSorted(), 'the run records these copies and no other').toEqual(copies.map(([branch]) => branch).toSorted());
+        for (const [branch, files] of copies) {
+          for (const [file, text] of Object.entries(files)) expect(git(origin, 'show', `refs/heads/${branch}:${file}`), `${branch} holds ${file}`).toBe(text);
+        }
+      }
+      for (const id of refused ? [] : scenario.expectGone ?? []) {
+        const { branch } = changesOf(run, id);
+        expect(git(origin, 'for-each-ref', `refs/heads/${branch}`), `${id}'s branch is gone from origin`).toBe('');
+        expect(git(checkout, 'for-each-ref', `refs/heads/${branch}`), `${id}'s branch is gone from the checkout`).toBe('');
       }
       if (!refused && scenario.expectFailure) {
         const { step: id, names, codeIsNot } = scenario.expectFailure;

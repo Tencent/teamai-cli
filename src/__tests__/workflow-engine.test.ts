@@ -5056,6 +5056,20 @@ describe('deliver: pr at workflow start', () => {
     expect(started).toMatchObject({ data: { status: 'running' } });
   });
 
+  it('starts a workflow step without workspace that delivers a workflow whose header says workspace: new, which opens the copy it delivers', async () => {
+    const { started } = await start({
+      'review-and-fix': workflow('review-and-fix', `  - id: fix
+    prompt: Fix what the review found.
+`, 'workspace: new\n'),
+      ship: workflow('ship', `  - id: change
+    deliver: pr
+    workflow: review-and-fix
+`),
+    }, 'ship', { ref: 'main', commit });
+
+    expect(started).toMatchObject({ data: { status: 'running' } });
+  });
+
   it('refuses a workflow step that delivers without a copy of its own', async () => {
     const { started } = await start({ ship: workflow('ship', `  - id: change
     deliver: pr

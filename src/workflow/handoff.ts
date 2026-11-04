@@ -23,7 +23,7 @@ import { openPrivateStep } from './scope.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
 import { workflowRunBy, type RunPublication, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
-import { branchName, isIsolated, stepMode, worksInTeam, type LeaseSession, type SessionRef } from './workspace.js';
+import { basePinBranch, branchName, isIsolated, runBranchPrefix, stepMode, worksInTeam, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
 /**
@@ -290,7 +290,7 @@ export async function publishRun(
     return ok(receipt(runId, 'unchanged', before.value));
   }
 
-  const pinned = await checkOrigin(checkout, stored, { side: 'publish' });
+  const pinned = await checkOrigin(checkout, stored, { side: 'publish', succeeded: stored.status === 'succeeded' });
 
   if (!pinned.ok) return pinned;
 
@@ -459,21 +459,30 @@ function receipt(runId: string, publication: PublishReceipt['publication'], snap
   return answer;
 }
 
+/** Whether a branch on origin at one of `heads` contains `commit`, as far as `checkout` has both. */
+async function heldOnOrigin({ checkout, commit, heads }: { checkout: string; commit: string; heads: Iterable<string> }): Promise<boolean> {
+  for (const head of heads) if ((await git(checkout, ['merge-base', '--is-ancestor', commit, head])).code === 0) return true;
+
+  return false;
+}
+
 /**
  * Checks, with `ls-remote` on the origin of business checkout `checkout`, that every workspace of run `run` is on origin
  * at the commit the run recorded, and that its base is pinned as `teamai/<run>/base`, which a driver's fetch of the run's
- * branches brings in wherever the base came from. A publish pins a missing base; nothing else is pushed or fetched.
+ * branches brings in wherever the base came from. A publish pins a missing base; nothing else is pushed or fetched. A
+ * succeeded run's branch may be missing when its cleanup deleted it, which it does only while a branch that stays holds
+ * its commit: such a branch passes, and a retry brings it back from the run's copies.
  */
 async function checkOrigin(
   checkout: string,
   run: { id: string; base?: { commit: string }; copies?: Record<string, { commit?: string }> },
-  by: { side: 'publish' } | { side: 'claim'; publisher: HandoffOwner },
+  by: { side: 'publish'; succeeded: boolean } | { side: 'claim'; publisher: HandoffOwner },
 ): Promise<Result<void>> {
   const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
-  const pin = `teamai/${run.id}/base`;
+  const pin = basePinBranch(run.id);
 
   if (!run.base && recorded.length === 0) return ok(undefined);
-  const listed = await git(checkout, ['ls-remote', '--heads', 'origin', `refs/heads/teamai/${run.id}/*`]);
+  const listed = await git(checkout, ['ls-remote', '--heads', 'origin', `refs/heads/${runBranchPrefix(run.id)}*`]);
 
   if (listed.code !== 0) return refused(originUnavailable(checkout, 'read', listed.stderr));
 
@@ -511,6 +520,8 @@ async function checkOrigin(
           : `Branch ${branch} on the origin of ${checkout} is at ${actual}, and run ${run.id} recorded ${commit} when ${by.publisher.user} last published it. If ${by.publisher.user} continued the run since, ${by.publisher.user} can publish it again: teamai workflow publish ${run.id}. Moving ${branch} on origin back to ${commit} discards the commits on it past ${commit}; teamai does not move it.`,
       });
     }
+
+    if (branch !== pin && by.side === 'publish' && by.succeeded && await heldOnOrigin({ checkout, commit, heads: heads.values() })) continue;
 
     if (branch !== pin || by.side === 'claim') {
       return refused({
@@ -695,6 +706,27 @@ export async function publishRunEnd(config: LocalConfig, runId: string, checkout
   return error.code === 'not_owner' ? claimedElsewhere(runId, error.owner, error.ownedAt) : error;
 }
 
+/**
+ * Offers run `runId` on teamai-reports, published from `checkout`, for a person to claim, as a driver nobody attends
+ * hands over a step only a person can take. Answers why it could not, as a clause.
+ */
+export async function offerToPerson(config: LocalConfig, runId: string, checkout: string): Promise<string | undefined> {
+  const publication = await publishRun(config, runId, { checkout });
+
+  if (!publication.ok) return publication.error.message.replace(/\.$/, '');
+
+  return publication.value.offered ? undefined : 'the checkout it works in has no origin, so teamai-reports cannot say which repository it works in';
+}
+
+/** What a driver says once it offered run `runId` to a person at `steps`, who continues it with `resume`. */
+export function offeredToPerson(runId: string, steps: readonly string[], resume: string): string {
+  const named = steps.map((step) => `"${step}"`).join(', ');
+
+  return steps.length > 1
+    ? `Steps ${named} need a person, so run ${runId} is offered on teamai-reports. A person continues it with: ${resume}`
+    : `Step ${named} needs a person, so run ${runId} is offered on teamai-reports. A person continues it with: ${resume}`;
+}
+
 /** What a claim decided from the snapshot it read; `replaces` is the write a claim lands only over. */
 type ClaimVerdict =
   | { kind: 'owned'; snapshot: RunSnapshot }
@@ -867,10 +899,9 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
   return (id: string): boolean => done(id);
 }
 
-/** What a run carries: its definitions, the steps it settled for good, and its status. */
+/** What a run carries: its definitions and its status. */
 export interface CarriedRun extends Definitions {
   source: WorkflowSource;
-  settled: string[];
   status: RunStatus;
 }
 
@@ -885,7 +916,7 @@ export async function carriedRun(config: LocalConfig, runId: string, { published
   if (stored === 'corrupt') return refused(runUnreadable(runId));
 
   const local = stored === 'missing' ? undefined
-    : { definition: stored.definition, workflows: stored.workflows ?? {}, source: DefaultWorkflows.sourceOfRun(stored), settled: settledSteps(stored), status: stored.status };
+    : { definition: stored.definition, workflows: stored.workflows ?? {}, source: DefaultWorkflows.sourceOfRun(stored), status: stored.status };
 
   if (local && !claim) return ok(local);
 
@@ -897,7 +928,7 @@ export async function carriedRun(config: LocalConfig, runId: string, { published
   const definitions = await definitionsOf(config, origin.value);
 
   return definitions.ok
-    ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status })
+    ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), status: origin.value.status })
     : definitions;
 }
 
@@ -1146,6 +1177,23 @@ function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
 }
 
 /**
+ * Published run `snapshot` as a claim would continue it with `definitions`, every lease released, before it adds what
+ * only the claiming machine knows: its scorers, checkout and publication. `resume --next` judges what an offered run
+ * needs from it without claiming the run.
+ */
+export function handedRun(snapshot: RunSnapshot, definitions: Definitions, handed = handedOver(snapshot, definitions)): RunState {
+  // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
+  const { definitionHash: _hash, copies: _copies, steps: _steps, ...body } = snapshotBody(snapshot);
+  const pinned: Pick<RunState, 'workflows' | 'copies'> = {};
+
+  if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
+
+  if (Object.keys(handed.copies).length > 0) pinned.copies = handed.copies;
+
+  return { ...body, id: snapshot.run, definition: definitions.definition, ...pinned, steps: handed.steps, settledAttempts: [] };
+}
+
+/**
  * The definitions run `snapshot` executes, exactly as the machine that ran it had them: this machine's cache when it holds
  * the same ones, else the team commit the run ran at.
  */
@@ -1253,22 +1301,10 @@ async function install(
   handed: Handover,
   secrets: Record<string, string>,
 ): Promise<Result<ClaimReceipt>> {
-  // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
-  const { definitionHash: _hash, copies: _copies, steps: _steps, ...body } = snapshotBody(snapshot);
-
   const publication: RunPublication = { stateRevision: snapshot.stateRevision };
 
   if (Object.values(handed.copies).some((copy) => copy.commit !== undefined)) publication.reconcileCopies = true;
-  const pinned: Pick<RunState, 'workflows'> = {};
-
-  if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
-  const copied: Pick<RunState, 'copies'> = {};
-
-  if (Object.keys(handed.copies).length > 0) copied.copies = handed.copies;
-
-  const run: RunState = {
-    ...body, id: runId, definition: definitions.definition, ...pinned, steps: handed.steps, settledAttempts: [], ...copied, checkout, publication,
-  };
+  const run: RunState = { ...handedRun(snapshot, definitions, handed), checkout, publication };
 
   const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };

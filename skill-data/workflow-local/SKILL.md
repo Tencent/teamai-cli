@@ -19,15 +19,16 @@ The local driver runs a whole run in one process on this machine: each command s
 2. Start the run: `teamai workflow start <name> --driver local`, with the inputs as one JSON object in `--inputs`. `teamai workflow start --help` lists the other options, such as answering optional approvals and picking the prompt tool.
 3. To continue a run that stopped, run `teamai workflow resume <run>`.
 
-The command exits when the run ends: 0 when it succeeded, 1 when it failed or was cancelled. A failed run names each failed step, its message and its `teamai workflow retry` command on stderr. Done when it has exited and the outcome, the failing step's message and the pull requests the run opened are reported where the person reads them: the job log, or your reply.
+The command exits when the run ends: 0 when it succeeded, 1 when it failed or was cancelled. It also exits 0 when it hands the run to a person (see Approvals). A failed run names each failed step, its message and its `teamai workflow retry` command on stderr. Done when it has exited and the outcome, the failing step's message and the pull requests the run opened are reported where the person reads them: the job log, or your reply.
 
 ## Approvals
 
 Without a terminal, nobody answers a gate during the run:
 
-- A required approval fails its step `hitl_required`, and so does the run.
 - With `--auto-approve`, or the member's `workflows.auto_approve`, an optional approval is answered yes and a choice takes its default.
-- Without either, an optional approval is skipped, and a choice fails `hitl_required`.
+- Without either, an optional approval is skipped.
+- A required approval, an interactive step, or a choice neither answers hands the run to a person: the command publishes the run offered on teamai-reports, prints the step and `teamai workflow resume <run> --claim` on stderr, and exits 0. Report that command where the person reads it.
+- When the run cannot be offered, that step fails `hitl_required`, and its message says why and how to continue it.
 
 ## From an agent session
 

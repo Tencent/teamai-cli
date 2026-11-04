@@ -16,10 +16,13 @@ const FLAT = 'src/workflow/';
 /** @type {Record<string, { typeOnly?: true; names?: string[]; values?: string[] }>} */
 const SKILL_IMPORTS = {
   'src/workflow/protocol.ts': {},
-  'src/workflow/types.ts': { typeOnly: true },
+  // Whether only a person answers a gate, the one rule the engine and the offers apply too.
+  'src/workflow/types.ts': { typeOnly: true, values: ['onlyPersonAnswers'] },
   // The declared env facts, and the advice a missing key gets, which the preflight prints before a start.
   'src/workflow/requirements.ts': { typeOnly: true, values: ['envAdvice'] },
   'src/workflow/describe.ts': { typeOnly: true },
+  // What a driver nobody attends says once it offered a run to a person, as the local driver logs it.
+  'src/workflow/handoff.ts': { names: ['offeredToPerson'] },
   'src/workflow/attempt-marker.ts': {},
   // The wire shapes the engine answers with, which every driver parses with the same schema.
   'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema', 'ConfinedLease'] },

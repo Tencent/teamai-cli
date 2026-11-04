@@ -45,6 +45,10 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'branch_diverged', 'sessions_not_archived',
       // Refusals of a driver's or member's request about a run that is already past it.
       'stale_revision', 'wrong_driver', 'run_settled', 'step_not_found', 'not_hitl', 'not_waiting', 'invalid_choice', 'not_cancellable', 'not_retryable',
+      // Refusals of a retry of a run past workflows.retention, whose branches doctor --fix may have removed; the run stays settled.
+      'run_expired',
+      // Refusals of a retry of a succeeded run whose cleanup deleted branches that did not come back; the run stays settled.
+      'branches_not_restored',
       // Refusals of a hand label, or of scoring whose settings cannot be read.
       'label_invalid', 'scoring_settings_invalid',
       // Work the driver's judge tools cannot run the scorer's model for; it stays open for another driver.

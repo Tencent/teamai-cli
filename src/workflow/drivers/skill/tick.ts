@@ -6,7 +6,7 @@ import { driverIdentity } from '../../../driver-identity.js';
 import { scoredLabels } from '../../../scorers/engine-hooks.js';
 import type { ToolId } from '../../../tools.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
-import type { ResumeClaim, RunReadied } from '../../protocol.js';
+import type { PersonHandoff, ResumeClaim, RunReadied } from '../../protocol.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { readChildResult } from './child-brief.js';
@@ -20,7 +20,7 @@ import {
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
 import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, pollRow, readiedRow, reopenedRow, replyRow,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, readiedRow, reopenedRow, replyRow,
   reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
@@ -248,6 +248,8 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   }
 
   let probed = false;
+  // Set once the run could not be offered to a person: the engine then fails the steps only one can take.
+  let unoffered: PersonHandoff | undefined;
 
   for (;;) {
     const version = state.done ? await context.client.runVersion(state.run) : undefined;
@@ -265,7 +267,9 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
       runMode: state.options.mode, autoApprove: request.autoApprove ? true : undefined,
     };
 
-    const answer = await context.client.next(state.run, body);
+    const handoff = unoffered ?? request.handoff;
+    const options = handoff === undefined ? undefined : { handoff };
+    const answer = await context.client.next(state.run, body, options);
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);
     state = traced(context, startedRow(state, startedOf(answer)))?.state ?? state;
@@ -290,9 +294,20 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     state = replied.state;
     await apply(replied.effects);
 
+    if (replied.row === 'D30') {
+      const offered = traced(context, offeredRow({ steps: replied.offer, offered: await context.client.offer(state.run, state.driver.workspace) }));
+
+      if (offered.row === 'D32') {
+        unoffered = offered.handoff;
+        continue;
+      }
+
+      return { state, spawned, waiting: replied.waiting, turn: offered.turn };
+    }
+
     if (!probed && traced(context, heldProbeRow(reply))) {
       probed = true;
-      const probe = engineReply(state.run, await context.client.next(state.run, { ...body, canTakeLease: false })).reply;
+      const probe = engineReply(state.run, await context.client.next(state.run, { ...body, canTakeLease: false }, options)).reply;
       state = traced(context, gateCheckRow(state, probe))?.state ?? state;
       const asked = probe.kind === 'hitl' ? traced(context, replyRow(state, { reply: probe, at })) : undefined;
 
@@ -400,8 +415,8 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
 }
 
 /** What still needs a person to continue a run: nothing once it ended, since a resume then only readies it as it ended. */
-function attendedNow(run: Pick<Extract<RunReadied, { kind: 'ready' }>, 'description' | 'settled' | 'status'>): string | undefined {
-  return run.status === 'running' ? attendedReason(run.description, 'continue', new Set(run.settled)) : undefined;
+function attendedNow(run: Pick<Extract<RunReadied, { kind: 'ready' }>, 'description' | 'status'>): string | undefined {
+  return run.status === 'running' ? attendedReason(run.description, 'continue') : undefined;
 }
 
 /**
@@ -415,7 +430,7 @@ function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEv
     : { kind: answer.after, run: answer.after === 'wake' ? nextLiteral(state.invocation, back) : pollLiteral(state.invocation, back) };
 
   return turnOf(state, {
-    events: answer.events === 'unseen' ? input.events : [], after, waiting: input.waiting, quiet: answer.quiet ? true : undefined, localTool: input.localTool, scoring: input.scoring,
+    events: answer.events === 'unseen' ? input.events : [], after, waiting: input.waiting, quiet: answer.quiet ? true : undefined, localTool: input.localTool, scoring: input.scoring, offered: answer.offered,
   });
 }
 

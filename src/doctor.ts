@@ -144,7 +144,7 @@ export interface DoctorContext {
 export interface DoctorOptions extends GlobalOptions {
   /** Emit the report as JSON on stdout instead of the human rendering. */
   json?: boolean;
-  /** Remove the lock files left behind by dead processes (#1027). */
+  /** Remove the lock files left behind by dead processes (#1027), and what settled workflow runs left behind (#1689). */
   fix?: boolean;
 }
 
@@ -1079,6 +1079,27 @@ export async function runChecks(
   return results;
 }
 
+/** `doctor --fix` for workflow runs: what it removed of each settled run, under the retention it names with its source. */
+async function sweepRunLeftovers({ localConfig, teamConfig }: DoctorContext): Promise<void> {
+  const { sweepLeftovers, warnNotDeleted } = await import('./workflow/leftovers.js');
+  const checkout = localConfig.repo.businessRepoRoot ?? localConfig.projectRoot ?? process.cwd();
+  const { retention, swept } = await sweepLeftovers(localConfig, teamConfig, { now: Date.now(), checkout });
+  const from = retention.file === undefined ? 'the default' : retention.file;
+
+  if (swept.length === 0) return;
+  log.info(`Removed what ${swept.length} workflow run(s) left behind (workflows.retention ${retention.text}, from ${from}):`);
+
+  for (const run of swept) {
+    const removed = [...run.branches, ...run.worktrees.map((dir) => `worktree ${dir}`), ...run.refs];
+
+    log.info(`  ${run.run} (settled ${run.settledAt}${run.from === 'teamai-reports' ? ', from teamai-reports' : ''}): ${removed.length > 0 ? removed.join(', ') : 'nothing'}`);
+
+    warnNotDeleted(run.run, run.failed);
+  }
+
+  log.info('');
+}
+
 /** The only writer of the JSON channel. */
 function emitReport(report: DoctorReport): void {
   console.log(JSON.stringify(report, null, 2));
@@ -1162,6 +1183,8 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
       for (const p of removed) log.info(`  ${p}`);
       log.info('');
     }
+
+    await sweepRunLeftovers(ctx);
   }
 
   // Doctor only: it spawns `codex app-server`, which the post-pull pass skips.

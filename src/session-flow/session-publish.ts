@@ -17,7 +17,7 @@ import { settledHere } from '../workflow/judge-work.js';
 import { installOwner, readRuns } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { isIsolated } from '../workflow/workspace.js';
-import { AgentSession, recordedToolRoots, sessionKey, type ToolRootsLookup } from './agent-session.js';
+import { AgentSession, recordedToolRoots, sessionKey, type AgentSessionFailure, type ToolRootsLookup } from './agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from './archive.js';
 import { SessionWork } from './session-work.js';
 
@@ -96,17 +96,18 @@ export interface StepSessionsPublished {
   unpublished?: { sessions: number; reason: string };
 }
 
-/** Why step session `key` can never be archived from this machine, or undefined when this machine reads it. */
-async function unarchivableReason(key: PublishedKey, toolRootsFor: ToolRootsLookup): Promise<string | undefined> {
+/** Why step session `key` cannot be read here: teamai reads no sessions of its tool, or its platform failed to read it. */
+type ReadFailure = { kind: 'tool'; tool: string } | { kind: 'platform'; platform: string; failure: AgentSessionFailure };
+
+/** What keeps this machine from reading step session `key`, or undefined when it reads it. */
+async function readFailure(key: PublishedKey, toolRootsFor: ToolRootsLookup): Promise<ReadFailure | undefined> {
   switch (key.kind) {
     case 'tool':
-      return `teamai reads no sessions from ${key.tool}`;
+      return { kind: 'tool', tool: key.tool };
     case 'platform': {
       const found = await AgentSession.find({ platform: key.platform, sessionId: key.sessionId }, { scrub: false, toolRootsFor });
 
-      if (found.status === 'done') return undefined;
-
-      return `the ${key.platform} session ${key.sessionId} cannot be read here: ${found.failure.message.replace(/\.$/, '')}`;
+      return found.status === 'done' ? undefined : { kind: 'platform', platform: key.platform, failure: found.failure };
     }
 
     default: {
@@ -115,6 +116,60 @@ async function unarchivableReason(key: PublishedKey, toolRootsFor: ToolRootsLook
       return unhandled;
     }
   }
+}
+
+/** `failure`, as the reason a run's unreadable sessions share lists it. */
+function failureText(failure: AgentSessionFailure): string {
+  switch (failure.code) {
+    case 'not_found':
+      return 'not found';
+    case 'unreadable':
+      return 'unreadable';
+    case 'no_adapter':
+      return 'teamai has no reader for them here';
+    case 'tool_unavailable':
+      return 'the tool is not installed here';
+    case 'list_failed':
+      return 'listing them failed';
+    case 'invalid_workspace':
+      return 'their workspace is gone';
+    case 'write_failed':
+      return 'a write failed';
+    case 'copy_busy':
+      return 'another teamai process held them';
+    default: {
+      const unhandled: never = failure;
+
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Why the step sessions of one run that `failures` keep from being read here are never archived from this machine: one
+ * reason for the whole run, never per session or per tool, so the drain says them in one line per run.
+ */
+function skippedReason(failures: readonly ReadFailure[]): string {
+  const causes = new Map<string, Set<string>>();
+
+  for (const failure of failures) {
+    const [source, cause] = failure.kind === 'tool' ? [failure.tool, 'teamai reads no sessions from it'] : [failure.platform, failureText(failure.failure)];
+    causes.set(source, (causes.get(source) ?? new Set()).add(cause));
+  }
+
+  const [only, ...others] = causes;
+
+  if (only !== undefined && others.length === 0) {
+    const [source, said] = only;
+
+    if (failures[0]?.kind === 'tool') return `teamai reads no sessions from ${source}`;
+
+    return failures.length > 1
+      ? `${source} could not read these sessions here (${[...said].join(', ')}), so they stay unarchived`
+      : `${source} could not read this session here (${[...said].join(', ')}), so it stays unarchived`;
+  }
+
+  return `these sessions could not be read here (${[...causes].map(([source, said]) => `${source}: ${[...said].join(', ')}`).join('; ')}), so they stay unarchived`;
 }
 
 type UnrecordedPass = { pass: RunPass; key: PublishedKey };
@@ -168,15 +223,21 @@ async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<S
     const checkout = run.checkout ?? SessionWork.scopeCwd(config);
     const toolRoots = recordedToolRoots(checkout);
     const refs = new Map<string, ArchiveSessionRef>();
-    const skipped: StepSessionsPublished['skipped'] = [];
+    const unread: Array<UnrecordedPass & { failure: ReadFailure }> = [];
 
     for (const { pass, key } of passes) {
-      const reason = await unarchivableReason(key, () => toolRoots);
+      const failure = await readFailure(key, () => toolRoots);
 
-      if (reason !== undefined) {
-        skipped.push({ step: pass.step, pass: pass.pass, reason });
-        await record(config, { ...key, skippedAt: now, reason });
-      } else if (key.kind === 'platform') refs.set(sessionKey(key), { platform: key.platform, sessionId: key.sessionId });
+      if (failure !== undefined) unread.push({ pass, key, failure });
+      else if (key.kind === 'platform') refs.set(sessionKey(key), { platform: key.platform, sessionId: key.sessionId });
+    }
+
+    const reason = skippedReason(unread.map(({ failure }) => failure));
+    const skipped: StepSessionsPublished['skipped'] = [];
+
+    for (const { pass, key } of unread) {
+      skipped.push({ step: pass.step, pass: pass.pass, reason });
+      await record(config, { ...key, skippedAt: now, reason });
     }
 
     if (refs.size === 0) {

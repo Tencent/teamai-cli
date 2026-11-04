@@ -16,7 +16,7 @@ import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retryStep } from './workflow/run-controls.js';
-import { isIsolated } from './workflow/workspace.js';
+import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
@@ -66,6 +66,9 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
   const failed = FailedDoneSchema.safeParse(envelope.data.done);
 
   if (failed.success) await explainFailedSteps(config, failed.data.run, secrets);
+  const succeeded = SucceededDoneSchema.safeParse(envelope.data.done);
+
+  if (succeeded.success) await nameRunCopy(config, succeeded.data.run);
 
   if (resolveRunMode(process.env) !== 'unattended') return;
 
@@ -83,6 +86,16 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
 }
 
 const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed') });
+
+const SucceededDoneSchema = z.object({ run: z.string(), outcome: z.literal('succeeded') });
+
+/** On stderr, the branch a succeeded run whose workflow's header says `workspace: new` left its changes on, and how to bring them in. */
+async function nameRunCopy(config: LocalConfig, runId: string): Promise<void> {
+  const run = await readRun(config, runId);
+  const branch = run === 'missing' || run === 'corrupt' ? undefined : runCopyToMerge(run);
+
+  if (branch !== undefined) log.info(`Run ${runId} left its changes on branch ${branch}. Bring them in with: git merge ${branch}`);
+}
 
 const DoneRunSchema = z.object({ run: z.string() });
 
@@ -367,7 +380,7 @@ async function skillAnswer(raw: Parameters<typeof parseSkillCall>[0]): Promise<{
   return { envelope: await runSkillCall(call, context), secrets: loaded.secrets };
 }
 
-const TIMEOUT_MESSAGE = '--timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h';
+const TIMEOUT_MESSAGE = '--timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d';
 
 /** The flags of `workflow start` and `resume` without `--driver skill`. The skill driver's flags are refused, the first given in this order. */
 const NonSkillRunOptionsSchema = z.object({
@@ -969,8 +982,11 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
   const caller: InvokeCaller = invokeCaller(options.confirmed);
 
   if (isSkill && evidence.kind === 'none') caller.evidence = { kind: 'skill-driver' };
+
   // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
-  const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, sandbox: options.sandbox === true, hasPerson: personAnswers(caller.mode) };
+  const taker: Taker = isSkill
+    ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' }
+    : { caller, driver: 'local', tools, sandbox: options.sandbox === true, hasPerson: personAnswers(caller.mode), autoApprove: options.autoApprove ?? loaded.config.workflows?.auto_approve === true };
 
   if (options.next) await takeNext(loaded, taker, options);
   else await listResumable(loaded, taker);
@@ -1134,7 +1150,10 @@ function resumableRow(resumable: ResumableRun): string[] {
 
       if (offer.needs.length > 0) return [run, workflow, 'needs a person', ownerText(owner), `offered on teamai-reports, ${offer.needs.join('; ')}: ${take}`];
 
-      return [run, workflow, 'running', ownerText(owner), 'offered on teamai-reports: teamai workflow resume --next'];
+      // A runner takes it and finds out by running whether it reaches a person, handing it back if it does.
+      const may = offer.mayNeed.length > 0 ? `, may need a person at ${offer.mayNeed.join(', ')}` : '';
+
+      return [run, workflow, 'running', ownerText(owner), `offered on teamai-reports${may}: teamai workflow resume --next`];
     }
 
     case 'here': {

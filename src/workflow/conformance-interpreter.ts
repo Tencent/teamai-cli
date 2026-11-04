@@ -541,16 +541,17 @@ async function expectEnd(scenario: ConformanceScenario, runner: ConformanceRunne
   }
 }
 
-const PreparedCommandSchema = z.object({
-  attempt: z.string(), revision: z.number(), step: z.string(), command: z.string(), cwd: z.string(), env: z.record(z.string(), z.string()).optional(),
-});
+const PreparedLeaseFields = { attempt: z.string(), revision: z.number(), step: z.string(), cwd: z.string(), env: z.record(z.string(), z.string()).optional() };
+
+/** A prepared lease of a command, or of a prompt, whose text the scenario's agent runs as a shell command. */
+const PreparedLeaseSchema = z.union([z.object({ ...PreparedLeaseFields, command: z.string() }), z.object({ ...PreparedLeaseFields, prompt: z.string() })]);
 
 /** The codes a `next --prepare` answers once it settled the attempt it could not prepare `failed`. */
 const PREPARE_FAILURES = new Set(['setup_failed', 'workspace_base', 'merge_conflict']);
 
-function runCommand(lease: z.infer<typeof PreparedCommandSchema>): Promise<{ exitCode: number; stdout: string }> {
+function runCommand(lease: z.infer<typeof PreparedLeaseSchema>): Promise<{ exitCode: number; stdout: string }> {
   return new Promise((resolve) => {
-    const child = spawn(lease.command, { shell: true, cwd: lease.cwd, env: { ...process.env, ...lease.env }, stdio: ['ignore', 'pipe', 'ignore'] });
+    const child = spawn('command' in lease ? lease.command : lease.prompt, { shell: true, cwd: lease.cwd, env: { ...process.env, ...lease.env }, stdio: ['ignore', 'pipe', 'ignore'] });
     let stdout = '';
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     child.on('error', () => resolve({ exitCode: 127, stdout }));
@@ -560,7 +561,8 @@ function runCommand(lease: z.infer<typeof PreparedCommandSchema>): Promise<{ exi
 
 /**
  * Drives run `runId` to its end as `driver` declaring `can`, through the protocol as the skill driver's runners do:
- * each lease is prepared in its place, its command run there, and its exit reported, one step at a time. With `claim`,
+ * each lease is prepared in its place, its command, or its prompt as a shell command, run there, and its exit reported,
+ * one step at a time. With `claim`,
  * the first call claims the run. Answers the call that ended the run.
  */
 export async function driveByProtocol(input: {
@@ -581,9 +583,9 @@ export async function driveByProtocol(input: {
     }
 
     if (answer.data.done !== undefined) return answer;
-    const lease = PreparedCommandSchema.safeParse(answer.data.lease);
+    const lease = PreparedLeaseSchema.safeParse(answer.data.lease);
 
-    if (!lease.success) throw new Error(`Run ${runId} answered neither a prepared command nor its end: ${JSON.stringify(answer)}`);
+    if (!lease.success) throw new Error(`Run ${runId} answered neither a prepared lease nor its end: ${JSON.stringify(answer)}`);
     const { attempt, revision, step } = lease.data;
     const { exitCode, stdout } = await runCommand(lease.data);
     const outputs = commandOutputs(stdout);

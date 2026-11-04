@@ -428,6 +428,64 @@ steps:
     loop: { back_to: review, max_iterations: 3 }
 `;
 
+describe('a workflow header workspace', () => {
+  const HEADER = `schemaVersion: v1alpha1
+name: build
+description: Review and fix in one copy.
+`;
+  const STEPS = `steps:
+  - id: review
+    command: node review.js
+`;
+
+  it('accepts workspace: new, which the definition keeps', () => {
+    const result = parse(`${HEADER}workspace: new\n${STEPS}`);
+    expect(result.ok && result.definition.workspace).toBe('new');
+  });
+
+  it('rejects any other header workspace', () => {
+    expect(rejected(`${HEADER}workspace: continue\n${STEPS}`)).toEqual([
+      { message: `${FILE}:4: field "workspace": workspace in a workflow header must be new, so its steps work in one copy; set workspace on a step for any other mode`, code: 'bad_workspace' },
+    ]);
+  });
+
+  it('rejects deliver in the header, pointing at the step that runs the workflow', () => {
+    expect(rejected(`${HEADER}workspace: new\ndeliver: pr\n${STEPS}`)).toEqual([
+      { message: `${FILE}:5: field "deliver": a workflow header takes no deliver; delivery belongs to a step, so run this workflow from a step with deliver: pr`, code: 'bad_delivery' },
+    ]);
+  });
+
+  it('refuses a role on a step continuing the copy the run opens with another, naming defaults.role as where the copy gets its role', () => {
+    expect(rejected(`${HEADER}workspace: new
+defaults: { role: review }
+steps:
+  - id: fix
+    role: spec
+    prompt: Fix it.
+`)).toEqual([
+      { code: 'bad_role', message: `${FILE}:8: field "steps[0].role": step "fix" has role spec but continues the copy the run opens with role review, which every step there runs with; remove role from step "fix", or set it as defaults.role` },
+    ]);
+  });
+
+  it('rejects a read-only step that runs a workflow whose header says workspace: new, naming both', () => {
+    const child = parse(`schemaVersion: v1alpha1
+name: review-and-fix
+description: Review and fix in one copy.
+workspace: new
+${STEPS}`, 'workflows/review-and-fix.yaml');
+    if (!child.ok) throw new Error(child.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'review-and-fix' ? child.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `${HEADER}steps:
+  - id: check
+    workspace: read-only
+    workflow: review-and-fix
+`, files);
+    expect(result.ok ? [] : result.diagnostics.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { message: `${FILE}:6: field "steps[0].workspace": step "check" has workspace: read-only but runs workflow "review-and-fix", whose header says workspace: new, so its steps work in a copy; remove workspace from step "check" so it opens or continues one`, code: 'bad_workspace' },
+    ]);
+  });
+});
+
 describe('deliver', () => {
   const FIX = `schemaVersion: v1alpha1
 name: build
@@ -816,6 +874,91 @@ steps:
     ]);
   });
 
+  it('reads the pull request of a step, a workflow step, each for_each item and each pass with deliver: pr, and passes it out as an output', () => {
+    expect(parse(`schemaVersion: v1alpha1
+name: build
+description: Build and deliver.
+inputs:
+  targets: [string]
+outputs:
+  pr: steps.fix.pr
+steps:
+  - id: fix
+    workspace: new
+    deliver: pr
+    workflow:
+      steps:
+        - id: patch
+          workspace: continue
+          command: node patch.js
+  - id: build
+    needs: []
+    for_each: inputs.targets
+    workspace: new
+    command: node build.js
+    deliver: pr
+  - id: bump
+    needs: []
+    workspace: new
+    command: node bump.js
+    deliver: pr
+    loop: { back_to: bump, while: "steps.bump.passes[0].pr == null", max_iterations: 2 }
+  - id: report
+    needs: [fix, build, bump]
+    if: steps.fix.pr == null || steps.bump.pr != null
+    env:
+      FIX: "{{ steps.fix.pr.url }}"
+      FIRST: "{{ steps.build.results[0].pr.url }}"
+    command: node report.js
+`)).toMatchObject({ ok: true });
+  });
+
+  it('rejects a read of the pull request of a step without deliver: pr', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Build.
+steps:
+  - id: build
+    workspace: new
+    command: node build.js
+  - id: report
+    needs: [build]
+    if: steps.build.pr != null
+    command: node report.js
+`)).toEqual([
+      { message: `${FILE}:10: field "steps[1].if": step "report" if reads steps.build.pr, but step "build" has no deliver: pr, so it has no pr` },
+    ]);
+  });
+
+  it('rejects a read of the pull request of a for_each step, whose pull requests are per item', () => {
+    const content = `${FAN.replace('    for_each: inputs.targets\n', '    for_each: inputs.targets\n    workspace: new\n    deliver: pr\n')}  - id: report
+    needs: [build]
+    if: steps.build.pr != null
+    command: node report.js
+`;
+    expect(rejected(content)).toEqual([
+      { message: `${FILE}:16: field "steps[1].if": step "report" if reads steps.build.pr, but step "build" has for_each, so its pr is in steps.build.results` },
+    ]);
+  });
+
+  it('rejects a read of a pull request field other than url', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Build.
+steps:
+  - id: build
+    workspace: new
+    command: node build.js
+    deliver: pr
+  - id: report
+    needs: [build]
+    if: steps.build.pr.number > 0
+    command: node report.js
+`)).toEqual([
+      { message: `${FILE}:11: field "steps[1].if": step "report" if reads steps.build.pr.number, which is not in a pull request: url` },
+    ]);
+  });
+
   it('reports a rejected for_each step once, not again at each read of its results', () => {
     const content = `${FAN.replace('node build.js', 'node build.js {{ item }}')}  - id: report
     needs: [build]
@@ -870,7 +1013,7 @@ describe('expressions in templates', () => {
     ['a double-quoted string', '{{ filter(steps.build.results, .outcome == "failed") }}', "strings use single quotes, as in 'failed'"],
     ['= for ==', "{{ any(steps.build.results, .outcome = 'failed') }}", 'any is called as any(list, predicate)'],
     ['a field a step does not have', '{{ length(steps.build.result) }}',
-      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results or steps.<id>.branches'],
+      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
     ['a string compared with <', "{{ length(steps.build.results) < 'x' }}", "compares 'x' with <, but it is not a number"],
   ])('rejects a call with %s, with the parse error', (_case, text, message) => {
     expect(rejected(TRIAGE.replace(FIX_PROMPT, `'Fix ${text.replaceAll("'", "''")}.'`))).toEqual([
@@ -1338,6 +1481,22 @@ ends: { shipped: succeeded }
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[0].requires.gpu', code: 'unknown_key' }));
   });
 
+  it('reads a timeout in days', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+timeout: 2d
+steps:
+  - id: plan
+    prompt: Plan it.
+    timeout: 1d
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.timeout).toBe(172_800_000);
+    expect(result.definition.steps.map((step) => step.timeout)).toEqual([86_400_000]);
+  });
+
   it('reads timeout on the file and on a step as milliseconds', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
@@ -1383,8 +1542,8 @@ ends: { shipped: succeeded }
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
-      'workflows/build.yaml:4: field "timeout": timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
-      'workflows/build.yaml:8: field "steps[0].timeout": steps[0].timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
+      'workflows/build.yaml:4: field "timeout": timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d',
+      'workflows/build.yaml:8: field "steps[0].timeout": steps[0].timeout must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d',
       expect.stringContaining('field "steps[1].workflow.timeout": step "check" runs an inline workflow'),
       expect.stringContaining('field "steps[2].timeout": step "done" has no action'),
     ]));

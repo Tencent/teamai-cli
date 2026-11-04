@@ -38,7 +38,7 @@ export const INVOKE_ALIAS_SINCE = '0.28.0';
  */
 export const STEP_ROLE_SINCE = '0.29.0';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias', 'private']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'workspace', 'steps', 'finally', 'invoke', 'alias', 'private']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
 const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver', 'continue_on_failure']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
@@ -65,8 +65,8 @@ const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /** A scorer a step lists: a token, the name of a file in scorers/, or a scorer a run generates, whose name holds a colon. */
 const SCORER_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const DURATION = /^(\d+)(ms|s|m|h)$/;
-const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000]]);
+const DURATION = /^(\d+)(ms|s|m|h|d)$/;
+const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000], ['d', 86_400_000]]);
 
 /** The type names of the output shorthand. */
 function isTypeName(name: string | undefined): name is 'string' | 'number' | 'boolean' {
@@ -252,7 +252,9 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   for (const pair of root.items) {
     const key = scalarString(pair.key);
 
-    if (!key || !HEADER_KEYS.has(key)) {
+    if (key === 'deliver') {
+      diagnostics.push({ ...locate(file, lineCounter, pair.key ?? root, 'deliver', 'a workflow header takes no deliver; delivery belongs to a step, so run this workflow from a step with deliver: pr'), code: 'bad_delivery' });
+    } else if (!key || !HEADER_KEYS.has(key)) {
       diagnostics.push(unknownKey(file, lineCounter, pair.key ?? root, key ?? '(root)', key ?? '(root)'));
     }
   }
@@ -315,6 +317,12 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, 'budget', ctx) : undefined;
   const setupPair = root.items.find((pair) => scalarString(pair.key) === 'setup');
   const setup = setupPair ? parseSetup(setupPair.value ?? setupPair.key, ctx) : undefined;
+  const workspaceNode = valueNode(root, 'workspace');
+  const workspace = workspaceNode && scalarString(workspaceNode) === 'new' ? 'new' : undefined;
+
+  if (workspaceNode && !workspace) {
+    diagnostics.push({ ...locate(file, lineCounter, workspaceNode, 'workspace', 'workspace in a workflow header must be new, so its steps work in one copy; set workspace on a step for any other mode'), code: 'bad_workspace' });
+  }
 
   // A malformed inputs header is already reported; checking reads against it would only add noise.
   const readInputs = inputsPair && !inputs ? undefined : inputs ?? {};
@@ -332,7 +340,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
 
-  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, steps }, ctx));
+  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, workspace, steps }, ctx));
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   const header: Omit<WorkflowDefinition, 'schemaVersion' | 'name' | 'description' | 'steps' | 'finally'> = {};
@@ -358,6 +366,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (budget) header.budget = budget;
 
   if (setup) header.setup = setup;
+
+  if (workspace) header.workspace = workspace;
   const definition: WorkflowDefinition = { schemaVersion: 'v1alpha1', name, description, ...header, steps };
 
   if (finallySteps) definition.finally = finallySteps;
@@ -740,6 +750,13 @@ function parseBody(
       if (workspacePair && !workspace) {
         diagnostics.push({
           ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, { team: { branch? } }, { confined: <dir> }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
+          code: 'bad_workspace',
+        });
+      }
+
+      if (workspace === 'read-only' && workflow && TOKEN.test(workflow) && files && !files.cycle(workflow) && files.runnable(workflow)?.workspace === 'new') {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair?.value ?? item, `${field}.workspace`, `${stepLabel} has workspace: read-only but runs workflow "${workflow}", whose header says workspace: new, so its steps work in a copy; remove workspace from ${stepLabel} so it opens or continues one`),
           code: 'bad_workspace',
         });
       }
@@ -1803,7 +1820,7 @@ function parseSetup(node: Node | null | undefined, ctx: ParseContext): Setup | u
   return parsed.success && diagnostics.length === before ? parsed.data : undefined;
 }
 
-/** A positive whole number of `ms`, `s`, `m`, or `h`, such as `30s` or `2h`, read as milliseconds; undefined otherwise. */
+/** A positive whole number of `ms`, `s`, `m`, `h`, or `d`, such as `30s` or `14d`, read as milliseconds; undefined otherwise. */
 export function durationMs(text: string): number | undefined {
   const [, amount = '', unit = ''] = DURATION.exec(text.trim()) ?? [];
   const ms = Number(amount) * (DURATION_UNITS.get(unit) ?? 0);
@@ -1816,7 +1833,7 @@ function parseTimeout(node: Node | null | undefined, field: string, ctx: ParseCo
   const ms = durationMs(scalarString(node) ?? '');
 
   if (ms !== undefined) return ms;
-  ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${field} must be a positive duration, such as 500ms, 30s, 10m, or 2h`));
+  ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${field} must be a positive duration, such as 500ms, 30s, 10m, 2h, or 14d`));
 
   return undefined;
 }
@@ -2021,7 +2038,7 @@ function outputDiagnostics(
     }
 
     const step = steps.find((candidate) => candidate.id === path.step);
-    const unavailable = step && unavailableField(path, !!step.forEach, step.hitl?.options);
+    const unavailable = step && unavailableField(path, !!step.forEach, step.hitl?.options, step.deliver === 'pr');
 
     if (unavailable) {
       diagnostics.push(at(unavailable));

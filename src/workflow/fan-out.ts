@@ -177,6 +177,8 @@ function itemResults(items: StepState[], run: RunState | undefined): ItemResult[
 
     if (branch) result.branch = branch;
 
+    if (pass?.pr) result.pr = pass.pr;
+
     return result;
   });
 }

@@ -22,7 +22,7 @@ import { PublishedRuns, type Taker } from '../workflow-published-runs.js';
 import type { WorkflowDefinition, WorkflowEnvelope } from '../workflow/types.js';
 import { worktreePath } from '../workflow/worktree.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
-import { archiveOnDefaultBranch, BUILD, dirs, git, holdBasePin, Member, originFile, originRef, pull, runStep, SHIP, start, startIn, team, work, WORKSPACES } from './helpers/workflow-handoff-fixture.js';
+import { archiveOnDefaultBranch, BUILD, dirs, git, holdBasePin, Member, onGitHub, originFile, originRef, pull, runStep, SHIP, start, startIn, team, work, WORKSPACES } from './helpers/workflow-handoff-fixture.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -896,12 +896,121 @@ steps:
     const runs = await publishedRuns(runner);
     expect(runs).toEqual([expect.objectContaining({
       run: runId, workflow: 'release', owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
-      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], uses: { env: [], prompts: [] }, lacks: [] },
+      offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], mayNeed: ['ship'], uses: { env: [], prompts: [] }, lacks: [] },
     })]);
     const self = (await installOwner(runner.config)).id;
     expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self })).toEqual([]);
     expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: true, self }).map((run) => run.run)).toEqual([runId]);
     expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/other', hasPerson: true, self })).toEqual([]);
+  });
+
+  const SHIP_ISSUE = `schemaVersion: v1alpha1
+name: ship-issue
+description: Build, and pair with a person only when the run is stuck and someone picks pair.
+steps:
+  - id: build
+    command: echo build
+  - id: stuck
+    needs: [build]
+    choose: { message: Stuck?, options: [give-up, pair], default: give-up }
+  - id: pair
+    needs: [stuck]
+    if: steps.stuck.choice == 'pair'
+    approve: { message: Pair now?, required: true }
+    command: echo pair
+`;
+
+  it('lets a runner take an offered run whose person step only a choice can reach, and finish it under --auto-approve', async () => {
+    const acme = team({ 'ship-issue': SHIP_ISSUE });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'ship-issue', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(runner, { ...runnerTaker(), autoApprove: true });
+    expect(runs.map((run) => run.offer && { needs: run.offer.needs, mayNeed: run.offer.mayNeed })).toEqual([{ needs: [], mayNeed: ['pair'] }]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self: (await installOwner(runner.config)).id }).map((run) => run.run)).toEqual([runId]);
+
+    expect(await claimOffered(runner.config, runId, { checkout: runner.checkout })).toMatchObject({ ok: true });
+    vi.stubEnv('TEAMAI_MODE', 'unattended');
+    try {
+      expect(await runLocalDriver(runner.config, runId, runner.checkout, { hitl: false, autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(await readRun(runner.config, runId)).toMatchObject({ steps: [{ id: 'build', status: 'succeeded' }, { id: 'stuck', answer: { choice: 'give-up', channel: 'auto_approve' } }, { id: 'pair', status: 'skipped' }] });
+  });
+
+  it('lets an unattended skill session take an offered run whose person step is not ready yet, and leaves one handed back at a required approval', async () => {
+    // An agent session takes only a workflow that allows it.
+    const allowed = (yaml: string) => yaml.replace('\nsteps:', '\ninvoke: allow\nsteps:');
+    const acme = team({ 'ship-issue': allowed(SHIP_ISSUE), release: allowed(RELEASE) });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const skill = { caller: { evidence: { kind: 'skill-driver' as const }, confirmed: false, mode: 'unattended' as const }, driver: 'skill' as const, hasPerson: false };
+    const later = await startRun(alice.config, 'ship-issue', {}, { secrets: {} });
+    const laterId = 'data' in later ? String(later.data.run) : '';
+    await publishRun(alice.config, laterId, { env: {}, checkout: alice.checkout });
+    const handed = await startRun(alice.config, 'release', {}, { secrets: {} });
+    const handedId = 'data' in handed ? String(handed.data.run) : '';
+    expect(await runStep(alice, handedId)).toBe('build');
+    await publishRun(alice.config, handedId, { env: {}, checkout: alice.checkout });
+
+    const runs = await publishedRuns(runner, skill);
+    expect(runs.map((run) => [run.run, run.offer?.needs, run.offer?.mayNeed])).toEqual([
+      [laterId, [], ['pair']], [handedId, ['only a person can answer the approval at ship'], ['ship']],
+    ]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self: (await installOwner(runner.config)).id }).map((run) => run.run)).toEqual([laterId]);
+  });
+
+  it('says a choice with a default may need a person for a runner without --auto-approve, and not for one with it', async () => {
+    const acme = team({ 'ship-issue': SHIP_ISSUE });
+    const alice = await acme.member('alice');
+    const runner = await acme.member('runner');
+    originAt('https://github.com/acme/app.git', [alice, runner]);
+    const started = await startRun(alice.config, 'ship-issue', {}, { secrets: {} });
+    const runId = 'data' in started ? String(started.data.run) : '';
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+
+    expect((await publishedRuns(runner)).map((run) => run.offer?.mayNeed)).toEqual([['stuck', 'pair']]);
+    expect((await publishedRuns(runner, { ...runnerTaker(), autoApprove: true })).map((run) => run.offer?.mayNeed)).toEqual([['pair']]);
+  });
+
+  it('hands a run that reaches a required approval unattended to a person on teamai-reports: a second runner leaves it, and a person claims and finishes it', async () => {
+    const acme = team({ release: RELEASE });
+    const ci = await acme.member('ci');
+    const runner = await acme.member('runner');
+    const alice = await acme.member('alice');
+    onGitHub(acme.business, [ci, runner, alice]);
+    const runId = await startIn(ci, 'release');
+    const info = vi.spyOn(log, 'info');
+
+    vi.stubEnv('TEAMAI_MODE', 'unattended');
+    try {
+      expect(await runLocalDriver(ci.config, runId, ci.checkout, { hitl: false })).toEqual({
+        data: { handoff: { run: runId, steps: ['ship'], resume: `teamai workflow resume ${runId} --claim` } },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(info).toHaveBeenCalledWith(`Step "ship" needs a person, so run ${runId} is offered on teamai-reports. A person continues it with: teamai workflow resume ${runId} --claim`);
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({
+      owner: { user: 'ci' }, offered: { at: expect.any(String) }, steps: [{ id: 'build', status: 'succeeded' }, { id: 'ship', status: 'waiting' }],
+    });
+
+    const runs = await publishedRuns(runner);
+    expect(runs.map((run) => run.offer?.needs)).toEqual([['only a person can answer the approval at ship']]);
+    expect(PublishedRuns.candidates(runs, { repository: 'github.com/acme/app', hasPerson: false, self: (await installOwner(runner.config)).id })).toEqual([]);
+
+    expect(await claimRun(alice.config, runId, { checkout: alice.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    const question = vi.fn(async () => 'yes');
+    expect(await runLocalDriver(alice.config, runId, alice.checkout, { hitl: true, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(question).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ owner: { user: 'alice' }, status: 'succeeded' });
   });
 
   const SIGN = `schemaVersion: v1alpha1
@@ -927,7 +1036,7 @@ steps:
 
     const runs = await publishedRuns(runner);
     expect(runs).toEqual([expect.objectContaining({
-      run: runId, offer: { at: expect.any(String), needs: [], uses: { env: ['SIGNING_KEY'], prompts: [] }, lacks: [{
+      run: runId, offer: { at: expect.any(String), needs: [], mayNeed: [], uses: { env: ['SIGNING_KEY'], prompts: [] }, lacks: [{
         reason: 'sign requires env SIGNING_KEY, which has no value here', fix: 'set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY',
       }] },
     })]);
@@ -1089,7 +1198,7 @@ steps:
     expect(rows).toEqual([
       expect.objectContaining({
         run: offered, workflow: 'release', isMine: true, owner: expect.objectContaining({ user: 'alice' }), repository: 'github.com/acme/app',
-        offer: { at: expect.any(String), needs: ['only a person can answer the approval at ship'], uses: { env: [], prompts: [] }, lacks: [] },
+        offer: { at: expect.any(String), needs: [], mayNeed: ['ship'], uses: { env: [], prompts: [] }, lacks: [] },
       }),
       expect.objectContaining({ run: held, workflow: 'build', isMine: false, owner: expect.objectContaining({ user: 'bob' }) }),
     ]);
