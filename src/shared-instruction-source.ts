@@ -76,7 +76,7 @@ function rank(dir: SharedInstructionSourceDir): number {
  */
 export async function shadowedSharedInstructionFiles(
   repoPath: string,
-): Promise<Array<{ path: string; deliveredFrom: SharedInstructionSourceDir; shadowedIn: SharedInstructionSourceDir[] }>> {
+): Promise<Array<{ path: string; deliveredPath: string; deliveredFrom: SharedInstructionSourceDir; shadowedIn: SharedInstructionSourceDir[] }>> {
   const dirs = await existingSharedInstructionDirs(repoPath);
 
   if (dirs.length < 2) return [];
@@ -110,6 +110,7 @@ export async function shadowedSharedInstructionFiles(
   return [...byPath].flatMap(([filePath, sources]) => sources.length > 1
     ? [{
       path: filePath,
+      deliveredPath: `${sources[0]}/${filePath}`,
       deliveredFrom: sources[0],
       shadowedIn: sources.slice(1),
     }]

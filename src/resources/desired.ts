@@ -740,7 +740,7 @@ export async function resolveTeamAgents(
 export async function collectClaudemdFiles(
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
-): Promise<{ contents: string[]; overrides: NamespaceOverride[] }> {
+): Promise<{ contents: string[]; overrides: NamespaceOverride[]; paths: string[] }> {
   const repoPath = localConfig.repo.localPath;
   const own = await claudemdCandidates(repoPath, roleContext);
   const members = await deliveredMembers(localConfig);
@@ -748,15 +748,21 @@ export async function collectClaudemdFiles(
   // The workspace's own context activates every namespace a member does, so
   // its candidates hold every member's files, in the order of one scope.
   const contents: string[] = [];
+  // The source paths of the files the block carries, so a caller can say
+  // which files were delivered without re-deriving the rules (#1682).
+  const paths: string[] = [];
 
   for (const candidate of own.candidates) {
     if (!delivered.has(candidate.source)) continue;
     const content = await readFileSafe(candidate.value);
 
-    if (content) contents.push(content);
+    if (content) {
+      contents.push(content);
+      paths.push(candidate.source);
+    }
   }
 
-  return { contents, overrides };
+  return { contents, overrides, paths };
 }
 
 interface ClaudemdCandidates {

@@ -2818,15 +2818,17 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
     // A file the two source directories both define is reported by the
     // shadowing note below, which says which copy is delivered. The legacy
     // note is about duplicates WITHIN one directory (a namespace file and
-    // the root file of the same name), so the shadowed copies stay out of
-    // it — otherwise it would claim a copy is delivered that pull drops.
-    const shadowedPaths = new Set(team.shadowed.map((entry) => entry.path));
+    // the root file of the same name), so only the SHADOWED copies stay out
+    // of it — the delivered copy is still there, and dropping it would hide
+    // a duplicate that is really in the block.
+    const shadowed = team.shadowed;
 
     // claudemd file names at the root and one level down, as the block collects them.
     // listFilesRecursive joins with '/' on every platform.
     const claudemdFiles = team.claudemdFiles
       .map((entry) => ({ dir: entry.dir, segments: entry.file.split('/') }))
-      .filter((entry) => entry.segments.length <= 2 && (entry.segments[entry.segments.length - 1] ?? '').endsWith('.md'));
+      .filter((entry) => entry.segments.length <= 2 && (entry.segments[entry.segments.length - 1] ?? '').endsWith('.md'))
+      .filter((entry) => !shadowed.some((s) => s.path === entry.segments.join('/') && s.shadowedIn.includes(entry.dir)));
 
     return [
       ...repeatedNames(team.skills, (item) => item.name, (item) => item.relativePath).map(([name, sources]) => (
@@ -2835,13 +2837,13 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
         .map(([name, sources]) => (
           `rules: "${name}" is defined in ${listed(sources)} (legacy mode: each is delivered at its own path)`)),
       ...repeatedNames(
-        claudemdFiles.filter((entry) => !shadowedPaths.has(entry.segments.join('/'))),
+        claudemdFiles,
         (entry) => entry.segments[entry.segments.length - 1] ?? '',
         (entry) => `${entry.dir}/${entry.segments.join('/')}`,
       )
         .map(([name, sources]) => (
           `claudemd: "${name}" is defined in ${listed(sources)} (legacy mode: all of them are in the managed block)`)),
-      ...shadowedNotes(team.shadowed),
+      ...shadowedNotes(shadowed),
     ];
   }
 
@@ -2850,7 +2852,10 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
     ...(team.agents.kind === 'resolved' ? team.agents.overrides : []).map((override) => describeOverride('agents', override)),
     ...team.rules.overrides.map((override) => describeOverride('rules', override)),
     ...team.claudemd.overrides.map((override) => describeOverride('claudemd', override)),
-    ...shadowedNotes(team.shadowed),
+    // Only the conflicts this member actually receives: a namespace their
+    // role does not carry is not delivered by pull, so reporting it would
+    // name a copy that never reaches them.
+    ...shadowedNotes(team.shadowed.filter((entry) => team.claudemd.paths.includes(entry.deliveredPath))),
   ];
 }
 
@@ -2859,7 +2864,7 @@ export async function buildNamespaceNotes(ctx: DoctorContext): Promise<string[]>
  * delivers one copy, so the note names the copy it delivers and the ones it
  * leaves out (#1682).
  */
-function shadowedNotes(shadowed: readonly { path: string; deliveredFrom: string; shadowedIn: string[] }[]): string[] {
+function shadowedNotes(shadowed: readonly { path: string; deliveredPath: string; deliveredFrom: string; shadowedIn: string[] }[]): string[] {
   return shadowed.map((entry) => (
     `claudemd: "${entry.path}" is delivered from ${entry.deliveredFrom}/; `
     + `${listed(entry.shadowedIn.map((dir) => `${dir}/`))} not delivered`));

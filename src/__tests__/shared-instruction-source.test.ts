@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
-import { collectClaudemdFiles } from '../resources/desired.js';
+import { collectClaudemdFiles, type RolePullContext } from '../resources/desired.js';
 import {
   existingSharedInstructionDirs,
   shadowedSharedInstructionFiles,
@@ -85,6 +85,27 @@ describe('shared-instruction source directory', () => {
     expect(text).toContain('ONLY AGENTSMD');
   });
 
+  it('collects only the namespaces the member receives', async () => {
+    await teamFile('claudemd/backend/note.md', 'BACKEND NOTE\n');
+    await teamFile('agentsmd/backend/note.md', 'AGENTS BACKEND NOTE\n');
+    await teamFile('agentsmd/frontend/note.md', 'AGENTS FRONTEND NOTE\n');
+
+    // The member's role carries `frontend`, not `backend`.
+    const roleContext = {
+      activeNamespaces: { knowledge: ['frontend'] },
+    } as unknown as RolePullContext;
+
+    const { contents, paths } = await collectClaudemdFiles(config(), roleContext);
+    const text = contents.join('\n');
+
+    expect(text).toContain('AGENTS FRONTEND NOTE');
+    expect(text).not.toContain('AGENTS BACKEND NOTE');
+    expect(text).not.toContain('BACKEND NOTE');
+    // The path of the file the block carries, so a caller can tell which
+    // copy a conflict is about.
+    expect(paths).toEqual(['agentsmd/frontend/note.md']);
+  });
+
   it('lists the directories a repo actually has, preferred first', async () => {
     expect(await existingSharedInstructionDirs(repoPath)).toEqual([]);
 
@@ -110,6 +131,7 @@ describe('shared-instruction source directory', () => {
 
     expect(shadowed).toHaveLength(1);
     expect(shadowed[0].path).toBe('common.md');
+    expect(shadowed[0].deliveredPath).toBe('agentsmd/common.md');
     expect(shadowed[0].deliveredFrom).toBe('agentsmd');
     expect(shadowed[0].shadowedIn).toEqual(['claudemd']);
   });
@@ -122,6 +144,7 @@ describe('shared-instruction source directory', () => {
 
     expect(shadowed).toHaveLength(1);
     expect(shadowed[0].path).toBe('backend/conventions.md');
+    expect(shadowed[0].deliveredPath).toBe('agentsmd/backend/conventions.md');
     expect(shadowed[0].deliveredFrom).toBe('agentsmd');
     expect(shadowed[0].shadowedIn).toEqual(['claudemd']);
   });
