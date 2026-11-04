@@ -815,6 +815,22 @@ describe('a retry of a run that succeeded', () => {
     expect(again).not.toMatchObject({ data: { done: { notPublished: expect.anything() } } });
   });
 
+  it('is published after its cleanup, and another install that claims it brings the deleted branch back on a retry', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(CHOOSES);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(branches(origin, runId)).toEqual(['join/p1']);
+
+    // Publishing pins the base, as every publish does, and brings back no deleted branch.
+    expect(await publishRun(config, runId, { checkout: cwd, env: {} })).toMatchObject({ ok: true });
+    expect(branches(origin, runId)).toEqual(['base', 'join/p1']);
+
+    const other = await otherInstall(config, root, origin);
+    expect(await claimRun(other.config, runId, { checkout: other.cwd })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    expect(await retryStep(other.config, runId, {}, 'decide')).toMatchObject({ data: { reopened: true } });
+    expect(branches(origin, runId)).toEqual(['base', 'change/p1', 'join/p1']);
+  });
+
   it('brings back on origin a branch its cleanup deleted there only, since the host had it checked out here', async () => {
     const { config, cwd, root, origin, runId } = await fixture(CHOOSES);
     shareTeam(config, root);

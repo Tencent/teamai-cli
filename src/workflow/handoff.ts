@@ -257,7 +257,7 @@ export async function publishRun(
     return ok(receipt(runId, 'unchanged', before.value));
   }
 
-  const pinned = await checkOrigin(checkout, stored, { side: 'publish' });
+  const pinned = await checkOrigin(checkout, withoutCleanedUp(stored), { side: 'publish' });
 
   if (!pinned.ok) return pinned;
 
@@ -424,6 +424,23 @@ function receipt(runId: string, publication: PublishReceipt['publication'], snap
   }
 
   return answer;
+}
+
+/**
+ * Run `run` without the branches its success cleanup deleted at its current revision. A branch that stays holds their
+ * commits, and a retry brings them back from the run's copies, so publishing the settled run checks only what stays.
+ */
+function withoutCleanedUp(run: RunState): RunState {
+  if (run.status !== 'succeeded' || run.leftovers?.revision !== run.revision) return run;
+  const deleted = new Set(run.leftovers.deleted);
+  const { base, copies, ...kept } = run;
+  const checked: RunState = kept;
+
+  if (base && !deleted.has(basePinBranch(run.id))) checked.base = base;
+
+  if (copies) checked.copies = Object.fromEntries(Object.entries(copies).filter(([branch]) => !deleted.has(branch)));
+
+  return checked;
 }
 
 /**
