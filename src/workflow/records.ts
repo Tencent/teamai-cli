@@ -88,8 +88,11 @@ export type WorkflowRunRecord = {
   failure?: { code: RecordedFailure };
   startedAt: string;
   endedAt?: string;
-  /** When a retry reopened the run after this end: it runs again, and what it left is in use until its next end. */
-  reopenedAt?: string;
+  /**
+   * Until when what the run left is kept, which its owner's `workflows.retention` set as it ended. `teamai doctor --fix`
+   * on another machine removes it only a grace period after this; absent, never.
+   */
+  retainedUntil?: string;
   durationMs?: number;
   /**
    * Per-step entries (#1083: step, agent, tool/model, outcome, tokens) — a
@@ -286,6 +289,7 @@ export function buildEndRecord(
     end: run.end,
     failure: failure ? { code: failure } : undefined,
     endedAt: run.updatedAt,
+    retainedUntil: run.retainedUntil,
     durationMs: Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : undefined,
     steps,
     stepCounts: {
@@ -329,16 +333,8 @@ export function pullRequestBranches(run: Pick<RunState, 'id' | 'deliveries'>): s
 export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunRecord): WorkflowRunRecord {
   if (!origin) return next;
 
-  if (origin.phase === 'end' && next.phase === 'start') {
-    // A start a retry queued after this end reopens the run; a start replayed from before the end does not.
-    const reopened = next.reopenedAt !== undefined && Date.parse(next.reopenedAt) > Date.parse(origin.endedAt ?? '');
-
-    return reopened ? { ...origin, reopenedAt: next.reopenedAt } : origin;
-  }
-
+  if (origin.phase === 'end' && next.phase === 'start') return origin;
   const merged = { ...origin, ...next, startedAt: origin.startedAt };
-
-  if (next.reopenedAt === undefined) delete merged.reopenedAt;
 
   if (next.end === undefined) delete merged.end;
 
@@ -347,6 +343,8 @@ export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunR
   if (next.prs === undefined) delete merged.prs;
 
   if (next.prBranches === undefined) delete merged.prBranches;
+
+  if (next.retainedUntil === undefined) delete merged.retainedUntil;
 
   return merged;
 }
@@ -359,27 +357,6 @@ async function isRecordingEnabled(config: LocalConfig): Promise<boolean> {
   return isUsageReportEnabled(config, (await loadTeamConfig(config.repo.localPath)) ?? {});
 }
 
-/** The record of `phase`: a reopen is a start, which marks an end already published as reopened. */
-function phaseRecord(run: RunState, { driver, username, phase }: { driver: DriverIdentity | undefined; username: string; phase: 'start' | 'end' | 'reopen' }): CurrentWorkflowRunRecord {
-  switch (phase) {
-    case 'start':
-      return buildStartRecord(run, driver, username);
-    case 'reopen': {
-      const now = new Date();
-
-      return { ...buildStartRecord(run, driver, username, now), reopenedAt: now.toISOString() };
-    }
-
-    case 'end':
-      return buildEndRecord(run, driver, username);
-    default: {
-      const unhandled: never = phase;
-
-      return unhandled;
-    }
-  }
-}
-
 /**
  * Build and queue a run's phase record (#1083). True once the record is in
  * the queue; false with usage reporting off, or when it could not be queued,
@@ -390,13 +367,16 @@ export async function queueRunRecord(
   config: LocalConfig,
   run: RunState,
   driver: DriverIdentity | undefined,
-  phase: 'start' | 'end' | 'reopen',
+  phase: 'start' | 'end',
   secrets: Record<string, string>,
 ): Promise<boolean> {
   try {
     if (!await isRecordingEnabled(config)) return false;
     const username = config.username ?? 'unknown';
-    const record = phaseRecord(run, { driver, username, phase });
+
+    const record = phase === 'start'
+      ? buildStartRecord(run, driver, username)
+      : buildEndRecord(run, driver, username);
 
     await enqueueRecord(config, record, secrets);
 
@@ -514,39 +494,6 @@ export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflow
   const tmp = `${target}.tmp`;
   await fs.writeFile(tmp, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
   await fs.rename(tmp, target);
-}
-
-/** The part of a queued start record that says a retry queued it to reopen its run. */
-const QueuedReopenSchema = z.object({ reopenedAt: z.string() });
-
-/** Removes the mark that run `runId` runs again from the queue, so a drain cannot publish it for a run that did not reopen. */
-async function removeQueuedReopenRecord(config: LocalConfig, runId: string): Promise<void> {
-  const file = path.join(pendingDir(config), `${runId}.start.json`);
-  const text = await fs.readFile(file, 'utf-8').catch(() => undefined);
-
-  if (text !== undefined && QueuedReopenSchema.safeParse(jsonOrUndefined(text)).success) await fs.rm(file, { force: true });
-}
-
-/**
- * Publishes now the mark that settled run `run` runs again, which a retry lands before it reopens a run whose end
- * reached teamai-reports: until then doctor --fix on another machine reads that end as the run's last word. Unowed when
- * its end never reached teamai-reports, so no mark is needed first. Pending, with why, leaves no mark queued.
- */
-export async function publishReopenMark(config: LocalConfig, run: RunState, secrets: Record<string, string>): Promise<{ state: 'unowed' } | RecordDelivery> {
-  if (await runRecordState(config, run) !== 'published') return { state: 'unowed' };
-
-  if (!await queueRunRecord(config, run, run.driver, 'reopen', secrets)) return { state: 'pending', reason: 'it could not be queued' };
-  let delivery: RecordDelivery;
-
-  try {
-    delivery = await publishPendingRecords(config, { run: run.id });
-  } catch (cause) {
-    delivery = { state: 'pending', reason: cause instanceof Error ? cause.message : String(cause) };
-  }
-
-  if (delivery.state === 'pending') await removeQueuedReopenRecord(config, run.id);
-
-  return delivery;
 }
 
 /** Removes the provisional end of a reopened run so a later drain cannot publish it. */

@@ -40,8 +40,8 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       'branch_diverged', 'sessions_not_archived', 'judge_lease',
       // Refusals of a driver's or member's request about a run that is already past it.
       'stale_revision', 'wrong_driver', 'run_settled', 'step_not_found', 'not_hitl', 'not_waiting', 'invalid_choice', 'not_cancellable', 'not_retryable',
-      // Refusals of a retry whose mark that the run runs again did not reach teamai-reports; the run stays settled.
-      'reopen_not_published',
+      // Refusals of a retry of a run past workflows.retention, whose branches doctor --fix may have removed; the run stays settled.
+      'run_expired',
       // Refusals of a judge submit, answered to the driver; the lease and the run stay as they were.
       'lease_unknown', 'lease_settled', 'lease_judging', 'entry_closed', 'label_invalid', 'isolation_unmet', 'scoring_settings_invalid',
       // Work the driver's judge tools cannot run the scorer's model for; it stays open for another driver.

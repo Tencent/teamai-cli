@@ -16,7 +16,7 @@ import { log } from '../utils/logger.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
 import { publishRunEnd, type HandoffError } from './handoff.js';
 import { pullRequestBranches, RECORDS_DIR, RunRecordFieldsSchema } from './records.js';
-import { resolveRetention, retentionEnds, type ResolvedRetention } from './retention.js';
+import { ownRunSweptAt, resolveRetention, type ResolvedRetention } from './retention.js';
 import { parseSnapshot, snapshotPath } from './snapshot.js';
 import { AttemptIdSchema, attemptsDir, installOwner, readRun, readRuns, RunIdSchema, updateRun, withCleanupLock } from './store.js';
 import type { KeptBranchReason, RunLeftovers, RunState } from './types.js';
@@ -301,7 +301,10 @@ export interface Sweep {
 }
 
 /** The fields of a run record on teamai-reports a sweep reads. */
-const SweptRecordSchema = RunRecordFieldsSchema.extend({ prBranches: z.array(z.string()).optional().catch(undefined), reopenedAt: z.string().optional() });
+const SweptRecordSchema = RunRecordFieldsSchema.extend({
+  prBranches: z.array(z.string()).optional().catch(undefined),
+  retainedUntil: z.string().optional().catch(undefined),
+});
 
 type SweptRecord = z.infer<typeof SweptRecordSchema>;
 
@@ -393,36 +396,54 @@ async function settledRecords(config: LocalConfig): Promise<SweptRecord[]> {
     return [record.value];
   }));
 
-  return records.flat().filter((record) => record.status !== 'running' && record.reopenedAt === undefined);
+  return records.flat().filter((record) => record.status !== 'running');
 }
 
 /**
- * When run `runId` settled, and the branches its pull requests use, as both what this machine knows (`known`) and the
- * run's snapshot on teamai-reports say, as this machine last fetched it: a stale local copy, or an end record a retry
- * made old, never outranks the snapshot. Undefined while the run may still need what it left: its snapshot says it runs,
- * or another install claimed it and has not settled it since, or the snapshot cannot be read.
+ * What run `runId`'s snapshot on teamai-reports says, as this machine's sweep fetched it: `unpublished` without one;
+ * `unsettled` while it runs, while another install claimed it and has not settled it since, or when it cannot be read;
+ * else which install settled it, until when that install keeps what it left, and the branches its pull requests use.
  */
-async function currentlySettled(
-  { config, install }: { config: LocalConfig; install: string },
-  runId: string,
-  known: { settledAt: string; prBranches: string[] },
-): Promise<{ settledAt: string; prBranches: string[] } | undefined> {
-  if (!usesBranchWorktree(config)) return known;
+type PublishedRun =
+  | { kind: 'unpublished' }
+  | { kind: 'unsettled' }
+  | { kind: 'settled'; owner: string; retainedUntil?: string; prBranches: string[] };
+
+async function publishedRun({ config, install }: { config: LocalConfig; install: string }, runId: string): Promise<PublishedRun> {
+  if (!usesBranchWorktree(config)) return { kind: 'unpublished' };
   const { readReportsOriginFile } = await import('../utils/reports-branch.js');
   const text = await readReportsOriginFile(getReportsDir(config), snapshotPath(runId));
 
-  if (text === null) return known;
+  if (text === null) return { kind: 'unpublished' };
   const parsed = parseSnapshot(text, runId);
 
-  if (!parsed.ok) return warnNotRemoved(runId, `its snapshot on teamai-reports could not be read (${parsed.error.message})`);
+  if (!parsed.ok) {
+    warnNotRemoved(runId, `its snapshot on teamai-reports could not be read (${parsed.error.message})`);
+
+    return { kind: 'unsettled' };
+  }
+
   const snapshot = parsed.value;
 
-  if (snapshot.status === 'running' || (snapshot.owner.id !== install && Date.parse(snapshot.ownedAt) > Date.parse(snapshot.updatedAt))) return undefined;
+  if (snapshot.status === 'running' || (snapshot.owner.id !== install && Date.parse(snapshot.ownedAt) > Date.parse(snapshot.updatedAt))) return { kind: 'unsettled' };
 
-  return {
-    settledAt: Date.parse(snapshot.updatedAt) > Date.parse(known.settledAt) ? snapshot.updatedAt : known.settledAt,
-    prBranches: [...new Set([...known.prBranches, ...pullRequestBranches({ id: runId, deliveries: snapshot.deliveries })])],
-  };
+  return { kind: 'settled', owner: snapshot.owner.id, retainedUntil: snapshot.retainedUntil, prBranches: pullRequestBranches({ id: runId, deliveries: snapshot.deliveries }) };
+}
+
+/**
+ * How long past the `retainedUntil` another install published `doctor --fix` here waits before it removes what that run
+ * left: a retry its owner started just before then, which no machine tells this one about, has this long to settle.
+ */
+const OTHER_INSTALL_GRACE_MS = 7 * 86_400_000;
+
+/**
+ * When `doctor --fix` here may remove what a run of another install left: a grace period past the `retainedUntil` it
+ * published, or past `later` when a later settle published one there. Never without the first.
+ */
+function otherInstallSweepsAt(retainedUntil: string | undefined, later?: string): number | undefined {
+  if (retainedUntil === undefined) return undefined;
+
+  return Math.max(Date.parse(retainedUntil), later === undefined ? -Infinity : Date.parse(later)) + OTHER_INSTALL_GRACE_MS;
 }
 
 function warnNotRemoved(runId: string, reason: string): undefined {
@@ -507,19 +528,14 @@ function cleaned(run: RunState, by: RunLeftovers['by']): boolean {
 
 /**
  * What `teamai doctor --fix` does with settled runs: deletes again what a succeeded run could not delete as it settled,
- * and, once a run settled longer ago than `workflows.retention`, removes its branches but those a pull request uses,
- * its worktrees and kept refs, and its base pin on origin. Runs of this machine are cleaned in the checkout they ran in,
+ * and, once a run is past its `retainedUntil`, which no retry reopens, removes its branches but those a pull request
+ * uses, its worktrees and kept refs, and its base pin on origin. A run another install settled last waits a grace period
+ * more, and one that published no `retainedUntil` stays. Runs of this machine are cleaned in the checkout they ran in,
  * runs other machines published a record of in `checkout`. Running it again, or after it stopped midway, ends the same.
  */
 export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfig, 'workflows'> | null, { now, checkout }: { now: number; checkout: string }): Promise<Sweep> {
   const retention = await resolveRetention(config, team);
-
-  const expired = (settledAt: string): boolean => {
-    const ends = retentionEnds(settledAt, retention);
-
-    return ends !== undefined && ends <= now;
-  };
-
+  const due = (at: number | undefined): boolean => at !== undefined && at <= now;
   const secrets = await knownSecrets(config);
   const swept: SweptRun[] = [];
   const fresh = await refreshReports(config);
@@ -529,7 +545,7 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
   for (const run of runs.filter((item) => item.status !== 'running')) {
     const at = run.checkout ?? checkout;
 
-    if (!expired(run.updatedAt)) {
+    if (!due(ownRunSweptAt(run, retention))) {
       if (run.status === 'succeeded' && !cleaned(run, 'success')) {
         await withCleanupLock(config, run.id, async () => cleanUpSucceededRun(config, { runId: run.id, checkout: at, secrets, notPublished: await publishRunEnd(config, run.id, at) }));
       }
@@ -538,9 +554,14 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
     }
 
     if (cleaned(run, 'retention') || (run.publication !== undefined && !fresh)) continue;
-    const current = await currentlySettled(reports, run.id, { settledAt: run.updatedAt, prBranches: pullRequestBranches(run) });
+    const published = await publishedRun(reports, run.id);
 
-    if (current === undefined || !expired(current.settledAt)) continue;
+    if (published.kind === 'unsettled') continue;
+    const byOther = published.kind === 'settled' && published.owner !== reports.install;
+
+    // Another install claimed the run: its retainedUntil, not the one this copy settled with, says when no retry reopens it.
+    if (byOther && !due(otherInstallSweepsAt(published.retainedUntil))) continue;
+    const keep = new Set([...pullRequestBranches(run), ...published.kind === 'settled' ? published.prBranches : []]);
     const attempts = await attemptsOf(config, run.id);
 
     if ('error' in attempts) {
@@ -553,7 +574,7 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
       const reread = await readRun(config, run.id);
 
       if (reread === 'missing' || reread === 'corrupt' || reread.revision !== run.revision) return undefined;
-      const removed = await removeRun({ checkout: at, runId: run.id, keep: new Set(current.prBranches), attempts: attempts.names });
+      const removed = await removeRun({ checkout: at, runId: run.id, keep, attempts: attempts.names });
 
       // A ref or worktree that stayed leaves the run uncleaned, so the next sweep tries it again.
       if (removed?.complete) {
@@ -578,17 +599,20 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
   for (const record of fresh ? await settledRecords(config) : []) {
     const { endedAt } = record;
 
-    if (local.has(record.run) || endedAt === undefined || !expired(endedAt)) continue;
+    if (local.has(record.run) || endedAt === undefined || !due(otherInstallSweepsAt(record.retainedUntil))) continue;
 
     // An older teamai did not record which branches its pull requests use, so none of its branches is known to be free.
     if (record.prs?.length && record.prBranches === undefined) continue;
-    const current = await currentlySettled(reports, record.run, { settledAt: endedAt, prBranches: record.prBranches ?? [] });
+    const published = await publishedRun(reports, record.run);
 
-    if (current === undefined || !expired(current.settledAt)) continue;
+    if (published.kind === 'unsettled') continue;
+
+    if (published.kind === 'settled' && !due(otherInstallSweepsAt(record.retainedUntil, published.retainedUntil))) continue;
+    const keep = new Set([...record.prBranches ?? [], ...published.kind === 'settled' ? published.prBranches : []]);
 
     // A claim here since the runs were read makes the run this machine's, which the next sweep goes by.
     const locked = await withCleanupLock(config, record.run, async () => (
-      await readRun(config, record.run) === 'missing' ? removeRun({ checkout, runId: record.run, keep: new Set(current.prBranches), attempts: [] }) : undefined
+      await readRun(config, record.run) === 'missing' ? removeRun({ checkout, runId: record.run, keep, attempts: [] }) : undefined
     ));
 
     const removed = locked.kind === 'held' ? locked.value : undefined;

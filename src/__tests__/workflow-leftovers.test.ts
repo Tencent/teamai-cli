@@ -10,7 +10,6 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/loca
 import { readRun } from '../workflow/store.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { retryStep } from '../workflow/run-controls.js';
-import { publishPendingRecords } from '../workflow/records.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
 import { runCopyToMerge } from '../workflow/workspace.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME } from '../types.js';
@@ -420,7 +419,7 @@ describe('doctor --fix past workflows.retention', () => {
     expect(branches(origin, runId)).toEqual(before);
   });
 
-  it('goes by when the install that claimed a run settled it, and keeps the pull request branch it delivered', async () => {
+  it('goes by until when the install that claimed a run keeps it, a grace period more, and keeps the pull request branch it delivered', async () => {
     const ready = path.join(os.tmpdir(), `teamai-leftovers-ready-${process.pid}-${Date.now()}`);
     const { config, cwd, root, origin, runId } = await fixture(`schemaVersion: v1alpha1
 name: ship
@@ -453,11 +452,11 @@ steps:
 
     expect(Date.parse(ended.updatedAt)).toBeLessThan(settled);
 
-    await sweepLeftovers(config, null, { now: settled + 14 * DAY - 1, checkout: cwd });
+    await sweepLeftovers(config, null, { now: settled + 21 * DAY - 1, checkout: cwd });
 
     expect(branches(origin, runId)).toEqual(before);
 
-    await sweepLeftovers(config, null, { now: settled + 14 * DAY, checkout: cwd });
+    await sweepLeftovers(config, null, { now: settled + 21 * DAY, checkout: cwd });
 
     expect(branches(origin, runId)).toEqual(['join/p2']);
   });
@@ -475,41 +474,6 @@ steps:
     await sweepLeftovers(other.config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: other.cwd });
 
     expect(branches(origin, runId)).toEqual(before);
-  });
-
-  it('does not reopen a run whose end is on teamai-reports while teamai-reports refuses the mark that it runs again', async () => {
-    const { config, cwd, root, runId } = await fixture(FAILS_LAST);
-    shareTeam(config, root);
-    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
-    const ended = await state(config, runId);
-    const hook = path.join(config.repo.remote, 'hooks', 'pre-receive');
-    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    const published = () => JSON.parse(git(config.repo.remote, ['show', `teamai-reports:workflows/runs/${runId}.json`])) as { status: string; reopenedAt?: string };
-
-    const refused = await retryStep(config, runId, {}, 'join');
-
-    expect(refused).toEqual({ error: { code: 'reopen_not_published', message: expect.stringMatching(new RegExp(
-      `^Run ${runId} was not reopened: its end is on teamai-reports, and the mark that it runs again did not reach teamai-reports \\(.+\\)\\. `
-      + `Until it does, teamai doctor --fix on another machine may remove the branches the run needs\\. `
-      + `Retry once teamai-reports accepts pushes: teamai workflow retry ${runId} join$`,
-    )) } });
-    expect(await state(config, runId)).toMatchObject({ status: 'failed', revision: ended.revision });
-    fs.rmSync(hook);
-    await publishPendingRecords(config);
-    expect(published()).toMatchObject({ status: 'failed' });
-    expect(published().reopenedAt).toBeUndefined();
-
-    expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true, run: { status: 'running' } } });
-    expect(published().reopenedAt).toEqual(expect.any(String));
-  });
-
-  it('reopens a run whose end never reached teamai-reports while teamai-reports refuses pushes', async () => {
-    const { config, cwd, root, runId } = await fixture(FAILS_LAST);
-    shareTeam(config, root);
-    fs.writeFileSync(path.join(config.repo.remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'pending' } } });
-
-    expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true, run: { status: 'running' } } });
   });
 
   it('leaves a published run alone, with one warning, when teamai-reports cannot be fetched', async () => {
@@ -585,24 +549,6 @@ steps:
     expect(await state(config, runId)).toMatchObject({ status: 'failed', revision: ended.revision });
   });
 
-  it('keeps what a run needs that a retry reopens while doctor --fix runs', async () => {
-    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
-    shareTeam(config, root);
-    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
-    const ended = await state(config, runId);
-    const before = branches(origin, runId);
-    const release = pausesOn(root, 'push.*teamai-reports');
-
-    const retrying = retryStep(config, runId, {}, 'join');
-    await release.reached();
-    const swept = await sweepLeftovers(config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: cwd });
-    release.go();
-
-    expect(await retrying).toMatchObject({ data: { reopened: true } });
-    expect(swept.swept).toEqual([]);
-    expect(branches(origin, runId)).toEqual(before);
-  });
-
   it('keeps every run with workflows.retention never', async () => {
     const { config, cwd, origin, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
@@ -655,8 +601,8 @@ steps:
     const record = (run: string, endedAt: string, extra: object) => fs.writeFileSync(path.join(records, `${run}.json`), JSON.stringify({
       schemaVersion: 'v1alpha1', run, workflow: 'ship-issue', phase: 'end', status: 'failed', startedAt: endedAt, endedAt, username: 'ci', publishedAt: endedAt, ...extra,
     }));
-    record(ran, '2026-10-01T12:00:00.000Z', { prs: ['https://github.com/fixture/app/pull/1'], prBranches: [`teamai/${ran}/change/p1`] });
-    record(recent, '2026-11-01T12:00:00.000Z', {});
+    record(ran, '2026-10-01T12:00:00.000Z', { retainedUntil: '2026-10-15T12:00:00.000Z', prs: ['https://github.com/fixture/app/pull/1'], prBranches: [`teamai/${ran}/change/p1`] });
+    record(recent, '2026-10-20T12:00:00.000Z', { retainedUntil: '2026-11-03T12:00:00.000Z' });
 
     const swept = await sweepLeftovers(http, null, { now, checkout: cwd });
 
@@ -673,7 +619,7 @@ steps:
     const records = path.join(getReportsDir(http), 'workflows', 'runs');
     fs.mkdirSync(records, { recursive: true });
     const endedAt = '2026-10-01T12:00:00.000Z';
-    fs.writeFileSync(path.join(records, `${ran}.json`), JSON.stringify({ schemaVersion: 'v1alpha1', run: ran, workflow: 'ship', phase: 'end', status: 'failed', startedAt: endedAt, endedAt, username: 'ci', publishedAt: endedAt }));
+    fs.writeFileSync(path.join(records, `${ran}.json`), JSON.stringify({ schemaVersion: 'v1alpha1', run: ran, workflow: 'ship', phase: 'end', status: 'failed', startedAt: endedAt, endedAt, retainedUntil: '2026-10-15T12:00:00.000Z', username: 'ci', publishedAt: endedAt }));
     const broken = path.join(records, 'rfedcba9876543210.json');
     fs.writeFileSync(broken, '{"run":');
     const warn = vi.spyOn(log, 'warn');
@@ -683,5 +629,68 @@ steps:
     expect(swept.swept).toEqual([expect.objectContaining({ run: ran, branches: [`teamai/${ran}/build-0/p1`] })]);
     expect(branches(origin, ran)).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^Run record ${broken} was not read \\(.+\\), so what its run left is not removed\\.$`)));
+  });
+});
+
+describe('a run that settled longer ago than workflows.retention', () => {
+  it('is not reopened by a retry, which names the command that starts the workflow again', async () => {
+    const { config, cwd, runId } = await fixture(FAILS_LAST);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const ended = await state(config, runId);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.parse(ended.updatedAt) + 14 * DAY);
+
+    try {
+      expect(await retryStep(config, runId, {}, 'join')).toEqual({ error: {
+        code: 'run_expired',
+        message: `Run ${runId} was not reopened: it settled at ${ended.updatedAt}, and workflows.retention kept what it left until ${new Date(Date.parse(ended.updatedAt) + 14 * DAY).toISOString()}, so teamai doctor --fix may have removed its branches. Start the workflow again: teamai workflow start ship`,
+      } });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(await state(config, runId)).toEqual(ended);
+  });
+
+  it('publishes with its end until when it is kept, and nothing under workflows.retention never', async () => {
+    const { config, cwd, root, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const record = JSON.parse(git(config.repo.remote, ['show', `teamai-reports:workflows/runs/${runId}.json`])) as { endedAt: string; retainedUntil?: string };
+    expect(record.retainedUntil).toBe(new Date(Date.parse(record.endedAt) + 14 * DAY).toISOString());
+
+    const never = await fixture(FAILS_LAST);
+    never.config.workflows = { tools: {}, retention: 'never' };
+    expect(await runLocalDriver(never.config, never.runId, never.cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect((await state(never.config, never.runId)).retainedUntil).toBeUndefined();
+  });
+
+  it('is swept from another machine only a week after it was kept until', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const until = Date.parse((await state(config, runId)).retainedUntil ?? '');
+    const other = await otherInstall(config, root, origin);
+
+    expect((await sweepLeftovers(other.config, null, { now: until + 7 * DAY - 1, checkout: other.cwd })).swept).toEqual([]);
+    expect(branches(origin, runId)).toEqual(['join/p1', 'left/p1']);
+
+    expect((await sweepLeftovers(other.config, null, { now: until + 7 * DAY, checkout: other.cwd })).swept)
+      .toEqual([expect.objectContaining({ run: runId, from: 'teamai-reports' })]);
+    expect(branches(origin, runId)).toEqual([]);
+  });
+
+  it('is never swept from another machine when its record says nothing of until when it is kept', async () => {
+    const { config, cwd, origin } = await fixture(NO_DELIVERY);
+    const ran = 'r0123456789abcdef';
+    git(cwd, ['push', '-q', 'origin', `HEAD:refs/heads/teamai/${ran}/left/p1`]);
+    const http: LocalConfig = { ...config, repo: { ...config.repo, kind: 'http' } };
+    const records = path.join(getReportsDir(http), 'workflows', 'runs');
+    fs.mkdirSync(records, { recursive: true });
+    const endedAt = '2025-01-01T12:00:00.000Z';
+    fs.writeFileSync(path.join(records, `${ran}.json`), JSON.stringify({ schemaVersion: 'v1alpha1', run: ran, workflow: 'ship', phase: 'end', status: 'failed', startedAt: endedAt, endedAt, username: 'ci', publishedAt: endedAt }));
+
+    expect((await sweepLeftovers(http, null, { now: Date.parse('2026-11-03T12:00:00.000Z'), checkout: cwd })).swept).toEqual([]);
+    expect(branches(origin, ran)).toEqual(['left/p1']);
   });
 });

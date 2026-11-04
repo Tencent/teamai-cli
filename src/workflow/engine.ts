@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
+import { loadTeamConfig } from '../config.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { DriverSchema, sameDriver } from '../driver-identity.js';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
@@ -17,6 +18,7 @@ import {
 } from './expression.js';
 import { outputMismatch } from './output.js';
 import { publishPendingRecords, publishRunRecords, queueRunRecord, runRecordState, type RecordState } from './records.js';
+import { resolveRetention, retentionEnds } from './retention.js';
 import { freezeVerdicts, isUnsettled, verdictEntries } from './scoring-entries.js';
 import {
   parseTemplate, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
@@ -679,6 +681,9 @@ export async function finishRun(
 
   if (enterFinalizing(run, result, now)) return { kind: 'finalizing' };
   settleRun(run, now, result);
+  const retainedUntil = retentionEnds(now, await resolveRetention(config, await loadTeamConfig(config.repo.localPath)));
+
+  if (retainedUntil !== undefined) run.retainedUntil = new Date(retainedUntil).toISOString();
   const queued = await queueRunRecord(config, run, driver, 'end', secrets);
   run.endRecordQueued = queued;
 

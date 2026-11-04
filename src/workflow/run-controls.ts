@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
@@ -12,9 +13,10 @@ import { publishRunEnd } from './handoff.js';
 import { cleanUpSucceededRun } from './leftovers.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
-import { publishReopenMark, publishRunRecords, queueRunRecord, removeQueuedEndRecord, runRecordState } from './records.js';
+import { publishRunRecords, removeQueuedEndRecord } from './records.js';
+import { resolveRetention, runRetainedUntil } from './retention.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { isRunId, readRun, withCleanupLock } from './store.js';
+import { isRunId, withCleanupLock } from './store.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { isIsolated } from './workspace.js';
@@ -449,17 +451,16 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
 
 /** `retryStep` once doctor --fix cannot remove what the run left until it is done. */
 async function retryUnlocked(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
-  const found = isRunId(runId) ? await readRun(config, runId) : 'missing';
-  // Published before the run lock, which no network call may hold; under it, the run must still be as it was read here.
-  const mark = found === 'missing' || found === 'corrupt' || found.status === 'running' ? undefined : { revision: found.revision, delivery: await publishReopenMark(config, found, secrets) };
+  const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
 
-  if (mark?.delivery.state === 'pending') {
-    return error('reopen_not_published', `Run ${runId} was not reopened: its end is on teamai-reports, and the mark that it runs again did not reach teamai-reports (${mark.delivery.reason}). Until it does, teamai doctor --fix on another machine may remove the branches the run needs. Retry once teamai-reports accepts pushes: ${retryCommand(runId, step)}`);
-  }
+  return controlRun(config, runId, secrets, async (run, now, finish) => {
+    const retainedUntil = run.status === 'running' ? undefined : runRetainedUntil(run, retention);
 
-  let reopenQueued = false;
+    // Past it, doctor --fix on any machine may remove what the run needs, and no install coordinates a reopen with it.
+    if (retainedUntil !== undefined && retainedUntil <= Date.parse(now)) {
+      return error('run_expired', `Run ${run.id} was not reopened: it settled at ${run.updatedAt}, and workflows.retention kept what it left until ${new Date(retainedUntil).toISOString()}, so teamai doctor --fix may have removed its branches. Start the workflow again: ${restartCommand(run)}`);
+    }
 
-  const envelope = await controlRun(config, runId, secrets, async (run, now, finish) => {
     if (isIsolated(run)) {
       return error('not_retryable', `Run ${run.id} is isolated: it runs only on the machine that started it, and a step that ran again would change what it already admitted or measured. Start a new run: ${restartCommand(run)}`);
     }
@@ -505,11 +506,6 @@ async function retryUnlocked(config: LocalConfig, runId: string, secrets: Record
     if (!Array.isArray(containers)) return containers;
     const reopened = run.status !== 'running';
 
-    // An end that reached teamai-reports since the run was read needs its mark first, which a retry that starts over publishes.
-    if (reopened && (mark === undefined || run.revision !== mark.revision || (mark.delivery.state === 'unowed' && await runRecordState(config, run) === 'published'))) {
-      return error('busy', `Run ${run.id} changed while this retry started, so it was not reopened. Try again: ${retryCommand(run.id, step)}`);
-    }
-
     for (const container of containers) {
       if (container.child === target) {
         // A failed delivery delivers the same branch again; the agent's work it delivers does not change.
@@ -538,10 +534,9 @@ async function retryUnlocked(config: LocalConfig, runId: string, secrets: Record
       run.status = 'running';
       delete run.end;
       delete run.failure;
+      delete run.retainedUntil;
       await removeQueuedEndRecord(config, run.id);
       delete run.endRecordQueued;
-
-      if (mark?.delivery.state === 'unowed') reopenQueued = await queueRunRecord(config, run, run.driver, 'reopen', secrets);
     }
 
     run.revision += 1;
@@ -555,9 +550,4 @@ async function retryUnlocked(config: LocalConfig, runId: string, secrets: Record
 
     return ok(reopened && run.status === 'running' ? { ...retried, resume: `teamai workflow resume ${run.id}` } : retried);
   });
-
-  // Another machine's doctor --fix reads the run's published end until this reaches teamai-reports.
-  if (reopenQueued) await publishRunRecords(config);
-
-  return envelope;
 }

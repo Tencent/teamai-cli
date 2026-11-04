@@ -517,6 +517,12 @@ export interface RunState {
    */
   limitsFrom?: LimitsFrom;
   updatedAt: string;
+  /**
+   * Until when what the settled run left is kept: its settle time plus the `workflows.retention` its owner had then.
+   * Past it a retry does not reopen the run, and `teamai doctor --fix` may remove what it left. Absent while it runs,
+   * under `never`, and on runs settled before it was recorded.
+   */
+  retainedUntil?: string;
 }
 
 /**

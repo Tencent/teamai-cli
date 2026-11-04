@@ -26,7 +26,7 @@ import { benchmarkCells, benchmarkTable, type BenchmarkCells } from '../benchmar
 import { locateStep } from '../workflow/engine.js';
 import { benchmarkRecordPath, buildEndRecord, RECORDS_DIR, RunRecordFieldsSchema, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
 import { settledBranches, type SettledBranches } from '../workflow/leftovers.js';
-import { resolveRetention, retentionEnds, type ResolvedRetention } from '../workflow/retention.js';
+import { ownRunSweptAt, resolveRetention, type ResolvedRetention } from '../workflow/retention.js';
 import { loadTeamConfig } from '../config.js';
 import { callerProvenance, respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import { PublishedRuns, type PublishedRun, type Taker } from '../workflow-published-runs.js';
@@ -407,7 +407,7 @@ async function branchesOf(config: LocalConfig, run: RunState): Promise<Pick<RunD
   if (branches?.state !== 'kept') return branches ? { branches } : {};
   const retention = await resolveRetention(config, await loadTeamConfig(config.repo.localPath));
   const kept: KeptRunBranches = { ...branches, retention };
-  const ends = retentionEnds(run.updatedAt, retention);
+  const ends = ownRunSweptAt(run, retention);
 
   if (ends !== undefined) kept.eligibleAt = new Date(ends).toISOString();
 

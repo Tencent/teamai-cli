@@ -8,6 +8,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { loadMemberSettings, ownMemberSettings } from '../config.js';
 import { getDataHome, getTeamaiHomeDir, type LocalConfig, type TeamaiConfig } from '../types.js';
+import type { RunState } from './types.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { durationMs } from './parse.js';
 
@@ -34,6 +35,25 @@ export type ResolvedRetention = Retention & { file?: string };
 /** When what a run that settled at `settledAt` left goes past `retention`, in epoch milliseconds; undefined under `never`. */
 export function retentionEnds(settledAt: string, retention: Retention): number | undefined {
   return retention.kind === 'after' ? Date.parse(settledAt) + retention.ms : undefined;
+}
+
+/**
+ * When what settled run `run` left goes past its retention, in epoch milliseconds: the `retainedUntil` it settled with,
+ * else, on a run that settled before teamai recorded it, its settle time plus `retention`. Undefined: kept for good.
+ */
+export function runRetainedUntil(run: Pick<RunState, 'retainedUntil' | 'updatedAt'>, retention: Retention): number | undefined {
+  return run.retainedUntil !== undefined ? Date.parse(run.retainedUntil) : retentionEnds(run.updatedAt, retention);
+}
+
+/**
+ * When `doctor --fix` on the machine that owns settled run `run` removes what it left: once no retry reopens it, and once
+ * `retention`, which may have grown since, or become `never`, passed too. Undefined: never.
+ */
+export function ownRunSweptAt(run: Pick<RunState, 'retainedUntil' | 'updatedAt'>, retention: Retention): number | undefined {
+  const reopenable = runRetainedUntil(run, retention);
+  const retained = retentionEnds(run.updatedAt, retention);
+
+  return reopenable === undefined || retained === undefined ? undefined : Math.max(reopenable, retained);
 }
 
 /** The retention for `config`'s scope, warning once of each level whose value is neither a duration nor `never`. */
