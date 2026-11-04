@@ -261,17 +261,16 @@ export async function cleanUpSucceededRun(
 }
 
 /**
- * Brings back each branch succeeded run `run`'s cleanup deleted, at the commit the run recorded on it, on origin and
- * in `checkout`, before a retry reopens the run: publishing it checks each copy's branch on origin, and a step it runs
- * again may start from one. A branch already at that commit stays; one at another commit is not moved. Answers the
- * branches that are not back, and why. Run again, or after it stopped midway, it ends the same.
+ * Brings back the branch of each copy of the checkout succeeded run `run` recorded, at the commit the run recorded on
+ * it, on origin and in `checkout`, before a retry reopens the run: publishing it checks each one on origin, and a step it
+ * runs again may start from one. Cleanup may have deleted one on either side, or a claim may have brought the run here
+ * without them. A branch already at that commit stays; one at another commit is not moved. The base pin is not brought
+ * back: publishing pins it again. Answers the branches that are not back, and why. Run again, or after it stopped
+ * midway, it ends the same.
  */
-export async function restoreDeletedBranches(run: RunState, checkout: string): Promise<RunLeftovers['failed']> {
-  const wanted = (run.leftovers?.by === 'success' ? run.leftovers.deleted : []).flatMap((branch) => {
-    const commit = branch === basePinBranch(run.id) ? run.base?.commit : run.copies?.[branch]?.commit;
-
-    return commit === undefined ? [] : [{ branch, commit }];
-  });
+export async function restoreRecordedBranches(run: RunState, checkout: string): Promise<RunLeftovers['failed']> {
+  // A clone's branch and a team repo branch are not branches of this checkout.
+  const wanted = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.kind === undefined && copy.commit !== undefined ? [{ branch, commit: copy.commit }] : []));
 
   if (wanted.length === 0) return [];
   const tips = await runBranches({ checkout, runId: run.id });

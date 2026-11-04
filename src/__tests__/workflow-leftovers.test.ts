@@ -815,6 +815,27 @@ describe('a retry of a run that succeeded', () => {
     expect(again).not.toMatchObject({ data: { done: { notPublished: expect.anything() } } });
   });
 
+  it('brings back on origin a branch its cleanup deleted there only, since the host had it checked out here', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(CHOOSES);
+    shareTeam(config, root);
+    const change = `teamai/${runId}/change/p1`;
+    const release = pausesOn(root, 'push .*--delete');
+    const driving = runLocalDriver(config, runId, cwd, { autoApprove: true });
+    await release.reached();
+    git(cwd, ['worktree', 'add', '-q', path.join(root, 'host'), change]);
+    release.go();
+    expect(await driving).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
+    const tip = (await state(config, runId)).copies?.[change]?.commit;
+    expect(branches(origin, runId)).toEqual(['join/p1']);
+
+    expect(await retryStep(config, runId, {}, 'decide')).toMatchObject({ data: { reopened: true } });
+    expect(git(origin, ['rev-parse', `refs/heads/${change}`])).toBe(tip);
+
+    const again = await runLocalDriver(config, runId, cwd, { autoApprove: true });
+    expect(again).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
+    expect(again).not.toMatchObject({ data: { done: { notPublished: expect.anything() } } });
+  });
+
   it('is refused while origin refuses a branch back, naming it, and reopens the run once it takes it', async () => {
     const { config, cwd, origin, runId } = await fixture(CHOOSES);
     expect(await runLocalDriver(config, runId, cwd, { autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });

@@ -10,7 +10,7 @@ import {
 import { evaluateExpression, isRecord, isTruthy } from './expression.js';
 import { isItem, itemsAfter, itemsOf } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
-import { cleanUpSucceededRun, restoreDeletedBranches } from './leftovers.js';
+import { cleanUpSucceededRun, restoreRecordedBranches } from './leftovers.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
@@ -512,7 +512,7 @@ async function restoreForRetry(config: LocalConfig, runId: string, step: string,
   if (run === 'missing' || run === 'corrupt' || run.status !== 'succeeded' || run.leftovers?.by !== 'success') return undefined;
 
   if (retryRefusal(run, step, retention, new Date().toISOString()) || !('target' in retryTarget(run, step))) return undefined;
-  const failed = await restoreDeletedBranches(run, run.driver?.workspace ?? process.cwd());
+  const failed = await restoreRecordedBranches(run, run.driver?.workspace ?? process.cwd());
 
   if (failed.length === 0) return undefined;
   const why = failed.map(({ branch, reason }) => `Branch ${branch} is not back ${reason}.`).join(' ');
