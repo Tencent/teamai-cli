@@ -10,6 +10,7 @@ import { hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfi
 import { RUN_MODES, type RunMode } from './launch-context.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
 import { memberTools } from './tool-launch/call.js';
+import { resolveDefaultDriver } from './default-driver.js';
 import { DEFAULT_RETENTION, resolveRetention } from './workflow/retention.js';
 import {
   getDataHome,
@@ -122,6 +123,7 @@ const MEMBER_SETTING_REPORT_KEYS = [
   'workflows.sandbox',
   'workflows.allow.network',
   'workflows.retention',
+  'workflows.driver',
   'recallEnabled',
   'contributeHintEnabled',
   'mrHintEnabled',
@@ -275,6 +277,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
     if (key === 'workflows.retention') return asJsonTree(selectedTeam?.workflows?.retention);
 
+    if (key === 'workflows.driver') return asJsonTree(selectedTeam?.workflows?.driver);
+
     if (key === 'updatePolicy') return selectedTeam?.autoUpdate === false ? 'skip' : selectedTeam?.autoUpdate === true ? 'auto' : undefined;
     const mode = publishMode(key);
 
@@ -292,6 +296,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
     if (key === 'workflows.retention') return DEFAULT_RETENTION;
 
+    if (key === 'workflows.driver') return 'local';
+
     if (key === 'recallEnabled') return false;
 
     if (key === 'contributeHintEnabled' || key === 'mrHintEnabled' || key === 'usageReportEnabled') return true;
@@ -308,6 +314,7 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
   const publishing = SessionPolicy.publish(ctx.localConfig, ctx.teamConfig).policies;
   const retention = await resolveRetention(ctx.localConfig, ctx.teamConfig);
+  const defaultDriver = await resolveDefaultDriver(ctx.localConfig);
 
   const levelsFor = (key: string): MemberSettingSource[] => {
     const parts = reportPathParts(key);
@@ -379,9 +386,12 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
 
     if (machineShadowed && machineValue !== undefined) levels.push(settingSource('machine', machineValue, machineFile, undefined, false));
 
-    // resolveRetention skips a wrong value, and the next level decides: every level above the one it took is unused.
-    if (key === 'workflows.retention') {
-      const decided = levels.findIndex((level) => (level.level === 'default' ? retention.file === undefined : level.file === retention.file));
+    // resolveRetention and resolveDefaultDriver skip a wrong value, and the next level decides: every level above the one
+    // they took is unused.
+    const resolved = key === 'workflows.retention' ? retention : key === 'workflows.driver' ? defaultDriver : undefined;
+
+    if (resolved) {
+      const decided = levels.findIndex((level) => (level.level === 'default' ? resolved.file === undefined : level.file === resolved.file));
 
       return levels.map((level, at) => (at < decided ? { ...level, used: false } : level));
     }
@@ -408,6 +418,8 @@ export async function memberSettingsReport(ctx: { localConfig: LocalConfig; team
     if (key === 'usageReportEnabled') return isUsageReportEnabled(ctx.localConfig, ctx.teamConfig ?? {});
 
     if (key === 'workflows.retention') return retention.text;
+
+    if (key === 'workflows.driver') return defaultDriver.text;
 
     if (key === 'coAuthorEnabled') return resolveCoAuthor(ctx.localConfig, ctx.teamConfig ?? {}) ?? true;
     const mode = publishMode(key);

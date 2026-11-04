@@ -17,8 +17,11 @@ const LOCAL = DriverNameSchema.parse('local');
 /** What a start decides by default: drive the run here, leave it awaiting a driver this machine does not run, or leave it to any driver. */
 export type DefaultDrive = { drive: DriverName } | { awaits: DriverName } | { unassigned: true };
 
+/** A default driver, the name it is written as, and the file that set it: none for `local` when no level sets one. */
+export interface ResolvedDefaultDriver { driver: Exclude<Driver, 'skill'>; text: string; file?: string }
+
 /** The first level of `config`'s scope whose `workflows.driver` names a driver a default may be, else `local`. */
-async function defaultDriver(config: LocalConfig): Promise<Exclude<Driver, 'skill'>> {
+export async function resolveDefaultDriver(config: LocalConfig): Promise<ResolvedDefaultDriver> {
   const machineFile = path.join(getTeamaiHomeDir(), 'config.yaml');
   const scopeFile = config.scope === 'user' ? machineFile : path.join(getDataHome(config), 'config.yaml');
 
@@ -34,12 +37,17 @@ async function defaultDriver(config: LocalConfig): Promise<Exclude<Driver, 'skil
     if (written === undefined) continue;
     const parsed = parseDriver(written);
 
-    if (parsed.ok && parsed.driver !== 'skill') return parsed.driver;
+    if (parsed.ok && parsed.driver !== 'skill') {
+      const { driver } = parsed;
+
+      return { driver, text: driver === 'local' || driver === 'none' ? driver : driver.external, file };
+    }
+
     const reason = parsed.ok ? 'the skill driver needs a coding session, so it drives only a run started with --driver skill' : parsed.reason;
     warnOnce(`Ignoring workflows.driver in ${file}: ${reason}.`);
   }
 
-  return 'local';
+  return { driver: 'local', text: 'local' };
 }
 
 /** Whether this machine drives runs for driver `name`: only `local`, until driver definitions are resolved from `config`'s member and team. */
@@ -49,7 +57,7 @@ export async function drivesHere(_config: LocalConfig, name: DriverName): Promis
 
 /** What a start in `config`'s scope does without `--driver`, from `workflows.driver`. */
 export async function driveByDefault(config: LocalConfig): Promise<DefaultDrive> {
-  const driver = await defaultDriver(config);
+  const { driver } = await resolveDefaultDriver(config);
 
   if (driver === 'none') return { unassigned: true };
   const name = driver === 'local' ? LOCAL : driver.external;
