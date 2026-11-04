@@ -230,6 +230,27 @@ describe('hook-handlers registry', () => {
     delete process.env.TEAMAI_UPVOTE_JUDGE;
   });
 
+  it('lets a background update finish its registry, install and hook-refresh budgets (#1685)', async () => {
+    vi.useFakeTimers();
+    mockDoUpdate.mockImplementationOnce(() => new Promise((resolve) => setTimeout(resolve, 80_000)));
+    const handlers = buildHandlerRegistry().filter((r) => r.handler.name === 'update');
+    const dispatcher = createDispatcher({ handlers, localConfig: null });
+    let settled = false;
+    const dispatch = dispatcher.dispatch('stop', '*', {}, 'copilot', 'background').then((result) => {
+      settled = true;
+      return result;
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect((await dispatch).errors).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('returns registrations for all expected events', () => {
     const registry = buildHandlerRegistry();
     const events = new Set(registry.map((r) => r.event));

@@ -2,6 +2,13 @@ import type { LocalConfig, TeamaiConfig } from './types.js';
 
 export type UpdatePolicy = 'auto' | 'prompt' | 'skip';
 
+export const VERSION_CHECK_TIMEOUT = 5_000;
+export const INSTALL_TIMEOUT = 60_000;
+export const HOOK_REFRESH_TIMEOUT = 15_000;
+
+/** Cover every updater subprocess plus lock/config work before detached dispatch exits. */
+export const UPDATE_BUDGET_MS = VERSION_CHECK_TIMEOUT + INSTALL_TIMEOUT + HOOK_REFRESH_TIMEOUT + 10_000;
+
 /**
  * Resolve the effective update policy.
  *

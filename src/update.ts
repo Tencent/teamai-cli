@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import fse from 'fs-extra';
 import { z } from 'zod';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigForDir } from './config.js';
-import { resolveEffectiveUpdatePolicy } from './update-policy.js';
+import { resolveEffectiveUpdatePolicy, VERSION_CHECK_TIMEOUT, INSTALL_TIMEOUT, HOOK_REFRESH_TIMEOUT } from './update-policy.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { log } from './utils/logger.js';
 import { errnoCode, expandHome, ensureDir } from './utils/fs.js';
@@ -32,8 +32,6 @@ const PUBLIC_REGISTRY = 'https://registry.npmjs.org';
 /** Tencent internal tnpm registry (for @tencent/ scoped package). */
 const TNPM_REGISTRY = 'http://r.tnpm.oa.com';
 
-const VERSION_CHECK_TIMEOUT = 5000;
-const INSTALL_TIMEOUT = 60000;
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 // ─── Helpers ────────────────────────────────────────────
@@ -1062,7 +1060,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
         : { cmd: 'teamai', args: ['hooks', 'inject', '--silent'] };
 
       await execFileAsync(refresh.cmd, refresh.args, {
-        timeout: 15_000,
+        timeout: HOOK_REFRESH_TIMEOUT,
         windowsHide: true,
       });
       log.success('Refreshed hooks with new version');
