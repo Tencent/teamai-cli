@@ -461,6 +461,17 @@ describe('retry after the run dir was removed', () => {
     expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'label2'))).toMatchObject({ retried: { runsAgain: ['evidence2'] }, reopened: false });
   });
 
+  it('runs again the enclosing workflow\'s step whose output a retried step of an inline workflow reads in the run dir', async () => {
+    const f = await fixture(`  - id: prep\n    command: echo prep\n    output: { dir: string }\n  - id: inner\n    needs: [prep]\n    workflow:\n      steps:\n        - id: use\n          command: echo use\n          env: { DIR: "{{ steps.prep.outputs.dir }}" }`);
+    const prep = data(await f.next()).lease;
+    data(await reportAttempt(f.config, f.id, { attempt: prep.attempt, revision: prep.revision, driver, outcome: 'success', outputs: { dir: path.join(runScratchDir(f.config, f.id), 'prep') } }));
+    await f.report(data(await f.next()).lease, 'failed');
+    expect(data(await f.next()).done.outcome).toBe('failed');
+
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'inner.use'))).toMatchObject({ retried: { step: 'inner.use', runsAgain: ['prep'] }, reopened: true });
+    expect(data(await f.next()).lease).toMatchObject({ step: 'prep' });
+  });
+
   it.each([
     ['reads that path only in if', '    if: steps.evidence.outputs.dir != \'\'', (runDir: string) => path.join(runDir, 'group')],
     ['reads a path outside the run dir', '    env: { DIR: "{{ steps.evidence.outputs.dir }}" }', (_runDir: string, root: string) => path.join(root, 'group')],

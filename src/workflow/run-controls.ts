@@ -348,14 +348,15 @@ function holdsGonePathIn(value: JsonValue | undefined, dir: string): boolean {
 /**
  * The steps whose outputs `state`'s templates render where they hold a path inside `runDir`, the run's
  * `$TEAMAI_RUN_DIR`, that is gone: its run's end removed it, and a step that ran since a retry reopened the run brought
- * back only its own. A read only in `if` renders nothing, so it brings no step.
+ * back only its own. A read only in `if` renders nothing, so it brings no step. `here` are those of `state`'s own
+ * workflow; `enclosing`, by id, those of the workflows around it.
  */
-function runDirProducers(input: { scope: Scope; states: StepState[]; state: StepState; runDir: string }): StepState[] {
+function runDirProducers(input: { scope: Scope; states: StepState[]; state: StepState; runDir: string }): { here: StepState[]; enclosing: string[] } {
   const { scope, states, state, runDir } = input;
   const id = localId(scope, state);
   const definition = scope.definition.steps.find((step) => step.id === id);
 
-  if (!definition) return [];
+  if (!definition) return { here: [], enclosing: [] };
   const bindsItem = Object.hasOwn(scope, 'item') || definition.forEach !== undefined;
   const context = contextOf(scope, states, state);
 
@@ -369,7 +370,10 @@ function runDirProducers(input: { scope: Scope; states: StepState[]; state: Step
     read.root === 'steps' && read.field === 'outputs' && read.step !== id && holdsGonePathIn(pathValue(read, context), runDir) ? [read.step] : []
   )));
 
-  return states.filter((other) => producers.has(localId(scope, other)));
+  const here = states.filter((other) => producers.has(localId(scope, other)));
+  const own = new Set(here.map((other) => localId(scope, other)));
+
+  return { here, enclosing: [...producers].filter((producer) => !own.has(producer)) };
 }
 
 /**
@@ -380,6 +384,8 @@ function runDirProducers(input: { scope: Scope; states: StepState[]; state: Step
 function retryContainers(run: RunState, target: StepState, runDir: { path: string; isGone: boolean }): RetryContainer[] | WorkflowEnvelope {
   const containers: RetryContainer[] = [];
   let child = target;
+  // The ids of the steps of the workflows around this one that a step running again reads gone run-dir paths from.
+  const enclosing = new Set<string>();
 
   for (;;) {
     const located = locateStep(run, child.id);
@@ -419,12 +425,15 @@ function retryContainers(run: RunState, target: StepState, runDir: { path: strin
       writers = (state, isWriter) => {
         const producers = runDirProducers({ scope, states, state, runDir: runDir.path });
 
-        return [...runDir.isGone || isWriter || producers.length > 0 ? confinedWriters({ scope, states, state, isWriter }) : [], ...producers];
+        for (const id of producers.enclosing) enclosing.add(id);
+
+        return [...runDir.isGone || isWriter || producers.here.length > 0 ? confinedWriters({ scope, states, state, isWriter }) : [], ...producers.here];
       };
     }
 
     const cone = new Set([child]);
-    const written = new Set<StepState>();
+    // The steps of this workflow an inner one read gone run-dir paths from run again, as a step of its own would bring them.
+    const written = new Set(isItem(child) ? [] : states.filter((state) => enclosing.delete(localId(scope, state))));
 
     for (let changed = true; changed;) {
       changed = false;
