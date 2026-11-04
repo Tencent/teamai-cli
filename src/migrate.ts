@@ -52,14 +52,16 @@ const SKIP_ENTRIES = new Set<string>([
 /**
  * The transient files `acquireLock` makes next to a lock (src/update.ts): the
  * `<lock>.<uuid>.tmp` of its exclusive create, the reclaim `.sentinel` (with its
- * own create temp and `.reclaim-<uuid>`), and the reclaim's `.new-<uuid>`. A
- * contending process creates and removes them while the copy runs (#760).
+ * own create temp, the `.steal-<uuid>` claims that remove a dead one, each with
+ * its create temp, and an older teamai's `.reclaim-<uuid>`), and the reclaim's
+ * `.new-<uuid>`. A contending process creates and removes them while the copy
+ * runs (#760).
  */
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 const LOCK_ARTIFACT = new RegExp(
   `^(?:${[SYNC_LOCK_FILENAME, '.update-lock'].map((l) => l.replace(/\./g, '\\.')).join('|')})` +
-    `(?:\\.sentinel(?:\\.${UUID}\\.tmp|\\.reclaim-${UUID})?|\\.${UUID}\\.tmp|\\.new-${UUID})$`,
+    `(?:\\.sentinel(?:\\.steal-${UUID})*(?:\\.${UUID}\\.tmp|\\.reclaim-${UUID})?|\\.${UUID}\\.tmp|\\.new-${UUID})$`,
 );
 
 /** Whether a top-level entry stays behind: a SKIP_ENTRIES name or a lock artifact. */
