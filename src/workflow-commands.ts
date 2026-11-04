@@ -605,7 +605,8 @@ const ShortcutDoneSchema = z.object({
 
 /**
  * Starts `workflow` as the shortcut `command` does, as the CLI, so an agent session runs the command as it did before
- * it was a workflow, on the driver `workflows.driver` names, else local: it shows the
+ * it was a workflow, on the driver `workflows.driver` names, else local, and inside a workflow attempt on the local
+ * driver in this process, as part of the step that runs the command: it shows the
  * lines its steps say as they run, then prints the run's `outputs.text` and exits with its `outputs.exit_code`, 1 when
  * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
  * text. A private run starts no drain.
@@ -656,7 +657,9 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
   }
 
   const isPrivate = cached.definition.private === true;
-  const decided = await driveByDefault(config);
+  // Inside a workflow attempt the run is part of the step that runs this command, so the step's own process drives it,
+  // under the step's lease, place and timeout, rather than leaving it to the driver workflows.driver names.
+  const decided: DefaultDrive = nestedCall(process.env) === undefined ? await driveByDefault(config) : { kind: 'drive', driver: LOCAL_DRIVER };
   const driver = decided.kind === 'drive' ? decided.driver : undefined;
   const say = (line: string): void => { (json ? process.stderr : process.stdout).write(`${line}\n`); };
 

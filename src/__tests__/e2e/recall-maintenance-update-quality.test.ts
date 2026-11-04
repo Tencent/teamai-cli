@@ -62,13 +62,14 @@ describe('recall maintenance --update-quality', () => {
   let sandbox: string;
   let home: string;
   let docs: string;
+  let remote: string;
 
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
 
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-update-quality-'));
     home = path.join(sandbox, 'home');
-    const remote = path.join(sandbox, 'remote.git');
+    remote = path.join(sandbox, 'remote.git');
     const localPath = path.join(home, '.teamai', 'team-repo');
     const work = path.join(sandbox, 'work');
     docs = path.join(localPath, 'docs');
@@ -174,6 +175,42 @@ describe('recall maintenance --update-quality', () => {
     expect(stderr).toContain('failed with tool_failed: AI call failed (tool: claude): Authentication failed');
     expect(code).toBe(1);
     expect(fs.existsSync(path.join(docs, 'guide.md.draft.md'))).toBe(false);
+  });
+
+  it('drives its own run inside the step of a team workflow that runs it, whatever driver the member set', async () => {
+    const team = path.join(fs.mkdtempSync(path.join(sandbox, 'team-edit-')), 'team');
+    git(['clone', '-q', remote, team], sandbox);
+    fs.mkdirSync(path.join(team, 'workflows'));
+    fs.writeFileSync(path.join(team, 'workflows', 'weekly-quality.yaml'), [
+      'schemaVersion: v1alpha1', 'name: weekly-quality', 'description: Drafts updates of the stale entries.',
+      'steps:', '  - id: drafts', '    command: teamai recall maintenance --update-quality', '',
+    ].join('\n'));
+    git(['add', '-A'], team);
+    git(['commit', '-qm', 'weekly quality'], team);
+    git(['push', '-q', 'origin', 'main'], team);
+    const pulled = await runCLI(['pull'], { home, cwd: sandbox, bin: sandbox });
+    expect(pulled.code, pulled.stderr).toBe(0);
+    const config = path.join(home, '.teamai', 'config.yaml');
+    const member = fs.readFileSync(config, 'utf8');
+    // Outside a run this leaves the shortcut's run open for another driver; inside a step, the step's process drives it.
+    fs.writeFileSync(config, `${member}workflows:\n  driver: none\n`);
+    const bin = fs.mkdtempSync(path.join(sandbox, 'bin-'));
+    fakeClaude(bin, undefined);
+    for (const id of ['guide', 'lesson']) fs.rmSync(path.join(docs, `${id}.md.draft.md`), { force: true });
+
+    try {
+      const { code, stdout, stderr } = await runCLI(['workflow', 'start', 'weekly-quality', '--driver', 'local'], { home, cwd: sandbox, bin });
+      const runs = path.join(home, '.teamai', 'workflows', 'runs');
+      const states = fs.readdirSync(runs).filter((file) => /^r[0-9a-f]+\.json$/.test(file))
+        .map((file) => JSON.parse(fs.readFileSync(path.join(runs, file), 'utf8')) as { name: string; status: string });
+
+      expect(JSON.parse(stdout.trim().split('\n').at(-1) ?? '')).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+      expect(code, stderr).toBe(0);
+      expect(states.filter((state) => state.name === 'weekly-quality' || state.status !== 'succeeded')).toEqual([{ name: 'weekly-quality', status: 'succeeded' }].map((state) => expect.objectContaining(state)));
+      expect(fs.readFileSync(path.join(docs, 'lesson.md.draft.md'), 'utf8')).toBe('---\ndate: 2026-11-04\n---\n\n# lesson, updated');
+    } finally {
+      fs.writeFileSync(config, member);
+    }
   });
 
   it('prints the run\'s envelope with --json, and what it said on stderr', async () => {
