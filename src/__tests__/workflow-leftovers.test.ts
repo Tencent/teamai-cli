@@ -10,6 +10,7 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/loca
 import { readRun } from '../workflow/store.js';
 import { claimRun, publishRun } from '../workflow/handoff.js';
 import { retryStep } from '../workflow/run-controls.js';
+import { publishPendingRecords } from '../workflow/records.js';
 import { sweepLeftovers } from '../workflow/leftovers.js';
 import { runCopyToMerge } from '../workflow/workspace.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME } from '../types.js';
@@ -447,6 +448,41 @@ steps:
     await sweepLeftovers(other.config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: other.cwd });
 
     expect(branches(origin, runId)).toEqual(before);
+  });
+
+  it('does not reopen a run whose end is on teamai-reports while teamai-reports refuses the mark that it runs again', async () => {
+    const { config, cwd, root, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const ended = await state(config, runId);
+    const hook = path.join(config.repo.remote, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const published = () => JSON.parse(git(config.repo.remote, ['show', `teamai-reports:workflows/runs/${runId}.json`])) as { status: string; reopenedAt?: string };
+
+    const refused = await retryStep(config, runId, {}, 'join');
+
+    expect(refused).toEqual({ error: { code: 'reopen_not_published', message: expect.stringMatching(new RegExp(
+      `^Run ${runId} was not reopened: its end is on teamai-reports, and the mark that it runs again did not reach teamai-reports \\(.+\\)\\. `
+      + `Until it does, teamai doctor --fix on another machine may remove the branches the run needs\\. `
+      + `Retry once teamai-reports accepts pushes: teamai workflow retry ${runId} join$`,
+    )) } });
+    expect(await state(config, runId)).toMatchObject({ status: 'failed', revision: ended.revision });
+    fs.rmSync(hook);
+    await publishPendingRecords(config);
+    expect(published()).toMatchObject({ status: 'failed' });
+    expect(published().reopenedAt).toBeUndefined();
+
+    expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true, run: { status: 'running' } } });
+    expect(published().reopenedAt).toEqual(expect.any(String));
+  });
+
+  it('reopens a run whose end never reached teamai-reports while teamai-reports refuses pushes', async () => {
+    const { config, cwd, root, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    fs.writeFileSync(path.join(config.repo.remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'pending' } } });
+
+    expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true, run: { status: 'running' } } });
   });
 
   it('leaves a published run alone, with one warning, when teamai-reports cannot be fetched', async () => {

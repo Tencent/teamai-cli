@@ -516,6 +516,39 @@ export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflow
   await fs.rename(tmp, target);
 }
 
+/** The part of a queued start record that says a retry queued it to reopen its run. */
+const QueuedReopenSchema = z.object({ reopenedAt: z.string() });
+
+/** Removes the mark that run `runId` runs again from the queue, so a drain cannot publish it for a run that did not reopen. */
+async function removeQueuedReopenRecord(config: LocalConfig, runId: string): Promise<void> {
+  const file = path.join(pendingDir(config), `${runId}.start.json`);
+  const text = await fs.readFile(file, 'utf-8').catch(() => undefined);
+
+  if (text !== undefined && QueuedReopenSchema.safeParse(jsonOrUndefined(text)).success) await fs.rm(file, { force: true });
+}
+
+/**
+ * Publishes now the mark that settled run `run` runs again, which a retry lands before it reopens a run whose end
+ * reached teamai-reports: until then doctor --fix on another machine reads that end as the run's last word. Unowed when
+ * its end never reached teamai-reports, so no mark is needed first. Pending, with why, leaves no mark queued.
+ */
+export async function publishReopenMark(config: LocalConfig, run: RunState, secrets: Record<string, string>): Promise<{ state: 'unowed' } | RecordDelivery> {
+  if (await runRecordState(config, run) !== 'published') return { state: 'unowed' };
+
+  if (!await queueRunRecord(config, run, run.driver, 'reopen', secrets)) return { state: 'pending', reason: 'it could not be queued' };
+  let delivery: RecordDelivery;
+
+  try {
+    delivery = await publishPendingRecords(config, { run: run.id });
+  } catch (cause) {
+    delivery = { state: 'pending', reason: cause instanceof Error ? cause.message : String(cause) };
+  }
+
+  if (delivery.state === 'pending') await removeQueuedReopenRecord(config, run.id);
+
+  return delivery;
+}
+
 /** Removes the provisional end of a reopened run so a later drain cannot publish it. */
 export async function removeQueuedEndRecord(config: LocalConfig, runId: string): Promise<void> {
   await fs.rm(path.join(pendingDir(config), `${runId}.end.json`), { force: true });
