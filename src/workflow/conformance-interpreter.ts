@@ -35,6 +35,20 @@ export function controlsYaml(steps: string): string {
 /** A JSON object a scenario sends as a body, or that an answer, the run file, or its end record must match. */
 export type ScenarioJson = { [key: string]: JsonValue };
 
+/** What a report body writes for the run's `$TEAMAI_RUN_DIR`, an absolute path no scenario knows before the run starts. */
+const RUN_DIR = '<run-dir>';
+
+/** `value` with `RUN_DIR` in each of its strings replaced by `dir`. */
+function withRunDir(value: JsonValue, dir: string): JsonValue {
+  if (typeof value === 'string') return value.replaceAll(RUN_DIR, dir);
+
+  if (Array.isArray(value)) return value.map((entry) => withRunDir(entry, dir));
+
+  if (value === null || typeof value !== 'object') return value;
+
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, withRunDir(entry, dir)]));
+}
+
 /**
  * A benchmark suite as files: `benchmarks/<name>/suite.yaml` and `tasks/<task>.yaml`, where `{{startingCommit}}` in a
  * task stands for the commit the runner's project starts at. The interpreter never touches the disk.
@@ -170,6 +184,7 @@ export type ConformanceOperation =
     revision?: number;
     /** Fields added to the `changes` the harness reports from the workspace of this operation's saved lease. */
     changes?: ScenarioJson;
+    /** What the driver reports; `<run-dir>` in a string stands for the run's `$TEAMAI_RUN_DIR`, and needs a runner with `runDir`. */
     body: ScenarioJson;
     expect: ScenarioJson;
   };
@@ -490,6 +505,14 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         Object.assign(body, operation.body);
 
         if (operation.changes) body.changes = leasedChanges(lease, operation.changes);
+
+        if (JSON.stringify(body).includes(RUN_DIR)) {
+          if (!runner.runDir) throw new Error(`A scenario that reports ${RUN_DIR} needs a runner with a runDir`);
+          const dir = await runner.runDir(runId);
+
+          for (const [key, value] of Object.entries(body)) body[key] = withRunDir(value, dir);
+        }
+
         expect(await client.report(runId, body)).toMatchObject(operation.expect);
         break;
       }

@@ -7,6 +7,21 @@ import { limitsConformanceScenarios } from '../limits-conformance.js';
 import { confinedConformanceScenarios } from './confined.js';
 import { primitiveConformanceScenarios } from './primitives.js';
 
+/** Two groups, each a step that reports a directory under `$TEAMAI_RUN_DIR` and one that reads it in its env. */
+const RUN_DIR_GROUPS = `schemaVersion: v1alpha1
+name: build
+description: Read a directory an earlier step reported under the run dir.
+steps:
+${['one', 'two'].map((group) => `  - id: evidence-${group}
+    needs: []
+    command: echo evidence
+    output: { dir: string }
+  - id: label-${group}
+    needs: [evidence-${group}]
+    command: echo label
+    env: { DIR: "{{ steps.evidence-${group}.outputs.dir }}" }
+`).join('')}`;
+
 const TWO_STEPS = `schemaVersion: v1alpha1
 name: build
 description: Exercise the workflow protocol.
@@ -777,6 +792,36 @@ workflowConformanceScenarios.push(
       { kind: 'report', lease: 'again', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
       { kind: 'next', saveAs: 'two', expect: { data: { lease: { step: 'two', pass: 1 } } } },
     ],
+  },
+  {
+    name: 'a retry runs again each step whose run-dir path the retried step reads once that path is gone, after another retry and a step that ran since, and none whose path is there',
+    workflowName: 'build', yaml: RUN_DIR_GROUPS,
+    operations: [
+      { kind: 'next', saveAs: 'evidence-one', expect: { data: { lease: { step: 'evidence-one' } } } },
+      { kind: 'next', saveAs: 'evidence-two', running: ['evidence-one'], expect: { data: { lease: { step: 'evidence-two' } } } },
+      { kind: 'runFiles', files: { 'one/evidence.json': '{}', 'two/evidence.json': '{}' } },
+      { kind: 'report', lease: 'evidence-one', body: { outcome: 'success', outputs: { dir: '<run-dir>/one' } }, expect: { data: { accepted: true } } },
+      { kind: 'report', lease: 'evidence-two', body: { outcome: 'success', outputs: { dir: '<run-dir>/two' } }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'label-one', expect: { data: { lease: { step: 'label-one' } } } },
+      { kind: 'next', saveAs: 'label-two', running: ['label-one'], expect: { data: { lease: { step: 'label-two' } } } },
+      { kind: 'report', lease: 'label-one', body: { outcome: 'failed' }, expect: { data: { accepted: true } } },
+      { kind: 'report', lease: 'label-two', body: { outcome: 'failed' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'retry', step: 'label-one', expect: { data: { retried: { step: 'label-one', pass: 2, runsAgain: ['evidence-one'] }, reopened: true } } },
+      { kind: 'next', saveAs: 'evidence-one-again', expect: { data: { lease: { step: 'evidence-one', pass: 2 } } } },
+      { kind: 'runFiles', files: { 'one/evidence.json': '{}' } },
+      { kind: 'report', lease: 'evidence-one-again', body: { outcome: 'success', outputs: { dir: '<run-dir>/one' } }, expect: { data: { accepted: true } } },
+      { kind: 'retry', step: 'label-two', expect: { data: { retried: { step: 'label-two', pass: 2, runsAgain: ['evidence-two'] }, reopened: false } } },
+      { kind: 'next', saveAs: 'label-one-again', expect: { data: { lease: { step: 'label-one', pass: 2 } } } },
+      { kind: 'retry', step: 'label-one', expect: { data: { retried: { step: 'label-one', pass: 3, runsAgain: [] }, reopened: false } } },
+    ],
+    expectState: {
+      status: 'running',
+      steps: [
+        { id: 'evidence-one', status: 'succeeded', pass: 2 }, { id: 'label-one', status: 'pending', pass: 3 },
+        { id: 'evidence-two', status: 'pending', pass: 2 }, { id: 'label-two', status: 'pending', pass: 2 },
+      ],
+    },
   },
   {
     name: 'retry stuck lease invalidates its old report', workflowName: 'build', yaml: TWO_STEPS,
