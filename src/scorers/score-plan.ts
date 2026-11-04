@@ -16,6 +16,7 @@ import { findRunConfig } from '../workflow/run-location.js';
 import { workflowBatch } from '../workflow/scope.js';
 import { readRun } from '../workflow/store.js';
 import type { RunPass } from '../workflow/loop.js';
+import type { StepState } from '../workflow/step-state.js';
 import type { RunState, StepScorers, WorkflowStep } from '../workflow/types.js';
 import { batchesScorers } from './batch.js';
 import { STAGES, type ScorerDefinition, type Stage } from './definition.js';
@@ -136,14 +137,35 @@ function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
 
-/** What the store needs of a run: whether it ended, and when it last changed; a run gone reads as undefined. */
+/** The plan group a `score` item of a `teamai-score` instance judges: its subject, and its scorers, the mark's group. */
+const ScoreItemSchema = z.object({ subject: z.string(), scorers: z.string() });
+
+/** Whether `step` was ever leased: it holds an attempt, settled with one, or a pass of it did. */
+function wasLeased(step: StepState): boolean {
+  return ('attempt' in step && step.attempt !== undefined) || (step.passes ?? []).some((pass) => pass.attempt !== undefined);
+}
+
+/** The subject and group of each `judge` step of `run` that was leased, as `<subject>\n<group>`. */
+function judgedGroups(run: RunState): Set<string> {
+  return new Set(run.steps.flatMap((step) => {
+    if (!step.id.endsWith('.judge') || !wasLeased(step)) return [];
+    const item = ScoreItemSchema.safeParse(run.steps.find((each) => each.id === step.id.slice(0, -'.judge'.length))?.item);
+
+    return item.success ? [`${item.data.subject}\n${item.data.scorers}`] : [];
+  }));
+}
+
+/** What the store needs of a run: whether it ended, when it last changed and which groups it judged; a run gone reads as undefined. */
 export function markFacts(config: LocalConfig, now: string): MarkFacts {
   return {
     now,
     readRun: async (runId) => {
       const run = await readRun(config, runId);
 
-      return run === 'missing' || run === 'corrupt' ? undefined : { ended: run.status !== 'running', changedAt: run.updatedAt };
+      if (run === 'missing' || run === 'corrupt') return undefined;
+      const judged = judgedGroups(run);
+
+      return { ended: run.status !== 'running', changedAt: run.updatedAt, judgeRan: (subject, group) => judged.has(`${subject}\n${group}`) };
     },
   };
 }

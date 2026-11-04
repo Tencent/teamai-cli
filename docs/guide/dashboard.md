@@ -84,7 +84,7 @@ Score runs: rd9b944dbf01dff5a Succeeded · r8fd8dc67cfd476f5 Running
 | Not sampled at 20% | The scorer's `samplingRate` left the pass out. | Nothing, or judge it anyway with the command shown. |
 | Judging in `<run>` | That `teamai-score` run holds the scorer and has not ended. | Open the run to see which of its steps waits. |
 | Waiting for CI | The pull request's CI has not finished. Waiting is not a lapse. | Nothing: the next `teamai-finished-sessions` judges it once CI has. |
-| Lapsed 3/4 · expires `<time>` | Score runs ended that many times without labelling it. | Nothing: the next `teamai-finished-sessions` starts it again, until the fourth lapse or the expiry. Or judge it now with the command shown. |
+| Lapsed 3/4 · expires `<time>` | Score runs ended that many times without labelling it. A run that ended before its judge started counts none, for 14 days after the first run started it. | Nothing: the next `teamai-finished-sessions` starts it again, until the fourth lapse or the expiry. Or judge it now with the command shown. |
 | Failed · `<code>` | The attempt ended with that code, and automatic judging does not start it again. The sentence under it says why. | Fix the cause it names, then run the command shown. |
 | Expired | It was not judged within 14 days of the run's last change. | Judge it with the command shown. |
 

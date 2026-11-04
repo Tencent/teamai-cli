@@ -34,7 +34,8 @@ export type MarkKey =
 /**
  * `open`: the `teamai-score` run `run` launched it and has not ended. `waiting`: its group waits for CI, which is no
  * lapse. `lapsed`: the run that launched it ended with it still open, `lapses` times; automatic judging starts it again
- * until the fourth. `expired`: a pass whose run last changed more than 14 days ago, or that long after it was asked for.
+ * until the fourth. A run that ended before a judge attempt of its group ran counts no lapse, until 14 days after the
+ * mark first opened. `expired`: a pass whose run last changed more than 14 days ago, or that long after it was asked for.
  */
 export type MarkState =
   | { kind: 'unmarked' }
@@ -49,10 +50,12 @@ export type MarkState =
 /** What a write or a settle of the launch says: a label, a failed attempt, or CI that has not finished. */
 export type MarkOutcome = { kind: 'labelled' } | { kind: 'failed'; code: JudgeFailureCode; usage?: ConfinedUsage } | { kind: 'waiting' };
 
-/** What the store needs of a run: whether it ended, and when it last changed. */
+/** What the store needs of a run: whether it ended, when it last changed, and which groups it ran a judge attempt of. */
 export interface RunStatus {
   ended: boolean;
   changedAt: string;
+  /** Whether the run leased a judge attempt of `group` on `subject`, the formatted subject, whatever became of it after. */
+  judgeRan: (subject: string, group: string) => boolean;
 }
 
 /** A run of this machine by id, or undefined when it is gone. */
@@ -78,10 +81,11 @@ export type Opened =
   | { status: 'busy' };
 
 const Mark = { scorer: z.string().min(1), subject: z.string().min(1), sourceHash: z.string().min(1).optional(), at: z.string().min(1) };
-const Restart = { lapses: z.number().int().min(0).max(MARK_LAPSES - 1), requestedAt: z.string().optional() };
+const Restart = { lapses: z.number().int().min(0).max(MARK_LAPSES - 1), requestedAt: z.string().optional(), firstOpenedAt: z.string().optional() };
 
 const LineSchema = z.discriminatedUnion('state', [
-  z.object({ ...Mark, ...Restart, state: z.literal('open'), run: z.string().min(1), group: z.string().min(1), demand: z.enum(DEMANDS) }),
+  /** `uncounted`: it starts again a mark whose run ended before its judge ran, so it spends no daily-limit slot. */
+  z.object({ ...Mark, ...Restart, state: z.literal('open'), run: z.string().min(1), group: z.string().min(1), demand: z.enum(DEMANDS), uncounted: z.literal(true).optional() }),
   z.object({ ...Mark, ...Restart, state: z.literal('waiting') }),
   /** Open judge work an earlier teamai's attempts left, carried over on the upgrade: started again as a lapse. */
   z.object({ ...Mark, ...Restart, state: z.literal('carried') }),
@@ -96,19 +100,23 @@ type StateOf<TLine> = TLine extends unknown ? Omit<TLine, keyof typeof Mark> : n
 /** A line without the key and time every line has: what one state adds. */
 type LineState = StateOf<Line>;
 
-/** What a next automatic launch carries on: the lapses so far, and when the mark was last asked for. */
+/**
+ * What a next automatic launch carries on: the lapses so far, when the mark was last asked for, and when it first opened
+ * since it was fresh or asked for. Absent on a mark opened before teamai kept it.
+ */
 interface Restart {
   lapses: number;
   requestedAt?: string;
+  firstOpenedAt?: string;
 }
 
 /** Where a mark that never lapsed, or whose lapses a label or a failure ended, starts again from. */
 const FRESH: Restart = { lapses: 0 };
 
-/** A mark as its newest line leaves it. */
+/** A mark as its newest line leaves it; `uncounted` when it lapsed without a lapse counted, so its next start spends no slot. */
 interface Derived {
   state: MarkState;
-  restart: Restart;
+  restart: Restart & { uncounted?: true };
 }
 
 function marksFile(config: LocalConfig): string {
@@ -218,8 +226,8 @@ async function readLedger(config: LocalConfig, now: string) {
     if (mark.line.state === 'open') launches.push({ key: mark.key, line: mark.line });
   }
 
-  /** Session launches of `now`'s local day, by run, group and subject: a group of one subject is one launch. */
-  const slotsOn = (today: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && localDay(line.at) === localDay(today) ? [slotOf(line.run, line.group, key)] : [])));
+  /** Session launches of `now`'s local day, by run, group and subject: a group of one subject is one launch, and an uncounted start none. */
+  const slotsOn = (today: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && line.uncounted !== true && localDay(line.at) === localDay(today) ? [slotOf(line.run, line.group, key)] : [])));
 
   return { newest, latest, slotsOn, torn: text !== '' && !text.endsWith('\n') };
 }
@@ -241,12 +249,23 @@ async function isExpired(key: MarkKey, requestedAt: string | undefined, { now, r
   return since + MARK_WINDOW_MS <= Date.parse(now);
 }
 
-/** An open mark while its run goes on; once the run ended or is gone, one more lapse. */
+/**
+ * An open mark while its run goes on. Once the run ended before a judge attempt of the group ran, and within 14 days of
+ * when the mark first opened, a lapse that counts none; once it ended otherwise or is gone, one more lapse.
+ */
 async function openOrLapsed(line: Extract<Line, { state: 'open' }>, readRun: ReadRun): Promise<Derived> {
-  if ((await readRun(line.run))?.ended === false) return { state: { kind: 'open', at: line.at, run: line.run, group: line.group, demand: line.demand }, restart: restartOf(line) };
+  const run = await readRun(line.run);
+
+  if (run?.ended === false) return { state: { kind: 'open', at: line.at, run: line.run, group: line.group, demand: line.demand }, restart: restartOf(line) };
+  const firstOpenedAt = line.firstOpenedAt ?? line.at;
+
+  if (run !== undefined && !run.judgeRan(line.subject, line.group) && Date.parse(run.changedAt) < Date.parse(firstOpenedAt) + MARK_WINDOW_MS) {
+    return { state: { kind: 'lapsed', lapses: line.lapses }, restart: { ...restartOf(line), firstOpenedAt, uncounted: true } };
+  }
+
   const lapses = line.lapses + 1;
 
-  return { state: { kind: 'lapsed', lapses }, restart: { ...restartOf(line), lapses } };
+  return { state: { kind: 'lapsed', lapses }, restart: { ...restartOf(line), lapses, firstOpenedAt } };
 }
 
 /** A failed mark's code, and what its judge call spent when its tool reported that. */
@@ -300,6 +319,8 @@ function restartOf(line: Extract<Line, { lapses: number }>): Restart {
 
   if (line.requestedAt !== undefined) restart.requestedAt = line.requestedAt;
 
+  if (line.firstOpenedAt !== undefined) restart.firstOpenedAt = line.firstOpenedAt;
+
   return restart;
 }
 
@@ -322,10 +343,16 @@ function canLaunch({ state }: Derived, demand: Demand): boolean {
   return demand === 'named' ? state.kind !== 'open' : startsAgain(state);
 }
 
+/** The line that opens `key`: a named launch starts its lapses and 14 days again, an automatic one goes on with them. */
 function openLine(key: MarkKey, derived: Derived, launch: Launch, group: string, now: string): Line {
-  const restart = launch.demand === 'named' ? { lapses: 0, requestedAt: now } : derived.restart;
+  const restart = launch.demand === 'named' ? { lapses: 0, requestedAt: now, firstOpenedAt: now } : { ...derived.restart, firstOpenedAt: derived.restart.firstOpenedAt ?? now };
 
   return lineOf(key, now, { state: 'open', run: launch.run, group, demand: launch.demand, ...restart });
+}
+
+/** Whether `line` starts a mark again without spending a daily-limit slot. */
+function startsUncounted(line: Line | undefined): boolean {
+  return line?.state === 'open' && line.uncounted === true;
 }
 
 function closeLine(key: MarkKey, current: Line | undefined, outcome: MarkOutcome, now: string): Line {
@@ -366,22 +393,23 @@ export const Marks = {
       const lines: Line[] = [];
 
       for (const { group, keys } of launch.groups) {
-        const starts: Array<{ key: MarkKey; line?: Line }> = [];
+        const starts: Array<{ key: MarkKey; line?: Line; isUncounted: boolean }> = [];
         let isAsked = launch.demand === 'named';
 
         for (const key of keys) {
           const derived = await derivedIn(ledger, key, facts);
 
-          if (derived.state.kind === 'open' && derived.state.run === launch.run) starts.push({ key });
+          if (derived.state.kind === 'open' && derived.state.run === launch.run) starts.push({ key, isUncounted: startsUncounted(ledger.newest.get(idOf(key))?.line) });
           else if (canLaunch(derived, launch.demand)) {
-            starts.push({ key, line: openLine(key, derived, launch, group, facts.now) });
+            const line = openLine(key, derived, launch, group, facts.now);
+            starts.push({ key, line, isUncounted: startsUncounted(line) });
             // A mark someone asked for keeps that when automatic judging starts it again.
             isAsked ||= derived.restart.requestedAt !== undefined;
           } else outcome.skipped.push({ key, state: derived.state });
         }
 
         if (starts.length === 0) continue;
-        const counted = starts.find(({ key }) => key.subject.kind !== 'run');
+        const counted = starts.find(({ key, isUncounted }) => key.subject.kind !== 'run' && !isUncounted);
         const slot = counted && slotOf(launch.run, group, counted.key);
         const spends = slot !== undefined && !slots.has(slot);
 

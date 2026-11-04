@@ -345,7 +345,7 @@ describe('the start of teamai-finished-sessions', () => {
     if (first.kind !== 'started') throw new Error(JSON.stringify(first));
     const pins = await pinScorers(config, ['quality']);
     const key = { scorer: 'quality', sourceHash: pins.quality?.sourceHash ?? '', subject: { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: IDLE } } };
-    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString() }) });
+    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString(), judgeRan: () => true }) });
     vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 31 * 60 * 1000 });
 
     try {
@@ -371,7 +371,7 @@ describe('the start of teamai-finished-sessions', () => {
     expect(started.definition.timeout).toBeUndefined();
     const pins = await pinScorers(config, ['quality']);
     const key = { scorer: 'quality', sourceHash: pins.quality?.sourceHash ?? '', subject: { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: IDLE } } };
-    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString() }) });
+    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString(), judgeRan: () => true }) });
     vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 31 * 60 * 1000 });
 
     try {
