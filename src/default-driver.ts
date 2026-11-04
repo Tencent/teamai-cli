@@ -11,6 +11,7 @@ import { loadMemberSettings, loadTeamConfig, ownMemberSettings } from './config.
 import { getDataHome, getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { warnOnce } from './utils/warn-once.js';
 import { LOCAL_DRIVER, parseDriver, type Driver, type DriverName } from './workflow/driver-name.js';
+import type { RunState } from './workflow/types.js';
 
 /** What a start decides by default: drive the run here, leave it awaiting a driver this machine does not run, or leave it to any driver. */
 export type DefaultDrive = { kind: 'drive' | 'awaits'; driver: DriverName } | { kind: 'unassigned' };
@@ -61,6 +62,11 @@ export async function driveByDefault(config: LocalConfig): Promise<DefaultDrive>
   const name = driver === 'local' ? LOCAL_DRIVER : driver.external;
 
   return { kind: await drivesHere(config, name) ? 'drive' : 'awaits', driver: name };
+}
+
+/** The `awaits` a run that `decided` starts carries: the driver it awaits, or none. */
+export function awaitsOf(decided: DefaultDrive): RunState['awaits'] {
+  return decided.kind === 'awaits' ? { driver: decided.driver } : undefined;
 }
 
 /** What a command says of run `run`, which it started awaiting driver `driver`. */

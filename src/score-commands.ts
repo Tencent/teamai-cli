@@ -12,7 +12,7 @@ import { log, setStderrOnly } from './utils/logger.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 import { startWorkflow } from './workflow-commands.js';
-import { driveByDefault } from './default-driver.js';
+import { awaitsOf, driveByDefault } from './default-driver.js';
 import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 
 export interface ScoreOptions {
@@ -305,7 +305,7 @@ async function startScore(start: ScoreStart, driver: string | undefined): Promis
 
   await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
     scope: named.config,
-    awaits: decided?.kind === 'awaits' ? decided.driver : undefined,
+    awaits: decided && awaitsOf(decided),
     instead: insteadOf(start, driver),
     answer: async (config, runId, driven) => {
       const answered = await ScoreAnswer.of(config, runId, driven, start.scorers);

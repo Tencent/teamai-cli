@@ -413,7 +413,7 @@ export interface ShortcutStart {
   instead?: string;
   answer?: (config: LocalConfig, runId: string, driven: WorkflowEnvelope) => Promise<WorkflowEnvelope | undefined>;
   /** The driver `workflows.driver` names, which this machine does not run: the run starts unassigned, awaiting it. */
-  awaits?: DriverName;
+  awaits?: RunState['awaits'];
 }
 
 /** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
@@ -508,7 +508,7 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
   const alone = asks(asked, 'local') ? localStrictCan(config, options) : undefined;
-  const awaits = shortcut.awaits && { driver: shortcut.awaits };
+  const { awaits } = shortcut;
   const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout, instead: shortcut.instead, startedBy: 'person', awaits });
 
   if ('error' in started || !asks(asked, 'local')) {

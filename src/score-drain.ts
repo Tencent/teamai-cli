@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { loadTeamConfig } from './config.js';
-import { awaitsLine, driveByDefault } from './default-driver.js';
+import { awaitsLine, awaitsOf, driveByDefault } from './default-driver.js';
 import { resolveWorkflowEnv } from './env-resolution.js';
 import type { RunMode } from './launch-context.js';
 import { scoringUnavailable } from './scorers/home.js';
@@ -250,7 +250,7 @@ async function finishSessions(config: LocalConfig, mode: RunMode): Promise<Finis
 
   if (unavailable) log.warn(unavailable);
   const decided = await driveByDefault(config);
-  const started = await startHere(config, { mode, awaits: decided.kind === 'awaits' ? { driver: decided.driver } : undefined }, finished);
+  const started = await startHere(config, { mode, awaits: awaitsOf(decided) }, finished);
 
   if (!started) return finished;
 

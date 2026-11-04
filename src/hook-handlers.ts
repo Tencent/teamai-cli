@@ -424,14 +424,14 @@ async function spawnDetachedResume(run: string, { driver, cwd, env }: { driver: 
  * a run already working on that data home is left to its driver.
  */
 async function startFinishedSessions(config: LocalConfig): Promise<void> {
-  const [{ FinishedSessions }, { resolveWorkflowEnv }, { inProcessClient }, { resolveRunMode }, { withoutAgentEvidence }, { awaitsLine, driveByDefault }] = await Promise.all([
+  const [{ FinishedSessions }, { resolveWorkflowEnv }, { inProcessClient }, { resolveRunMode }, { withoutAgentEvidence }, { awaitsLine, awaitsOf, driveByDefault }] = await Promise.all([
     import('./session-flow/finished-sessions.js'), import('./env-resolution.js'), import('./workflow/protocol.js'), import('./launch-context.js'), import('./workflow/attempt-marker.js'),
     import('./default-driver.js'),
   ]);
 
   try {
     const decided = await driveByDefault(config);
-    const awaits = decided.kind === 'awaits' ? { driver: decided.driver } : undefined;
+    const awaits = awaitsOf(decided);
     const started = await FinishedSessions.start(config, { client: inProcessClient({ config, env: await resolveWorkflowEnv(config) }), mode: resolveRunMode(process.env), awaits });
 
     switch (started.kind) {
