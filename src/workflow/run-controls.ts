@@ -12,7 +12,7 @@ import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
-import { contextOf, localId, statesIn } from './scope.js';
+import { contextOf, localId, statesIn, type Scope } from './scope.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { isIsolated } from './workspace.js';
@@ -293,7 +293,21 @@ interface RetryContainer {
   resetStops: boolean;
 }
 
-function retryContainers(run: RunState, target: StepState): RetryContainer[] | WorkflowEnvelope {
+/** The steps a confined `state` needs, one of which writes its directory under `$TEAMAI_RUN_DIR`; none for another step. */
+function confinedWriters(scope: Scope, states: StepState[], state: StepState): StepState[] {
+  const definition = scope.definition.steps.find((step) => step.id === localId(scope, state));
+
+  if (!(definition?.workspace instanceof Object && 'confined' in definition.workspace)) return [];
+  const needs = new Set(definition.needs);
+
+  return states.filter((other) => needs.has(localId(scope, other)));
+}
+
+/**
+ * The containers a retry of `target` resets, innermost first, each with the steps that run again in it. When the run
+ * settled, its `$TEAMAI_RUN_DIR` is gone, so a confined step that runs again takes the steps it needs with it.
+ */
+function retryContainers(run: RunState, target: StepState, scratchRemoved: boolean): RetryContainer[] | WorkflowEnvelope {
   const containers: RetryContainer[] = [];
   let child = target;
 
@@ -305,6 +319,7 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
     let states: StepState[];
     let runner: StepState | undefined;
     let dependencies: (state: StepState) => StepState[];
+    let writers: (state: StepState) => StepState[] = () => [];
     let reads: RunReads | undefined;
 
     if (isItem(child)) {
@@ -330,15 +345,18 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
 
         return states.filter((other) => ids.has(localId(scope, other)));
       };
+
+      if (scratchRemoved) writers = (state) => confinedWriters(scope, states, state);
     }
 
     const cone = new Set([child]);
 
     for (let changed = true; changed;) {
       changed = false;
+      const written = new Set([...cone].flatMap(writers));
 
       for (const state of states) {
-        if (cone.has(state) || !dependencies(state).some((need) => cone.has(need))) continue;
+        if (cone.has(state) || !(written.has(state) || dependencies(state).some((need) => cone.has(need)))) continue;
         cone.add(state);
         changed = true;
       }
@@ -476,10 +494,11 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       return error('not_retryable', `Step "${step}" is ${target.status}; retry a leased or stopped step, or a HITL request to answer it again`);
     }
 
-    const containers = retryContainers(run, target);
+    // A run that settled had its $TEAMAI_RUN_DIR removed by finishRun.
+    const reopened = run.status !== 'running';
+    const containers = retryContainers(run, target, reopened);
 
     if (!Array.isArray(containers)) return containers;
-    const reopened = run.status !== 'running';
 
     for (const container of containers) {
       if (container.child === target) {

@@ -17,6 +17,31 @@ steps:
       verdict: pass | fail
 `;
 
+/** Each item writes its own evidence directory and judges from it, the directory read from the evidence step's output. */
+const JUDGE_EACH = `schemaVersion: v1alpha1
+name: judge
+description: Judge each change from the evidence an earlier step of its item wrote.
+steps:
+  - id: plan
+    command: ./plan.sh
+    output:
+      changes: [string]
+  - id: score
+    needs: [plan]
+    for_each: steps.plan.outputs.changes
+    workflow:
+      steps:
+        - id: evidence
+          command: ./evidence.sh
+          output: { dir: string }
+        - id: judge
+          needs: [evidence]
+          workspace: { confined: "{{ steps.evidence.outputs.dir }}" }
+          prompt: Judge {{ item }} from the files here.
+          output:
+            verdict: pass | fail
+`;
+
 /** A team alias only Codex runs, so a driver whose confined tools are Claude's has no model for the step. */
 const ALIASES = { 'models/aliases.yaml': 'aliases:\n  confined-judge:\n    codex: gpt-6-astra\n' };
 
@@ -42,6 +67,62 @@ export const confinedConformanceScenarios: ConformanceScenario[] = [
       { kind: 'files', lease: 'judge', expect: { 'diff.txt': '- retries: 0\n+ retries: 3\n', 'confined.json': '{"level":"verified"}' } },
     ],
     expectState: { status: 'running', steps: [{ id: 'evidence', status: 'succeeded' }, { id: 'judge', status: 'leased' }] },
+  },
+  {
+    name: 'workspace confined: a retry of the step after its run ended runs again the step that writes its directory',
+    workflowName: 'judge',
+    yaml: JUDGE.replace('    model: confined-judge\n', ''),
+    operations: [
+      ...evidence('{"level":"verified"}'),
+      { kind: 'next', saveAs: 'judge', can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'judge' } } } },
+      { kind: 'report', lease: 'judge', body: { outcome: 'failed' }, expect: { data: { step: { id: 'judge', status: 'failed' } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'retry', step: 'judge', expect: { data: { retried: { step: 'judge', pass: 2 }, reopened: true } } },
+      { kind: 'next', saveAs: 'evidence2', expect: { data: { lease: { step: 'evidence', pass: 2 } } } },
+      { kind: 'runFiles', files: { 'evidence/confined.json': '{"level":"verified"}', 'evidence/diff.txt': '- retries: 0\n+ retries: 3\n' } },
+      { kind: 'report', lease: 'evidence2', body: { outcome: 'success' }, expect: { data: { step: { id: 'evidence', status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'judge2', prepare: true, can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'judge', pass: 2, confined: { level: 'verified' } } } } },
+      { kind: 'files', lease: 'judge2', expect: { 'diff.txt': '- retries: 0\n+ retries: 3\n', 'confined.json': '{"level":"verified"}' } },
+    ],
+    expectState: { status: 'running', steps: [{ id: 'evidence', status: 'succeeded', pass: 2 }, { id: 'judge', status: 'leased', pass: 2 }] },
+  },
+  {
+    name: 'workspace confined: a retry of the step in a for_each item after its run ended runs again the item\'s step that writes its directory',
+    workflowName: 'judge',
+    yaml: JUDGE_EACH,
+    operations: [
+      { kind: 'next', saveAs: 'plan', expect: { data: { lease: { step: 'plan' } } } },
+      { kind: 'report', lease: 'plan', body: { outcome: 'success', outputs: { changes: ['retries'] } }, expect: { data: { step: { id: 'plan', status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'evidence', expect: { data: { lease: { step: 'score[0].evidence' } } } },
+      { kind: 'runFiles', files: { 'retries/confined.json': '{"level":"verified"}', 'retries/diff.txt': '+ retries: 3\n' } },
+      { kind: 'report', lease: 'evidence', body: { outcome: 'success', outputs: { dir: 'retries' } }, expect: { data: { step: { id: 'score[0].evidence', status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'judge', can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'score[0].judge' } } } },
+      { kind: 'report', lease: 'judge', body: { outcome: 'failed' }, expect: { data: { step: { id: 'score[0].judge', status: 'failed' } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'retry', step: 'score[0].judge', expect: { data: { retried: { step: 'score[0].judge', pass: 2 }, reopened: true } } },
+      { kind: 'next', saveAs: 'evidence2', expect: { data: { lease: { step: 'score[0].evidence', pass: 2 } } } },
+      { kind: 'runFiles', files: { 'retries/confined.json': '{"level":"verified"}', 'retries/diff.txt': '+ retries: 3\n' } },
+      { kind: 'report', lease: 'evidence2', body: { outcome: 'success', outputs: { dir: 'retries' } }, expect: { data: { step: { id: 'score[0].evidence', status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'judge2', prepare: true, can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'score[0].judge', pass: 2, confined: { level: 'verified' } } } } },
+      { kind: 'files', lease: 'judge2', expect: { 'diff.txt': '+ retries: 3\n', 'confined.json': '{"level":"verified"}' } },
+    ],
+    expectState: {
+      status: 'running',
+      steps: [{ id: 'plan', status: 'succeeded' }, { id: 'score' }, { id: 'score[0]' }, { id: 'score[0].evidence', status: 'succeeded', pass: 2 }, { id: 'score[0].judge', status: 'leased', pass: 2 }],
+    },
+  },
+  {
+    name: 'workspace confined: a retry of the step while its run runs keeps the directory, and runs again only the step',
+    workflowName: 'judge',
+    yaml: JUDGE.replace('    model: confined-judge\n', ''),
+    operations: [
+      ...evidence('{"level":"verified"}'),
+      { kind: 'next', saveAs: 'judge', can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'judge' } } } },
+      { kind: 'retry', step: 'judge', expect: { data: { retried: { step: 'judge', pass: 2 }, reopened: false } } },
+      { kind: 'next', saveAs: 'judge2', prepare: true, running: ['judge'], cancelled: ['judge'], can: { confined: [VERIFIED_CLAUDE] }, expect: { data: { lease: { step: 'judge', pass: 2 } } } },
+      { kind: 'files', lease: 'judge2', expect: { 'diff.txt': '- retries: 0\n+ retries: 3\n' } },
+    ],
+    expectState: { status: 'running', steps: [{ id: 'evidence', status: 'succeeded' }, { id: 'judge', status: 'leased', pass: 2 }] },
   },
   {
     name: 'workspace confined: a directory outside the run\'s $TEAMAI_RUN_DIR fails the step confined_invalid',
