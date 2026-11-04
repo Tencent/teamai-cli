@@ -21,6 +21,7 @@ import { log } from '../utils/logger.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { projectDataHome } from '../utils/partition.js';
 import { Marks } from '../scorers/marks.js';
+import { ScoreSubjects } from '../scorers/score-subjects.js';
 import { pinScorers } from '../scorers/cache.js';
 import { attemptEnv } from '../workflow/attempt-marker.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
@@ -333,6 +334,27 @@ describe('the start of teamai-finished-sessions', () => {
 
     expect(second).toMatchObject({ kind: 'started' });
     expect(second).not.toEqual(first);
+  });
+
+  it('ends a run past its timeout that nothing drove, so the session it was judging is started again', async () => {
+    const config = await team({}, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const first = await FinishedSessions.start(config, { client, mode: 'attended' });
+    if (first.kind !== 'started') throw new Error(JSON.stringify(first));
+    const pins = await pinScorers(config, ['quality']);
+    const key = { scorer: 'quality', sourceHash: pins.quality?.sourceHash ?? '', subject: { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: IDLE } } };
+    await Marks.open(config, { run: first.run, demand: 'auto', groups: [{ group: 'quality', keys: [key] }] }, { now: new Date().toISOString(), readRun: async () => ({ ended: false, changedAt: new Date().toISOString() }) });
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 31 * 60 * 1000 });
+
+    try {
+      await FinishedSessions.start(config, { client, mode: 'attended' });
+
+      expect(await readRun(config, first.run)).toMatchObject({ status: 'failed' });
+      expect(await ScoreSubjects.lapsed(config, new Date().toISOString())).toEqual([{ subject: `session:claude-code:${IDLE}`, scorers: ['quality'] }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('starts a run for a single lapsed judgment, though no session waits', async () => {

@@ -16,10 +16,12 @@ import { ScoreSubjects } from '../scorers/score-subjects.js';
 import { scopeScoring, type ScopeScoring } from '../scorers/settings.js';
 import { availableTeamSkills } from '../scorers/skill-evidence.js';
 import { routingScorers } from '../scorers/skill-routing.js';
+import { driverIdentity } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
+import { runDeadline } from '../workflow/limits.js';
 import { durationMs } from '../workflow/parse.js';
 import { startAsCli, type WorkflowClient } from '../workflow/protocol.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -307,6 +309,26 @@ async function workingRun(config: LocalConfig, now: number): Promise<RunId | und
 }
 
 /**
+ * Ends each run of teamai-finished-sessions in `config` that passed its timeout with nothing driving it, through the
+ * engine's own deadline, so the marks it held lapse and a later run starts them again.
+ */
+async function endExpired(config: LocalConfig, { client, cwd }: { client: Pick<WorkflowClient, 'next'>; cwd: string }): Promise<void> {
+  const now = Date.now();
+
+  const expired = (await readRuns(config)).filter((run) => {
+    const deadline = run.name === FINISHED_WORKFLOW && run.status === 'running' ? runDeadline(run) : undefined;
+
+    return deadline !== undefined && Date.parse(deadline) <= now;
+  });
+
+  for (const run of expired) {
+    const answer = await client.next(run.id, { driver: driverIdentity('local', cwd), canTakeLease: false });
+
+    if ('error' in answer) log.warn(`Run ${run.id} of ${FINISHED_WORKFLOW} passed its timeout and could not be ended, so the sessions it was judging wait for the next start: ${answer.error.message}`);
+  }
+}
+
+/**
  * Whether a run would find work in `config` whatever idle time its file sets: a session it would list once idle at all,
  * or a lapse. Nothing prunes ended runs, so a start that would find none starts none.
  */
@@ -324,8 +346,9 @@ async function hasWork(config: LocalConfig, now: string): Promise<boolean> {
  * agent evidence, whatever process calls it, from the directory whose teamai resolves to this data home. A run that
  * already works on this data home is answered instead, so two passes never archive one session twice.
  */
-async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start'>; mode: RunMode }): Promise<FinishedStart> {
+async function start(config: LocalConfig, { client, mode }: { client: Pick<WorkflowClient, 'start' | 'next'>; mode: RunMode }): Promise<FinishedStart> {
   const cwd = SessionWork.scopeCwd(config);
+  await endExpired(config, { client, cwd });
   const working = await workingRun(config, Date.now());
 
   if (working) return { kind: 'working', run: working, cwd };
