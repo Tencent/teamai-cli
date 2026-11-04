@@ -300,7 +300,7 @@ export interface Sweep {
 }
 
 /** The fields of a run record on teamai-reports a sweep reads. */
-const SweptRecordSchema = RunRecordFieldsSchema.extend({ prBranches: z.array(z.string()).optional().catch(undefined) });
+const SweptRecordSchema = RunRecordFieldsSchema.extend({ prBranches: z.array(z.string()).optional().catch(undefined), reopenedAt: z.string().optional() });
 
 type SweptRecord = z.infer<typeof SweptRecordSchema>;
 
@@ -363,7 +363,7 @@ async function settledRecords(config: LocalConfig): Promise<SweptRecord[]> {
     return [record.value];
   }));
 
-  return records.flat().filter((record) => record.status !== 'running');
+  return records.flat().filter((record) => record.status !== 'running' && record.reopenedAt === undefined);
 }
 
 /**

@@ -433,6 +433,21 @@ steps:
     expect(branches(origin, runId)).toEqual(['join/p2']);
   });
 
+  it('keeps what a run needs that a retry reopened after its end record reached teamai-reports, swept from another machine', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const ended = await state(config, runId);
+    expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true } });
+    const other = await otherInstall(config, root, origin);
+    const before = branches(origin, runId);
+    expect(before).toContain('left/p1');
+
+    await sweepLeftovers(other.config, null, { now: Date.parse(ended.updatedAt) + 15 * DAY, checkout: other.cwd });
+
+    expect(branches(origin, runId)).toEqual(before);
+  });
+
   it('keeps every run with workflows.retention never', async () => {
     const { config, cwd, origin, runId } = await fixture(NO_DELIVERY.replace("writeFileSync('join.txt', 'J')", "writeFileSync('join.txt', 'J'); process.exit(1)"));
     expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });

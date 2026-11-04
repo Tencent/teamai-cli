@@ -12,7 +12,7 @@ import { publishRunEnd } from './handoff.js';
 import { cleanUpSucceededRun } from './leftovers.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
-import { publishRunRecords, removeQueuedEndRecord } from './records.js';
+import { publishRunRecords, queueRunRecord, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
 import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
@@ -438,7 +438,9 @@ export function restartCommand(run: RunState): string {
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
 export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
-  return controlRun(config, runId, secrets, async (run, now, finish) => {
+  let reopenQueued = false;
+
+  const envelope = await controlRun(config, runId, secrets, async (run, now, finish) => {
     if (isIsolated(run)) {
       return error('not_retryable', `Run ${run.id} is isolated: it runs only on the machine that started it, and a step that ran again would change what it already admitted or measured. Start a new run: ${restartCommand(run)}`);
     }
@@ -514,6 +516,7 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
       delete run.failure;
       await removeQueuedEndRecord(config, run.id);
       delete run.endRecordQueued;
+      reopenQueued = await queueRunRecord(config, run, run.driver, 'reopen', secrets);
     }
 
     run.revision += 1;
@@ -527,4 +530,9 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
 
     return ok(reopened && run.status === 'running' ? { ...retried, resume: `teamai workflow resume ${run.id}` } : retried);
   });
+
+  // Another machine's doctor --fix reads the run's published end until this reaches teamai-reports.
+  if (reopenQueued) await publishRunRecords(config);
+
+  return envelope;
 }

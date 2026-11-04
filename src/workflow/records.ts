@@ -88,6 +88,8 @@ export type WorkflowRunRecord = {
   failure?: { code: RecordedFailure };
   startedAt: string;
   endedAt?: string;
+  /** When a retry reopened the run after this end: it runs again, and what it left is in use until its next end. */
+  reopenedAt?: string;
   durationMs?: number;
   /**
    * Per-step entries (#1083: step, agent, tool/model, outcome, tokens) — a
@@ -327,8 +329,16 @@ export function pullRequestBranches(run: Pick<RunState, 'id' | 'deliveries'>): s
 export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunRecord): WorkflowRunRecord {
   if (!origin) return next;
 
-  if (origin.phase === 'end' && next.phase === 'start') return origin;
+  if (origin.phase === 'end' && next.phase === 'start') {
+    // A start a retry queued after this end reopens the run; a start replayed from before the end does not.
+    const reopened = next.reopenedAt !== undefined && Date.parse(next.reopenedAt) > Date.parse(origin.endedAt ?? '');
+
+    return reopened ? { ...origin, reopenedAt: next.reopenedAt } : origin;
+  }
+
   const merged = { ...origin, ...next, startedAt: origin.startedAt };
+
+  if (next.reopenedAt === undefined) delete merged.reopenedAt;
 
   if (next.end === undefined) delete merged.end;
 
@@ -349,6 +359,27 @@ async function isRecordingEnabled(config: LocalConfig): Promise<boolean> {
   return isUsageReportEnabled(config, (await loadTeamConfig(config.repo.localPath)) ?? {});
 }
 
+/** The record of `phase`: a reopen is a start, which marks an end already published as reopened. */
+function phaseRecord(run: RunState, { driver, username, phase }: { driver: DriverIdentity | undefined; username: string; phase: 'start' | 'end' | 'reopen' }): CurrentWorkflowRunRecord {
+  switch (phase) {
+    case 'start':
+      return buildStartRecord(run, driver, username);
+    case 'reopen': {
+      const now = new Date();
+
+      return { ...buildStartRecord(run, driver, username, now), reopenedAt: now.toISOString() };
+    }
+
+    case 'end':
+      return buildEndRecord(run, driver, username);
+    default: {
+      const unhandled: never = phase;
+
+      return unhandled;
+    }
+  }
+}
+
 /**
  * Build and queue a run's phase record (#1083). True once the record is in
  * the queue; false with usage reporting off, or when it could not be queued,
@@ -359,16 +390,13 @@ export async function queueRunRecord(
   config: LocalConfig,
   run: RunState,
   driver: DriverIdentity | undefined,
-  phase: 'start' | 'end',
+  phase: 'start' | 'end' | 'reopen',
   secrets: Record<string, string>,
 ): Promise<boolean> {
   try {
     if (!await isRecordingEnabled(config)) return false;
     const username = config.username ?? 'unknown';
-
-    const record = phase === 'start'
-      ? buildStartRecord(run, driver, username)
-      : buildEndRecord(run, driver, username);
+    const record = phaseRecord(run, { driver, username, phase });
 
     await enqueueRecord(config, record, secrets);
 
