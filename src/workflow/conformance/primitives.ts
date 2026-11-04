@@ -27,7 +27,8 @@ steps:
     command: echo note
 `;
 
-const JUDGE_EACH_TIMED = JUDGE_EACH.replace('    continue_on_failure: true\n', '    continue_on_failure: true\n    timeout: 1s\n');
+// Long enough that the CLI calls before the second item's lease never outlast it on a loaded machine; `advance` passes it.
+const JUDGE_EACH_TIMED = JUDGE_EACH.replace('    continue_on_failure: true\n', '    continue_on_failure: true\n    timeout: 6s\n');
 
 /** What a for_each step that kept the results of its items returns: the first item judged, the second stopped while leased. */
 const KEPT_VERDICTS: ScenarioJson[] = [{ item: 'a', outcome: 'success', outputs: { label: 'good' } }, { item: 'b', outcome: 'cancelled' }];
@@ -80,7 +81,7 @@ export const primitiveConformanceScenarios: ConformanceScenario[] = [
       { kind: 'next', saveAs: 'a', expect: { data: { lease: { step: 'judge[0]' } } } },
       { kind: 'report', lease: 'a', body: { outcome: 'success', outputs: { label: 'good' } }, expect: { data: { accepted: true } } },
       { kind: 'next', saveAs: 'b', expect: { data: { lease: { step: 'judge[1]' } } } },
-      { kind: 'advance', ms: 2000 },
+      { kind: 'advance', ms: 7000 },
       { kind: 'next', saveAs: 'note', running: ['b'], cancelled: ['b'], expect: { data: { lease: { step: 'note' } } } },
       { kind: 'report', lease: 'note', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded', outputs: { verdicts: KEPT_VERDICTS } } } } },
