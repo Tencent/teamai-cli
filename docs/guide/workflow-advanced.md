@@ -72,6 +72,33 @@ With `max_parallel` above 1:
 
 With 1, the driver runs one step at a time, and a command runs in your terminal, where Ctrl-C reaches it. A SIGTERM or SIGHUP sent to teamai alone stops the command, waits for it, and exits with that signal.
 
+With `max_parallel` unset, the driver still runs one step at a time, except the items of a `for_each` that declares `max_parallel`: they run side by side, up to that number. No other step starts while they run, and a `for_each` with no `max_parallel` runs its items one at a time. A run that has such a `for_each` runs as with `max_parallel` above 1: commands get no terminal, and Ctrl-C stops them all. Answer items take no place, so they overlap in the checkout. Command items with no `workspace` still share the checkout and run one at a time.
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-modules
+description: Summarize each module, two at a time, then print the summaries.
+inputs:
+  modules: [string]
+steps:
+  - id: summary
+    for_each: { items: inputs.modules, max_parallel: 2 }
+    answer: "Summarize the module {{ item }} in one line."
+    output: { text: string }
+  - id: report
+    needs: [summary]
+    command: 'echo "$SUMMARIES" >&2'
+    env: { SUMMARIES: "{{ steps.summary.results }}" }
+```
+
+```text
+$ teamai workflow start summarize-modules --driver local --inputs '{"modules":["api","cli","web"]}'
+ℹ Run rb7a66009e227f202 started. If it stops before it ends, continue it with: teamai workflow resume rb7a66009e227f202
+{"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
+```
+
+The tool answers `api` and `cli` at the same time, then `web`; `report` starts once all three are done. Other drivers already run ready steps side by side, so this applies to the local driver only.
+
 When an end cancels a running command, the driver sends SIGTERM to it and the processes it started, then SIGKILL 5 seconds later if any still run. A stopping command keeps its slot until its processes exit.
 
 ## An end cancels the steps still open

@@ -648,8 +648,9 @@ async function promptReport(
 }
 
 /**
- * Run leased commands, up to `workflows.max_parallel` at once. Each lease and
- * report goes through the same engine operations an external driver calls.
+ * Run leased commands, up to `workflows.max_parallel` at once, or with none set one at a time but for the items of a
+ * `for_each` that declares `max_parallel`. Each lease and report goes through the same engine operations an external
+ * driver calls.
  */
 export async function runLocalDriver(
   config: LocalConfig,
@@ -746,6 +747,24 @@ function mayConfine(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
   });
 
   return [run.definition, ...Object.values(run.workflows ?? {})].some((definition) => confines(definition.steps));
+}
+
+/**
+ * Whether two items of `run` may run at once with no `workflows.max_parallel`: a `for_each` it has now declares
+ * `max_parallel` above 1, or a template of it. A workflow a `from` step admits later is read when the run is driven
+ * again, so such a run keeps the terminal, one step at a time, until then.
+ */
+function mayRunItemsBeside(run: Pick<RunState, 'definition' | 'workflows' | 'admitted'>): boolean {
+  const beside = (steps: readonly WorkflowStep[]): boolean => steps.some((step) => {
+    const max = step.forEach?.maxParallel;
+    const child = stepWorkflow(step);
+
+    return (max !== undefined && (max instanceof Object || max > 1)) || (child?.kind === 'inline' && beside(child.workflow.steps));
+  });
+
+  const definitions = [run.definition, ...Object.values(run.workflows ?? {}), ...Object.values(run.admitted ?? {}).map(({ definition }) => definition)];
+
+  return definitions.some((definition) => beside(definition.steps));
 }
 
 function isSandbox(config: LocalConfig, options: Pick<LocalDriverOptions, 'sandbox'>): boolean {
@@ -875,10 +894,14 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   await sweepClones(config);
   const adapter = options.adapter ?? createLocalToolAdapter();
   const archive = openSessionArchive(config);
-  const maxParallel = config.workflows?.max_parallel ?? 1;
+  // With no workflows.max_parallel the driver runs one step at a time, except the items of a for_each that declares
+  // max_parallel, which `next` leases beside each other (`isOneAtATime`); a run that may have them runs in parallel.
+  const isOneAtATime = config.workflows?.max_parallel === undefined;
+  const maxParallel = config.workflows?.max_parallel ?? (isStarted && mayRunItemsBeside(started) ? Number.POSITIVE_INFINITY : 1);
+  const isParallel = maxParallel > 1;
   // One command at a time keeps the terminal: Ctrl-C reaches it, and it can prompt on /dev/tty. Parallel commands get
   // process groups of their own, which `stop` and the signal handlers below can end as a whole.
-  const detached = maxParallel > 1 && process.platform !== 'win32';
+  const detached = isParallel && process.platform !== 'win32';
   const reported = new Set<string>();
   const inFlight = new Map<string, { lease: Lease; command: StagedCommand }>();
   // Leases not started yet, in lease order. Steps that share a checkout run one at a time. Distinct worktrees overlap.
@@ -940,7 +963,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
     wake();
   };
 
-  if (maxParallel > 1) handle(STOP_SIGNALS);
+  if (isParallel) handle(STOP_SIGNALS);
   // The team env, resolved once per turn of the loop: the leases it hands out, their env, and what it masks agree. It
   // masks every value the drive has seen, so a value that changed while an attempt ran stays masked in what it reports.
   let env: WorkflowEnv | undefined;
@@ -977,7 +1000,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       const resolved = await resolveWorkflowEnv(config);
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
-      const next = await leaseNext(config, runId, driver, { running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, handoff, base, env: turn, alone: true, prepare: true });
+      const next = await leaseNext(config, runId, driver, { running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, handoff, base, env: turn, alone: true, prepare: true, isOneAtATime });
 
       if (signalled) continue;
       // A clone whose steps all settled is not needed any more.
@@ -1052,7 +1075,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         // Setup runs in its own process group, out of the terminal's reach, so the driver handles every stop signal until
         // the command starts. An attached command already has the signals its terminal sends to the whole group; a second
         // would force-quit some tools.
-        const forwarded = maxParallel === 1 ? commandSignalPolicy(await terminalReachesCommand()).forwarded : undefined;
+        const forwarded = !isParallel ? commandSignalPolicy(await terminalReachesCommand()).forwarded : undefined;
 
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
@@ -1104,7 +1127,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         const ignored = lease.interactive ? commandSignalPolicy(await terminalReachesCommand()).ignored : [];
         const controller = new AbortController();
 
-        if (maxParallel === 1) handle(STOP_SIGNALS);
+        if (!isParallel) handle(STOP_SIGNALS);
         prompts.set(lease.attempt, { lease, controller, exit: (async () => {
           const { confined: place, prompt } = lease;
 
@@ -1236,7 +1259,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         const ended = prompts.get(exited.attempt);
         prompts.delete(exited.attempt);
 
-        if (maxParallel === 1) handle([]);
+        if (!isParallel) handle([]);
         const failed = exited.body && ended && await report(exited.body, ended.lease);
 
         if (failed) return failed;
@@ -1247,7 +1270,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         const stopping = dying.get(exited.attempt);
         dying.delete(exited.attempt);
 
-        if (maxParallel === 1) handle([]);
+        if (!isParallel) handle([]);
 
         if (stopping) await abandonPlace({ config, lock, attempt: stopping.lease.attempt });
         continue;
@@ -1255,7 +1278,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
       inFlight.delete(exited.attempt);
 
-      if (maxParallel === 1) handle([]);
+      if (!isParallel) handle([]);
       const staged = exited.result;
 
       if (staged.kind === 'stopped') {

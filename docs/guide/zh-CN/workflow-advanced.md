@@ -72,6 +72,33 @@ workflows:
 
 为 1 时，驱动一次运行一个步骤，命令在你的终端里运行，Ctrl-C 会直接到达它。只发给 teamai 的 SIGTERM 或 SIGHUP 会停止命令，等它退出，然后以该信号退出。
 
+未设置 `max_parallel` 时，驱动仍然一次运行一个步骤，只有声明了 `max_parallel` 的 `for_each` 的各项例外：它们并排运行，最多为该数目。这些项运行期间不会启动其他步骤；没有 `max_parallel` 的 `for_each` 一次只运行一项。含有这种 `for_each` 的运行按 `max_parallel` 大于 1 的方式运行：命令没有终端，Ctrl-C 会停止所有命令。answer 项不占用位置，因此会在检出目录中重叠。没有 `workspace` 的命令项仍共用检出目录，一次只运行一个。
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-modules
+description: Summarize each module, two at a time, then print the summaries.
+inputs:
+  modules: [string]
+steps:
+  - id: summary
+    for_each: { items: inputs.modules, max_parallel: 2 }
+    answer: "Summarize the module {{ item }} in one line."
+    output: { text: string }
+  - id: report
+    needs: [summary]
+    command: 'echo "$SUMMARIES" >&2'
+    env: { SUMMARIES: "{{ steps.summary.results }}" }
+```
+
+```text
+$ teamai workflow start summarize-modules --driver local --inputs '{"modules":["api","cli","web"]}'
+ℹ Run rb7a66009e227f202 started. If it stops before it ends, continue it with: teamai workflow resume rb7a66009e227f202
+{"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
+```
+
+工具同时回答 `api` 和 `cli`，然后回答 `web`；三项都完成后 `report` 才启动。其他驱动本来就会并排运行就绪的步骤，所以这一点只适用于本地驱动。
+
 结局取消一个正在运行的命令时，驱动向它及其启动的进程发送 SIGTERM，5 秒后如果其中任何进程仍在运行，再发送 SIGKILL。正在停止的命令仍占用并行槽位，直到它的所有进程退出。
 
 ## 到达结局时取消仍未结束的步骤

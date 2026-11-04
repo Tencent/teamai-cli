@@ -152,3 +152,69 @@ steps:
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
 });
+
+/**
+ * A claude in `bin` that answers "Describe <name>." prompts. It appends `start <name>` and `end <name>`, each with the
+ * time, to one log. Between them it waits until two answers have started, or for `waitMs`, so two that run at once
+ * both start before either ends. It returns the log's lines, without the times, in the order they were written.
+ */
+function describingTool(bin: string, waitMs: number): () => string[] {
+  const log = path.join(bin, 'answers.log');
+  fakeTool(bin, 'claude', { stdout: claudeReply('described'), before: `
+  const me = /Describe (\\w+)/.exec(stdin)[1];
+  const lines = () => fs.existsSync(${JSON.stringify(log)}) ? fs.readFileSync(${JSON.stringify(log)}, 'utf8').trim().split('\\n') : [];
+  fs.appendFileSync(${JSON.stringify(log)}, 'start ' + me + ' ' + Date.now() + '\\n');
+  const deadline = Date.now() + ${waitMs};
+  while (lines().filter((line) => line.startsWith('start ')).length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  fs.appendFileSync(${JSON.stringify(log)}, 'end ' + me + ' ' + Date.now() + '\\n');` });
+
+  return () => fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => line.split(' ').slice(0, 2).join(' '));
+}
+
+/** A plan of two modules, then one answer per module; `after` adds steps that need only the plan. */
+const DESCRIBE = (forEach: string, after = ''): string => `schemaVersion: v1alpha1
+name: build
+description: Describe each module.
+steps:
+  - id: plan
+    command: echo '{"modules":["api","cli"]}'
+    output: { modules: [string] }
+  - id: describe
+    needs: [plan]
+    for_each: ${forEach}
+    answer: "Describe {{ item }}."
+    output: { text: string }
+${after}`;
+
+describe('for_each items on the local driver with no workflows.max_parallel', () => {
+  it('answers two items of a for_each with max_parallel 2 at the same time', async () => {
+    const { config, workspace, runId, bin } = await answering(DESCRIBE('{ items: steps.plan.outputs.modules, max_parallel: 2 }'));
+    const order = describingTool(bin, 10_000);
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(order().slice(0, 2).sort()).toEqual(['start api', 'start cli']);
+  });
+
+  it('answers the items of a for_each with no max_parallel one at a time', async () => {
+    const { config, workspace, runId, bin } = await answering(DESCRIBE('steps.plan.outputs.modules'));
+    const order = describingTool(bin, 300);
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(order()).toEqual(['start api', 'end api', 'start cli', 'end cli']);
+  });
+
+  it('starts no other step while the items run', async () => {
+    const lint = `  - id: lint
+    needs: [plan]
+    command: 'echo "start lint $(date +%s%3N)" >> "$LOG"; echo "end lint $(date +%s%3N)" >> "$LOG"'
+`;
+    const { config, workspace, runId, bin } = await answering(DESCRIBE('{ items: steps.plan.outputs.modules, max_parallel: 2 }', lint));
+    vi.stubEnv('LOG', path.join(bin, 'answers.log'));
+    const order = describingTool(bin, 10_000);
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const lines = order();
+    expect(lines.slice(0, 2).sort()).toEqual(['start api', 'start cli']);
+    expect(lines.slice(4)).toEqual(['start lint', 'end lint']);
+  });
+});

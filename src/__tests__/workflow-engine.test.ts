@@ -4299,6 +4299,32 @@ describe('for_each', () => {
     expect(cli).toMatchObject({ data: { lease: { step: 'build[2]', env: { TARGET: 'cli' } }, cancelled: [] } });
   });
 
+  it('for a driver that runs one step at a time, leases only the items of a for_each with max_parallel beside each other', async () => {
+    const capped = FAN_PLAN
+      .replace('for_each: steps.plan.outputs.targets', 'for_each: { items: steps.plan.outputs.targets, max_parallel: 2 }')
+      .replace('  - id: ship\n', '  - id: lint\n    needs: [plan]\n    command: node lint.js\n  - id: ship\n');
+    const { config, runId } = await startTree({ fan: capped }, 'fan');
+    const plan = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+    await reportAttempt(config, runId, { ...plan, outcome: 'success', outputs: { targets: ['web', 'api', 'cli'] }, driver: driverA });
+
+    const web = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+    const api = leaseIn(await leaseNext(config, runId, driverA, { running: [web.attempt], isOneAtATime: true }));
+    const full = await leaseNext(config, runId, driverA, { running: [web.attempt, api.attempt], isOneAtATime: true });
+
+    expect([web.step, api.step]).toEqual(['build[0]', 'build[1]']);
+    expect(full).toEqual({ data: { wait: { reason: 'build[0] is leased' }, cancelled: [] } });
+  });
+
+  it('for a driver that runs one step at a time, leases the items of a for_each with no max_parallel one at a time', async () => {
+    const { config, runId } = await startTree({ fan: FAN_PLAN }, 'fan');
+    const plan = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+    await reportAttempt(config, runId, { ...plan, outcome: 'success', outputs: { targets: ['web', 'api'] }, driver: driverA });
+
+    const web = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+
+    expect(await leaseNext(config, runId, driverA, { running: [web.attempt], isOneAtATime: true })).toEqual({ data: { wait: { reason: 'build[0] is leased' }, cancelled: [] } });
+  });
+
   it('hands a restarted driver its item leases back with the same ids, attempts and env, one per call', async () => {
     const { config, runId } = await startTree({ fan: FAN_PLAN }, 'fan');
     const plan = leaseIn(await leaseNext(config, runId, driverA));

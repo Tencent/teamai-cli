@@ -1141,6 +1141,35 @@ function advanceInstance(
 }
 
 /**
+ * The items `path` runs under that run beside the other items of their step, outermost first: each `<step>[<n>]` on
+ * the way whose `for_each` declares `max_parallel`.
+ */
+function parallelItems(run: RunState, path: string): string[] {
+  const segments = parseStepPath(path);
+
+  return segments.flatMap((segment, index) => {
+    if (segment.index === undefined) return [];
+    const at = segments.slice(0, index + 1).map((part) => (part.index === undefined ? part.id : `${part.id}[${part.index}]`));
+    const fanOut = [...at.slice(0, -1), segment.id].join('.');
+
+    return locateStep(run, fanOut)?.step.forEach?.maxParallel === undefined ? [] : [at.join('.')];
+  });
+}
+
+/**
+ * Whether the step at `path` may run while the one at `other` does, for a driver that runs one step at a time: only
+ * when they run under two items of one `for_each` that declares `max_parallel`, which bounds how many start.
+ */
+function runsBeside(run: RunState, path: string, other: string): boolean {
+  const mine = parallelItems(run, path);
+  const theirs = parallelItems(run, other);
+  const split = mine.findIndex((item, index) => item !== theirs[index]);
+  const fanOut = (item: string | undefined): string | undefined => item?.replace(/\[\d+\]$/u, '');
+
+  return split !== -1 && theirs[split] !== undefined && fanOut(mine[split]) === fanOut(theirs[split]);
+}
+
+/**
  * Settles items at the current revision and returns the leaves available to lease. An item waits for its
  * `after` dependencies and for room under `max_parallel`. A ready leaf does not take room until it is leased, and
  * `next` leases one step per call, so a held-back item leaves its room to the next one.
@@ -1746,6 +1775,12 @@ export interface NextOptions {
    * fails `tool_unavailable` at once. For any other driver it stays pending.
    */
   alone?: boolean;
+  /**
+   * Process-only: the driver runs one lease at a time, except the items of a `for_each` that declares `max_parallel`,
+   * which it runs beside each other up to that limit, as the local driver does when `workflows.max_parallel` is unset.
+   * `next` then leases a step beside the open leases only where `runsBeside` allows.
+   */
+  isOneAtATime?: boolean;
 }
 
 /**
@@ -2010,8 +2045,18 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         // change what is ready, so the run settles again.
         const held: Held[] = [];
         let settledOne = false;
+        const leasedSteps = run.steps.filter((step): step is LeasedStep => step.status === 'leased');
+        let besideOpen: LeasedStep | undefined;
 
         for (const { lease: state, definition, rendered } of result.ready) {
+          const blocking = options.isOneAtATime ? leasedSteps.find((leasedStep) => !runsBeside(run, state.id, leasedStep.id)) : undefined;
+
+          // A step that may not run beside an open lease waits for it, as it would for a driver with no room.
+          if (blocking) {
+            besideOpen ??= blocking;
+            continue;
+          }
+
           const located = locateStep(run, state.id);
 
           if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${state.id}"`) };
@@ -2110,6 +2155,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }
 
         if (settledOne) continue;
+
+        if (besideOpen && held.length === 0) return wait(besideOpen);
         const holds = [...held, ...personHolds()];
 
         return answer({ wait: { reason: holds.map((item) => item.reason).join('; '), held: holds } });
