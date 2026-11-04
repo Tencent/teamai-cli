@@ -193,6 +193,28 @@ console.log(JSON.stringify({type:'step_finish',part:{modelID:'reported-open-mode
   expect(await fs.access(invocation.env.OPENCODE_CONFIG_DIR ?? '').then(() => true, () => false)).toBe(false);
 });
 
+it('reads the member\'s commented opencode.json as OpenCode does, and gives the judge its model', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'Judge.');
+  const settings = path.join(root, 'user-opencode.json');
+  await fs.writeFile(settings, '{\n  // the model the team pays for\n  "model": "anthropic/claude-haiku-4-5",\n}\n');
+  vi.stubEnv('OPENCODE_CONFIG', settings);
+  const record = path.join(root, 'config.json');
+  const executable = path.join(root, 'opencode-fake');
+  await fs.writeFile(executable, `#!${process.execPath}
+const fs=require('fs'),path=require('path'); const args=process.argv.slice(2);
+if(args.includes('--version')) { console.log('opencode v2.1.2'); process.exit(); }
+if(args[0]==='session') process.exit();
+fs.writeFileSync(${JSON.stringify(record)},fs.readFileSync(path.join(process.env.OPENCODE_CONFIG_DIR,'opencode.json'),'utf8'));
+process.stdin.resume(); process.stdin.on('end',()=>console.log(JSON.stringify({type:'text',sessionID:'ses_judge',part:{text:JSON.stringify({label:'good',reasoning:'r'})}})));
+\n`, { mode: 0o755 });
+
+  expect(await runLocalJudge({ tool: 'opencode', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: true });
+  expect(z.object({ model: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8'))).model).toBe('anthropic/claude-haiku-4-5');
+});
+
 async function openCodeFake(dir: string): Promise<string> {
   const executable = path.join(dir, 'opencode-fake');
   await fs.writeFile(executable, `#!${process.execPath}

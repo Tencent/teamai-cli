@@ -60,7 +60,7 @@ export type OpenclawWorkspace =
   | { readonly kind: 'found'; readonly dir: string }
   /** `candidate` is the directory OpenClaw would read, although it does not exist. */
   | { readonly kind: 'none'; readonly tried: string; readonly candidate: string }
-  /** openclaw.json is there but not plain JSON, so a workspace it sets is unknown. */
+  /** openclaw.json is there but does not parse as JSON5 either, so a workspace it sets is unknown. */
   | { readonly kind: 'unreadable-config'; readonly file: string; readonly error: string; readonly fallback: string | null };
 
 /**
@@ -74,7 +74,7 @@ export type OpenclawWorkspace =
  *
  * Found only when the directory from that order exists: another workspace
  * that happens to exist is not the one OpenClaw reads. An openclaw.json
- * teamai cannot parse (OpenClaw reads JSON5) hides step 2, so the result says
+ * that does not parse, as JSON or as JSON5, hides step 2, so the result says
  * so, with the directory steps 3-4 give as `fallback`.
  * Per-agent workspaces in `agents.list` are not followed.
  */
@@ -85,7 +85,7 @@ export async function resolveOpenclawWorkspace(
   if (workspacePath && await host.exists(workspacePath)) return { kind: 'found', dir: workspacePath };
   const p = host.path;
   const cfgPath = resolveOpenclawConfigPath(host, stateDir);
-  const read = await host.readJson(cfgPath);
+  const read = await host.readOpenclawConfig(cfgPath);
   const configured = agentDefaultsOf(read)?.workspace?.trim();
   const envDir = host.env.OPENCLAW_WORKSPACE_DIR?.trim();
 
@@ -107,7 +107,7 @@ export async function resolveOpenclawWorkspace(
 /** The default workspace's AGENTS.md is the first bootstrap file and shares the total cap. */
 export async function openclawBootstrapBudget(): Promise<{ limit: number; config: string; error?: string }> {
   const config = resolveOpenclawConfigPath();
-  const read = await realHost().readJson(config);
+  const read = await realHost().readOpenclawConfig(config);
 
   if (read.kind === 'invalid') return { limit: 0, config, error: read.error };
   const defaults = agentDefaultsOf(read);

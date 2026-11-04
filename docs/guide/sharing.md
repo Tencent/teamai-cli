@@ -335,6 +335,15 @@ OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude C
 - Oh My Pi waits 25 seconds for a `PreToolUse` hook. A slower hook does not block the call. Hermes stops any hook after 300 seconds.
 - OpenClaw and Hermes run `SessionStart` on the session's first prompt. OpenCode, Oh My Pi, and Pi build the system prompt for each request, so they run `SessionStart` again before each request after the first, so what it prints follows a change a `UserPromptSubmit` hook made (a `/ponytail lite` that sets a level shows on the next turn).
 - OpenClaw loads teamai's plugin from `plugins.load.paths` in `openclaw.json`. If `plugins.allow` leaves it out, pull warns and the hooks do not run.
+- teamai reads `openclaw.json` as OpenClaw does, comments included, so a workspace set there is followed. teamai writes that file only while it is plain JSON. In a commented file it adds nothing, and pull prints the line to add by hand:
+
+  ```json5
+  // ~/.openclaw/openclaw.json
+  {
+    agents: { defaults: { workspace: "~/work/team-ws" } }, // teamai writes AGENTS.md here
+    plugins: { load: { paths: ["/Users/ana/.openclaw/teamai/teamai-team-hooks.mjs"] } }, // add by hand
+  }
+  ```
 
 ```yaml
 sharing:
@@ -384,6 +393,27 @@ servers:
 ```
 
 Write secrets as `${VAR}` and declare the key in `env/secrets.yaml`. A server for one project goes in `mcp/<ns>/mcp.yaml`.
+
+OpenCode's `opencode.json`, Cursor's `mcp.json` and `hooks.json`, CodeBuddy's settings and MCP files, Qoder's `settings.json` and Pi's `models.json` may hold comments, since those tools read them so. teamai reads them the same way and edits only its own entries: your lines and comments stay as you wrote them. Here is `~/.config/opencode/opencode.json` after a pull of the `local-formatter` server above:
+
+```jsonc
+{
+  "mcp": {
+    "notes": { "type": "local", "command": ["notes-mcp"], "enabled": false }, // off until the API key arrives
+    "local-formatter": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@acme/formatter-mcp"
+      ],
+      "enabled": true
+    },
+  },
+}
+```
+
+When the team drops `local-formatter`, the next pull takes its lines out and leaves `notes` and its comment as they are. Claude Code, Codex, Muse and the other tools reject a commented file, so teamai does too: pull warns that the file does not parse and changes nothing in it.
 
 For stdio servers, `env` keys stay literal in Codex's TOML: `HTTP.PROXY` is one variable, and names such as `ProgramFiles(x86)` are quoted automatically.
 

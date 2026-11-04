@@ -10,6 +10,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { loadAutoCompactRecord, reconcileAutoCompactForConfig, reconcileAutoCompactLocked, spliceCodexAutoCompact } from '../autocompact-reconcile.js';
 import { resolveAutoCompactTokens } from '../types.js';
+import { parseJsonAs } from '../utils/json.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 describe('auto-compact reconcile', () => {
@@ -75,6 +76,21 @@ describe('auto-compact reconcile', () => {
       config: { modelPolicies: expect.arrayContaining([{ provider: 'deepseek-official', model: 'deepseek-v4-pro', thresholdRatio: 0.4 }]) },
     }]);
     expect(Object.keys(managed)).toHaveLength(5);
+  });
+
+  // CodeBuddy Code 2.179.1 reads settings.json with jsonc-parser; Claude Code 2.1.316 refuses a comment.
+  it('writes into a commented CodeBuddy settings.json, keeping the comment, and leaves a commented Claude one alone', async () => {
+    const commented = '{\n  // the member\'s note\n  "theme": "dark",\n}\n';
+    await fse.writeFile(path.join(home, '.codebuddy', 'settings.json'), commented);
+    await fse.writeFile(path.join(home, '.claude', 'settings.json'), commented);
+
+    const { changes } = await run(team(400_000), {});
+
+    const buddy = await text('.codebuddy/settings.json');
+    expect(buddy).toContain('// the member\'s note');
+    expect(parseJsonAs(buddy, 'jsonc')).toEqual({ theme: 'dark', autoCompactWindow: 434_783 });
+    expect(await text('.claude/settings.json')).toBe(commented);
+    expect(changes.find((c) => c.tool === 'claude')).toMatchObject({ action: 'skipped' });
   });
 
   it('is idempotent', async () => {

@@ -66,10 +66,11 @@ fs.promises.writeFile = async (file, ...rest) => { hold(file); return write(file
   fs.writeFileSync(script, `import { SessionCaptures } from ${JSON.stringify(path.resolve('src/session-flow/captures.ts'))};
 SessionCaptures.addToolVersion(${JSON.stringify(config)}, 'claude', ${JSON.stringify(payload)}).catch((error) => { console.error(error); process.exitCode = 1; });
 `);
-  // Match the shipped bundle layout: package-info resolves ../package.json.
+  // Match the shipped bundle layout: package-info resolves ../package.json. tsup takes a package's `module`
+  // entry before `main`, as here: jsonc-parser's `main` is a UMD build that a bundle cannot load.
   fs.copyFileSync(path.resolve('package.json'), path.join(root, 'package.json'));
   const compiled = path.join(root, 'dist', 'writer.mjs');
-  buildSync({ entryPoints: [script], outfile: compiled, bundle: true, platform: 'node', format: 'esm', banner: { js: "import { createRequire as fixtureCreateRequire } from 'node:module'; const require = fixtureCreateRequire(import.meta.url);" } });
+  buildSync({ entryPoints: [script], outfile: compiled, bundle: true, platform: 'node', format: 'esm', mainFields: ['module', 'main'], banner: { js: "import { createRequire as fixtureCreateRequire } from 'node:module'; const require = fixtureCreateRequire(import.meta.url);" } });
   const child = spawn(process.execPath, [compiled], {
     env: { ...process.env, NODE_OPTIONS: `--require ${preload}` }, stdio: 'inherit',
   });

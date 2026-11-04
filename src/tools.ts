@@ -1,4 +1,5 @@
 import type { McpFormat } from './resources/mcp-format.js';
+import type { JsonSyntax } from './utils/json.js';
 import type { RuleFormatId } from './resources/rule-format.js';
 import type { SessionPlatform, StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import type { TokenFormatId } from './token-usage/index.js';
@@ -198,6 +199,8 @@ export type AgentsChannels = Scoped<AgentsTarget<HomeRead>, AgentsTarget<HomeRea
 type McpCommon<R> = {
   readonly format: McpFormat;
   readonly key?: readonly [string, ...string[]];
+  /** How the tool parses the file, when it takes more than strict JSON (`parseJsonAs`). */
+  readonly syntax?: JsonSyntax;
   readonly reads: Reads<R>;
   readonly readGates?: readonly ReadGateKind[];
 };
@@ -232,7 +235,14 @@ export type McpChannels = Scoped<McpUser, McpProject> & {
 export type HookFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 
 /** teamai's entries in the hook list of the scope's configured hook file (`toolPaths.settings`, Copilot's `toolPaths.hooks`), in `format`. */
-export type HookSettings<R> = { readonly channel: 'settings'; readonly format: HookFormat; readonly reads: Reads<R>; readonly readGates?: readonly ReadGateKind[] };
+export type HookSettings<R> = {
+  readonly channel: 'settings';
+  readonly format: HookFormat;
+  readonly reads: Reads<R>;
+  readonly readGates?: readonly ReadGateKind[];
+  /** How the tool parses the file, when it takes more than strict JSON (`parseJsonAs`). */
+  readonly syntax?: JsonSyntax;
+};
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
 export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
@@ -477,6 +487,8 @@ export const TOOLS = {
     },
     hooks: {
       user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude/settings.json', evidence: 'verified' }], readGates: ['claude-hooks-enabled'] },
+      // No workspace-trust gate: Claude Code 2.1.316 shows its trust dialog before SessionStart and exits on "No",
+      // and `claude -p` runs a project's hooks in an untrusted folder, so no session runs while it skips them.
       self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.claude/settings.json', when: 'workspaceUnder', evidence: 'verified' }, { base: 'project', path: '.claude/settings.local.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['claude-hooks-enabled'] },
       subagentStop: true,
       stopReply: true,
@@ -708,12 +720,14 @@ export const TOOLS = {
       user: { reads: [{ base: 'home', path: '.cursor/agents', evidence: 'source' }] },
       project: { reads: [{ base: 'project', path: '.cursor/agents', when: 'workspaceUnder', evidence: 'verified' }] },
     },
+    // cursor-agent 2026.10.21 (run) lists the servers of an mcp.json with comments and trailing commas.
     mcp: {
-      user: { format: 'cursor', reads: [{ base: 'home', path: '.cursor/mcp.json', evidence: 'source' }] },
+      user: { format: 'cursor', syntax: 'jsonc', reads: [{ base: 'home', path: '.cursor/mcp.json', evidence: 'source' }] },
       // The Cursor CLI (2026.10.21, verified) loads a project server only once it is approved; the IDE's approvals are not traced.
-      project: { judgedTeamaiOnly: true, format: 'cursor', reads: [{ base: 'project', path: '.cursor/mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['cursor-mcp-approval'] },
+      project: { judgedTeamaiOnly: true, format: 'cursor', syntax: 'jsonc', reads: [{ base: 'project', path: '.cursor/mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['cursor-mcp-approval'] },
     },
-    hooks: { user: { channel: 'settings', format: 'cursor', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] }, subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
+    // cursor-agent 2026.10.21 parses hooks.json with `parseJSONC`: comments stripped, then JSON.parse, so no trailing commas.
+    hooks: { user: { channel: 'settings', format: 'cursor', syntax: 'json-comments', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', syntax: 'json-comments', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] }, subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
     sessions: ['cursor'],
     launch: 'cursor',
     autoCompact: 'none',
@@ -798,6 +812,8 @@ export const TOOLS = {
     },
   },
   joycode: {
+    // JoyCode Desktop 0.6.0's dist/main.js resolves JOYCODE_HOME (default ~/.joycode) and passes it on as CODEX_HOME (#1572).
+    // The JoyCode 3.8.71 IDE extension never reads it and keeps everything under os.homedir()/.joycode.
     home: { dir: '.joycode', moves: { by: [{ kind: 'env', name: 'JOYCODE_HOME', evidence: 'source' }] } },
     skillLoad: { calls: [] },
     skills: UNKNOWN_READS,
@@ -855,12 +871,13 @@ export const TOOLS = {
       user: { reads: [{ base: 'home', path: '.qoder/agents', evidence: 'source' }] },
       project: { reads: [{ base: 'project', path: '.qoder/agents', when: 'workspaceUnder', evidence: 'source' }] },
     },
+    // qodercli 1.1.81 reads settings.json as JSON.parse(stripJsonComments(text)): comments, no trailing commas.
     mcp: {
-      user: { format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] },
-      project: { judgedTeamaiOnly: false, format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['qoder-folder-trust', 'qoder-mcp-approval'] },
+      user: { format: 'claude', syntax: 'json-comments', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] },
+      project: { judgedTeamaiOnly: false, format: 'claude', syntax: 'json-comments', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['qoder-folder-trust', 'qoder-mcp-approval'] },
     },
     // qodercli 1.1.81 loads project, then project-local (settings.local.json), then user hooks; both project files wait on folder trust.
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }, { base: 'project', path: '.qoder/settings.local.json', when: 'cwdOnly', evidence: 'source' }], readGates: ['qoder-folder-trust'] }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home' },
+    hooks: { user: { channel: 'settings', format: 'claude', syntax: 'json-comments', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', syntax: 'json-comments', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }, { base: 'project', path: '.qoder/settings.local.json', when: 'cwdOnly', evidence: 'source' }], readGates: ['qoder-folder-trust'] }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home' },
     // Qoder CLI 1.1.78: <id>.jsonl under <QODER_CONFIG_DIR or QODER_CLI_HOME/.qoder or ~/.qoder>/projects/<cwd>.
     sessions: ['qoder'],
     launch: 'qoder',
@@ -1236,14 +1253,17 @@ export const TOOLS = {
       user: { reads: [{ base: 'home', path: '.codebuddy/agents', evidence: 'source' }] },
       project: { reads: [{ base: 'project', path: '.codebuddy/agents', when: 'cwdOnly', evidence: 'source' }] },
     },
+    // CodeBuddy Code 2.179.1 reads its settings and MCP files with jsonc-parser, `allowTrailingComma: true`; models.json strictly.
     mcp: {
       user: {
         format: 'buddy',
+        syntax: 'jsonc',
         reads: [{ base: 'home', firstOf: ['.codebuddy/.mcp.json', '.codebuddy/mcp.json', { in: 'codebuddy-config-dir', path: '.codebuddy.json' }], evidence: 'source' }],
       },
       project: {
         judgedTeamaiOnly: false,
         format: 'buddy',
+        syntax: 'jsonc',
         localScope: { file: { in: 'codebuddy-config-dir', path: '.codebuddy.json' }, key: 'realpath' },
         reads: [{ base: 'project', firstOf: ['.mcp.json', 'mcp.json'], when: 'cwdOnly', evidence: 'source' }],
         // CodeBuddy Code 2.179.1 starts a .mcp.json server only once it is approved, in `codebuddy -p` too.
@@ -1251,7 +1271,7 @@ export const TOOLS = {
       },
     },
     // CodeBuddy Code 2.179.1 (`-p`) runs the hooks of the project's settings.json and settings.local.json, merged.
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }, { base: 'project', path: '.codebuddy/settings.local.json', when: 'cwdOnly', evidence: 'verified' }] }, subagentStop: true, stopReply: false, shell: 'bundled', teamHooks: 'home' },
+    hooks: { user: { channel: 'settings', format: 'claude', syntax: 'jsonc', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', syntax: 'jsonc', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }, { base: 'project', path: '.codebuddy/settings.local.json', when: 'cwdOnly', evidence: 'verified' }] }, subagentStop: true, stopReply: false, shell: 'bundled', teamHooks: 'home' },
     sessions: ['codebuddy'],
     launch: 'codebuddy',
     autoCompact: 'buddy',
@@ -1490,11 +1510,12 @@ export const TOOLS = {
       user: { reads: [{ base: 'home', path: '.config/opencode/agents', evidence: 'verified' }] },
       project: { reads: [{ base: 'project', path: '.opencode/agents', when: 'workspaceUnder', evidence: 'verified' }] },
     },
+    // OpenCode 2.1.2 parses opencode.json with jsonc-parser, `allowTrailingComma: true` (packages/core/src/config.ts#L110-L121).
     mcp: {
-      user: { format: 'opencode', reads: [{ base: 'home', path: '.config/opencode/opencode.json', evidence: 'verified' }] },
+      user: { format: 'opencode', syntax: 'jsonc', reads: [{ base: 'home', path: '.config/opencode/opencode.json', evidence: 'verified' }] },
       project: {
         judgedTeamaiOnly: true,
-        format: 'opencode', alternate: { path: '.opencode/teamai-mcp.json', when: 'opencode-v2-plugin' },
+        format: 'opencode', syntax: 'jsonc', alternate: { path: '.opencode/teamai-mcp.json', when: 'opencode-v2-plugin' },
         reads: [
           { base: 'project', path: 'opencode.json', when: 'workspaceUnder', evidence: 'verified' },
           { base: 'project', path: '.opencode/teamai-mcp.json', when: 'workspaceUnder', evidence: 'verified' },
@@ -1798,6 +1819,22 @@ export function hookSettingsFormatOf(tool: string): HookFormat | null {
   for (const channel of [hooks.user, hooks.self]) if (channel instanceof Object && channel.channel === 'settings') return channel.format;
 
   return null;
+}
+
+/** How `tool` parses its hook settings file: the syntax of its settings channel, else strict JSON. */
+export function hookSyntaxOf(tool: string): JsonSyntax {
+  const { hooks } = channelsOf(tool);
+
+  for (const channel of [hooks.user, hooks.self]) if (channel instanceof Object && channel.channel === 'settings') return channel.syntax ?? 'json';
+
+  return 'json';
+}
+
+/** How `tool` parses its MCP file in `scope`: that channel's syntax, else strict JSON. */
+export function mcpSyntaxOf(tool: string, scope: 'user' | 'project'): JsonSyntax {
+  const channel = channelsOf(tool).mcp[scope];
+
+  return channel instanceof Object ? channel.syntax ?? 'json' : 'json';
 }
 
 /** The shape teamai reads and writes `tool`'s hook file in: its settings format, else Claude's, which the DeepSeek Harness adapter writes and an earlier release wrote for a tool that reads none. */

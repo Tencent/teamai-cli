@@ -89,7 +89,7 @@ describeLocateMatrix('sessions', ROWS);
 describe('a session store on Windows when HOME is not the profile home', () => {
   const host: Host = {
     platform: 'win32', path: path.win32, home: 'D:\\member', profileHome: 'C:\\Users\\member', env: {}, toolHomes: { kind: 'missing' },
-    cwd: () => 'D:\\repo', exists: async () => false, readJson: async () => ({ kind: 'missing' }),
+    cwd: () => 'D:\\repo', exists: async () => false, readOpenclawConfig: async () => ({ kind: 'missing' }),
     realpath: async (file) => file, readText: async () => null, existsNow: () => false, readTextNow: () => null, userToolRoots: async () => undefined,
   };
   const at = (toolRoots: Record<string, string>) => installOf({ toolPaths: {} }, { scope: 'user', repo: {}, toolRoots });

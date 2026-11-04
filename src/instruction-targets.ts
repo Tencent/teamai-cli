@@ -399,12 +399,12 @@ function managedBlockBody(block: string): string {
  * pull warns with it and doctor's fix says it.
  */
 export async function unreadableRulesFileMessage(tool: string, gate: { readonly file: string }): Promise<string> {
-  const read = await readJsonObject(gate.file);
+  const read = await readJsonObject(gate.file, 'json5');
   const why = read.kind === 'invalid' ? ` (${read.error})` : '';
 
-  return `teamai cannot read ${gate.file} as plain JSON${why}, so it cannot tell which `
+  return `${gate.file} does not parse as JSON or JSON5${why}, so teamai cannot tell which `
     + `workspace ${tool} reads: it writes no team-rules block, and ${tool} gets none of the team rules from teamai. `
-    + 'Make that file plain JSON (no comments or trailing commas), then run `teamai pull`.';
+    + 'Fix that file, then run `teamai pull`.';
 }
 
 /** The target teamai writes `place`'s blocks to, with the header and ownership `locate` gives it. */

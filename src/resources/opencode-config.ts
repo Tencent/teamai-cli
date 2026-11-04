@@ -1,7 +1,9 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { isJsonObject, type JsonObject, type JsonValue } from '../types.js';
-import { readFileSafe, writeJsonAtomic, pathExists, remove, symlinkTarget } from '../utils/fs.js';
+import { mcpSyntaxOf } from '../tools.js';
+import { readFileSafe, writeJsonAtomic, writeJsonKeepingComments, pathExists, remove, symlinkTarget } from '../utils/fs.js';
+import { isPlainJson, parseJsonAs, type JsonSyntax } from '../utils/json.js';
 import { log } from '../utils/logger.js';
 
 // ─── OpenCode config activation ──────────────────────────────
@@ -159,8 +161,10 @@ export async function reconcileOpencodeInstructionSet(
   if (raw.trim() === '') {
     data = {};
   } else {
+    const syntax = opencodeConfigSyntax();
+
     try {
-      const parsed: JsonValue = JSON.parse(raw);
+      const parsed = parseJsonAs(raw, syntax);
 
       if (!isJsonObject(parsed)) {
         log.warn(`Could not parse ${configFileAbs} as a JSON object — skipping OpenCode ${purpose}`);
@@ -203,14 +207,15 @@ export async function reconcileOpencodeInstructionSet(
   // A symlink there is the member's (a dotfiles setup): written at the file it points to, never deleted.
   const target = await symlinkTarget(configFileAbs);
 
-  if (deleteIfEmpty && target === configFileAbs && Object.keys(data).every((key) => key === '$schema')) {
+  // A file holding the member's comments is theirs too, so it stays.
+  if (deleteIfEmpty && target === configFileAbs && Object.keys(data).every((key) => key === '$schema') && isPlainJson(raw)) {
     await remove(configFileAbs);
     log.debug(`Removed ${configFileAbs}: it held only teamai ${purpose} entries`);
 
     return true;
   }
 
-  await writeJsonAtomic(target, data);
+  await writeJsonKeepingComments(configFileAbs, data, () => writeJsonAtomic(target, data));
   log.debug(`Reconciled teamai ${purpose} entries in ${configFileAbs}`);
 
   return true;
@@ -253,7 +258,7 @@ export async function readOpencodeInstructionList(configFile: string): Promise<J
   if (raw.trim() === '') return [];
 
   try {
-    const parsed: JsonValue = JSON.parse(raw);
+    const parsed = parseJsonAs(raw, opencodeConfigSyntax());
 
     if (!isJsonObject(parsed)) return null;
     const { instructions } = parsed;
@@ -295,4 +300,9 @@ export function opencodeContextReference(contextFile: string, scope: 'user' | 'p
  */
 export function opencodeV1ClaudeFile(home: string): string {
   return path.join(home, '.claude', 'CLAUDE.md');
+}
+
+/** How OpenCode parses its config files: the syntax its MCP channel names for opencode.json. */
+function opencodeConfigSyntax(): JsonSyntax {
+  return mcpSyntaxOf('opencode', 'user');
 }

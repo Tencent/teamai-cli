@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { z } from 'zod';
-import { isToolId } from './tools.js';
+import { hookSyntaxOf, isToolId } from './tools.js';
 import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
@@ -1041,7 +1041,8 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   const builtin = await readBuiltinOverride(localConfig);
   const disabledByTeam = builtin.known && (builtin.override?.disabled ?? []).includes('Hook dispatch session-start');
   const file = path.join(resolveBaseDir(localConfig), toolPath.settings);
-  const read = await readJsonObject(file);
+  const syntax = hookSyntaxOf('cursor');
+  const read = await readJsonObject(file, syntax);
   const hooks = read.kind === 'ok' ? CursorHooksSchema.parse(read.value).hooks : undefined;
 
   const registered = hooks !== undefined && hooks.sessionStart.some((entry) => {
@@ -1056,7 +1057,7 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
     + 'elsewhere the teamai sessionStart hook adds the team rules and instructions';
 
   const fix = read.kind === 'invalid'
-    ? `${why}, but ${file} is not valid JSON (${read.error}), so Cursor runs no hooks from it and those workspaces `
+    ? `${why}, but ${file} does not parse (${read.error}), so Cursor runs no hooks from it and those workspaces `
       + 'get none of them. Fix the file by hand (teamai does not rewrite a file it cannot parse), then run '
       + '`teamai hooks inject`.'
     : !registered && disabledByTeam

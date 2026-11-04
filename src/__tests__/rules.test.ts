@@ -1276,11 +1276,11 @@ describe('RulesHandler.pullAllRules — OpenCode instructions activation', () =>
 
     it('keeps the root glob while .opencode/opencode.json cannot be parsed, so the rules stay registered', async () => {
       await fse.writeJson(rootConfig(), { instructions: ['.opencode/rules/*.md'] });
-      await fse.writeFile(dotConfig(), '{ // a comment\n}\n');
+      await fse.writeFile(dotConfig(), '{ "instructions": \n');
 
       await handler.pullAllRules(teamConfig, projectConfig);
 
-      expect(await fse.readFile(dotConfig(), 'utf8')).toBe('{ // a comment\n}\n');
+      expect(await fse.readFile(dotConfig(), 'utf8')).toBe('{ "instructions": \n');
       expect(await fse.readJson(rootConfig())).toEqual({ instructions: ['.opencode/rules/*.md'] });
     });
 

@@ -8,7 +8,7 @@ import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
 function linuxHost(env: Record<string, string>, existing: readonly string[]): Host {
   return {
     platform: 'linux', path: path.posix, home: '/home/m', profileHome: '/home/m', env, toolHomes: { kind: 'missing' }, cwd: () => '/home/m',
-    exists: async (file) => existing.includes(file), readJson: async () => ({ kind: 'missing' }),
+    exists: async (file) => existing.includes(file), readOpenclawConfig: async () => ({ kind: 'missing' }),
     realpath: async (file) => file, readText: async () => null, existsNow: () => false, readTextNow: () => null, userToolRoots: async () => undefined,
   };
 }

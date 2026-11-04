@@ -426,6 +426,13 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(await (await check(TRUST))?.check()).toBe(true);
     });
 
+    // qodercli 1.1.81 strips comments from settings.json before JSON.parse.
+    it('reads a commented user settings.json as Qoder CLI does', async () => {
+      await fse.outputFile(userSettings(), `{\n  // the member's note\n  "permissions": { "trustDirectories": [${JSON.stringify(projectRoot)}] }\n}\n`);
+
+      expect(await (await check(TRUST))?.check()).toBe(true);
+    });
+
     it('does not take the project\'s own settings as trust', async () => {
       await fse.outputJson(path.join(projectRoot, '.qoder', 'settings.local.json'), { permissions: { trustDirectories: [projectRoot] } });
 
@@ -469,6 +476,12 @@ describe('doctor — the tool trusts the project it reads team files from', () =
         ['all at once', { enableAllProjectMcpServers: true }],
       ])('passes once the user settings approve it %s', async (_label, mcp) => {
         await fse.outputJson(userSettings(), { permissions: { trustDirectories: [projectRoot] }, mcp });
+
+        expect(await (await check(APPROVAL))?.check()).toBe(true);
+      });
+
+      it('reads an approval in a commented settings.json', async () => {
+        await fse.outputFile(userSettings(), `{\n  /* trusted */ "permissions": { "trustDirectories": [${JSON.stringify(projectRoot)}] },\n  // approved\n  "mcp": { "enabledProjectMcpServers": ["issues"] }\n}\n`);
 
         expect(await (await check(APPROVAL))?.check()).toBe(true);
       });
@@ -664,6 +677,13 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(await (await check(APPROVAL))?.check()).toBe(true);
     });
 
+    // CodeBuddy Code 2.179.1 reads its settings with jsonc-parser, trailing commas allowed.
+    it('reads an approval in a commented settings.local.json', async () => {
+      await fse.outputFile(localSettings(), '{\n  // approved by hand\n  "enabledMcpjsonServers": ["issues",],\n}\n');
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
     it('fails on a rejection, whatever approves all', async () => {
       await fse.outputJson(localSettings(), { enableAllProjectMcpServers: true, disabledMcpjsonServers: ['issues'] });
 
@@ -731,6 +751,13 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       `${name}-${createHash('sha256').update(JSON.stringify({ path: projectRoot, server })).digest('hex').slice(0, 16)}`;
 
     it('passes once the CLI approved the server as the project defines it now', async () => {
+      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', { command: 'issues-server' })]);
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('reads a commented .cursor/mcp.json as the CLI does, so an approved server counts as approved', async () => {
+      await fse.outputFile(path.join(projectRoot, '.cursor', 'mcp.json'), '{\n  // the member\'s note\n  "mcpServers": {\n    "issues": { "command": "issues-server", },\n  },\n}\n');
       await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', { command: 'issues-server' })]);
 
       expect(await (await check(APPROVAL))?.check()).toBe(true);

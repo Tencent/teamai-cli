@@ -245,13 +245,25 @@ describe('doctor — skills delivered on disk', () => {
       expect(await (await hookCheck())?.check()).toBe(true);
     });
 
-    it('fails on an openclaw.json teamai cannot read, naming JSON5', async () => {
-      await fse.outputFile(path.join(stateDir(), 'openclaw.json'), '{ hooks: { internal: { enabled: true } } }');
+    it('reads an openclaw.json with comments and unquoted keys, as OpenClaw does', async () => {
+      await fse.outputFile(path.join(stateDir(), 'openclaw.json'), [
+        '// written by hand',
+        '{',
+        '  hooks: { internal: { enabled: true, entries: { "teamai-status-report": { enabled: true } } } },',
+        '}',
+      ].join('\n'));
+
+      expect(await (await hookCheck())?.check()).toBe(true);
+    });
+
+    it('fails on an openclaw.json that OpenClaw cannot read either, naming the file', async () => {
+      const file = path.join(stateDir(), 'openclaw.json');
+      await fse.outputFile(file, '{ hooks: { internal: ');
 
       const check = await hookCheck();
 
       expect(await check?.check()).toBe(false);
-      expect(check?.fix).toContain('is not plain JSON');
+      expect(check?.fix).toContain(`${file} does not parse`);
     });
 
     it('is not built when teamai has no hook in the workspace', async () => {

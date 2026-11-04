@@ -3,11 +3,11 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import type { JsonValue, LocalConfig, TeamaiConfig } from './types.js';
-import { TOOL_IDS, TOOLS, type ToolDescriptor, type ToolId } from './tools.js';
+import { hookSyntaxOf, TOOL_IDS, TOOLS, type ToolDescriptor, type ToolId } from './tools.js';
 import { JsonValueSchema, isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
 import { toolHome } from './tool-home.js';
 import { withFileLock } from './update.js';
-import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic } from './utils/fs.js';
+import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic, writeJsonKeepingComments } from './utils/fs.js';
 import type { JsonObjectRead } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 
@@ -450,7 +450,8 @@ export function spliceCodexAutoCompact(source: string, value: number | null): st
 /** The current value as JSON text (undefined when absent), or `unreadable`. */
 async function readCurrent(t: Target): Promise<{ current: string | undefined; doc?: SettingsDoc } | 'unreadable'> {
   if (t.kind === 'claude' || t.kind === 'buddy') {
-    const read = await readJsonObject(t.file);
+    // The settings.json the tool's hooks go to too.
+    const read = await readJsonObject(t.file, hookSyntaxOf(t.tool));
 
     if (read.kind === 'invalid') return 'unreadable';
     const doc = read.kind === 'ok' ? read.value : {};
@@ -481,7 +482,7 @@ async function apply(t: Target, value: JsonValue, doc?: SettingsDoc): Promise<vo
 
     if (value === null) delete next.autoCompactWindow;
     else next.autoCompactWindow = value;
-    await writeJson(t.file, next);
+    await writeJsonKeepingComments(t.file, next, () => writeJson(t.file, next));
 
     return;
   }

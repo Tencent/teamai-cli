@@ -2,9 +2,10 @@ import fse from 'fs-extra';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { isJsonObject, type JsonValue } from '../types.js';
+import { isJsonObject } from '../types.js';
 import { log } from './logger.js';
 import { expandHome } from './home.js';
+import { editJsonText, isPlainJson, parseJson, parseJsonAs, type JsonSyntax } from './json.js';
 
 const IGNORED_NAMES = new Set([
   '__pycache__',
@@ -171,15 +172,17 @@ export type JsonObjectRead =
   // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- callers merge their own typed entries into the object and write it back
   | { kind: 'ok'; value: Record<string, unknown> };
 
-/** Read a file that should hold a JSON object, saying why when it does not. Never throws, never logs. */
-export async function readJsonObject(filePath: string): Promise<JsonObjectRead> {
+/**
+ * Read a file that should hold a JSON object, parsed as the tool that reads it does (`syntax`), saying why when it
+ * does not. Never throws, never logs.
+ */
+export async function readJsonObject(filePath: string, syntax: JsonSyntax = 'json'): Promise<JsonObjectRead> {
   const raw = await readFileSafe(filePath);
 
   if (raw === null) return { kind: 'missing' };
 
   try {
-    // JSON.parse returns `any`; what it builds is a JsonValue by construction.
-    const value: JsonValue = JSON.parse(raw);
+    const value = parseJsonAs(raw, syntax);
 
     return isJsonObject(value)
       ? { kind: 'ok', value }
@@ -187,6 +190,29 @@ export async function readJsonObject(filePath: string): Promise<JsonObjectRead> 
   } catch (e) {
     return { kind: 'invalid', error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Write `data` over a JSON file a tool may read with comments. A file that is
+ * absent, blank or plain JSON is written by `writePlain`, as before; one that
+ * holds comments or trailing commas is edited key by key (`editJsonText`) and
+ * written atomically at its link's target, mode kept, so the comments stay.
+ */
+export async function writeJsonKeepingComments<T>(
+  filePath: string,
+  data: T,
+  writePlain: () => Promise<void>,
+  options?: { mode?: number },
+): Promise<void> {
+  const current = await readFileSafe(filePath);
+
+  if (current === null || isPlainJson(current)) {
+    await writePlain();
+
+    return;
+  }
+
+  await writeFileAtomic(filePath, editJsonText(current, parseJson(JSON.stringify(data))), options);
 }
 
 /**

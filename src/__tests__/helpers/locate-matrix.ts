@@ -157,7 +157,7 @@ function hostFor(row: MatrixRow, cell: Cell): Host {
     toolHomes: { kind: 'ok', homes: expand(row.toolHomes, cell) },
     cwd: () => cwdOf(cell.platform, cell.cwd),
     exists: async (dir) => existing.has(dir),
-    readJson: async (file) => {
+    readOpenclawConfig: async (file) => {
       if (invalid.has(file)) return { kind: 'invalid', error: 'Unexpected token' };
       const value = files.get(file);
       return value === undefined ? { kind: 'missing' } : { kind: 'ok', value };

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { parseJson } from '../utils/json.js';
+import { parseJsonAs, type JsonSyntax } from '../utils/json.js';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { parse as parseToml, type TomlTable, type TomlValue } from 'smol-toml';
@@ -10,7 +10,8 @@ import { withoutTomlBom } from '../utils/toml.js';
 import { getUserHome } from '../utils/home.js';
 import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
 import { toolHome } from '../tool-home.js';
-import { errnoCode, pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
+import { errnoCode, pathExists, writeFileAtomic, writeJsonAtomic, writeJsonKeepingComments } from '../utils/fs.js';
+import { mcpSyntaxOf } from '../tools.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';
@@ -142,6 +143,11 @@ function openCodeSettingsPath(): string {
   return path.join(toolHome('opencode'), 'opencode.json');
 }
 
+/** OpenCode's config, read in the syntax its MCP channel names for this same file. */
+async function openCodeDoc(): Promise<JsonObject> {
+  return jsonObject(openCodeSettingsPath(), mcpSyntaxOf('opencode', 'user'));
+}
+
 /**
  * Pi relocates its whole agent directory with `PI_CODING_AGENT_DIR`, the same
  * way Codex honors `CODEX_HOME`. The file TeamAI manages inside it is
@@ -151,6 +157,13 @@ function openCodeSettingsPath(): string {
 function piSettingsPath(): string {
   return path.join(toolHome('pi'), 'models.json');
 }
+
+/**
+ * Pi 1.4.0 reads models.json as `JSON.parse(stripJsonComments(stripBom(text)))`
+ * (dist/core/model-config.js:140), which drops `//` comments and trailing
+ * commas. It does not take block comments, which this syntax also takes.
+ */
+const PI_MODELS_SYNTAX: JsonSyntax = 'jsonc';
 
 /**
  * OMP (Oh My Pi) keeps its provider catalog in `models.yml` in its agent dir,
@@ -380,7 +393,7 @@ async function writableTarget(file: string): Promise<string> {
 }
 
 async function writeAgentJson(file: string, value: JsonValue): Promise<void> {
-  await writeJsonAtomic(await writableTarget(file), value, { mode: 0o600 });
+  await writeJsonKeepingComments(file, value, async () => writeJsonAtomic(await writableTarget(file), value, { mode: 0o600 }), { mode: 0o600 });
 }
 
 /** Read a YAML mapping, the shape OMP's `models.yml` uses. */
@@ -417,14 +430,15 @@ async function writeAgentYaml(file: string, doc: JsonObject): Promise<void> {
   await writeFileAtomic(file, YAML.stringify(doc, { indent: 2 }), { mode: 0o600 });
 }
 
-async function jsonObject(file: string): Promise<JsonObject> {
+/** `file`'s object, parsed as the agent that reads it does (`syntax`). */
+async function jsonObject(file: string, syntax: JsonSyntax = 'json'): Promise<JsonObject> {
   const raw = await readOptionalFile(file);
 
   if (raw === null || raw.trim() === '') return {};
   let parsed: JsonValue;
 
   try {
-    parsed = parseJson(raw);
+    parsed = parseJsonAs(raw, syntax);
   } catch (error) {
     throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }
@@ -572,7 +586,7 @@ function piKeyOf(reference: Snapshot | undefined): string | null {
 /** The file and reader for the Pi-family agent whose provider TeamAI manages. */
 async function piDoc(agent: 'pi' | 'omp'): Promise<JsonObject> {
   const file = ownSettingsPath(agent);
-  const doc = agent === 'omp' ? await yamlObject(file) : await jsonObject(file);
+  const doc = agent === 'omp' ? await yamlObject(file) : await jsonObject(file, PI_MODELS_SYNTAX);
 
   if (doc.providers !== undefined && !isJsonObject(doc.providers)) {
     throw new Error(`Cannot update ${file}: providers must be an object`);
@@ -1014,7 +1028,7 @@ function openCodeSnapshot(doc: JsonObject): OpenCodeSnapshot {
 
 async function writeOpenCode(snapshot: OpenCodeSnapshot): Promise<void> {
   const file = openCodeSettingsPath();
-  const doc = await jsonObject(file);
+  const doc = await openCodeDoc();
 
   if (doc.provider !== undefined && !isJsonObject(doc.provider)) {
     throw new Error(`Cannot update ${file}: provider must be an object`);
@@ -1188,7 +1202,7 @@ async function currentSnapshot(agent: ModelAgent, roots: AgentRoots, reference?:
 
   if (agent === 'codex') return codexSnapshot((await readOptionalFile(codexSettingsPath(roots))) ?? '');
 
-  if (agent === 'opencode') return openCodeSnapshot(await jsonObject(openCodeSettingsPath()));
+  if (agent === 'opencode') return openCodeSnapshot(await openCodeDoc());
 
   if (agent === 'muse') return museSnapshot();
 
@@ -1446,7 +1460,7 @@ async function firstSwitchCollision(agent: ModelAgent, roots: AgentRoots, profil
   }
 
   if (agent === 'opencode') {
-    const providers = openCodeProviders(await jsonObject(openCodeSettingsPath()));
+    const providers = openCodeProviders(await openCodeDoc());
     const taken = OPENCODE_PROVIDER_IDS.find((id) => providers[id] !== undefined);
 
     return taken ? `opencode already has a user-owned provider named ${taken}` : undefined;

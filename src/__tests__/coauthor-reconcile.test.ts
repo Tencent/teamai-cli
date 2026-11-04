@@ -19,6 +19,7 @@ import {
   spliceCodexAttribution,
 } from '../coauthor-reconcile.js';
 import { StateSchema } from '../types.js';
+import { parseJsonAs } from '../utils/json.js';
 import type { TeamaiConfig, LocalConfig, State } from '../types.js';
 
 const TOOL_PATHS = {
@@ -149,6 +150,21 @@ describe('co-author reconcile', () => {
       expect(changes.find((c) => c.file === file)?.action).toBe('skipped');
       expect(managed[file]).toBeUndefined();
     }
+  });
+
+  // CodeBuddy Code 2.179.1 reads settings.json with jsonc-parser, trailing commas allowed.
+  it('writes the trailer setting into a commented CodeBuddy settings.json, keeping the comment', async () => {
+    const settings = path.join(homeDir, '.codebuddy', 'settings.json');
+    await fse.ensureDir(path.join(homeDir, '.codebuddy', 'skills'));
+    await fse.writeFile(settings, '{\n  // the member\'s note\n  "theme": "dark",\n}\n');
+    const withCodebuddy = { ...team({ enabled: false }), toolPaths: { codebuddy: { skills: '.codebuddy/skills', settings: '.codebuddy/settings.json' } } } as TeamaiConfig;
+
+    const { changes } = await reconcileCoAuthorForConfig(withCodebuddy, baseLocal, freshState());
+
+    const written = await fse.readFile(settings, 'utf8');
+    expect(written).toContain('// the member\'s note');
+    expect(parseJsonAs(written, 'jsonc')).toEqual({ theme: 'dark', attribution: { commit: '', pr: '' } });
+    expect(changes).toContainEqual(expect.objectContaining({ tool: 'codebuddy', action: 'updated' }));
   });
 
   it('writes the Codex trailer setting into the recorded CODEX_HOME root', async () => {

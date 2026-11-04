@@ -20,8 +20,8 @@ export type Host = {
   /** The session's directory, read only when a relative path needs it: a removed one throws (#810). */
   cwd(): string;
   exists(file: string): Promise<boolean>;
-  /** A JSON object file, as `readJsonObject` reads it: OpenClaw's openclaw.json. */
-  readJson(file: string): Promise<JsonObjectRead>;
+  /** OpenClaw's openclaw.json, read as OpenClaw reads it (`json5`). */
+  readOpenclawConfig(file: string): Promise<JsonObjectRead>;
   /** `file` through its links; `file` itself when it cannot be resolved (missing, a loop, unreadable). */
   realpath(file: string): Promise<string>;
   /** A small text file, or null when it is missing or unreadable: a linked worktree's `.git` and its `commondir`. */
@@ -51,7 +51,7 @@ export function realHost(overrides: Partial<Pick<Host, 'env' | 'home'>> = {}): H
     toolHomes: cachedToolHomesRead(),
     cwd: () => process.cwd(),
     exists: pathExists,
-    readJson: readJsonObject,
+    readOpenclawConfig: async (file) => readJsonObject(file, 'json5'),
     realpath: (file) => fs.promises.realpath(file).catch(() => file),
     readText: readFileSafe,
     existsNow: (file) => fs.existsSync(file),

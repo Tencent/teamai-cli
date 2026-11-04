@@ -14,7 +14,8 @@ import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { realFilePath } from './git-exclude.js';
 import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
 import { pathExists, readFileIfExists } from './utils/fs.js';
-import { mapStrings, parseJson } from './utils/json.js';
+import { hookSyntaxOf, mcpSyntaxOf } from './tools.js';
+import { mapStrings, parseJson, parseJsonAs, type JsonSyntax } from './utils/json.js';
 
 /**
  * What teamai holds in the gated place. `summary` opens the fix
@@ -227,7 +228,7 @@ async function copilotFolderTrust(gate: Extract<ReadGate, { kind: 'copilot-folde
   const { resolveAnchors } = await import('./utils/git.js');
   const root = await realFilePath(gate.checkout);
   const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
-  const config = await readStore(gate.config, { comments: true });
+  const config = await readStore(gate.config, { syntax: 'line-comments' });
 
   if (config.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: config.reason, question: 'Copilot CLI trusts this project' });
   const folders = config.kind === 'ok' ? [config.value.trustedFolders, config.value.trusted_folders].flatMap(stringsIn) : [];
@@ -260,13 +261,11 @@ type StoreRead =
 
 /**
  * Only an absent store means the tool has not asked yet; one that is there
- * but cannot be read or parsed leaves its verdict unknown. `comments` drops
- * the `//` lines Copilot heads config.json with; `notJson` words a parse failure.
+ * but cannot be read or parsed leaves its verdict unknown. `syntax` is how the
+ * tool parses the file: a `JsonSyntax`, or `line-comments`, which drops the
+ * `//` lines Copilot heads config.json with.
  */
-async function readStore(
-  file: string,
-  { comments = false, notJson = (error: string) => `does not parse (${error})` }: { comments?: boolean; notJson?: (error: string) => string } = {},
-): Promise<StoreRead> {
+async function readStore(file: string, { syntax = 'json' }: { syntax?: JsonSyntax | 'line-comments' } = {}): Promise<StoreRead> {
   let raw: string | null;
 
   try {
@@ -276,16 +275,14 @@ async function readStore(
   }
 
   if (raw === null) return { kind: 'missing' };
-  const body = comments ? raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n') : raw;
 
   try {
-    const value = parseJson(body);
+    const value = syntax === 'line-comments' ? parseJson(raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n'))
+      : parseJsonAs(raw, syntax);
 
-    return isJsonObject(value)
-      ? { kind: 'ok', value }
-      : { kind: 'unreadable', reason: notJson('not a JSON object') };
+    return isJsonObject(value) ? { kind: 'ok', value } : { kind: 'unreadable', reason: 'does not parse (not a JSON object)' };
   } catch (error) {
-    return { kind: 'unreadable', reason: notJson(error instanceof Error ? error.message : String(error)) };
+    return { kind: 'unreadable', reason: `does not parse (${error instanceof Error ? error.message : String(error)})` };
   }
 }
 
@@ -298,7 +295,7 @@ async function readStore(
  */
 async function qoderFolderTrust(gate: Extract<ReadGate, { kind: 'qoder-folder-trust' }>, cause: string): Promise<ReadGateVerdict> {
   const root = await realFilePath(gate.checkout);
-  const settings = await readStore(gate.config);
+  const settings = await readStore(gate.config, { syntax: hookSyntaxOf('qoder') });
 
   if (settings.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: settings.reason, question: 'Qoder CLI trusts this folder' });
   const value = settings.kind === 'ok' ? settings.value : {};
@@ -411,7 +408,7 @@ async function qoderMcpApproval(gate: Extract<ReadGate, { kind: 'qoder-mcp-appro
   let all = false;
 
   for (const file of files) {
-    const settings = await readStore(file);
+    const settings = await readStore(file, { syntax: hookSyntaxOf('qoder') });
 
     if (settings.kind === 'unreadable') return unreadable({ cause, file, reason: settings.reason, question: 'Qoder CLI approved these servers' });
     const mcp = settings.kind === 'ok' ? fieldOf(settings.value, 'mcp') : undefined;
@@ -510,7 +507,7 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
  */
 async function codebuddyMcpApproval(gate: Extract<ReadGate, { kind: 'codebuddy-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
   const cause = `${held.summary}, but CodeBuddy Code starts a project's .mcp.json servers only once you approve them`;
-  const settings = await readStore(gate.config);
+  const settings = await readStore(gate.config, { syntax: hookSyntaxOf('codebuddy') });
 
   if (settings.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: settings.reason, question: 'CodeBuddy Code approved these servers' });
   const value = settings.kind === 'ok' ? settings.value : {};
@@ -566,7 +563,7 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
   const { disabled } = lists;
   const cliHasRun = await pathExists(gate.cliConfig);
   const approvals = lists.approvals ?? (cliHasRun ? new Set<string>() : null);
-  const project = await readStore(path.join(root, '.cursor', 'mcp.json'));
+  const project = await readStore(path.join(root, '.cursor', 'mcp.json'), { syntax: mcpSyntaxOf('cursor', 'project') });
   const servers = project.kind === 'ok' ? fieldOf(project.value, 'mcpServers') : undefined;
 
   const approved = (name: string): boolean => {
@@ -592,11 +589,11 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
   });
 }
 
-/** openclaw.json as OpenClaw writes it is plain JSON; a member may write JSON5, which teamai cannot read. */
+/** openclaw.json, read as OpenClaw reads it: plain JSON, else JSON5. */
 async function readOpenclawConfig(
   config: string, cause: string, question: string,
 ): Promise<{ readonly read: true; readonly value: JsonObject } | { readonly read: false; readonly verdict: ReadGateVerdict }> {
-  const found = await readStore(config, { notJson: (error) => `is not plain JSON (${error}), as comments or JSON5 make it` });
+  const found = await readStore(config, { syntax: 'json5' });
 
   if (found.kind === 'unreadable') return { read: false, verdict: unreadable({ cause, file: config, reason: found.reason, question }) };
 
