@@ -10,7 +10,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { knownSecrets } from '../env-resolution.js';
-import { getReportsDir, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { getReportsDir, REPORTS_BRANCH, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { errnoCode } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
@@ -321,9 +321,9 @@ async function readNames(dir: string): Promise<{ names: string[] } | { error: st
   }
 }
 
-async function readSweptRecord(file: string): Promise<{ value: SweptRecord } | { error: string }> {
+function parseSweptRecord(text: string): { value: SweptRecord } | { error: string } {
   try {
-    const parsed = SweptRecordSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+    const parsed = SweptRecordSchema.safeParse(JSON.parse(text));
 
     return parsed.success ? { value: parsed.data } : { error: parsed.error.issues.map((issue) => `${issue.path.join('.') || 'record'}: ${issue.message}`).join('; ') };
   } catch (cause) {
@@ -372,31 +372,70 @@ async function refreshReports(config: LocalConfig): Promise<boolean> {
   }
 }
 
-/** The settled run records on teamai-reports, as this machine last refreshed it. */
+/** A run record file on teamai-reports, named by where it was read, with its text or why it could not be read. */
+type RecordFile = { at: string } & ({ text: string } | { error: string });
+
+/**
+ * The run record files on teamai-reports: from the ref the sweep's refresh just fetched, since the checkout keeps an
+ * older copy when an interrupted write left it dirty; from the reports directory where teamai-reports is no branch.
+ */
+async function recordFiles(config: LocalConfig): Promise<{ files: RecordFile[] } | { from: string; error: string }> {
+  const reports = getReportsDir(config);
+
+  if (!usesBranchWorktree(config)) {
+    const dir = path.join(reports, RECORDS_DIR);
+    const listed = await readNames(dir);
+
+    if ('error' in listed) return { from: dir, error: listed.error };
+
+    return { files: await Promise.all(listed.names.filter((name) => name.endsWith('.json')).map(async (name): Promise<RecordFile> => {
+      const at = path.join(dir, name);
+
+      return fs.readFile(at, 'utf8').then((text) => ({ at, text }), (cause: unknown) => ({ at, error: causeText(cause) }));
+    })) };
+  }
+
+  const ref = `origin/${REPORTS_BRANCH}`;
+
+  // A refresh that found no teamai-reports on origin leaves no tracking ref, and no records.
+  if ((await git(reports, ['rev-parse', '--verify', '--quiet', `refs/remotes/${ref}`])).code !== 0) return { files: [] };
+  const listed = await git(reports, ['ls-tree', '--name-only', ref, '--', `${RECORDS_DIR}/`]);
+
+  if (listed.code !== 0) return { from: `${ref}:${RECORDS_DIR}`, error: listed.stderr.trim() || 'git ls-tree failed' };
+  const paths = listed.stdout.split('\n').filter((name) => name.endsWith('.json'));
+  const { readReportsOriginFiles } = await import('../utils/reports-branch.js');
+  const texts = await readReportsOriginFiles(reports, paths);
+
+  return { files: paths.map((name) => {
+    const text = texts.get(name);
+
+    return text === undefined || text === null ? { at: `${ref}:${name}`, error: 'git could not read it' } : { at: `${ref}:${name}`, text };
+  }) };
+}
+
+/** The settled run records on teamai-reports. */
 async function settledRecords(config: LocalConfig): Promise<SweptRecord[]> {
-  const dir = path.join(getReportsDir(config), RECORDS_DIR);
-  const listed = await readNames(dir);
+  const listed = await recordFiles(config);
 
   if ('error' in listed) {
-    log.warn(`The run records in ${dir} were not read (${listed.error}), so what runs other machines ended left is not removed.`);
+    log.warn(`The run records in ${listed.from} were not read (${listed.error}), so what runs other machines ended left is not removed.`);
 
     return [];
   }
 
-  const records = await Promise.all(listed.names.filter((file) => file.endsWith('.json')).map(async (file) => {
-    const at = path.join(dir, file);
-    const record = await readSweptRecord(at);
+  const records = listed.files.flatMap((file) => {
+    const record = 'text' in file ? parseSweptRecord(file.text) : file;
 
     if ('error' in record) {
-      log.warn(`Run record ${at} was not read (${record.error}), so what its run left is not removed.`);
+      log.warn(`Run record ${file.at} was not read (${record.error}), so what its run left is not removed.`);
 
       return [];
     }
 
     return [record.value];
-  }));
+  });
 
-  return records.flat().filter((record) => record.status !== 'running');
+  return records.filter((record) => record.status !== 'running');
 }
 
 /**

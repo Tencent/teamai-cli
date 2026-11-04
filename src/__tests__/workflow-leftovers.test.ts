@@ -693,4 +693,20 @@ describe('a run that settled longer ago than workflows.retention', () => {
     expect((await sweepLeftovers(http, null, { now: Date.parse('2026-11-03T12:00:00.000Z'), checkout: cwd })).swept).toEqual([]);
     expect(branches(origin, ran)).toEqual(['left/p1']);
   });
+
+  it('is swept from another machine by the record origin holds, though an interrupted write left an older one in its checkout', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    shareTeam(config, root);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    const first = Date.parse((await state(config, runId)).retainedUntil ?? '');
+    const other = await otherInstall(config, root, origin);
+    await sweepLeftovers(other.config, null, { now: Date.now(), checkout: other.cwd });
+    fs.appendFileSync(path.join(getReportsDir(other.config), 'workflows', 'runs', `${runId}.json`), '\n');
+    expect(await retryStep(config, runId, {}, 'join')).toMatchObject({ data: { reopened: true } });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed', record: 'published' } } });
+    expect(Date.parse((await state(config, runId)).retainedUntil ?? '')).toBeGreaterThan(first);
+
+    expect((await sweepLeftovers(other.config, null, { now: first + 7 * DAY, checkout: other.cwd })).swept).toEqual([]);
+    expect(branches(origin, runId)).toEqual(['join/p1', 'join/p2', 'left/p1']);
+  });
 });
