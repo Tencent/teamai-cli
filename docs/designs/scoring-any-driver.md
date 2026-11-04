@@ -1,6 +1,6 @@
 # Scoring on any driver
 
-> Status: Proposal — follow-up to #1700. Nothing below is implemented yet.
+> Status: Implemented — follow-up to #1700.
 
 ## Problem
 
@@ -80,11 +80,12 @@ The finished-sessions hook, `teamai score --drain` and `teamai score` decide thr
 ```
 parseDriver(name) -> local | skill | none | { external: name }
 drivesHere(config, name) -> Promise<boolean>        // local: yes; anything else: no, until definitions are resolved
-driveByDefault(config) -> Promise<{ drive: name } | { awaits: name }>
+driveByDefault(config) -> Promise<{ drive: name } | { awaits: name } | { unassigned: true }>   // unassigned: none
 driveRun(config, run, name)                         // the one way --drain and score drive a run; the hook passes --driver <name>
 ```
 
-The `awaits` line is built in one place.
+The `awaits` line is built in one place. A driver that takes a lease of the run clears `awaits`. A later drain that
+finds the run still open says which driver it awaits.
 
 When this machine does not drive the default, the run starts unassigned with `awaits: { driver }` in its run state,
 which every machine sees, and the command prints:

@@ -13,9 +13,9 @@ One document per feature design, in English. The status column says how far each
 | Implemented | [Workflow step roles](workflow-step-roles.md) — a workflow step runs with a team role's knowledge in a copy of its own | — |
 | Implemented | [Workspace children](workspace-children.md) — a workspace also delivers what the repos set up inside it select | #913 |
 | Implemented | [Skill serving](skill-serving.md) — built-in skill content shipped with the CLI (`teamai skill get`) | #678 |
+| Implemented | [Scoring on any driver](scoring-any-driver.md) — every driver runs the judging workflows; `local` is only the default | #1700 |
 | Implemented, living | [Team secrets](team-secrets.md) — describes only what the current version does | #875, #879 |
 | In progress | [Multi-project management](multi-project-management.md) — `project` as a dimension orthogonal to `role`; P1/P2 shipped (`--project`, `manifest/projects.yaml`) | #375 |
-| Proposal | [Scoring on any driver](scoring-any-driver.md) — every driver runs the judging workflows; `local` is only the default | #1700 |
 | Proposal | [Management backend](management-backend.md) — a backend for members who do not use Git | #341 |
 | Historical plan | [Git-native memory](git-native-memory.md) — March 2026 planning note; recall and voting have since shipped and are documented in the [Usage Guide](../guide/knowledge.md#knowledge-capture--retrieval) | — |
 | Historical plan | [Team intelligence platform](team-intelligence-platform.md) — March 2026 planning note; session docs, usage analytics and digest have since shipped | — |
