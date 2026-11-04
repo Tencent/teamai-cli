@@ -244,6 +244,35 @@ teamai workflow start review-packages --inputs '{"packages":[{"dir":"packages/co
 
 `review[0]` 使用模型别名 `strong` 运行，`review[1]` 的模型渲染为空，因此使用工具的默认模型。某个评审失败时，`summarize` 仍会基于另一个评审运行，运行成功，`reviews` 中包含每一项。
 
+### 只在部分失败时回退
+
+`steps.<id>.failure` 读取步骤失败的原因：它的 `code` 和 `message`。步骤没有失败时为 `null`。回退步骤读取它，只处理它要处理的失败，其他失败照样失败：
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-or-keep
+description: Summarize the notes, and keep them as written when the tool fails for any reason but a tool the member names that cannot run.
+inputs: { notes: string }
+ends: { unconfigured-tool: failed }
+steps:
+  - id: summary
+    answer: "Summarize these notes in five lines: {{ inputs.notes }}"
+    output: { text: string }
+    timeout: 60s
+    continue_on_failure: true
+  - id: keep
+    needs: [summary]
+    if: steps.summary.outcome == 'failed' && steps.summary.failure.code != 'tool_unconfigured'
+    command: 'echo "Kept the notes as written: $WHY" >&2'
+    env: { WHY: "{{ steps.summary.failure.message }}" }
+  - id: stop
+    needs: [summary]
+    if: steps.summary.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+```
+
+工具超时或出错退出时，`keep` 运行，运行成功。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具无法运行时，`stop` 让运行以 `failed` 结束，成员会看到需要修改的设置。只用 `continue_on_failure` 的话，运行会在什么都没做的情况下成功。`failure` 只读取步骤当前的 pass。租约渲染的模板（如 `model` 或受限目录）和 `writes` 模板不能读取它，就像它们不能读取 `outcome` 一样。
+
 ## 先到达的结局生效
 
 驱动再次调用 `next` 之前，多个上报可能到达两个结局。此时 `next` 采用先到达的那个结局，与步骤在文件中的顺序无关。
@@ -797,6 +826,7 @@ steps:
 | --- | --- |
 | 输入 | `inputs.issue`、`inputs.issue.labels` |
 | 步骤的 outcome、结局或输出 | `steps.check.outcome`、`steps.check.end`、`steps.review.outputs.files` |
+| 步骤失败的原因，或 `null` | `steps.summary.failure.code`、`steps.summary.failure.message`。见[只在部分失败时回退](#只在部分失败时回退)。 |
 | 步骤的每个 pass | `steps.review.passes`、`steps.review.passes[0].outputs.verdict`。见[读取每一个 pass](#读取每一个-pass)。 |
 | `for_each` 步骤的 results | `steps.build.results`、`steps.build.results[0].outcome`、`steps.build.branches` |
 | 设置了 `deliver: pr` 的步骤交付的 pull request，或 `null` | `steps.fix.pr`、`steps.fix.pr.url`、`steps.build.results[0].pr.url`。见[交付 PR](workflow.md#交付-pr)。 |

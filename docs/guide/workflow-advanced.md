@@ -244,6 +244,35 @@ teamai workflow start review-packages --inputs '{"packages":[{"dir":"packages/co
 
 `review[0]` runs on the model alias `strong`, and `review[1]` on the tool's default, since its model renders empty. When one review fails, `summarize` still runs on the other, and the run succeeds with every entry in `reviews`.
 
+### Fall back on some failures only
+
+`steps.<id>.failure` reads why a step failed: its `code` and its `message`. It is `null` for a step that did not fail. A fallback step reads it to cover the failures it is meant for and leave the others failing:
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-or-keep
+description: Summarize the notes, and keep them as written when the tool fails for any reason but a tool the member names that cannot run.
+inputs: { notes: string }
+ends: { unconfigured-tool: failed }
+steps:
+  - id: summary
+    answer: "Summarize these notes in five lines: {{ inputs.notes }}"
+    output: { text: string }
+    timeout: 60s
+    continue_on_failure: true
+  - id: keep
+    needs: [summary]
+    if: steps.summary.outcome == 'failed' && steps.summary.failure.code != 'tool_unconfigured'
+    command: 'echo "Kept the notes as written: $WHY" >&2'
+    env: { WHY: "{{ steps.summary.failure.message }}" }
+  - id: stop
+    needs: [summary]
+    if: steps.summary.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+```
+
+When the tool times out or exits with an error, `keep` runs and the run succeeds. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, `stop` ends the run `failed`, so the member sees the setting to fix. `continue_on_failure` alone would let the run succeed with nothing done. `failure` reads only the step's current pass. A template that a lease renders, such as `model` or a confined directory, and a `writes` template cannot read it, as they cannot read `outcome`.
+
 ## The end reached first wins
 
 Reports can reach two ends before the driver calls `next` again. `next` then applies the end that was reached first, whatever order the steps have in the file.
@@ -797,6 +826,7 @@ steps:
 | --- | --- |
 | An input | `inputs.issue`, `inputs.issue.labels` |
 | A step's outcome, end, or output | `steps.check.outcome`, `steps.check.end`, `steps.review.outputs.files` |
+| Why a step failed, or `null` | `steps.summary.failure.code`, `steps.summary.failure.message`. See [Fall back on some failures only](#fall-back-on-some-failures-only). |
 | Every pass of a step | `steps.review.passes`, `steps.review.passes[0].outputs.verdict`. See [Read every pass](#read-every-pass). |
 | The results of a `for_each` step | `steps.build.results`, `steps.build.results[0].outcome`, `steps.build.branches` |
 | The pull request a step with `deliver: pr` delivered, or `null` | `steps.fix.pr`, `steps.fix.pr.url`, `steps.build.results[0].pr.url`. See [Deliver a PR](workflow.md#deliver-a-pr). |

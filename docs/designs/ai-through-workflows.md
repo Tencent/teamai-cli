@@ -128,9 +128,10 @@ Every key is generic: the engine never branches on a feature.
 
 ```yaml
 - id: publish
-  command: teamai recall promote publish --learning "$ID"
-  env: { ID: "{{ inputs.learning }}" }
-  writes: ["skills/", "rules/", "docs/"]
+  command: teamai recall promote publish --learning "$ID" --to "$CATEGORY" --reason "$REASON" --content "$CONTENT"
+  env: { ID: "{{ inputs.learning }}", CATEGORY: "{{ steps.category.outputs.category }}", … }
+  # The review branch is written in a disposable worktree, under .teamai/ when the knowledge is this checkout's.
+  writes: [.teamai/]
 ```
 
 A change under a listed path is kept. Any other change still fails the step `read_only_dirty`.
@@ -141,11 +142,20 @@ A change under a listed path is kept. Any other change still fails the step `rea
 - id: content
   answer: "Rewrite this learning as a {{ steps.category.outputs.category }}: …"
   continue_on_failure: true
-- id: content-fallback
+- id: unconfigured-tool
   needs: [content]
-  if: steps.content.outcome == 'failed' && steps.content.failure.code != 'override_invalid'
-  command: teamai recall promote original --learning "$ID"
+  if: steps.content.failure.code == 'tool_unconfigured'
+  end: unconfigured-tool
+- id: publish
+  needs: [content]
+  # Any other failure publishes the learning as written: --content renders empty.
+  if: steps.content.outcome == 'success' || steps.content.failure.code != 'tool_unconfigured'
+  command: teamai recall promote publish --learning "$ID" --content "$CONTENT" …
 ```
+
+`failure` is `{ code, message }`, `null` for a step that did not fail. An answer step reports a tool the member names
+that cannot run as `tool_unconfigured`, and the fallback must not hide it, so an `end` fails the run:
+`continue_on_failure` alone would let it succeed with nothing done.
 
 ### Parallel steps
 

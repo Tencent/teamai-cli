@@ -162,13 +162,32 @@ A learning can become a skill, rule, or doc when its confidence is at least 0.90
 
 Promoted skills use `skills/<learningId>/SKILL.md`, with missing `name` and `description` frontmatter filled in so tools can discover them. Rules and docs remain Markdown files in their respective directories.
 
-```bash
-teamai recall promote
-teamai recall promote <learningId> --category skills
-teamai recall promote <learningId> --dry-run
+```console
+$ teamai recall promote
+ℹ 1 learning(s) eligible for promotion:
+ℹ   - retry-deploys (confidence: 0.94, suggested: rules)
+
+$ teamai recall promote retry-deploys
+ℹ Run r706cf485d20bb53e started. If it stops before it ends, continue it with: teamai workflow resume r706cf485d20bb53e
+✔ Promotion artifact pushed to branch teamai/push/alice/20261104-230453
+ℹ Create a pull/merge request for teamai/push/alice/20261104-230453 to review the promoted knowledge.
+✔ Promoted: retry-deploys -> rules/retry-deploys.md
+✔ Published promotion marker to the learnings branch
 ```
 
-Promotion pushes the new entry to a review branch and opens a PR/MR when the provider supports it. With the `git` provider, open the review request yourself using the printed branch name. The learning is marked as promoted only after the entry is pushed; merge the review request before teammates pull it. If the push fails, the learning stays eligible for retry. If a review request is closed without merging, delete its branch and the learning is offered for promotion again. Existing target files are never overwritten, and `--category` accepts only `skills`, `rules`, or `docs`.
+Listing makes no AI call: `suggested` comes from the learning's keywords. `teamai recall promote <learningId>` runs the default workflow [`teamai-promote-learning`](workflow.md#default-workflows). The member's AI tool picks the category and says why, unless `--category skills|rules|docs` gives it, then rewrites the learning for that category. When the AI cannot answer, the keyword category and the learning as written are used. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, the command fails and publishes nothing. `--dry-run` only prints where the entry would go, in the keyword category unless `--category` is given. A learning that is not a candidate exits 1.
+
+Promotion pushes the new entry to a review branch. Its commit, and the PR/MR it opens when the provider supports it, say the category and why:
+
+```text
+[teamai] Promote retry-deploys to rules
+
+Category: rules
+
+It states what the team always does after a 502, so it reads as a rule.
+```
+
+With the `git` provider, open the review request yourself using the printed branch name. The learning is marked as promoted only after the entry is pushed; merge the review request before teammates pull it. If the push fails, the learning stays eligible for retry. If a review request is closed without merging, delete its branch and the learning is offered for promotion again. Existing target files are never overwritten.
 
 ## Codebase Knowledge Graph
 

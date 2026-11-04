@@ -55,6 +55,25 @@ A feature that orchestrates AI work ships as a default workflow in `workflows/`,
 - **The workflow cache holds only what one sync settled.** `checkReferences` checks each file's version against the versions the other files settle to, and `dropUnsettled` removes every other cache entry. `startRun` relies on this: it reads the workflows a run uses from the cache and does not check them against each other again. A new way for a file to keep or lose its version goes through `checkReferences`.
 - **`src/workflow/` never imports `src/benchmark/`.** The engine and its drivers know only generic primitives: clone places, `workflow: { from }`, `deliver: publish`, `finally`, `on_limit: end_turn`, `requires.strict`, `sampling: all`, `continue_on_failure`, `private`, `$TEAMAI_RUN_DIR`, `startedBy`, `run.id` and a `model` template. A benchmark is the default workflow `teamai-benchmark`, whose steps run the `teamai benchmark` verbs as commands. The `teamai/workflow-boundaries` lint rule fails any import from `src/workflow/` into `src/benchmark/`.
 - **`continue_on_failure` changes only what a scope's outcome counts.** `settleScope` in `engine.ts` fails a scope for a stopped step unless the step's definition has the key; the step's own status, and the rules for its dependents, stay as they are. `keptResults` in `fan-out.ts` gives such a `for_each` step the results of its settled items when it stops unsettled, on a timeout (`expire` in `limits.ts`) and on a cancel (`cancelRun` in `run-controls.ts`).
+- **A fallback reads why a step failed, never only that it failed.** `currentStep` in `scope.ts` gives a settled step's `failure` (code and message, current pass only) to expressions and templates; `stepFieldSchema` in `expression.ts` types it, and `undeclaredField` in `parse-context.ts` refuses a field it lacks. A migrated default that kept a success-shaped fallback guards it on the code, and ends the run `failed` on a code the fallback must not hide, such as `tool_unconfigured` for a tool the member names that cannot run: `continue_on_failure` alone would let the run succeed with nothing done.
+
+  ```yaml fragment
+  # workflows/teamai-promote-learning.yaml, abridged
+  ends: { unconfigured-tool: failed }
+  steps:
+    - id: content
+      answer: "Rewrite this learning as {{ steps.category.outputs.category }}: …"
+      output: { text: string }
+      continue_on_failure: true
+    - id: unconfigured-tool
+      needs: [ask-category, content]
+      if: steps.ask-category.failure.code == 'tool_unconfigured' || steps.content.failure.code == 'tool_unconfigured'
+      end: unconfigured-tool
+    - id: publish
+      needs: [content]
+      if: steps.content.outcome == 'success' || steps.content.failure.code != 'tool_unconfigured'
+      command: teamai recall promote publish --learning "$ID" --to "$CATEGORY" --reason "$REASON" --content "$CONTENT" --content-failure "$WHY"
+  ```
 - **`private` is decided per step path, by `privateSteps` in `scope.ts`.** A path is private when a workflow file on the way to it has the key. Every reader asks it: `projectRun` in `snapshot.ts` drops the outputs and results of private steps and their passes, and the item and inputs of private steps, `unrecordedSteps` in `session-publish.ts` archives no session of one, and `publishRun`, `claimRun` and `resumeRun` in `handoff.ts` refuse `private_open` while `openPrivateStep` finds one unsettled. A private root is read from `run.definition.private`: `queueRunRecord` in `records.ts` records nothing for it, `handoff.ts` refuses it `isolated_run`, and `listLocalRuns` in `dashboard/workflow-runs.ts` leaves it out.
 - **`$TEAMAI_RUN_DIR` is a path, never a run field.** `runScratchDir` in `store.ts` names it from the run id, `attemptEnv` in `attempt-marker.ts` gives it to every process an attempt starts, with either driver, the protocol client's `next` puts it with the rest of `attemptEnv` on every command lease's `env` (`withAttemptEnv` in `protocol.ts`), so an external driver's commands get it too, `leaseNext` makes it before it leases a step, and `finishRun` removes it after `settleRun`, however the run ended.
 - **`startedBy` comes from the caller of `start`.** `start` in `protocol.ts` records `agent` when the caller shows agent evidence (`agentEvidence` in `attempt-marker.ts`, or `--driver skill`), else the `startedBy` every caller must pass: `cli` for one of the CLI's own automatic starts, `person` for a start a person asked for. No default, so a new automatic start cannot be recorded as a person's, which hand labels and policy overrides trust.

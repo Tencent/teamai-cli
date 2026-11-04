@@ -146,13 +146,32 @@ teamai recall maintenance --update-quality
 
 晋升后的 skill 位于 `skills/<learningId>/SKILL.md`，缺少的 `name` 和 `description` 前置信息会自动补齐，便于工具识别。rule 和 doc 仍是各自目录下的 Markdown 文件。
 
-```bash
-teamai recall promote
-teamai recall promote <learningId> --category skills
-teamai recall promote <learningId> --dry-run
+```console
+$ teamai recall promote
+ℹ 1 learning(s) eligible for promotion:
+ℹ   - retry-deploys (confidence: 0.94, suggested: rules)
+
+$ teamai recall promote retry-deploys
+ℹ Run r706cf485d20bb53e started. If it stops before it ends, continue it with: teamai workflow resume r706cf485d20bb53e
+✔ Promotion artifact pushed to branch teamai/push/alice/20261104-230453
+ℹ Create a pull/merge request for teamai/push/alice/20261104-230453 to review the promoted knowledge.
+✔ Promoted: retry-deploys -> rules/retry-deploys.md
+✔ Published promotion marker to the learnings branch
 ```
 
-晋升会把新条目推送到评审分支，并在 provider 支持时创建 PR/MR。使用 `git` provider 时，请根据输出的分支名自行发起评审。只有条目推送成功后才会标记 learning 已晋升；合并评审后，其他成员才能 pull 到它。推送失败时，learning 仍可重试晋升。评审未合并就关闭时，删除它的分支，learning 会重新成为晋升候选。已有的目标文件不会被覆盖，`--category` 只接受 `skills`、`rules` 或 `docs`。
+列出候选不调用 AI：`suggested` 来自经验中的关键词。`teamai recall promote <learningId>` 运行默认工作流 [`teamai-promote-learning`](workflow.md#默认工作流)。成员的 AI 工具选择类别并说明理由（`--category skills|rules|docs` 给出时除外），然后按该类别改写经验。AI 无法回答时，使用关键词类别和经验原文。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具无法运行时，命令失败，不发布任何内容。`--dry-run` 只输出条目会写到哪里，未给出 `--category` 时使用关键词类别。不是候选的经验以 1 退出。
+
+晋升会把新条目推送到评审分支。它的提交，以及 provider 支持时创建的 PR/MR，会写明类别和理由：
+
+```text
+[teamai] Promote retry-deploys to rules
+
+Category: rules
+
+It states what the team always does after a 502, so it reads as a rule.
+```
+
+使用 `git` provider 时，请根据输出的分支名自行发起评审。只有条目推送成功后才会标记 learning 已晋升；合并评审后，其他成员才能 pull 到它。推送失败时，learning 仍可重试晋升。评审未合并就关闭时，删除它的分支，learning 会重新成为晋升候选。已有的目标文件不会被覆盖。
 
 ## 代码知识图谱
 
