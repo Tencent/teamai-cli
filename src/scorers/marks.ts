@@ -129,6 +129,11 @@ function idOf(key: MarkKey): string {
   return JSON.stringify([key.scorer, key.sourceHash ?? null, Subject.format(key.subject)]);
 }
 
+/** A scorer's marks of one subject, whatever rubric each is for: the newest of them is the one automatic judging goes on with. */
+function scorerOf(key: MarkKey): string {
+  return JSON.stringify([key.scorer, Subject.format(key.subject)]);
+}
+
 function keyOf(line: Line): MarkKey | undefined {
   const subject = Subject.parse(line.subject);
 
@@ -203,10 +208,12 @@ async function readLedger(config: LocalConfig, now: string) {
   const carried = await readCarried(config, now) ?? '';
   const text = await readFileSafe(marksFile(config)) ?? '';
   const newest = new Map<string, { key: MarkKey; line: Line }>();
+  const latest = new Map<string, { key: MarkKey; line: Line }>();
   const launches: Array<{ key: MarkKey; line: Extract<Line, { state: 'open' }> }> = [];
 
   for (const mark of [...carried.split('\n'), ...text.split('\n')].flatMap((one) => parsedLine(one) ?? [])) {
     newest.set(idOf(mark.key), mark);
+    latest.set(scorerOf(mark.key), mark);
 
     if (mark.line.state === 'open') launches.push({ key: mark.key, line: mark.line });
   }
@@ -214,7 +221,7 @@ async function readLedger(config: LocalConfig, now: string) {
   /** Session launches of `now`'s local day, by run, group and subject: a group of one subject is one launch. */
   const slotsOn = (today: string) => new Set(launches.flatMap(({ key, line }) => (key.subject.kind !== 'run' && localDay(line.at) === localDay(today) ? [slotOf(line.run, line.group, key)] : [])));
 
-  return { newest, slotsOn, torn: text !== '' && !text.endsWith('\n') };
+  return { newest, latest, slotsOn, torn: text !== '' && !text.endsWith('\n') };
 }
 
 type Ledger = Awaited<ReturnType<typeof readLedger>>;
@@ -296,6 +303,21 @@ function restartOf(line: Extract<Line, { lapses: number }>): Restart {
   return restart;
 }
 
+/**
+ * The mark of `key` in `ledger`. A session key no line opened yet goes on with the lapses of its scorer's newest mark of
+ * the subject under an older rubric, while that one starts again, so a rubric changed since counts no lapse twice.
+ */
+async function derivedIn(ledger: Ledger, key: MarkKey, facts: MarkFacts): Promise<Derived> {
+  const own = ledger.newest.get(idOf(key))?.line;
+  const derived = await derive(key, own, facts);
+  const latest = ledger.latest.get(scorerOf(key));
+
+  if (own !== undefined || latest === undefined) return derived;
+  const earlier = await derive(latest.key, latest.line, facts);
+
+  return earlier.state.kind === 'lapsed' && startsAgain(earlier.state) ? { ...derived, restart: earlier.restart } : derived;
+}
+
 function canLaunch({ state }: Derived, demand: Demand): boolean {
   return demand === 'named' ? state.kind !== 'open' : startsAgain(state);
 }
@@ -348,7 +370,7 @@ export const Marks = {
         let isAsked = launch.demand === 'named';
 
         for (const key of keys) {
-          const derived = await derive(key, ledger.newest.get(idOf(key))?.line, facts);
+          const derived = await derivedIn(ledger, key, facts);
 
           if (derived.state.kind === 'open' && derived.state.run === launch.run) starts.push({ key });
           else if (canLaunch(derived, launch.demand)) {
@@ -374,6 +396,7 @@ export const Marks = {
           if (!line) continue;
           lines.push(line);
           ledger.newest.set(idOf(key), { key, line });
+          ledger.latest.set(scorerOf(key), { key, line });
         }
 
         outcome.opened.push({ group, keys: starts.map(({ key }) => key) });
@@ -435,10 +458,13 @@ export const Marks = {
     return { closed: [...byId].flatMap(([id, pass]) => (live.has(id) ? [] : [pass])), live };
   },
 
-  /** The marks automatic judging starts again: lapses before the fourth, and marks waiting for CI, none expired. */
+  /**
+   * The marks automatic judging starts again: lapses before the fourth, and marks waiting for CI, none expired, and of a
+   * session only its scorer's newest mark, so a lapse a later rubric took up is not started again.
+   */
   async restartable(config: LocalConfig, facts: MarkFacts): Promise<Array<{ key: MarkKey; state: Extract<MarkState, { kind: 'lapsed' | 'waiting' }> }>> {
-    const { newest } = await readLedger(config, facts.now);
-    const marks = await Promise.all([...newest.values()].map(async ({ key, line }) => ({ key, state: (await derive(key, line, facts)).state })));
+    const { latest } = await readLedger(config, facts.now);
+    const marks = await Promise.all([...latest.values()].map(async ({ key, line }) => ({ key, state: (await derive(key, line, facts)).state })));
 
     return marks.flatMap(({ key, state }) => ((state.kind === 'waiting' || state.kind === 'lapsed') && startsAgain(state) ? [{ key, state }] : []));
   },

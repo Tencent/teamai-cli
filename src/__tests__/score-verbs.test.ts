@@ -1031,6 +1031,44 @@ describe('score label and score write', () => {
     expect(await ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW })).toEqual({ ok: true, output: { list: [] } });
   });
 
+  it.each([100, 0])('judge a lapsed session once with the rubric a pull changed since, and list it no more, at sampling rate %i', async (rate) => {
+    const config = await team({}, { quality: scorer({ rate }) });
+    const subject = 'session:claude-code:one';
+    plantSession(path.join(root, 'app'), 'one', 'Fix the login bug.');
+    const asked = await scoreRun(config, { subject, scorers: ['quality'], demand: 'named' });
+    expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand: 'named' }, (await asked.next('plan')).ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+    data(await cancelRun(config, asked.runId, await knownSecrets(config)));
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), scorer({ rate }).replace('Judge the work.', 'Judge the work strictly.'));
+    await syncScorersThenWorkflows(config);
+    const lapsed = async () => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
+
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject, scorers: ['quality'] }] } });
+    await walk(config, subject, { inputs: { scorers: ['quality'] }, judge: { answer: { label: 'good', reasoning: 'It fixed the bug.' } } });
+
+    expect(await LabelStore.local(config)).toMatchObject([{ scorer: 'quality', label: 'good' }]);
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [] } });
+  });
+
+  it('start a lapsed session again only until its fourth lapse, a pull having changed the rubric in between', async () => {
+    const config = await team({}, { quality: scorer({ rate: 0 }) });
+    const subject = 'session:claude-code:one';
+    const lapse = async (demand: string) => {
+      const started = await scoreRun(config, { subject, scorers: ['quality'], demand });
+      expect(await ScoreVerbs.plan({ subject, scorers: '["quality"]', batch: 'false', demand }, (await started.next('plan')).ctx)).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+      data(await cancelRun(config, started.runId, await knownSecrets(config)));
+    };
+    const lapsed = async () => ScoreVerbs.subjects({ lapsed: true }, { env: {}, current: config, now: NOW });
+    await lapse('named');
+    await lapse('auto');
+    await lapse('auto');
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), scorer({ rate: 0 }).replace('Judge the work.', 'Judge the work strictly.'));
+    await syncScorersThenWorkflows(config);
+
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [{ subject, scorers: ['quality'] }] } });
+    await lapse('auto');
+    expect(await lapsed()).toEqual({ ok: true, output: { list: [] } });
+  });
+
   it('settle a group whose evidence failed as a failed attempt, so automatic judging does not start it again', async () => {
     const config = await team({ review: REVIEW }, { quality: scorer(), coverage: scorer() });
     const runId = await reviewedRun(config, 'session-gone');

@@ -79,15 +79,15 @@ interface Judged {
 
 /**
  * Whether a plan of `request` starts a mark again: on an automatic demand with no hand label, a lapse or a wait for CI on
- * its subject of a scorer an earlier launch took, which may be one someone named, that does not judge sessions or does
- * not sample the subject, so sampling skips none.
+ * its subject of a scorer an earlier launch took, under whichever rubric, which may be one someone named, that does not
+ * judge sessions or does not sample the subject, so sampling skips none.
  */
 async function restartsOf(request: PlanRequest, facts: MarkFacts): Promise<(key: MarkKey) => boolean> {
   if (request.demand !== 'auto' || request.label !== '') return () => false;
   const id = Subject.format(request.subject);
   const restartable = (await Marks.restartable(request.attempt.config, facts)).flatMap(({ key }) => (Subject.format(key.subject) === id ? [key] : []));
 
-  return (key) => restartable.some((mark) => mark.scorer === key.scorer && mark.sourceHash === key.sourceHash);
+  return (key) => restartable.some((mark) => mark.scorer === key.scorer);
 }
 
 /** What plan keeps in its attempt's directory: the pin of each session scorer whose mark it opened, by name. */
