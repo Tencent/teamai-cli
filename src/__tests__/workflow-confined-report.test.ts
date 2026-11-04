@@ -49,7 +49,7 @@ async function fixture(): Promise<LocalConfig> {
  * Starts the judge workflow with its directory confined at `level`, leases its step to a driver that offers `offered`
  * at verified, and reports `confined` as what ran. What the step became.
  */
-async function judged(config: LocalConfig, level: 'verified' | 'best-effort', confined: ConfinedRunReport, options: { edit?: (runFile: string) => void; leasedAgainOn?: string } = {}): Promise<unknown> {
+async function judged(config: LocalConfig, level: 'verified' | 'best-effort', confined: ConfinedRunReport | undefined, options: { edit?: (runFile: string) => void; leasedAgainOn?: string } = {}): Promise<unknown> {
   const run = String(data(await startRun(config, 'judge', {}, { secrets: await knownSecrets(config) })).run);
   fs.mkdirSync(path.join(runScratchDir(config, run), 'evidence'), { recursive: true });
   fs.writeFileSync(path.join(runScratchDir(config, run), 'evidence', 'confined.json'), JSON.stringify({ level }));
@@ -57,7 +57,7 @@ async function judged(config: LocalConfig, level: 'verified' | 'best-effort', co
   let lease = LeaseSchema.parse(data(await leaseNext(config, run, driver, { can: can('claude') })).lease);
   if (options.leasedAgainOn !== undefined) lease = LeaseSchema.parse(data(await leaseNext(config, run, driver, { can: can(options.leasedAgainOn) })).lease);
   options.edit?.(runFilePath(config, run));
-  data(await reportAttempt(config, run, { ...lease, outcome: 'success', driver, outputs: { answer: 'yes' }, tool: confined.tool, confined }));
+  data(await reportAttempt(config, run, { ...lease, outcome: 'success', driver, outputs: { answer: 'yes' }, ...confined && { tool: confined.tool, confined } }));
   const stored = await readRun(config, run);
   return typeof stored === 'object' ? stored.steps.find((step) => step.id === 'judge') : stored;
 }
@@ -78,6 +78,14 @@ describe('a confined report checked against its lease', () => {
       status: 'failed', failure: { code: 'confined_report_mismatch', message: expect.stringContaining('best-effort') },
     });
     expect(await judged(config, 'best-effort', { tool: 'claude', isolation: 'verified', access: 'read' })).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('fails a success that names no confined run, so nothing shows the step ran confined', async () => {
+    const config = await fixture();
+
+    expect(await judged(config, 'best-effort', undefined)).toMatchObject({
+      status: 'failed', failure: { code: 'confined_report_mismatch', message: expect.stringContaining('names no confined run') },
+    });
   });
 
   it('does not check a lease granted before its terms were kept', async () => {

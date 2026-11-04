@@ -2814,11 +2814,16 @@ function admitInto(run: RunState, path: string, field: string, output: AdmittedW
 }
 
 /**
- * Why the confined run a report names is not one `terms`, the lease's, allow: a tool the lease did not name, or an
- * isolation below its level, which is a minimum. A lease issued before teamai kept its terms is not checked.
+ * Why the confined run a report names is not one `terms`, the lease's, allow: none named by a success, a tool the lease
+ * did not name, or an isolation below its level, which is a minimum. A lease issued before teamai kept its terms is not
+ * checked, and a report that did not succeed needs no confined run.
  */
-function confinedMismatch(step: string, terms: LeasedConfined | undefined, ran: ConfinedRunReport | undefined): WorkflowFailure | undefined {
-  if (!terms || !ran) return undefined;
+function confinedMismatch(step: string, terms: LeasedConfined | undefined, ran: ConfinedRunReport | undefined, outcome: ReportInput['outcome']): WorkflowFailure | undefined {
+  if (!terms) return undefined;
+
+  if (!ran) {
+    return outcome !== 'success' ? undefined : { code: 'confined_report_mismatch', message: `Step "${step}" was leased to run confined at ${terms.level} on ${terms.tools.join(', ')}, and its report names no confined run, so nothing shows it ran confined. Retry the step with a driver that reports the confined run it launched.` };
+  }
 
   if (!terms.tools.includes(ran.tool)) {
     return { code: 'confined_report_mismatch', message: `Step "${step}" was leased to run confined on ${terms.tools.join(', ')}, and its report says ${ran.tool} ran it, so what judged it is not what was leased. Retry the step with a driver that runs it on a tool it offers.` };
@@ -2883,7 +2888,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       failure = { code: 'budget_unmeasured', message };
     }
 
-    const confinedProblem = outcome === 'released' ? undefined : confinedMismatch(step.id, step.lease.confined, report.confined);
+    const confinedProblem = outcome === 'released' ? undefined : confinedMismatch(step.id, step.lease.confined, report.confined, outcome);
 
     if (confinedProblem) {
       outcome = 'failed';
