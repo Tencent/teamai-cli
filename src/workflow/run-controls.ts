@@ -34,7 +34,7 @@ async function controlRun(
 
   const change = () => withRun(config, runId, secrets, async (run, now) => {
     const before = JSON.stringify(run);
-    checkout = run.driver?.workspace ?? checkout;
+    checkout = run.driver?.workspace ?? run.checkout ?? checkout;
 
     const finish = async (result: WorkflowResult): Promise<void> => {
       const finished = await finishRun(config, run, now, result, secrets, run.driver);
