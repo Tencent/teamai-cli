@@ -577,7 +577,7 @@ async function keptRefs(checkout: string, attempts: string[]): Promise<{ refs: s
  */
 async function removeRun(
   { checkout, runId, keep, attempts }: { checkout: string; runId: string; keep: ReadonlySet<string>; attempts: string[] },
-): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: string[]; complete: boolean } | undefined> {
+): Promise<Omit<SweptRun, 'run' | 'from' | 'settledAt'> & { kept: RunLeftovers['kept']; complete: boolean } | undefined> {
   const tips = await runBranches({ checkout, runId });
 
   if ('error' in tips) return warnNotRemoved(runId, tips.error);
@@ -614,9 +614,12 @@ async function removeRun(
   }
 
   const all = namesOf(tips);
-  const { deleted, failed } = await deleteBranches({ checkout, runId, branches: all.filter((branch) => !keep.has(branch)), tips });
+  const { deleted, failed, hostKept } = await deleteBranches({ checkout, runId, branches: all.filter((branch) => !keep.has(branch)), tips });
+  const keptHere: RunLeftovers['kept'] = all.filter((branch) => keep.has(branch)).map((branch) => ({ branch, why: 'pr' }));
 
-  return { branches: deleted, worktrees, refs, failed, kept: all.filter((branch) => keep.has(branch)), complete };
+  for (const branch of hostKept) keptHere.push({ branch, why: 'host' });
+
+  return { branches: deleted, worktrees, refs, failed, kept: keptHere, complete };
 }
 
 /** The attempts of a run of this machine, whose kept refs go with it, or why they could not be listed. */
@@ -686,7 +689,7 @@ export async function sweepLeftovers(config: LocalConfig, team: Pick<TeamaiConfi
 
       // A ref or worktree that stayed leaves the run uncleaned, so the next sweep tries it again.
       if (removed?.complete) {
-        const leftovers: RunLeftovers = { by: 'retention', at: new Date(now).toISOString(), revision: run.revision, kept: removed.kept.map((branch) => ({ branch, why: 'pr' })), deleted: removed.branches, failed: removed.failed };
+        const leftovers: RunLeftovers = { by: 'retention', at: new Date(now).toISOString(), revision: run.revision, kept: removed.kept, deleted: removed.branches, failed: removed.failed };
 
         await updateRun(config, run.id, secrets, async (stored) => (
           stored === 'missing' || stored.revision !== run.revision ? { value: undefined } : { value: undefined, write: { ...stored, leftovers } }

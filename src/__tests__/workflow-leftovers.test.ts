@@ -354,6 +354,22 @@ async function otherInstall(config: LocalConfig, root: string, origin: string): 
 }
 
 describe('doctor --fix past workflows.retention', () => {
+  it('lists a branch the host keeps checked out among what it kept, past the retention', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(FAILS_LAST);
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const left = `teamai/${runId}/left/p1`;
+    const teamaiWorktree = git(cwd, ['worktree', 'list', '--porcelain']).split('\n\n')
+      .find((entry) => entry.includes(`branch refs/heads/${left}`))?.match(/^worktree (.+)$/m)?.[1];
+    if (teamaiWorktree) git(cwd, ['worktree', 'remove', '--force', teamaiWorktree]);
+    git(cwd, ['worktree', 'add', '-q', path.join(root, 'host'), left]);
+
+    await sweepLeftovers(config, null, { now: Date.parse((await state(config, runId)).updatedAt) + 14 * DAY, checkout: cwd });
+
+    expect(branches(origin, runId)).not.toContain('left/p1');
+    expect(branches(cwd, runId)).toContain('left/p1');
+    expect((await state(config, runId)).leftovers).toMatchObject({ by: 'retention', kept: [{ branch: left, why: 'host' }] });
+  });
+
   it('keeps what a failed run left until the retention passed, then removes it but the pull request branch, once', async () => {
     const { config, cwd, root, origin, runId } = await fixture(FAILS_AFTER_DELIVERY);
     fakeGh(path.join(root, 'gh'));
