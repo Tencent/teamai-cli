@@ -187,6 +187,19 @@ describe('teamai score --session', () => {
     expect(fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8')).toContain('Add retries to the client');
   });
 
+  it('names a scorer file outside the current directory by its absolute path', async () => {
+    const config = await fixture();
+    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+    fakeClaude('good');
+    quality();
+    const outside = path.join(root, 'elsewhere', 'quality.md');
+    fs.mkdirSync(path.dirname(outside));
+    fs.writeFileSync(outside, SCORER);
+    vi.mocked(process.cwd).mockReturnValue(path.join(root, 'draft'));
+
+    expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [outside] }))).toMatchObject({ label: { scorer: 'quality', file: outside } });
+  });
+
   it('holds the judge, and says why, when the scorer\'s alias has no model for any judge tool here', async () => {
     const config = await fixture();
     fs.mkdirSync(path.join(config.repo.localPath, 'models'));

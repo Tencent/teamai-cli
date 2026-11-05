@@ -26,7 +26,7 @@ function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
 
-/** A scorer file read as `teamai pull` reads it, with the path it was named by, relative to the current directory. */
+/** A scorer file read as `teamai pull` reads it, with its path relative to the current directory, or absolute outside it. */
 export interface TriedFile {
   scorer: string;
   file: string;
@@ -37,7 +37,8 @@ export interface TriedFile {
 /** The scorer file `value` names, relative to the current directory, read and parsed as `teamai pull` parses it. */
 async function fileOf(value: string): Promise<TriedFile | Refusal> {
   const full = path.resolve(value);
-  const file = path.relative(process.cwd(), full).split(path.sep).join('/');
+  const relative = path.relative(process.cwd(), full);
+  const file = relative.startsWith('..') || path.isAbsolute(relative) ? full : relative.split(path.sep).join('/');
 
   if (!file.endsWith('.md') || path.posix.basename(file) === 'README.md') return refused('scorer_invalid', formatScorerDiagnostic({ file, message: NOT_A_SCORER }));
   const content = await readFileSafe(full);
