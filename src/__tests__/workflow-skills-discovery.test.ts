@@ -162,14 +162,14 @@ describe('generated workflow skills', () => {
     const first = createDeliveryRecorder();
     await deploy(first);
     const listed = await first.merge(undefined);
-    expect(listed).toEqual({ 'workflow-skills': [skillAt('teamai-import-from-mr'), skillAt('teamai-new-scorer'), skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-learnings-from-sessions'), skillAt('teamai-share-session'), skill('check'), skill('gated')] });
+    expect(listed).toEqual({ 'workflow-skills': [skillAt('teamai-import-from-mr'), skillAt('teamai-new-scorer'), skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-session'), skill('check'), skill('gated')] });
     const confirmed = createDeliveryRecorder();
     await deploy(confirmed);
     expect(await confirmed.merge(listed)).toEqual(listed);
     await put('gated', null);
     const pruned = createDeliveryRecorder();
     await deploy(pruned);
-    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skillAt('teamai-import-from-mr'), skillAt('teamai-new-scorer'), skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-learnings-from-sessions'), skillAt('teamai-share-session'), skill('check')] });
+    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skillAt('teamai-import-from-mr'), skillAt('teamai-new-scorer'), skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-session'), skill('check')] });
   });
 
   it('writes a skill for teamai\'s default teamai-import-from-mr that says when to offer it', async () => {
@@ -245,6 +245,18 @@ describe('generated skills of teamai\'s default workflows', () => {
 
     expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
     expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+  });
+
+  it('offers no skill while recall is off for a workflow that runs teamai-share-learnings, and one once it is on', async () => {
+    const off = await team({}, undefined, { recall: false });
+    await off.deploy();
+
+    expect(fs.existsSync(off.skillAt('teamai-share-learnings-from-sessions'))).toBe(false);
+
+    const on = await team({}, undefined, { recall: true });
+    await on.deploy();
+
+    expect(fs.existsSync(on.skillAt('teamai-share-learnings-from-sessions'))).toBe(true);
   });
 
   it('offers no skill for a team copy of teamai-share-learnings while recall is off, whatever its alias', async () => {
