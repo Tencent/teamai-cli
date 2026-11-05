@@ -15,7 +15,7 @@ interface ImportLockMeta {
   pid: number;
   host: string;
   startedAt: string;   // ISO
-  teamRepo: string;    // resolved team repo path
+  teamRepo: string;    // the resolved holder: the team repo, else the teamwiki directory
 }
 
 /**
@@ -36,53 +36,88 @@ const ImportLockFieldsSchema = z
   );
 
 /**
- * Returns the lock file path for a given team repo directory.
- * Placed in the parent of the resolved team repo path so it is never touched
- * by git operations (reset, clean, checkout) running inside the repo itself.
+ * The lock file of the teamwiki `holder` names: the team repo that holds it, or the teamwiki directory itself when no
+ * team repo does. It sits in the holder's parent, so git operations inside a team repo never touch it.
  */
-function lockPathFor(teamRepoPath: string): string {
-  return path.join(path.dirname(path.resolve(teamRepoPath)), '.teamai-import.lock');
+function lockPathFor(holder: string): string {
+  return path.join(path.dirname(path.resolve(holder)), '.teamai-import.lock');
+}
+
+/** Another live process holds the import lock of a teamwiki. */
+export class ImportLockHeldError extends Error {
+  readonly name = 'ImportLockHeldError';
+}
+
+/** Who holds a lock, as the refusal names it; empty when the file does not say. */
+async function holderOf(lockPath: string): Promise<string> {
+  try {
+    const meta = ImportLockFieldsSchema.parse(JSON.parse(await readFile(lockPath, 'utf8')));
+
+    return meta.pid !== undefined && meta.host !== undefined ? ` (process ${meta.pid} on ${meta.host})` : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Writes the lock file only when none exists; false when one does. */
+async function createLockFile(lockPath: string, meta: ImportLockMeta): Promise<boolean> {
+  try {
+    await writeFile(lockPath, JSON.stringify(meta, null, 2), { encoding: 'utf8', flag: 'wx' });
+
+    return true;
+  } catch (e) {
+    if (e instanceof Error && 'code' in e && e.code === 'EEXIST') return false;
+    throw e;
+  }
 }
 
 /**
- * Acquire the import lock for the given team repo directory.
- * Returns an idempotent async release function.
+ * Acquire the exclusive import lock of the teamwiki `holder` names (see `lockPathFor`), so two imports never write one
+ * teamwiki at once. Returns an idempotent async release function.
  *
  * Re-entrant within the same process: a reference count is maintained so that
  * nested acquire/release pairs do not prematurely delete the lock file written
  * by the outermost caller. The lock file is only created on the first acquire
  * (ref count 0 → 1) and only deleted on the last release (ref count 1 → 0).
  *
- * Lock acquisition is best-effort: if writing the lock file fails, the error is
- * logged at debug level and execution continues — the lock is a protective hint,
- * not a hard barrier that should block an import from running.
+ * A lock another live process holds refuses the acquire; one left by a process that is gone, or older than the TTL, is
+ * taken over. A lock file that cannot be written at all is logged at debug level and the import goes on.
  *
- * @param teamRepoPath - Path to the team repo directory (will be resolved).
+ * @param holder - The team repo that holds the teamwiki, else the teamwiki directory.
  * @returns An async release function. Calling it multiple times is safe (idempotent).
+ * @throws ImportLockHeldError when another live process holds the lock.
  */
-export async function acquireImportLock(teamRepoPath: string): Promise<() => Promise<void>> {
-  const lockPath = lockPathFor(teamRepoPath);
-
+export async function acquireImportLock(holder: string): Promise<() => Promise<void>> {
+  const lockPath = lockPathFor(holder);
   const count = refCounts.get(lockPath) ?? 0;
-  refCounts.set(lockPath, count + 1);
 
   if (count === 0) {
-    // First acquire: write the lock file.
+    const meta: ImportLockMeta = {
+      pid: process.pid,
+      host: os.hostname(),
+      startedAt: new Date().toISOString(),
+      teamRepo: path.resolve(holder),
+    };
+
     try {
       await mkdir(path.dirname(lockPath), { recursive: true });
 
-      const meta: ImportLockMeta = {
-        pid: process.pid,
-        host: os.hostname(),
-        startedAt: new Date().toISOString(),
-        teamRepo: path.resolve(teamRepoPath),
-      };
+      // isImportInProgress removes a lock whose process is gone or that is stale, which this process then takes.
+      if (!(await createLockFile(lockPath, meta))) {
+        if (await isImportInProgress(holder)) {
+          throw new ImportLockHeldError(`Another teamai import is writing this teamwiki${await holderOf(lockPath)}. `
+            + `Wait for it to finish, then run this command again. If no import is running, remove ${lockPath}.`);
+        }
 
-      await writeFile(lockPath, JSON.stringify(meta, null, 2), 'utf8');
+        await writeFile(lockPath, JSON.stringify(meta, null, 2), 'utf8');
+      }
     } catch (e) {
+      if (e instanceof ImportLockHeldError) throw e;
       log.debug(`[import-lock] Failed to write lock file ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+
+  refCounts.set(lockPath, count + 1);
 
   let released = false;
 
@@ -121,7 +156,7 @@ export async function acquireImportLock(teamRepoPath: string): Promise<() => Pro
  * - Malformed lock: fall back to file mtime; a fresh but unreadable file is treated
  *   as active to err on the side of protecting uncommitted data.
  *
- * @param teamRepoPath - Path to the team repo directory (will be resolved).
+ * @param teamRepoPath - The team repo that holds the teamwiki, else the teamwiki directory.
  * @returns True if an active import lock is detected, false otherwise.
  */
 export async function isImportInProgress(teamRepoPath: string): Promise<boolean> {

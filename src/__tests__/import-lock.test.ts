@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { acquireImportLock, isImportInProgress } from '../utils/import-lock.js';
@@ -116,5 +116,23 @@ describe('import-lock', () => {
     await writeFile(lockPath, 'not-json{', 'utf8');
 
     expect(await isImportInProgress(teamRepo)).toBe(true);
+  });
+  it('refuses while another live process holds it, and leaves that lock in place', async () => {
+    const held = JSON.stringify({ pid: process.ppid, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }, null, 2);
+    await writeFile(lockPath, held, 'utf8');
+
+    await expect(acquireImportLock(teamRepo)).rejects.toThrow(
+      `Another teamai import is writing this teamwiki (process ${process.ppid} on ${os.hostname()}). Wait for it to finish, then run this command again. If no import is running, remove ${lockPath}.`,
+    );
+    expect(await readFile(lockPath, 'utf8')).toBe(held);
+  });
+
+  it('takes the lock over from a process that is gone', async () => {
+    await writeFile(lockPath, JSON.stringify({ pid: 2147483646, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }), 'utf8');
+
+    const release = await acquireImportLock(teamRepo);
+    expect(JSON.parse(await readFile(lockPath, 'utf8')).pid).toBe(process.pid);
+    await release();
+    expect(await fileExists(lockPath)).toBe(false);
   });
 });

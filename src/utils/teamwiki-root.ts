@@ -44,16 +44,17 @@ export async function assertTeamwikiWritable(target: TeamwikiTarget | undefined)
 }
 
 /**
- * Hold the import lock while writing into the team repo, so the usage
- * reporter does not reset it mid-import. An `--output` teamwiki needs none.
+ * Hold the exclusive import lock of the teamwiki while writing it, so two imports never write one teamwiki at once and
+ * the usage reporter does not reset a team repo mid-import. A teamwiki outside a team repo is locked too.
  *
  * @returns the release function
+ * @throws ImportLockHeldError when another live process holds the lock
  */
 export async function lockTeamwiki(target: TeamwikiTarget): Promise<() => Promise<void>> {
-  if (!target.team) return async () => {};
-
-  await assertTeamwikiWritable(target);
   const { acquireImportLock } = await import('./import-lock.js');
+
+  if (!target.team) return acquireImportLock(target.wikiRoot);
+  await assertTeamwikiWritable(target);
 
   return acquireImportLock(target.team.localConfig.repo.localPath);
 }
