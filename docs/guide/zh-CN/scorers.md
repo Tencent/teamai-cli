@@ -646,6 +646,8 @@ Judge only the team skill <skill>, against its entry in skills.available in evid
 skill_routing: false
 ```
 
+成员在 `config.yaml` 中设置的 `scoring.skill_routing` 优先于团队的。工作区或 self 作用域之下，`~/.teamai/config.yaml` 只能关闭它，因此一台机器永远不会自行开始付费评审。
+
 想用单独的方式评判某个技能，就保持 `skill_routing` 关闭，为每个技能写一个评分器。下面这个评分器为没有得到 `release` 的会话加了一个 `unavailable` 取值：
 
 `scorers/ops/routing-release.md`：

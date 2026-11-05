@@ -226,19 +226,25 @@ export function upvoteJudgeAliasNotes(): string[] {
     : [];
 }
 
-/** recall_adoption: the member config's, or the alias's, over the team's; a machine's false turns it off. */
-function recallAdoptionOf({ config, machine, team, problems }: { config: LocalConfig; machine: LocalConfig['scoring']; team: boolean; problems: string[] }): boolean {
+/**
+ * skill_routing or recall_adoption: the member config's over the team's, and for recall_adoption the alias's when the
+ * member config leaves it unset; a machine's false turns it off.
+ */
+function memberSwitchOf({ key, config, machine, team, problems }: {
+  key: 'skill_routing' | 'recall_adoption'; config: LocalConfig; machine: LocalConfig['scoring']; team: boolean; problems: string[];
+}): boolean {
   // The config schema keeps a value that is not true or false as its text.
   const read = (source: string, value: boolean | string | undefined): boolean | undefined => {
     if (value === undefined || value === true || value === false) return value;
-    problems.push(`${source} scoring.recall_adoption is ${JSON.stringify(value)}, not true or false, so it is ignored`);
+    problems.push(`${source} scoring.${key} is ${JSON.stringify(value)}, not true or false, so it is ignored`);
 
     return undefined;
   };
 
-  const member = read('config.yaml', config.scoring?.recall_adoption) ?? (isUpvoteJudgeAlias() ? true : undefined);
+  const alias = key === 'recall_adoption' && isUpvoteJudgeAlias() ? true : undefined;
+  const member = read('config.yaml', config.scoring?.[key]) ?? alias;
 
-  if (read('~/.teamai/config.yaml', machine?.recall_adoption) === false) return false;
+  if (read('~/.teamai/config.yaml', machine?.[key]) === false) return false;
 
   return member ?? team;
 }
@@ -309,8 +315,8 @@ export async function scopeScoring(config: LocalConfig): Promise<ScopeScoring> {
       ...(machine?.isolation === undefined ? [] : [{ source: '~/.teamai/config.yaml scoring.isolation', value: machine.isolation }]),
     ],
     sessions: sessionScoring({ config, machine, rootFile, inNamespaces, problems }),
-    skillRouting: teamSwitch('skillRouting'),
-    recallAdoption: recallAdoptionOf({ config, machine, team: teamSwitch('recallAdoption'), problems }),
+    skillRouting: memberSwitchOf({ key: 'skill_routing', config, machine, team: teamSwitch('skillRouting'), problems }),
+    recallAdoption: memberSwitchOf({ key: 'recall_adoption', config, machine, team: teamSwitch('recallAdoption'), problems }),
     problems,
   };
 }

@@ -955,6 +955,12 @@ export const MemberSettingsSchema = z.object({
     /** How many sessions a local day may lease for judging; 0 turns session scoring off. Another value is kept as its text, which sets nothing. */
     daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
     /**
+     * Ask a finished session's judge one routing question per skill it was delivered, over the team's
+     * `scorers/scoring.yaml`; in ~/.teamai/config.yaml below a workspace or self scope, only false applies. Another value
+     * is kept as its text, which sets nothing.
+     */
+    skill_routing: z.union([z.boolean(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
+    /**
      * Ask a finished session's judge whether it adopted each recalled doc it never opened (#1391), over the team's
      * `scorers/scoring.yaml`; in ~/.teamai/config.yaml below a workspace or self scope, only false applies. Another value
      * is kept as its text, which sets nothing.

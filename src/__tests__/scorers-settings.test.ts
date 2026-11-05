@@ -288,6 +288,14 @@ describe('scopeScoring machine settings', () => {
     expect(await scopeScoring(teamRepo({}))).toMatchObject({ ok: true, recallAdoption: false });
   });
 
+  it('turns skill_routing off, never on', async () => {
+    onMachine('scoring:\n  skill_routing: false\n');
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'skill_routing: true\n' }, { scoring: { skill_routing: true } }))).toMatchObject({ ok: true, skillRouting: false });
+
+    onMachine('scoring:\n  skill_routing: true\n');
+    expect(await scopeScoring(teamRepo({}))).toMatchObject({ ok: true, skillRouting: false });
+  });
+
   it('reports a value it cannot use with the machine file, and ignores it', async () => {
     onMachine('scoring:\n  sessions: { attended: always }\n  daily_limit: lots\n');
 
@@ -312,6 +320,11 @@ describe('scopeScoring skill_routing', () => {
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops' }))).toMatchObject({ ok: true, skillRouting: false });
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'dev' }))).toMatchObject({ ok: true, skillRouting: true });
     expect(await scopeScoring(teamRepo({ 'scorers/ops/scoring.yaml': 'skill_routing: true\n' }, { primaryRole: 'ops' }))).toMatchObject({ ok: true, skillRouting: true });
+  });
+
+  it("a member's value wins over the team's", async () => {
+    expect(await scopeScoring(teamRepo({}, { scoring: { skill_routing: true } }))).toMatchObject({ ok: true, skillRouting: true });
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'skill_routing: true\n' }, { scoring: { skill_routing: false } }))).toMatchObject({ ok: true, skillRouting: false });
   });
 
   it('a value that is not true or false is dropped with a problem', async () => {

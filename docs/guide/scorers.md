@@ -646,6 +646,8 @@ An active scorers namespace's `scoring.yaml` overrides the root file's `skill_ro
 skill_routing: false
 ```
 
+A member's `scoring.skill_routing` in `config.yaml` wins over the team's. `~/.teamai/config.yaml` below a workspace or self scope can only turn it off, so a machine never starts paid judging.
+
 To judge one skill its own way, leave `skill_routing` off and write one scorer per skill. This one adds an `unavailable` value for sessions that were not delivered `release`:
 
 `scorers/ops/routing-release.md`:
