@@ -107,6 +107,10 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       // Why teamai score ended its teamai-score run with a scorer unlabelled: its judge waits for a driver that can run it,
       // plan left it out, or a step of its group failed with no code of its own.
       'judge_pending', 'not_planned', 'score_step_failed',
+      // Refusals of a --driver definition, and why a step runtime could not do what it was asked: answered at start or
+      // resume, or carried in the message of an attempt that records runtime_failed.
+      'driver_not_found', 'driver_invalid', 'driver_namespace_conflict', 'runtime_not_found', 'runtime_namespace_conflict', 'runtime_not_accepted',
+      'bad_option', 'runtime_exited', 'runtime_protocol', 'exec_failed',
       // Why a scorer got no label from a judge attempt: kept with its mark under scores/, never on a run.
       ...literalStrings('src/scorers/label.ts', 'JUDGE_FAILURES')];
 
