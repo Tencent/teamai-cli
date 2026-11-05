@@ -30,7 +30,14 @@ const GIT_ENV = {
 };
 
 function git(args: string[], cwd: string): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } });
+  const env = { ...process.env, ...GIT_ENV };
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', env });
+  } catch (error) {
+    // Without the stderr, a failing git command reports only the argv.
+    const detail = (error as { stderr?: string }).stderr ?? '';
+    throw new Error(`git ${args.join(' ')} failed in ${cwd}:\n${detail}`, { cause: error });
+  }
 }
 
 function run(args: string[], cwd: string, expectStatus = 0): string {
@@ -41,6 +48,42 @@ function run(args: string[], cwd: string, expectStatus = 0): string {
   });
   expect(result.status, `${args.join(' ')}\n${result.stdout}\n${result.stderr}`).toBe(expectStatus);
   return result.stdout;
+}
+
+/**
+ * The `teamai-learnings` worktree beside the team clone. `pull` already made
+ * one for the team it synced, so this only has to name it: the branch is
+ * checked out there and a write under `learnings/` is what `contribute` would
+ * publish.
+ */
+function ensureLearningsWorktree(worktree: string): void {
+  if (fs.existsSync(path.join(worktree, '.git'))) return;
+
+  // The pull made no learnings worktree (a team with nothing to publish).
+  // An orphan branch, as `teamai init` creates it: no parent, no team files.
+  git(['checkout', '-q', '--orphan', 'teamai-learnings'], teamRepo);
+  git(['rm', '-rq', '--cached', '.'], teamRepo);
+  fs.rmSync(path.join(teamRepo, 'rules'), { recursive: true, force: true });
+  fs.rmSync(path.join(teamRepo, 'docs'), { recursive: true, force: true });
+  fs.rmSync(path.join(teamRepo, 'skills'), { recursive: true, force: true });
+  fs.rmSync(path.join(teamRepo, 'teamwiki'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(teamRepo, '.gitignore'), '');
+  git(['add', '-f', '.gitignore'], teamRepo);
+  git(['-c', 'user.name=ana', '-c', 'user.email=ana@teamai.test', 'commit', '-q', '-m', '[teamai] Initialize learnings branch'], teamRepo);
+  // The main clone has to leave the branch before a worktree can check it out.
+  git(['checkout', '-q', 'main'], teamRepo);
+  git(['worktree', 'add', '-q', worktree, 'teamai-learnings'], teamRepo);
+}
+
+/** Commit what the test wrote into the learnings worktree, as `teamai contribute` does. */
+function commitLearningsWorktree(worktree: string): void {
+  git(['add', '-A'], worktree);
+  // A retried test finds its own learning already committed; that is the state
+  // the recall below expects, so nothing left to do is not a failure.
+  const staged = git(['status', '--porcelain'], worktree).trim();
+
+  if (staged === '') return;
+  git(['-c', 'user.name=ana', '-c', 'user.email=ana@teamai.test', 'commit', '-q', '-m', 'learning: ledger timeout'], worktree);
 }
 
 function writeTeamFiles(root: string): void {
@@ -235,5 +278,39 @@ expect(result.stdout + result.stderr).toContain('); all of it is ignored.');
     expect(out).toContain('term "LedgerReceipts", confidence 0.9');
     // The dry run changes no file.
     expect(git(['status', '--porcelain'], teamRepo)).toBe(before);
+  });
+
+  it('a link whose source learning lives in the learnings worktree reaches the other end', () => {
+    // Learnings are published to the `teamai-learnings` branch, checked out in
+    // a worktree beside the team clone — not under `repo.localPath`. A
+    // relation declared there has to resolve against that checkout, and this
+    // was enforced in code with no test of its own (#1552 closing follow-up).
+    const worktree = path.join(path.dirname(teamRepo), 'learnings-wt');
+    const learningsDir = path.join(worktree, 'learnings');
+
+    ensureLearningsWorktree(worktree);
+    const learningFile = path.join(learningsDir, 'alpha', 'ledger-timeout.md');
+    fs.mkdirSync(path.dirname(learningFile), { recursive: true });
+    fs.writeFileSync(learningFile, [
+      '---',
+      'title: "Ledger receipt write times out at 3s"',
+      'author: ana',
+      'date: 2026-10-12',
+      'tags: [payments, ledger]',
+      'related:',
+      '  REFERENCES: rules/payments.md',
+      '---',
+      'The receipt write times out at 3s; retry once.',
+      '',
+    ].join('\n'));
+    commitLearningsWorktree(worktree);
+
+    const out = run(['recall', 'payments ledger'], projectRoot);
+
+    // The rule's hit answers ← for the learning's REFERENCES, so the relation
+    // resolves with its source in the worktree rather than under
+    // repo.localPath — the case the follow-up asked for.
+    const rulePath = path.join(teamRepo, 'rules', 'payments.md');
+    expect(out).toContain(`Related: ← REFERENCES ${rulePath}`);
   });
 });
