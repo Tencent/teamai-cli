@@ -6,7 +6,7 @@ Each rule below spans more than one file. The rule names the code that owns it, 
 
 ## Workflow first
 
-A feature that orchestrates AI work ships as a default workflow in `workflows/`, which a team replaces with a file of the same name. Its command only starts that workflow. The engine never branches on a feature: every key a feature needs is generic, and any workflow can use it. Reuse a workflow as a `workflow:` step instead of copying its steps. The rules contributors follow are in [AGENTS.md](../../AGENTS.md#rules) and [CONTRIBUTING.md](../../.github/CONTRIBUTING.md#coding-style).
+A feature that orchestrates AI work ships as a default workflow in `workflows/`, which a team replaces with a file of the same name. Its command only starts that workflow, on the driver `workflows.driver` names (`runShortcut`, `driveByDefault`). Only drivers launch AI tools: a feature asks one through an `answer` or `prompt` step, and `teamai/launch-through-workflows` fails an import of the launcher (`src/tool-launch/`) outside `src/workflow/`. The engine never branches on a feature: every key a feature needs is generic, and any workflow can use it. Reuse a workflow as a `workflow:` step instead of copying its steps. The rules contributors follow are in [AGENTS.md](../../AGENTS.md#rules) and [CONTRIBUTING.md](../../.github/CONTRIBUTING.md#coding-style).
 
 ## Rules that span files
 
