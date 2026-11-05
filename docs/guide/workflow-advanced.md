@@ -1310,7 +1310,7 @@ An install into an ignored directory does not fail. With `node_modules/` in `.gi
 }
 ```
 
-A command step has no `changed` list. If the place is already dirty when the command is about to start, the command does not run and the step fails the same way. A file the command itself writes during the run is still committed. Wait for the host setup to finish before adopt, or make it write only ignored files. A report sent through the CLI, with no child `result.json`, still commits the dirty tree. The skill driver is what supplies the list.
+A command step has no `changed` list. If the place is already dirty when the command is about to start, the command does not run and the step fails the same way. The base agent files prepare put there are not that dirt: a path that still matches them is left out, the command runs, and finish puts the branch's copies back when the command left them unchanged. A file the command itself writes during the run is still committed. Wait for the host setup to finish before adopt, or make it write only ignored files. A report sent through the CLI, with no child `result.json`, still commits the dirty tree. The skill driver is what supplies the list.
 
 What TeamAI records to prepare an attempt stays on this machine: paths and file fingerprints, with no prompt, env value, or graph.
 

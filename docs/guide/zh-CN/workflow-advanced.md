@@ -1310,7 +1310,7 @@ Step "fix" left .setup-out in /work/teamai-fix, which the step did not report ch
 }
 ```
 
-命令步骤没有 `changed`。命令即将启动时位置已经不干净，命令不会运行，步骤以同样的方式失败。命令自己在运行期间写入的文件仍会被提交。所以要等宿主的 setup 结束后再 `adopt`，或让它只写 git 忽略的文件。经 CLI 发送、没有子代理 `result.json` 的报告仍会提交整棵脏树。名单由 skill 驱动提供。
+命令步骤没有 `changed`。命令即将启动时位置已经不干净，命令不会运行，步骤以同样的方式失败。准备时放上的基线 agent 文件不算这份脏：仍与它们一致的路径被排除，命令会运行；命令没有改它们时，结束时把分支上的副本放回去。命令自己在运行期间写入的文件仍会被提交。所以要等宿主的 setup 结束后再 `adopt`，或让它只写 git 忽略的文件。经 CLI 发送、没有子代理 `result.json` 的报告仍会提交整棵脏树。名单由 skill 驱动提供。
 
 TeamAI 为准备 attempt 记录的内容只保存在本机：路径和文件指纹，不含提示词、env 值或图。
 

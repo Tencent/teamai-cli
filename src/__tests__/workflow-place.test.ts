@@ -10,7 +10,7 @@ import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { DRIVERS_UNDER_TEST, inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance/place.js';
-import { inProcessClient, type HostPlaceRequest } from '../workflow/protocol.js';
+import { inProcessClient, refuseDirtyAdoptedCommand, type HostPlaceRequest } from '../workflow/protocol.js';
 import { pull } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -552,6 +552,56 @@ steps:
 
     expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message: expect.stringContaining('AGENTS.md') } } } });
     expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+  });
+
+  it('does not treat the base agent overlay as a host change when a later command is about to run', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Write a change, then check it, in a place the host makes.
+alias: ship
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: check
+          needs: [write]
+          command: node -e "process.exit(0)"
+`);
+    const run = RunIdSchema.parse(f.runId);
+    const lease = async (): Promise<{ raw: unknown } & z.infer<typeof LeaseSchema>> => {
+      const answer = await f.client.next(f.runId, body(f));
+      if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+      return { raw: answer.data.lease, ...LeaseSchema.parse(answer.data.lease) };
+    };
+    const write = await lease();
+    const dir = path.join(path.dirname(f.work), 'hosts', 'overlay');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'Branch instructions.\n');
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'Added on the branch.\n');
+    expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver }, { changed: ['AGENTS.md', 'CLAUDE.md'] })).toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+
+    const check = await lease();
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepare(lock, check.raw), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    const status = git(dir, 'status', '--porcelain');
+    expect(status).toContain('AGENTS.md');
+    expect(status).toContain('CLAUDE.md');
+    const before = { config: f.config, run, attempt: check.attempt };
+    expect(await refuseDirtyAdoptedCommand(before)).toBeUndefined();
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    const hostFile = await refuseDirtyAdoptedCommand(before);
+    expect(hostFile).toMatchObject({ code: 'unreported_changes', message: expect.stringContaining('.setup-out') });
+    expect(hostFile?.message).not.toContain('AGENTS.md');
+    expect(hostFile?.message).not.toContain('CLAUDE.md');
+    fs.rmSync(path.join(dir, '.setup-out'));
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'host wrote this\n');
+    const edited = await refuseDirtyAdoptedCommand(before);
+    expect(edited).toMatchObject({ code: 'unreported_changes', message: expect.stringContaining('AGENTS.md') });
+    expect(edited?.message).not.toContain('CLAUDE.md');
+    expect(edited?.message).not.toContain('.setup-out');
   });
 
   it.each([

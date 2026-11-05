@@ -665,6 +665,41 @@ export async function recordConfigOverlay(dir: string, saved: string): Promise<v
 }
 
 /**
+ * Paths among `dirty` that still match the overlay `saved` recorded after prepare. Prepare checks the base agent
+ * files out over the branch, so git lists them when that copy differs, and the host did not write them. A missing
+ * overlay matches nothing. `error` is why the record could not be read.
+ */
+export async function unchangedOverlayPaths(dir: string, saved: string, dirty: readonly string[]): Promise<{ paths: ReadonlySet<string> } | { error: string }> {
+  const file = path.join(saved, '_overlay.json');
+
+  if (!await pathExists(file)) return { paths: new Set() };
+
+  let raw: unknown;
+
+  try {
+    raw = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+
+    return { error: `${file} could not be read (${reason})` };
+  }
+
+  const parsed = z.record(z.string(), z.string()).safeParse(raw);
+
+  if (!parsed.success) return { error: `${file} is not a record of the base agent files` };
+  const roots = await savedConfigPaths(saved);
+  const current = await fileManifest(dir, roots);
+  const covered = (relative: string): boolean => roots.some((root) => relative === root || relative.startsWith(`${root}/`));
+  const paths = new Set<string>();
+
+  for (const relative of dirty) {
+    if (covered(relative) && current[relative] === parsed.data[relative]) paths.add(relative);
+  }
+
+  return { paths };
+}
+
+/**
  * Puts back each branch agent file that the step left unchanged. A file the step edited stays. When git cannot list the
  * worktree's files, nothing is put back, `saved` is kept, and the reason is returned as a clause. `runGit` runs every
  * git call.

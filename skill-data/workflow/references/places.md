@@ -79,7 +79,7 @@ Wait for that script to finish before `adopt`, or make it write only files git i
 
 The install stays in the place and is not in the commit. The child's `src/app.ts` is.
 
-A command has no `changed` list. When the place is already dirty as the command is about to start, the command does not run and the step fails the same way. A file the command itself writes while it runs is still committed. That is why the host setup has to finish before `adopt`, or write only ignored files.
+A command has no `changed` list. When the place is already dirty as the command is about to start, the command does not run and the step fails the same way. The base agent files prepare put there are not that dirt: a path that still matches them is left out, the command runs, and finish puts the branch's copies back when the command left them unchanged. A file the command itself writes while it runs is still committed. That is why the host setup has to finish before `adopt`, or write only ignored files.
 
 ## Later steps
 

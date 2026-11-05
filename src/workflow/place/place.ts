@@ -17,7 +17,7 @@ import { stageEvidence } from '../../scorers/engine-hooks.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { type CopyContract, type WorkspaceContract } from '../workspace.js';
-import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, releaseReadCopy, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
+import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, releaseReadCopy, removeWorktree, reopenConfigConflicts, stepCheckout, unchangedOverlayPaths, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, preparedClone, removeClone, type CloneLease } from './clone.js';
 import { openWorktree } from './created.js';
@@ -646,8 +646,9 @@ async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { p
 
 /**
  * Why a command must not start in an adopted place, or undefined when it may. A file written after adopt, such as a
- * host's background setup, is already there: the command does not run, and nothing is committed. A file the command
- * itself writes during the run is still committed afterwards.
+ * host's background setup, is already there: the command does not run, and nothing is committed. The base agent files
+ * prepare checked out over the branch are not that file when they still match the overlay it recorded. A file the
+ * command itself writes during the run is still committed afterwards.
  */
 export async function refuseDirtyAdoptedCommand(input: { config: LocalConfig; run: RunId; attempt: AttemptId }): Promise<WorkflowFailure | undefined> {
   const read = await readPlaceRecord(input.config, input.run, input.attempt);
@@ -657,7 +658,10 @@ export async function refuseDirtyAdoptedCommand(input: { config: LocalConfig; ru
   const listed = await commitPathsOf(dir);
 
   if ('error' in listed) return { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir} before its command ran, so the command did not run. Git said: ${listed.error}.` };
-  const dirty = listed.paths.toSorted((left, right) => left.localeCompare(right));
+  const overlay = await unchangedOverlayPaths(dir, placeFiles(input.config, input.run, input.attempt).overlay, listed.paths);
+
+  if ('error' in overlay) return { code: 'workspace_base', message: `Step "${step}" could not read the base agent files recorded for ${dir} before its command ran, so the command did not run. ${overlay.error}` };
+  const dirty = listed.paths.filter((relative) => !overlay.paths.has(relative)).toSorted((left, right) => left.localeCompare(right));
 
   if (dirty.length === 0) return undefined;
 
