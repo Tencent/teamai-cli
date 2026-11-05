@@ -151,8 +151,22 @@ async function candidatesIn(dir: string, extensions: ReadonlySet<string>): Promi
 }
 
 /**
+ * What the user scope's pulls recorded writing into the tools' user directories, or undefined with no user-scope
+ * install or no record. A rule teamai delivered is the team's, edited or not: push carries an edit back.
+ */
+async function deliveredToUserScope(): Promise<Readonly<Record<string, string>> | undefined> {
+  const { loadLocalConfigForScope } = await import('./config.js');
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+
+  if (!user) return undefined;
+  const { deliveredHashes } = await import('./pull.js');
+
+  return deliveredHashes(user);
+}
+
+/**
  * `teamai import scan-rules`: the rule files in the user rules directory of every tool teamai supports, as the member's
- * `toolRoots` and each tool's home place them. Says so when there are none.
+ * `toolRoots` and each tool's home place them, but for those teamai delivered there. Says so when there are none.
  */
 async function scanRules(): Promise<{ candidates: Candidate[] }> {
   const { resolveMemberToolRoots } = await import('./config.js');
@@ -170,9 +184,10 @@ async function scanRules(): Promise<{ candidates: Candidate[] }> {
   }
 
   const candidates: Candidate[] = [];
+  const delivered = await deliveredToUserScope();
 
   for (const dir of dirs) {
-    if (fs.existsSync(dir)) candidates.push(...await candidatesIn(dir, RULE_EXTENSIONS));
+    if (fs.existsSync(dir)) candidates.push(...(await candidatesIn(dir, RULE_EXTENSIONS)).filter((candidate) => delivered?.[candidate.file] === undefined));
   }
 
   if (candidates.length === 0) log.info('no importable files found');
@@ -243,7 +258,10 @@ async function writeLearnings(flags: { classified: string; reviewed: string; tar
       }
     }
 
-    const destPath = path.join(destDir, buildFilename(title));
+    let destPath = path.join(destDir, buildFilename(title));
+
+    // Two items of one title on one day, or one imported earlier today, keep their own files.
+    for (let n = 2; written.includes(destPath) || fs.existsSync(destPath); n += 1) destPath = path.join(destDir, buildFilename(`${title} ${n}`));
 
     try {
       await ensureDir(destDir);

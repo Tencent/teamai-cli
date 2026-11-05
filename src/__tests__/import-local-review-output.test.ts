@@ -75,6 +75,21 @@ describe('teamai import write-learnings', () => {
     expect(fs.readFileSync(path.join(repo, 'learnings', `${TODAY}-pod-startup-timeout.md`), 'utf8')).toContain('title: "Pod startup timeout"\n');
   });
 
+  it('writes a second item of the same title and day under a numbered name, beside a file already there', async () => {
+    fs.mkdirSync(path.join(repo, 'rules'));
+    fs.writeFileSync(path.join(repo, 'rules', `${TODAY}-deploy-rule.md`), 'imported earlier today');
+
+    const result = await ImportLearnings.writeLearnings({
+      classified: JSON.stringify([classified('/r/a.md', 'rule', 'Deploy rule'), classified('/r/b.md', 'rule', 'Deploy rule')]),
+      reviewed: '',
+      target: repo,
+      byType: 'true',
+    });
+
+    expect(result.written).toEqual([path.join(repo, 'rules', `${TODAY}-deploy-rule-2.md`), path.join(repo, 'rules', `${TODAY}-deploy-rule-3.md`)]);
+    expect(fs.readFileSync(path.join(repo, 'rules', `${TODAY}-deploy-rule.md`), 'utf8')).toBe('imported earlier today');
+  });
+
   it('says a file it could not write, in English, and goes on', async () => {
     fs.writeFileSync(path.join(repo, 'rules'), 'not a directory');
 
