@@ -1264,6 +1264,54 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 
 要准备驱动已经领取的 attempt，运行 `next <run> --prepare --attempt <attempt>`。运行不再把该 attempt 租给这个驱动时，返回 `wrong_attempt`。加上 `--adopt <dir>` 时，attempt 改在宿主创建的位置运行：该仓库的一个干净 worktree，位于租约的工作区分支上，或分离在其起点，就像 `git worktree add` 创建的那样。不符合的位置返回 `adopt_mismatch`，attempt 仍保持租约。TeamAI 在那里像在自己的 worktree 中一样 commit 和 push，但从不删除该位置。
 
+提示词步骤的子代理在 `attempts/<attempt>/result.json` 的 `changed` 里列出它改过的每个路径，相对该位置。重命名要列出旧路径和新路径。TeamAI 只提交这些路径。git 会提交、但名单里没有的路径让步骤以 `unreported_changes` 失败：什么都不 commit、不 push，文件留在原地。
+
+```json
+{"kind":"output","output":"Fixed the null check.","changed":["src/app.ts","src/legacy.ts"]}
+```
+
+`adopt` 检查的是当时干净的树。宿主在这之后写入的文件不在名单里。Paseo 创建 worktree 时运行 `paseo.json` 的 `worktree.setup`。下面这段先等两秒，再写入一个 git 不会忽略的文件：
+
+```json
+{
+  "worktree": {
+    "setup": "sleep 2; echo host > .setup-out"
+  }
+}
+```
+
+T3 对 `t3.json` 里每个带 `runOnWorktreeCreate` 的脚本做同样的事：
+
+```json
+{
+  "scripts": [
+    {
+      "name": "Setup Worktree",
+      "command": "echo host > .setup-out",
+      "runOnWorktreeCreate": true
+    }
+  ]
+}
+```
+
+步骤接着失败，CLI 的原文是英文：
+
+```text
+Step "fix" left .setup-out in /work/teamai-fix, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.
+```
+
+装到已被忽略的目录里不会失败。`.gitignore` 含有 `node_modules/` 时，这段 Paseo setup 把安装留在位置里，不放进 commit：
+
+```json
+{
+  "worktree": {
+    "setup": "npm install"
+  }
+}
+```
+
+命令步骤没有 `changed`。命令即将启动时位置已经不干净，命令不会运行，步骤以同样的方式失败。命令自己在运行期间写入的文件仍会被提交。所以要等宿主的 setup 结束后再 `adopt`，或让它只写 git 忽略的文件。经 CLI 发送、没有子代理 `result.json` 的报告仍会提交整棵脏树。名单由 skill 驱动提供。
+
 TeamAI 为准备 attempt 记录的内容只保存在本机：路径和文件指纹，不含提示词、env 值或图。
 
 ## 在自己的驱动里使用克隆工作区

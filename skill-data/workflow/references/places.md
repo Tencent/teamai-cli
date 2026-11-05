@@ -25,8 +25,64 @@ When your host makes a worktree only as it starts a child there, start that chil
 
 A step that was stopped leaves its edits in its place for your host to keep or drop. Commit, stash or remove them before you adopt that place again.
 
+## What gets committed
+
+A committing step's brief asks for `changed`: every path the step created, edited, renamed, or deleted, relative to the place. A rename or a copy lists the path it had and the path it has.
+
+```json
+{"kind":"output","output":"Fixed the null check.","changed":["src/app.ts","src/legacy.ts"]}
+```
+
+TeamAI commits those paths and pushes the branch. A path git would commit that is not in the list fails the step with `unreported_changes`. Nothing is committed or pushed, and the file stays in the place.
+
+A host that keeps writing after `adopt` hits that. `adopt` saw a clean tree. The script then writes `.setup-out`, which git does not ignore.
+
+Paseo, `paseo.json`, `worktree.setup` sleeps and then writes the file:
+
+```json
+{
+  "worktree": {
+    "setup": "sleep 2; echo host > .setup-out"
+  }
+}
+```
+
+T3, `t3.json`, a script with `runOnWorktreeCreate` writes it as the worktree is created:
+
+```json
+{
+  "scripts": [
+    {
+      "name": "Setup Worktree",
+      "command": "echo host > .setup-out",
+      "runOnWorktreeCreate": true
+    }
+  ]
+}
+```
+
+The step fails, and `.setup-out` is still in the place:
+
+```text
+Step "fix" left .setup-out in /work/teamai-fix, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.
+```
+
+Wait for that script to finish before `adopt`, or make it write only files git ignores. `npm install` into `node_modules/` does not fail when `.gitignore` lists `node_modules/`:
+
+```json
+{
+  "worktree": {
+    "setup": "npm install"
+  }
+}
+```
+
+The install stays in the place and is not in the commit. The child's `src/app.ts` is.
+
+A command has no `changed` list. When the place is already dirty as the command is about to start, the command does not run and the step fails the same way. A file the command itself writes while it runs is still committed. That is why the host setup has to finish before `adopt`, or write only ignored files.
+
 ## Later steps
 
 A later step on the same branch, a command or a read-only step included, goes on in the place the last step on it finished in, while that place passes the checks: a prompt's dispatch comes with that `dir`, and no `place` action. When the place no longer passes, because your host removed it or it has changes, a `place` action asks for another.
 
-TeamAI commits each step's work in the place and never removes it. Remove it with your host once the run is done.
+TeamAI commits the paths a prompt step lists in `changed`, and a command step's own writes, and never removes the place. Remove it with your host once the run is done.
