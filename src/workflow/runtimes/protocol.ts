@@ -35,27 +35,27 @@ export type RuntimeRequest =
   | { type: 'collect' | 'reattach' | 'close'; handle: string };
 
 const InitReplySchema = z.discriminatedUnion('ok', [
-  z.object({ type: z.literal('init'), ok: z.literal(true), can: CanSchema }),
-  z.object({ type: z.literal('init'), ok: z.literal(false), error: RuntimeFailureSchema }),
+  z.object({ type: z.literal('init'), ok: z.literal(true), can: CanSchema }).strict(),
+  z.object({ type: z.literal('init'), ok: z.literal(false), error: RuntimeFailureSchema }).strict(),
 ]);
 
 const OpEventSchema = z.discriminatedUnion('event', [
-  z.object({ op: OpIdSchema, event: z.literal('accepted'), handle: RuntimeHandleSchema.optional() }),
-  z.object({ op: OpIdSchema, event: z.literal('ready') }),
-  z.object({ op: OpIdSchema, event: z.literal('failed'), failure: RuntimeFailureSchema }),
-  z.object({ op: OpIdSchema, event: z.literal('output'), stream: z.enum(['stdout', 'stderr']), data: z.string() }),
-  z.object({ op: OpIdSchema, event: z.literal('exited'), code: z.number().int(), stdout: z.string() }),
-  z.object({ op: OpIdSchema, event: z.literal('cancelled') }),
+  z.object({ op: OpIdSchema, event: z.literal('accepted'), handle: RuntimeHandleSchema.optional() }).strict(),
+  z.object({ op: OpIdSchema, event: z.literal('ready') }).strict(),
+  z.object({ op: OpIdSchema, event: z.literal('failed'), failure: RuntimeFailureSchema }).strict(),
+  z.object({ op: OpIdSchema, event: z.literal('output'), stream: z.enum(['stdout', 'stderr']), data: z.string() }).strict(),
+  z.object({ op: OpIdSchema, event: z.literal('exited'), code: z.number().int(), stdout: z.string() }).strict(),
+  z.object({ op: OpIdSchema, event: z.literal('cancelled') }).strict(),
 ]);
 
 export type OpEvent = z.infer<typeof OpEventSchema>;
 
 const HandleEventSchema = z.discriminatedUnion('event', [
-  z.object({ event: z.literal('collected'), handle: RuntimeHandleSchema }),
-  z.object({ event: z.literal('collect_failed'), handle: RuntimeHandleSchema, failure: RuntimeFailureSchema }),
-  z.object({ event: z.literal('alive'), handle: RuntimeHandleSchema, ops: z.array(OpStateSchema) }),
-  z.object({ event: z.literal('gone'), handle: RuntimeHandleSchema }),
-  z.object({ event: z.literal('closed'), handle: RuntimeHandleSchema }),
+  z.object({ event: z.literal('collected'), handle: RuntimeHandleSchema }).strict(),
+  z.object({ event: z.literal('collect_failed'), handle: RuntimeHandleSchema, failure: RuntimeFailureSchema }).strict(),
+  z.object({ event: z.literal('alive'), handle: RuntimeHandleSchema, ops: z.array(OpStateSchema) }).strict(),
+  z.object({ event: z.literal('gone'), handle: RuntimeHandleSchema }).strict(),
+  z.object({ event: z.literal('closed'), handle: RuntimeHandleSchema }).strict(),
 ]);
 
 export type HandleEvent = z.infer<typeof HandleEventSchema>;
@@ -65,7 +65,7 @@ export const RuntimeMessageSchema = z.union([
   InitReplySchema,
   OpEventSchema,
   HandleEventSchema,
-  z.object({ event: z.literal('error'), message: z.string() }),
+  z.object({ event: z.literal('error'), message: z.string() }).strict(),
 ]);
 
 export type RuntimeMessage = z.infer<typeof RuntimeMessageSchema>;
@@ -82,5 +82,19 @@ export function parseRuntimeLine(line: string): { ok: true; message: RuntimeMess
 
   const parsed = RuntimeMessageSchema.safeParse(raw);
 
-  return parsed.success ? { ok: true, message: parsed.data } : { ok: false, reason: `it wrote a message protocol ${RUNTIME_PROTOCOL} does not have: ${line.slice(0, 200)}` };
+  if (parsed.success) return { ok: true, message: parsed.data };
+  const surplus = unknownKeys(parsed.error.issues);
+
+  return { ok: false, reason: surplus.length > 0
+    ? `it wrote ${surplus.map((key) => `"${key}"`).join(', ')}, which protocol ${RUNTIME_PROTOCOL} does not have: ${line.slice(0, 200)}`
+    : `it wrote a message protocol ${RUNTIME_PROTOCOL} does not have: ${line.slice(0, 200)}` };
+}
+
+/** The keys a strict message refused, wherever the union of messages reported them. */
+function unknownKeys(issues: readonly z.core.$ZodIssue[]): string[] {
+  return [...new Set(issues.flatMap((issue) => {
+    if (issue.code === 'unrecognized_keys') return issue.keys;
+
+    return issue.code === 'invalid_union' ? issue.errors.flatMap((branch) => unknownKeys(branch)) : [];
+  }))];
 }

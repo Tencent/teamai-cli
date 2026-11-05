@@ -373,6 +373,19 @@ describe('the toy step runtime', () => {
       toy.stdin.end();
     }
   });
+  it('fails init for a protocol version it does not speak, naming the key', async () => {
+    const toy = spawn(process.execPath, [TOY_RUNTIME], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const lines: string[] = [];
+    readline.createInterface({ input: toy.stdout }).on('line', (line) => { lines.push(line); });
+    toy.stdin.write(`${JSON.stringify({ type: 'init', protocol: 99, mode: 'unattended', options: { state: path.join(dir, 'state') } })}\n`);
+
+    try {
+      expect(await until(() => lines.length > 0)).toBe(true);
+      expect(JSON.parse(lines[0] ?? '')).toMatchObject({ type: 'init', ok: false, error: { code: 'bad_protocol', key: 'protocol' } });
+    } finally {
+      toy.stdin.end();
+    }
+  });
 });
 
 describe('the stdio step runtime client', () => {
@@ -391,6 +404,16 @@ describe('the stdio step runtime client', () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       throw new Error('the run record could not be written');
     })).rejects.toThrow('the run record could not be written');
+    await runtime.dispose();
+  });
+
+  it('fails a runtime that writes a key protocol 1 does not have, naming the key', async () => {
+    const surplus = `require('readline').createInterface({ input: process.stdin }).on('line', () => {
+      process.stdout.write(JSON.stringify({ type: 'init', ok: true, can: {}, surplus: true }) + '\\n');
+    });`;
+    const runtime = stdioStepRuntime({ name: 'surplus', command: process.execPath, args: ['-e', surplus] });
+
+    expect(await runtime.init({ options: {}, mode: 'unattended' })).toMatchObject({ ok: false, failure: { message: expect.stringContaining('"surplus"') } });
     await runtime.dispose();
   });
 });

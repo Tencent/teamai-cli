@@ -90,6 +90,12 @@ function stopGroup(pgid) {
 }
 
 function init(request) {
+  if (request.protocol !== 1) {
+    send({ type: 'init', ok: false, error: { code: 'bad_protocol', key: 'protocol', message: `The toy runtime speaks protocol 1, and was sent protocol ${JSON.stringify(request.protocol)}.` } });
+
+    return;
+  }
+
   const unknown = Object.keys(request.options ?? {}).find((key) => !OPTIONS.has(key));
 
   if (unknown !== undefined) {
