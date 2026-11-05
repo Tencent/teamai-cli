@@ -489,4 +489,3 @@ process.stdout.write(JSON.stringify({ type: 'result', result: group }));
 
   expect(text).toBe(ours);
 });
-

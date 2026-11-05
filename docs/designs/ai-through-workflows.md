@@ -304,7 +304,9 @@ ratio  = r + (judged_count > 0 ? judge_upvoted_count / judged_count : 0) Ã— (1 â
 | `pod-startup` | 10 | 0 | 0 | 0 | 0.00 | 0.00 |
 
 A document that is judged in a session is credited once, however often the session is judged again, and a later
-tool-call credit of the same session is blocked.
+tool-call credit of the same session is blocked. The local votes file stores the session/document identities with
+the counter mutations under one lock; the recall journal is a retry and reporting projection. Those identities
+survive journal retention and vote synchronization.
 
 ### Trying and writing a scorer
 

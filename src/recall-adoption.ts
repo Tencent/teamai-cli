@@ -6,11 +6,12 @@
  *   teamai recall ────────────────▶ run ────────────────┼─▶ recall log
  *   Stop / SubagentStop ── creditAdoptedDocs ◀── join ──┤
  *   pull ── drainRecallLog: pending sessions, retention ┘
- *              ├─▶ incrementUpvoted (per-session ledger) ─▶ consumed, credit
+ *              ├─▶ creditRecallAdoptions (durable ledger) ─▶ consumed, credit
  *              └─▶ countRecalledSessions ─▶ counted
  *
- * A credit line holds a root session's credit of a doc for good, whoever gave
- * it: a read here, or an adoption label `teamai score write` wrote (#1391).
+ * The votes file holds each root session's credit of a doc for good, whoever
+ * gave it: a read here, or an adoption label `teamai score write` wrote (#1391).
+ * Credit and counted lines project that state into the journal for reporting.
  *
  * The hook side only classifies the call and appends its lines in one write;
  * it never reads the log. The reducer does the join, at Stop, at SubagentStop
@@ -28,7 +29,7 @@ import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import { appendRecallLines, readRecallLog, recallLogPath } from './recall-log.js';
 import type { Actor, ClaimLine, CreditLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
 import { getVotesDir } from './types.js';
-import type { AdoptionVerdict } from './votes.js';
+import { readUserVotes, type AdoptionVerdict } from './votes.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { isAbsolutePath, pathKey, samePath } from './utils/agent-path.js';
 import { rewriteJsonl } from './utils/jsonl-store.js';
@@ -300,6 +301,13 @@ function creditKey(session: string, doc: string): string {
   return `${session}\n${doc}`;
 }
 
+/** Durable credits survive the recall journal's retention and an interrupted completion append. */
+async function durableCredits(config: LocalConfig, session: string): Promise<Set<string>> {
+  const votes = await readUserVotes(path.join(getVotesDir(config), `${config.username}.yaml`));
+
+  return new Set(votes.adoptionCredits?.[session] ?? []);
+}
+
 /** Whether `at` falls within the adoption window after the run. */
 function inWindow(at: number, run: RunLine): boolean {
   const since = at - Date.parse(run.ts);
@@ -309,10 +317,9 @@ function inWindow(at: number, run: RunLine): boolean {
 
 /**
  * The reducer: credit the docs `sessionId` adopted, through the per-session
- * upvote ledger, and mark the evidence that credited them consumed so it never
- * votes again. Evidence the ledger already credited this session is consumed
- * too, and a run's doc is credited once: a later read of it counts for
- * nothing, even after the ledger's window. When the votes file is busy
+ * durable adoption ledger, and mark the evidence that credited them consumed so it never
+ * votes again. A run's doc is credited once: a later read of it counts for
+ * nothing, even after the journal is pruned. When the votes file is busy
  * nothing is consumed, so the next trigger (Stop, SubagentStop or `pull`)
  * retries.
  *
@@ -452,6 +459,7 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   const votePath = path.join(getVotesDir(config), `${config.username}.yaml`);
 
   if (!await countSessions(config, index, target, runs, votePath)) return { credited: null, recalled };
+  const held = await durableCredits(config, target);
 
   const keys = new Set<string>();
   const crediting: string[] = [];
@@ -459,7 +467,7 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   for (const e of evidence) {
     if (consumed.has(e.id)) continue;
     // A doc this session credited once, by a read or an adoption label, never credits again (#1391).
-    const fresh = opened(e).filter((d) => !done.has(creditOf(d)) && !credits.has(creditKey(target, d.key)));
+    const fresh = opened(e).filter((d) => !done.has(creditOf(d)) && !credits.has(creditKey(target, d.key)) && !held.has(d.key));
 
     if (fresh.length === 0) continue;
 
@@ -469,26 +477,25 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
 
   if (keys.size === 0) return { credited: [], recalled };
 
-  const { incrementUpvoted } = await import('./votes.js');
-  const credited = await incrementUpvoted(votePath, [...keys], target);
+  const ts = new Date().toISOString();
+  const creditLines = [...keys].map((doc): CreditLine => ({ kind: 'credit', ts, id: randomUUID(), session: target, doc, source: 'tool', adopted: true, votes: 'written' }));
+  const { creditRecallAdoptions } = await import('./votes.js');
+  const credited = await creditRecallAdoptions({ votePath, credits: creditLines });
 
   if (credited === null) return { credited: null, recalled };
 
   for (const id of crediting) consumed.add(id);
-  const ts = new Date().toISOString();
   // A key the ledger had already credited is this session's credit too.
-  const creditLines = [...keys].map((doc): CreditLine => ({ kind: 'credit', ts, id: randomUUID(), session: target, doc, source: 'tool', adopted: true, votes: 'written' }));
-
   for (const line of creditLines) credits.set(creditKey(target, line.doc), { ...line, isWritten: true });
 
   try {
     await appendRecallLines(config, [...crediting.map((evidenceId): RecallLogLine => ({ kind: 'consumed', ts, evidence: evidenceId })), ...creditLines]);
   } catch (e) {
-    // The ledger still holds the credit for its window; past it this evidence could credit again.
+    // The votes file holds the credit identity, so a retry cannot increment it again.
     log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  return { credited, recalled };
+  return { credited: credited.map((credit) => credit.doc), recalled };
 }
 
 /**
@@ -501,7 +508,7 @@ async function countSessions(config: LocalConfig, index: LogIndex, target: strin
   if (docs.length === 0) return true;
   const { countRecalledSessions } = await import('./votes.js');
 
-  if (!await countRecalledSessions(votePath, docs)) return false;
+  if (!await countRecalledSessions({ votePath, sessionId: target, docIds: docs })) return false;
 
   for (const doc of docs) index.counted.add(creditKey(target, doc));
 
@@ -509,7 +516,7 @@ async function countSessions(config: LocalConfig, index: LogIndex, target: strin
     const ts = new Date().toISOString();
     await appendRecallLines(config, docs.map((doc) => ({ kind: 'counted', ts, session: target, doc })));
   } catch (e) {
-    // Lost lines count the session again at the next trigger: an overcount of one session, never a lost vote.
+    // The votes file holds the identity too, so a retry restores the marker without counting again.
     log.debug(`recall adoption: could not record ${docs.length} counted session(s): ${e instanceof Error ? e.message : String(e)}`);
   }
 
@@ -527,7 +534,8 @@ export async function adoptionCandidates(config: LocalConfig, sessionId: string)
   if (index.rootOf(sessionId) !== sessionId) return [];
   const { runs, evidence, opened } = viewRoot(index, sessionId);
   const read = new Set(evidence.flatMap(opened).map((d) => d.key));
-  const docs = runs.flatMap((r) => r.docs).filter((d) => d.eligible && !read.has(d.key) && !index.credits.has(creditKey(sessionId, d.key)));
+  const held = await durableCredits(config, sessionId);
+  const docs = runs.flatMap((r) => r.docs).filter((d) => d.eligible && !read.has(d.key) && !index.credits.has(creditKey(sessionId, d.key)) && !held.has(d.key));
 
   return [...new Map(docs.map((d) => [d.key, d] as const)).values()];
 }
@@ -542,8 +550,9 @@ export async function creditAdoptionVerdicts(config: LocalConfig, sessionId: str
   const before = indexLog(await readRecallLog(config));
   const root = before.rootOf(sessionId);
   const ts = new Date().toISOString();
+  const held = await durableCredits(config, root);
 
-  const claims = [...new Map(verdicts.map((v) => [v.doc, v] as const)).values()].flatMap((v): CreditLine[] => (before.credits.has(creditKey(root, v.doc))
+  const claims = [...new Map(verdicts.map((v) => [v.doc, v] as const)).values()].flatMap((v): CreditLine[] => (before.credits.has(creditKey(root, v.doc)) || held.has(v.doc)
     ? []
     : [{ kind: 'credit', ts, id: randomUUID(), session: root, doc: v.doc, source: 'judge', adopted: v.adopted, votes: 'pending' }]));
 
@@ -564,9 +573,9 @@ async function writePendingJudgeCredits(config: LocalConfig, index: LogIndex): P
   const pending = [...index.credits.values()].filter((c) => c.source === 'judge' && !c.isWritten);
 
   if (pending.length === 0) return true;
-  const { creditJudged } = await import('./votes.js');
+  const { creditRecallAdoptions } = await import('./votes.js');
 
-  if (!await creditJudged(path.join(getVotesDir(config), `${config.username}.yaml`), pending.map((c) => ({ doc: c.doc, adopted: c.adopted })))) return false;
+  if (await creditRecallAdoptions({ votePath: path.join(getVotesDir(config), `${config.username}.yaml`), credits: pending }) === null) return false;
   const ts = new Date().toISOString();
   await appendRecallLines(config, pending.map(({ isWritten: _isWritten, ...c }): CreditLine => ({ ...c, ts, votes: 'written' })));
 

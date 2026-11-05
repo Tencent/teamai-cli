@@ -9,6 +9,7 @@ import { parseYaml } from './utils/yaml.js';
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
 import { isJsonObject, type JsonValue } from './types.js';
 import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteDelta, VoteEntryV2 } from './types.js';
+import type { CreditLine } from './recall-log.js';
 import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -96,30 +97,6 @@ function pruneLedger(ledger: UpvoteLedger, now: number): boolean {
   }
 
   return changed;
-}
-
-/**
- * The doc-ids already credited for `sessionId` in the in-file ledger. Read-only
- * (no lock needed — a stale read only means a candidate is judged one extra time,
- * never a double-count, since incrementUpvoted dedups under the lock). The judge
- * uses this to skip docs the foreground pass already upvoted, so it does not burn
- * a local-CLI call on a candidate that would dedup to nothing (issue #723 review).
- */
-export async function creditedDocIdsForSession(votePath: string, sessionId: string): Promise<Set<string>> {
-  try {
-    // Read WITHOUT loadUserVotes: on a v1 file loadUserVotes performs an
-    // unlocked auto-migration write, which could clobber a concurrent locked
-    // increment with a stale snapshot (issue #723 review). This read-only helper
-    // parses the YAML directly and never writes; the ledger only exists in v2
-    // files anyway, so a v1/absent/corrupt file simply yields an empty set.
-    const content = await readFileSafe(votePath);
-
-    if (!content) return new Set();
-
-    return new Set(readUserVotesFromContent(content).upvotedSessions?.[sessionId]?.docIds ?? []);
-  } catch {
-    return new Set();
-  }
 }
 
 /**
@@ -387,22 +364,28 @@ function bump(data: UserVotesV2, docId: string, counter: string, by: number): vo
 /**
  * Count one more recalled session for each of `docIds` (#1391): the denominator of the adoption estimator. A doc
  * whose entry has no session count yet starts from its recalls, which is what the ratio read before, so its confidence
- * does not jump at the upgrade; recall counted this session's recall when it ran, so it is among them. The caller
- * counts each (root session, doc) once. Returns false when the votes file was busy: nothing was counted, and the
- * caller retries.
+ * does not jump at the upgrade; recall counted this session's recall when it ran, so it is among them. The identity
+ * is stored with the counter, so retries count each (root session, doc) once. Returns false when the votes file was
+ * busy: nothing was counted, and the caller retries.
  */
-export async function countRecalledSessions(votePath: string, docIds: readonly string[]): Promise<boolean> {
+export async function countRecalledSessions({ votePath, sessionId, docIds }: { votePath: string; sessionId: string; docIds: readonly string[] }): Promise<boolean> {
   if (docIds.length === 0) return true;
 
   const { acquired } = await withVotesLock(votePath, async () => {
     const data = await loadUserVotes(votePath);
+    const counted = new Set(data.recalledSessions?.[sessionId] ?? []);
+    const fresh = [...new Set(docIds)].filter((docId) => !counted.has(docId));
 
-    for (const docId of new Set(docIds)) {
+    if (fresh.length === 0) return;
+
+    for (const docId of fresh) {
       const entry = data.votes[docId];
       const startsFromRecalls = entry !== undefined && entry.recalled_session_count === undefined;
       bump(data, docId, 'recalled_session', startsFromRecalls ? Math.max(1, entry.recalled_count) : 1);
+      counted.add(docId);
     }
 
+    data.recalledSessions = { ...data.recalledSessions, [sessionId]: [...counted] };
     await saveUserVotes(votePath, data);
   });
 
@@ -415,33 +398,53 @@ export interface AdoptionVerdict {
   adopted: boolean;
 }
 
-/**
- * Credit judge verdicts: each counts a judged session for its doc, and an adopted one an upvote, counted in the total
- * and in `judge_upvoted_count`. The caller credits each (root session, doc) once. Returns false when the votes file
- * was busy: nothing was credited, and the caller retries.
- */
-export async function creditJudged(votePath: string, verdicts: readonly AdoptionVerdict[]): Promise<boolean> {
-  if (verdicts.length === 0) return true;
+/** The recall journal fields whose effect the votes file deduplicates. */
+export type RecallAdoptionCredit = Pick<CreditLine, 'session' | 'doc' | 'source' | 'adopted'>;
 
-  const { acquired } = await withVotesLock(votePath, async () => {
+/**
+ * Credit recall adoption once per root session and doc, keeping the identity with the counters. A judge verdict
+ * counts a judged session and, when adopted, a judge upvote within the total. Returns the newly credited inputs,
+ * or null when the votes file was busy and nothing was credited.
+ */
+export async function creditRecallAdoptions({ votePath, credits }: { votePath: string; credits: readonly RecallAdoptionCredit[] }): Promise<RecallAdoptionCredit[] | null> {
+  if (credits.length === 0) return [];
+
+  const { acquired, value } = await withVotesLock(votePath, async () => {
     const data = await loadUserVotes(votePath);
     const now = new Date().toISOString();
+    const ledger = { ...data.adoptionCredits };
+    const fresh: RecallAdoptionCredit[] = [];
 
-    for (const { doc, adopted } of verdicts) {
-      bump(data, doc, 'judged', 1);
+    for (const credit of credits) {
+      const { doc, adopted, session, source } = credit;
+      const seen = new Set(ledger[session] ?? []);
 
-      if (!adopted) continue;
-      bump(data, doc, 'upvoted', 1);
-      bump(data, doc, 'judge_upvoted', 1);
-      const entry = data.votes[doc];
+      if (seen.has(doc)) continue;
+      seen.add(doc);
+      ledger[session] = [...seen];
+      fresh.push(credit);
 
-      if (entry) entry.last_upvoted_at = now;
+      if (source === 'judge') bump(data, doc, 'judged', 1);
+
+      if (adopted) {
+        bump(data, doc, 'upvoted', 1);
+
+        if (source === 'judge') bump(data, doc, 'judge_upvoted', 1);
+
+        const entry = data.votes[doc];
+
+        if (entry) entry.last_upvoted_at = now;
+      }
     }
 
+    if (fresh.length === 0) return [];
+    data.adoptionCredits = ledger;
     await saveUserVotes(votePath, data);
+
+    return fresh;
   });
 
-  return acquired;
+  return acquired ? value ?? [] : null;
 }
 
 /**

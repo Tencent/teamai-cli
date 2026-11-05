@@ -10,7 +10,7 @@
  *   link      a child session a subagent ran in, and the session that started it (OpenCode's task tool)
  *   consumed  evidence that has been credited, so it never votes again
  *   credit    a root session's credit of a recalled doc, by a read (tool) or an adoption label (judge): the first for a
- *             session and doc stands, so neither credits it again (#1391); a judge credit is written before its votes
+ *             session and doc stands; the votes file deduplicates the effect durably (#1391). A judge credit is written before its votes
  *             and again once they are, so a busy votes file is retried at pull
  *   counted   a root session counted once in a doc's recalled sessions (#1391)
  *

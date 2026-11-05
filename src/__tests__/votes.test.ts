@@ -17,11 +17,10 @@ import {
   recallFeedback,
   hasPendingVoteDeltas,
   pruneUpvoteLedger,
-  creditedDocIdsForSession,
   readUserVotesFromContent,
   stageVotesMerge,
   confirmVotesSynced,
-  creditJudged,
+  creditRecallAdoptions,
   countRecalledSessions,
 } from '../votes.js';
 import type { UserVotes, UserVotesV2 } from '../types.js';
@@ -426,34 +425,6 @@ describe('pruneUpvoteLedger (bounded even in judge-off config)', () => {
     // firstTs unchanged; the same doc is still deduped.
     expect(after2.upvotedSessions.sLong.firstTs).toBe(firstTs1);
     expect(await incrementUpvoted(filePath, ['doc-a'], 'sLong')).toEqual([]);
-  });
-});
-
-describe('creditedDocIdsForSession (#6: read-only, no v1 migration write)', () => {
-  it('reads the session ledger from a v2 file', async () => {
-    const filePath = path.join(tmpDir, 'user.yaml');
-    await incrementUpvoted(filePath, ['doc-a', 'doc-b'], 'sX');
-    const got = await creditedDocIdsForSession(filePath, 'sX');
-    expect([...got].sort()).toEqual(['doc-a', 'doc-b']);
-  });
-
-  it('does NOT migrate/rewrite a v1 file (no unlocked write that could clobber a concurrent increment)', async () => {
-    const filePath = path.join(tmpDir, 'legacy.yaml');
-    // A v1 votes file (no version:2). loadUserVotes would migrate+save this;
-    // creditedDocIdsForSession must not.
-    const v1 = 'votes:\n  doc-a:\n    at: "2026-01-01T00:00:00Z"\n';
-    fs.writeFileSync(filePath, v1);
-    const before = fs.readFileSync(filePath, 'utf-8');
-    const got = await creditedDocIdsForSession(filePath, 'sX');
-    expect([...got]).toEqual([]); // v1 has no ledger
-    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before); // untouched
-  });
-
-  it('returns empty for a missing or corrupt file without throwing', async () => {
-    expect([...await creditedDocIdsForSession(path.join(tmpDir, 'nope.yaml'), 's')]).toEqual([]);
-    const bad = path.join(tmpDir, 'bad.yaml');
-    fs.writeFileSync(bad, ': : not yaml : :');
-    expect([...await creditedDocIdsForSession(bad, 's')]).toEqual([]);
   });
 });
 
@@ -973,7 +944,7 @@ describe('adoption counters (#1391)', () => {
   });
 
   it('credits an adopted verdict as a judge upvote within the total, and an ignored one as judged only', async () => {
-    expect(await creditJudged(votePath(), [{ doc: 'pod-startup', adopted: true }, { doc: 'retry-policy', adopted: false }])).toBe(true);
+    expect(await creditRecallAdoptions({ votePath: votePath(), credits: [{ session: 'first', source: 'judge', doc: 'pod-startup', adopted: true }, { session: 'first', source: 'judge', doc: 'retry-policy', adopted: false }] })).toHaveLength(2);
 
     const { votes, deltas } = await readUserVotes(votePath());
     expect(votes['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
@@ -985,11 +956,11 @@ describe('adoption counters (#1391)', () => {
   });
 
   // Recall counts a doc's recall when it runs, so the session counted first is already among its 7 recalls.
-  it('counts a recalled session once per call, starting a doc that has none from its recalls', async () => {
+  it('counts each recalled session once, starting a doc that has none from its recalls', async () => {
     await saveUserVotes(votePath(), { version: 2, votes: { 'helm-values': { recalled_count: 7, upvoted_count: 2, last_recalled_at: '2026-06-05T00:00:00Z' } }, deltas: {} });
 
-    expect(await countRecalledSessions(votePath(), ['helm-values', 'new-doc'])).toBe(true);
-    expect(await countRecalledSessions(votePath(), ['helm-values'])).toBe(true);
+    expect(await countRecalledSessions({ votePath: votePath(), sessionId: 'first', docIds: ['helm-values', 'new-doc'] })).toBe(true);
+    expect(await countRecalledSessions({ votePath: votePath(), sessionId: 'second', docIds: ['helm-values'] })).toBe(true);
 
     const { votes, deltas } = await readUserVotes(votePath());
     expect(votes['helm-values']?.recalled_session_count).toBe(8);
@@ -1002,7 +973,7 @@ describe('adoption counters (#1391)', () => {
     const repoDir = path.join(tmpDir, 'repo');
     fs.mkdirSync(localDir, { recursive: true });
     fs.mkdirSync(path.join(repoDir, 'votes'), { recursive: true });
-    await creditJudged(path.join(localDir, 'jeff.yaml'), [{ doc: 'pod-startup', adopted: true }]);
+    await creditRecallAdoptions({ votePath: path.join(localDir, 'jeff.yaml'), credits: [{ session: 'first', source: 'judge', doc: 'pod-startup', adopted: true }] });
 
     expect(await syncVotesToTeam(repoDir, 'jeff', localDir)).toBe(true);
 
