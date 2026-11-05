@@ -35,6 +35,12 @@ export interface ScoreAttempt {
   dir: string;
   /** The instance's `label` input, a hand label; '' for none. */
   hand: string;
+  /** The instance's `files` input: scorer files it labels with in place of named scorers. */
+  files: string[];
+  /** The instance's `store` input: false when its labels are only tried. A run started before the input existed stores. */
+  storesLabels: boolean;
+  /** The instance's `control` input: it judges a session's first prompt alone. */
+  isControl: boolean;
 }
 
 export type ScoreAttemptRead = { ok: true; attempt: ScoreAttempt } | { ok: false; code: 'score_attempt_required'; message: string };
@@ -102,7 +108,13 @@ export const ScoreAttempt = {
 
     return {
       ok: true,
-      attempt: { config, run, attempt: attemptId.data, step: leased.id, instance: { ...instance, inputs }, dir: path.join(runDir, attemptId.data), hand: z.string().catch('').parse(inputs.label) },
+      attempt: {
+        config, run, attempt: attemptId.data, step: leased.id, instance: { ...instance, inputs }, dir: path.join(runDir, attemptId.data),
+        hand: z.string().catch('').parse(inputs.label),
+        files: z.array(z.string()).catch([]).parse(inputs.files),
+        storesLabels: z.boolean().catch(true).parse(inputs.store),
+        isControl: z.boolean().catch(false).parse(inputs.control),
+      },
     };
   },
 

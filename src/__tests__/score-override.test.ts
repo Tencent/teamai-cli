@@ -60,6 +60,8 @@ describe('a team teamai-score.yaml', () => {
 
   it.each([
     ['takes another input', shippedWith('  batch: boolean\n', '  batch: boolean\n  ticket: string\n'), 'score_override_contract'],
+    ['stores the labels of a run that only tries them', shippedWith('inputs: { files: [], store: true, control: false }', 'inputs: { files: [], store: false, control: false }'), 'score_override_contract'],
+    ['makes a caller pass an input the default gives a default', shippedWith('defaults:\n  inputs: { files: [], store: true, control: false }\n', ''), 'score_override_contract'],
     ['gives another output', shippedWith('outputs: { labels: steps.score.results }', 'outputs: { labels: steps.score.results, plan: steps.plan.outputs.groups }'), 'score_override_contract'],
     ['is not private', shippedWith('private: true\n', ''), 'score_override_contract'],
     ['lets an agent start it', shippedWith('invoke: deny', 'invoke: allow'), 'score_override_contract'],

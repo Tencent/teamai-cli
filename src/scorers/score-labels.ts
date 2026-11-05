@@ -332,7 +332,7 @@ export const ScoreLabels = {
 
   /**
    * Writes the labels `label` left in `dir` to local storage, after checking each again; one that fails writes none. A
-   * label of a private or isolated run stays out of the outbox. Each scorer's mark the root run holds closes. Answers
+   * label of a private or isolated run stays out of the outbox, and an instance that only tries its labels writes none. Each scorer's mark the root run holds closes. Answers
    * the version of each label written, so a reader takes the labels this run wrote and no other run's.
    */
   async write(attempt: ScoreAttempt, dir: string, group: GroupRecord, { now }: { now: string }): Promise<{ ok: true; written: string[] } | Refusal> {
@@ -345,6 +345,9 @@ export const ScoreLabels = {
     const problems = entries.length === members.length ? entries.flatMap((entry, index) => entryProblem(group, members, entry, index) ?? []) : ['the entries are not one per scorer of the group'];
 
     if (problems.length > 0) return refused('label_invalid', `${dir}/${LABELS} cannot be written: ${problems.join('; ')}. Nothing was written.`);
+
+    // A tried label stays in labels.json, which the run's directory holds until the run is removed.
+    if (!attempt.storesLabels) return { ok: true, written: [] };
 
     // Before the labels: what a generated question's label does is claimed once per session, so a retry adds nothing.
     if (group.judged.kind === 'session') {

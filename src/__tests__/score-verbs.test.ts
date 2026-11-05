@@ -1997,3 +1997,52 @@ describe('what teamai score answers for a run its local driver drove', () => {
     expect(await ScoreAnswer.of(config, 'r0000000000000000', { data: { run: 'r0000000000000000', done: { outcome: 'succeeded' } } }, ['quality'])).toBeUndefined();
   });
 });
+
+describe('scorer files tried in a teamai-score run', () => {
+  const SESSION_KEY = { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: 'one' } };
+
+  /** A team with no scorer, session `one` in its checkout, and the scorer file `<root>/draft/quality.md`. */
+  async function drafted(): Promise<{ config: LocalConfig; file: string }> {
+    const config = await team({}, {});
+    plantSession(config.projectRoot ?? '', 'one', 'Add retries to the client.');
+    const file = path.join(root, 'draft', 'quality.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, scorer({ rate: 0 }));
+    return { config, file };
+  }
+
+  it('labels a session with a file, writes no label and opens no mark when store is false', async () => {
+    const { config, file } = await drafted();
+    const { answers } = await walk(config, 'session:claude-code:one', { judge: { answer: { label: 'good', reasoning: 'It ran the tests.' } }, inputs: { files: [file], store: false, demand: 'named' } });
+
+    expect(answers.get('plan')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 0, labels: [] } });
+    expect(await LabelStore.local(config)).toEqual([]);
+    const sourceHash = createHash('sha256').update(fs.readFileSync(file, 'utf8')).digest('hex');
+    expect(await Marks.states(config, [{ scorer: 'quality', subject: SESSION_KEY, sourceHash }], markFacts(config, NOW))).toEqual([{ kind: 'unmarked' }]);
+  });
+
+  it('gives the judge the session\'s first prompt alone when control is true', async () => {
+    const { config, file } = await drafted();
+    const seen: { transcript?: string } = {};
+    await walk(config, 'session:claude-code:one', { judge: { answer: { label: 'bad', reasoning: 'Nothing was done.' } }, inputs: { files: [file], store: false, control: true, demand: 'named' }, after: {
+      'score[0].evidence': async (answers) => {
+        const evidence = answers.get('score[0].evidence');
+        seen.transcript = fs.readFileSync(path.join(evidence?.ok ? String(evidence.output.dir) : '', 'transcripts', 'session.md'), 'utf8');
+      },
+    } });
+
+    expect(seen.transcript).toContain('Add retries to the client.');
+    expect(seen.transcript).not.toContain('Reviewed.');
+  });
+
+  it('refuses scorer files in a run that stores its labels, and a file teamai pull would not take', async () => {
+    const { config, file } = await drafted();
+    const planOf = async (inputs: Record<string, unknown>) => ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', ...inputs })).next('plan')).ctx);
+
+    expect(await planOf({ files: [file], store: true })).toEqual({ ok: false, code: 'invalid_arguments', message: `A scorer file's label is never stored, and this teamai-score run stores its labels: ${file}. Start it with store false.` });
+    fs.writeFileSync(file, scorer().replace('passingScore: 1', 'passingScore: 2'));
+    expect(await planOf({ files: [file], store: false })).toMatchObject({ ok: false, code: 'scorer_invalid' });
+  });
+});

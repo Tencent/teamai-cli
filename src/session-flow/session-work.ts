@@ -438,9 +438,9 @@ async function samplingScorers(config: LocalConfig, scorers?: readonly SessionSc
 
 /**
  * Reads the session for a judge, redacted with this scope's team secrets: from the file its hooks last named, else
- * where its tool keeps it. Not ok when it is gone or holds nothing to judge.
+ * where its tool keeps it; with `control`, its first prompt alone. Not ok when it is gone or holds nothing to judge.
  */
-async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok: true; judged: JudgedSession } | { ok: false }> {
+async function read(config: LocalConfig, subject: SessionSubject, { control = false }: { control?: boolean } = {}): Promise<{ ok: true; judged: JudgedSession } | { ok: false }> {
   const captures = await SessionCaptures.read(config, subject.platform, subject.sessionId);
   const filePath = captures.flatMap((capture) => capture.sessionFile ?? []).at(-1);
   const found = await AgentSession.find(filePath ? { ...subject, filePath } : { ...subject }, { subagents: true });
@@ -448,7 +448,8 @@ async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok:
   if (found.status !== 'done' || found.session.messages.length === 0) return { ok: false };
   const envSecrets = await knownSecrets(config);
 
-  return { ok: true, judged: judgeSession({ platform: subject.platform, found, captures, mask: (text) => redact(text, { envSecrets }) }) };
+  // The control keeps the captures, so the skills the session had stay in its evidence while those it used go.
+  return { ok: true, judged: judgeSession({ platform: subject.platform, found: control ? firstPromptOnly(found) : found, captures, mask: (text) => redact(text, { envSecrets }) }) };
 }
 
 /**

@@ -28,6 +28,7 @@ import { isDelivered } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
 import { GeneratedQuestions, type QuestionSwitches } from './generated-questions.js';
 import { Subject } from './subject.js';
+import { TryScorer } from './try-scorer.js';
 import { ScoreItem } from './judging-workflows.js';
 
 /** One judge launch: the scorers it labels, joined by `,`, and the stages its steps run. */
@@ -249,8 +250,16 @@ async function sessionPins(config: LocalConfig, subject: Exclude<Subject, { kind
     : refused('scorer_not_found', `Scorer ${question} is not a ${GeneratedQuestions.familyOf(question)?.noun ?? 'question'} of ${Subject.format(subject)}. ${why}`);
 }
 
+/** The scorer files the instance tries, each a candidate in place of a named scorer. */
+async function fileCandidates(files: readonly string[]): Promise<Candidate[] | Refusal> {
+  const read = await TryScorer.files(files);
+
+  return read.ok ? read.files.map(({ scorer, pin, definition }) => ({ name: scorer, pin, definition })) : read;
+}
+
 async function sessionJudged(request: PlanRequest, subject: Exclude<Subject, { kind: 'run' }>, scoring: { batch: boolean | undefined } & QuestionSwitches): Promise<Judged | Refusal> {
-  const candidates = await sessionPins(request.attempt.config, subject, { names: request.scorers, switches: scoring });
+  const { files } = request.attempt;
+  const candidates = files.length > 0 ? await fileCandidates(files) : await sessionPins(request.attempt.config, subject, { names: request.scorers, switches: scoring });
 
   if (!Array.isArray(candidates)) return candidates;
   const structured = subject.kind === 'session' ? subject.subject : undefined;
@@ -334,12 +343,24 @@ function groupOf(request: PlanRequest, judged: Judged, members: readonly Candida
   };
 }
 
+/** Why the instance's `files`, `store` and `control` inputs cannot label `subject`; undefined when they can. */
+function triedRefusal({ files, storesLabels, isControl }: ScoreAttempt, subject: Subject): Refusal | undefined {
+  if (files.length > 0 && storesLabels) return refused('invalid_arguments', `A scorer file's label is never stored, and this teamai-score run stores its labels: ${files.join(', ')}. Start it with store false.`);
+
+  if (subject.kind === 'run' && (files.length > 0 || isControl)) return refused('invalid_arguments', `Scorer files and the control judge a session, and ${Subject.format(subject)} is a pass. Name a session as the subject.`);
+
+  return undefined;
+}
+
 export async function planGroups(request: PlanRequest): Promise<{ ok: true; groups: PlanGroup[] } | Refusal> {
   const { config, run } = request.attempt;
+  const { subject } = request;
+  const unfit = triedRefusal(request.attempt, subject);
+
+  if (unfit) return unfit;
   const scoring = await scopeScoring(config);
 
   if (!scoring.ok) return refused('scoring_settings_invalid', scoring.reason);
-  const { subject } = request;
   const facts = markFacts(config, request.now);
   const restarts = await restartsOf(request, facts);
   const judged = subject.kind === 'run' ? await runJudged(request, subject.subject, scoring.batch) : await sessionJudged(request, subject, scoring);
@@ -348,6 +369,13 @@ export async function planGroups(request: PlanRequest): Promise<{ ok: true; grou
 
   if (request.label !== '') return handGroup(request, judged);
   const groups = grouped(request, judged, restarts);
+
+  // Labels that are only tried hold no mark, so they count toward no daily limit and lapse nowhere.
+  if (!request.attempt.storesLabels) {
+    if (subject.kind !== 'run') await writePlannedPins(request.attempt.dir, judged.candidates, groups.flat().map(judged.key));
+
+    return { ok: true, groups: groups.map((members) => groupOf(request, judged, members)) };
+  }
 
   const launch: Launch = {
     run: run.id,

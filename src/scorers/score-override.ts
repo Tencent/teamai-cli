@@ -7,7 +7,7 @@
  */
 import { REPORTS_BRANCH, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import { stepWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
+import { stepWorkflow, type WorkflowDefaults, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from '../workflow/types.js';
 import { confinedOf } from '../workflow/workspace.js';
 import { anyScorerChecks, cachedScorerNames } from './cache.js';
 import { JUDGING_WORKFLOWS, SCORE_WORKFLOW, type ScoreItemStep } from './judging-workflows.js';
@@ -115,7 +115,7 @@ function publishProblems({ path, field, step }: Walked): Problem[] {
 }
 
 /** Whether a header field of the team file is the default's, either absent counting as `{}`. */
-function same<TField extends WorkflowDefinition['inputs'] | WorkflowDefinition['outputs'] | WorkflowDefinition['setup']>(team: TField, shipped: TField): boolean {
+function same<TField extends WorkflowDefinition['inputs'] | WorkflowDefinition['outputs'] | WorkflowDefinition['setup'] | WorkflowDefaults['inputs']>(team: TField, shipped: TField): boolean {
   return canonicalJson(team ?? {}) === canonicalJson(shipped ?? {});
 }
 
@@ -125,6 +125,9 @@ function contractProblems(team: WorkflowDefinition, shipped: WorkflowDefinition)
   const contract = (field: string, message: string) => found.push({ code: 'score_override_contract', field, message });
 
   if (!same(team.inputs, shipped.inputs)) contract('inputs', 'changes the inputs teamai\'s default teamai-score takes, which every workflow that runs it passes. Declare them as it ships them');
+
+  // A default a caller relies on, such as store: true, decides what a run that leaves the input out writes.
+  if (!same(team.defaults?.inputs, shipped.defaults?.inputs)) contract('defaults.inputs', 'changes the input defaults teamai\'s default teamai-score gives, which every workflow that runs it may leave the inputs to. Give them as it ships them');
 
   if (!same(team.outputs, shipped.outputs)) contract('outputs', 'changes the outputs teamai\'s default teamai-score gives. Keep them as it ships them: no output may carry a judge\'s reasoning');
   const shippedInline = inlineOutputs(shipped);
