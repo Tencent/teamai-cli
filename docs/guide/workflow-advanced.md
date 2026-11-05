@@ -1243,6 +1243,36 @@ Every decision without HITL and `hitl_required` failure logs a warning to stderr
 
 `interactive: true` needs `prompt` or `prompt_file`. The step waits for a driver with HITL. Without a terminal, `--driver local` [hands the run to a person](workflow.md#when-a-run-reaches-a-person), who continues it with `resume <run> --claim` from a terminal. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, and the step succeeds. An interactive step that sets `workspace: read-only` is checked like a command: a checkout change fails `read_only_dirty` and the edits stay. Inside a workspace an enclosing step opened, they are kept on `refs/teamai/kept/<attempt>` and removed from the workspace. An interactive step in its own workspace can still change that workspace. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
 
+### Ask about each item
+
+A choose step cannot carry `for_each`, but the inline workflow a `for_each` runs can hold one, so a person answers once per item. Each result carries the item as `item` and the answer as `outputs.choice` and `outputs.note`:
+
+```yaml
+schemaVersion: v1alpha1
+name: triage-findings
+description: Ask about each finding of a scan, then file the ones a person kept.
+inputs:
+  findings: [{ id: string, title: string, severity: string }]
+steps:
+  - id: review
+    for_each: "filter(inputs.findings, .severity != 'info')"
+    workflow:
+      outputs: { choice: steps.ask.choice, note: steps.ask.note }
+      steps:
+        - id: ask
+          choose:
+            message: |-
+              {{ item.title }} ({{ item.severity }}, {{ item.id }})
+              file opens an issue; rename opens it with your note as its title; skip leaves it out.
+            options: [file, rename, skip]
+  - id: file
+    needs: [review]
+    command: node scripts/file-findings.js "$REVIEWED"
+    env: { REVIEWED: "{{ steps.review.results }}" }
+```
+
+The local driver asks the items one after another. Without a person to answer, the run waits or fails as the table above says for a choice without a default. `teamai import --from-tools` reviews the files it found this way, in `teamai-import-learnings`.
+
 ## Retry, cancel, and resume
 
 ```sh

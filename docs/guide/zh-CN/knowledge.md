@@ -52,6 +52,29 @@ sharing:
 
 本机覆盖：`~/.teamai/config.yaml` 的 `contributeHintEnabled: false`，或 `TEAMAI_CONTRIBUTE_HINT_DISABLED=1`。
 
+### 导入规则和 iWiki 页面
+
+```bash
+teamai import --from-tools                  # 本机每个 AI 工具的规则目录
+teamai import --from-tools --all            # 不逐条询问，全部接受
+teamai import --from-iwiki 12345            # iWiki 空间，或带 /p/<id> 的页面 URL；需要 TAI_PAT_TOKEN
+teamai import --from-tools --output ./out   # 写入 ./out，不推送
+```
+
+AI 工具把每个文件分为 rule、doc 或 learning，并跳过个人内容。其余每一条都会询问你：
+
+```text
+Step "learnings.review[0].ask": Deploy rule (rule) from /home/alice/.claude/rules/deploy.md
+Summary: Deploy only on weekdays.
+Tags: ["deploy"]
+accept writes it; edit writes it with your note as its title; skip leaves it out.
+Options: accept, edit, skip
+teamai workflow respond <run> 'learnings.review[0].ask' <option> --pass 1
+Choice, followed by an optional note: edit Weekday deploys
+```
+
+接受的条目按类型写入团队仓库的 `rules/`、`docs/` 或 `learnings/`，frontmatter 带上该 `type:`，随后导入会提交并推送。AI 工具无法分类某个文件时，导入失败，什么也不写。逐条确认需要终端：在 workflow 步骤里，或输入不是终端时，请加 `--all`。`--from-claude` 是 `--from-tools` 的旧名。它们背后的 workflow 是 [`teamai-import-rules` 和 `teamai-import-from-iwiki`](workflow.md#默认工作流)；中断的导入用 `teamai workflow resume <run>` 继续，它取代了 `--resume`。
+
 ### 搜索知识
 
 ```bash

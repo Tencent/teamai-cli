@@ -1243,6 +1243,36 @@ teamai workflow resume <run>
 
 `interactive: true` 要求 `prompt` 或 `prompt_file`。步骤会等待支持 HITL 的驱动。没有终端时，`--driver local` 会[把运行交给人](workflow.md#运行需要人参与时)，由人在终端中用 `resume <run> --claim` 继续。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
 
+### 逐条询问
+
+choose 步骤不能带 `for_each`，但 `for_each` 运行的 inline workflow 里可以有 choose，这样每个条目都由人回答一次。每个结果以 `item` 带上条目，以 `outputs.choice` 和 `outputs.note` 带上回答：
+
+```yaml
+schemaVersion: v1alpha1
+name: triage-findings
+description: Ask about each finding of a scan, then file the ones a person kept.
+inputs:
+  findings: [{ id: string, title: string, severity: string }]
+steps:
+  - id: review
+    for_each: "filter(inputs.findings, .severity != 'info')"
+    workflow:
+      outputs: { choice: steps.ask.choice, note: steps.ask.note }
+      steps:
+        - id: ask
+          choose:
+            message: |-
+              {{ item.title }} ({{ item.severity }}, {{ item.id }})
+              file opens an issue; rename opens it with your note as its title; skip leaves it out.
+            options: [file, rename, skip]
+  - id: file
+    needs: [review]
+    command: node scripts/file-findings.js "$REVIEWED"
+    env: { REVIEWED: "{{ steps.review.results }}" }
+```
+
+本地驱动器逐条询问。没有人回答时，运行会像上表中没有默认值的 choose 那样等待或失败。`teamai import --from-tools` 在 `teamai-import-learnings` 中就是这样逐条确认找到的文件。
+
 ## 重试、取消和继续运行
 
 ```sh

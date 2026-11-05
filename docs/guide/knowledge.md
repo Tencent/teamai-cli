@@ -52,6 +52,29 @@ sharing:
 
 On one machine, set `contributeHintEnabled: false` in `~/.teamai/config.yaml`, or `TEAMAI_CONTRIBUTE_HINT_DISABLED=1`.
 
+### Importing rules and iWiki pages
+
+```bash
+teamai import --from-tools                  # the rules directory of every AI tool on this machine
+teamai import --from-tools --all            # accept every item without asking
+teamai import --from-iwiki 12345            # an iWiki space, or a page URL with /p/<id>; needs TAI_PAT_TOKEN
+teamai import --from-tools --output ./out   # write into ./out, push nothing
+```
+
+The AI tool classifies each file as a rule, a doc or a learning, and leaves out the personal ones. Then it asks you about each of the others:
+
+```text
+Step "learnings.review[0].ask": Deploy rule (rule) from /home/alice/.claude/rules/deploy.md
+Summary: Deploy only on weekdays.
+Tags: ["deploy"]
+accept writes it; edit writes it with your note as its title; skip leaves it out.
+Options: accept, edit, skip
+teamai workflow respond <run> 'learnings.review[0].ask' <option> --pass 1
+Choice, followed by an optional note: edit Weekday deploys
+```
+
+An accepted item lands by its type in `rules/`, `docs/` or `learnings/` of the team repo, with that `type:` in its frontmatter, and the import commits and pushes. A file the AI tool cannot classify fails the import, and nothing is written. The review needs a terminal: inside a workflow step, or with input that is not a terminal, pass `--all`. `--from-claude` is the older name of `--from-tools`. The workflows behind these are [`teamai-import-rules` and `teamai-import-from-iwiki`](workflow.md#default-workflows); a stopped import continues with `teamai workflow resume <run>`, which replaces `--resume`.
+
 ### Searching knowledge
 
 ```bash
