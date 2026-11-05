@@ -528,8 +528,6 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
 async function placeLeased(config: LocalConfig, lock: RunLock, leased: Leased, adopt?: string): Promise<PlacePrepared | PlaceBusy> {
   const { lease, root, others } = leased;
 
-  // The member's AI tool answers it from the checkout, where it changes nothing, so no other attempt waits for it.
-  if (lease.answer) return { kind: 'prepared', dir: root };
   const held = await placeHeldBy({ config, run: lock.run, root, lease, others, adopt });
 
   if (held) return { kind: 'busy', ...held };

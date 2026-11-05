@@ -1,6 +1,6 @@
 /**
  * An answer step on the local driver: the member's AI tool answers the lease's prompt on the one-shot launch every AI
- * call takes, in no place, and the step reports the reply as text or as the JSON its output declares.
+ * call takes, in the managed read-only checkout, and the step reports the reply as text or as the JSON its output declares.
  */
 import { CallError, type CallErrorKind } from '../../../tool-launch/member-tools.js';
 import { createToolCaller, type CallOptions, type ToolCallerDeps } from '../../../tool-launch/call.js';

@@ -27,7 +27,7 @@ export const LeaseWireSchema = LeaseIdSchema.extend({
   command: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   prompt: z.string().optional(),
-  /** The prompt is an answer step's: the member's AI tool answers it on its one-shot call launch, in no place. */
+  /** The prompt is an answer step's: the member's AI tool answers it on its one-shot call launch, in the checkout read-only. */
   answer: z.literal(true).optional(),
   /** A command step's paths, relative to the checkout, under which a change it makes is kept rather than failing it `read_only_dirty`. */
   writes: z.array(z.string()).optional(),

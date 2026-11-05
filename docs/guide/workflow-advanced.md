@@ -72,7 +72,7 @@ With `max_parallel` above 1:
 
 With 1, the driver runs one step at a time, and a command runs in your terminal, where Ctrl-C reaches it. A SIGTERM or SIGHUP sent to teamai alone stops the command, waits for it, and exits with that signal.
 
-With `max_parallel` unset, the driver still runs one step at a time, except the items of a `for_each` that declares `max_parallel`: they run side by side, up to that number. No other step starts while they run, and a `for_each` with no `max_parallel` runs its items one at a time. A run that has such a `for_each` runs as with `max_parallel` above 1: commands get no terminal, and Ctrl-C stops them all. Answer items take no place, so they overlap in the checkout. Command items with no `workspace` still share the checkout and run one at a time.
+With `max_parallel` unset, the driver still runs one step at a time, except the items of a `for_each` that declares `max_parallel`: they run side by side, up to that number. No other step starts while they run, and a `for_each` with no `max_parallel` runs its items one at a time. A run that has such a `for_each` runs as with `max_parallel` above 1: commands get no terminal, and Ctrl-C stops them all. Answers and command items with no `workspace` share the checkout and run one at a time, even when the fan-out allows more parallel items.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -724,7 +724,7 @@ steps:
 
 ## Ask the member's AI tool for an answer
 
-`answer` is a prompt the member's AI tool answers in one call, with no workspace, no session and no agent. A step that only needs text or a decision from a model uses it:
+`answer` is a prompt the member's AI tool answers in one call, in the checkout read-only, with no session and no agent. A step that only needs text or a decision from a model uses it:
 
 ```yaml
 schemaVersion: v1alpha1
@@ -747,11 +747,14 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 - `output` is required. `{ text: string }` takes the reply as text. Any other output names the JSON the reply holds, and the local driver asks the tool for it.
 - The tool is the one teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model`, `workspace` and `session` on the step.
 - The launch is marked as teamai's own, so the member's hooks do not capture it.
-- It takes no place, so it runs beside a command in the checkout.
+- It reserves the checkout until it finishes, so answers and commands using that checkout run one at a time, even
+  across `for_each` items. A change to the checkout fails the answer `read_only_dirty`.
 - A prompt has no default timeout. Give the step one.
 - It fails `tool_unavailable` when no tool is installed, `tool_unconfigured` when the tool the member names cannot run, `tool_failed` when the call fails, and `invalid_output` when the reply holds no JSON.
 
-Another driver gets an answer step as a prompt lease with `answer: true` and no workspace. It answers the prompt and reports the outputs.
+Another driver gets an answer step as a prompt lease with `answer: true` and no separate workspace. It prepares
+the lease, answers in `cwd`, and reports the outputs; preparation reserves and snapshots the checkout as for other
+read-only steps.
 
 ## Let a command write in the checkout
 

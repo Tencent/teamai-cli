@@ -485,6 +485,7 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   if (credited === null) return { credited: null, recalled };
 
   for (const id of crediting) consumed.add(id);
+
   // A key the ledger had already credited is this session's credit too.
   for (const line of creditLines) credits.set(creditKey(target, line.doc), { ...line, isWritten: true });
 

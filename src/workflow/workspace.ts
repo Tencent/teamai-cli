@@ -133,7 +133,7 @@ export function resolveMode(step: WorkflowStep, ancestors: readonly WorkflowStep
 
   if (step.command !== undefined && step.prompt === undefined && step.promptFile === undefined) return 'read-only';
 
-  // The member's AI tool answers it in no place, whatever copy the steps around it work in.
+  // An answer reads the checkout, without inheriting a surrounding copy.
   if (step.answer !== undefined) return 'read-only';
 
   for (const ancestor of ancestors.toReversed()) {
@@ -876,7 +876,7 @@ export function planWorkspace(
   const { ancestors } = splitLevels(levelsTo(run, state.id), state.id);
   const mode = resolveMode(definition, ancestors.map((ancestor) => ancestor.step));
 
-  // It reads only its directory, or nothing for an answer, so it runs in no copy, whatever the steps around it open, and resumes no session.
+  // A confined step reads its directory; an answer reads the checkout. Neither inherits a copy or resumes a session.
   if (confinedOf(definition) !== undefined || definition.answer !== undefined) return { mode };
   // A role template that gives no role id fails the step before any role it would run with is compared.
   const levels = roleLevelsOf(run, state.id);

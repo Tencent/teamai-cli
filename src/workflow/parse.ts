@@ -58,7 +58,7 @@ const ACTIONLESS_KEYS = new Set(['id', 'needs', 'if', 'end', 'approve', 'choose'
 const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file', 'with', 'model', 'output', 'end', 'loop', 'break', 'timeout', 'requires', 'workspace', 'continue_on_failure']);
 
 /**
- * What an answer step may carry: one prompt the member's AI tool answers, in no workspace and with no session, so no key
+ * What an answer step may carry: one prompt the member's AI tool answers, in the checkout read-only and with no session, so no key
  * that names a tool, an agent, a model, a role, a person or a place.
  */
 const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure']);
@@ -638,7 +638,7 @@ function parseBody(
           const key = scalarString(pair.key);
 
           if (key !== undefined && STEP_KEYS.has(key) && !ANSWER_STEP_KEYS.has(key) && !ACTION_KEYS.includes(key)) {
-            diagnostics.push(locate(file, lineCounter, pair.key, `${field}.${key}`, `${stepLabel} answer takes no ${key}: the member's AI tool answers its prompt with text, in no workspace`));
+            diagnostics.push(locate(file, lineCounter, pair.key, `${field}.${key}`, `${stepLabel} answer takes no ${key}: the member's AI tool answers its prompt with text, in the checkout read-only`));
           }
         }
 

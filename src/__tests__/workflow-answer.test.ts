@@ -101,9 +101,9 @@ steps:
 `)).toEqual([
       'workflows/ask.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, or workflow',
       'workflows/ask.yaml:11: field "steps[1].output": step "bare" answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds',
-      'workflows/ask.yaml:16: field "steps[2].workspace": step "placed" answer takes no workspace: the member\'s AI tool answers its prompt with text, in no workspace',
-      'workflows/ask.yaml:17: field "steps[2].tool": step "placed" answer takes no tool: the member\'s AI tool answers its prompt with text, in no workspace',
-      'workflows/ask.yaml:18: field "steps[2].session": step "placed" answer takes no session: the member\'s AI tool answers its prompt with text, in no workspace',
+      'workflows/ask.yaml:16: field "steps[2].workspace": step "placed" answer takes no workspace: the member\'s AI tool answers its prompt with text, in the checkout read-only',
+      'workflows/ask.yaml:17: field "steps[2].tool": step "placed" answer takes no tool: the member\'s AI tool answers its prompt with text, in the checkout read-only',
+      'workflows/ask.yaml:18: field "steps[2].session": step "placed" answer takes no session: the member\'s AI tool answers its prompt with text, in the checkout read-only',
     ]);
   });
 });
@@ -205,7 +205,7 @@ outputs: { category: steps.category.outputs.category }
 `;
 
 describe('answer leases', () => {
-  it('leases an answer with its prompt rendered and no place, even in a workflow that works in a copy, and takes its JSON', async () => {
+  it('checks an answer in the checkout even when its workflow works in a copy', async () => {
     const { config, checkout, client } = await fixture({ category: CATEGORY });
     const run = await started(client, 'category', checkout, { learning: 'Retry with backoff.' });
     const lease = await nextLease(client, run);
@@ -215,14 +215,14 @@ describe('answer leases', () => {
     expect(lease).not.toHaveProperty('session');
 
     const reported = await withRunLock(config, run, async (lock) => {
-      expect(await client.prepare(lock, lease)).toEqual({ kind: 'prepared', dir: checkout });
+      expect(await client.prepare(lock, lease)).toEqual({ kind: 'prepared', dir: checkout, prompt: 'Is this learning a skill, a rule or a doc? Retry with backoff.' });
       fs.writeFileSync(path.join(checkout, 'README.md'), 'changed while it answered\n');
 
       return client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver, outputs: { category: 'rule' } }, { lock });
     }, { waitMs: 0 });
 
-    expect(reported).toMatchObject({ data: { step: { id: 'category', status: 'succeeded' } } });
-    expect(await client.next(run, { driver })).toMatchObject({ data: { done: { outcome: 'succeeded', outputs: { category: 'rule' } } } });
+    expect(reported).toMatchObject({ data: { step: { id: 'category', status: 'failed', failure: { code: 'read_only_dirty' } } } });
+    expect(await client.next(run, { driver })).toMatchObject({ data: { done: { outcome: 'failed' } } });
   });
 });
 

@@ -119,7 +119,8 @@ Every key is generic: the engine never branches on a feature.
   timeout: 30s
 ```
 
-- No workspace. The tool gets the prompt and returns text or JSON.
+- No separate workspace. The tool answers in the checkout, reserved until the answer finishes. A change to the
+  checkout fails the step `read_only_dirty`, as for other read-only steps.
 - The tool is chosen as the launcher chose it before: `TEAMAI_AI_TOOL`, `ai.tool` of the project, of the machine, then
   the first installed tool of the launch order. Every tool with a `call` launch runs it.
 - The launched session is marked as teamai's own, so the member's hooks do not capture or judge it.
@@ -166,7 +167,7 @@ that cannot run as `tool_unconfigured`, and the fallback must not hide it, so an
 
 - On the local driver, with no `workflows.max_parallel`, a `for_each` runs its items in parallel up to its own
   `max_parallel`, which may read `inputs`, and every other step runs one at a time. Other drivers already run ready
-  steps side by side.
+  steps side by side. Answers share the checkout and run one at a time, including across `for_each` items.
 - `workflows.max_parallel`, when a member or machine sets it, caps every step on the local driver as before, and the
   open leases of a run on every driver.
 

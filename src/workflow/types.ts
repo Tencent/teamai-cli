@@ -70,7 +70,7 @@ export interface WorkflowStep {
   /** Original team-repo-relative source path for a cached prompt. */
   promptFile?: string;
   /**
-   * A prompt the member's AI tool answers with text, or with JSON that matches `output`, in no workspace: the tool the
+   * A prompt the member's AI tool answers with text, or with JSON that matches `output`, in the checkout read-only: the tool the
    * member's `ai.tool` names, else the first installed one, on its one-shot call launch.
    */
   answer?: string;

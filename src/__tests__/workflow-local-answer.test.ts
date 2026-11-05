@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import { runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { readRun } from '../workflow/store.js';
-import { BARRIER, dirs, projectAiTool, workflowFixture } from './helpers/workflow-local-driver-fixture.js';
+import { dirs, projectAiTool, workflowFixture } from './helpers/workflow-local-driver-fixture.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -123,33 +123,42 @@ outputs: { color: steps.ask.outputs.color }
     });
   });
 
-  it('answers beside a command in the checkout, since it takes no place', async () => {
+  it('fails an answer that modifies the checkout', async () => {
+    const { config, workspace, runId, bin } = await answering(COLOR);
+    fakeTool(bin, 'claude', { stdout: claudeReply('blue'), before: "fs.writeFileSync('unexpected.md', 'changed');" });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, z.string().parse(runId))).toMatchObject({
+      steps: [{ id: 'ask', status: 'failed', failure: { code: 'read_only_dirty' } }],
+    });
+  });
+
+  it('waits for a command using the checkout before answering', async () => {
     const { config, workspace, runId, bin } = await answering(`schemaVersion: v1alpha1
 name: build
-description: A command and an answer that each wait for the other.
+description: A command and an answer that use the checkout.
 steps:
   - id: left
     needs: []
-    command: node barrier.js left right
+    command: node serial.js
   - id: right
     needs: []
     answer: Name one color.
     output: { text: string }
 `);
     config.workflows = { tools: {}, max_parallel: 2 };
-    fs.writeFileSync(path.join(workspace, 'barrier.js'), BARRIER);
-    execFileSync('git', ['add', 'barrier.js'], { cwd: workspace });
+    const log = path.join(bin, 'order.log');
+    fs.writeFileSync(path.join(workspace, 'serial.js'), `const fs = require('fs');
+fs.appendFileSync(${JSON.stringify(log)}, 'command start\\n');
+setTimeout(() => fs.appendFileSync(${JSON.stringify(log)}, 'command end\\n'), 200);`);
+    execFileSync('git', ['add', 'serial.js'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'scripts'], { cwd: workspace });
-    const markers = path.join(path.dirname(workspace), 'markers');
-    fakeTool(bin, 'claude', { stdout: claudeReply('blue'), before: `
-  fs.mkdirSync(${JSON.stringify(markers)}, { recursive: true });
-  fs.writeFileSync(path.join(${JSON.stringify(markers)}, 'right.ready'), '');
-  const deadline = Date.now() + 2000;
-  while (!fs.existsSync(path.join(${JSON.stringify(markers)}, 'left.ready')) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));` });
+    fakeTool(bin, 'claude', { stdout: claudeReply('blue'), before: `fs.appendFileSync(${JSON.stringify(log)}, 'answer\\n');` });
 
-    const done = await runLocalDriver(config, runId, workspace);
-
-    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual(['command start', 'command end', 'answer']);
   });
 });
 
@@ -187,12 +196,12 @@ steps:
 ${after}`;
 
 describe('for_each items on the local driver with no workflows.max_parallel', () => {
-  it('answers two items of a for_each with max_parallel 2 at the same time', async () => {
+  it('serializes answer items that share the checkout despite max_parallel 2', async () => {
     const { config, workspace, runId, bin } = await answering(DESCRIBE('{ items: steps.plan.outputs.modules, max_parallel: 2 }'));
-    const order = describingTool(bin, 10_000);
+    const order = describingTool(bin, 100);
 
     expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(order().slice(0, 2).sort()).toEqual(['start api', 'start cli']);
+    expect(order()).toEqual(['start api', 'end api', 'start cli', 'end cli']);
   });
 
   it('answers the items of a for_each with no max_parallel one at a time', async () => {
@@ -210,11 +219,11 @@ describe('for_each items on the local driver with no workflows.max_parallel', ()
 `;
     const { config, workspace, runId, bin } = await answering(DESCRIBE('{ items: steps.plan.outputs.modules, max_parallel: 2 }', lint));
     vi.stubEnv('LOG', path.join(bin, 'answers.log'));
-    const order = describingTool(bin, 10_000);
+    const order = describingTool(bin, 100);
 
     expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     const lines = order();
-    expect(lines.slice(0, 2).sort()).toEqual(['start api', 'start cli']);
+    expect(lines.slice(0, 4)).toEqual(['start api', 'end api', 'start cli', 'end cli']);
     expect(lines.slice(4)).toEqual(['start lint', 'end lint']);
   });
 });

@@ -1056,11 +1056,10 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         held.push(nextLease.confined ? { ...nextLease, cwd: nextLease.confined.dir } : nextLease);
       }
 
-      // An answer takes no place, so it neither waits for one nor holds one.
       const placesBusy = (): Set<string> => new Set([
         ...[...inFlight.values()].map(({ lease }) => placeOf(lease, root)),
         ...[...dying.values()].map(({ lease }) => placeOf(lease, root)),
-        ...[...prompts.values()].flatMap(({ lease }) => lease.answer ? [] : [placeOf(lease, root)]),
+        ...[...prompts.values()].map(({ lease }) => placeOf(lease, root)),
       ]);
 
       for (let index = 0; !interactiveRuns() && busy() < maxParallel;) {
@@ -1071,7 +1070,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
         if ([...dying.values()].some((stopping) => stopping.step === lease.step)
           || placesBusy().has(placeOf(lease, root))
-          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && !earlier.answer && placeOf(earlier, root) === placeOf(lease, root))) {
+          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOf(earlier, root) === placeOf(lease, root))) {
           index += 1;
           continue;
         }
@@ -1118,7 +1117,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       // interactive one starts only once nothing else runs.
       while (!interactiveRuns() && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
-          && (lease.answer || !placesBusy().has(placeOf(lease, root)))
+          && !placesBusy().has(placeOf(lease, root))
           && ![...dying.values()].some((stopping) => stopping.step === lease.step)
           && (!lease.interactive || busy() === 0));
 
@@ -1142,8 +1141,17 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
           const { confined: place, prompt } = lease;
 
           if (lease.answer && prompt !== undefined) {
-            if (!startable(lease, controller.signal)) return undefined;
-            const answered = await runAnswerStep({ config, prompt, output: lease.output, cwd: root, expiresAt: lease.expiresAt, signal: controller.signal, ...lookup });
+            const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal });
+
+            if (!startable(lease, controller.signal)) {
+              await abandonPlace({ config, lock, attempt: lease.attempt });
+
+              return undefined;
+            }
+
+            if (failure) return unstaged(lease, failure);
+
+            const answered = await runAnswerStep({ config, prompt, output: lease.output, cwd: lease.cwd ?? root, expiresAt: lease.expiresAt, signal: controller.signal, ...lookup });
 
             // Cancelled while it answered: the engine settles the step, and the reply is not wanted.
             return controller.signal.aborted ? undefined : { attempt: lease.attempt, revision: lease.revision, driver, ...answered };
