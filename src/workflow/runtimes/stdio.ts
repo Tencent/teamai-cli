@@ -3,7 +3,7 @@ import readline from 'node:readline';
 import crossSpawn from 'cross-spawn';
 import { log } from '../../utils/logger.js';
 import { parseRuntimeLine, RUNTIME_PROTOCOL, type HandleEvent, type OpEvent, type RuntimeRequest } from './protocol.js';
-import type { ExecEnd, Initialized, Opened, Reattached, RuntimeFailure, StepRuntime } from './step-runtime.js';
+import type { ExecEnd, ExecEvents, Initialized, Opened, Reattached, RuntimeFailure, StepRuntime } from './step-runtime.js';
 
 /** How long `dispose` waits for a runtime to exit once its stdin ends; one that runs on is left to finish its own work. */
 const DISPOSE_WAIT_MS = 2000;
@@ -23,6 +23,9 @@ export function stdioStepRuntime({ name, command, args = [], cwd }: { name: stri
   let onInit: ((reply: Initialized) => void) | undefined;
   const ops = new Map<string, (event: OpEvent | RuntimeFailure) => void>();
   const handles = new Map<string, HandleWaiter[]>();
+  // An operation repeated while this connection still has it in flight joins it, rather than replacing its listener.
+  const opening = new Map<string, { join: (onAccepted: (handle: string) => Promise<void>) => Promise<Opened> }>();
+  const executing = new Map<string, { join: (events: ExecEvents) => Promise<ExecEnd> }>();
 
   const die = (reason: string): void => {
     if (dead) return;
@@ -126,9 +129,25 @@ export function stdioStepRuntime({ name, command, args = [], cwd }: { name: stri
     open(request, onAccepted) {
       if (dead) return Promise.resolve<Opened>({ kind: 'failed', failure: dead });
 
-      return new Promise<Opened>((resolve) => {
-        let persisted: Promise<void> = Promise.resolve();
-        let handle: string | undefined;
+      const inFlight = opening.get(request.op);
+
+      if (inFlight) return inFlight.join(onAccepted);
+      const persisters = [onAccepted];
+      let handle: string | undefined;
+      let persisted: Promise<void> = Promise.resolve();
+
+      const persist = (onHandle: (handle: string) => Promise<void>, accepted: string): void => {
+        persisted = persisted.then(() => onHandle(accepted));
+        // Handled where open settles; the runtime's ready may come after the write already failed.
+        persisted.catch(() => {});
+      };
+
+      const settled = new Promise<Opened>((resolve, reject) => {
+        // A caller that joins while the handle is being written adds its own write, which open also waits for.
+        const settleAfterPersisted = (opened: Opened): void => {
+          const at = persisted;
+          at.then(() => (at === persisted ? resolve(opened) : settleAfterPersisted(opened)), reject);
+        };
 
         ops.set(request.op, (event) => {
           if (isFailure(event)) {
@@ -147,7 +166,8 @@ export function stdioStepRuntime({ name, command, args = [], cwd }: { name: stri
 
             const accepted = event.handle;
             handle = accepted;
-            persisted = persisted.then(() => onAccepted(accepted));
+
+            for (const onHandle of persisters) persist(onHandle, accepted);
 
             return;
           }
@@ -155,21 +175,41 @@ export function stdioStepRuntime({ name, command, args = [], cwd }: { name: stri
           if (event.event !== 'ready' && event.event !== 'failed') return;
           ops.delete(request.op);
 
-          const settled: Opened = event.event === 'failed' ? { kind: 'failed', failure: event.failure }
+          settleAfterPersisted(event.event === 'failed' ? { kind: 'failed', failure: event.failure }
             : handle === undefined ? { kind: 'failed', failure: { code: 'runtime_protocol', message: `Step runtime "${name}" reported open ${request.op} ready before it accepted it.` } }
-              : { kind: 'ready', handle };
-
-          void persisted.then(() => resolve(settled));
+              : { kind: 'ready', handle });
         });
 
         send({ type: 'open', ...request });
       });
+
+      opening.set(request.op, {
+        join: (onHandle) => {
+          persisters.push(onHandle);
+
+          if (handle !== undefined) persist(onHandle, handle);
+
+          return settled;
+        },
+      });
+
+      const forget = (): void => { opening.delete(request.op); };
+
+      settled.then(forget, forget);
+
+      return settled;
     },
 
     exec(request, events) {
       if (dead) return Promise.resolve<ExecEnd>({ kind: 'failed', failure: dead });
 
-      return new Promise<ExecEnd>((resolve) => {
+      const inFlight = executing.get(request.op);
+
+      if (inFlight) return inFlight.join(events);
+      const callers = [events];
+      let accepted = false;
+
+      const ended = new Promise<ExecEnd>((resolve) => {
         ops.set(request.op, (event) => {
           if (isFailure(event)) {
             ops.delete(request.op);
@@ -180,11 +220,13 @@ export function stdioStepRuntime({ name, command, args = [], cwd }: { name: stri
 
           switch (event.event) {
             case 'accepted':
-              events.onAccepted?.();
+              accepted = true;
+
+              for (const caller of callers) caller.onAccepted?.();
 
               return;
             case 'output':
-              events.onOutput?.(event.stream, event.data);
+              for (const caller of callers) caller.onOutput?.(event.stream, event.data);
 
               return;
             case 'exited':
@@ -214,6 +256,19 @@ export function stdioStepRuntime({ name, command, args = [], cwd }: { name: stri
 
         send({ type: 'exec', ...request });
       });
+
+      executing.set(request.op, {
+        join: (next) => {
+          callers.push(next);
+
+          if (accepted) next.onAccepted?.();
+
+          return ended;
+        },
+      });
+      void ended.then(() => { executing.delete(request.op); });
+
+      return ended;
     },
 
     async cancel(op) {

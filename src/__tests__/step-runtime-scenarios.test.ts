@@ -106,6 +106,26 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
     expect(await runtime.open(openRequest(), async () => {})).toEqual(opened);
   });
 
+  it('answers an open id repeated before it settles with the same handle, persisted for each caller', async () => {
+    const runtime = await start();
+    const accepted: string[] = [];
+    const request = openRequest();
+    const persist = async (handle: string): Promise<void> => { accepted.push(handle); };
+    const [first, repeated] = await Promise.all([runtime.open(request, persist), runtime.open(request, persist)]);
+
+    expect(first.kind).toBe('ready');
+    expect(repeated).toEqual(first);
+    if (first.kind !== 'ready') return;
+    expect(accepted).toEqual([first.handle, first.handle]);
+  });
+
+  it('fails the open with the error that kept it from persisting the handle', async () => {
+    const runtime = await start();
+
+    await expect(runtime.open(openRequest(), async () => { throw new Error('the run record could not be written'); }))
+      .rejects.toThrow('the run record could not be written');
+  });
+
   it('accepts an exec, streams its output, and ends with its exit code and complete stdout, in the step env', async () => {
     const runtime = await start();
     const opened = await runtime.open(openRequest(), async () => {});
@@ -124,12 +144,13 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
   });
 
   it('keeps names the exec unsets out of its process', async () => {
-    const runtime = await start();
-    const opened = await runtime.open(openRequest(), async () => {});
-    if (opened.kind !== 'ready') throw new Error('not opened');
+    // Set before the runtime starts, so a runtime in a process of its own inherits the name it has to remove.
     process.env.TEAMAI_SCENARIO_WITHHELD = 'secret';
 
     try {
+      const runtime = await start();
+      const opened = await runtime.open(openRequest(), async () => {});
+      if (opened.kind !== 'ready') throw new Error('not opened');
       const end = await runtime.exec({ ...execRequest(opened.handle, [process.execPath, '-e', 'process.stdout.write(String(process.env.TEAMAI_SCENARIO_WITHHELD))']), unset: ['TEAMAI_SCENARIO_WITHHELD'] }, {});
 
       expect(end).toEqual({ kind: 'exited', code: 0, stdout: 'undefined' });
@@ -146,6 +167,22 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
     const first = await runtime.exec(request, {});
 
     expect(await runtime.exec(request, {})).toEqual(first);
+    expect(fs.readFileSync(path.join(worktree, 'runs'), 'utf8')).toBe('x');
+  });
+
+  it('answers an exec id repeated while it runs with the same acceptance and outcome, running it once', async () => {
+    const runtime = await start();
+    const opened = await runtime.open(openRequest(), async () => {});
+    if (opened.kind !== 'ready') throw new Error('not opened');
+    const request = execRequest(opened.handle, [process.execPath, '-e', 'require("fs").appendFileSync("runs", "x"); setTimeout(() => process.stdout.write("once"), 300)']);
+    let accepted = 0;
+    const events = { onAccepted: () => { accepted += 1; } };
+    const first = runtime.exec(request, events);
+    expect(await until(() => fs.existsSync(path.join(worktree, 'runs')))).toBe(true);
+    const repeated = runtime.exec(request, events);
+
+    expect(await Promise.all([first, repeated])).toEqual([{ kind: 'exited', code: 0, stdout: 'once' }, { kind: 'exited', code: 0, stdout: 'once' }]);
+    expect(accepted).toBe(2);
     expect(fs.readFileSync(path.join(worktree, 'runs'), 'utf8')).toBe('x');
   });
 
@@ -215,5 +252,25 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
     await second.cancel(request.op);
     expect(await until(() => !pidAlive(shell))).toBe(true);
     expect(await second.reattach(opened.handle)).toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'cancelled' }] });
+  });
+
+  it.runIf(subject.retains)('does not run again an exec id its own restart left running, and ends it when cancelled', async () => {
+    const first = await start();
+    const opened = await first.open(openRequest(), async () => {});
+    if (opened.kind !== 'ready') throw new Error('not opened');
+    const request = execRequest(opened.handle, ['/bin/sh', '-c', 'echo x >> runs; sleep 30']);
+    void first.exec(request, {});
+    const runs = path.join(worktree, 'runs');
+    expect(await until(() => fs.existsSync(runs))).toBe(true);
+    await first.dispose();
+    const second = await start();
+    let accepted = false;
+    const ending = second.exec(request, { onAccepted: () => { accepted = true; } });
+    expect(await until(() => accepted)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(fs.readFileSync(runs, 'utf8')).toBe('x\n');
+    await second.cancel(request.op);
+    expect(await ending).toEqual<ExecEnd>({ kind: 'cancelled' });
   });
 });

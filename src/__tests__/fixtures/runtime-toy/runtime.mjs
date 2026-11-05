@@ -124,6 +124,21 @@ function exec(request) {
     return;
   }
 
+  // An exec a toy before this one started is answered from its record when its group ends, never run again. A cancel
+  // of it says it ended.
+  if (record?.pgid !== undefined) {
+    send({ op: request.op, event: 'accepted' });
+    const wait = setInterval(() => {
+      if (groupAlive(record.pgid)) return;
+      clearInterval(wait);
+
+      if (fs.existsSync(file('cancel', request.op))) return;
+      send({ op: request.op, event: 'failed', failure: { code: 'runtime_lost', message: `The toy lost exec ${request.op}.` } });
+    }, 25);
+
+    return;
+  }
+
   const env = { ...process.env, ...request.env };
 
   for (const name of request.unset ?? []) delete env[name];
