@@ -713,7 +713,7 @@ Generated: do not edit by hand. Regenerate with
     - `--mode <mode>` — Operation mode: comment | write | both
     - `--team-repo <path>` — Team knowledge repo path (required for write mode)
     - `--comment-marker <marker>` — HTML comment anchor for idempotent updates
-    - `--write-mode <mode>` — Write strategy: direct | pending-review
+    - `--write-mode <mode>` — Write strategy: direct; pending-review has no effect and writes as direct does
     - `--output <dir>` — Write artifacts to directory
     - `--individual-comments` — Post each suggestion as separate comment with reaction/resolve support
     - `--no-discussions` — Leave the MR's review threads out of the extraction

@@ -251,6 +251,17 @@ describe('teamai ci extract-mr (real CLI, no teamai init)', () => {
     ]);
   });
 
+  it('says that --write-mode pending-review has no effect, and writes the learning as direct does', async () => {
+    const sb = await ciMachine();
+
+    const ran = await sb.run(['--url', `${sb.api.origin}/group/app/-/merge_requests/7`, '--mode', 'write', '--team-repo', sb.team, '--write-mode', 'pending-review']);
+
+    expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    expect(ran.stdout + ran.stderr).toContain('--write-mode pending-review has no effect');
+    expect(ran.stdout).toContain(`✔ Learning written: learnings/${TODAY}-Retry-uploads-on-5xx.md`);
+    expect(fs.existsSync(path.join(sb.team, '.teamai', 'pending-review.jsonl'))).toBe(false);
+  });
+
   it('exits 1 with the provider\'s error for an MR it cannot read, before any AI call or comment', async () => {
     const sb = await ciMachine();
 

@@ -390,6 +390,10 @@ async function start(opts: CiExtractMrOptions): Promise<void> {
     throw new Error('write mode requires --team-repo');
   }
 
+  if (opts.writeMode === 'pending-review') {
+    log.warn('--write-mode pending-review has no effect: ci extract-mr queues nothing for review, so the learning is written to learnings/ as with direct.');
+  }
+
   const teamRepo = opts.teamRepo === undefined ? undefined : path.resolve(opts.teamRepo);
   // The team repo's `language: en` makes the learning English (#1187).
   const { loadTeamConfig } = await import('../config.js');
