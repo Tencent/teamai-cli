@@ -4,6 +4,7 @@
  * --drain` start that workflow once for each scope a directory reaches, so every item runs in its session's data home.
  */
 import { z } from 'zod';
+import { readContributeState } from '../contribute-check.js';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from '../config.js';
 import { ATTEMPT_ENV, RUN_MODES, type RunMode } from '../launch-context.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -60,7 +61,24 @@ export interface ListContext {
   now: string;
 }
 
-export type Listed = { ok: true; list: FinishedSession[] } | { ok: false; code: string; message: string };
+type Refusal = { ok: false; code: string; message: string };
+
+export type Listed = { ok: true; list: FinishedSession[] } | Refusal;
+
+/** A finished session a person may share learnings from: when something last happened in it, and its first prompt, redacted. */
+export interface ShareableSession {
+  session: string;
+  source: string;
+  ended: string;
+  prompt: string;
+}
+
+/** The flags of `session list --finished --all`, as the command line gives them: `--publish` and `--scorers` are refused. */
+export interface ShareOptions extends ListOptions {
+  within?: string;
+}
+
+export type Shareable = { ok: true; list: ShareableSession[] } | Refusal;
 
 interface Request {
   idleMs: number;
@@ -68,7 +86,7 @@ interface Request {
   scorers: string[];
 }
 
-function refused(code: string, message: string): Listed {
+function refused(code: string, message: string): Refusal {
   return { ok: false, code, message };
 }
 
@@ -83,7 +101,7 @@ function scorerNames(text: string): string[] | undefined {
   }
 }
 
-function requestOf({ idle = '6h', publish = 'policy', scorers = '[]' }: ListOptions): Request | Listed {
+function requestOf({ idle = '6h', publish = 'policy', scorers = '[]' }: ListOptions): Request | Refusal {
   const idleMs = durationMs(idle);
 
   if (idleMs === undefined) return refused('invalid_arguments', `--idle ${idle} is not a duration. Pass a whole number of s, m or h, such as 6h.`);
@@ -156,6 +174,41 @@ async function list(options: ListOptions, ctx: ListContext): Promise<Listed> {
   const scope = await scopeOf(request, ctx);
 
   return scope.ok ? listIn(scope.config, request, ctx.now) : scope;
+}
+
+/** How far back `session list --finished --all` looks unless `--within` says otherwise. */
+const SHARE_WITHIN = '7d';
+
+/**
+ * Every finished session of the scope, of any run mode, last active within `within`, that no learning was contributed
+ * from yet, whatever the session policies and archive marks say: it publishes and judges nothing, so any run may list
+ * them. Each comes with its first prompt as `teamai session show` redacts it; a session with nothing to read is left out.
+ */
+async function shareable({ within = SHARE_WITHIN, ...options }: ShareOptions, ctx: ListContext): Promise<Shareable> {
+  if (options.publish !== undefined || options.scorers !== undefined) {
+    return refused('invalid_arguments', '--finished --all lists every finished session to share learnings from, whatever the session policies say, so it takes no --publish or --scorers. Drop them, or drop --all to list the sessions to archive and judge.');
+  }
+
+  const request = requestOf(options);
+
+  if ('ok' in request) return request;
+  const withinMs = durationMs(within);
+
+  if (withinMs === undefined) return refused('invalid_arguments', `--within ${within} is not a duration. Pass a whole number of s, m, h or d, such as 7d.`);
+  const scope = await scopeOf(request, ctx);
+
+  if (!scope.ok) return scope;
+  const since = Date.parse(ctx.now) - withinMs;
+  const found: ShareableSession[] = [];
+
+  for (const session of await SessionWork.finished(await SessionCaptures.list(scope.config), ctx.now, () => true, request.idleMs)) {
+    if (session.activeAt < since || (await readContributeState(session.sessionId)).contributed) continue;
+    const read = await SessionWork.read(scope.config, { platform: session.platform, sessionId: session.sessionId });
+
+    if (read.ok) found.push({ session: session.sessionId, source: session.platform, ended: new Date(session.activeAt).toISOString(), prompt: read.judged.context.prompt });
+  }
+
+  return { ok: true, list: found };
 }
 
 /** What a request asks of the sessions of each run mode: whether to judge them, with which scorers, and to publish them. */
@@ -380,4 +433,4 @@ async function start(config: LocalConfig, { client, mode, awaits }: { client: Pi
   return run.success ? { kind: 'started', run: run.data, cwd } : { kind: 'failed', failure: { code: 'run_unreadable', message: `The new ${FINISHED_WORKFLOW} run id was missing` } };
 }
 
-export const FinishedSessions = { list, start, reachedScopes, backgroundScopes } as const;
+export const FinishedSessions = { list, shareable, start, reachedScopes, backgroundScopes } as const;

@@ -441,16 +441,17 @@ Generated: do not edit by hand. Regenerate with
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--all` — Rebuild indexes for every repo in the team repo (not just the current project)
-  - `teamai session list` — List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step's, is never listed, nor a scorer whose mark is open or closed.
+  - `teamai session list` — List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step's, is never listed, nor a scorer whose mark is open or closed. With --finished --all, list every finished session of this machine to share learnings from, whatever the session policies and archive say, last active within --within, leaving out those a learning was contributed from, each with when it was last active and its first prompt, redacted; any run may list them, one an agent started too.
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--author <name>` — Filter by author
-    - `--all` — List sessions across all projects in the team repo (not just the current one)
+    - `--all` — List sessions across all projects in the team repo (not just the current one). With --finished: every finished session to share learnings from, not only those to archive and judge (no --publish or --scorers)
     - `--finished` — List the finished sessions of this machine to archive and judge, not the team's pushed ones
     - `--idle <duration>` — With --finished: how long an attended session has been idle to count as finished, such as 6h (default). An unattended one counts once a drain reached it.
+    - `--within <duration>` — With --finished --all: how recently a session was last active to be listed, such as 3d (default 7d)
     - `--publish <policy>` — With --finished: policy (sessions.publish for the session's run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.
     - `--scorers <json>` — With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.
-    - `--json` — With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}
+    - `--json` — With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}
   - `teamai session resume <sessionName>` — Restore a team session to a local platform
     - `--platform <platform>` — Target platform to restore into
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)

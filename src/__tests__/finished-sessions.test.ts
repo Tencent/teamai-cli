@@ -14,7 +14,8 @@ vi.mock('node:os', async (importOriginal) => {
 import type { RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
-import { FinishedSessions, type ListOptions } from '../session-flow/finished-sessions.js';
+import { FinishedSessions, type ListOptions, type ShareOptions } from '../session-flow/finished-sessions.js';
+import { markContributed } from '../contribute-check.js';
 import { SessionPublish } from '../session-flow/session-publish.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { LocalConfig } from '../types.js';
@@ -252,6 +253,62 @@ describe('session list --finished', () => {
   });
 });
 
+const DAY = 24 * HOUR;
+
+async function shareable(config: LocalConfig, options: ShareOptions = {}, env: NodeJS.ProcessEnv = {}) {
+  return FinishedSessions.shareable(options, { env, current: config, now: new Date().toISOString() });
+}
+
+describe('session list --finished --all', () => {
+  it('lists every finished session whatever the policies and archive say, with when it was last active and its first prompt', async () => {
+    const config = await team();
+    capturedSession(IDLE, 'attended');
+    capturedSession(ACTIVE, 'attended', { idleFor: 0 });
+    await SessionPublish.recordArchived(config, { platform: 'claude-code', sessionId: IDLE }, new Date().toISOString());
+
+    const answer = await shareable(config);
+
+    expect(answer).toEqual({ ok: true, list: [{ session: IDLE, source: 'claude-code', ended: expect.any(String), prompt: 'Add retries to the client' }] });
+    const ended = answer.ok ? Date.parse(answer.list[0]?.ended ?? '') : Number.NaN;
+    expect(Math.abs(ended - (Date.now() - 7 * HOUR))).toBeLessThan(60_000);
+  });
+
+  it('leaves out a session last active before --within, seven days unless given', async () => {
+    const config = await team();
+    capturedSession(IDLE, 'attended', { idleFor: 8 * DAY });
+
+    expect(await shareable(config)).toEqual({ ok: true, list: [] });
+    expect(await shareable(config, { within: '30d' })).toMatchObject({ ok: true, list: [{ session: IDLE }] });
+  });
+
+  it('leaves out a session a learning was already contributed from', async () => {
+    const config = await team();
+    capturedSession(IDLE, 'attended');
+    capturedSession(ACTIVE, 'attended', { idleFor: 8 * HOUR });
+    await markContributed(IDLE);
+
+    expect(await shareable(config)).toMatchObject({ ok: true, list: [{ session: ACTIVE }] });
+  });
+
+  it('refuses --publish and --scorers, and a --within that is not a duration', async () => {
+    const config = await team();
+    const refused = '--finished --all lists every finished session to share learnings from, whatever the session policies say, so it takes no --publish or --scorers. Drop them, or drop --all to list the sessions to archive and judge.';
+
+    expect(await shareable(config, { publish: 'always' })).toEqual({ ok: false, code: 'invalid_arguments', message: refused });
+    expect(await shareable(config, { scorers: '["quality"]' })).toEqual({ ok: false, code: 'invalid_arguments', message: refused });
+    expect(await shareable(config, { within: 'a week' })).toEqual({ ok: false, code: 'invalid_arguments', message: '--within a week is not a duration. Pass a whole number of s, m, h or d, such as 7d.' });
+  });
+
+  it('lists the sessions inside a run an agent started', async () => {
+    const config = await team();
+    capturedSession(IDLE, 'attended');
+    const runId = String(data(await startRun(config, 'teamai-finished-sessions', { publish: 'policy', scorers: [] }, { secrets: {}, startedBy: 'agent' })).run);
+    const { attempt } = data(await leaseNext(config, runId, { kind: 'external', machine: 'm1', workspace: root })).lease as { attempt: string };
+
+    expect(await shareable(config, {}, attemptEnv(config, runId, attempt, 'attended'))).toMatchObject({ ok: true, list: [{ session: IDLE }] });
+  });
+});
+
 /** Runs `teamai session list --finished ...args` from `<root>/app`, and what it printed and its exit code. */
 async function listCommand(...args: string[]): Promise<{ code: number; out: string[]; err: string[] }> {
   const out: string[] = [];
@@ -299,10 +356,24 @@ describe('teamai session list --finished', () => {
     expect(await listCommand()).toEqual({ code: 0, out: ['No finished sessions to archive or judge here.'], err: [] });
   });
 
-  it('refuses --all, and lists nothing where teamai is not set up, exiting 1 with why', async () => {
-    const refused = 'Error: --finished lists the sessions of this machine, so it takes no --author, --all or --repo-root.';
+  it('prints with --all each finished session to share learnings from, as a line or as {"list":[...]} with --json', async () => {
+    await team();
+    capturedSession(IDLE, 'attended');
 
-    expect(await listCommand('--all')).toEqual({ code: 1, out: [], err: [refused] });
+    const line = await listCommand('--all');
+    expect(line).toMatchObject({ code: 0, err: [] });
+    expect(line.out).toEqual([expect.stringMatching(new RegExp(`^  ${IDLE}  claude-code  \\d{4}-\\d{2}-\\d{2}T[\\d:.]+Z  Add retries to the client$`))]);
+    const json = await listCommand('--all', '--json');
+    expect(json).toMatchObject({ code: 0, err: [] });
+    expect(JSON.parse(json.out[0] ?? '')).toEqual({ list: [{ session: IDLE, source: 'claude-code', ended: expect.any(String), prompt: 'Add retries to the client' }] });
+  });
+
+  it('refuses --author, --repo-root, and --within without --all, and lists nothing where teamai is not set up, exiting 1 with why', async () => {
+    const refused = 'Error: --finished lists the sessions of this machine, so it takes no --author or --repo-root.';
+
+    expect(await listCommand('--author', 'someone')).toEqual({ code: 1, out: [], err: [refused] });
+    expect(await listCommand('--repo-root', root)).toEqual({ code: 1, out: [], err: [refused] });
+    expect(await listCommand('--within', '3d')).toEqual({ code: 1, out: [], err: ['Error: --within sets how far back --finished --all looks, so it takes --all. Add --all to list the sessions to share learnings from.'] });
     expect(await listCommand('--json')).toEqual({
       code: 1,
       out: [JSON.stringify({ error: { code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no sessions to list. Run teamai init.' } })],
