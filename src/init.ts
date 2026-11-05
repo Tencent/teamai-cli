@@ -2726,7 +2726,7 @@ export async function init(options: GlobalOptions & {
               if (forcedProvider) mrLocalConfig.provider = forcedProvider;
 
               if (mrTeamConfig) {
-                const prUrl = await withTimeout(
+                const mrPush = await withTimeout(
                   autoPushViaMR(
                     localPath,
                     `[teamai] Configure reviewers: ${reviewers.join(', ')}`,
@@ -2739,8 +2739,8 @@ export async function init(options: GlobalOptions & {
                   'Reviewer config push',
                 );
 
-                if (prUrl) {
-                  log.success(`Reviewer config pushed via MR: ${prUrl}`);
+                if (mrPush.pushed && mrPush.prUrl) {
+                  log.success(`Reviewer config pushed via MR: ${mrPush.prUrl}`);
                 } else {
                   log.warn('Reviewer config MR could not be created (you can push manually later)');
                 }

@@ -722,7 +722,7 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
   const { localConfig: lc, teamConfig: tc } = team;
   const { autoPushViaMR } = await import('./utils/git.js');
 
-  const prUrl = await autoPushViaMR(
+  const mrPush = await autoPushViaMR(
     lc.repo.localPath,
     message,
     ['.'],
@@ -730,7 +730,10 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
     { repo: lc.repo, username: lc.username, provider: lc.provider },
   );
 
-  if (prUrl) log.success(`MR created: ${prUrl}`);
+  // Nothing to commit, or a failed push autoPushViaMR already warned about, pushed no branch.
+  if (!mrPush.pushed) return;
+
+  if (mrPush.prUrl) log.success(`MR created: ${mrPush.prUrl}`);
   else log.success(`Branch pushed to team knowledge repo (${lc.repo.remote})`);
 }
 
