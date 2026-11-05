@@ -646,6 +646,54 @@ teamai workflow start nightly-e2e --driver local --timeout 30m
 
 `--timeout` bounds the run to the shorter of it and the file's `timeout`, with `--driver local` or `--driver skill`. Past it, the run fails `timeout`, and its `finally` steps still run.
 
+## Give an input a default
+
+```yaml
+schemaVersion: v1alpha1
+name: check-package
+description: Lint a package, and test it unless told not to.
+inputs: { package: string, test: boolean, reporters: [string] }
+defaults:
+  inputs: { test: true, reporters: [] }
+steps:
+  - id: lint
+    command: 'echo "lint $PACKAGE" >&2'
+    env: { PACKAGE: "{{ inputs.package }}" }
+  - id: test
+    needs: [lint]
+    if: inputs.test
+    command: 'echo "test $PACKAGE, reporters $REPORTERS" >&2'
+    env: { PACKAGE: "{{ inputs.package }}", REPORTERS: "{{ inputs.reporters }}" }
+```
+
+```text
+$ teamai workflow start check-package --driver local --inputs '{"package":"api"}'
+{"data":{"done":{"run":"rfe89fff7a148ec61","outcome":"succeeded","progress":[{"step":"lint","lines":["lint api"]},{"step":"test","lines":["test api, reporters []"]}]},"cancelled":[]}}
+```
+
+A start with only `{"test":false}` leaves out `package`, which has no default, so no run starts:
+
+```text
+{"error":{"code":"invalid_inputs","message":"inputs.package is missing"}}
+```
+
+`defaults.inputs` gives an input the value a start, or a step's `with`, uses when it leaves that input out. Each value must fit the type the input declares, and name an input the file declares; pull rejects the file otherwise. An input with no default is still required. The run records the value it used, so `steps.<id>.inputs` and the dashboard show the default.
+
+A workflow other teams run can take a new input this way without breaking them: a step that runs it keeps its `with` as it is.
+
+```yaml
+schemaVersion: v1alpha1
+name: release-web
+description: Check the web package, then publish it.
+steps:
+  - id: check
+    workflow: check-package
+    with: { package: web }          # test: true, reporters: []
+  - id: publish
+    needs: [check]
+    command: npm publish -w web
+```
+
 ## Run a workflow a step printed
 
 ```yaml

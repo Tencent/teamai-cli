@@ -646,6 +646,54 @@ teamai workflow start nightly-e2e --driver local --timeout 30m
 
 使用 `--driver local` 或 `--driver skill` 时，`--timeout` 把运行限制在它和文件的 `timeout` 中较短的那个。超过后运行以 `timeout` 失败，它的 `finally` 步骤仍会运行。
 
+## 给输入设默认值
+
+```yaml
+schemaVersion: v1alpha1
+name: check-package
+description: Lint a package, and test it unless told not to.
+inputs: { package: string, test: boolean, reporters: [string] }
+defaults:
+  inputs: { test: true, reporters: [] }
+steps:
+  - id: lint
+    command: 'echo "lint $PACKAGE" >&2'
+    env: { PACKAGE: "{{ inputs.package }}" }
+  - id: test
+    needs: [lint]
+    if: inputs.test
+    command: 'echo "test $PACKAGE, reporters $REPORTERS" >&2'
+    env: { PACKAGE: "{{ inputs.package }}", REPORTERS: "{{ inputs.reporters }}" }
+```
+
+```text
+$ teamai workflow start check-package --driver local --inputs '{"package":"api"}'
+{"data":{"done":{"run":"rfe89fff7a148ec61","outcome":"succeeded","progress":[{"step":"lint","lines":["lint api"]},{"step":"test","lines":["test api, reporters []"]}]},"cancelled":[]}}
+```
+
+只传 `{"test":false}` 的启动漏了没有默认值的 `package`，因此不会创建运行：
+
+```text
+{"error":{"code":"invalid_inputs","message":"inputs.package is missing"}}
+```
+
+`defaults.inputs` 给出某个输入的值：启动或步骤的 `with` 没有传这个输入时，就用这个值。每个值必须符合该输入声明的类型，且必须是文件声明过的输入，否则 pull 会拒绝该文件。没有默认值的输入仍然必填。运行会记下它用到的值，所以 `steps.<id>.inputs` 和仪表盘会显示默认值。
+
+这样，一个被其他团队运行的工作流可以新增输入而不破坏它们：运行它的步骤保持原来的 `with` 即可。
+
+```yaml
+schemaVersion: v1alpha1
+name: release-web
+description: Check the web package, then publish it.
+steps:
+  - id: check
+    workflow: check-package
+    with: { package: web }          # test: true, reporters: []
+  - id: publish
+    needs: [check]
+    command: npm publish -w web
+```
+
 ## 运行步骤打印的工作流
 
 ```yaml

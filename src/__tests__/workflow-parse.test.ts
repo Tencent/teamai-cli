@@ -1352,6 +1352,47 @@ steps:
     expect(scalar.diagnostics.map(formatDiagnostic)).toEqual(['workflows/build.yaml:4: field "defaults": defaults must be a mapping']);
   });
 
+  it('keeps a default of each input it declares, of the input\'s type', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Score it.
+inputs: { subject: string, files: [string], store: boolean, demand: auto | named }
+defaults:
+  inputs: { files: [], store: true, demand: auto }
+steps:
+  - id: plan
+    command: echo plan
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.defaults).toEqual({ inputs: { files: [], store: true, demand: 'auto' } });
+  });
+
+  it('refuses an input default that does not fit the input\'s type, and one of an input the file does not declare', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Score it.
+inputs: { files: [string], store: boolean, demand: auto | named }
+defaults:
+  inputs:
+    files: [1]
+    store: "yes"
+    demand: someone
+    colour: blue
+steps:
+  - id: plan
+    command: echo plan
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "defaults.inputs.files": defaults.inputs.files[0] must be a string',
+      'workflows/build.yaml:8: field "defaults.inputs.store": defaults.inputs.store must be a boolean',
+      'workflows/build.yaml:9: field "defaults.inputs.demand": defaults.inputs.demand must be one of auto, named',
+      'workflows/build.yaml:10: field "defaults.inputs.colour": defaults.inputs.colour is not an input this workflow declares in inputs',
+    ]);
+  });
+
   it('parses requires on a step and in defaults', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build

@@ -518,3 +518,52 @@ describe('the run timeout a start gives', () => {
     }
   });
 });
+
+describe('input defaults', () => {
+  const SCORE = `schemaVersion: v1alpha1
+name: score
+description: Score a subject.
+inputs: { subject: string, store: boolean }
+defaults:
+  inputs: { store: true }
+steps:
+  - id: plan
+    command: node -e "process.exit(0)"
+    env: { SUBJECT: "{{ inputs.subject }}", STORE: "{{ inputs.store }}" }
+`;
+  const SHIP = `schemaVersion: v1alpha1
+name: ship
+description: Ship, then score it.
+steps:
+  - id: score
+    workflow: score
+    with: { subject: shipped }
+`;
+  const caller = { evidence: { kind: 'none' }, confirmed: false, mode: 'attended' } as const;
+
+  it('starts with the default of an input the start leaves out, and still requires an input with no default', async () => {
+    const { config, checkout } = await fixture({ score: SCORE });
+    const client = await protocol(config);
+
+    const started = await client.start('score', { inputs: { subject: 'session:claude-code:one' }, checkout, caller, startedBy: 'person' });
+    if (!('data' in started)) throw new Error(JSON.stringify(started));
+    const run = await readRun(config, RunIdSchema.parse(started.data.run));
+    expect(run !== 'missing' && run !== 'corrupt' && run.inputs).toEqual({ subject: 'session:claude-code:one', store: true });
+    expect(await client.start('score', { inputs: { subject: 'session:claude-code:one', store: false }, checkout, caller, startedBy: 'person' })).toMatchObject({ data: { run: expect.any(String) } });
+
+    expect(await client.start('score', { inputs: { store: false }, checkout, caller, startedBy: 'person' })).toEqual({ error: { code: 'invalid_inputs', message: 'inputs.subject is missing' } });
+  });
+
+  it('runs a workflow: step that leaves out a defaulted input with the default', async () => {
+    const { config, checkout } = await fixture({ score: SCORE, ship: SHIP });
+    const client = await protocol(config);
+
+    const started = await client.start('ship', { checkout, caller, startedBy: 'person' });
+    if (!('data' in started)) throw new Error(JSON.stringify(started));
+    const runId = RunIdSchema.parse(started.data.run);
+    const next = await client.next(runId, { driver });
+    expect(next).toMatchObject({ data: { lease: { step: 'score.plan', env: { SUBJECT: 'shipped', STORE: 'true' } } } });
+    const run = await readRun(config, runId);
+    expect(run !== 'missing' && run !== 'corrupt' && run.steps.find((step) => step.id === 'score')?.inputs).toEqual({ subject: 'shipped', store: true });
+  });
+});

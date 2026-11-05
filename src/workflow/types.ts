@@ -10,6 +10,7 @@ import type { LeaseSession } from './workspace.js';
 import type { ConfinedLease } from './lease-wire.js';
 import type { StepModel } from './step-model.js';
 import type { ClonePlace } from './clone.js';
+import type { JsonValue } from '../types.js';
 import type { DriverName } from './driver-name.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
@@ -308,6 +309,8 @@ export interface WorkflowDefaults {
   requires?: Requirements;
   /** The role of a step of the file that names none and runs inside no `workflow` step that names one. */
   role?: string;
+  /** The value of each input it names when a start or a step's `with` leaves that input out; of the input's type. */
+  inputs?: Record<string, JsonValue>;
 }
 
 /** `scorers: [a, b]`, or `scorers: { names: [a, b], batch: true }`. Each name is a file in `scorers/`. */
@@ -350,7 +353,7 @@ export interface WorkflowDefinition {
   schemaVersion: 'v1alpha1';
   name: string;
   description: string;
-  /** Values `start --inputs` must pass, each typed with the output shorthand. Every input is required. */
+  /** Values `start --inputs` must pass, each typed with the output shorthand: all but those `defaults.inputs` gives. */
   inputs?: Record<string, OutputSchema>;
   /** Named ends a step can finish this workflow with, each with the run outcome it gives. */
   ends?: Record<string, EndOutcome>;

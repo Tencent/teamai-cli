@@ -16,7 +16,8 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
-import { isDataBranch } from '../types.js';
+import { isDataBranch, JsonValueSchema, type JsonValue } from '../types.js';
+import { outputMismatch } from './output.js';
 import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
@@ -317,7 +318,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   }
 
   const defaultsPair = root.items.find((pair) => scalarString(pair.key) === 'defaults');
-  const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx) : undefined;
+  const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx, inputs) : undefined;
   const timeoutPair = root.items.find((pair) => scalarString(pair.key) === 'timeout');
   const timeout = timeoutPair ? parseTimeout(timeoutPair.value ?? timeoutPair.key, 'timeout', ctx) : undefined;
   const budgetPair = root.items.find((pair) => scalarString(pair.key) === 'budget');
@@ -1366,9 +1367,10 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
   if (!reference.with) return [];
   const inputs = child.inputs ?? {};
   const passed = new Set(reference.with.keys.map((key) => key.name));
+  const defaulted = child.defaults?.inputs ?? {};
 
   return [
-    ...Object.entries(inputs).filter(([name]) => !passed.has(name)).map(([name, type]) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
+    ...Object.entries(inputs).filter(([name]) => !passed.has(name) && !Object.hasOwn(defaulted, name)).map(([name, type]) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
       `${label} with does not pass input "${name}", which workflow "${workflow}" declares as ${declaredType(type)}`)),
     ...reference.with.keys.filter((key) => !Object.hasOwn(inputs, key.name)).map((key) => locate(file, lineCounter, key.node, `${field}.with.${key.name}`,
       `${label} with.${key.name} is not an input workflow "${workflow}" declares`)),
@@ -1574,7 +1576,35 @@ function parseDefaultRole(node: Node | undefined, ctx: ParseContext): string | u
   return undefined;
 }
 
-function parseDefaults(node: Node | null | undefined, ctx: ParseContext): WorkflowDefaults | undefined {
+/** `defaults.inputs`: a value of each input it names, which must be one `inputs` declares and fit its type. */
+function parseDefaultInputs(node: Node | undefined, ctx: ParseContext, declared: Record<string, OutputSchema> | undefined): Record<string, JsonValue> | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+
+  if (!isMap(node)) {
+    diagnostics.push(locate(file, lineCounter, node, 'defaults.inputs', 'defaults.inputs must map input names to their values'));
+
+    return undefined;
+  }
+
+  const values: Record<string, JsonValue> = {};
+
+  for (const pair of node.items) {
+    const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+    const name = scalarString(keyNode) ?? '';
+    const field = `defaults.inputs.${name}`;
+    const valueAt = isYamlNode(pair.value) ? pair.value : undefined;
+    const type = declared?.[name];
+    const value = JsonValueSchema.safeParse(valueAt?.toJSON());
+    const problem = !type ? `${field} is not an input this workflow declares in inputs` : value.success ? outputMismatch(type, value.data, field) : `${field} must be a value`;
+
+    if (problem !== null) diagnostics.push(locate(file, lineCounter, valueAt ?? keyNode ?? node, field, problem));
+    else if (value.success) values[name] = value.data;
+  }
+
+  return values;
+}
+
+function parseDefaults(node: Node | null | undefined, ctx: ParseContext, declared: Record<string, OutputSchema> | undefined): WorkflowDefaults | undefined {
   const { file, lineCounter, diagnostics } = ctx;
 
   if (!isMap(node)) {
@@ -1587,19 +1617,21 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   let scorers: { batch: boolean } | undefined;
   let requires: Requirements | undefined;
   let role: string | undefined;
+  let inputs: Record<string, JsonValue> | undefined;
 
   for (const pair of node.items) {
     const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
     const key = scalarString(keyNode);
 
     if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
+    else if (key === 'inputs') inputs = parseDefaultInputs(valueNode(node, 'inputs'), ctx, declared);
     else if (key === 'role') role = parseDefaultRole(valueNode(node, 'role'), ctx);
     else if (key === 'scorers') scorers = parseDefaultScorers(valueNode(node, 'scorers'), ctx);
     else if (key === 'requires') requires = parseRequires(valueNode(node, 'requires'), 'defaults.requires', ctx);
     else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
   }
 
-  if (model === undefined && scorers === undefined && requires === undefined && role === undefined) return undefined;
+  if (model === undefined && scorers === undefined && requires === undefined && role === undefined && inputs === undefined) return undefined;
   const defaults: WorkflowDefaults = {};
 
   if (model !== undefined) defaults.model = model;
@@ -1609,6 +1641,8 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   if (requires) defaults.requires = requires;
 
   if (role !== undefined) defaults.role = role;
+
+  if (inputs) defaults.inputs = inputs;
 
   return defaults;
 }

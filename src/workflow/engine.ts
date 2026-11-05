@@ -1005,16 +1005,17 @@ function startWorkflowStep(
     const rendered = renderStrings(step.with ?? {}, contextOf(scope, states, state));
 
     if (!rendered.ok) return withTemplateFailure(state, rendered.error);
-    const mismatch = inputsMismatch(child.definition.name, child.definition.inputs, rendered.value);
+    const given = withInputDefaults(child.definition, rendered.value);
+    const mismatch = inputsMismatch(child.definition.name, child.definition.inputs, given ?? rendered.value);
 
     if (mismatch) return { code: 'invalid_inputs', message: `step "${state.id}" with does not fit workflow "${child.definition.name}": ${mismatch}` };
-    const unfit = itemLimitMismatch(child.definition.steps, isRecord(rendered.value) ? rendered.value : undefined);
+    const unfit = itemLimitMismatch(child.definition.steps, given);
 
     if (unfit) return { code: 'invalid_inputs', message: `step "${state.id}" with does not fit workflow "${child.definition.name}": ${unfit}` };
 
     // inputsMismatch has checked that the rendered value is an object.
-    if (child.definition.inputs && isRecord(rendered.value)) {
-      inputs = rendered.value;
+    if (child.definition.inputs && given) {
+      inputs = given;
       child.inputs = inputs;
     }
   }
@@ -1422,7 +1423,16 @@ export function reconcileRun(run: RunState, now: string): Settled {
   return expire(run, now) ?? settleScope(run, run.finalizing ? finallyScope(run) : topScope(run), now);
 }
 
-/** Why `inputs` do not fit what the workflow declares, naming the field, or null when they fit. Every declared input is required. */
+/**
+ * `inputs` with the default of each input they leave out, from `definition.defaults.inputs`; undefined when they are
+ * not an object, which `inputsMismatch` refuses.
+ */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- fills inputs nothing has read yet: a start payload's, or what a step's `with` rendered to
+function withInputDefaults(definition: Pick<WorkflowDefinition, 'defaults'>, inputs: unknown): RunState['inputs'] {
+  return isRecord(inputs) ? { ...definition.defaults?.inputs, ...inputs } : undefined;
+}
+
+/** Why `inputs` do not fit what the workflow declares, naming the field, or null when they fit. Every declared input is required; fill defaults first. */
 // oxlint-disable-next-line teamai/no-unknown-parameters -- validates inputs nothing has read yet: a start payload's, or what a step's `with` rendered to
 function inputsMismatch(name: string, declared: Record<string, OutputSchema> | undefined, inputs: unknown): string | null {
   if (!isRecord(inputs)) return 'inputs must be a JSON object';
@@ -1472,11 +1482,10 @@ export async function startRun(
     return error('workflow_not_found', `Workflow "${name}" has no runnable version. Check workflows/${name}.yaml and pull again.`);
   }
 
-  const mismatch = inputsMismatch(cached.definition.name, cached.definition.inputs, inputs);
+  const given = withInputDefaults(cached.definition, inputs);
+  const mismatch = inputsMismatch(cached.definition.name, cached.definition.inputs, given ?? inputs);
 
   if (mismatch) return error('invalid_inputs', mismatch);
-  // inputsMismatch has checked that inputs are an object.
-  const given = isRecord(inputs) ? inputs : undefined;
   const tree = await loadWorkflowTree(config, cached);
 
   // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
