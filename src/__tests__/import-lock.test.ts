@@ -135,4 +135,14 @@ describe('import-lock', () => {
     await release();
     expect(await fileExists(lockPath)).toBe(false);
   });
+
+  it('leaves no directory behind that it created only for the lock', async () => {
+    const output = path.join(root, 'out', 'wiki');
+
+    const release = await acquireImportLock(path.join(output, 'teamwiki'));
+    expect(await fileExists(path.join(output, '.teamai-import.lock'))).toBe(true);
+    await release();
+
+    expect(await fileExists(path.join(root, 'out'))).toBe(false);
+  });
 });

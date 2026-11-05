@@ -1,4 +1,4 @@
-import { writeFile, readFile, unlink, stat, mkdir } from 'node:fs/promises';
+import { writeFile, readFile, unlink, stat, mkdir, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { z } from 'zod';
@@ -9,6 +9,22 @@ const LOCK_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours; a lock older than this is st
 
 /** Module-level reference counts for reentrant locking within the same process. */
 const refCounts = new Map<string, number>();
+
+/** The first directory an acquire created for a lock file, by lock path: the last release removes it again when empty. */
+const createdDirs = new Map<string, string>();
+
+/** Removes the directories from `dir` up to `created`, while each is empty, so a refused import leaves no output behind. */
+async function removeEmptyDirs(dir: string, created: string): Promise<void> {
+  for (let current = dir; current.startsWith(created); current = path.dirname(current)) {
+    try {
+      await rmdir(current);
+    } catch {
+      return;
+    }
+
+    if (current === created) return;
+  }
+}
 
 /** Metadata written into the lock file. */
 interface ImportLockMeta {
@@ -100,7 +116,9 @@ export async function acquireImportLock(holder: string): Promise<() => Promise<v
     };
 
     try {
-      await mkdir(path.dirname(lockPath), { recursive: true });
+      const created = await mkdir(path.dirname(lockPath), { recursive: true });
+
+      if (created) createdDirs.set(lockPath, created);
 
       // isImportInProgress removes a lock whose process is gone or that is stale, which this process then takes.
       if (!(await createLockFile(lockPath, meta))) {
@@ -136,6 +154,11 @@ export async function acquireImportLock(holder: string): Promise<() => Promise<v
       } catch (e) {
         log.debug(`[import-lock] Failed to remove lock file ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
       }
+
+      const created = createdDirs.get(lockPath);
+      createdDirs.delete(lockPath);
+
+      if (created) await removeEmptyDirs(path.dirname(lockPath), created);
     } else {
       refCounts.set(lockPath, next);
     }
