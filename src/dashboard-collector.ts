@@ -305,7 +305,7 @@ async function recordTokenRequests(
 /**
  * Scan a full transcript once at Stop time and collect cumulative, idempotent
  * snapshots of:
- * - interrupt:  user message whose text starts with "[Request interrupted by user"
+ * - interrupt:  Claude user interrupt markers or Cursor user-aborted turn_ended records
  * - toolReject: tool_result with is_error=true marked as a user rejection
  * - prompts:    genuine human prompt turns (user entries with real text, excluding
  *               interrupts, tool_results, and meta/sidechain entries).
@@ -385,6 +385,12 @@ export function isHumanPromptEntry(entry: TranscriptEntry): boolean {
   });
 }
 
+const StopTranscriptEntrySchema = TranscriptEntrySchema.extend({
+  role: z.string().optional().catch(undefined),
+  status: z.string().optional().catch(undefined),
+  error: z.string().optional().catch(undefined),
+});
+
 async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<TranscriptScanResult> {
   let interrupt = 0;
   let toolReject = 0;
@@ -410,13 +416,13 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
     for await (const line of rl) {
       const trimmed = line.trim();
 
-      // Cheap pre-filter: friction and prompts are on user records only.
-      if (!trimmed || !trimmed.includes('"user"')) continue;
+      // Cursor puts aborts on turn_ended records, not user messages.
+      if (!trimmed || (!trimmed.includes('"user"') && !trimmed.includes('"turn_ended"'))) continue;
 
-      let entry: TranscriptEntry;
+      let entry: z.infer<typeof StopTranscriptEntrySchema>;
 
       try {
-        const parsed = TranscriptEntrySchema.safeParse(JSON.parse(trimmed));
+        const parsed = StopTranscriptEntrySchema.safeParse(JSON.parse(trimmed));
 
         if (!parsed.success) continue;
         entry = parsed.data;
@@ -424,9 +430,18 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
         continue;
       }
 
-      if (entry.type !== 'user') continue;
+      if (entry.type === 'turn_ended') {
+        if (entry.status === 'aborted'
+          || (entry.status === 'error' && (entry.error === 'User aborted request' || entry.error === 'user_stopped_generation'))) interrupt++;
 
-      if (isHumanPromptEntry(entry)) prompts++;
+        continue;
+      }
+
+      const entryType = entry.type ?? entry.role;
+
+      if (entryType !== 'user') continue;
+
+      if (isHumanPromptEntry({ ...entry, type: entryType })) prompts++;
       const content = entry.message?.content;
 
       if (!Array.isArray(content)) continue;

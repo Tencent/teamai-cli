@@ -150,6 +150,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- Cursor Stop hooks count user-aborted transcript turns and human prompts, where both stayed at zero. Quota and model errors are not counted as interrupts, and repeated Stop hooks keep one cumulative snapshot (for [#1736](https://github.com/Tencent/teamai-cli/issues/1736)).
 - A workflow prompt step whose tool writes `"failure": null` in its result file succeeds. It used to fail though the tool had done the work. The result instruction now asks the tool to leave `failure` out unless the step failed.
 - An attempt's `result.json` holds no secret of the run on disk: teamai masks a command's outputs, a tool's stdout result and a failed confined judge's output before it writes them, and the skill driver masks the result a child wrote once it reports. Before, the local driver masked them only when it reported, and the skill driver's child result not at all.
 - `teamai codebase --reconcile` in a team repo commits the `teamwiki/.indices/graph-index.json` it updates and pushes it, under the import lock. It used to leave that file modified, so the next `teamai push` failed with `Cannot push: the team repo has uncommitted changes`. Product pages are not committed with it, even when staged, a run that finds nothing new leaves the file and pushes nothing, a push the remote refuses fails the command with git's reason, and the next run publishes a graph that a failed push left committed. `--dry-run` and `--output` publish nothing.
