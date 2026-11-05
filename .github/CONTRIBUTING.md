@@ -77,7 +77,13 @@ src/
   resources/         # per-resource-type handlers (skills, rules, docs, env, ...)
   utils/             # shared helpers (git, fs, logger, prompt, ...)
   *.ts               # top-level command entry points (init, push, pull, ...)
+packages/            # private npm workspace packages, bundled into teamai-cli by tsup
+  <name>/
+    package.json     # "name": "@teamai/<name>", "private": true, "exports": { ".": "./src/index.ts" }
+    src/             # source, with each test beside its file (index.ts, index.test.ts)
 ```
+
+`src/` imports a package by its name (`import { ... } from '@teamai/<name>'`), never by a relative path, and never imports a `runtime-*` package; a package never imports `src/`. `teamai/package-boundaries` checks this. A package is not listed in the root `dependencies`: npm links it through `workspaces`, and tsup bundles it.
 
 See [docs/dev/adding-a-provider.md](../docs/dev/adding-a-provider.md) for how to add a new git provider.
 
