@@ -329,3 +329,23 @@ describe('the toy step runtime', () => {
       .toEqual<ExecEnd>({ kind: 'exited', code: 0, stdout: 'finished' });
   });
 });
+
+describe('the stdio step runtime client', () => {
+  it('waits for the handle write when the runtime dies after accepting an open, and rejects with its error', async () => {
+    // A runtime that accepts every open with a handle and exits before it reports the place ready.
+    const acceptsThenExits = `require('readline').createInterface({ input: process.stdin }).on('line', (line) => {
+      const request = JSON.parse(line);
+      if (request.type === 'init') process.stdout.write(JSON.stringify({ type: 'init', ok: true, can: {} }) + '\\n');
+      if (request.type === 'open') process.stdout.write(JSON.stringify({ op: request.op, event: 'accepted', handle: 'h1' }) + '\\n', () => process.exit(1));
+    });`;
+    const runtime = stdioStepRuntime({ name: 'accepts-then-exits', command: process.execPath, args: ['-e', acceptsThenExits] });
+    expect(await runtime.init({ options: {}, mode: 'unattended' })).toMatchObject({ ok: true });
+    const request: OpenRequest = { op: newOpId(), run: 'r0123abcd', attempt: 'a0123abcd', credentials: {}, view: { worktree: os.tmpdir(), readonly: [], result: os.tmpdir(), toolHome: {} } };
+
+    await expect(runtime.open(request, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      throw new Error('the run record could not be written');
+    })).rejects.toThrow('the run record could not be written');
+    await runtime.dispose();
+  });
+});
