@@ -42,7 +42,11 @@ describe('benchmark arm recall', () => {
     // The arm that asked for it gets the recall agent, the recall rule and the
     // context rule; the arm that did not gets none of them.
     expect(withRecall?.paths).toEqual(expect.arrayContaining(recallFiles));
-    expect(without?.paths).not.toEqual(expect.arrayContaining(recallFiles));
+    // The clone without recall has to exist: without this, a change that
+    // gave every clone recall would leave `without` undefined and the case
+    // would still pass.
+    expect(without, 'no clone ran without recall').toBeDefined();
+    expect(without?.paths.filter((file) => recallFiles.includes(file))).toEqual([]);
     // Both arms ran the same task on the same tool.
     expect(launches).toHaveLength(2);
   }, 240_000);

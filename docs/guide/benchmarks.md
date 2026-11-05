@@ -200,13 +200,16 @@ defaults:
 arms:
   - name: with-relations
     recall: true
-  - name: baseline
-    recall: false
+  - name: without-relations
+    team: { without: [rules/payments.md] }
+    recall: true
 repetitions: 3
 timeout: 45m
 ```
 
-`recall` is a measurement's control, not a comparison key: it never counts as a changed `defaults` key, and the matrix cannot cross it. Leave it out and the arm runs as every workflow clone does, without recall.
+Both arms run with recall, so the only thing between them is the relation: the second runs without the rule that declares it. A suite needs its arms to differ in a `defaults` key — `recall` is not one, since it is a measurement's control rather than a value the page compares — so the arms differ in their `team` instead.
+
+`recall` never counts as a changed `defaults` key, and the matrix cannot cross it. Leave it out and the arm runs as every workflow clone does, without recall.
 
 ### Cross tools with team assets
 
