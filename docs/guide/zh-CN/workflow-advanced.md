@@ -79,7 +79,7 @@ workflows:
 ```yaml
 schemaVersion: v1alpha1
 name: summarize-modules
-description: Summarize each module, two at a time, then print the summaries.
+description: Summarize each module, then print the summaries.
 inputs:
   modules: [string]
 steps:
@@ -99,7 +99,7 @@ $ teamai workflow start summarize-modules --driver local --inputs '{"modules":["
 {"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
 ```
 
-工具同时回答 `api` 和 `cli`，然后回答 `web`；三项都完成后 `report` 才启动。其他驱动本来就会并排运行就绪的步骤，所以这一点只适用于本地驱动。
+这些回答共用 checkout，所以即使 `max_parallel` 允许同时两个，工具也会依次回答 `api`、`cli`、`web`；三项都完成后 `report` 才启动。其他驱动本来就会并排运行就绪的步骤，所以这一点只适用于本地驱动。
 
 结局取消一个正在运行的命令时，驱动向它及其启动的进程发送 SIGTERM，5 秒后如果其中任何进程仍在运行，再发送 SIGKILL。正在停止的命令仍占用并行槽位，直到它的所有进程退出。
 

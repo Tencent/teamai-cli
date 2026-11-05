@@ -29,7 +29,7 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     deepEnrich?: boolean;
 }
 
-/** How many component docs a deep enrichment asks the tool for at once, as it did before it was a workflow. */
+/** How many components a deep enrichment has in progress at once, the max_parallel of its fan-out. */
 const DEEP_ENRICH_CONCURRENCY = 5;
 
 /**

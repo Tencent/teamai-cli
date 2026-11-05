@@ -79,7 +79,7 @@ With `max_parallel` unset, the driver still runs one step at a time, except the 
 ```yaml
 schemaVersion: v1alpha1
 name: summarize-modules
-description: Summarize each module, two at a time, then print the summaries.
+description: Summarize each module, then print the summaries.
 inputs:
   modules: [string]
 steps:
@@ -99,7 +99,7 @@ $ teamai workflow start summarize-modules --driver local --inputs '{"modules":["
 {"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
 ```
 
-The tool answers `api` and `cli` at the same time, then `web`; `report` starts once all three are done. Other drivers already run ready steps side by side, so this applies to the local driver only.
+The answers share the checkout, so the tool answers `api`, then `cli`, then `web`, although `max_parallel` allows two at once; `report` starts once all three are done. Other drivers already run ready steps side by side, so this applies to the local driver only.
 
 When an end cancels a running command, the driver sends SIGTERM to it and the processes it started, then SIGKILL 5 seconds later if any still run. A stopping command keeps its slot until its processes exit.
 

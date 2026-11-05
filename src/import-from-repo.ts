@@ -110,7 +110,7 @@ function itemFlags(flags: { item: string; settings: string }) {
 
 /**
  * Imports `items` into the teamwiki `target` names through a `teamai-import-from-repo` run, as the command `command`
- * does, under the teamwiki's import lock, which refuses while another import writes it. Items run `concurrency` at once.
+ * does, under the teamwiki's import lock, which refuses while another import writes it. At most `concurrency` items are in progress at once.
  * A teamwiki outside a team repo needs no teamai init: the run then builds a config of its own.
  *
  * @throws ImportLockHeldError when another import holds the teamwiki's lock

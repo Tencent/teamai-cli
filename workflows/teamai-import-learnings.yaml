@@ -1,6 +1,6 @@
 schemaVersion: v1alpha1
 name: teamai-import-learnings
-description: Classify files as team rules, docs or learnings with the AI tool, three at once, leave out the personal ones, ask a person to accept, edit or skip each of the others, and write the accepted ones into rules/, docs/ or learnings/ of the team repo by their type, or all into one directory. It neither commits nor pushes - teamai-import-rules and teamai-import-from-iwiki run it and publish what it wrote.
+description: Classify files as team rules, docs or learnings with the AI tool, leave out the personal ones, ask a person to accept, edit or skip each of the others, and write the accepted ones into rules/, docs/ or learnings/ of the team repo by their type, or all into one directory. It neither commits nor pushes - teamai-import-rules and teamai-import-from-iwiki run it and publish what it wrote.
 invoke: deny
 private: true
 # candidates: each file to classify, by the path it is shown as and the file that holds its text. dir: the team repo,
