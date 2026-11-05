@@ -1123,10 +1123,13 @@ const todowriteHintHandler: HookHandler = {
 
 const mrHintHandler: HookHandler = {
   name: 'mr-hint',
-  async execute(_stdin, _tool, config) {
+  async execute(stdin, _tool, config) {
     const { computeMrHintOutput } = await import('./mr-hint.js');
+    // The session the hint may offer teamai-import-from-mr to, as the Stop hook's reminder resolves it.
+    const { readSessionRun, sessionRun } = await import('./launch-context.js');
+    const session = { sessionId: deriveSessionId(stdin, { includeCwd: true }), cwd: resolveHookCwd(stdin) ?? process.cwd(), run: readSessionRun(stdin) ?? sessionRun(process.env) };
 
-    return computeMrHintOutput(await teamAgentLanguage(config), config);
+    return computeMrHintOutput(await teamAgentLanguage(config), config, session);
   },
 };
 

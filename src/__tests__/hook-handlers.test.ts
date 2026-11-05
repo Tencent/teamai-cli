@@ -2303,6 +2303,8 @@ describe('mr-hint agent language (#1014)', () => {
       expect(mockMrHintOutput.mock.calls.at(-1)).toEqual([
         'en',
         expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
+        // The session the hint may offer teamai-import-from-mr to.
+        { sessionId: expect.any(String), cwd: expect.any(String), run: expect.objectContaining({ runMode: expect.any(String) }) },
       ]);
     } finally {
       fsMod.rmSync(dir, { recursive: true, force: true });
@@ -2325,6 +2327,8 @@ describe('mr-hint agent language (#1014)', () => {
       expect(mockMrHintOutput.mock.calls.at(-1)).toEqual([
         undefined,
         expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
+        // The session the hint may offer teamai-import-from-mr to.
+        { sessionId: expect.any(String), cwd: expect.any(String), run: expect.objectContaining({ runMode: expect.any(String) }) },
       ]);
     } finally {
       fsMod.rmSync(dir, { recursive: true, force: true });

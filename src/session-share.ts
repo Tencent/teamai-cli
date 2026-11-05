@@ -4,27 +4,19 @@
  * hook's friction reminder offers `teamai-share-learnings` and records the offer it made from these values, and
  * `workflow start --describe` proposes them, each with why, as the inputs of either workflow.
  */
-import { loadLocalConfigForScope, loadTeamConfig } from './config.js';
+import { loadTeamConfig } from './config.js';
 import type { SessionRun } from './launch-context.js';
 import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
 import { SessionWork, type SessionScorer } from './session-flow/session-work.js';
 import { markFacts } from './scorers/score-plan.js';
-import { getDataHome, type LocalConfig, type SessionShareOffered } from './types.js';
-import { nestedStart } from './workflow/attempt-marker.js';
-import { loadWorkflowTree, resolveStart } from './workflow/cache.js';
-import { projectPartitions } from './workflow/run-location.js';
+import type { LocalConfig, SessionShareOffered } from './types.js';
+import { WorkflowOffers } from './workflow-offers.js';
 import type { OutputSchema } from './workflow/types.js';
 
 /** teamai's default that shares what a session taught, then the session: the one the friction reminder offers. */
 const SHARE_LEARNINGS = 'teamai-share-learnings';
-
-/** teamai's default that publishes and scores a session, which `teamai-share-learnings` runs as a step. */
-const SHARE_SESSION = 'teamai-share-session';
-
-/** The workflows whose inputs describe proposes, by name: the defaults, and a team file that replaces one. */
-const PROPOSED_FOR = new Set([SHARE_LEARNINGS, SHARE_SESSION]);
 
 /** A value teamai proposes for one input, and why it proposes that value. */
 interface Proposal<T> {
@@ -143,40 +135,24 @@ async function offer(config: LocalConfig, session: { tool: string; sessionId: st
 
 /**
  * What the friction reminder offers session `sessionId` of `tool`, whose Stop hook runs under `config` in `cwd`, in a
- * session of `run`: the `publish` and `scorers` describe proposes for it. Undefined, so the reminder stays today's, in
- * a session teamai launched, one that runs unattended, one in a workflow place, where no start is allowed, one that
- * drives a skill-driven run not done yet in this machine's data homes, its own share run included, and where teamai-share-learnings resolves to no
- * definition, to one whose `invoke` is deny, or to one that cannot start, such as with a team teamai-share-session of
- * other inputs. The values are those of the scope a start would run in.
+ * session of `run`: the `publish` and `scorers` describe proposes for it. Undefined, so the reminder stays today's,
+ * where a hook may not offer teamai-share-learnings ({@link WorkflowOffers.offerable}), its own undone share run
+ * included. The values are those of the scope a start would run in.
  */
 async function reminderOffer(
   config: LocalConfig,
   { tool, sessionId, cwd, run }: { tool: string; sessionId: string; cwd: string; run: SessionRun },
   options: OfferOptions = {},
 ): Promise<SessionShareOffered | undefined> {
-  if (run.launchedBy !== undefined || run.runMode === 'unattended' || (await nestedStart(process.env, cwd)) !== undefined) return undefined;
-  const start = await resolveStart(config, SHARE_LEARNINGS);
+  const startConfig = await WorkflowOffers.offerable(config, SHARE_LEARNINGS, { sessionId, cwd, run });
 
-  if (!start.workflow || (start.workflow.definition.invoke ?? 'deny') === 'deny') return undefined;
-
-  // A sub-workflow the team replaced with other inputs would fail the run after its learnings were shared.
-  if ('failed' in await loadWorkflowTree(start.config, start.workflow)) return undefined;
-  // The skill driver imports this module for describe, so this one loads it only here.
-  const { drivesUndoneRun } = await import('./workflow/drivers/skill/skill-driver.js');
-  // A run lives in the data home of the scope it was started in, and a session drives it from any directory.
-  const [user, partitions] = await Promise.all([loadLocalConfigForScope('user', undefined, { dryRun: true }), projectPartitions()]);
-  const homes = new Map([config, ...(user ? [user] : []), ...partitions].map((home) => [getDataHome(home), home]));
-
-  if ((await Promise.all([...homes.values()].map((home) => drivesUndoneRun(home, sessionId)))).some(Boolean)) return undefined;
-  const { publish, scorers } = await propose(start.config, { tool, sessionId }, options);
+  if (startConfig === undefined) return undefined;
+  const { publish, scorers } = await propose(startConfig, { tool, sessionId }, options);
 
   return { publish: publish.value, scorers: scorers.value };
 }
 
-/**
- * The inputs teamai proposes values for, by name and parsed type. A team override that declares one with the same name
- * and type gets it filled; an enum matches in any order.
- */
+/** The inputs teamai proposes values for, by name and parsed type. */
 const CONTRACT = {
   session: { type: 'string' },
   source: { type: 'string' },
@@ -185,30 +161,19 @@ const CONTRACT = {
   demand: { type: 'enum', values: ['auto', 'named'] },
 } as const satisfies Record<keyof SessionShareOffer, OutputSchema>;
 
-function isContractInput(name: string): name is keyof SessionShareOffer {
-  return Object.hasOwn(CONTRACT, name);
-}
-
-function sameType(left: OutputSchema, right: OutputSchema): boolean {
-  if (left.type === 'enum' && right.type === 'enum') return [...left.values].sort().join('\0') === [...right.values].sort().join('\0');
-
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 const NO_SESSION_WHY = 'No agent session found: give the session and its tool.';
 
 /**
- * What describe proposes for the declared `inputs` of the workflow `name` resolves to, by input: for either share workflow,
- * each input the contract names with the same type, from {@link offer} for the calling session; with no agent session,
- * only why for `session` and `source`. Nothing for another workflow or another input.
+ * What describe proposes for the declared `inputs` of either share workflow, by input: each input the contract names
+ * with the same type, from {@link offer} for the calling session; with no agent session, only why for `session` and
+ * `source`. Nothing for another input.
  */
 async function proposals(
   config: LocalConfig,
-  { name, inputs }: { name: string; inputs: Readonly<Record<string, OutputSchema>> },
+  { inputs }: { inputs: Readonly<Record<string, OutputSchema>> },
   caller: { session: string | undefined; tool: string | undefined },
 ): Promise<Record<string, { value?: unknown; why: string }>> {
-  if (!PROPOSED_FOR.has(name)) return {};
-  const matching = Object.entries(inputs).flatMap(([input, type]) => (isContractInput(input) && sameType(type, CONTRACT[input]) ? [input] : []));
+  const matching = WorkflowOffers.contractInputs(inputs, CONTRACT);
 
   if (matching.length === 0) return {};
 
