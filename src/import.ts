@@ -227,6 +227,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         all: opts.all ?? false,
         output: opts.output,
         resume: opts.resume ?? false,
+        dryRun: opts.dryRun ?? false,
         command: 'teamai import --from-iwiki',
       });
     } else if (opts.fromMr && (!Array.isArray(opts.fromMr) || opts.fromMr.length > 0)) {
@@ -493,6 +494,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         all: opts.all ?? false,
         output: opts.output,
         resume: opts.resume ?? false,
+        dryRun: opts.dryRun ?? false,
         command: opts.fromTools ? 'teamai import --from-tools' : 'teamai import --from-claude',
       });
     } else {

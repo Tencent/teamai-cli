@@ -287,16 +287,21 @@ export interface LearningsImport {
   /** The directory every item is written into, in place of the team repo. */
   output?: string;
   resume: boolean;
+  /**
+   * Load the member's config as a preview and start nothing. The CLI refuses `--dry-run` for these imports before they
+   * run (`dry-run-guard.ts`), so only an in-process caller passes it.
+   */
+  dryRun: boolean;
   /** The command a person runs, as a refusal names it. */
   command: string;
 }
 
 /**
  * Starts `workflow`, which runs teamai-import-learnings into the member's team repo, or `output`, with `inputs` beside
- * where its items go. Refused, said and exited 1, before any AI call: `--resume`, no teamai init, and a review nobody
- * can answer, inside a workflow step or with no terminal.
+ * where its items go. Refused, said and exited 1, before any AI call: `--resume`, no teamai init, what `ready` throws
+ * once the config is loaded, and a review nobody can answer, inside a workflow step or with no terminal.
  */
-async function start(workflow: string, inputs: Record<string, JsonValue>, options: LearningsImport): Promise<ShortcutEnd | undefined> {
+async function start(workflow: string, inputs: Record<string, JsonValue>, options: LearningsImport, ready: () => void = () => {}): Promise<ShortcutEnd | undefined> {
   if (options.resume) {
     log.error(RESUME_REPLACED);
     process.exitCode = 1;
@@ -305,7 +310,10 @@ async function start(workflow: string, inputs: Record<string, JsonValue>, option
   }
 
   const { autoDetectInit } = await import('./config.js');
-  const { localConfig } = await autoDetectInit(undefined, { dryRun: false });
+  const { localConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
+
+  if (options.dryRun) return undefined;
+  ready();
   const { runShortcut } = await import('./workflow-commands.js');
   const dir = options.output === undefined ? localConfig.repo.localPath : path.resolve(options.output);
 

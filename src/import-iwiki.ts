@@ -206,7 +206,6 @@ async function publish(flags: { kept: string; written: string; target: string; b
  * `dual` the codebase sections into docs/team-codebase/ of this directory, or `output`.
  */
 async function start(options: LearningsImport & { source: string; dual: boolean; requireReview: boolean }): Promise<ShortcutEnd | undefined> {
-  if (!process.env['TAI_PAT_TOKEN']) throw new Error(TOKEN_MISSING);
   const { getTeamCodebasePaths } = await import('./utils/team-codebase-paths.js');
   const cwd = process.cwd();
 
@@ -216,7 +215,9 @@ async function start(options: LearningsImport & { source: string; dual: boolean;
     sections_dir: path.resolve(getTeamCodebasePaths(cwd, options.output).root),
     review_dir: cwd,
     require_review: options.requireReview,
-  }, options);
+  }, options, () => {
+    if (!process.env['TAI_PAT_TOKEN']) throw new Error(TOKEN_MISSING);
+  });
 }
 
 export const ImportFromIwiki = { fetch, publish, start } as const;

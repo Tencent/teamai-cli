@@ -338,8 +338,8 @@ proposes `scorers/<name>.md` to the team as a pull request.
   `~/.teamai/import-session.json` is written. The run's `Run … started` line is on stderr.
 - `import --from-tools` scans the user rules directory of every tool in `TOOLS`, `.mdc` included; `--from-claude` is
   its hidden alias. The commit says `Import from local: tool rules`. No `teamai init` is refused before any AI call,
-  an `--output` import names each file it wrote by its absolute path, and `--from-iwiki` checks its token before
-  init. `--iwiki-dual` asks for the sections from the pages it already fetched, once the import is pushed.
+  and an `--output` import names each file it wrote by its absolute path. `--iwiki-dual` asks for the sections from
+  the pages it already fetched, once the import is pushed.
 - A failed classification and an `--update-quality` entry that could not be drafted exit 1.
 - Imported rules and docs land in `rules/` and `docs/` instead of `learnings/`; the classifier has no skill type.
 - In a team repo, `codebase --deep-enrich` asks for each component doc once, with no sequential retry of the batch,
