@@ -18,8 +18,13 @@ const DEFAULT_CAN = {
 let options;
 const running = new Map();
 
+// Once teamai is gone nobody reads stdout, and writing to it fails with EPIPE. The toy stops writing and keeps
+// recording, so a toy started later still finds every outcome.
+let connected = true;
+process.stdout.on('error', () => { connected = false; });
+
 function send(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+  if (connected) process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 function file(...parts) {

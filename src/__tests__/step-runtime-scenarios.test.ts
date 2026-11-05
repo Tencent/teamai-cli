@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { localStepRuntime } from '../workflow/runtimes/local.js';
 import { stdioStepRuntime } from '../workflow/runtimes/stdio.js';
@@ -287,5 +289,43 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
 
     expect(await second.reattach(opened.handle)).toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'running' }] });
     expect(await second.exec(request, {})).toEqual<ExecEnd>({ kind: 'exited', code: 0, stdout: 'finished' });
+  });
+});
+
+describe('the toy step runtime', () => {
+  let dir: string;
+  const disposed: StepRuntime[] = [];
+
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-toy-runtime-')); });
+
+  afterEach(async () => {
+    await Promise.all(disposed.splice(0).map((runtime) => runtime.dispose()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records the outcome of an exec whose output arrives after the teamai that started it is gone', async () => {
+    const worktree = path.join(dir, 'worktree');
+    const state = path.join(dir, 'state');
+    fs.mkdirSync(worktree);
+    const toy = spawn(process.execPath, [TOY_RUNTIME], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const lines: string[] = [];
+    readline.createInterface({ input: toy.stdout }).on('line', (line) => { lines.push(line); });
+    const write = (request: object): void => { toy.stdin.write(`${JSON.stringify(request)}\n`); };
+    const op = newOpId();
+    write({ type: 'init', protocol: 1, mode: 'unattended', options: { state } });
+    write({ type: 'open', op: newOpId(), run: 'r0123abcd', attempt: 'a0123abcd', credentials: {}, view: { worktree, readonly: [], result: path.join(dir, 'out'), toolHome: {} } });
+    expect(await until(() => lines.some((line) => line.includes('"ready"')))).toBe(true);
+    write({ type: 'exec', op, handle: 'toy-r0123abcd-a0123abcd', argv: [process.execPath, '-e', 'setTimeout(() => process.stdout.write("finished"), 500)'], env: {}, unset: [], cwd: worktree });
+    expect(await until(() => lines.some((line) => line.includes(op) && line.includes('"accepted"')))).toBe(true);
+    // As when teamai is killed: nobody reads the toy's stdout any more, and its stdin ends.
+    toy.stdout.destroy();
+    toy.stdin.end();
+
+    const second = stdioStepRuntime({ name: 'toy', command: process.execPath, args: [TOY_RUNTIME] });
+    disposed.push(second);
+    expect(await second.init({ options: { state }, mode: 'unattended' })).toMatchObject({ ok: true });
+
+    expect(await second.exec({ op, handle: 'toy-r0123abcd-a0123abcd', argv: [], env: {}, unset: [], cwd: worktree }, {}))
+      .toEqual<ExecEnd>({ kind: 'exited', code: 0, stdout: 'finished' });
   });
 });
