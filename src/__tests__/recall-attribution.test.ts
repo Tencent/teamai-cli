@@ -84,7 +84,6 @@ const { getProjectSearchIndexPath, getUserLearningsDir, getUserSearchIndexPath, 
 const { readRecallLog, recallLogPath } = await import('../recall-log.js');
 const { creditAdoptionVerdicts, drainRecallLog } = await import('../recall-adoption.js');
 const { acquireLock, releaseLock } = await import('../update.js');
-const { parseTranscriptForVotes } = await import('../transcript-parser.js');
 const { loadOpencodePlugin } = await import('./helpers/opencode-plugin.js');
 const { loadOmpExtension, loadPiExtension } = await import('./helpers/pi-extensions.js');
 const { showStats } = await import('../stats.js');
@@ -2205,15 +2204,6 @@ describe('recall attribution acceptance (#884)', () => {
     const raw = fs.readFileSync(recallLogPath(h.project), 'utf-8');
     for (const secret of ['SNIPPETMARK', 'Raise the pool size']) expect(raw).not.toContain(secret);
     expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
-  });
-
-  it('an older CLI still finds the recalled doc in the new output', async () => {
-    await h.setUp();
-    const { output, run } = await h.recall('redis timeout');
-    expect(run).toBeDefined();
-    const transcript = path.join(h.tmp, 'transcript.jsonl');
-    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: output }] } })}\n`);
-    expect((await parseTranscriptForVotes(transcript)).recalledDocIds).toEqual(['redis-timeout']);
   });
 
   it('the recall log sits in the data home of the scope that ran the recall', async () => {

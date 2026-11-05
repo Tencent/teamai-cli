@@ -17,7 +17,6 @@ const mockContributeCheckForSession = vi.fn().mockResolvedValue({ hint: null });
 const mockTakePendingHint = vi.fn().mockResolvedValue(null);
 // Default: no doc has been credited yet this session → every adopted doc is
 // "fresh" (returns its input). Tests that exercise the dedup override this.
-const mockParseTranscriptForVotes = vi.fn().mockResolvedValue({ recalledDocIds: [], finalAssistantText: '', recalledDocPaths: {} });
 // incrementUpvoted now returns the docs it actually credited (or null on lock
 // failure). Default: echo the input docIds as the freshly-credited set.
 const mockIncrementUpvoted = vi.fn().mockImplementation(async (_p: string, docIds: string[]) => docIds);
@@ -142,20 +141,12 @@ vi.mock('../mr-hint.js', () => ({
   computeMrHintOutput: mockMrHintOutput,
 }));
 
-vi.mock('../transcript-parser.js', () => ({
-  parseTranscriptForVotes: mockParseTranscriptForVotes,
-}));
-
 // votes-sync's adoption comes from the recall-log reducer (#884); its own
 // behavior is covered end to end in recall-attribution.test.ts.
 const mockCreditAdoptedDocs = vi.hoisted(() => vi.fn());
 vi.mock('../recall-adoption.js', () => ({
   recalledDocsForSession: vi.fn(async () => []),
   creditAdoptedDocs: mockCreditAdoptedDocs,
-  recalledKeyOf: vi.fn(async () => () => undefined),
-  // The judge backfills a missing `File:` path from the recall log; these tests
-  // supply every path via the transcript, so the lookup is never consulted.
-  recalledPathOf: vi.fn(async () => () => undefined),
   recordToolCall: vi.fn(async () => undefined),
 }));
 
@@ -218,7 +209,6 @@ describe('hook-handlers registry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLocalAgentInstructionText.mockResolvedValue('');
-    mockParseTranscriptForVotes.mockResolvedValue({ recalledDocIds: [], finalAssistantText: '', recalledDocPaths: {}, recalledDocScopes: {} });
     mockIncrementUpvoted.mockImplementation(async (_p: string, docIds: string[]) => docIds);
     mockCreditAdoptedDocs.mockResolvedValue({ credited: [], recalled: 0 });
     mockPackageManifestHash.mockResolvedValue('before-hash');
@@ -1305,7 +1295,6 @@ describe('hook-handlers registry', () => {
     const result = await handler.execute({ session_id: 'sid-adopt-1', cwd: '/x' }, 'claude', scope);
 
     expect(mockCreditAdoptedDocs).toHaveBeenCalledWith(scope, 'sid-adopt-1');
-    expect(mockParseTranscriptForVotes).not.toHaveBeenCalled();
     expect(result).toContain('Adopted team knowledge this session');
   });
 
