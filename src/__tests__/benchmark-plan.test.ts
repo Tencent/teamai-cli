@@ -15,6 +15,7 @@ import type { BenchmarkSuiteFiles } from '../workflow/conformance-interpreter.js
 import { leaseNext, reconcileRun, reportAttempt } from '../workflow/engine.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import type { DriverCan } from '../workflow/requirements.js';
+import { ClonePlaceSchema } from '../workflow/clone.js';
 import { cancelRun } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
@@ -38,11 +39,12 @@ afterEach(() => {
  * the first with no tool or team (`teams[i]`) of its own runs model m<i>, as each arm changes one of the defaults.
  * `trial` is the suite's `trial` value, and `prompt` every task's.
  */
-function suiteOf({ tasks = 1, arms = 1, repetitions = 1, tools = [] as string[], teams = [] as string[], trial = '', parallel = 1, prompt = 'Make the test pass.' } = {}): BenchmarkSuiteFiles {
+function suiteOf({ tasks = 1, arms = 1, repetitions = 1, tools = [] as string[], teams = [] as string[], trial = '', parallel = 1, prompt = 'Make the test pass.', armsYaml = '' } = {}): BenchmarkSuiteFiles {
   const names = (prefix: string, count: number): string[] => Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1).padStart(2, '0')}`);
+  const listed = armsYaml || names('a', arms).map((name, index) => `{ name: ${name}${tools[index] ? `, tool: ${tools[index]}` : teams[index] ? `, team: ${teams[index]}` : index > 0 ? `, model: m${index + 1}` : ''} }`).join(', ');
   return {
     name: 'fix',
-    suite: `schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults: { tool: claude }\narms: [${names('a', arms).map((name, index) => `{ name: ${name}${tools[index] ? `, tool: ${tools[index]}` : teams[index] ? `, team: ${teams[index]}` : index > 0 ? `, model: m${index + 1}` : ''} }`).join(', ')}]\nrepetitions: ${repetitions}\nparallel: ${parallel}\ntimeout: 10m\n${trial ? `trial: ${trial}\n` : ''}`,
+    suite: `schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults: { tool: claude }\narms: [${listed}]\nrepetitions: ${repetitions}\nparallel: ${parallel}\ntimeout: 10m\n${trial ? `trial: ${trial}\n` : ''}`,
     tasks: Object.fromEntries(names('t', tasks).map((name) => [name,
       `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: ${JSON.stringify(prompt)}\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\n`])),
   };
@@ -139,6 +141,24 @@ describe('benchmark plan run', () => {
 
     const arm = typeof run === 'object' ? stepDefinitions(run)('trials.r1.t01.a02') : undefined;
     expect(arm?.workspace).toEqual({ clone: { commit: RUN_START, repo: 'https://github.com/fixture/app.git', team: expected } });
+  });
+
+  it('gives a trial clone the recall setting its arm asks for, and leaves it off when the arm asks nothing', async () => {
+    // A suite that measures declared relations needs recall on in both arms: that is the
+    // only path a relation takes to a session (#1564). A workflow clone keeps it off.
+    const recallOf = (run: Awaited<ReturnType<typeof readRun>>): boolean | undefined => {
+      const place = stepDefinitions(run as RunState)('trials.r1.t01.a01')?.workspace;
+      if (typeof place !== 'object' || !('clone' in place)) return undefined;
+      const team = ClonePlaceSchema.parse(place.clone).team;
+
+      return 'recall' in team ? team.recall : undefined;
+    };
+
+    const on = await startFix({ armsYaml: '{ name: a01, recall: true }' });
+    expect(recallOf(await readRun(on.config, on.runId))).toBe(true);
+
+    const off = await startFix();
+    expect(recallOf(await readRun(off.config, off.runId))).toBeUndefined();
   });
 
   it.each([

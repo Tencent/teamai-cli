@@ -33,6 +33,10 @@ export const TeamPathSchema = z.string().refine(
  * Which team assets the clone gets at `revision`: the revision as pulled, the revision a ref named (the ref is only its
  * name), or the revision without some of its files and directories, each a path in the team repo. `none` installs
  * nothing.
+ *
+ * `recall` asks for the team's recall deployment on or off in the clone. Absent: off, as a workflow clone always has
+ * been. A benchmark arm sets it because the measurement compares declared relations, and they reach a session through
+ * recall alone.
  */
 const TreatmentSchema = z.union([
   z.literal('pulled'),
@@ -42,7 +46,7 @@ const TreatmentSchema = z.union([
 
 export const CloneTeamSchema = z.union([
   z.object({ treatment: z.literal('none') }).strict(),
-  z.object({ revision: CommitSchema, selection: TeamSelectionSchema, treatment: TreatmentSchema }).strict(),
+  z.object({ revision: CommitSchema, selection: TeamSelectionSchema, treatment: TreatmentSchema, recall: z.boolean().optional() }).strict(),
 ]);
 
 export type CloneTeam = z.infer<typeof CloneTeamSchema>;
@@ -53,6 +57,9 @@ export type InstalledTeam = Extract<CloneTeam, { revision: string }>;
 /**
  * `commit` is where the clone starts. `repo` keys the commit cache it may be fetched from, never a URL: preparation is
  * offline, from the run's checkout or that cache.
+ *
+ * `team.recall` is a benchmark arm's measurement control, and a workflow may name it too: the compiled benchmark steps
+ * the run stores are read back through this same schema, so a narrower one for the written form cannot tell them apart.
  */
 export const ClonePlaceSchema = z.object({
   commit: CommitSchema,

@@ -43,6 +43,7 @@ setup:
 | `team` | arm 运行时使用的团队资产。见[使用其他团队资产的 arm](#使用其他团队资产的-arm)。 |
 | `workflow` | 每个 trial 在任务上运行的团队工作流，代替单个 prompt。见[运行工作流的 arm](#运行工作流的-arm)。 |
 | `role` | 每个 trial 的克隆使用的 `manifest/roles.yaml` 中的角色。见[以角色运行的 arm](#以角色运行的-arm)。 |
+| `recall` | 该 arm 的 trial 克隆是否部署团队的 recall，而每个 workflow 克隆都默认关闭它。见[开启 recall 的 arm](#开启-recall-的-arm)。 |
 | `model` | `models/aliases.yaml` 里的模型别名（运行启动时按每个 arm 的工具解析），或一个模型名。 |
 | `repetitions` | 1 到 10，默认 3。 |
 | `parallel` | 运行基线和 trial 的通道数，1 到 32，默认 1。见[并行通道](#并行通道)。 |
@@ -183,6 +184,32 @@ role_unavailable: Arm "review" runs with role review, which manifest/roles.yaml 
 ```
 
 带角色的 arm 需要团队资产供角色选择，因此套件拒绝同时写 `role` 和 `team: none`。matrix 也可以交叉角色：`matrix: { tool: [claude, codex], role: [frontend, review] }` 生成 `claude-frontend`、`claude-review`、`codex-frontend` 和 `codex-review`。对比会在每个工具上配对两个角色，在每个角色内配对两个工具，绝不配对两者都不同的一对。
+
+### 开启 recall 的 arm
+
+团队的 recall 对任务到底有没有帮助——比如某条规则声明了它的文档和代码页讲的是同一件事？给各 arm 开 recall。trial 的克隆里 recall 是关闭的，和每个 workflow 克隆一样；`recall: true` 为该 arm 的克隆打开它，它的会话会在加载的资产上看到 `Related:` 行：
+
+```yaml
+schemaVersion: v1alpha1
+name: relations-help
+description: 声明的关联是否帮助修复落地。
+repo: https://github.com/acme/billing.git
+defaults:
+  tool: claude
+  model: strong
+arms:
+  - name: with-relations
+    recall: true
+  - name: without-relations
+    team: { without: [rules/payments.md] }
+    recall: true
+repetitions: 3
+timeout: 45m
+```
+
+两个 arm 都开着 recall，唯一的差别就是那条关联：第二个 arm 运行时没有声明它的规则。套件要求各 arm 在某个 `defaults` 键上不同——`recall` 不算，因为它是测量的对照条件而不是页面要对比的值——所以两个 arm 改的是 `team`。
+
+`recall` 从不算作一个被更改的 `defaults` 键，matrix 也不能交叉它。不写它时，该 arm 和每个 workflow 克隆一样在没有 recall 下运行。
 
 ### 用 matrix 交叉工具和团队资产
 

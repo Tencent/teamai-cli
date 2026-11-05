@@ -596,7 +596,9 @@ async function installTeam(input: {
     additionalRoles: selection.additionalRoles, projects: selection.projects, excludedSkills: selection.excludedSkills,
     ...tags,
     enabledAgents: tools,
-    recallEnabled: false, contributeHintEnabled: false, mrHintEnabled: false, usageReportEnabled: false, coAuthorEnabled: false, codexTrustEnabled: false,
+    // A workflow clone leaves recall off: it adds files a step did not ask for. A
+    // benchmark arm turns it on because it measures what recall delivers (#1564).
+    recallEnabled: team.recall ?? false, contributeHintEnabled: false, mrHintEnabled: false, usageReportEnabled: false, coAuthorEnabled: false, codexTrustEnabled: false,
   };
 
   const overridden = await assignedOverSelection({ config, selection, revision });
