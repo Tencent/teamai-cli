@@ -844,7 +844,7 @@ Pull refuses a file that changes what a label means, and teamai's default runs i
 | `score_override_prompt` | has a prompt step not confined to a directory, or one that lists `scorers` |
 | `score_override_confined_dir` | confines the judge to a directory that is not an output of a step it needs |
 | `score_override_judge_prompt` | has a judge prompt that does not read `steps.evidence.outputs.rubric` and `steps.evidence.outputs.schema` |
-| `score_override_publish` | runs `teamai score publish` without `deliver: publish` to `teamai-reports`, or publishes to another branch |
+| `score_override_publish` | runs `teamai score publish` without `deliver: publish` to `teamai-reports`, publishes to another branch, or publishes without `if: inputs.store`, so a run that only tries scorers would publish |
 | `score_override_step_missing` | drops or renames `plan`, `evidence`, `judge`, `label`, `write`, `publish` or `settle`, or `check` while a scorer here has a check |
 | `default_override_alias` | is another workflow with `alias: teamai-score` |
 

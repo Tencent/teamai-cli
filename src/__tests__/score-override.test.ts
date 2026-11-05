@@ -120,6 +120,14 @@ describe('a team teamai-score.yaml', () => {
     ]);
   });
 
+  it('is refused when its publish step drops the condition that keeps a run that only tries scorers from publishing', async () => {
+    const unguarded = shippedWith('          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n', '          workspace: { team: { branch: teamai-reports } }\n');
+
+    expect(await pulled({ 'teamai-score': unguarded })).toMatchObject({ source: 'default', refused: [
+      'workflows/teamai-score.yaml:1: field "steps.score.publish.if": step "score.publish" publishes without if: inputs.store, so a run that only tries scorers would publish the scope\'s pending labels. Give it if: inputs.store, as teamai\'s default teamai-score does',
+    ] });
+  });
+
   it('may drop its check step until a scorer of the team has a check', async () => {
     const renamed = SHIPPED.replace('- id: check\n', '- id: verify\n').replaceAll('steps.check.', 'steps.verify.').replace('needs: [evidence, check]', 'needs: [evidence, verify]');
     const scorer = (extra: string) => `---\nlabels:\n  - { value: good, score: 1, description: Did the work }\n  - { value: bad, score: 0, description: Did not }\npassingScore: 1\n${extra}---\nJudge the work.\n`;

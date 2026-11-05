@@ -844,7 +844,7 @@ pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
 | `score_override_prompt` | 含有不限定在目录里的提示步骤，或列出 `scorers` 的提示步骤 |
 | `score_override_confined_dir` | 把评审者限定在的目录不是它所依赖步骤的输出 |
 | `score_override_judge_prompt` | 评审提示没有读取 `steps.evidence.outputs.rubric` 和 `steps.evidence.outputs.schema` |
-| `score_override_publish` | 运行 `teamai score publish` 却没有 `deliver: publish` 到 `teamai-reports`，或发布到其他分支 |
+| `score_override_publish` | 运行 `teamai score publish` 却没有 `deliver: publish` 到 `teamai-reports`，发布到其他分支，或发布步骤没有 `if: inputs.store`，使只试用评分器的运行也会发布 |
 | `score_override_step_missing` | 去掉或改名了 `plan`、`evidence`、`judge`、`label`、`write`、`publish` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
 | `default_override_alias` | 是另一个带 `alias: teamai-score` 的工作流 |
 

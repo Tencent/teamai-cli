@@ -30,6 +30,9 @@ const KEPT = {
 
 const PUBLISH = 'teamai score publish';
 
+/** The condition that keeps a run that only tries scorers (`store: false`) from publishing the scope's pending labels. */
+const PUBLISH_IF = 'inputs.store';
+
 /** One refusal, before pull locates it in the file. */
 type Problem = Pick<WorkflowDiagnostic, 'field' | 'message'> & { code: ScoreOverrideCode };
 
@@ -107,11 +110,16 @@ function publishesLabels(step: WorkflowStep): boolean {
   return step.command === PUBLISH && step.deliver === 'publish' && branch === REPORTS_BRANCH;
 }
 
-/** Why the step at `walked` publishes, or runs the publish verb, other than as the default publishes the labels. */
+/** Why the step at `walked` publishes, or runs the publish verb, other than as the default publishes the labels, or in a run that stores none. */
 function publishProblems({ path, field, step }: Walked): Problem[] {
-  if ((step.command !== PUBLISH && step.deliver !== 'publish') || publishesLabels(step)) return [];
+  if (step.command !== PUBLISH && step.deliver !== 'publish') return [];
+  const found: Problem[] = [];
 
-  return [{ code: 'score_override_publish', field, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` }];
+  if (!publishesLabels(step)) found.push({ code: 'score_override_publish', field, message: `step "${path}" runs ${PUBLISH} without deliver: publish in workspace: { team: { branch: ${REPORTS_BRANCH} } }, where every member's labels are. Give it both, as teamai's default teamai-score does` });
+
+  if (step.if !== PUBLISH_IF) found.push({ code: 'score_override_publish', field: `${field}.if`, message: `step "${path}" publishes without if: ${PUBLISH_IF}, so a run that only tries scorers would publish the scope's pending labels. Give it if: ${PUBLISH_IF}, as teamai's default teamai-score does` });
+
+  return found;
 }
 
 /** Whether a header field of the team file is the default's, either absent counting as `{}`. */
