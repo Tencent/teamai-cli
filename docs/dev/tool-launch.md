@@ -1,8 +1,7 @@
 # Tool launch
 
 Maintainer notes on `src/tool-launch/`, the code that starts a coding tool headless. Workflow drivers call it: for a
-step that prompts a tool, a step that answers a prompt, and a scorer's judge. The few callers outside a workflow left
-on the lint rule's `BASELINE` are moving into workflow steps.
+step that prompts a tool, a step that answers a prompt, and a scorer's judge. Nothing else launches one.
 
 Each rule below spans more than one file. The rule names the code that owns it, so you can read the details there.
 
@@ -44,9 +43,8 @@ teamai(launch-through-workflows): Only a workflow driver launches an AI tool. Ru
 
 - **Only a workflow driver launches a tool.** `teamai/launch-through-workflows`
   (`oxlint-plugin-teamai/rules/launch-through-workflows.js`) fails an import of `call.ts`, `run.ts` or `runConfined`
-  outside `src/workflow/` and `src/tool-launch/`. Its `BASELINE` lists the callers that still launch a tool outside a
-  workflow. It only shrinks: when a caller's AI work moves into a workflow step, its entry is deleted, and the rule
-  reports a listed file that no longer imports the launcher.
+  outside `src/workflow/` and `src/tool-launch/`. Its `BASELINE` of callers allowed to launch outside a workflow is
+  empty, and it only shrinks: the rule reports a listed file that no longer imports the launcher.
 - **An answer step picks the member's tool.** `memberTools` in `member-tools.ts` lists what the member names, most
   specific first: `TEAMAI_AI_TOOL`, then `ai.tool` in the scope's own config, then in the machine's. `createToolCaller` in
   `call.ts` takes the first and fails with `CallError` `override_invalid` when teamai cannot launch it, or takes the
@@ -54,9 +52,9 @@ teamai(launch-through-workflows): Only a workflow driver launches an AI tool. Ru
   (`no_tool` → `tool_unavailable`, `override_invalid` → `tool_unconfigured`, `call_failed` → `tool_failed`). A
   workflow's fallback reads `steps.<id>.failure.code` and ends the run on `tool_unconfigured`, so a wrong setting is
   never hidden.
-- **`callTool` is being removed.** `call.ts` still exports `callTool` and `callToolParallel` for the callers left on
-  the lint rule's `BASELINE`. Once that list is empty, the answer step is the only caller of `createToolCaller`, and the
-  two exports go. New code calls neither.
+- **`callTool` is being removed.** `call.ts` still exports `callTool` and `callToolParallel`, though the lint rule's
+  `BASELINE` is empty and the answer step is the only caller of `createToolCaller`. The two exports go next. New code
+  calls neither.
 - **A tool launches through its adapter.** `launch` on the tool's descriptor in `src/tools.ts` names an entry of
   `LAUNCH_ADAPTERS` in `adapters.ts`, or `none`. The adapter holds the profiles teamai builds for it: `call` always,
   `step` and `confined` when the tool can run them. `LAUNCH_ORDER` in `tools.ts` is the order an answer step tries
@@ -68,6 +66,6 @@ teamai(launch-through-workflows): Only a workflow driver launches an AI tool. Ru
 - **The support page follows the adapters.** The `workflows` and `aiBackend` cells in `src/tools.ts` stay hand-written,
   for their evidence and notes, and `tools.test.ts` fails when a cell marks a feature built that the adapter has no
   profile for, or the reverse.
-- **Steps and judges still switch on the adapter.** `invocation` in `drivers/local/local-tool-adapter.ts` and the judge
-  argv and answer reader in `scorers/judge.ts` each end in a `never` check, so a new adapter with a `step` or `judge`
-  profile fails the type check until both handle it.
+- **Steps and judges still switch on the adapter.** `invocation` in `drivers/local/local-tool-adapter.ts` ends in a `never` check,
+  and `LAUNCHES` in `tool-launch/confined.ts`, which launches every judge step, `satisfies` a launch per family, so a new
+  adapter with a `step` or `judge` profile fails the type check until both handle it.

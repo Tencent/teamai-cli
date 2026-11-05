@@ -18,9 +18,7 @@ const LAUNCHERS = {
  * Callers that launch a tool outside a workflow today. This list may only shrink: move a caller's AI work into a
  * workflow step, then delete its entry. A listed file that no longer imports the launcher is reported, so it is removed.
  */
-const BASELINE = scopedFiles([
-  'src/scorers/judge.ts',
-]);
+const BASELINE = scopedFiles([]);
 
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Launch AI tools only from workflow drivers.' } },
