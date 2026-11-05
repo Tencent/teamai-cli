@@ -606,6 +606,18 @@ Generated: do not edit by hand. Regenerate with
     - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
     - `--scenarios <markdown>` — What the tool answered for the scenarios
     - `--scenarios-failure <message>` — Why the tool could not answer for the scenarios, when it could not
+  - `teamai codebase enrich-plan` — A step of a teamai-codebase-enrich run: list the modules of a codebase with at least five facts in the teamwiki's facts cache, which the last extract wrote. Prints {"modules":[{"name","files","components","interfaces"}],"interfaces"}.
+    - `--wiki-root <dir>` — The teamwiki directory the codebase was extracted into
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+  - `teamai codebase enrich-summary` — A step of a teamai-codebase-enrich run: read what the AI tool answered about each module, for the domain prompt. Prints {"count","project","modules"}; count is 0 when a module could not be asked or no answer parsed, and nothing is to be written.
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--results <json>` — The results of the modules step
+  - `teamai codebase enrich-write` — A step of a teamai-codebase-enrich run: write _manifest.json and _domains.json beside the codebase's evidence from what the AI tool answered. Prints {"modules","domain"}; modules is 0 when nothing was written.
+    - `--wiki-root <dir>` — The teamwiki directory the codebase was extracted into
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--results <json>` — The results of the modules step
+    - `--domain <json>` — What the tool answered for the domain
+    - `--domain-failure <message>` — Why the tool could not answer for the domain, when it could not
 
 ## review
 

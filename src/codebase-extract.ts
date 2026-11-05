@@ -1142,6 +1142,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
 
   const {
     enrichWithAI,
+    writeEnrichResult,
     writeManifest,
     buildFallbackManifest,
     groupFactsByModule,
@@ -1157,24 +1158,13 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
       const enrichResult = await enrichWithAI({ project, facts, interfaceInventory, modules });
 
       if (enrichResult) {
-        await writeManifest(enrichResult.manifest, evidenceDir);
+        const domain = await writeEnrichResult(enrichResult, evidenceDir);
         manifestSource = 'ai';
         manifestComponentCount = enrichResult.manifest.components.length;
         aiDomains = enrichResult.domains;
 
-        // Persist AI-inferred domain classification for rebuildWikiIndex
-        const domainMeta = {
-          domain: enrichResult.repoDomain || (enrichResult.domains[0]?.name ?? ''),
-          description: enrichResult.repoDescription || '',
-          keywords: enrichResult.repoKeywords || [],
-          components: enrichResult.domains[0]?.components ?? [],
-        };
-
-        await writeFile(path.join(evidenceDir, '_domains.json'), JSON.stringify(domainMeta, null, 2), 'utf-8');
-
         if (!opts.json) {
-          const domainLabel = domainMeta.domain || 'uncategorized';
-          console.log(`  AI enrich: ${enrichResult.manifest.components.length} modules, domain=${domainLabel}`);
+          console.log(`  AI enrich: ${enrichResult.manifest.components.length} modules, domain=${domain || 'uncategorized'}`);
         }
       }
     } catch (e) {

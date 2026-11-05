@@ -1807,6 +1807,75 @@ codebaseCommand
     process.stdout.write(`${JSON.stringify(await DeepEnrich.finish(target, { text: cmdOpts.scenarios, failure: cmdOpts.scenariosFailure }))}\n`);
   });
 
+async function codebaseEnrichVerbTarget(flags: { wikiRoot: string; codebase: string }): Promise<import('./enrich-with-ai.js').CodebaseEnrichTarget | undefined> {
+  const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+  const parsed = CodebaseEnrich.targetOf(flags);
+
+  if (parsed.ok) return parsed.target;
+  log.error(parsed.message);
+  await rejectVerbInput();
+
+  return undefined;
+}
+
+async function moduleRepliesOf(results: string): Promise<import('./enrich-with-ai.js').ModuleReply[] | undefined> {
+  const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+  const parsed = CodebaseEnrich.repliesOf(results);
+
+  if (parsed.ok) return parsed.replies;
+  log.error(parsed.message);
+  await rejectVerbInput();
+
+  return undefined;
+}
+
+// The verbs a teamai-codebase-enrich run's steps call.
+codebaseCommand
+  .command('enrich-plan')
+  .description('A step of a teamai-codebase-enrich run: list the modules of a codebase with at least five facts in the teamwiki\'s facts cache, which the last extract wrote. Prints {"modules":[{"name","files","components","interfaces"}],"interfaces"}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory the codebase was extracted into')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string }) => {
+    setStderrOnly(true);
+    const target = await codebaseEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+    process.stdout.write(`${JSON.stringify(await CodebaseEnrich.plan(target))}\n`);
+  });
+
+codebaseCommand
+  .command('enrich-summary')
+  .description('A step of a teamai-codebase-enrich run: read what the AI tool answered about each module, for the domain prompt. Prints {"count","project","modules"}; count is 0 when a module could not be asked or no answer parsed, and nothing is to be written.')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .requiredOption('--results <json>', 'The results of the modules step')
+  .action(async (cmdOpts: { codebase: string; results: string }) => {
+    setStderrOnly(true);
+    const replies = await moduleRepliesOf(cmdOpts.results);
+
+    if (!replies) return;
+    const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+    process.stdout.write(`${JSON.stringify(CodebaseEnrich.summary(cmdOpts.codebase, replies))}\n`);
+  });
+
+codebaseCommand
+  .command('enrich-write')
+  .description('A step of a teamai-codebase-enrich run: write _manifest.json and _domains.json beside the codebase\'s evidence from what the AI tool answered. Prints {"modules","domain"}; modules is 0 when nothing was written.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory the codebase was extracted into')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .requiredOption('--results <json>', 'The results of the modules step')
+  .option('--domain <json>', 'What the tool answered for the domain', '')
+  .option('--domain-failure <message>', 'Why the tool could not answer for the domain, when it could not', '')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; results: string; domain: string; domainFailure: string }) => {
+    setStderrOnly(true);
+    const target = await codebaseEnrichVerbTarget(cmdOpts);
+    const replies = target && await moduleRepliesOf(cmdOpts.results);
+
+    if (!target || !replies) return;
+    const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+    process.stdout.write(`${JSON.stringify(await CodebaseEnrich.write(target, replies, { text: cmdOpts.domain, failure: cmdOpts.domainFailure }))}\n`);
+  });
+
 
 program
     .command('review [id]')

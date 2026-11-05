@@ -1089,6 +1089,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-draft-learning-updates` | 为团队经常召回却很少采用的每个 doc、rule 和 skill 起草更新，写成它旁边的 `<entry>.draft.md`，由 [`teamai recall maintenance --update-quality`](knowledge.md#知识库维护) 启动。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |
 | `teamai-promote-learning` | 把一条经验晋升为 skill、rule 或 doc：AI 选择类别（`--category` 给出时除外）并改写经验，结果推送到评审分支，并附带说明类别和理由的拉取请求，由 [`teamai recall promote <learning-id>`](knowledge.md#知识库维护) 启动。输入：`learning`、`category`（`''` 表示由 AI 选择）。私有 | 始终：`invoke: ask`，agent 在用户同意后启动它 |
 | `teamai-codebase-deep-enrich` | 为项目的组件写设计文档（一次五个），然后写架构总览和图谱文档，由 [`teamai codebase --deep-enrich`](knowledge.md#代码知识图谱) 启动。输入：`wiki_root`、`project`、`max_modules`（`0` 表示全部）、`concurrency`。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |
+| `teamai-codebase-enrich` | 询问刚提取的代码库每个模块做什么、整体属于哪个业务域，并在它的 evidence 旁写入 `_manifest.json` 和 `_domains.json`。输入：`wiki_root`、`project`。私有 | 从不：`invoke: deny` |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
 | `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
 | `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |

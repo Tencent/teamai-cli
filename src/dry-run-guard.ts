@@ -99,6 +99,8 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
   'codebase',
   'review',
   'ci extract-mr', // `--output` is refused below
+  'codebase enrich-plan', // a step of teamai-codebase-enrich; only reads
+  'codebase enrich-summary', // a step of teamai-codebase-enrich; only reads its flags
 ]);
 
 /**
@@ -140,6 +142,7 @@ export const NO_DRY_RUN_PREVIEW = {
   'codebase deep-enrich-write': 'writes a component design doc or the architecture overview',
   'codebase deep-enrich-graph': 'writes the graph docs of a codebase',
   'codebase deep-enrich-finish': 'writes the scenarios doc, the teamwiki indexes and the quality reports',
+  'codebase enrich-write': 'a step of a teamai-codebase-enrich run; writes _manifest.json and _domains.json',
   'recall maintenance stale': 'a step of a teamai-draft-learning-updates run; refreshes the team checkouts it reads',
   'recall maintenance draft-context': 'a step of a teamai-draft-learning-updates run',
   'recall maintenance write-draft': 'writes a draft beside a stale entry',
