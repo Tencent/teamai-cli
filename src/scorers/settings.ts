@@ -172,7 +172,7 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   inNamespaces: readonly TeamFile[];
   problems: string[];
 }): SessionScoring {
-  const member = config.scoring?.sessions;
+  const member = config.scoring?.sessions ?? (isUpvoteJudgeAlias() ? { attended: 'auto' } : undefined);
   const limit = config.scoring?.daily_limit;
   // The config schema keeps an invalid daily_limit as its text, so only a number is a limit.
   const memberLimit = z.number().safeParse(limit).data;
@@ -181,7 +181,7 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   if (limit !== undefined && memberLimit === undefined) problems.push(`config.yaml scoring.daily_limit is ${limit}, not a whole number of 0 or more, so it is ignored`);
 
   if (machine?.daily_limit !== undefined && machineDailyLimit === undefined) problems.push(`~/.teamai/config.yaml scoring.daily_limit is ${machine.daily_limit}, not a whole number of 0 or more, so it is ignored`);
-  const fromMember = SessionPolicy.read('config.yaml scoring.sessions', member ?? {}, { booleans: true });
+  const fromMember = SessionPolicy.read(config.scoring?.sessions === undefined && member !== undefined ? `${UPVOTE_JUDGE_ALIAS}=1 as scoring.sessions` : 'config.yaml scoring.sessions', member ?? {}, { booleans: true });
   const fromMachine = SessionPolicy.read('~/.teamai/config.yaml scoring.sessions', machine?.sessions ?? {}, { booleans: true });
   problems.push(...fromMember.problems, ...fromMachine.problems);
   const defaults = { attended: 'off', unattended: 'auto' } as const;
@@ -207,6 +207,33 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   const off = { policy: 'off', source: dailyLimitSource } as const;
 
   return { policies: { attended: off, unattended: off }, dailyLimit: 0, dailyLimitSource };
+}
+
+/**
+ * `TEAMAI_UPVOTE_JUDGE=1`, which turned on the removed votes-judge Stop hook, reads as a member config of
+ * `scoring: { recall_adoption: true, sessions: { attended: auto } }` for each key that config leaves unset.
+ */
+const UPVOTE_JUDGE_ALIAS = 'TEAMAI_UPVOTE_JUDGE';
+
+function isUpvoteJudgeAlias(): boolean {
+  return process.env[UPVOTE_JUDGE_ALIAS] === '1';
+}
+
+/** recall_adoption: the member config's, or the alias's, over the team's; a machine's false turns it off. */
+function recallAdoptionOf({ config, machine, team, problems }: { config: LocalConfig; machine: LocalConfig['scoring']; team: boolean; problems: string[] }): boolean {
+  // The config schema keeps a value that is not true or false as its text.
+  const read = (source: string, value: boolean | string | undefined): boolean | undefined => {
+    if (value === undefined || value === true || value === false) return value;
+    problems.push(`${source} scoring.recall_adoption is ${JSON.stringify(value)}, not true or false, so it is ignored`);
+
+    return undefined;
+  };
+
+  const member = read('config.yaml', config.scoring?.recall_adoption) ?? (isUpvoteJudgeAlias() ? true : undefined);
+
+  if (read('~/.teamai/config.yaml', machine?.recall_adoption) === false) return false;
+
+  return member ?? team;
 }
 
 function failed(cause: string): ScopeScoring {
@@ -276,7 +303,7 @@ export async function scopeScoring(config: LocalConfig): Promise<ScopeScoring> {
     ],
     sessions: sessionScoring({ config, machine, rootFile, inNamespaces, problems }),
     skillRouting: teamSwitch('skillRouting'),
-    recallAdoption: teamSwitch('recallAdoption'),
+    recallAdoption: recallAdoptionOf({ config, machine, team: teamSwitch('recallAdoption'), problems }),
     problems,
   };
 }
