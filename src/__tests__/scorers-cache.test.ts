@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
-import { loadCachedScorer, syncScorerDefinitions } from '../scorers/cache.js';
+import { defaultScorerRubric, loadCachedScorer, syncScorerDefinitions } from '../scorers/cache.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
 import { log } from '../utils/logger.js';
 import { routingScorers } from '../scorers/skill-routing.js';
@@ -342,5 +342,23 @@ Judge only the team skill \`release\`, against its entry in \`skills.available\`
 
     const [question] = await routingScorers(config, [release]);
     expect(question?.definition.labels.map(({ value }) => value)).toEqual(['fit', 'idle', 'extra', 'missed']);
+  });
+
+  it('refuses a scorers/teamai-adoption.md that reads a variable adoption does not offer, and keeps teamai\'s rubric', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-adoption.md', `---
+labels:
+  - { value: used, score: 1, description: "{{ skill.name }} was used." }
+  - { value: unused, score: 0, description: "{{ doc.id }} was not." }
+passingScore: 1
+sessions: true
+---
+Judge only {{ doc.id }}.
+`);
+
+    const { invalid } = await syncScorerDefinitions(config);
+
+    expect(invalid).toEqual([{ file: 'scorers/teamai-adoption.md', code: 'default_scorer_variable', message: 'reads {{ skill.name }}, which teamai\'s default scorer teamai-adoption does not offer. It offers doc.id, doc.path and doc.file; teamai\'s default runs until the file reads only those' }]);
+    expect((await defaultScorerRubric(config, 'teamai-adoption')).overridden).toBe(false);
   });
 });

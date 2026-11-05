@@ -28,6 +28,7 @@ import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import { appendRecallLines, readRecallLog, recallLogPath } from './recall-log.js';
 import type { Actor, ClaimLine, CreditLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
 import { getVotesDir } from './types.js';
+import type { AdoptionVerdict } from './votes.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { isAbsolutePath, pathKey, samePath } from './utils/agent-path.js';
 import { rewriteJsonl } from './utils/jsonl-store.js';
@@ -512,6 +513,63 @@ async function countSessions(config: LocalConfig, index: LogIndex, target: strin
   return true;
 }
 
+/**
+ * The eligible docs root session `sessionId`'s runs returned that no countable read of the session opened, credited or
+ * still pending, and that the session holds no credit of: what an adoption question asks of (#1391). None for a
+ * session another session started: its runs count under the root's.
+ */
+export async function adoptionCandidates(config: LocalConfig, sessionId: string): Promise<RecalledDoc[]> {
+  const index = indexLog(await readRecallLog(config));
+
+  if (index.rootOf(sessionId) !== sessionId) return [];
+  const { runs, evidence, opened } = viewRoot(index, sessionId);
+  const read = new Set(evidence.flatMap(opened).map((d) => d.key));
+  const docs = runs.flatMap((r) => r.docs).filter((d) => d.eligible && !read.has(d.key) && !index.credits.has(creditKey(sessionId, d.key)));
+
+  return [...new Map(docs.map((d) => [d.key, d] as const)).values()];
+}
+
+/**
+ * Credits `verdicts` on root session `sessionId` (#1391): each claims the session and doc with a pending judge credit,
+ * unless a read or an earlier label holds one, then writes the votes of the claims that stand, and marks them written.
+ * Judge credits a busy votes file left pending before are written first. Returns the verdicts credited now, or null
+ * when the votes file was busy: the claims stay pending, and the next adoption write or `pull` writes them.
+ */
+export async function creditAdoptionVerdicts(config: LocalConfig, sessionId: string, verdicts: readonly AdoptionVerdict[]): Promise<AdoptionVerdict[] | null> {
+  const before = indexLog(await readRecallLog(config));
+  const root = before.rootOf(sessionId);
+  const ts = new Date().toISOString();
+
+  const claims = [...new Map(verdicts.map((v) => [v.doc, v] as const)).values()].flatMap((v): CreditLine[] => (before.credits.has(creditKey(root, v.doc))
+    ? []
+    : [{ kind: 'credit', ts, id: randomUUID(), session: root, doc: v.doc, source: 'judge', adopted: v.adopted, votes: 'pending' }]));
+
+  if (claims.length > 0) await appendRecallLines(config, claims);
+  // Read again: of two writers claiming one session and doc, the first line stands.
+  const ok = await writePendingJudgeCredits(config, indexLog(await readRecallLog(config)));
+
+  if (!ok) return null;
+
+  return claims.map((c) => ({ doc: c.doc, adopted: c.adopted }));
+}
+
+/**
+ * Writes the votes of every judge credit in `index` still pending, then marks them written. False when the votes file
+ * was busy: they stay pending.
+ */
+async function writePendingJudgeCredits(config: LocalConfig, index: LogIndex): Promise<boolean> {
+  const pending = [...index.credits.values()].filter((c) => c.source === 'judge' && !c.isWritten);
+
+  if (pending.length === 0) return true;
+  const { creditJudged } = await import('./votes.js');
+
+  if (!await creditJudged(path.join(getVotesDir(config), `${config.username}.yaml`), pending.map((c) => ({ doc: c.doc, adopted: c.adopted })))) return false;
+  const ts = new Date().toISOString();
+  await appendRecallLines(config, pending.map(({ isWritten: _isWritten, ...c }): CreditLine => ({ ...c, ts, votes: 'written' })));
+
+  return true;
+}
+
 /** Eligible docs from this session's settled, linked recall runs, keyed for voting. */
 export async function recalledDocsForSession(config: LocalConfig, sessionId: string): Promise<RecalledDoc[]> {
   const index = indexLog(await readRecallLog(config));
@@ -680,12 +738,15 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
 }
 
 /**
- * Run the reducer for each root session with evidence not yet consumed, or a
+ * Write the votes of judge credits a busy votes file left pending, then run
+ * the reducer for each root session with evidence not yet consumed, or a
  * recalled doc it was not counted for yet. It stops at the first busy votes
  * file: the rest stays pending for the next trigger.
  */
 async function creditPendingSessions(config: LocalConfig): Promise<void> {
   const index = indexLog(await readRecallLog(config));
+
+  if (!await writePendingJudgeCredits(config, index)) return;
 
   const uncounted = index.lines.flatMap((l) => {
     const owner = l.kind === 'run' ? index.ownerOf(l) : null;

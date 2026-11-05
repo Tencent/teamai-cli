@@ -16,6 +16,7 @@ import { JudgeAnswerSchema, verdictsOf } from './batch.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
 import { removeSubjectEvidence } from './evidence.js';
 import { readRecord, type GroupRecord } from './evidence-dir.js';
+import { GeneratedQuestions } from './generated-questions.js';
 import { scoresDir } from './home.js';
 import { JUDGE_FAILURES, labelVersion, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
@@ -344,6 +345,18 @@ export const ScoreLabels = {
     const problems = entries.length === members.length ? entries.flatMap((entry, index) => entryProblem(group, members, entry, index) ?? []) : ['the entries are not one per scorer of the group'];
 
     if (problems.length > 0) return refused('label_invalid', `${dir}/${LABELS} cannot be written: ${problems.join('; ')}. Nothing was written.`);
+
+    // Before the labels: what a generated question's label does is claimed once per session, so a retry adds nothing.
+    if (group.judged.kind === 'session') {
+      const generated = entries.flatMap((entry, index) => {
+        const pin = group.scorers[index]?.pin;
+
+        return entry.kind === 'labelled' && pin && GeneratedQuestions.isGenerated(entry.scorer) ? [{ scorer: entry.scorer, pin, passed: entry.label.passed }] : [];
+      });
+
+      await GeneratedQuestions.written(attempt.config, group.judged.subject, generated);
+    }
+
     const run = await subjectRun(attempt, group);
     const keepLocal = group.judged.kind === 'run' && run !== undefined && (privateSteps(run)(group.judged.subject.step) || isIsolated(run));
 

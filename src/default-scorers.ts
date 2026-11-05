@@ -8,7 +8,8 @@ import { isTemplateRead, parseTemplate, renderText, type Template } from './work
 // ─── Default scorers (#1391) ─────────────────────────────
 //
 //  The CLI ships the rubrics of the questions it generates per
-//  item, such as a routing question per team skill, as
+//  item, a routing question per team skill and an adoption
+//  question per recalled doc, as
 //  scorers/<name>.md in the npm package. Each is a template:
 //  `{{ skill.name }}` reads a variable of the item, from a set
 //  closed per default. A team file of the same name replaces
@@ -20,6 +21,7 @@ import { isTemplateRead, parseTemplate, renderText, type Template } from './work
 /** The variables each default offers, by name: all a team file that replaces it may read. */
 const VARIABLES = {
   'teamai-routing': ['skill.name', 'skill.namespace'],
+  'teamai-adoption': ['doc.id', 'doc.path', 'doc.file'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type DefaultScorerName = keyof typeof VARIABLES;
@@ -33,7 +35,7 @@ export type DefaultScorerCode = 'default_scorer_template' | 'default_scorer_vari
 /** A filled-in rubric: its text, which a run pins, and the scorer it parses to. */
 export type FilledScorer = { content: string; definition: ScorerDefinition };
 
-const NAMES: readonly DefaultScorerName[] = ['teamai-routing'];
+const NAMES: readonly DefaultScorerName[] = ['teamai-routing', 'teamai-adoption'];
 
 function isName(name: string): name is DefaultScorerName {
   return NAMES.some((known) => known === name);
@@ -134,7 +136,7 @@ function problems(name: DefaultScorerName, file: string, content: string): Array
   }))];
 
   if (unknown.length > 0) {
-    const offers = offered.join(' and ');
+    const offers = `${offered.slice(0, -1).join(', ')} and ${offered.at(-1) ?? ''}`;
 
     return unknown.map((source) => refusal('default_scorer_variable', `reads ${source}, which teamai's default scorer ${name} does not offer. It offers ${offers}; teamai's default runs until the file reads only those`));
   }

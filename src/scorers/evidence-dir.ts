@@ -217,7 +217,7 @@ async function sessionEvidence(attempt: ScoreAttempt, subject: Exclude<Subject, 
     return { dir: attempt.dir, rubric: '', schema: '', delivers: false };
   }
 
-  await writeSessionEvidence(attempt.dir, judged, pinned.rubrics);
+  await writeSessionEvidence(attempt.dir, judged, pinned.rubrics, Object.assign({}, ...pinned.scorers.map(({ pin }) => pin.evidence ?? {})));
 
   return judgeRecords(attempt, group, pinned.rubrics, AgentSession.toolForPlatform(judged.subject.platform));
 }

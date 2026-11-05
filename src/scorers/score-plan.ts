@@ -26,7 +26,7 @@ import { isSampled } from './sampling.js';
 import { ScoreAttempt } from './score-attempt.js';
 import { isDelivered } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
-import { isRoutingScorer } from './skill-routing.js';
+import { GeneratedQuestions, type QuestionSwitches } from './generated-questions.js';
 import { Subject } from './subject.js';
 import { ScoreItem } from './judging-workflows.js';
 
@@ -231,31 +231,33 @@ async function runJudged(request: PlanRequest, subject: RunSubject, teamBatch: b
 }
 
 /**
- * The scorers of a session: those named, else every scorer that judges sessions and, while `skill_routing` is on, a
- * routing question per team skill its captures delivered.
+ * The scorers of a session: those named, else every scorer that judges sessions and the generated questions the
+ * scoring switches ask: while `skill_routing` is on, a routing question per team skill its captures delivered, and
+ * while `recall_adoption` is on, an adoption question per recalled doc it never opened.
  */
-async function sessionPins(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>, { names, isRouting }: { names: readonly string[]; isRouting: boolean }): Promise<Candidate[] | Refusal> {
+async function sessionPins(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>, { names, switches }: { names: readonly string[]; switches: QuestionSwitches }): Promise<Candidate[] | Refusal> {
   if (names.length === 0) {
-    const scorers = [...await SessionWork.sessionScorers(config), ...(isRouting ? await SessionWork.routingQuestions(config, subject) : [])];
+    const scorers = [...await SessionWork.sessionScorers(config), ...await SessionWork.generatedQuestions(config, subject, switches)];
 
     return scorers.map(({ scorer, pin, definition }) => ({ name: scorer, pin, definition }));
   }
 
   const { pins, unpinned } = await SessionWork.pinsOf(config, subject, names);
-  const [routing, why] = [...unpinned][0] ?? [];
+  const [question, why] = [...unpinned][0] ?? [];
 
-  return routing === undefined ? pinned(names, pins, 'a scorer teamai pull cached') : refused('scorer_not_found', `Scorer ${routing} is not a routing question of ${Subject.format(subject)}. ${why}`);
+  return question === undefined ? pinned(names, pins, 'a scorer teamai pull cached')
+    : refused('scorer_not_found', `Scorer ${question} is not a ${GeneratedQuestions.familyOf(question)?.noun ?? 'question'} of ${Subject.format(subject)}. ${why}`);
 }
 
-async function sessionJudged(request: PlanRequest, subject: Exclude<Subject, { kind: 'run' }>, scoring: { batch: boolean | undefined; skillRouting: boolean }): Promise<Judged | Refusal> {
-  const candidates = await sessionPins(request.attempt.config, subject, { names: request.scorers, isRouting: scoring.skillRouting });
+async function sessionJudged(request: PlanRequest, subject: Exclude<Subject, { kind: 'run' }>, scoring: { batch: boolean | undefined } & QuestionSwitches): Promise<Judged | Refusal> {
+  const candidates = await sessionPins(request.attempt.config, subject, { names: request.scorers, switches: scoring });
 
   if (!Array.isArray(candidates)) return candidates;
   const structured = subject.kind === 'session' ? subject.subject : undefined;
 
   return {
     candidates,
-    sampled: (candidate) => structured === undefined || isRoutingScorer(candidate.name) || isSampled(candidate.name, structured, candidate.definition.samplingRate),
+    sampled: (candidate) => structured === undefined || GeneratedQuestions.isGenerated(candidate.name) || isSampled(candidate.name, structured, candidate.definition.samplingRate),
     batch: batchesScorers({ team: scoring.batch }),
     stagesOf: () => [],
     alone: () => false,
@@ -290,22 +292,22 @@ function batchKey(candidate: Candidate, judged: Judged): string {
 
 /**
  * The group `candidate` joins: its own; under `batch`, that of the scorers sharing its model, tool and stages; and for a
- * routing question, that of the session's other routing questions sharing its judge, which only `batch` lets team
- * scorers join.
+ * generated question, that of the session's other questions of its family sharing its judge, which only `batch` lets
+ * team scorers join.
  */
 function groupKey(candidate: Candidate, judged: Judged, batch: boolean): string {
-  const routing = isRoutingScorer(candidate.name);
+  const family = GeneratedQuestions.familyOf(candidate.name);
 
-  if (!(batch || routing) || judged.alone(candidate)) return `${candidate.name}\n`;
+  if (!(batch || family) || judged.alone(candidate)) return `${candidate.name}\n`;
   const shared = batchKey(candidate, judged);
 
-  return routing && !batch ? `routing\n${shared}` : shared;
+  return family && !batch ? `${family.prefix}\n${shared}` : shared;
 }
 
 /**
  * The sampled scorers, every one on a named demand, grouped: a scorer with a check alone, else those that ask for one
- * model, prefer one judge tool and take the same stages. A session's routing questions share a group whatever `batch`
- * says, and its team scorers join them only under `batch`.
+ * model, prefer one judge tool and take the same stages. A session's generated questions of one family share a group
+ * whatever `batch` says, and its team scorers join them only under `batch`.
  */
 function grouped(request: PlanRequest, judged: Judged, restarts: (key: MarkKey) => boolean): Candidate[][] {
   const groups = new Map<string, Candidate[]>();

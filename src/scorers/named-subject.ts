@@ -21,7 +21,7 @@ import { scoringUnavailable } from './home.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import { missingEvidence } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
-import { isRoutingScorer } from './skill-routing.js';
+import { GeneratedQuestions } from './generated-questions.js';
 import type { Subject } from './subject.js';
 
 type Refusal = { ok: false; code: string; message: string };
@@ -175,7 +175,7 @@ async function ofSession(from: LocalConfig, demand: SessionDemand): Promise<({ o
   const unready = await scoringRefusal(config);
 
   if (unready) return unready;
-  const teamScorers = demand.scorers.filter((name) => !isRoutingScorer(name));
+  const teamScorers = demand.scorers.filter((name) => !GeneratedQuestions.isGenerated(name));
   const pinned = definitionsOf(teamScorers, await pinScorers(config, teamScorers));
 
   if (!pinned.ok) return notCached(config, pinned.unpinned);

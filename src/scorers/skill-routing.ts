@@ -13,9 +13,8 @@
 import { DefaultScorers } from '../default-scorers.js';
 import type { LocalConfig } from '../types.js';
 import { defaultScorerRubric, scorerSourceHash } from './cache.js';
-import type { ScorerDefinition } from './definition.js';
-import type { PinnedScorer } from './pin.js';
-import type { AvailableSkill } from './skill-evidence.js';
+import type { GeneratedQuestion, QuestionFamily } from './generated-questions.js';
+import { availableTeamSkills, type AvailableSkill } from './skill-evidence.js';
 
 export const ROUTING_PREFIX = 'teamai:routing:';
 
@@ -47,15 +46,12 @@ export function routingSkillOf(name: { skill: string; namespace?: string }, avai
   return available.find((skill) => !skill.namespaceUnknown && skill.name === name.skill && (name.namespace === undefined ? skill.namespace === undefined : skill.namespace === name.namespace));
 }
 
-/** A routing question: its scorer name, its pinned rubric, and the definition the rubric parses to. */
-export type RoutingQuestion = { scorer: string; pin: PinnedScorer; definition: ScorerDefinition };
-
 /**
  * The routing question of `skill`, `rubric` filled in with its name and namespace: the text of teamai's default
  * `scorers/teamai-routing.md`, or the team's file of that name. The rubric names the skill and says
  * where to read it; the description the judge judges against stays in `skills.available` in evidence.json.
  */
-export function routingScorer(rubric: string, skill: AvailableSkill): RoutingQuestion {
+export function routingScorer(rubric: string, skill: AvailableSkill): GeneratedQuestion {
   const scorer = routingScorerName(skill);
   const { content, definition } = DefaultScorers.fillIn('teamai-routing', { file: `scorers/${scorer.replaceAll(':', '-')}.md`, content: rubric }, { 'skill.name': skill.name, 'skill.namespace': skill.namespace ?? '' });
 
@@ -63,7 +59,7 @@ export function routingScorer(rubric: string, skill: AvailableSkill): RoutingQue
 }
 
 /** Every routing question of `skills`, in `skills.available` order: one per skill whose namespace the record can tell. */
-export async function routingScorers(config: LocalConfig, skills: readonly AvailableSkill[]): Promise<RoutingQuestion[]> {
+export async function routingScorers(config: LocalConfig, skills: readonly AvailableSkill[]): Promise<GeneratedQuestion[]> {
   const asked = skills.filter((skill) => !skill.namespaceUnknown);
 
   if (asked.length === 0) return [];
@@ -89,7 +85,7 @@ function unroutedWhy(parsed: { skill: string } | undefined, available: readonly 
  * The routing question `value` names among `available`, the team skills a session's captures delivered (undefined
  * when they record none), or why it names none of them. It resolves whatever `skill_routing` says.
  */
-export async function routingQuestionOf(config: LocalConfig, value: string, available: readonly AvailableSkill[] | undefined): Promise<{ ok: true; question: RoutingQuestion } | { ok: false; why: string }> {
+export async function routingQuestionOf(config: LocalConfig, value: string, available: readonly AvailableSkill[] | undefined): Promise<{ ok: true; question: GeneratedQuestion } | { ok: false; why: string }> {
   const parsed = parseRoutingScorer(value);
   const skill = parsed && available !== undefined ? routingSkillOf(parsed, available) : undefined;
 
@@ -98,3 +94,12 @@ export async function routingQuestionOf(config: LocalConfig, value: string, avai
 
   return question.scorer === value ? { ok: true, question } : { ok: false, why: `It names ${question.scorer}.` };
 }
+
+/** The routing family of generated questions: one per team skill a session's captures delivered, while `skill_routing` is on. */
+export const routingQuestions: QuestionFamily = {
+  prefix: ROUTING_PREFIX,
+  noun: 'routing question',
+  switch: 'skillRouting',
+  questions: async (config, { captures }) => routingScorers(config, availableTeamSkills(captures) ?? []),
+  questionOf: async (config, name, session) => routingQuestionOf(config, name, session === undefined ? undefined : availableTeamSkills(session.captures)),
+};

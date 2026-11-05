@@ -14,8 +14,7 @@ import { pinnedDefinition } from '../scorers/pin.js';
 import { markFacts } from '../scorers/score-plan.js';
 import { ScoreSubjects } from '../scorers/score-subjects.js';
 import { scopeScoring, type ScopeScoring } from '../scorers/settings.js';
-import { availableTeamSkills } from '../scorers/skill-evidence.js';
-import { routingScorers } from '../scorers/skill-routing.js';
+import { GeneratedQuestions } from '../scorers/generated-questions.js';
 import { driverIdentity } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
@@ -191,23 +190,24 @@ async function scoringOf(config: LocalConfig) {
   return scoringUnavailable(config) ? undefined : scopeScoring(config);
 }
 
-/** The session judging policies of loaded `scoring`, and whether `skill_routing` is on. */
+/** The session judging policies of loaded `scoring`, and which generated questions its switches ask. */
 function judgingOf(scoring: Extract<ScopeScoring, { ok: true }>) {
-  return { policies: scoring.sessions.policies, isRouting: scoring.skillRouting };
+  return { policies: scoring.sessions.policies, switches: { skillRouting: scoring.skillRouting, recallAdoption: scoring.recallAdoption } };
 }
 
 /**
  * Which scorers judge a session: the scorers `names` names, whatever a policy says, or else, while `judging`, those
- * that sample it and, while `skill_routing` is on, a routing question per team skill its captures delivered.
+ * that sample it and the generated questions its switches ask: routing per delivered team skill, adoption per recalled
+ * doc it never opened.
  */
 async function candidatesOf(config: LocalConfig, { names, judging }: { names: readonly string[]; judging: ReturnType<typeof judgingOf> | undefined }): Promise<Pick<Wants, 'candidates' | 'demand'> | Extract<Listed, { ok: false }>> {
   if (names.length === 0 && judging === undefined) return { candidates: async () => [], demand: 'auto' };
 
   if (names.length === 0) {
     const sampling = await SessionWork.samplingScorers(config);
-    const routing = async (session: Finished) => (judging?.isRouting ? routingScorers(config, availableTeamSkills(session.captures) ?? []) : []);
+    const generated = async (session: Finished) => (judging ? GeneratedQuestions.questions(config, { subject: { platform: session.platform, sessionId: session.sessionId }, captures: session.captures }, judging.switches) : []);
 
-    return { candidates: async (session) => [...await sampling(session), ...await routing(session)], demand: 'auto' };
+    return { candidates: async (session) => [...await sampling(session), ...await generated(session)], demand: 'auto' };
   }
 
   const named = await namedScorers(config, names);

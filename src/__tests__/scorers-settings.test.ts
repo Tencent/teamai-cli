@@ -36,10 +36,10 @@ describe('scopeScoring isolation', () => {
     const files = { 'scorers/scoring.yaml': 'isolation: best-effort\n', 'scorers/ops/scoring.yaml': 'isolation: verified\n' };
 
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'dev' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false,
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false,
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
   });
 
@@ -63,7 +63,7 @@ describe('scopeScoring isolation', () => {
 
   it('drops a key it does not know, with a problem that names the file', async () => {
     expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'isolation: verified\nsampling: 50\n' }))).toMatchObject({
-      ok: true, problems: ['scorers/scoring.yaml: "sampling" is not a scoring setting (batch, isolation, sessions, skill_routing, daily_limit), so it is ignored'],
+      ok: true, problems: ['scorers/scoring.yaml: "sampling" is not a scoring setting (batch, isolation, sessions, skill_routing, recall_adoption, daily_limit), so it is ignored'],
     });
   });
 });
@@ -184,7 +184,7 @@ describe('scopeScoring team session defaults', () => {
         'scorers/scoring.yaml sessions is "yes please", not true, false or a mapping of attended and unattended to off, ask or auto, so it is ignored',
         'scorers/scoring.yaml: daily_limit is "many", not a whole number of 0 or more, so it is ignored',
       ],
-      sessions: SESSIONS_DEFAULT, skillRouting: false,
+      sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
   });
 });
@@ -288,7 +288,7 @@ describe('scopeScoring machine settings', () => {
         '~/.teamai/config.yaml scoring.daily_limit is lots, not a whole number of 0 or more, so it is ignored',
         '~/.teamai/config.yaml scoring.sessions.attended is "always", not off, ask or auto, so it is ignored',
       ],
-      sessions: SESSIONS_DEFAULT, skillRouting: false,
+      sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
   });
 });

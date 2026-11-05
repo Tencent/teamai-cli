@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,6 +34,7 @@ import { cancelRun } from '../workflow/run-controls.js';
 import type { StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { Command } from 'commander';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
+import { recallLogPath } from '../recall-log.js';
 
 const SCORER = `---
 labels:
@@ -124,6 +126,19 @@ describe('session list --finished', () => {
     expect(await listed(config, { idle: '6h' })).toEqual({
       ok: true,
       list: [{ session: IDLE, source: 'claude-code', publish: false, scorers: ['quality'], demand: 'auto' }],
+    });
+  });
+
+  it('lists an adoption question per recalled doc the session never opened while recall_adoption is on (#1391)', async () => {
+    const config = await team({ 'scorers/scoring.yaml': 'recall_adoption: true\n', 'docs/pod-startup.md': '---\ntitle: Pod startup\n---\nRaise the probe delay.\n' }, { scoring: { sessions: true } });
+    capturedSession(IDLE, 'attended');
+    const doc = { key: 'pod-startup', scope: 'user', path: path.join(config.repo.localPath, 'docs', 'pod-startup.md'), score: 1, eligible: true };
+    fs.mkdirSync(path.dirname(recallLogPath(config)), { recursive: true });
+    fs.writeFileSync(recallLogPath(config), `${JSON.stringify({ kind: 'run', ts: '2026-10-20T10:00:00.500Z', run: 'run-1', session: IDLE, via: 'env', unambiguous: true, docs: [doc] })}\n`);
+
+    expect(await listed(config, { idle: '6h' })).toEqual({
+      ok: true,
+      list: [{ session: IDLE, source: 'claude-code', publish: false, scorers: ['quality', `teamai:adoption:${createHash('sha256').update('pod-startup').digest('hex').slice(0, 12)}`], demand: 'auto' }],
     });
   });
 
