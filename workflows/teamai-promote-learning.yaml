@@ -1,6 +1,6 @@
 schemaVersion: v1alpha1
 name: teamai-promote-learning
-description: Promote a team learning that is high-confidence and adopted by several members to a skill, rule or doc. The AI picks the category, unless the person gave one, and rewrites the learning for it; it is pushed on a review branch with a pull request that says the category and why, then the learning is marked promoted. Use when the person asks to promote a learning that teamai recall promote lists; teamai recall promote <learning-id> starts it.
+description: Promote an adopted, high-confidence learning to a skill, rule or doc - the AI picks the category unless the person gave one, rewrites the learning for it and opens a pull request that says why, then marks it promoted. Use when the person asks to promote a learning that teamai recall promote lists.
 invoke: ask
 private: true
 inputs: { learning: string, category: string }

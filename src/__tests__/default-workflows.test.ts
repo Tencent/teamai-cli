@@ -6,6 +6,7 @@ import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { listCachedWorkflows, loadCachedWorkflow, loadWorkflowTree } from '../workflow/cache.js';
+import { renderWorkflowSkill } from '../workflow/discovery/render.js';
 import { startRun } from '../workflow/engine.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { buildStartRecord } from '../workflow/records.js';
@@ -104,6 +105,20 @@ describe('default workflows', () => {
     });
     const tree = await loadWorkflowTree(config, learnings);
     expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-session', 'teamai-score']);
+  });
+
+  it('keep the whole description of each one an agent may start in the skill teamai pull generates for it', async () => {
+    const config = testConfig();
+    await syncScorersThenWorkflows(config);
+    const advertised = (await listCachedWorkflows(config)).flatMap(({ definition: { name, alias, description, invoke } }) => (invoke === 'ask' || invoke === 'allow' ? [{ name, alias, description, invoke }] : []));
+
+    expect(advertised.map(({ name }) => name)).toContain('teamai-import-from-mr');
+    for (const { name, alias, description, invoke } of advertised) {
+      const skill = renderWorkflowSkill({ name, alias, description, invoke, source: 'default', skill: name }, 'claude');
+      const kept = JSON.parse(skill.split('\n').find((line) => line.startsWith('description: '))?.slice('description: '.length) ?? '""');
+
+      expect(kept, `${name}: shorten its description so the generated skill keeps all of it`).toContain(description.replace(/\s+/g, ' ').trim().replace(/\.$/, ''));
+    }
   });
 
   it('are never written to the workflow cache', async () => {
