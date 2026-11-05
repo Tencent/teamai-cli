@@ -1,0 +1,9 @@
+{
+  "name": "@teamai/tool-core",
+  "private": true,
+  "type": "module",
+  "description": "The tool contract and registry every tool family implements; bundled into teamai-cli.",
+  "exports": {
+    "./registry": "./src/registry.ts"
+  }
+}
