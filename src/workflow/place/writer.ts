@@ -162,7 +162,10 @@ export async function finishWriter(input: {
    * Absent: commit the tree, as a place TeamAI made does.
    */
   reported?: readonly string[];
-  /** A failure the step already has. Kept when the tree has paths outside `reported`, so that failure is not replaced. */
+  /**
+   * A failure the step already has. Kept when the tree has paths outside `reported` and this failure stopped the step
+   * before it ran. A failure from a step that ran is replaced, so the report names the unreported paths.
+   */
   already?: WorkflowFailure;
 }): Promise<{ changes?: StepChanges; failure?: WorkflowFailure; unpushed?: string }> {
   const { dir, step, workspace, rangeFrom, conflicts, saved, failed, reported, already } = input;
@@ -189,7 +192,9 @@ export async function finishWriter(input: {
     const missing = listed.paths.filter((relative) => !reported.includes(relative) && !prepared.paths.has(relative)).sort((left, right) => left.localeCompare(right));
 
     if (missing.length > 0) {
-      return { failure: already ?? { code: 'unreported_changes', message: unreportedChangesMessage(step, dir, missing, 'which the step did not report changing, so nothing was committed or pushed.') } };
+      const kept = already !== undefined && stoppedBeforeTheStep(already.code) ? already : undefined;
+
+      return { failure: kept ?? { code: 'unreported_changes', message: unreportedChangesMessage(step, dir, missing, 'which the step did not report changing, so nothing was committed or pushed.') } };
     }
 
     paths = listed.paths;
@@ -258,6 +263,16 @@ async function unchangedMergePreparation(dir: string, dirty: readonly string[]):
   }
 
   return { paths };
+}
+
+/** Failures that stop a step before it runs. A later failure, such as a child's `blocked`, does not hide an unreported path. */
+function stoppedBeforeTheStep(code: string): boolean {
+  return code === 'model_unavailable'
+    || code === 'missing_env'
+    || code === 'setup_failed'
+    || code === 'setup_dirty'
+    || code === 'setup_secret'
+    || code === 'unreported_changes';
 }
 
 const HOST_SETUP_ADVICE = 'If your host\'s setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.';

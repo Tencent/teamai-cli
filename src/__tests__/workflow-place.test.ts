@@ -486,6 +486,29 @@ steps:
     expect(git(dir, 'status', '--porcelain')).toContain('.setup-out');
   });
 
+  it('names the host file when a child that ran also failed', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('ran-blocked', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    fs.writeFileSync(path.join(dir, 'code.txt'), 'step\n');
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    const failure = { code: 'blocked', message: 'Could not finish the edit.' };
+    const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', failure, driver: f.driver }, { changed: ['code.txt'] });
+
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message: expect.stringContaining('.setup-out') } } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+    expect(git(dir, 'status', '--porcelain')).toContain('.setup-out');
+  });
+
   it('names every unreported path', async () => {
     const f = await fixture(`schemaVersion: v1alpha1
 name: build
