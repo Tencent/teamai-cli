@@ -114,11 +114,8 @@ export function addVoteEntry(factors: ConfidenceFactors | undefined, entry: Vote
   return added;
 }
 
-/**
- * Aggregate all vote files and compute per-doc confidence.
- */
-export async function computeAllConfidence(votesDir: string): Promise<Map<string, number>> {
-  const result = new Map<string, number>();
+/** Each doc's factors, summed over every member's vote file in `votesDir`. */
+export async function aggregateConfidenceFactors(votesDir: string): Promise<Map<string, ConfidenceFactors>> {
   const { readUserVotes } = await import('../votes.js');
   const files = await listFiles(votesDir);
   const aggregated = new Map<string, ConfidenceFactors>();
@@ -135,7 +132,16 @@ export async function computeAllConfidence(votesDir: string): Promise<Map<string
     }
   }
 
-  for (const [docId, factors] of aggregated) result.set(docId, computeConfidence(factors));
+  return aggregated;
+}
+
+/**
+ * Aggregate all vote files and compute per-doc confidence.
+ */
+export async function computeAllConfidence(votesDir: string): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+
+  for (const [docId, factors] of await aggregateConfidenceFactors(votesDir)) result.set(docId, computeConfidence(factors));
 
   return result;
 }
