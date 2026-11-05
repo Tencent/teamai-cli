@@ -493,9 +493,11 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。文件按 `teamai pull` 的方式校验，无效文件在任何评审运行前以 pull 的提示失败。评审方式与缓存的评分器相同，也支持 `--batch` 和在会话内运行。
+推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。文件按 `teamai pull` 的方式校验，无效文件在任何运行开始前以 pull 的提示失败。该命令在 `--driver` 或 `workflows.driver` 指定的 driver 上启动[默认工作流](workflow.md#默认工作流) `teamai-try-scorer`，都未指定时用 local。它用该文件和 `store: false` 运行两次 [`teamai-score`](#teamai-score-工作流)：一次评判会话，一次只评判会话的第一条提示，然后由 `teamai score report` 读取两次结论。评审方式与缓存的评分器相同，也支持 `--batch`：本机没有工具能按文件的 `model` 或 `isolation` 接手的评审，会让运行以 `confined_pending` 停下等待。
 
 文件的标签从不保存，因此该命令不接受 `--push`，`--run` 也只接受评分器名称，与文件一起给出的评分器名称会被拒绝：请用单独的命令评判它。输出给出标签及其理由，并带 `"stored": false`。旁边的 `stored` 列出本机为该会话和同名评分器保存的最新标签，每个评分标准一条，便于看出修改是否改变了结论。`control` 是用同一文件只对会话的第一条提示再评审一次的结果。它通过时会附带警告：该评分标准会让 agent 什么都没做的会话通过，可能并未评判 agent 的工作。它只警告、从不失败，因为评分标准可能本就是评判提示本身。
+
+`teamai-try-scorer` 是 `invoke: deny`，所以在 agent 会话中该命令返回 `invoke_denied`。请让 agent 使用 `/teamai-new-scorer`：它和你一起编写评分器，以同样的方式在你指定的会话上试用，展示结论，并在把 `scorers/<name>.md` 作为合并请求提交给团队之前征得你的同意。
 
 工作流或整个团队分支用 `teamai pull --team-ref <branch>` 试用（[分发](distribution.md)）。
 
@@ -799,7 +801,8 @@ $ teamai pull
 
 ```text
 teamai-score   private, invoke: deny, timeout 336h
-inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named }
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named, files: [string], store: boolean, control: boolean }
+defaults: { inputs: { files: [], store: true, control: false } }
 
 plan           teamai score plan → 各组：共用一次评审调用、走相同阶段的评分器
 score          每组一次：
@@ -808,11 +811,11 @@ score          每组一次：
   judge        限定在证据目录里的提示步骤，除非某个阶段已经判定或设置了 label
   label        teamai score label → 每个评分器的标签
   write        teamai score write → scores/labels.jsonl 和待发布队列
-  publish      teamai score publish → 把本成员待发布的标签发布到 teamai-reports
+  publish      teamai score publish → 把本成员待发布的标签发布到 teamai-reports；store 为 false 时跳过
   settle       teamai score settle，在该组的某个步骤出错之后
 ```
 
-`subject` 为 `run:<run>:<step>:<pass>`、`session:<source>:<id>` 或 `team-session:<author>:<archive>`。运行是 `private` 的：它和评审者的推理都留在本机。`invoke: deny` 让任何 agent 会话都不能启动它，所以 agent 从不为自己的工作打标签。在 `teamai-score` 尝试之外运行的 score 动词返回 `score_attempt_required`。
+`subject` 为 `run:<run>:<step>:<pass>`、`session:<source>:<id>` 或 `team-session:<author>:<archive>`。`files`、`store` 和 `control` 有[默认值](workflow-advanced.md#给输入设默认值)，所以运行 `teamai-score` 的步骤可以不传它们；[`teamai-try-scorer`](#试用评分器文件) 设置它们来用评分器文件评判会话，`store: false` 不写入也不发布任何标签，`control: true` 只评判会话的第一条提示。运行是 `private` 的：它和评审者的推理都留在本机。`invoke: deny` 让任何 agent 会话都不能启动它，所以 agent 从不为自己的工作打标签。在 `teamai-score` 尝试之外运行的 score 动词返回 `score_attempt_required`。
 
 ### 为团队替换它
 
@@ -835,7 +838,7 @@ pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
 
 | 代码 | 该文件 |
 |---|---|
-| `score_override_contract` | 改变了 `inputs` 或任何 `outputs`，去掉了 `private: true`，或把 `invoke` 设为 `deny` 以外的值 |
+| `score_override_contract` | 改变了 `inputs`、它们的 `defaults` 或任何 `outputs`，去掉了 `private: true`，或把 `invoke` 设为 `deny` 以外的值 |
 | `score_override_command` | 运行的命令不是带有 teamai 版本所给参数的 score 动词，给动词的 `env` 不同，或添加了 `finally` 步骤或 `setup` 命令 |
 | `score_override_workflow_step` | 含有内联 `score` 以外的 `workflow:` 步骤 |
 | `score_override_prompt` | 含有不限定在目录里的提示步骤，或列出 `scorers` 的提示步骤 |

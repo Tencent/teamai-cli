@@ -1086,6 +1086,8 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
 | `teamai-score` | 用团队的[评分器](scorers.md#teamai-score-工作流)给一个工作流 pass 或会话打标签。由 [`teamai score`](scorers.md#按需评分) 和 `teamai-share-session` 启动 | 从不：`invoke: deny`，任何 agent 会话都不能启动它 |
+| `teamai-try-scorer` | 通过 `store: false` 的 `teamai-score`，用评分器文件评判一个会话和只含其第一条提示的会话，不保存任何标签。由 [`teamai score --scorer <file>`](scorers.md#试用评分器文件) 启动。私有 | 从不：`invoke: deny` |
+| `teamai-new-scorer` | 与用户一起编写评分器，用 `teamai-try-scorer` 试用，再从[团队工作区](#团队工作区)把 `scorers/<name>.md` 作为拉取请求提交给团队。输入：`session`、`source` | 始终：`invoke: ask`，agent 在用户同意后启动它 |
 | `teamai-draft-learning-updates` | 为团队经常召回却很少采用的每个 doc、rule 和 skill 起草更新，写成它旁边的 `<entry>.draft.md`，由 [`teamai recall maintenance --update-quality`](knowledge.md#知识库维护) 启动。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |
 | `teamai-promote-learning` | 把一条经验晋升为 skill、rule 或 doc：AI 选择类别（`--category` 给出时除外）并改写经验，结果推送到评审分支，并附带说明类别和理由的拉取请求，由 [`teamai recall promote <learning-id>`](knowledge.md#知识库维护) 启动。输入：`learning`、`category`（`''` 表示由 AI 选择）。私有 | 始终：`invoke: ask`，agent 在用户同意后启动它 |
 | `teamai-codebase-deep-enrich` | 为项目的组件写设计文档（一次五个），然后写架构总览和图谱文档，由 [`teamai codebase --deep-enrich`](knowledge.md#代码知识图谱) 启动。输入：`wiki_root`、`project`、`max_modules`（`0` 表示全部）、`concurrency`。私有 | 从不按名称启动：`invoke: deny`。该命令在 agent 会话中也能运行它 |

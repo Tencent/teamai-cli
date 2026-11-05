@@ -493,9 +493,11 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any judge runs. The judge runs as it does for a cached scorer, also with `--batch` and inside a session.
+Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any run starts. The command starts the [default workflow](workflow.md#default-workflows) `teamai-try-scorer` on the driver `--driver` or `workflows.driver` names, else local. It runs [`teamai-score`](#the-teamai-score-workflow) twice with the file and `store: false`, on the session and on its first prompt alone, then `teamai score report` reads both verdicts. The judge runs as it does for a cached scorer, also with `--batch`: a judge no tool here can take for the file's `model` or `isolation` holds the run with `confined_pending`.
 
 The file's label is never stored, so the command takes no `--push`, `--run` takes scorer names only, and a scorer name beside a file is refused: score it in a command of its own. The output prints the label with its reasoning and `"stored": false`. Next to it, `stored` lists the newest label kept on this machine for that session and the scorer of the same name, one per rubric, so you see whether your edit changes the verdict. `control` is the file judged a second time, on the session's first prompt alone. When it passes, it carries a warning: the rubric passes a session where the agent did nothing, so it may not judge the work. It warns and never fails, since a rubric may judge the prompt by design.
+
+`teamai-try-scorer` is `invoke: deny`, so from an agent session the command answers `invoke_denied`. Ask the agent for `/teamai-new-scorer` instead. It writes the scorer with you, tries it the same way on the session you name, shows the verdict, and asks before it proposes `scorers/<name>.md` to the team as a pull request.
 
 A workflow or a whole team branch is tried with `teamai pull --team-ref <branch>` ([distribution](distribution.md)).
 
@@ -799,7 +801,8 @@ Put each `{{ … }}` of the frontmatter inside a double-quoted string, as above:
 
 ```text
 teamai-score   private, invoke: deny, timeout 336h
-inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named }
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named, files: [string], store: boolean, control: boolean }
+defaults: { inputs: { files: [], store: true, control: false } }
 
 plan           teamai score plan → the groups: scorers that share one judge launch and the same stages
 score          once per group:
@@ -808,11 +811,11 @@ score          once per group:
   judge        a prompt confined to the evidence directory, unless a stage decided or label is set
   label        teamai score label → each scorer's label
   write        teamai score write → scores/labels.jsonl and the pending outbox
-  publish      teamai score publish → this member's pending labels, published to teamai-reports
+  publish      teamai score publish → this member's pending labels, published to teamai-reports; skipped when store is false
   settle       teamai score settle, after a step of the group broke
 ```
 
-`subject` is `run:<run>:<step>:<pass>`, `session:<source>:<id>` or `team-session:<author>:<archive>`. The run is `private`: it and the judge's reasoning stay on this machine. `invoke: deny` keeps every agent session from starting it, so an agent never labels its own work. A score verb run outside a `teamai-score` attempt answers `score_attempt_required`.
+`subject` is `run:<run>:<step>:<pass>`, `session:<source>:<id>` or `team-session:<author>:<archive>`. `files`, `store` and `control` have [defaults](workflow-advanced.md#give-an-input-a-default), so a step that runs `teamai-score` may leave them out; [`teamai-try-scorer`](#try-a-scorer-file) sets them to judge scorer files on a session, `store: false` writes and publishes no label, and `control: true` judges the session's first prompt alone. The run is `private`: it and the judge's reasoning stay on this machine. `invoke: deny` keeps every agent session from starting it, so an agent never labels its own work. A score verb run outside a `teamai-score` attempt answers `score_attempt_required`.
 
 ### Replace it for your team
 
@@ -835,7 +838,7 @@ Pull refuses a file that changes what a label means, and teamai's default runs i
 
 | Code | The file |
 |---|---|
-| `score_override_contract` | changes `inputs` or any `outputs`, drops `private: true`, or sets `invoke` to anything but `deny` |
+| `score_override_contract` | changes `inputs`, their `defaults`, or any `outputs`, drops `private: true`, or sets `invoke` to anything but `deny` |
 | `score_override_command` | runs a command other than a score verb with the arguments teamai's gives it, gives a verb other `env`, or adds a `finally` step or a `setup` command |
 | `score_override_workflow_step` | has a `workflow:` step other than the inline `score` |
 | `score_override_prompt` | has a prompt step not confined to a directory, or one that lists `scorers` |
