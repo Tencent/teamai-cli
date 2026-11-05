@@ -723,8 +723,24 @@ steps:
 
 命令在 `docs/api/<area>/` 下写的文件留在检出中，步骤成功。其他地方的改动仍会让它以 `read_only_dirty` 失败，移动过的 HEAD 从不保留。
 
+命令写入调用方指定的目录（可能在检出之外）时，列出那个输入：
+
+```yaml
+schemaVersion: v1alpha1
+name: render-site
+description: Render the site into the directory the caller names.
+inputs: { out: string }
+steps:
+  - id: render
+    command: npm run site:build -- --out "$OUT"
+    env: { OUT: "{{ inputs.out }}" }
+    writes: ["{{ inputs.out }}"]
+```
+
+`teamai workflow start render-site --inputs '{"out":"/home/alice/site"}'` 渲染出一个绝对路径。它在检出之内时，其下的改动和相对路径一样被保留。它在检出之外时，命令可以随意写入：写在那里的内容不会弄脏检出。
+
 - 只有命令步骤可以写 `writes`。
-- pull 拒绝绝对路径、离开检出的路径，以及读取 `inputs` 之外内容的模板。渲染后落在检出之外的路径会让步骤在运行前以 `invalid_template` 失败。
+- pull 拒绝文件里直接写的绝对路径、离开检出的路径，以及读取 `inputs` 之外内容的模板。模板渲染出离开检出的相对路径或空值时，步骤在运行前以 `invalid_template` 失败。
 
 ## 克隆工作区
 

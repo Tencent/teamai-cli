@@ -141,10 +141,10 @@ steps:
     writes: docs/
 `)).toEqual([
       'workflows/ask.yaml:11: field "steps[1].writes": step "ask" writes is only allowed on a command step',
-      'workflows/ask.yaml:15: field "steps[2].writes[0]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it',
-      'workflows/ask.yaml:15: field "steps[2].writes[1]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it',
-      'workflows/ask.yaml:15: field "steps[2].writes[2]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it',
-      'workflows/ask.yaml:15: field "steps[2].writes[3]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it',
+      'workflows/ask.yaml:15: field "steps[2].writes[0]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it; name a directory elsewhere with an input, such as "{{ inputs.dir }}"',
+      'workflows/ask.yaml:15: field "steps[2].writes[1]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it; name a directory elsewhere with an input, such as "{{ inputs.dir }}"',
+      'workflows/ask.yaml:15: field "steps[2].writes[2]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it; name a directory elsewhere with an input, such as "{{ inputs.dir }}"',
+      'workflows/ask.yaml:15: field "steps[2].writes[3]": step "wide" writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it; name a directory elsewhere with an input, such as "{{ inputs.dir }}"',
       'workflows/ask.yaml:15: field "steps[2].writes[4]": step "wide" writes template {{ steps.list.outputs.dir }}: a writes template reads only inputs',
       'workflows/ask.yaml:19: field "steps[3].writes": step "single" writes must be a list of paths, such as [docs/]',
     ]);
@@ -236,6 +236,16 @@ steps:
     writes: ["{{ inputs.area }}/"]
 `;
 
+const DRAFT_ANYWHERE = `schemaVersion: v1alpha1
+name: draft
+description: Write drafts into a directory the caller names.
+inputs: { dir: string }
+steps:
+  - id: write
+    command: node -e "process.exit(0)"
+    writes: ["{{ inputs.dir }}"]
+`;
+
 describe('writes in the checkout', () => {
   it('keeps a change under the paths a command writes, rendered from its inputs, and fails one outside them read_only_dirty', async () => {
     const { config, checkout, client } = await fixture({ draft: DRAFT });
@@ -256,6 +266,28 @@ describe('writes in the checkout', () => {
     expect(await report((dir) => fs.writeFileSync(path.join(dir, 'README.md'), 'changed\n'))).toMatchObject({
       data: { step: { id: 'write', status: 'failed' } },
     });
+  });
+
+  it('keeps a change under an absolute path a writes template renders inside the checkout, and runs a step whose path renders outside it', async () => {
+    const { config, checkout, client } = await fixture({ draft: DRAFT_ANYWHERE });
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-answer-elsewhere-')); dirs.push(elsewhere);
+    const report = async (dir: string, change: () => void): Promise<unknown> => {
+      const run = await started(client, 'draft', checkout, { dir });
+      const lease = await nextLease(client, run);
+      expect(lease).toMatchObject({ writes: [dir] });
+
+      return withRunLock(config, run, async (lock) => {
+        await client.prepare(lock, lease);
+        change();
+
+        return client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver }, { lock });
+      }, { waitMs: 0 });
+    };
+
+    const docs = path.join(checkout, 'docs');
+    expect(await report(docs, () => fs.writeFileSync(path.join(docs, 'guide.md.draft.md'), 'draft\n'))).toMatchObject({ data: { step: { id: 'write', status: 'succeeded' } } });
+    expect(await report(docs, () => fs.writeFileSync(path.join(checkout, 'README.md'), 'changed\n'))).toMatchObject({ data: { step: { id: 'write', status: 'failed' } } });
+    expect(await report(elsewhere, () => fs.writeFileSync(path.join(elsewhere, 'page.md'), 'page\n'))).toMatchObject({ data: { step: { id: 'write', status: 'succeeded' } } });
   });
 
   it('fails a step whose writes renders a path outside the checkout before it runs', async () => {

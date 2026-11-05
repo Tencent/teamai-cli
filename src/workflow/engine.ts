@@ -301,9 +301,9 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   const texts: RenderedLease = {};
   const prompt = rendered.get('prompt') ?? rendered.get('answer');
   const writes = (definition.writes ?? []).map((_, index) => rendered.get(`writes[${index}]`) ?? '');
-  const outside = writes.find((written) => !Writes.isCheckoutPath(written));
+  const outside = writes.find((written) => !Writes.isRenderedPath(written));
 
-  if (outside !== undefined) return { code: 'invalid_template', message: `step "${state.id}" writes ${JSON.stringify(outside)}, which is not a path inside the checkout; give writes a path relative to it, such as docs/` };
+  if (outside !== undefined) return { code: 'invalid_template', message: `step "${state.id}" writes ${JSON.stringify(outside)}, which is neither a path inside the checkout nor an absolute path; give writes a path relative to the checkout, such as docs/, or an input that names a directory` };
 
   if (definition.writes) texts.writes = writes;
   const model = rendered.get('model');

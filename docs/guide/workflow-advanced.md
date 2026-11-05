@@ -723,8 +723,24 @@ steps:
 
 A file the command writes under `docs/api/<area>/` stays in the checkout, and the step succeeds. A change anywhere else still fails it `read_only_dirty`, and a moved HEAD is never kept.
 
+A command that writes into a directory the caller names, which may be outside the checkout, lists the input:
+
+```yaml
+schemaVersion: v1alpha1
+name: render-site
+description: Render the site into the directory the caller names.
+inputs: { out: string }
+steps:
+  - id: render
+    command: npm run site:build -- --out "$OUT"
+    env: { OUT: "{{ inputs.out }}" }
+    writes: ["{{ inputs.out }}"]
+```
+
+`teamai workflow start render-site --inputs '{"out":"/home/alice/site"}'` renders an absolute path. Inside the checkout, a change under it is kept as under a relative path. Outside the checkout, the command writes there freely: nothing it writes there can dirty the checkout.
+
 - Only a command step takes `writes`.
-- Pull rejects an absolute path, a path that leaves the checkout, and a template that reads anything but `inputs`. A path that renders outside the checkout fails the step `invalid_template` before it runs.
+- Pull rejects an absolute path written in the file, a path that leaves the checkout, and a template that reads anything but `inputs`. A template that renders a relative path leaving the checkout, or nothing, fails the step `invalid_template` before it runs.
 
 ## Clone workspaces
 

@@ -1976,7 +1976,7 @@ function parseWrites(node: Node | null | undefined, field: string, label: string
     const written = scalarString(isYamlNode(entry) ? entry : undefined);
 
     if (written === undefined || (!findTemplate(written, false) && !Writes.isCheckoutPath(written))) {
-      diagnostics.push(locate(file, lineCounter, isYamlNode(entry) ? entry : node, `${field}[${index}]`, `${label} writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it`));
+      diagnostics.push(locate(file, lineCounter, isYamlNode(entry) ? entry : node, `${field}[${index}]`, `${label} writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it; name a directory elsewhere with an input, such as "{{ inputs.dir }}"`));
     }
 
     return written ?? '';
