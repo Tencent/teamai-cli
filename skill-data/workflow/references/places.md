@@ -33,7 +33,7 @@ A committing step's brief asks for `changed`: every path the step created, edite
 {"kind":"output","output":"Fixed the null check.","changed":["src/app.ts","src/legacy.ts"]}
 ```
 
-TeamAI commits those paths and pushes the branch. A path git would commit that is not in the list fails the step with `unreported_changes`. Nothing is committed or pushed, and the file stays in the place.
+TeamAI commits those paths and pushes the branch. A path git would commit that is not in the list fails the step with `unreported_changes`. Nothing is committed or pushed, and the file stays in the place. A file the preparation merge staged, and that the step left as the merge wrote it, is part of that merge. It does not have to be in the list.
 
 A host that keeps writing after `adopt` hits that. `adopt` saw a clean tree. The script then writes `.setup-out`, which git does not ignore. These host files are examples. This repository does not run them.
 

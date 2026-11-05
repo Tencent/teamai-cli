@@ -29,7 +29,7 @@ import { runSetup } from './setup.js';
 import { finishTeamClone, openTeamClone, removeTeamClone, teamKeyOf } from './team.js';
 import { finishDataCheckout, openDataCheckout, removeDataCheckout } from './data.js';
 import { commitPathsOf } from './worktree-snapshot.js';
-import { finishWriter, mergeBranches, rememberConflicts, unreportedChangesMessage, withUnpushed } from './writer.js';
+import { finishWriter, mergeBranches, recordMergePreparation, rememberConflicts, unreportedChangesMessage, withUnpushed } from './writer.js';
 
 /**
  * The checkout a driver working from `cwd` makes its places in: `checkout`, the one the run started from, unless `cwd`
@@ -465,6 +465,13 @@ async function stageRole(input: {
     const merged = await mergeBranches({ dir, run: base.run, step: lease.step, executor: lease.executor, merge: workspace.merge });
 
     if (merged.kind === 'failed') return merged;
+
+    if (opening.adopted) {
+      const unreadable = await recordMergePreparation(dir);
+
+      if (unreadable) return { kind: 'failed', failure: { code: 'workspace_base', message: `Step "${lease.step}" could not list the merge in ${dir}, so the step did not run. Git said: ${unreadable}.` } };
+    }
+
     const range: Pick<Writer, 'rangeFrom'> = {};
 
     if (rangeFrom) range.rangeFrom = rangeFrom;

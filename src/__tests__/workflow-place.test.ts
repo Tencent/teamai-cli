@@ -604,6 +604,64 @@ steps:
     expect(edited?.message).not.toContain('.setup-out');
   });
 
+  const JOIN = `schemaVersion: v1alpha1
+name: build
+description: Join two sides in a place the host makes.
+alias: ship
+steps:
+  - id: left
+    workspace: new
+    prompt: Write the left side.
+  - id: right
+    needs: []
+    workspace: new
+    prompt: Write the right side.
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Join both sides.
+`;
+
+  /** Runs both sides, then adopts the join at its start with `a.ts` in conflict and `b.ts` staged by the merge. */
+  async function adoptedJoin(name: string) {
+    const f = await fixture(JOIN);
+    for (let side = 0; side < 2; side += 1) {
+      const lease = await next(f);
+      const file = path.join(lease.cwd, 'a.ts');
+      fs.writeFileSync(file, lease.step === 'left' ? 'left\n' : 'right\n');
+      if (lease.step === 'right') fs.writeFileSync(path.join(lease.cwd, 'b.ts'), 'from right\n');
+      expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    }
+    const answer = await f.client.next(f.runId, body(f));
+    if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+    const join = { raw: answer.data.lease, ...LeaseSchema.parse(answer.data.lease) };
+    const dir = path.join(path.dirname(f.work), 'hosts', name);
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, join.workspace.start.commit);
+    const run = RunIdSchema.parse(f.runId);
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, join.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    expect(fs.readFileSync(path.join(dir, 'a.ts'), 'utf8')).toContain('<<<<<<<');
+    expect(git(dir, 'status', '--porcelain')).toContain('b.ts');
+    return { f, dir, join };
+  }
+
+  it('commits a preparation merge the child did not report when the child only resolved the conflict', async () => {
+    const { f, dir, join } = await adoptedJoin('merged');
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'resolved\n');
+    expect(await f.client.report(f.runId, { attempt: join.attempt, revision: join.revision, outcome: 'success', driver: f.driver }, { changed: ['a.ts'] }))
+      .toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+    expect(git(f.remote, 'show', `${join.workspace.branch}:a.ts`)).toBe('resolved');
+    expect(git(f.remote, 'show', `${join.workspace.branch}:b.ts`)).toBe('from right');
+  });
+
+  it('still rejects a preparation merge file the child changed and did not report', async () => {
+    const { f, dir, join } = await adoptedJoin('tampered');
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'resolved\n');
+    fs.writeFileSync(path.join(dir, 'b.ts'), 'tampered\n');
+    const answer = await f.client.report(f.runId, { attempt: join.attempt, revision: join.revision, outcome: 'success', driver: f.driver }, { changed: ['a.ts'] });
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message: expect.stringContaining('b.ts') } } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(join.workspace.start.commit);
+  });
+
   it.each([
     { end: 'fails', report: (f: Awaited<ReturnType<typeof fixture>>, lease: { attempt: string; revision: number }) => f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', message: 'broke', driver: f.driver }), answer: { data: { accepted: true } } },
     {

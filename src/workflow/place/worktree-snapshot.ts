@@ -66,6 +66,20 @@ export async function commitPathsOf(dir: string, run: Git = git): Promise<{ path
   return { paths: pathsGitWouldCommit(status.stdout) };
 }
 
+/** Paths in `text` that are already tracked. An untracked file is not part of a merge prepare staged. */
+export function trackedPathsGitWouldCommit(text: string): string[] {
+  return porcelainRecords(text).filter((record) => record.mark !== '??' && record.mark !== '!!').flatMap((record) => record.paths);
+}
+
+/** The tracked paths in `dir` that git would commit, or why `git status` could not be read. */
+export async function trackedCommitPathsOf(dir: string, run: Git = git): Promise<{ paths: string[] } | { error: string }> {
+  const status = await run(dir, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+
+  if (status.code !== 0) return { error: status.stderr.trim() || 'git status failed' };
+
+  return { paths: trackedPathsGitWouldCommit(status.stdout) };
+}
+
 async function hashPath(workspace: string, relative: string): Promise<string> {
   const full = path.resolve(workspace, relative);
 

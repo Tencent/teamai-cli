@@ -657,6 +657,13 @@ export async function replaceConfig(dir: string, from: string): Promise<void> {
   }
 }
 
+/** How the overlay records `relative` in `dir`, or `absent` when that path is not there. */
+export async function worktreeContentKey(dir: string, relative: string): Promise<string> {
+  const files = await fileManifest(dir, [relative]);
+
+  return files[relative] ?? 'absent';
+}
+
 /** Records the agent files present after team delivery, so that delivery is not a step edit. */
 export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
   const paths = await savedConfigPaths(saved);

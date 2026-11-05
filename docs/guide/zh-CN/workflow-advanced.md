@@ -1264,7 +1264,7 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 
 要准备驱动已经领取的 attempt，运行 `next <run> --prepare --attempt <attempt>`。运行不再把该 attempt 租给这个驱动时，返回 `wrong_attempt`。加上 `--adopt <dir>` 时，attempt 改在宿主创建的位置运行：该仓库的一个干净 worktree，位于租约的工作区分支上，或分离在其起点，就像 `git worktree add` 创建的那样。不符合的位置返回 `adopt_mismatch`，attempt 仍保持租约。TeamAI 在那里像在自己的 worktree 中一样 commit 和 push，但从不删除该位置。
 
-提示词步骤的子代理在 `attempts/<attempt>/result.json` 的 `changed` 里列出它改过的每个路径，相对该位置。重命名要列出旧路径和新路径。TeamAI 只提交这些路径。git 会提交、但名单里没有的路径让步骤以 `unreported_changes` 失败：什么都不 commit、不 push，文件留在原地。
+提示词步骤的子代理在 `attempts/<attempt>/result.json` 的 `changed` 里列出它改过的每个路径，相对该位置。重命名要列出旧路径和新路径。TeamAI 只提交这些路径。git 会提交、但名单里没有的路径让步骤以 `unreported_changes` 失败：什么都不 commit、不 push，文件留在原地。准备时的合并已经暂存、并且步骤没有再改的文件属于这次合并，不必写进名单。
 
 ```json
 {"kind":"output","output":"Fixed the null check.","changed":["src/app.ts","src/legacy.ts"]}
