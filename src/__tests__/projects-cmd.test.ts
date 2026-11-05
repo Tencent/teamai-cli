@@ -32,7 +32,7 @@ const logMocks = vi.hoisted(() => ({
 }));
 vi.mock('../utils/logger.js', () => ({ log: logMocks }));
 
-import { projectsAdd, projectsList, projectsUpdate, projectsRemove } from '../projects-cmd.js';
+import { projectsAdd, projectsList, projectsRemove, projectsSet, projectsUpdate } from '../projects-cmd.js';
 import { autoDetectInit } from '../config.js';
 
 describe('projects add / update / remove (#756)', () => {
@@ -71,6 +71,9 @@ describe('projects add / update / remove (#756)', () => {
 
   afterEach(async () => {
     await fse.remove(repoDir);
+    // process.exitCode is global state: leaving it set would leak into the
+    // next case and, worse, into vitest's own exit status.
+    process.exitCode = 0;
   });
 
   describe('add', () => {
@@ -286,6 +289,108 @@ describe('projects add / update / remove (#756)', () => {
       } finally {
         printed.mockRestore();
       }
+    });
+  });
+
+  // Every one of these commands refused the request it was given. The message
+  // is on stderr either way; the exit code is what a script or CI job reads, so
+  // it has to say the command failed rather than only looking like it on screen.
+  describe('exit code', () => {
+    it('set: 1 when the team has no projects manifest', async () => {
+      await projectsSet(['alpha'], {});
+
+      expect(errors()).toContain('defines no projects');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('set: 1 for an unknown project', async () => {
+      await writeManifest([{ id: 'alpha', resources: { skills: ['alpha'] } }]);
+
+      await projectsSet(['nosuchproject'], {});
+
+      expect(errors()).toContain('Unknown project "nosuchproject"');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('set: stays 0 when the selection goes through', async () => {
+      await writeManifest([{ id: 'alpha', resources: { skills: ['alpha'] } }]);
+
+      await projectsSet(['alpha'], { dryRun: true });
+
+      expect(process.exitCode).toBe(0);
+    });
+
+    it('add: 1 when no namespace is given', async () => {
+      await projectsAdd('alpha', { namespaces: ' , ' });
+
+      expect(errors()).toContain('At least one namespace is required');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('add: 1 when the manifest cannot be read', async () => {
+      await fse.ensureDir(path.dirname(manifestPath()));
+      await fse.writeFile(manifestPath(), 'version: 1\nprojects: [\n');
+
+      await projectsAdd('alpha', { namespaces: 'alpha' });
+
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('add: 1 when the edit fails validation', async () => {
+      await projectsAdd('../escape', { namespaces: 'common' });
+
+      expect(errors()).toContain('Invalid projects manifest');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('add: 1 for a project that already exists', async () => {
+      await writeManifest([{ id: 'alpha', resources: { skills: ['alpha'] } }]);
+
+      await projectsAdd('alpha', { namespaces: 'alpha' });
+
+      expect(errors()).toContain('Project "alpha" already exists');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('update: 1 with nothing to update', async () => {
+      await projectsUpdate('alpha', {});
+
+      expect(errors()).toContain('Nothing to update');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('update: 1 for an unknown project', async () => {
+      await writeManifest([{ id: 'alpha', resources: { skills: ['alpha'] } }]);
+
+      await projectsUpdate('ghost', { addNamespaces: 'extra' });
+
+      expect(errors()).toContain('Unknown project "ghost"');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('update: 1 rather than leave a project with no namespace', async () => {
+      await writeManifest([{ id: 'alpha', resources: { knowledge: ['k'], skills: ['alpha'], learnings: ['l'], agents: ['a'] } }]);
+
+      await projectsUpdate('alpha', { removeNamespaces: 'k,alpha,l,a' });
+
+      expect(errors()).toContain('Cannot remove every namespace');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('remove: 1 for an unknown project', async () => {
+      await writeManifest([{ id: 'alpha', resources: { skills: ['alpha'] } }]);
+
+      await projectsRemove('ghost', {});
+
+      expect(errors()).toContain('Unknown project "ghost"');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('remove: 1 when the team has no projects manifest', async () => {
+      await projectsRemove('alpha', {});
+
+      expect(errors()).toContain('defines no projects');
+      expect(process.exitCode).toBe(1);
     });
   });
 });

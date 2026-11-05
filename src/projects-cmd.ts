@@ -124,6 +124,7 @@ export async function projectsSet(
 
   if (!manifest) {
     log.error('This team repo defines no projects (no manifest/projects.yaml).');
+    process.exitCode = 1;
 
     return;
   }
@@ -134,6 +135,7 @@ export async function projectsSet(
   for (const id of requested) {
     if (!validIds.has(id)) {
       log.error(`Unknown project "${id}". Valid projects: ${[...validIds].join(', ') || '(none)'}`);
+      process.exitCode = 1;
 
       return;
     }
@@ -298,6 +300,7 @@ async function editProjectsManifest(
       current = await loadProjectsManifest(repoPath);
     } catch (e) {
       log.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
 
       return;
     }
@@ -310,6 +313,7 @@ async function editProjectsManifest(
       validateProjectsManifest(result.manifest);
     } catch (e) {
       log.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
 
       return;
     }
@@ -343,6 +347,7 @@ export async function projectsAdd(
 
   if (namespaces.length === 0) {
     log.error(`At least one namespace is required. Use --namespaces common,${projectId}`);
+    process.exitCode = 1;
 
     return;
   }
@@ -352,6 +357,7 @@ export async function projectsAdd(
 
     if (findProject(base, projectId)) {
       log.error(`Project "${projectId}" already exists. Use \`teamai projects update ${projectId}\` to modify it.`);
+      process.exitCode = 1;
 
       return null;
     }
@@ -385,6 +391,7 @@ export async function projectsUpdate(
 
   if (toAdd.length === 0 && toRemove.size === 0 && options.name === undefined && options.description === undefined) {
     log.error('Nothing to update. Use --add-namespaces, --remove-namespaces, --name, or --description.');
+    process.exitCode = 1;
 
     return;
   }
@@ -394,6 +401,7 @@ export async function projectsUpdate(
 
     if (!manifest || !existing) {
       log.error(manifest ? unknownProjectMessage(manifest, projectId) : 'This team repo defines no projects (no manifest/projects.yaml).');
+      process.exitCode = 1;
 
       return null;
     }
@@ -411,6 +419,7 @@ export async function projectsUpdate(
 
     if (PROJECT_RESOURCE_TYPES.every((type) => resources[type].length === 0)) {
       log.error(`Cannot remove every namespace from project "${projectId}". Use \`teamai projects remove ${projectId}\` to delete it.`);
+      process.exitCode = 1;
 
       return null;
     }
@@ -436,6 +445,7 @@ export async function projectsRemove(projectId: string, options: GlobalOptions):
     (manifest) => {
       if (!manifest || !findProject(manifest, projectId)) {
         log.error(manifest ? unknownProjectMessage(manifest, projectId) : 'This team repo defines no projects (no manifest/projects.yaml).');
+        process.exitCode = 1;
 
         return null;
       }

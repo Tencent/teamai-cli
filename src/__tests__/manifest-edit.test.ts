@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const reportsMocks = vi.hoisted(() => {
   class EmptyRepoError extends Error {}
@@ -7,18 +7,25 @@ const reportsMocks = vi.hoisted(() => {
 });
 vi.mock('../utils/reports-branch.js', () => reportsMocks);
 
-const gitMocks = vi.hoisted(() => ({ pullRepo: vi.fn().mockResolvedValue('already up to date') }));
+const gitMocks = vi.hoisted(() => ({
+  pullRepo: vi.fn().mockResolvedValue('already up to date'),
+  pushRepoBranch: vi.fn(),
+  checkoutMaster: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../utils/git.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/git.js')>()),
   ...gitMocks,
 }));
 
+const prMocks = vi.hoisted(() => ({ createPrWithFallback: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../push.js', () => prMocks);
+
 const logMocks = vi.hoisted(() => ({ info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 const spin = vi.hoisted(() => ({ succeed: vi.fn(), warn: vi.fn() }));
 vi.mock('../utils/logger.js', () => ({ log: logMocks, spinner: vi.fn(() => ({ start: () => spin })) }));
 
-import { runManifestEdit } from '../manifest-edit.js';
-import type { LocalConfig } from '../types.js';
+import { pushManifestChange, runManifestEdit } from '../manifest-edit.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 function config(kind: 'self' | undefined, localPath: string): LocalConfig {
   return {
@@ -32,6 +39,12 @@ function config(kind: 'self' | undefined, localPath: string): LocalConfig {
 
 describe('runManifestEdit', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  afterEach(() => {
+    // process.exitCode is global state: leaving it set would leak into the
+    // next case and, worse, into vitest's own exit status.
+    process.exitCode = 0;
+  });
 
   it('pulls and edits the team repo clone directly outside single-repo mode', async () => {
     const fn = vi.fn().mockResolvedValue(undefined);
@@ -78,6 +91,7 @@ describe('runManifestEdit', () => {
     await runManifestEdit(config('self', '/business/.teamai'), 'Projects', vi.fn());
 
     expect(logMocks.error).toHaveBeenCalledWith('Projects update failed: boom');
+    expect(process.exitCode).toBe(1);
   });
 
   it('reports an empty repo as is', async () => {
@@ -86,5 +100,50 @@ describe('runManifestEdit', () => {
     await runManifestEdit(config('self', '/business/.teamai'), 'Roles', vi.fn());
 
     expect(logMocks.error).toHaveBeenCalledWith('Repository is empty');
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('pushManifestChange', () => {
+  const localConfig = config('self', '/team-repo');
+  const teamConfig = {
+    team: 'test',
+    description: '',
+    repo: 'https://github.com/team/repo.git',
+    provider: 'github',
+    reviewers: [],
+  } as unknown as TeamaiConfig;
+  const change = {
+    repoPath: '/team-repo',
+    teamConfig,
+    localConfig,
+    commitMsg: '[teamai] Add project "checkout"',
+    prDescription: 'Add project "checkout"',
+  };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  afterEach(() => {
+    process.exitCode = 0;
+  });
+
+  // The manifest is already written locally at this point, so a push that never
+  // opened the PR is the one failure a caller must not read as done.
+  it('reports a push that never reached a PR', async () => {
+    gitMocks.pushRepoBranch.mockRejectedValue(new Error('remote rejected'));
+
+    await pushManifestChange(change);
+
+    expect(logMocks.error).toHaveBeenCalledWith('Push failed: remote rejected');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('stays 0 when the branch and the PR go through', async () => {
+    gitMocks.pushRepoBranch.mockResolvedValue(true);
+
+    await pushManifestChange(change);
+
+    expect(prMocks.createPrWithFallback).toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
   });
 });
