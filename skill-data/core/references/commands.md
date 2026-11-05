@@ -579,7 +579,7 @@ Generated: do not edit by hand. Regenerate with
   - `--upgrade-wiki` (hidden) — Migrate docs/team-codebase/ to teamwiki/ graph format
   - `--lint` — Run global consistency lint over the teamwiki knowledge graph, and count the member's asset relations (assets, relations, without a relation, unresolved)
   - `--reconcile` — Reconcile product and code knowledge in teamwiki
-  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence: starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs to the team repo
+  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs; an --output teamwiki is written by this process
   - `--fix` (hidden) — Deprecated: teamwiki lint has no autofix; runs lint in report-only mode
   - `--status` — Show knowledge-base git baseline (headSha / repoUrl / branch)
   - `--severity <level>` (hidden) — Minimum severity to report: high|medium|low|info

@@ -8,6 +8,7 @@ import type { GlobalOptions } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
 import type { ShortcutEnd } from './workflow-commands.js';
+import type { DeepEnrichResult } from './deep-enrich.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
 
@@ -32,9 +33,15 @@ export interface CodebaseCmdOptions extends GlobalOptions {
 /** How many component docs a deep enrichment asks the tool for at once, as it did before it was a workflow. */
 const DEEP_ENRICH_CONCURRENCY = 5;
 
+/** How a deep enrichment went: the run that wrote a team repo's teamwiki, or what this process wrote into another one. */
+export type DeepEnrichOutcome =
+    | { kind: 'run'; ended: ShortcutEnd | undefined }
+    | { kind: 'in-process'; result: DeepEnrichResult };
+
 /**
- * Starts teamai-codebase-deep-enrich on `project` of `target`, as `codebase --deep-enrich` and the hidden `deep-enrich`
- * do, under the import lock of the team repo that holds the teamwiki, as every command that writes it takes.
+ * Deep-enriches `project` of `target`, as `codebase --deep-enrich` and the hidden `deep-enrich` do, under the import
+ * lock of the team repo that holds the teamwiki, as every command that writes it takes. A team repo's teamwiki is
+ * written by a teamai-codebase-deep-enrich run.
  */
 export async function startDeepEnrich({ target, project, maxModules = 0, json, command }: {
     target: TeamwikiTarget;
@@ -42,18 +49,32 @@ export async function startDeepEnrich({ target, project, maxModules = 0, json, c
     maxModules?: number;
     json: boolean;
     command: string;
-}): Promise<ShortcutEnd | undefined> {
+}): Promise<DeepEnrichOutcome> {
+    if (!target.team) {
+        // A run needs an initialized teamai, and its steps may write only inside the checkout they run in, so a
+        // teamwiki outside a team repo (`--output`, a hidden `--wiki-root`) is still written here.
+        const { deepEnrich } = await import('./deep-enrich.js');
+        const result = await deepEnrich({ project, wikiRoot: target.wikiRoot, maxModules });
+
+        if (!result.complete) process.exitCode = 1;
+
+        return { kind: 'in-process', result };
+    }
+
     const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
     const { runShortcut } = await import('./workflow-commands.js');
     const releaseLock = await lockTeamwiki(target);
 
     try {
-        return await runShortcut({
-            workflow: 'teamai-codebase-deep-enrich',
-            inputs: { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency: DEEP_ENRICH_CONCURRENCY },
-            command,
-            json,
-        });
+        return {
+            kind: 'run',
+            ended: await runShortcut({
+                workflow: 'teamai-codebase-deep-enrich',
+                inputs: { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency: DEEP_ENRICH_CONCURRENCY },
+                command,
+                json,
+            }),
+        };
     } finally {
         await releaseLock();
     }
@@ -62,9 +83,42 @@ export async function startDeepEnrich({ target, project, maxModules = 0, json, c
 /** The teamwiki the hidden `deep-enrich` writes, `--wiki-root` or else the team repo's, with the team repo when it holds it. */
 export async function hiddenDeepEnrichTarget(wikiRoot: string | undefined): Promise<TeamwikiTarget> {
     const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
-    const team = await resolveTeamwiki();
 
-    return wikiRoot === undefined || path.resolve(wikiRoot) === team.wikiRoot ? team : { wikiRoot: path.resolve(wikiRoot) };
+    if (wikiRoot === undefined) return resolveTeamwiki();
+    const { NotInitializedError } = await import('./config.js');
+    const own = path.resolve(wikiRoot);
+
+    try {
+        const team = await resolveTeamwiki();
+
+        return team.wikiRoot === own ? team : { wikiRoot: own };
+    } catch (error) {
+        // A --wiki-root needs no teamai init, as before.
+        if (error instanceof NotInitializedError) return { wikiRoot: own };
+        throw error;
+    }
+}
+
+/** Prints what an in-process deep enrichment wrote, as `codebase --deep-enrich` always did. */
+function printDeepEnrichResult(result: DeepEnrichResult, { evidenceDir, json }: { evidenceDir: string; json: boolean }): void {
+    if (json) {
+        console.log(JSON.stringify({
+            project: result.project,
+            evidenceDir,
+            complete: result.complete,
+            missingComponents: result.missingComponents,
+            missingArchitecture: result.missingArchitecture,
+        }, null, 2));
+    } else if (result.complete) {
+        console.log(`Deep enrichment complete: project=${result.project}`);
+    } else {
+        const parts: string[] = [];
+
+        if (result.missingComponents.length > 0) parts.push(`missing component docs: ${result.missingComponents.join(', ')}`);
+
+        if (result.missingArchitecture) parts.push('missing architecture.md');
+        console.log(`Deep enrichment incomplete: project=${result.project}, ${parts.join(', ')}`);
+    }
 }
 
 // ─── Command handler ─────────────────────────────────────────────────────────
@@ -219,7 +273,15 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             return;
         }
 
-        const ended = await startDeepEnrich({ target, project, json: opts.json === true, command: `teamai codebase --deep-enrich --project ${project}` });
+        const outcome = await startDeepEnrich({ target, project, json: opts.json === true, command: `teamai codebase --deep-enrich --project ${project}` });
+
+        if (outcome.kind === 'in-process') {
+            printDeepEnrichResult(outcome.result, { evidenceDir, json: opts.json === true });
+
+            return;
+        }
+
+        const { ended } = outcome;
         const team = target.team;
 
         // In the team repo, publish deep-enrich output the way `teamai import` does, so the next `teamai push` does not

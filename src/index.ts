@@ -1694,7 +1694,7 @@ const codebaseCommand = program
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph, and count the member\'s asset relations (assets, relations, without a relation, unresolved)')
   .option('--reconcile', 'Reconcile product and code knowledge in teamwiki')
-  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence: starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs to the team repo')
+  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs; an --output teamwiki is written by this process')
   .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
@@ -1928,7 +1928,7 @@ ciCmd
 
 program
   .command('deep-enrich', { hidden: true })
-  .description('Run deep AI knowledge generation for an imported repo: starts the default workflow teamai-codebase-deep-enrich, as codebase --deep-enrich does, without publishing')
+  .description('Run deep AI knowledge generation for an imported repo, as codebase --deep-enrich does, without publishing: the default workflow teamai-codebase-deep-enrich for the team repo\'s teamwiki, this process for another --wiki-root')
   .requiredOption('--project <slug>', 'Project slug (directory name in evidence/code/)')
   .option('--wiki-root <path>', 'Teamwiki root path')
   .option('--max-modules <n>', 'Max modules to process (cost control)', parseInt)

@@ -118,7 +118,7 @@ export const NO_DRY_RUN_PREVIEW = {
   'bind-project': 'writes the local-agent binding',
   'hooks remove': 'edits every AI tool settings file',
   dashboard: 'a long-running server that creates its events file',
-  'deep-enrich': 'hidden; starts teamai-codebase-deep-enrich, which writes the docs that `codebase --deep-enrich` previews',
+  'deep-enrich': 'hidden; writes the docs that `codebase --deep-enrich` previews',
   // Hidden commands that hooks run, never with --dry-run.
   'source reconcile-plugins': 'hook-only',
   track: 'hook-only',

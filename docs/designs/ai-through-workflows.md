@@ -325,8 +325,10 @@ proposes `scorers/<name>.md` to the team as a pull request.
 - The per-item review of an import is the driver's choice prompt; the options and their order stay.
 - A failed classification and an `--update-quality` entry that could not be drafted exit 1.
 - Imported rules, skills and docs land in `rules/`, `skills/` and `docs/` instead of `learnings/`.
-- `codebase --deep-enrich` asks for each component doc once, with no sequential retry of the batch, names each failed
-  step with its retry command, and `--json` prints the run envelope. The hidden `deep-enrich` holds the import lock.
+- In a team repo, `codebase --deep-enrich` asks for each component doc once, with no sequential retry of the batch,
+  names each failed step with its retry command, and `--json` prints the run envelope. The hidden `deep-enrich` holds
+  the import lock. A teamwiki outside a team repo (`--output`, a hidden `--wiki-root`) is still written in-process
+  until a run needs no `teamai init` and a step may write outside its checkout.
 
 ## Test seams
 
