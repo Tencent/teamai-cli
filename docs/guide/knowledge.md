@@ -153,7 +153,19 @@ One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEA
 
 A team can ship its own recall agent: see [Replace the recall agent](sharing.md#replace-the-recall-agent).
 
-Turning recall off does not silence the SessionStart hint for recently merged MRs. That hint points to `teamai import --from-mr`, which can capture and publish a learning before the team enables recall. It has its own switch, so a team can turn it off without touching `contributeHint`:
+Turning recall off does not silence the SessionStart hint for recently merged MRs. That hint lists them and offers the default workflow [`teamai-import-from-mr`](workflow.md#default-workflows), which can capture and publish a learning before the team enables recall:
+
+```text
+[teamai:mr-hint] Found 1 recently merged MR(s) not yet imported into the team knowledge base.
+
+After this task, offer the user to turn these MRs into learnings with the teamai-import-from-mr workflow. Its describe proposes these MRs:
+
+- Retry flaky upload (merged: 2026-11-04) https://github.com/org/repo/pull/123
+
+  teamai workflow start --describe teamai-import-from-mr --driver skill
+```
+
+In that session, describe proposes the MRs the hint listed, and the agent starts the workflow once you agree. In a session teamai launched, the hint names `teamai import --from-mr <url...>` instead. The hint has its own switch, so a team can turn it off without touching `contributeHint`:
 
 ```yaml
 sharing:
@@ -233,7 +245,19 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 `--dir`, `--from-repo`, `--from-repo-list` and `--from-org` run the default workflow [`teamai-import-from-repo`](workflow.md#default-workflows). Each source is extracted with no AI, your AI tool describes its modules and writes its deep docs, and the indexes are rebuilt and published once for the whole batch. A repository that fails does not stop the others: the batch names it and exits 1. While one import writes a `teamwiki/`, another import into it is refused; run it again once the first has finished.
 
-`--from-mr` takes several MR URLs. Each draft is still confirmed on its own (or none with `--all`), the accepted learnings are published once at the end, and each repository's teamwiki is updated once. An MR that fails does not stop the rest; the run ends with a summary and exits non-zero if any failed.
+`--from-mr` runs the default workflow [`teamai-import-from-mr`](workflow.md#default-workflows). Your AI tool drafts a learning from each MR first, then you review each draft on its own:
+
+```text
+Step "review[0].ask": Retry budget per route from https://github.com/org/repo/pull/123
+Tags: ["retry","gateway"]
+Overlapping learnings: []
+Draft: ~/.teamai/workflows/runs/<run>/scratch/mr-…/learning.md
+accept publishes it; edit publishes it with your note as its title; skip leaves it out.
+Options: accept, edit, skip
+Choice, followed by an optional note: edit Cap gateway retries
+```
+
+`--all` accepts every draft without asking. The review needs a terminal: with piped input or inside a workflow step, the import is refused before any AI call and says to pass `--all`. The accepted learnings are published once at the end, and each repository's teamwiki is updated once. An MR that fails does not stop the rest; the run ends with a summary and exits non-zero if any failed.
 
 GitHub import reads commit pages of 100 when `gh pr view` reaches its 100-commit limit, or when import falls back to REST, up to the [GitHub endpoint's 250-commit limit](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request). A failed `gh` commit page triggers REST fallback. If REST cannot read the PR, import exits 1 before AI extraction and writes no learning for that PR. This changes the exit code for a full `gh pr view` result whose later commits cannot be read: it used to exit 0 with only the first 100 headlines. Scripts must handle the failure and retry after fixing access or request failures.
 

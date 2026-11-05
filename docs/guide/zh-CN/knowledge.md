@@ -137,7 +137,19 @@ teamai recall status
 
 团队可以用自己的 recall agent，见[替换 recall agent](sharing.md#替换-recall-agent)。
 
-关闭 recall 不会隐藏 SessionStart 的近期已合入 MR 提示。这条提示指向 `teamai import --from-mr`，团队在开启 recall 前也可以先提炼并发布 learning。它有自己的开关，关闭它不会影响 `contributeHint`：
+关闭 recall 不会隐藏 SessionStart 的近期已合入 MR 提示。这条提示列出这些 MR，并推荐默认工作流 [`teamai-import-from-mr`](workflow.md#默认工作流)，团队在开启 recall 前也可以先提炼并发布 learning：
+
+```text
+[teamai:mr-hint] 发现 1 个近期已合入但尚未提炼的 MR。
+
+请在任务完成后告知用户，可运行以下命令将这些 MR 提炼为 learning：
+
+- Retry flaky upload（merged: 2026-11-04） https://github.com/org/repo/pull/123
+
+  teamai workflow start --describe teamai-import-from-mr --driver skill
+```
+
+在该会话中，describe 会把提示列出的 MR 作为建议值，agent 在你同意后启动工作流。在 teamai 启动的会话中，提示改为给出 `teamai import --from-mr <url...>`。这条提示有自己的开关，关闭它不会影响 `contributeHint`：
 
 ```yaml
 sharing:
@@ -217,7 +229,19 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 `--dir`、`--from-repo`、`--from-repo-list` 和 `--from-org` 运行默认工作流 [`teamai-import-from-repo`](workflow.md#默认工作流)。每个来源先在不调用 AI 的情况下提取，再由你的 AI 工具描述它的模块、写出深度文档，最后整批只重建并发布一次索引。一个仓库失败不会中断其他仓库：整批会点名它，并以 1 退出。一个导入正在写某个 `teamwiki/` 时，写入同一目录的另一个导入会被拒绝；等第一个结束后再运行。
 
-`--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
+`--from-mr` 运行默认工作流 [`teamai-import-from-mr`](workflow.md#默认工作流)。你的 AI 工具先为每个 MR 起草一条 learning，然后你逐条审阅：
+
+```text
+Step "review[0].ask": Retry budget per route from https://github.com/org/repo/pull/123
+Tags: ["retry","gateway"]
+Overlapping learnings: []
+Draft: ~/.teamai/workflows/runs/<run>/scratch/mr-…/learning.md
+accept publishes it; edit publishes it with your note as its title; skip leaves it out.
+Options: accept, edit, skip
+Choice, followed by an optional note: edit Cap gateway retries
+```
+
+`--all` 不询问，接受全部草稿。审阅需要终端：输入来自管道或在工作流步骤中时，导入会在任何 AI 调用前被拒绝，并提示传 `--all`。可以一次传多个 MR URL：接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
 GitHub 导入在 `gh pr view` 达到 100 个提交的上限时，或回退到 REST 时，会按每页 100 个提交继续读取，最多返回 [GitHub 此接口限制的 250 个提交](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request)。通过 `gh` 读取提交页失败时会回退到 REST。如果 REST 无法读取该 PR，导入会在 AI 提炼前以退出码 1 失败，且不为该 PR 写入 learning。这改变了 `gh pr view` 返回满 100 条、后续提交却无法读取时的退出码：此前会只带着前 100 条提交标题退出 0。脚本需要处理失败，并在修复访问权限或请求故障后重试。
 

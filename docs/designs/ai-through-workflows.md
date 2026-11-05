@@ -194,7 +194,8 @@ of the empty one.
   line, such as `log.error` or a spinner's, stays on stderr.
 - A shortcut of a released command starts as the CLI, so a coding agent that ran `teamai import --dir` before still
   can. Inside a workflow attempt, it drives its private run in the step's own process.
-- `--dry-run` either stops before the start, or passes `dry_run: true` to a workflow whose write steps check it.
+- `--dry-run` either stops before the start, or passes `dry_run: true` to a workflow whose write steps check it. A
+  shortcut whose run then writes nothing (`preview`) loads the member's config read-only, as `--dry-run` does.
 - A private shortcut run starts no drain.
 
 ## Workflows
@@ -327,6 +328,8 @@ proposes `scorers/<name>.md` to the team as a pull request.
 | `ci extract-mr` comments on GitHub Enterprise through `GITHUB_API_URL` | `ci/mr-comment.ts` |
 | `ci extract-mr --write-mode pending-review` says it has no effect | `ci/extract-mr.ts` |
 | `recall promote <missing id>` exits 1 on both paths | `index.ts`, `maintenance/promotion-publish.ts` |
+| Two imported items of one title on one day keep their own files | `import-local.ts` |
+| `import --from-tools` leaves out the rules teamai delivered, by the delivered-copies ledger | `import-local.ts` |
 
 ## Behaviour that changes
 
@@ -353,6 +356,16 @@ proposes `scorers/<name>.md` to the team as a pull request.
   own error, and prints its `Batch import complete` line plainly. The deep-enrich retry names the absolute `--output`
   directory. Each line a step says keeps the stream it had, so the pull request lines stay on stderr.
   An `--output` teamwiki takes the import lock too, beside it.
+- `import --from-mr` drafts every MR before the review, which is the driver's choice prompt as for `--from-tools`
+  (`edit` takes the note as the title) instead of `Accept learning? [Y/n]`, and is refused the same way without a
+  terminal. The prompt always has the review-thread guidance and a `Review threads (N):` section. The `AI analysis`
+  spinner and the task list are gone: publishing says `Learning published` or `Published N learnings`, and the
+  teamwiki lines `Incremental teamwiki update skipped: …` and `Push changes via MR skipped: …` are plain. A failed MR of
+  several is named `  failed: <url>` after its step's own error, and a single one names the failed step with its retry
+  command. `--output` paths are absolute, and `--dry-run` drafts each MR in a run that neither reviews nor publishes.
+- The session-start MR hint offers `teamai-import-from-mr` with each MR's URL, and describe proposes those MRs to the
+  session the hint listed them in. Where a hook may not offer the workflow, such as in a session teamai launched, the
+  hint names `import --from-mr` as before.
 
 ## Test seams
 
