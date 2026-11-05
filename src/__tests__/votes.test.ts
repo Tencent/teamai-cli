@@ -984,6 +984,7 @@ describe('adoption counters (#1391)', () => {
     expect(deltas['retry-policy']).toMatchObject({ judged_delta: 1 });
   });
 
+  // Recall counts a doc's recall when it runs, so the session counted first is already among its 7 recalls.
   it('counts a recalled session once per call, starting a doc that has none from its recalls', async () => {
     await saveUserVotes(votePath(), { version: 2, votes: { 'helm-values': { recalled_count: 7, upvoted_count: 2, last_recalled_at: '2026-06-05T00:00:00Z' } }, deltas: {} });
 
@@ -991,9 +992,9 @@ describe('adoption counters (#1391)', () => {
     expect(await countRecalledSessions(votePath(), ['helm-values'])).toBe(true);
 
     const { votes, deltas } = await readUserVotes(votePath());
-    expect(votes['helm-values']?.recalled_session_count).toBe(9);
+    expect(votes['helm-values']?.recalled_session_count).toBe(8);
     expect(votes['new-doc']?.recalled_session_count).toBe(1);
-    expect(deltas['helm-values']?.recalled_session_delta).toBe(9);
+    expect(deltas['helm-values']?.recalled_session_delta).toBe(8);
   });
 
   it('clears every synced *_delta, keeping what arrived after the snapshot', async () => {

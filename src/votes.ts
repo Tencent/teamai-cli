@@ -387,8 +387,9 @@ function bump(data: UserVotesV2, docId: string, counter: string, by: number): vo
 /**
  * Count one more recalled session for each of `docIds` (#1391): the denominator of the adoption estimator. A doc
  * whose entry has no session count yet starts from its recalls, which is what the ratio read before, so its confidence
- * does not jump at the upgrade. The caller credits each (root session, doc) once. Returns false when the votes file
- * was busy: nothing was counted, and the caller retries.
+ * does not jump at the upgrade; recall counted this session's recall when it ran, so it is among them. The caller
+ * counts each (root session, doc) once. Returns false when the votes file was busy: nothing was counted, and the
+ * caller retries.
  */
 export async function countRecalledSessions(votePath: string, docIds: readonly string[]): Promise<boolean> {
   if (docIds.length === 0) return true;
@@ -398,8 +399,8 @@ export async function countRecalledSessions(votePath: string, docIds: readonly s
 
     for (const docId of new Set(docIds)) {
       const entry = data.votes[docId];
-      const seed = entry !== undefined && entry.recalled_session_count === undefined ? entry.recalled_count : 0;
-      bump(data, docId, 'recalled_session', seed + 1);
+      const startsFromRecalls = entry !== undefined && entry.recalled_session_count === undefined;
+      bump(data, docId, 'recalled_session', startsFromRecalls ? Math.max(1, entry.recalled_count) : 1);
     }
 
     await saveUserVotes(votePath, data);
