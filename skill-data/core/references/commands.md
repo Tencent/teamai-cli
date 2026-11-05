@@ -541,7 +541,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## import
 
-- `teamai import` — Import knowledge from local directories, remote repos, organizations, MRs, or iWiki
+- `teamai import` — Import knowledge from local directories, remote repos, organizations, MRs, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo
   - `--dir <path>` — Extract code knowledge from a local directory (same as --from-repo but no clone)
   - `--from-claude` (hidden) — Scan Claude/Cursor rule directories (the Claude root's rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)
   - `--from-mr <url...>` — Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update
@@ -571,6 +571,33 @@ Generated: do not edit by hand. Regenerate with
   - `--json` — Output cache status or GC result as JSON
   - `--max-bytes <n>` (hidden) — Override capacity cap for --cache-gc
   - `--stale-days <n>` (hidden) — Threshold for stale-eviction in days (default 30)
+  - `teamai import stage` — A step of a teamai-import-from-repo run: fetch a repository into its clone cache, or read a local checkout, and extract it into a staging teamwiki under $TEAMAI_RUN_DIR, with no AI call. Prints {"slug","stage","updated","enrich","narrate","context","head","finished"}.
+    - `--item <json>` — The item: {"kind":"repo"|"dir","source","domain","auth","slug","repo_url","mr_urls"}
+    - `--settings <json>` — The run's settings: {"depth","ssh","incremental","skip_enrich","max_files","team_repo"}
+    - `--wiki-root <dir>` — The teamwiki the item is imported into
+  - `teamai import publish` — A step of a teamai-import-from-repo run: publish an item's staged evidence into the teamwiki, with the narrative the AI tool wrote for a repository and the domain its list entry names, then reconcile the teamwiki. Prints {"deep"}: whether deep enrich follows.
+    - `--item <json>` — The item, as the stage step got it
+    - `--settings <json>` — The run's settings, as the stage step got them
+    - `--wiki-root <dir>` — The teamwiki the item is imported into
+    - `--stage <dir>` — The staging directory the stage step printed
+    - `--slug <slug>` — The codebase, its directory under evidence/code/
+    - `--narrative <markdown>` — What the tool answered for a repository's narrative
+    - `--narrative-failure <message>` — Why the tool could not answer for the narrative, when it could not
+  - `teamai import finish-item` — A step of a teamai-import-from-repo run: say how an item's deep enrich ended and record the commit a repository was imported at. Prints {"deep_complete"}.
+    - `--item <json>` — The item, as the stage step got it
+    - `--settings <json>` — The run's settings, as the stage step got them
+    - `--wiki-root <dir>` — The teamwiki the item is imported into
+    - `--mode <mode>` — The command that started the run: dir, repo, list, org, update or ci
+    - `--slug <slug>` — The codebase, its directory under evidence/code/
+    - `--head <sha>` — The commit a repository was fetched at
+    - `--deep <complete>` — What the deep-enrich run said: true, false, or empty when none ran
+    - `--deep-failure <message>` — Why the deep-enrich run failed, when it did: the deep enrich did not finish
+  - `teamai import finish` — A step of a teamai-import-from-repo run: once every item settled, rebuild the teamwiki indexes, publish the batch to the team repo, and sum it up. Prints {"text","exit_code","imported"}; exit_code is 1 when an item failed or its deep enrich did not finish.
+    - `--mode <mode>` — The command that started the run: dir, repo, list, org, update or ci
+    - `--wiki-root <dir>` — The teamwiki the items were imported into
+    - `--settings <json>` — The run's settings
+    - `--results <json>` — The results of the imports step
+    - `--skipped <n>` — How many entries of the list were skipped before the run
 
 ## codebase
 

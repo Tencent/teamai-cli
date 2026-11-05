@@ -336,6 +336,12 @@ proposes `scorers/<name>.md` to the team as a pull request.
   the import lock. A teamwiki outside a team repo (`--output`, a hidden `--wiki-root`) is written by the same
   workflow, with no `teamai init` needed, and the hidden `deep-enrich` prints the result line there too. A failure
   several steps share, such as a tool that cannot run, is said once with the step ids.
+- `import --dir`, `--from-repo`, `--from-repo-list` and `--from-org` extract each source before any AI call, so the
+  `AI enrich:` line follows the extract summary, and its `Output:` is a directory of the run. A batch says its
+  repositories in the order their steps run, names a failed one with `import failed: <url>` after the failing step's
+  own error, and prints its `Batch import complete` line plainly. The deep-enrich retry names the absolute `--output`
+  directory. What the publishing step says, the pull request lines included, is on stdout like every step's progress.
+  An `--output` teamwiki takes the import lock too, beside it.
 
 ## Test seams
 

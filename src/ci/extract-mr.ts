@@ -189,7 +189,7 @@ async function writeKnowledgeToRepo(
 
 /**
  * Import the merged checkout (the working directory) into the team repo's
- * teamwiki, as `teamai import --dir . --incremental` does, under the slug
+ * teamwiki through a teamai-import-from-repo run, as `teamai import --dir . --incremental` does, under the slug
  * `teamai import --from-repo` and `--from-mr` use for this repo. The baseline
  * published with that codebase's evidence makes the run incremental, even on a
  * fresh CI clone of the team repo.
@@ -210,24 +210,36 @@ async function importMergedCheckout(teamRepo: string, repoUrl: string, mrUrl: st
     return false;
   }
 
+  // Non-blocking: a failed update leaves the exit code of the extraction as it was.
+  const exitCode = process.exitCode;
+
   try {
     const { repoSlugForUrl } = await import('../import-repo.js');
-    const { importLocalCheckout } = await import('../import-codebase.js');
+    const { ImportFromRepo } = await import('../import-from-repo.js');
 
-    const { updated } = await importLocalCheckout({
-      sourceDir,
-      slug: repoSlugForUrl(repoUrl),
-      wikiRoot: path.join(teamRepoDir, 'teamwiki'),
-      incremental: true,
-      repoUrl,
-      sourceMrUrl: mrUrl,
+    const ended = await ImportFromRepo.start({
+      mode: 'ci',
+      items: [{ kind: 'dir', dir: sourceDir, slug: repoSlugForUrl(repoUrl), repoUrl, mrUrls: [mrUrl] }],
+      settings: { depth: 1, forceSsh: false, incremental: true, skipEnrich: false },
+      target: { wikiRoot: path.join(teamRepoDir, 'teamwiki') },
+      command: 'teamai ci extract-mr',
     });
 
-    return updated;
+    const imported = ImportFromRepo.importedOf(ended).at(0);
+
+    if (!imported || imported.failed) {
+      log.warn('teamwiki update failed (non-blocking): the step that failed is named above');
+
+      return false;
+    }
+
+    return imported.updated;
   } catch (err) {
     log.warn(`teamwiki update failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
 
     return false;
+  } finally {
+    process.exitCode = exitCode;
   }
 }
 

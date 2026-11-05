@@ -5,7 +5,6 @@ import { autoDetectInit } from './config.js';
 import { scanCandidates, classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
 import { importFromIWiki } from './import-iwiki.js';
 import { importFromMR } from './import-mr.js';
-import { importFromRepo, repoSlugForUrl } from './import-repo.js';
 import { importFromRepoList } from './import-repo-list.js';
 import { importFromOrg } from './import-org.js';
 import { importFromIWikiDual } from './iwiki-dual.js';
@@ -80,49 +79,6 @@ interface MrExtraction {
   learningFile?: string;
 }
 
-/**
- * `--dir` wrote a checkout with an origin under its directory name before it
- * took the remote's slug. A role or project that scoped that name under
- * `resources.wiki` no longer matches the codebase, which recall then shares
- * with everyone: name them so the team can update the entry.
- */
-async function warnStaleWikiScopes(scope: { teamRepo: string; legacySlug: string; slug: string }): Promise<void> {
-  const { legacySlug, slug } = scope;
-  let declarers: string[];
-
-  try {
-    const { loadRolesManifestIfPresent } = await import('./roles.js');
-    const { loadProjectsManifest } = await import('./projects.js');
-
-    const [roles, projects] = await Promise.all([
-      loadRolesManifestIfPresent(scope.teamRepo),
-      loadProjectsManifest(scope.teamRepo),
-    ]);
-
-    declarers = [
-      ...(roles?.roles ?? []).filter((role) => role.resources.wiki?.includes(legacySlug)).map((role) => `role ${role.id}`),
-      ...(projects?.projects ?? []).filter((project) => project.resources.wiki?.includes(legacySlug)).map((project) => `project ${project.id}`),
-    ];
-  } catch (err) {
-    // The import already succeeded; a manifest pull would reject is reported there.
-    log.debug(`resources.wiki check skipped: ${err instanceof Error ? err.message : String(err)}`);
-
-    return;
-  }
-
-  const [only, ...more] = declarers;
-
-  if (!only) return;
-
-  if (more.length === 0) {
-    log.warn(`${only} lists "${legacySlug}" under resources.wiki, and this codebase is now teamwiki/evidence/code/${slug}/. `
-      + `Change that entry to "${slug}" so it stays scoped to it.`);
-  } else {
-    log.warn(`${declarers.join(' and ')} list "${legacySlug}" under resources.wiki, and this codebase is now teamwiki/evidence/code/${slug}/. `
-      + `Change those entries to "${slug}" so it stays scoped to them.`);
-  }
-}
-
 /** Parse --max-files: a positive integer, or undefined to keep the extractor's default. */
 function parseMaxFiles(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -180,24 +136,42 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
     } else if (opts.fromRepo) {
       // 分支：--from-repo <url>，拉取远端仓库并生成单仓 codebase 摘要
       const fromRepo = opts.fromRepo;
-      let deepEnrichComplete = true;
+      const { previewRepoImport, repoSourceOf } = await import('./import-repo.js');
+      // An unsupported or unsafe URL is refused before anything is written, the lock included.
+      const source = repoSourceOf(fromRepo);
+      const settings = { depth: opts.depth ? parseInt(opts.depth, 10) : 1, forceSsh: opts.ssh ?? false, incremental: opts.incremental ?? false, skipEnrich: opts.skipEnrich ?? false, maxFiles };
+
+      if (opts.dryRun) {
+        log.info(`Importing remote repo: ${source.owner}/${source.repo} (provider: ${source.providerName})`);
+        await previewRepoImport(source, { ...settings, output: opts.output });
+
+        return;
+      }
+
+      const { assertTeamwikiWritable, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+      // Resolved before the run so a missing team repo fails fast.
+      const target = await resolveTeamwiki({ output: opts.output });
+      await assertTeamwikiWritable(target);
 
       const tasks = new Listr([
         {
           title: 'Import remote repository',
           task: async (ctx, task) => {
             task.output = `Repository: ${fromRepo}`;
-            deepEnrichComplete = await importFromRepo({
-              url: fromRepo,
-              depth: opts.depth ? parseInt(opts.depth, 10) : 1,
-              forceSsh: opts.ssh ?? false,
-              explicitDomain: opts.domain,
-              dryRun: opts.dryRun,
-              output: opts.output,
-              incremental: opts.incremental ?? false,
-              skipEnrich: opts.skipEnrich ?? false,
-              maxFiles,
+            const { ImportFromRepo } = await import('./import-from-repo.js');
+
+            const ended = await ImportFromRepo.start({
+              mode: 'repo',
+              items: [{ kind: 'repo', url: fromRepo, domain: opts.domain }],
+              settings,
+              target,
+              command: 'teamai import --from-repo',
             });
+
+            // A deep enrich that did not finish leaves the import done and its exit code 1, as the run said.
+            const isImported = ended?.outcome === 'succeeded' && ImportFromRepo.importedOf(ended).some((entry) => !entry.failed);
+
+            if (!isImported) throw new ImportRunFailed(`The import of ${fromRepo} did not finish; the failed step is named above.`);
           },
           rendererOptions: { persistentOutput: true },
         },
@@ -208,14 +182,6 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
 
       await tasks.run();
 
-      if (!deepEnrichComplete) {
-        const { failIncompleteDeepEnrich } = await import('./import-codebase.js');
-        failIncompleteDeepEnrich({
-          slug: repoSlugForUrl(fromRepo),
-          output: opts.output,
-        });
-      }
-
       return;
     } else if (opts.fromRepoList) {
       // 分支：--from-repo-list <yaml>，批量导入
@@ -225,7 +191,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           task: async (ctx, task) => {
             task.output = `List: ${opts.fromRepoList}`;
 
-            const result = await importFromRepoList({
+            const imported = await importFromRepoList({
               listPath: opts.fromRepoList!,
               concurrency: Number(opts.concurrency ?? 3),
               forceSsh: opts.ssh ?? false,
@@ -236,9 +202,12 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
               maxFiles,
             });
 
-            task.title = `Batch import complete: ${result.succeeded} succeeded, ${result.failed.length} failed, ${result.skipped.length} skipped`;
+            // The run prints its own summary and exit code.
+            if (imported.kind === 'preview') {
+              task.title = imported.summary;
 
-            if (result.failed.length > 0) process.exitCode = 1;
+              if (imported.failed > 0) process.exitCode = 1;
+            }
           },
           rendererOptions: { persistentOutput: true },
         },
@@ -411,8 +380,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             }
 
             const skipped: string[] = [];
+            const { ImportFromRepo } = await import('./import-from-repo.js');
+            const { repoSlugForUrl } = await import('./import-repo.js');
 
             for (const [repoUrl, sourceMrUrls] of mrUrlsByRepo) {
+              // Non-blocking: a repository whose update failed is named, and the import still succeeds.
+              const exitCode = process.exitCode;
+
               try {
                 const slug = repoSlugForUrl(repoUrl);
                 const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
@@ -423,15 +397,21 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
                 }
 
                 task.output = `Updating ${slug}...`;
-                await importFromRepo({
-                  url: repoUrl,
-                  incremental: true,
-                  skipAutoPush: true,
-                  sourceMrUrl: sourceMrUrls,
+
+                const ended = await ImportFromRepo.start({
+                  mode: 'update',
+                  items: [{ kind: 'repo', url: repoUrl, mrUrls: sourceMrUrls }],
+                  settings: { depth: 1, forceSsh: false, incremental: true, skipEnrich: false },
+                  target: { wikiRoot: teamwikiRoot, team: { localConfig, teamConfig } },
+                  command: 'teamai import --from-mr',
                 });
-                ctx.didUpdate = true;
+
+                if (ImportFromRepo.importedOf(ended).some((entry) => !entry.failed)) ctx.didUpdate = true;
+                else skipped.push(`Incremental update skipped: the import of ${slug} failed`);
               } catch (e) {
                 skipped.push(`Incremental update skipped: ${e instanceof Error ? e.message : String(e)}`);
+              } finally {
+                process.exitCode = exitCode;
               }
             }
 
@@ -496,18 +476,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         throw new Error(`Directory not found: ${dirPath}`);
       }
 
-      const { checkoutName, defaultProjectSlug } = await import('./codebase-extract.js');
-      const dirSlug = await defaultProjectSlug(dirPath);
-      const checkoutSlug = await checkoutName(dirPath);
-
       // <output>/teamwiki, else the team repo's teamwiki/; never the source directory.
-      const { lockTeamwiki, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
-
-      const {
-        failIncompleteDeepEnrich, importLocalCheckout, localCheckoutSlug, ownLegacySlug,
-      } = await import('./import-codebase.js');
+      const { assertTeamwikiWritable, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
 
       if (opts.dryRun) {
+        const { defaultProjectSlug } = await import('./codebase-extract.js');
+        const { localCheckoutSlug } = await import('./import-codebase.js');
+        const dirSlug = await defaultProjectSlug(dirPath);
         // The slug depends on the evidence already published, so the preview reads
         // it; a preview without a teamwiki still reports what it can.
         const preview = await resolveTeamwiki({ output: opts.output, dryRun: true }).catch(() => undefined);
@@ -520,57 +495,16 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       }
 
       const target = await resolveTeamwiki({ output: opts.output });
-      const { wikiRoot, team } = target;
-      const releaseImportLock = await lockTeamwiki(target);
+      await assertTeamwikiWritable(target);
+      const { ImportFromRepo } = await import('./import-from-repo.js');
 
-      try {
-        const slug = await localCheckoutSlug({ sourceDir: dirPath, slug: dirSlug, wikiRoot });
-
-        // A checkout that gained an origin may have published under a suffix before.
-        const legacySlug = slug === dirSlug && checkoutSlug !== slug
-          ? await ownLegacySlug({ sourceDir: dirPath, slug: checkoutSlug, wikiRoot })
-          : checkoutSlug;
-
-        log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
-
-        const imported = await importLocalCheckout({
-          sourceDir: dirPath,
-          slug,
-          // A suffixed slug is a new codebase; the directory-named evidence is another source's.
-          legacySlug: slug === dirSlug ? legacySlug : undefined,
-          wikiRoot,
-          incremental: opts.incremental ?? false,
-          skipEnrich: opts.skipEnrich ?? false,
-          maxFiles,
-        });
-
-        // While the old name still holds evidence (another repo's, or a copy the
-        // import warned about), a scope on it still points at that evidence. A
-        // suffixed checkout was never published under the old name, so such a
-        // scope is not its own.
-        if (team && slug === dirSlug && legacySlug !== slug
-          && !(await fs.pathExists(path.join(wikiRoot, 'evidence', 'code', legacySlug)))) {
-          await warnStaleWikiScopes({ teamRepo: team.localConfig.repo.localPath, legacySlug, slug });
-        }
-
-        if (!team) {
-          log.info(`Output written: ${wikiRoot}`);
-        } else if (imported.updated) {
-          await autoPushTeamRepo(team.localConfig.repo.localPath, `[teamai] Import from local dir: ${slug}`);
-          log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
-        }
-
-        log.success(`Local directory ${slug} import complete`);
-
-        if (imported.updated && !imported.deepEnrichComplete) {
-          failIncompleteDeepEnrich({
-            slug,
-            output: opts.output,
-          });
-        }
-      } finally {
-        await releaseImportLock();
-      }
+      await ImportFromRepo.start({
+        mode: 'dir',
+        items: [{ kind: 'dir', dir: dirPath }],
+        settings: { depth: 1, forceSsh: false, incremental: opts.incremental ?? false, skipEnrich: opts.skipEnrich ?? false, maxFiles },
+        target,
+        command: 'teamai import --dir',
+      });
     } else if (opts.fromClaude) {
       // 分支 3b：--from-claude，扫描规则文件并交互式导入
       const candidates = await scanCandidates({ fromClaude: true, dryRun: opts.dryRun });
@@ -602,7 +536,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       return;
     }
   } catch (err: unknown) {
-    log.error(err instanceof Error ? err.message : String(err));
+    // A run that failed already named the step that failed.
+    if (!(err instanceof ImportRunFailed)) log.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
+}
+
+/** A teamai-import-from-repo run that a Listr task started did not succeed; its steps already said why. */
+class ImportRunFailed extends Error {
+  readonly name = 'ImportRunFailed';
 }

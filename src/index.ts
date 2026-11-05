@@ -1621,9 +1621,9 @@ program
     }
   });
 
-program
+const importCommand = program
   .command('import')
-  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki')
+  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo')
   .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
   .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (the Claude root\'s rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)').hideHelp())
   .option('--from-mr <url...>', 'Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update')
@@ -1672,6 +1672,83 @@ program
 
     const { importCmd } = await import('./import.js');
     await importCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+/** Runs a verb of a teamai-import-from-repo step: prints what it answers as JSON, or says why it failed and exits 1, 65 when its flags are not what the step passes. */
+async function importVerb<TAnswer>(run: () => Promise<TAnswer>): Promise<void> {
+  setStderrOnly(true);
+  const { ImportInputError } = await import('./import-from-repo.js');
+  // Only JSON goes to stdout: the lines the extractor prints are the step's progress.
+  const { log: stdoutLog } = console;
+  console.log = console.error;
+
+  try {
+    const answer = await run();
+    process.stdout.write(`${JSON.stringify(answer)}\n`);
+  } catch (error) {
+    log.error(error instanceof Error ? error.message : String(error));
+
+    if (error instanceof ImportInputError) await rejectVerbInput();
+    else process.exitCode = 1;
+  } finally {
+    console.log = stdoutLog;
+  }
+}
+
+// The verbs a teamai-import-from-repo run's steps call.
+importCommand
+  .command('stage')
+  .description('A step of a teamai-import-from-repo run: fetch a repository into its clone cache, or read a local checkout, and extract it into a staging teamwiki under $TEAMAI_RUN_DIR, with no AI call. Prints {"slug","stage","updated","enrich","narrate","context","head","finished"}.')
+  .requiredOption('--item <json>', 'The item: {"kind":"repo"|"dir","source","domain","auth","slug","repo_url","mr_urls"}')
+  .requiredOption('--settings <json>', 'The run\'s settings: {"depth","ssh","incremental","skip_enrich","max_files","team_repo"}')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the item is imported into')
+  .action(async (cmdOpts: { item: string; settings: string; wikiRoot: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    await importVerb(() => ImportFromRepo.stage(cmdOpts));
+  });
+
+importCommand
+  .command('publish')
+  .description('A step of a teamai-import-from-repo run: publish an item\'s staged evidence into the teamwiki, with the narrative the AI tool wrote for a repository and the domain its list entry names, then reconcile the teamwiki. Prints {"deep"}: whether deep enrich follows.')
+  .requiredOption('--item <json>', 'The item, as the stage step got it')
+  .requiredOption('--settings <json>', 'The run\'s settings, as the stage step got them')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the item is imported into')
+  .requiredOption('--stage <dir>', 'The staging directory the stage step printed')
+  .requiredOption('--slug <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--narrative <markdown>', 'What the tool answered for a repository\'s narrative', '')
+  .option('--narrative-failure <message>', 'Why the tool could not answer for the narrative, when it could not', '')
+  .action(async (cmdOpts: { item: string; settings: string; wikiRoot: string; stage: string; slug: string; narrative: string; narrativeFailure: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    await importVerb(() => ImportFromRepo.publish(cmdOpts));
+  });
+
+importCommand
+  .command('finish-item')
+  .description('A step of a teamai-import-from-repo run: say how an item\'s deep enrich ended and record the commit a repository was imported at. Prints {"deep_complete"}.')
+  .requiredOption('--item <json>', 'The item, as the stage step got it')
+  .requiredOption('--settings <json>', 'The run\'s settings, as the stage step got them')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the item is imported into')
+  .requiredOption('--mode <mode>', 'The command that started the run: dir, repo, list, org, update or ci')
+  .requiredOption('--slug <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--head <sha>', 'The commit a repository was fetched at', '')
+  .option('--deep <complete>', 'What the deep-enrich run said: true, false, or empty when none ran', '')
+  .option('--deep-failure <message>', 'Why the deep-enrich run failed, when it did: the deep enrich did not finish', '')
+  .action(async (cmdOpts: { item: string; settings: string; wikiRoot: string; mode: string; slug: string; head: string; deep: string; deepFailure: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    await importVerb(() => ImportFromRepo.finishItem(cmdOpts));
+  });
+
+importCommand
+  .command('finish')
+  .description('A step of a teamai-import-from-repo run: once every item settled, rebuild the teamwiki indexes, publish the batch to the team repo, and sum it up. Prints {"text","exit_code","imported"}; exit_code is 1 when an item failed or its deep enrich did not finish.')
+  .requiredOption('--mode <mode>', 'The command that started the run: dir, repo, list, org, update or ci')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the items were imported into')
+  .requiredOption('--settings <json>', 'The run\'s settings')
+  .requiredOption('--results <json>', 'The results of the imports step')
+  .option('--skipped <n>', 'How many entries of the list were skipped before the run', '0')
+  .action(async (cmdOpts: { mode: string; wikiRoot: string; settings: string; skipped: string; results: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    await importVerb(() => ImportFromRepo.finish(cmdOpts));
   });
 
 program

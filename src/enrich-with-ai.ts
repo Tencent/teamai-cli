@@ -3,8 +3,6 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 
 import { z } from 'zod';
 
-import { callToolParallel } from './tool-launch/call.js';
-import { isOverrideInvalid } from './tool-launch/member-tools.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
@@ -71,19 +69,6 @@ function moduleBrief(moduleName: string, moduleFacts: CodeFact[], interfaceInven
   };
 }
 
-// teamai-codebase-enrich asks the same in its modules step; change both together.
-function buildModulePrompt(brief: ModuleBrief): string {
-  return `<context>
-模块名: ${brief.name}
-文件列表: ${brief.files}
-组件 (top 10): ${brief.components}
-接口: ${brief.interfaces}
-</context>
-
-分析上述代码模块，输出严格 JSON，不要任何解释文字:
-{"domain": "业务域名称(如计费/调度/存储/网关/测试)", "responsibilities": ["职责1", "职责2", "职责3"], "layer": "entry|orchestration|service|data", "summary": "一句话描述该模块的核心功能"}`;
-}
-
 function interfacesSummary(interfaceInventory: InterfaceInventory): string {
   return interfaceInventory.entries.map(e => `${e.component}:${e.type}:${e.count}`).join(', ') || '无';
 }
@@ -92,25 +77,6 @@ function modulesSummary(moduleResults: Array<{ name: string; result: ModuleAIRes
   return moduleResults.map(m =>
     `${m.name}: domain=${m.result.domain}, layer=${m.result.layer}, summary=${m.result.summary}`
   ).join('\n');
-}
-
-// teamai-codebase-enrich asks the same in its domain step; change both together.
-function buildDomainPrompt(project: string, modules: string, interfaces: string): string {
-  return `<context>
-项目名: ${project}
-模块分析:
-${modules}
-
-接口清单: ${interfaces}
-</context>
-
-这是一个代码仓库的分析结果。请判断该仓库整体属于哪个业务域，并给出：
-1. domain: 该仓库的核心业务域名称（如 API网关/计费引擎/流程编排/推理服务/配置管理/部署工具/测试框架/数据管理/网关代理 等）
-2. description: 一句话描述该仓库的核心职责（不超过30字）
-3. keywords: 5-10个路由关键词（用于AI检索时路由到该仓库）
-
-输出严格 JSON，不要任何解释文字:
-{"domain": "域名", "description": "一句话描述", "keywords": ["关键词1", "关键词2"]}`;
 }
 
 function parseJSON<T>(raw: string, schema: z.ZodType<T>): T | null {
@@ -257,67 +223,6 @@ export function describeEvidenceManifest(source: 'ai' | 'fallback' | 'none', com
 
 function qualifyingModules(modules: Map<string, CodeFact[]>): Array<[string, CodeFact[]]> {
   return [...modules.entries()].filter(([, facts]) => facts.length >= 5);
-}
-
-export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | null> {
-  const moduleEntries = qualifyingModules(ctx.modules);
-
-  if (moduleEntries.length === 0) {
-    log.debug('enrichWithAI: no qualifying modules, skipping');
-
-    return null;
-  }
-
-  log.debug(`enrichWithAI: ${moduleEntries.length} modules`);
-
-  // Step 1: AI enrichment per module (parallel)
-  const tasks = moduleEntries.map(([moduleName, moduleFacts]) => ({
-    prompt: buildModulePrompt(moduleBrief(moduleName, moduleFacts, ctx.interfaceInventory)),
-    parse: (raw: string) => {
-      const result = parseJSON(raw, ModuleAIResultSchema);
-
-      return result ? { name: moduleName, result } : null;
-    },
-  }));
-
-  let moduleResults: Array<{ name: string; result: ModuleAIResult }>;
-
-  try {
-    const results = await callToolParallel(tasks, { launchedBy: 'enrich-with-ai', concurrency: 3 });
-    moduleResults = results.filter((r): r is { name: string; result: ModuleAIResult } => r !== null);
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.warn(`enrichWithAI: module analysis failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
-
-    return null;
-  }
-
-  if (moduleResults.length === 0) {
-    log.debug('enrichWithAI: all module analyses returned null');
-
-    return null;
-  }
-
-  // Step 2: Repo-level domain classification (single call)
-  let domainResult: DomainAIResult | null = null;
-
-  try {
-    const domainPrompt = buildDomainPrompt(sanitizeForPrompt(ctx.project), modulesSummary(moduleResults), interfacesSummary(ctx.interfaceInventory));
-
-    const domainTasks = [{
-      prompt: domainPrompt,
-      parse: (raw: string) => {
-        return parseJSON(raw, DomainAIResultSchema);
-      },
-    }];
-
-    [domainResult] = await callToolParallel(domainTasks, { launchedBy: 'enrich-with-ai', concurrency: 1 });
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.debug('enrichWithAI: domain classification failed, continuing without');
-  }
-
-  return enrichResultOf(ctx, moduleResults, domainResult);
 }
 
 function enrichResultOf(

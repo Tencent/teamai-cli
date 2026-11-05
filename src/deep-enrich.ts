@@ -6,18 +6,8 @@ import { z } from 'zod';
 
 import { pathExists } from './utils/fs.js';
 import { lenientList } from './utils/json.js';
-import { callTool, callToolParallel } from './tool-launch/call.js';
-import { CallError, isOverrideInvalid } from './tool-launch/member-tools.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
-
-/** Public-command status: full completion vs remaining AI docs. */
-export interface DeepEnrichResult {
-  project: string;
-  complete: boolean;
-  missingComponents: string[];
-  missingArchitecture: boolean;
-}
 
 const PROGRESS_PHASES = ['pending', 'components', 'architecture', 'graph', 'ai-graph', 'index-enhance', 'done'] as const;
 
@@ -215,74 +205,6 @@ async function loadProgress(evidenceDir: string, project: string, allComponents:
 async function saveProgress(evidenceDir: string, state: ProgressState): Promise<void> {
   const updated: ProgressState = { ...state, updatedAt: new Date().toISOString() };
   await writeGeneratedFile(path.dirname(progressPath(evidenceDir)), PROGRESS_FILENAME, JSON.stringify(updated, null, 2));
-}
-
-// ─── Prompt 构建 ────────────────────────────────────────────
-
-function buildComponentPrompt(project: string, component: ComponentBrief): string {
-  return `<context>
-项目: ${project}
-模块: ${component.slug}
-职责: ${component.responsibilities}
-
-核心组件（来自代码提取）:
-${component.facts}
-
-调用链:
-${component.call_chains}
-
-模块依赖:
-${component.deps}
-</context>
-
-为上述代码模块生成一份组件设计文档。必须包含以下章节：
-
-## 🤖 AI 快速理解要点
-（表格：核心职责/架构层级/上游组件/下游组件/代码入口/核心机制/数据流向/技术栈，每项不超过20字）
-
-## 架构设计
-（ASCII 架构图 + 核心子模块说明）
-
-## 接口设计
-（对外接口表：接口名/方法/路径/说明）
-
-## 核心流程
-（主要请求处理流程，步骤式描述）
-
-直接输出 Markdown，不要任何前言或解释。`;
-}
-
-function buildArchitecturePrompt(project: string, brief: ArchitectureBrief): string {
-  return `<context>
-项目: ${project}
-模块清单:
-${brief.modules}
-
-模块间依赖:
-${brief.edges}
-
-接口统计:
-${brief.interfaces}
-</context>
-
-为上述项目生成一份技术架构总览文档。必须包含：
-
-## 项目概述
-（一段话描述项目的核心定位和能力）
-
-## 架构图
-（ASCII 分层架构图，标注各模块和调用方向）
-
-## 组件关系矩阵
-（表格：组件A→组件B + 关系类型 + 通信方式）
-
-## 核心链路
-（2-3条最重要的请求处理链路，从入口到存储的完整路径）
-
-## 技术栈
-（表格：维度/技术/说明）
-
-直接输出 Markdown，不要任何前言或解释。`;
 }
 
 // ─── 确定性图谱生成（无需 AI）─────────────────────────────
@@ -731,43 +653,6 @@ async function writeArchitectureDoc(docsDir: string, project: string, reply: Doc
   return true;
 }
 
-async function runPhaseComponents(project: string, components: ComponentBrief[], docsDir: string): Promise<void> {
-  const BATCH = 5;
-
-  for (let i = 0; i < components.length; i += BATCH) {
-    const batch = components.slice(i, i + BATCH);
-    const tasks = batch.map((brief) => ({ prompt: buildComponentPrompt(project, brief), parse: (output: string) => output }));
-    let replies: DocReply[];
-
-    try {
-      replies = (await callToolParallel(tasks, { launchedBy: 'deep-enrich', concurrency: BATCH })).map((text) => ({ text, failure: '' }));
-    } catch (e) {
-      if (isOverrideInvalid(e)) throw e;
-
-      // No AI tool is on PATH. Every retry would probe PATH again for each
-      // launcher, so skip the remaining components instead.
-      if (e instanceof CallError && e.kind === 'no_tool') {
-        log.warn(`deep-enrich[${project}]: Skipping ${components.length - i} component docs: ${e.message}`);
-
-        return;
-      }
-
-      log.warn(`deep-enrich[${project}]: batch[${i}] partially failed, falling back to sequential`);
-      replies = await Promise.all(tasks.map(async (task) => {
-        try {
-          return { text: (await callTool(task.prompt, { launchedBy: 'deep-enrich' })).text, failure: '' };
-        } catch (componentError) {
-          return { text: '', failure: componentError instanceof Error ? componentError.message : String(componentError) };
-        }
-      }));
-    }
-
-    for (const [index, brief] of batch.entries()) {
-      await writeComponentDoc(docsDir, project, brief.slug, replies[index] ?? { text: '', failure: '' });
-    }
-  }
-}
-
 // ─── Phase 3: 确定性图谱文档 ───────────────────────────────
 
 async function runPhaseGraph(project: string, evidenceDir: string, ctx: EnrichContext, docsDir: string): Promise<void> {
@@ -796,42 +681,6 @@ async function runPhaseGraph(project: string, evidenceDir: string, ctx: EnrichCo
 }
 
 // ─── Phase 4: AI 图谱（G5 场景序列图 + G6 知识图谱三元组）──────────
-
-function buildG5Prompt(project: string, brief: ScenariosBrief): string {
-  return `你是一个高级架构师。基于以下项目信息，为 Top-5 核心业务场景生成 mermaid sequenceDiagram。
-
-项目：${project}
-
-架构文档摘要（前2000字）：
-${brief.architecture}
-
-调用链数据：
-${brief.call_chains}
-
-模块列表：
-${brief.modules}
-
-要求：
-1. 识别项目中真实存在的核心业务场景（最多 5 个，如果项目较小则按实际数量输出，不要虚构）
-2. 每个场景生成一个 mermaid sequenceDiagram
-3. 每个图后附 2-3 句文字说明关键决策点
-4. 参与者使用实际模块名/组件名
-5. 如果可识别的真实场景少于 3 个，只输出实际存在的场景
-
-输出格式：
-# 核心业务场景序列图
-<!-- search-anchor: 流程, 场景, 序列图, sequence, 业务流, 完整流程 -->
-
-## 场景 1: <名称>
-\`\`\`mermaid
-sequenceDiagram
-...
-\`\`\`
-<说明>
-
-## 场景 2: ...
-`;
-}
 
 interface GraphConfidence {
   label: 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
@@ -1455,49 +1304,6 @@ async function finish(target: DeepEnrichTarget, scenarios: DocReply): Promise<De
     missing_components: missing.missingComponents,
     missing_architecture: missing.missingArchitecture,
   };
-}
-
-const NO_REPLY: DocReply = { text: '', failure: '' };
-
-/**
- * Deep enrichment of an imported codebase in this process, for the imports that have not moved to a workflow yet: the
- * steps of teamai-codebase-deep-enrich, with the tool called here.
- */
-export async function deepEnrich(target: DeepEnrichTarget): Promise<DeepEnrichResult> {
-  const { project } = target;
-  const docsDir = path.join(evidenceDirOf(target), 'docs');
-  const planned = await plan(target);
-
-  if (!planned) return { project, complete: false, missingComponents: [], missingArchitecture: true };
-
-  await runPhaseComponents(project, planned.components, docsDir);
-
-  if (planned.architecture.needed) {
-    log.info(`deep-enrich[${project}]: Phase 2 — Generating architecture overview`);
-
-    try {
-      await writeArchitectureDoc(docsDir, project, { text: (await callTool(buildArchitecturePrompt(project, planned.architecture), { launchedBy: 'deep-enrich' })).text, failure: '' });
-    } catch (e) {
-      if (isOverrideInvalid(e)) throw e;
-      await writeArchitectureDoc(docsDir, project, { text: '', failure: e instanceof Error ? e.message : String(e) });
-    }
-  }
-
-  const { scenarios } = await graph(target);
-  let reply = NO_REPLY;
-
-  if (scenarios.needed) {
-    try {
-      reply = { text: (await callTool(buildG5Prompt(project, scenarios), { launchedBy: 'deep-enrich' })).text, failure: '' };
-    } catch (e) {
-      if (isOverrideInvalid(e)) throw e;
-      reply = { text: '', failure: e instanceof Error ? e.message : String(e) };
-    }
-  }
-
-  const end = await finish(target, reply);
-
-  return { project, complete: end.complete, missingComponents: end.missing_components, missingArchitecture: end.missing_architecture };
 }
 
 /** The steps of teamai's default teamai-codebase-deep-enrich workflow, each a `codebase` verb. */

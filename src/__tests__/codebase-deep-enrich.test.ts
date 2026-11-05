@@ -3,18 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// Mock the AI client so the in-process deepEnrich's calls fail instantly instead of
-// waiting on real 600s timeouts. deepEnrich treats these as non-blocking skips.
-vi.mock('../tool-launch/call.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
-  callTool: vi.fn(async () => {
-    throw new Error('mock: AI unavailable');
-  }),
-  callToolParallel: vi.fn(async () => {
-    throw new Error('mock: AI batch unavailable');
-  }),
-}));
-
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn(),
@@ -22,10 +10,8 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 vi.mock('../workflow-commands.js', () => ({ runShortcut: vi.fn() }));
 
-import { callTool, callToolParallel } from '../tool-launch/call.js';
-import { CallError } from '../tool-launch/member-tools.js';
 import { codebaseCmd, hiddenDeepEnrichTarget, startDeepEnrich } from '../codebase-cmd.js';
-import { DeepEnrich, deepEnrich, type DeepEnrichEnd, type DocReply } from '../deep-enrich.js';
+import { DeepEnrich, type DeepEnrichEnd, type DocReply } from '../deep-enrich.js';
 import { runShortcut } from '../workflow-commands.js';
 import { autoDetectInit, NotInitializedError } from '../config.js';
 import { LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
@@ -267,26 +253,6 @@ describe('codebase deep-enrich', () => {
       }
     }
     expect(tablesWithoutDelimiter).toEqual([]);
-  });
-
-  it('stops the component phase after the first batch finds no AI tool on PATH', async () => {
-    const root = createEnrichFixture();
-    const manifestPath = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', '_manifest.json');
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    const slugs = Array.from({ length: 12 }, (_, index) => `Comp${index}`);
-    manifest.components = slugs.map(slug => ({ ...manifest.components[0], slug, title: slug, docPath: `evidence/code/faketest/${slug}.md` }));
-    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-    const noTool = new CallError('no_tool', 'No AI tool teamai launches is on PATH.');
-    vi.mocked(callToolParallel).mockRejectedValue(noTool);
-    vi.mocked(callTool).mockRejectedValue(noTool);
-
-    // The in-process deep enrichment the imports still run.
-    const report = await deepEnrich({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') });
-
-    // Each lookup spawns a PATH probe per launcher, so a miss is not retried per component or batch.
-    expect(callToolParallel).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(callTool).mock.calls.filter(([prompt]) => slugs.some(slug => prompt.includes(`模块: ${slug}\n`)))).toEqual([]);
-    expect(report.missingComponents).toEqual(slugs);
   });
 
   it('bounds reverse reachability output for a layered DAG', async () => {
@@ -620,8 +586,6 @@ describe('codebase deep-enrich', () => {
       command: 'teamai codebase --deep-enrich --project faketest',
       json: false,
     });
-    expect(callTool).not.toHaveBeenCalled();
-    expect(callToolParallel).not.toHaveBeenCalled();
   });
 
   it('starts teamai-codebase-deep-enrich on a hidden --wiki-root with no teamai init', async () => {
@@ -634,7 +598,6 @@ describe('codebase deep-enrich', () => {
 
     expect(ended).toEqual({ run: 'r1', outcome: 'succeeded', outputs: { exit_code: 0 } });
     expect(runShortcut).toHaveBeenCalledWith(expect.objectContaining({ inputs: { wiki_root: wikiRoot, project: 'faketest', max_modules: 0, concurrency: 5 } }));
-    expect(callTool).not.toHaveBeenCalled();
   });
 
   it('rejects a codebase outside evidence/code/ and a max-modules that is not a whole number', () => {

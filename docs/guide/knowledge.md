@@ -206,7 +206,9 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
-`--from-repo-list` runs up to 3 imports at once by default. `--concurrency <n>` sets this limit and must be a positive safe integer. Invalid values fail before the repo list is read or output is prepared.
+`--from-repo-list` runs up to 3 imports at once by default. `--concurrency <n>` sets this limit and must be a positive safe integer. Invalid values fail before the repo list is read or output is prepared. On your machine their AI calls run side by side, while extracting and publishing take turns.
+
+`--dir`, `--from-repo`, `--from-repo-list` and `--from-org` run the default workflow [`teamai-import-from-repo`](workflow.md#default-workflows). Each source is extracted with no AI, your AI tool describes its modules and writes its deep docs, and the indexes are rebuilt and published once for the whole batch. A repository that fails does not stop the others: the batch names it and exits 1. While one import writes a `teamwiki/`, another import into it is refused; run it again once the first has finished.
 
 `--from-mr` takes several MR URLs. Each draft is still confirmed on its own (or none with `--all`), the accepted learnings are published once at the end, and each repository's teamwiki is updated once. An MR that fails does not stop the rest; the run ends with a summary and exits non-zero if any failed.
 
@@ -291,9 +293,9 @@ A `--from-repo-list` or `--from-org` batch prints one line for each repo that di
 With `--output`, the retry is `teamai codebase --deep-enrich` on that directory:
 
 ```text
-$ teamai import --dir ./orders-api --output ./wiki
+$ cd /work && teamai import --dir ./orders-api --output ./wiki
 ...
-⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output ./wiki` to retry.
+⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output /work/wiki` to retry.
 ```
 
 A job that needs only the extraction, with no AI tool on the runner, skips the AI step and exits 0:

@@ -84,8 +84,8 @@ steps:
       RESULTS: "{{ steps.modules.results }}"
       TEXT: "{{ steps.domain.outputs.text }}"
       WHY: "{{ steps.domain.failure.message }}"
-    # A self-mode teamwiki lives under .teamai/ of this checkout.
-    writes: [.teamai/]
+    # The teamwiki may be in this checkout: under .teamai/ in self mode, or an --output directory.
+    writes: ["{{ inputs.wiki_root }}"]
     output: { modules: number, domain: string }
 outputs:
   modules: steps.write.outputs.modules

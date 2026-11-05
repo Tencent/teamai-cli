@@ -5,13 +5,14 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs-extra';
 
-import { importCodebase } from '../import-codebase.js';
+import type { EnrichResult } from '../enrich-with-ai.js';
+import type { ImportCodebaseOptions } from '../import-codebase.js';
+import { importCodebase as importStaged } from './helpers/import-codebase.js';
 
-const { mockEnrichWithAI } = vi.hoisted(() => ({ mockEnrichWithAI: vi.fn() }));
-vi.mock('../enrich-with-ai.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../enrich-with-ai.js')>();
-  return { ...actual, enrichWithAI: (...args: unknown[]) => mockEnrichWithAI(...args) };
-});
+/** What teamai-codebase-enrich found for the next import that enriches; undefined writes nothing. */
+let enriched: EnrichResult | undefined;
+
+const importCodebase = async (opts: ImportCodebaseOptions): Promise<boolean> => importStaged({ ...opts, enriched });
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, stdio: 'ignore' });
@@ -37,7 +38,7 @@ describe('importCodebase: the extraction every import source shares', () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-import-codebase-'));
     wikiRoot = path.join(root, 'team-repo', 'teamwiki');
     logs = [];
-    mockEnrichWithAI.mockReset();
+    enriched = undefined;
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')); });
   });
 
@@ -221,7 +222,7 @@ describe('importCodebase: the extraction every import source shares', () => {
     await fs.outputFile(path.join(evidence, 'docs', 'README.md'), '# graph routing\n');
     await fs.outputFile(path.join(evidence, 'docs', 'graph-g1-relations.md'), '# graph\n');
 
-    mockEnrichWithAI.mockResolvedValue({
+    enriched = {
       manifest: {
         schemaVersion: 'team-wiki.codebase-output-manifest.v2',
         project: slug,
@@ -239,7 +240,7 @@ describe('importCodebase: the extraction every import source shares', () => {
       repoDomain: 'Billing',
       repoDescription: 'billing',
       repoKeywords: ['billing', currentSlug],
-    });
+    };
 
     await fs.writeFile(path.join(repo, 'src', 'main.ts'), 'export function greet() { return "hello"; }\n');
     git(repo, 'commit', '-q', '-am', 'change');
@@ -259,7 +260,7 @@ describe('importCodebase: the extraction every import source shares', () => {
     git(repo, 'add', '-A');
     git(repo, 'commit', '-q', '-m', 'modules');
     const slug = 'github__acme__svc';
-    mockEnrichWithAI.mockResolvedValue({
+    enriched = {
       manifest: {
         schemaVersion: 'team-wiki.codebase-output-manifest.v2',
         project: slug,
@@ -278,7 +279,7 @@ describe('importCodebase: the extraction every import source shares', () => {
       repoDomain: 'Identity',
       repoDescription: 'identity',
       repoKeywords: [],
-    });
+    };
     await run(repo, slug, false, false);
 
     await fs.outputFile(path.join(repo, 'billing', 'main.ts'), 'export const billing = 1;\n');
@@ -497,7 +498,7 @@ describe('importCodebase: the extraction every import source shares', () => {
     await fs.outputFile(path.join(repo, 'auth', 'main.ts'), 'export const auth = 1;\n');
     git(repo, 'add', '-A');
     git(repo, 'commit', '-q', '-m', 'modules');
-    mockEnrichWithAI.mockResolvedValue({
+    enriched = {
       manifest: {
         schemaVersion: 'team-wiki.codebase-output-manifest.v2',
         project: 'svc',
@@ -516,7 +517,7 @@ describe('importCodebase: the extraction every import source shares', () => {
       repoDomain: 'Identity',
       repoDescription: 'identity',
       repoKeywords: [],
-    });
+    };
     await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: false });
 
     await importCodebase({ sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true });

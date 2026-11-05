@@ -630,11 +630,14 @@ export interface ShortcutRun {
   json: boolean;
 }
 
-/** What a shortcut reads of its run's end: `outputs.text` it prints, and `outputs.exit_code` it exits with. */
+/**
+ * What a shortcut reads of its run's end: `outputs.text` it prints, and `outputs.exit_code` it exits with. The other
+ * outputs pass through, for a command that reads more of how its run ended.
+ */
 const ShortcutDoneSchema = z.object({
   run: z.string(),
   outcome: z.string(),
-  outputs: z.object({ text: z.string().optional(), exit_code: z.number().int().optional() }).optional(),
+  outputs: z.object({ text: z.string().optional(), exit_code: z.number().int().optional() }).passthrough().optional(),
 });
 
 /** How a shortcut's run ended, for a command that does more once it has: undefined when it did not start or end. */

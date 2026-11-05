@@ -476,17 +476,20 @@ it('reports a detached-clone refusal when upgrading a wiki', async () => {
 
 
 it('propagates a detached-clone refusal before a wiki upgrade writes', async () => {
-  const importer = await import('../import-repo.js');
+  const { ImportFromRepo } = await import('../import-from-repo.js');
   const { upgradeCodebaseWiki } = await import('../codebase-upgrade-wiki.js');
   const cwd = path.join(root, 'legacy-upgrade');
   const docs = path.join(cwd, 'docs/team-codebase/repos');
   await fs.mkdir(docs, { recursive: true });
   await fs.writeFile(path.join(docs, 'app.md'), '---\nsource: https://example.com/team/app.git\n---\nLegacy wiki\n');
   const refusal = new gitModule.DetachedTeamRepoError('main');
-  const importSpy = vi.spyOn(importer, 'importFromRepo').mockRejectedValueOnce(refusal);
+  const teamwikiRoot = await import('../utils/teamwiki-root.js');
+  const targetSpy = vi.spyOn(teamwikiRoot, 'resolveTeamwiki').mockResolvedValueOnce({ wikiRoot: path.join(cwd, 'teamwiki') });
+  const importSpy = vi.spyOn(ImportFromRepo, 'start').mockRejectedValueOnce(refusal);
   try {
     await expect(upgradeCodebaseWiki({ cwd })).rejects.toBe(refusal);
   } finally {
     importSpy.mockRestore();
+    targetSpy.mockRestore();
   }
 });

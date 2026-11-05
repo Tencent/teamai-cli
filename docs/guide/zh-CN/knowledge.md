@@ -190,7 +190,9 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
-`--from-repo-list` 默认最多同时导入 3 个仓库。可用 `--concurrency <n>` 设置上限，值必须是正的安全整数。非法值会在读取仓库清单、准备输出目录之前报错。
+`--from-repo-list` 默认最多同时导入 3 个仓库。可用 `--concurrency <n>` 设置上限，值必须是正的安全整数。非法值会在读取仓库清单、准备输出目录之前报错。在你的机器上，它们的 AI 调用同时进行，提取和发布则轮流进行。
+
+`--dir`、`--from-repo`、`--from-repo-list` 和 `--from-org` 运行默认工作流 [`teamai-import-from-repo`](workflow.md#默认工作流)。每个来源先在不调用 AI 的情况下提取，再由你的 AI 工具描述它的模块、写出深度文档，最后整批只重建并发布一次索引。一个仓库失败不会中断其他仓库：整批会点名它，并以 1 退出。一个导入正在写某个 `teamwiki/` 时，写入同一目录的另一个导入会被拒绝；等第一个结束后再运行。
 
 `--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
@@ -275,9 +277,9 @@ $ echo $?
 用了 `--output` 时，重试命令是对该目录执行 `teamai codebase --deep-enrich`：
 
 ```text
-$ teamai import --dir ./orders-api --output ./wiki
+$ cd /work && teamai import --dir ./orders-api --output ./wiki
 ...
-⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output ./wiki` to retry.
+⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output /work/wiki` to retry.
 ```
 
 只需要提取结果、运行环境里没有 AI 工具的任务，跳过 AI 这一步，以 0 退出：
