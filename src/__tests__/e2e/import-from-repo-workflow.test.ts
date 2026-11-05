@@ -273,6 +273,22 @@ describe('teamai import through teamai-import-from-repo', { timeout: 120_000 }, 
     expect(output).not.toContain('has been pushed');
   });
 
+  it('says the pull request lines on stderr and the rest on stdout, as the command did before it ran as a workflow', async () => {
+    const sb = sandbox({ init: true });
+
+    // The team repo's remote is a local path, so the branch is pushed and no pull request can be opened.
+    const ran = await sb.run(['import', '--from-repo', URL_A]);
+
+    expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    const stderr = ran.stderr.split('\n');
+    expect(stderr).toContain('- Creating Pull Request...');
+    expect(stderr.some((line) => line.startsWith('✖ Failed to create PR: Invalid Git repo URL'))).toBe(true);
+    expect(ran.stdout).not.toContain('Creating Pull Request');
+    expect(ran.stdout).not.toContain('Failed to create PR');
+    expect(ran.stdout).toMatch(/ℹ Branch teamai\/push\/alice\/\S+ has been pushed\. You can create a PR manually\./);
+    expect(ran.stderr).not.toContain('has been pushed');
+  });
+
   it('asks the tool for two repositories at once with --concurrency 2', async () => {
     const sb = sandbox();
     fs.writeFileSync(path.join(sb.root, 'repos.yaml'), `version: 1\nrepos:\n  - url: ${URL_A}\n  - url: ${URL_B}\n`);

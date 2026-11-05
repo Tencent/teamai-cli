@@ -188,7 +188,10 @@ of the empty one.
 ### Shortcuts
 
 - A shortcut prints the run's `outputs.text` and exits with `outputs.exit_code`; `--json` prints the envelope.
-- The engine keeps each step's progress lines; the local driver prints them as they come, other drivers read them.
+- The engine keeps each step's progress lines; the local driver prints them as they come, other drivers read them. A
+  line keeps its stream: what a verb would print on stdout in a terminal (`log.info`, `success`, `warn`) is marked in
+  its stderr, which the local driver reads as the step's progress, and the shortcut prints it on stdout; an unmarked
+  line, such as `log.error` or a spinner's, stays on stderr.
 - A shortcut of a released command starts as the CLI, so a coding agent that ran `teamai import --dir` before still
   can. Inside a workflow attempt, it drives its private run in the step's own process.
 - `--dry-run` either stops before the start, or passes `dry_run: true` to a workflow whose write steps check it.
@@ -340,7 +343,7 @@ proposes `scorers/<name>.md` to the team as a pull request.
   `AI enrich:` line follows the extract summary, and its `Output:` is a directory of the run. A batch says its
   repositories in the order their steps run, names a failed one with `import failed: <url>` after the failing step's
   own error, and prints its `Batch import complete` line plainly. The deep-enrich retry names the absolute `--output`
-  directory. What the publishing step says, the pull request lines included, is on stdout like every step's progress.
+  directory. Each line a step says keeps the stream it had, so the pull request lines stay on stderr.
   An `--output` teamwiki takes the import lock too, beside it.
 
 ## Test seams

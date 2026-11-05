@@ -10,7 +10,7 @@ import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand,
 import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, workflowLaunch, type RunMode } from '../../../launch-context.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
-import { log } from '../../../utils/logger.js';
+import { log, PROGRESS_STREAMS_ENV, streamOfLine, withoutStreamMarks } from '../../../utils/logger.js';
 import { redact } from '../../../utils/redact.js';
 import { AgentSession } from '../../../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
@@ -168,8 +168,11 @@ export interface LocalDriverOptions {
   resolveTool?: (executable: string) => string | null;
   /** Called with the runs each report the engine took answers its settled passes started, which the caller drives. */
   started?: (runs: readonly StartedRun[]) => void;
-  /** Shown each line a command step writes to stderr as it writes it, masked: what a shortcut of the run shows live. */
-  progress?: (line: string) => void;
+  /**
+   * Shown each line a command step writes to stderr as it writes it, masked, with the stream the command meant it for:
+   * what a shortcut of the run shows live.
+   */
+  progress?: (line: string, stream: 'stdout' | 'stderr') => void;
 }
 
 /** A lease as this driver runs it: what the engine sent, and what staging it adds. A step staged after `expiresAt` does not start. */
@@ -380,7 +383,8 @@ async function resumeSession(archive: SessionArchive, lease: Lease, tool: Launch
   return undefined;
 }
 
-async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandExit, secrets: Record<string, string>): Promise<ReportBody> {
+async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, exited: CommandExit, secrets: Record<string, string>): Promise<ReportBody> {
+  const result = { ...exited, stderr: withoutStreamMarks(exited.stderr) };
   const end = commandEnd(result);
   await AttemptResult.write(attemptResultPath(config, lock.run, lease.attempt), end.outputs !== undefined ? { output: end.outputs } : {}, secrets);
   // What a command says as it runs goes to its stderr, so its stdout stays the step's outputs.
@@ -1090,13 +1094,18 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
             // The lease `env` is set over the step's environment, so its values reach the shell only as variables.
             const input: Parameters<typeof startGroupedCommand>[0] = {
-              command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, runId, lease.attempt, mode) }, detached, group: attemptDir(config, runId, lease.attempt),
+              command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, runId, lease.attempt, mode), [PROGRESS_STREAMS_ENV]: '1' }, detached, group: attemptDir(config, runId, lease.attempt),
             };
 
             const { progress } = options;
 
             if (!progress) return startGroupedCommand(input);
-            const shown = lineSplitter((line) => progress(masked(line, turn.secrets)));
+
+            const shown = lineSplitter((line) => {
+              const { stream, text } = streamOfLine(line);
+              progress(masked(text, turn.secrets), stream);
+            });
+
             const grouped = startGroupedCommand({ ...input, onStderr: shown.write });
 
             return { ...grouped, exit: grouped.exit.finally(shown.end) };

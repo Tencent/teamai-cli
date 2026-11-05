@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
+import { format } from 'node:util';
 import { Command, Option } from 'commander';
-import { setVerbose, setSilent, setStderrOnly, log } from './utils/logger.js';
+import { setVerbose, setSilent, setStderrOnly, log, writeInfoLine } from './utils/logger.js';
 import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
@@ -1678,9 +1679,9 @@ const importCommand = program
 async function importVerb<TAnswer>(run: () => Promise<TAnswer>): Promise<void> {
   setStderrOnly(true);
   const { ImportInputError } = await import('./import-from-repo.js');
-  // Only JSON goes to stdout: the lines the extractor prints are the step's progress.
+  // Only JSON goes to stdout: the lines the extractor prints are the step's progress, kept on the stream they were for.
   const { log: stdoutLog } = console;
-  console.log = console.error;
+  console.log = (...args: unknown[]) => writeInfoLine(format(...args));
 
   try {
     const answer = await run();

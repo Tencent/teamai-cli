@@ -463,8 +463,8 @@ export interface ShortcutStart {
    * starts unassigned awaiting, or `none`, which leaves it to any driver. Either is said with the run's id.
    */
   byDefault?: DefaultDrive;
-  /** Shown each line a step says as it runs on the local driver, as a shortcut shows its run's progress. */
-  progress?: (line: string) => void;
+  /** Shown each line a step says as it runs on the local driver, on the stream it was meant for, as a shortcut shows its run's progress. */
+  progress?: (line: string, stream: 'stdout' | 'stderr') => void;
   /** Says how the run the local driver drove went, or why it did not start, in place of printing the envelope. */
   present?: (config: LocalConfig, driven: WorkflowEnvelope, secrets: Record<string, string>) => Promise<void>;
 }
@@ -732,7 +732,7 @@ async function runShortcutIn(loaded: Ready, { workflow, inputs, command, json }:
   // under the step's lease, place and timeout, rather than leaving it to the driver workflows.driver names.
   const decided: DefaultDrive = nestedCall(process.env) === undefined && !isEphemeral ? await driveByDefault(config) : { kind: 'drive', driver: LOCAL_DRIVER };
   const driver = decided.kind === 'drive' ? decided.driver : undefined;
-  const say = (line: string): void => { (json ? process.stderr : process.stdout).write(`${line}\n`); };
+  const say = (line: string, stream: 'stdout' | 'stderr'): void => { (json || stream === 'stderr' ? process.stderr : process.stdout).write(`${line}\n`); };
 
   await startWorkflow(workflow, { driver, inputs: JSON.stringify(inputs) }, {
     ready: loaded,
