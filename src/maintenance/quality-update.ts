@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { listDirs, listFiles, pathExists, readFileSafe, writeFile } from '../utils/fs.js';
+import { DRAFT_SUFFIX, listDirs, listFiles, pathExists, readFileSafe, writeFile } from '../utils/fs.js';
 import { parseJson } from '../utils/json.js';
 import { listLearningFiles } from '../utils/learnings-roots.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
@@ -413,7 +413,7 @@ async function context(entry: { path: string; docId: string }, votesDir: string,
 
 /** The `write` step: writes `draft` beside the entry at `entryPath`, as `<entry>.draft.md`. */
 async function writeDraft(entryPath: string, draft: string): Promise<{ draft: string }> {
-  const draftPath = `${entryPath}.draft.md`;
+  const draftPath = `${entryPath}${DRAFT_SUFFIX}`;
   await writeFile(draftPath, draft);
   log.success(`  Draft written: ${draftPath}`);
 

@@ -169,7 +169,7 @@ teamai recall maintenance --prune --archive
 teamai recall maintenance --update-quality
 ```
 
-`--archive` 收走置信度低于 0.15 的 learning。`--update-quality` 在团队经常召回却很少采用的每个条目旁写出 `.draft.md`，改好后把文件名改成 `.md`。它运行默认工作流 [`teamai-draft-learning-updates`](workflow.md#默认工作流)，有条目没能起草时以 1 退出。
+`--archive` 收走置信度低于 0.15 的 learning。`--update-quality` 在团队经常召回却很少采用的每个条目旁写出 `.draft.md`，改好后把文件名改成 `.md`；改名之前 `teamai pull` 不会分发它。它运行默认工作流 [`teamai-draft-learning-updates`](workflow.md#默认工作流)，有条目没能起草时以 1 退出。
 
 知识摘要与维护命令（`teamai digest`、`teamai recall maintenance` 及 `teamai recall promote`）均涵盖当前作用域内活跃的项目命名空间经验以及共享根目录经验。
 

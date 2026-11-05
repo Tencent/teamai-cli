@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import matter from 'gray-matter';
 import { z } from 'zod';
-import { errnoCode, expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isIgnored } from './fs.js';
+import { errnoCode, expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isDraft, isIgnored } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
 import { teamRuleBody, teamRuleData } from '../resources/team-rule.js';
@@ -763,7 +763,7 @@ async function listDir(dir: string, reads: BuildReads): Promise<Dirent[] | null>
   if (reads.given.some((given) => isUnder(dir, given))) return null;
 
   try {
-    return (await readdir(expandHome(dir), { withFileTypes: true })).filter((entry) => !isIgnored(entry.name));
+    return (await readdir(expandHome(dir), { withFileTypes: true })).filter((entry) => !isIgnored(entry.name) && !isDraft(entry.name));
   } catch (e) {
     if (errnoCode(e) === 'ENOENT') return [];
     reads.unreadable.push({ path: dir, reason: failureReason(e) });
