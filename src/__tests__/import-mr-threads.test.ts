@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { extractMRLearningPrompt, formatMrThreads } from '../import-mr.js';
+import { formatComment } from '../ci/mr-comment.js';
 import { pruneThreads } from '../providers/mr-threads.js';
 import type { MRData, MRThread } from '../types.js';
 
@@ -41,15 +42,12 @@ describe('pruneThreads', () => {
     expect(threads).toEqual([remark]);
   });
 
-  it('drops comments posted with a custom --comment-marker as well', () => {
+  it('drops the comment ci extract-mr posted under a custom --comment-marker, which it signs as every comment', () => {
     const threads = pruneThreads([
-      { notes: [{ author: 'ci', body: '<!-- learning-bot -->\n## TeamAI 知识提炼' }] },
-      { notes: [{ author: 'ci', body: '<!-- teamai:ci-extract -->' }] },
+      { notes: [{ author: 'ci', body: formatComment({ title: 'Retry uploads', content: 'Retry on 5xx.' }, undefined, '<!-- learning-bot -->') }] },
       remark,
-    ], '<!-- learning-bot -->');
+    ]);
     expect(threads).toEqual([remark]);
-    // Without the marker the custom comment is an ordinary note.
-    expect(pruneThreads([{ notes: [{ author: 'ci', body: '<!-- learning-bot -->' }] }])).toHaveLength(1);
   });
 });
 

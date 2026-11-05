@@ -71,7 +71,7 @@ const MAX_NOTE_PAGES = 10;
  *
  * @throws Error on an API error; the caller keeps the extraction going without threads
  */
-async function fetchTGitThreads(enc: string, mrGlobalId: number, commentMarker?: string): Promise<MRThread[]> {
+async function fetchTGitThreads(enc: string, mrGlobalId: number): Promise<MRThread[]> {
   const notes: z.infer<typeof TGitNoteSchema>[] = [];
 
   for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
@@ -113,7 +113,7 @@ async function fetchTGitThreads(enc: string, mrGlobalId: number, commentMarker?:
     threads.push(fresh);
   }
 
-  return pruneThreads(threads, commentMarker);
+  return pruneThreads(threads);
 }
 
 /**
@@ -181,7 +181,7 @@ export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promi
 
   if (opts.discussions !== false) {
     try {
-      discussions = await fetchTGitThreads(enc, mr.id, opts.commentMarker);
+      discussions = await fetchTGitThreads(enc, mr.id);
     } catch (err) {
       log.warn(`Review threads not read (${err instanceof Error ? err.message : String(err)}); the learning is extracted without them`);
     }
