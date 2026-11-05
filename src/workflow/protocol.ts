@@ -17,7 +17,7 @@ import { ConfinedLeaseSchema, LeaseIdSchema, LeaseWireSchema } from './lease-wir
 import { carriedRun, claimOffered, offerToPerson, reconcileTakenCopies, resumeRun, settledSteps } from './handoff.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportable, reportAttempt, startRun, withIgnored, type NextOptions, type PersonHandoff, type ReportInput } from './engine.js';
 import {
-  abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparedCopyTeam, preparePlace, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
+  abandonPlace, adoptedPlaceOf, finishPlace, placeHeldBy, placeLeaseOf, placeOf, placeRecorded, preparedClone, preparedCopyTeam, preparePlace, refuseDirtyAdoptedCommand, releasePlace, runPlaceSetup, stagePassEvidence, sweepClones, type PlaceLease,
   type PlacePrepared,
   type StepEnd,
 } from './place/place.js';
@@ -32,6 +32,8 @@ import { cloneBranchOf, confinedOf, deliveryProblem, runCopyToMerge, stepRoleOf 
 import { headCommit } from './worktree.js';
 
 export type { PersonHandoff };
+
+export { refuseDirtyAdoptedCommand };
 
 /**
  * A run that a pass a report settled started, which the driver of the reported run drives as it drives that run: its
@@ -117,9 +119,13 @@ export interface WorkflowClient {
   offer(runId: RunId, checkout: string): Promise<PersonHandoff>;
   /** What the run file of `runId` says now, or undefined while this machine cannot read it. */
   runVersion(runId: RunId): Promise<RunVersion | undefined>;
-  /** Reports an attempt. A prepared one is finished first: its `changes` or `read` come from its place. */
+  /**
+   * Reports an attempt. A prepared one is finished first: its `changes` or `read` come from its place.
+   * `changed`: paths the skill child's result reported, supplied in process. Absent on a report from the CLI, which
+   * commits an adopted writer's tree as it stands.
+   */
   // oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; parseReport in engine.ts parses it, and the skill driver's tick.ts passes typed reports
-  report(runId: string, body: unknown, options?: { lock?: RunLock }): Promise<WorkflowEnvelope>;
+  report(runId: string, body: unknown, options?: { lock?: RunLock; changed?: readonly string[] }): Promise<WorkflowEnvelope>;
   /** Records an answer, with the provenance decided from the process or driver `via` names. A process inside a workflow attempt answers none: `nested_workflow`. */
   respond(runId: string, step: string, choice: string, options: { note?: string; pass?: number; via: RespondVia }): Promise<WorkflowEnvelope>;
   /** Reopens the target step's dependency cone. */
@@ -663,7 +669,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       const run = RunIdSchema.safeParse(runId);
       const report = run.success ? await withPreparedCopy(config, run.data, parsed.report) : parsed.report;
 
-      return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock }), parsed.ignored);
+      return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock, changed: options?.changed }), parsed.ignored);
     },
     respond: async (runId, step, choice, { via, ...answer }) => {
       if (via.kind === 'skill') return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via) });
@@ -891,7 +897,7 @@ async function startNamed({ config, secrets }: { config: LocalConfig; secrets: R
 }
 
 /** Reports an attempt as `placedReport` does, with the runs its settled passes started (`withStarted`). Every driver reports through it. */
-export async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
+export async function managedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined; changed?: readonly string[] }): Promise<WorkflowEnvelope> {
   return withStarted(input, await placedReport(input));
 }
 
@@ -916,7 +922,7 @@ async function withStarted({ config, runId, secrets }: { config: LocalConfig; ru
  * the run would refuse is sent as it is, and a cancelled one leaves the place as prepare found it; so does a
  * `released` attempt.
  */
-async function placedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined }): Promise<WorkflowEnvelope> {
+async function placedReport(input: { config: LocalConfig; runId: string; report: ReportInput; secrets: Record<string, string>; lock: RunLock | undefined; changed?: readonly string[] }): Promise<WorkflowEnvelope> {
   const { config, runId, report, secrets, lock } = input;
   const attempt = AttemptIdSchema.safeParse(report.attempt);
   const run = RunIdSchema.safeParse(runId);
@@ -924,7 +930,7 @@ async function placedReport(input: { config: LocalConfig; runId: string; report:
   if (!attempt.success || !run.success) return reportAttempt(config, runId, report, secrets);
 
   if (!await placeRecorded({ config, run: run.data, attempt: attempt.data })) return reportAttempt(config, runId, report, secrets);
-  const settle = (held: RunLock): Promise<WorkflowEnvelope> => settleManaged({ config, lock: held, attempt: attempt.data, report, secrets });
+  const settle = (held: RunLock): Promise<WorkflowEnvelope> => settleManaged({ config, lock: held, attempt: attempt.data, report, secrets, changed: input.changed });
 
   return lock ? settle(lock) : withRunLock(config, run.data, settle, { waitMs: 0 });
 }
@@ -932,7 +938,7 @@ async function placedReport(input: { config: LocalConfig; runId: string; report:
 /** What an accepted report answers of the step it settled. */
 const AcceptedSchema = z.object({ step: z.object({ outcome: z.string() }) });
 
-async function settleManaged(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; report: ReportInput; secrets: Record<string, string> }): Promise<WorkflowEnvelope> {
+async function settleManaged(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; report: ReportInput; secrets: Record<string, string>; changed?: readonly string[] }): Promise<WorkflowEnvelope> {
   const { config, lock, attempt, report, secrets } = input;
 
   // Checked first, so finishing the place does not commit for an attempt the run would refuse.
@@ -957,7 +963,7 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
   if (report.message !== undefined) end.message = report.message;
 
   if (report.failure) end.failure = report.failure;
-  const finished = await finishPlace({ config, lock, attempt, end, secrets });
+  const finished = await finishPlace({ config, lock, attempt, end, secrets, changed: input.changed });
   // A limit goes only with a step that succeeded: a failure to keep its work replaces both.
   const { limit, ...unlimited } = report;
   const body: ReportInput = { ...unlimited, ...finished };

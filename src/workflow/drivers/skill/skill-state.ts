@@ -111,7 +111,11 @@ const AttemptStateSchema = z.discriminatedUnion('phase', [
   z.object({ ...AttemptBase, phase: z.literal('dispatched'), dispatch: DispatchSchema }),
   z.object({ ...AttemptBase, phase: z.literal('stopping'), by: z.enum(['runner', 'agent']), why: z.enum(STOP_REASONS) }),
   /** `stopped`: the report gives up an attempt stopped for this reason. */
-  z.object({ ...AttemptBase, phase: z.literal('reporting'), body: ReportBodySchema, tail: z.string().optional(), stopped: z.enum(STOP_REASONS).optional() }),
+  /**
+   * `changed`: paths the child result reported, kept so a report sent again still names them. Absent on a report stored
+   * before that, and on a command or a setup failure that commits the tree.
+   */
+  z.object({ ...AttemptBase, phase: z.literal('reporting'), body: ReportBodySchema, tail: z.string().optional(), stopped: z.enum(STOP_REASONS).optional(), changed: z.array(z.string()).optional() }),
 ]);
 
 export type AttemptState = z.infer<typeof AttemptStateSchema>;

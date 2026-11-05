@@ -2017,7 +2017,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const [tighten] = dispatches(turn);
       if (!tighten) throw new Error(JSON.stringify(turn));
       expect(tighten).toMatchObject({ step: 'tighten', needs: { place: 'workspace' } });
-      expect(fs.readFileSync(tighten.brief, 'utf8')).toContain('Leave git to TeamAI. It commits and pushes that directory after you report.');
+      expect(fs.readFileSync(tighten.brief, 'utf8')).toContain('Leave git to TeamAI. It commits the paths you list in `changed`, then pushes that branch.');
       fs.mkdirSync(path.join(tighten.dir, 'rules'));
       fs.writeFileSync(path.join(tighten.dir, 'rules', 'tight.md'), '# Tight\n');
       await made.call({ kind: 'ack', run, attempt: tighten.attempt });

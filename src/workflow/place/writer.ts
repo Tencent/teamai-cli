@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { WorkflowFailure } from '../types.js';
 import type { StepChanges } from '../workspace.js';
+import { pathsGitWouldCommit } from './worktree-snapshot.js';
 import { commitWork, git, mergeBranch, offBranch, pushIfOrigin } from '../worktree.js';
 import { restoreOverlay, unrestoredConfig } from './overlay.js';
 
@@ -156,8 +157,15 @@ export async function finishWriter(input: {
   conflicts: Record<string, string>;
   saved: string;
   failed: boolean;
+  /**
+   * Paths the skill child reported changing, when this place was adopted and the skill driver supplied the list.
+   * Absent: commit the tree, as a place TeamAI made does.
+   */
+  reported?: readonly string[];
+  /** A failure the step already has. Kept when the tree has paths outside `reported` and this is `unreported_changes`. */
+  already?: WorkflowFailure;
 }): Promise<{ changes?: StepChanges; failure?: WorkflowFailure; unpushed?: string }> {
-  const { dir, step, workspace, rangeFrom, conflicts, saved, failed } = input;
+  const { dir, step, workspace, rangeFrom, conflicts, saved, failed, reported, already } = input;
   const unrestored = await restoreOverlay({ dir, configCommit: workspace.configCommit, saved });
 
   if (unrestored) return { failure: { code: 'workspace_base', message: `Step "${step}" ran, but nothing was committed or pushed. ${unrestoredConfig(unrestored, dir)}` } };
@@ -168,7 +176,24 @@ export async function finishWriter(input: {
   const open = await unresolvedConflicts(dir, conflicts);
 
   if (open.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${open.join(', ')}` } };
-  const committed = await commitWork(dir, `teamai: ${step}`, rangeFrom);
+
+  let paths: readonly string[] | undefined;
+
+  if (reported) {
+    const status = await git(dir, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+
+    if (status.code !== 0) return { failure: { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir}, so nothing was committed or pushed. Git said: ${status.stderr.trim() || 'git status failed'}.` } };
+    const dirty = pathsGitWouldCommit(status.stdout);
+    const missing = dirty.filter((relative) => !reported.includes(relative)).sort((left, right) => left.localeCompare(right));
+
+    if (missing.length > 0) {
+      return { failure: already?.code === 'unreported_changes' ? already : { code: 'unreported_changes', message: `Step "${step}" left ${missing.join(', ')} in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.` } };
+    }
+
+    paths = dirty;
+  }
+
+  const committed = await commitWork(dir, `teamai: ${step}`, rangeFrom, git, paths);
 
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
   await clearRememberedConflicts(dir);

@@ -30,7 +30,7 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
-import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
+import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, refuseDirtyAdoptedCommand, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, StartedRunSchema, unreadablePlace, type StartedRun } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
@@ -923,7 +923,11 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   const report = async (body: ReportBody, lease: Lease): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config);
     await AttemptResult.mask(attemptResultPath(config, runId, lease.attempt), secrets);
-    const answer = await managedReport({ config, runId, report: body, secrets, lock });
+
+    // A command that did not run because the adopted place was already dirty must not then commit that dirt.
+    const answer = body.failure?.code === 'unreported_changes'
+      ? await managedReport({ config, runId, report: body, secrets, lock, changed: [] })
+      : await managedReport({ config, runId, report: body, secrets, lock });
 
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
@@ -1025,7 +1029,11 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
           lease,
-          (signal) => stageLease(lease, { config, lock, root, env: turn, mode, signal }),
+          async (signal) => {
+            const staged = await stageLease(lease, { config, lock, root, env: turn, mode, signal });
+
+            return staged ?? refuseDirtyAdoptedCommand({ config, run: lock.run, attempt: lease.attempt });
+          },
           () => {
             if (forwarded) handle(forwarded);
 

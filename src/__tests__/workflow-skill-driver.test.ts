@@ -608,7 +608,7 @@ describe('skill driver', () => {
     expect(Object.keys(briefs).sort()).toEqual(['change', 'read']);
     expect(briefs.read).toContain('Do not change files here');
     expect(briefs.read).not.toContain('commits and pushes');
-    expect(briefs.change).toContain('It commits and pushes that directory after you report.');
+    expect(briefs.change).toContain('{"kind":"output","output":...,"changed":["src/app.ts","src/legacy.ts"]}');
     expect(briefs.change).not.toContain('Do not change files here');
   });
 
@@ -678,7 +678,7 @@ describe('skill driver', () => {
       if (!file) throw new Error(`${brief} names no result file`);
       return file;
     };
-    fs.writeFileSync(result(write.brief), JSON.stringify({ kind: 'output', output: 'Wrote the change.' }));
+    fs.writeFileSync(result(write.brief), JSON.stringify({ kind: 'output', output: 'Wrote the change.', changed: ['change.txt'] }));
     expect(await harness.call({ kind: 'report', run, attempt: write.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
 
     // polish continues the branch in the place the host made, and nobody is asked for another.
@@ -691,13 +691,136 @@ describe('skill driver', () => {
 
     await harness.call({ kind: 'ack', run, attempt: polish.attempt });
     fs.appendFileSync(path.join(dir, 'change.txt'), 'polished\n');
-    fs.writeFileSync(result(polish.brief), JSON.stringify({ kind: 'output', output: 'Polished the change.' }));
+    fs.writeFileSync(result(polish.brief), JSON.stringify({ kind: 'output', output: 'Polished the change.', changed: ['change.txt'] }));
     await harness.call({ kind: 'report', run, attempt: polish.attempt, role: 'agent', modelUnavailable: false });
     const done = await harness.call({ kind: 'next', run, wait: false });
     expect(done).toMatchObject({ data: { turn: { status: 'done', actions: [{ kind: 'done', outcome: 'succeeded' }] } } });
     // TeamAI leaves the place to its host, with both steps committed on the branch.
     expect(fs.readFileSync(path.join(dir, 'change.txt'), 'utf8')).toBe('written\npolished\n');
     expect(execFileSync('git', ['log', '--format=%s', `teamai/${run}/work/p1`], { cwd: dir, encoding: 'utf8' }).trim().split('\n')).toHaveLength(3);
+  });
+
+  it('does not run a command in an adopted place that is already dirty', async () => {
+    const commands: string[] = [];
+    const harness = await skillHarness({ change: `schemaVersion: v1alpha1
+name: change
+description: Write a change, then build it
+invoke: allow
+steps:
+  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: build
+          needs: [write]
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('built.txt', 'B')"
+` }, {
+      client: (client) => ({
+        ...client,
+        prepare: async (lock, raw) => {
+          const prepared = await client.prepare(lock, raw);
+
+          if (prepared.kind === 'prepared') fs.writeFileSync(path.join(prepared.dir, '.setup-out'), 'host\n');
+
+          return prepared;
+        },
+      }),
+      runners: (runners) => ({ ...runners, command: (input) => { commands.push(input.command); return runners.command(input); } }),
+    });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'change', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h3' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [place] = chosen.data.turn.actions;
+    if (place?.kind !== 'place') throw new Error(JSON.stringify(chosen));
+    const start = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: harness.work, encoding: 'utf8' }).trim();
+    const dir = path.join(harness.root, 'hosts', 'place');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', dir, start], { cwd: harness.work });
+    const adopted = await harness.call({ kind: 'adopt', run, attempt: place.attempt, dir });
+    if (!('data' in adopted) || !('turn' in adopted.data)) throw new Error(JSON.stringify(adopted));
+    const [write] = adopted.data.turn.actions;
+    if (write?.kind !== 'dispatch') throw new Error(JSON.stringify(adopted));
+    await harness.call({ kind: 'ack', run, attempt: write.attempt });
+    fs.writeFileSync(path.join(dir, 'code.txt'), 'written\n');
+    const result = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(write.brief, 'utf8'))?.[1];
+    if (!result) throw new Error('the brief names no result file');
+    fs.writeFileSync(result, JSON.stringify({ kind: 'output', output: 'Wrote the change.', changed: ['code.txt'] }));
+    expect(await harness.call({ kind: 'report', run, attempt: write.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
+    await eventsToDone(harness, run);
+    const stored = await readRun(harness.config, run);
+    expect(commands).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'built.txt'))).toBe(false);
+    expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'work.build')).toMatchObject({
+      status: 'failed',
+      failure: { code: 'unreported_changes', message: expect.stringContaining('.setup-out') },
+    });
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' })).toContain('.setup-out');
+    expect(execFileSync('git', ['log', '--format=%s', `teamai/${run}/work/p1`], { cwd: dir, encoding: 'utf8' })).not.toContain('.setup-out');
+  });
+
+  it('leaves a host file in place when a read-only command in an adopted place is already dirty', async () => {
+    const commands: string[] = [];
+    const harness = await skillHarness({ change: `schemaVersion: v1alpha1
+name: change
+description: Write a change, then show it
+invoke: allow
+steps:
+  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: show
+          needs: [write]
+          command: node -e "process.stdout.write('shown')"
+` }, {
+      client: (client) => ({
+        ...client,
+        prepare: async (lock, raw) => {
+          const prepared = await client.prepare(lock, raw);
+
+          if (prepared.kind === 'prepared') fs.writeFileSync(path.join(prepared.dir, '.setup-out'), 'host\n');
+
+          return prepared;
+        },
+      }),
+      runners: (runners) => ({ ...runners, command: (input) => { commands.push(input.command); return runners.command(input); } }),
+    });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'change', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h3' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [place] = chosen.data.turn.actions;
+    if (place?.kind !== 'place') throw new Error(JSON.stringify(chosen));
+    const start = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: harness.work, encoding: 'utf8' }).trim();
+    const dir = path.join(harness.root, 'hosts', 'reader');
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', dir, start], { cwd: harness.work });
+    const adopted = await harness.call({ kind: 'adopt', run, attempt: place.attempt, dir });
+    if (!('data' in adopted) || !('turn' in adopted.data)) throw new Error(JSON.stringify(adopted));
+    const [write] = adopted.data.turn.actions;
+    if (write?.kind !== 'dispatch') throw new Error(JSON.stringify(adopted));
+    await harness.call({ kind: 'ack', run, attempt: write.attempt });
+    fs.writeFileSync(path.join(dir, 'code.txt'), 'written\n');
+    const result = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(write.brief, 'utf8'))?.[1];
+    if (!result) throw new Error('the brief names no result file');
+    fs.writeFileSync(result, JSON.stringify({ kind: 'output', output: 'Wrote the change.', changed: ['code.txt'] }));
+    expect(await harness.call({ kind: 'report', run, attempt: write.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
+    await eventsToDone(harness, run);
+    const stored = await readRun(harness.config, run);
+    expect(commands).toEqual([]);
+    expect(fs.readFileSync(path.join(dir, '.setup-out'), 'utf8')).toBe('host\n');
+    expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'work.show')).toMatchObject({
+      status: 'failed',
+      failure: { code: 'unreported_changes', message: expect.not.stringContaining('Read-only') },
+    });
   });
 
   it('a cancelled command is stopped by its runner and reported released; a cancelled prompt step shows stop until reported', async () => {

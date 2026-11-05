@@ -849,29 +849,44 @@ async function fileManifest(root: string, paths: readonly string[]): Promise<Rec
   return files;
 }
 
-/** Stages every change. `git add -A` skips a submodule whose `ignore` is `all`, so each submodule is also staged by name. */
-async function stageAll(dir: string, runGit: Git = git): Promise<GitResult> {
-  const added = await runGit(dir, ['add', '-A']);
+/** Stages the paths `args` added, then forces any gitlink among them. `git add -A` skips a submodule whose `ignore` is `all`. */
+async function stageAdded(dir: string, args: string[], runGit: Git, only?: ReadonlySet<string>): Promise<GitResult> {
+  const added = await runGit(dir, args);
 
   if (added.code !== 0) return added;
-  const listed = await runGit(dir, ['ls-files', '-s', '-z']);
+  const listed = await runGit(dir, only === undefined ? ['ls-files', '-s', '-z'] : ['ls-files', '-s', '-z', '--', ...only]);
 
   if (listed.code !== 0) return listed;
-  const modules = gitlinkLines(listed.stdout).map((line) => line.slice(line.indexOf('\t') + 1));
+  const modules = gitlinkLines(listed.stdout).map((line) => line.slice(line.indexOf('\t') + 1)).filter((module) => only === undefined || only.has(module));
 
   return modules.length > 0 ? runGit(dir, ['add', '-f', '--', ...modules]) : added;
 }
 
-/** Commits every change in `dir`, with `runGit` running every git call. */
+/** Stages every change. `git add -A` skips a submodule whose `ignore` is `all`, so each submodule is also staged by name. */
+async function stageAll(dir: string, runGit: Git = git): Promise<GitResult> {
+  return stageAdded(dir, ['add', '-A'], runGit);
+}
+
+/** Stages `paths` and nothing else. An empty list stages nothing, so a file written after the caller chose the list stays out. */
+async function stagePaths(dir: string, paths: readonly string[], runGit: Git): Promise<GitResult> {
+  if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
+
+  return stageAdded(dir, ['add', '-A', '--', ...paths], runGit, new Set(paths));
+}
+
+/**
+ * Commits changes in `dir`, with `runGit` running every git call.
+ * `paths` stages only those paths. Absent, every change is staged. An empty list stages nothing.
+ */
 export async function commitWork(
-  dir: string, message: string, fromCommit?: string, runGit: Git = git,
+  dir: string, message: string, fromCommit?: string, runGit: Git = git, paths?: readonly string[],
 ): Promise<{ from: string; to: string; commits: string[] } | { error: string }> {
   const before = fromCommit === undefined ? await runGit(dir, ['rev-parse', 'HEAD']) : { code: 0, stdout: fromCommit, stderr: '' };
 
   if (before.code !== 0) return { error: before.stderr.trim() || 'HEAD could not be read' };
   const from = before.stdout.trim();
   const merging = (await runGit(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
-  const added = await stageAll(dir, runGit);
+  const added = paths === undefined ? await stageAll(dir, runGit) : await stagePaths(dir, paths, runGit);
 
   if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
   const staged = await runGit(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']);
@@ -1144,6 +1159,11 @@ export async function markReadCopy(dir: string, { branch, step }: { branch: stri
   }
 
   return { found: status.lines };
+}
+
+/** Drops the mark a reader left, without putting the worktree back. */
+export async function releaseReadCopy(dir: string): Promise<void> {
+  await clearReadCopyMark(dir);
 }
 
 async function clearReadCopyMark(dir: string): Promise<void> {

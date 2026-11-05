@@ -19,22 +19,42 @@ async function gitStatus(workspace: string, run: Git): Promise<{ ok: boolean; te
   return status.code === 0 ? { ok: true, text: status.stdout } : { ok: false, text: status.stderr.trim() };
 }
 
-/** Porcelain records from `git status -z`. A rename's first path is the one in the worktree; the next field is the old path. */
+/**
+ * Porcelain records from `git status -z`. A rename or copy's first path is the one in the worktree; the next field is
+ * the old path, which a snapshot does not hash.
+ */
 function statusEntries(text: string): { mark: string; relative: string }[] {
+  return porcelainRecords(text).map((record) => ({ mark: record.mark, relative: record.paths[0] ?? '' }));
+}
+
+/** Every path in one `git status -z` record. A rename or copy lists the worktree path and then the old path. */
+function porcelainRecords(text: string): { mark: string; paths: string[] }[] {
   const parts = text.split('\0');
-  const entries: { mark: string; relative: string }[] = [];
+  const records: { mark: string; paths: string[] }[] = [];
 
   for (let index = 0; index < parts.length; index += 1) {
     const item = parts[index] ?? '';
 
     if (item.length < 4) continue;
     const mark = item.slice(0, 2);
+    const paths = [item.slice(3)];
 
-    if (mark.includes('R') || mark.includes('C')) index += 1;
-    entries.push({ mark, relative: item.slice(3) });
+    if (mark.includes('R') || mark.includes('C')) {
+      index += 1;
+      const previous = parts[index];
+
+      if (previous !== undefined && previous !== '') paths.push(previous);
+    }
+
+    records.push({ mark, paths });
   }
 
-  return entries;
+  return records;
+}
+
+/** Every path in `text`, from `git status --porcelain -z`, that git would commit, including a rename or copy's old path. */
+export function pathsGitWouldCommit(text: string): string[] {
+  return porcelainRecords(text).flatMap((record) => record.paths);
 }
 
 async function hashPath(workspace: string, relative: string): Promise<string> {
