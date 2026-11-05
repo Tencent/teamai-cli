@@ -155,6 +155,7 @@ describe('workflow json payloads', () => {
   it.each([
     ['running that is not an array', { running: 'a00000000' }, 'running must be an array of attempt ids'],
     ['running that holds a number', { running: [1] }, 'running must be an array of attempt ids'],
+    ['queued that is not an array', { queued: 'a00000000' }, 'queued must be an array of attempt ids'],
     ['canTakeLease that is not a boolean', { canTakeLease: 'false' }, 'canTakeLease must be a boolean'],
     ['a base without a commit', { base: { ref: 'main' } }, 'base must include commit, and ref when it is set must not be empty'],
     ['a base with an empty ref', { base: { ref: '', commit: 'c0ffee' } }, 'base must include commit, and ref when it is set must not be empty'],

@@ -980,9 +980,12 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
     const secrets = env?.secrets ?? await knownSecrets(config);
     await AttemptResult.mask(attemptResultPath(config, runId, lease.attempt), secrets);
 
+    // The leases still waiting to start keep their whole timeout through this report too.
+    const sent: ReportBody = { ...body, queued: held.map((waiting) => waiting.attempt) };
+
     const answer = changed === undefined
-      ? await managedReport({ config, runId, report: body, secrets, lock })
-      : await managedReport({ config, runId, report: body, secrets, lock, changed });
+      ? await managedReport({ config, runId, report: sent, secrets, lock })
+      : await managedReport({ config, runId, report: sent, secrets, lock, changed });
 
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
@@ -1005,7 +1008,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       const resolved = await resolveWorkflowEnv(config);
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
-      const next = await leaseNext(config, runId, driver, { running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, handoff, base, env: turn, alone: true, prepare: true, isOneAtATime });
+      const next = await leaseNext(config, runId, driver, { running, queued: held.map((lease) => lease.attempt), canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, handoff, base, env: turn, alone: true, prepare: true, isOneAtATime });
 
       if (signalled) continue;
       // A clone whose steps all settled is not needed any more.
@@ -1014,6 +1017,14 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       if (isWorkflowError(next)) return next;
 
       const cancelled = z.array(z.string()).safeParse(next.data.cancelled);
+      const deadlines = z.record(z.string(), z.string()).safeParse(next.data.deadlines);
+
+      // A lease waiting to start keeps the deadline its restarted clock gives it.
+      for (const [index, lease] of held.entries()) {
+        const deadline = deadlines.success ? deadlines.data[lease.attempt] : undefined;
+
+        if (deadline !== undefined) held[index] = { ...lease, expiresAt: deadline };
+      }
 
       for (const attempt of cancelled.success ? cancelled.data : []) cancel(attempt);
 

@@ -265,6 +265,21 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+// Two commands that share the checkout, each with a timeout, so test waits behind lint as a queued attempt.
+const TURNS = `schemaVersion: v1alpha1
+name: check
+description: Lint and test
+invoke: allow
+steps:
+  - id: lint
+    command: node -e "setTimeout(() => {}, 2500)"
+    timeout: 60s
+  - id: test
+    needs: []
+    command: node -e "process.exit(0)"
+    timeout: 60s
+`;
+
 // Two commands that run until they are stopped and share the checkout, so one waits behind the other.
 const SERVE = `schemaVersion: v1alpha1
 name: check
@@ -1971,10 +1986,10 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'two steps in the checkout take turns: the second waits behind the first, and runs once it settled',
-    rows: ['C4', 'D9'],
+    name: 'two steps in the checkout take turns: the second waits behind the first, its deadline moving on with every tick, and runs once it settled',
+    rows: ['C4', 'D9', 'D33'],
     run: async () => {
-      const made = await harness({ check: ROOTS });
+      const made = await harness({ check: TURNS });
       const { run } = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
       const done = await polledToDone(made, run);
       expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);

@@ -22,7 +22,7 @@ import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } fr
 import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
 import {
   ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, readiedRow, reopenedRow, replyRow,
-  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
+  deadlineRow, reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
 import { errorOf, scoringWaits, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
@@ -108,7 +108,9 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  */
 async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody, changed?: readonly string[]): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
-  const answer = await context.client.report(state.run, body, changed === undefined ? { lock } : { lock, changed });
+  // The attempts still waiting for their place keep their whole timeout through this report too.
+  const sent = { ...body, queued: state.attempts.filter((open) => open.phase === 'queued').map((open) => open.attempt) };
+  const answer = await context.client.report(state.run, sent, changed === undefined ? { lock } : { lock, changed });
   const taken = traced(context, reportedRow(state, { attempt, reply: reportReply(answer), at: context.now().toISOString() }));
 
   if (!taken) return { state };
@@ -240,10 +242,14 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     return applied;
   };
 
+  const unqueued: AttemptId[] = [];
+
   for (const open of start.attempts) {
     const moved = traced(context, await attemptCheckRow(context, state, open));
 
     if (!moved) continue;
+
+    if (moved.row === 'D9') unqueued.push(open.attempt);
     state = moved.state;
     await apply(moved.effects);
   }
@@ -254,7 +260,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
   for (;;) {
     const version = state.done ? await context.client.runVersion(state.run) : undefined;
-    const ticked = traced(context, tickRow(state, { role, version }));
+    const ticked = traced(context, tickRow(state, { role, version, unqueued }));
 
     if (!('request' in ticked)) return { state, spawned };
 
@@ -264,7 +270,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
     // The engine reads an absent autoApprove and an undefined one alike, and the CLI's JSON drops it.
     const body = {
-      driver: { ...state.driver, can: { ...canFor(state.host.kind === 'chosen' ? state.host.id : undefined), confined: confinedCan(state) } }, running: request.running, canTakeLease: request.canTakeLease,
+      driver: { ...state.driver, can: { ...canFor(state.host.kind === 'chosen' ? state.host.id : undefined), confined: confinedCan(state) } }, running: request.running, queued: request.queued, canTakeLease: request.canTakeLease,
       runMode: state.options.mode, autoApprove: request.autoApprove ? true : undefined,
     };
 
@@ -272,12 +278,14 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     const options = handoff === undefined ? undefined : { handoff };
     const answer = await context.client.next(state.run, body, options);
     const at = context.now().toISOString();
-    const { reply, cancelled } = engineReply(state.run, answer);
+    const { reply, cancelled, deadlines } = engineReply(state.run, answer);
     state = traced(context, startedRow(state, startedOf(answer)))?.state ?? state;
     const sameEnd = reply.kind === 'done' && reply.out && state.done !== undefined && canonicalJson(endOf(reply)) === canonicalJson(endOf(state.done));
     state = traced(context, reopenedRow(state, { reply, sameEnd }))?.state ?? state;
 
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
+
+    for (const restarted of deadlines) state = traced(context, deadlineRow(state, restarted))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
     const givingUp = traced(context, giveUpRow(state, reply));
 

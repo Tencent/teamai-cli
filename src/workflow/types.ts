@@ -432,7 +432,7 @@ export interface StepLease {
   unenforced?: Unenforced[];
   /** When the step's own `timeout` ends this lease, counted from `leasedAt` so a hand-back does not extend it. */
   expiresAt?: string;
-  /** When the attempt was first leased. Absent on a lease issued before teamai recorded it. */
+  /** When the attempt was first leased, or last listed `queued` by its driver. Absent on a lease issued before teamai recorded it. */
   leasedAt?: string;
   /** The run mode the driver runs the lease in, as its `next` reported it, so the pass keeps it however it settles. */
   runMode?: RunMode;

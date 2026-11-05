@@ -204,6 +204,30 @@ describe('for_each items on the local driver with no workflows.max_parallel', ()
     expect(order()).toEqual(['start api', 'end api', 'start cli', 'end cli']);
   });
 
+  it.each([{ maxParallel: undefined }, { maxParallel: 2 }])('gives each queued answer item its whole timeout, with workflows.max_parallel $maxParallel', async ({ maxParallel }) => {
+    const { config, workspace, runId, bin } = await answering(`schemaVersion: v1alpha1
+name: build
+description: Describe each module.
+steps:
+  - id: plan
+    command: echo '{"modules":["api","cli"]}'
+    output: { modules: [string] }
+  - id: describe
+    needs: [plan]
+    for_each: { items: steps.plan.outputs.modules, max_parallel: 2 }
+    workflow:
+      steps:
+        - id: ask
+          answer: "Describe {{ item }}."
+          output: { text: string }
+          timeout: 3s
+`);
+    if (maxParallel !== undefined) config.workflows = { tools: {}, max_parallel: maxParallel };
+    fakeTool(bin, 'claude', { stdout: claudeReply('described'), before: 'await new Promise((resolve) => setTimeout(resolve, 2000));' });
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
   it('answers the items of a for_each with no max_parallel one at a time', async () => {
     const { config, workspace, runId, bin } = await answering(DESCRIBE('steps.plan.outputs.modules'));
     const order = describingTool(bin, 300);

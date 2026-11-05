@@ -104,6 +104,8 @@ export interface ReportInput {
   failure?: WorkflowFailure;
   /** The branch this attempt committed, when it ran in a workspace. */
   changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
+  /** As `next`'s `queued`: the driver's other open leases it holds but has not started, whose own timeout counts from this report. */
+  queued?: string[];
   /** `changes.pr_url` as the driver sent it: a pull request it opened itself, kept only once it is sanitized. */
   prUrl?: unknown;
   /** The branch and commit this attempt read, when it ran read-only in a workspace. */
@@ -1669,9 +1671,9 @@ function offerTerms(
 }
 
 /**
- * The turn limits granted in `terms`, and the deadline of a lease first issued at `since`. The step's own timeout counts
- * from `since`, so a hand-back never extends it. A driver that cannot end the turn gets the `on_limit: fail` lease,
- * whose own timeout is its deadline. One that can gets what is left of it at `now`; with none left, the lease takes the
+ * The turn limits granted in `terms`, and the deadline of a lease issued at `since`, its `leasedAt`. The step's own timeout
+ * counts from `since`, so a hand-back never extends it; only a call that lists the attempt `queued` moves it. A driver
+ * that cannot end the turn gets the `on_limit: fail` lease, whose own timeout is its deadline. One that can gets what is left of it at `now`; with none left, the lease takes the
  * deadline it passed, so `expire` times it out.
  */
 function turnTerms(
@@ -1685,6 +1687,22 @@ function turnTerms(
   const left = Date.parse(own) - Date.parse(now);
 
   return left > 0 ? { limits: { ...limits, timeoutMs: Math.min(limits.timeoutMs ?? left, left) } } : { expiresAt: own, limits };
+}
+
+/** Restarts the own timeout of each open lease of `driver` whose attempt `queued` lists, before anything reconciles the run. */
+function restartQueued(run: RunState, driver: DriverIdentity, queued: ReadonlySet<string>, now: string): void {
+  for (const step of run.steps) {
+    if (step.status === 'leased' && sameDriver(step.lease.driver, driver) && queued.has(step.lease.attempt)) restartClock(step.lease, now);
+  }
+}
+
+/** Moves the start of `held`'s own timeout to `now`, and its deadline with it. A lease issued before teamai recorded when keeps its deadline. */
+function restartClock(held: StepLease, now: string): void {
+  if (held.leasedAt === undefined) return;
+  const waited = Math.max(0, Date.parse(now) - Date.parse(held.leasedAt));
+
+  if (held.expiresAt !== undefined) held.expiresAt = new Date(Date.parse(held.expiresAt) + waited).toISOString();
+  held.leasedAt = now;
 }
 
 /** A lease's deadline and turn limits, each left out when it has none. */
@@ -1751,6 +1769,11 @@ export interface NextOptions {
    * The attempts of its open leases the driver is still running. An open lease it does not list is handed back to it.
    */
   running?: string[];
+  /**
+   * The attempts in `running` the driver holds but has not started, such as one waiting for its checkout. The step's own
+   * timeout of each counts from this call, so waiting does not use it up.
+   */
+  queued?: string[];
   /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, `hitl`, or `wait`. */
   canTakeLease?: boolean;
   /** The checkout the run's workspaces start from. It fixes the run's base only when `workflow start` recorded none. */
@@ -1930,6 +1953,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   const env = options.env ?? await resolveWorkflowEnv(config);
   await drainDeliveries(config, runId, env.secrets);
   const running = new Set(options.running);
+  const unstarted = new Set((options.queued ?? []).filter((attempt) => running.has(attempt)));
   const can = options.can ?? {};
   const maxParallel = config.workflows?.max_parallel;
   // The end record is queued under the run lock, so the run stores whether it
@@ -1950,15 +1974,22 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     };
 
     // Whatever settling changed is saved. `cancelled` is derived after settling: the attempts the driver runs that
-    // are no longer its open leases.
-    const answer = (data: EnvelopeData): RunOperation => ({
-      save: JSON.stringify(run) !== before,
-      envelope: ok({
-        ...data,
-        cancelled: [...running].filter((attempt) => !run.steps.some((step) => step.status === 'leased'
-          && step.lease.attempt === attempt && sameDriver(step.lease.driver, driver))),
-      }),
-    });
+    // are no longer its open leases. `deadlines` gives each queued attempt still open the deadline its restarted clock gives it.
+    const answer = (data: EnvelopeData): RunOperation => {
+      const open = run.steps.filter((step): step is LeasedStep => step.status === 'leased' && sameDriver(step.lease.driver, driver));
+
+      const deadlines = Object.fromEntries(open.flatMap((step) => {
+        const deadline = unstarted.has(step.lease.attempt) ? leaseDeadline(run, step) : undefined;
+
+        return deadline === undefined ? [] : [[step.lease.attempt, deadline]];
+      }));
+
+      const replied: EnvelopeData = { ...data, cancelled: [...running].filter((attempt) => !open.some((step) => step.lease.attempt === attempt)) };
+
+      if (Object.keys(deadlines).length > 0) replied.deadlines = deadlines;
+
+      return { save: JSON.stringify(run) !== before, envelope: ok(replied) };
+    };
 
     // Undefined once the run's `finally` steps start, so the loop hands them out.
     const done = async (result: WorkflowResult): Promise<{ save: boolean; envelope: WorkflowEnvelope } | undefined> => {
@@ -2007,6 +2038,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     // An agent's HITL answers every other gate, as auto-approve would.
     const personHolds = (): Held[] => (handoff?.kind === 'offers' ? waitingForPerson(run, { autoApprove: can.hitl === true || isAutoApproved }) : []);
     const byAgent = can.hitl === true && handoff !== undefined;
+
+    restartQueued(run, driver, unstarted, now);
 
     for (;;) {
       // Ends reached through reports, and deadlines passed, apply before an open lease is handed back, so a restarted
@@ -2297,7 +2330,7 @@ const NextBaseSchema = z.object({ ref: NonEmptyStringSchema.optional(), commit: 
 const DRIVER_FIELDS = new Set(['kind', 'machine', 'workspace', 'can']);
 
 /** The top-level payload fields `parseNextPayload` reads. */
-const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base', 'claim', 'autoApprove', 'runMode']);
+const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'queued', 'canTakeLease', 'base', 'claim', 'autoApprove', 'runMode']);
 
 /**
  * Where `parseReport` reads each ReportInput field from: the payload field of the same name, `changes.pr_url`, or
@@ -2308,7 +2341,7 @@ const REPORT_FIELD_SOURCES = {
   attempt: 'payload', revision: 'payload', outcome: 'payload', driver: 'payload', outputs: 'payload', exitCode: 'payload', message: 'payload',
   tool: 'payload', model: 'payload', session: 'payload', resumed: 'payload', tokens: 'payload', durationMs: 'payload', cost: 'payload',
   failure: 'payload', changes: 'payload', read: 'payload', agent: 'payload', used: 'payload', unenforced: 'payload', limit: 'payload',
-  confined: 'payload', progress: 'payload', prUrl: 'changes.pr_url',
+  confined: 'payload', progress: 'payload', queued: 'payload', prUrl: 'changes.pr_url',
 } as const satisfies Record<keyof ReportInput, 'payload' | 'changes.pr_url' | 'process'>;
 
 /** The top-level payload fields `parseReport` reads. */
@@ -2402,6 +2435,13 @@ export function parseReport(value: unknown): ParsedReport | string {
 
     if (!message.success) return 'message must be a string';
     report.message = message.data;
+  }
+
+  if (record.queued !== undefined) {
+    const queued = z.array(z.string()).safeParse(record.queued);
+
+    if (!queued.success) return 'queued must be an array of attempt ids';
+    report.queued = queued.data;
   }
 
   if (record.progress !== undefined) {
@@ -2558,6 +2598,13 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
 
     if (!running.success) return 'running must be an array of attempt ids';
     request.running = running.data;
+  }
+
+  if (record.queued !== undefined) {
+    const queued = z.array(z.string()).safeParse(record.queued);
+
+    if (!queued.success) return 'queued must be an array of attempt ids';
+    request.queued = queued.data;
   }
 
   if (record.canTakeLease !== undefined) {
@@ -2954,6 +3001,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
   const admission = await admitReported(config, runId, report, known);
 
   return withRun(config, runId, known, async (run, now) => {
+    restartQueued(run, report.driver, new Set((report.queued ?? []).filter((attempt) => attempt !== report.attempt)), now);
     const checked = reportedStep(run, report, now);
 
     if ('refused' in checked) return checked.refused;

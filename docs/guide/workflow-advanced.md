@@ -42,9 +42,11 @@ A driver that sends no `running` gets its open lease back on every call, so it r
 
 `"canTakeLease":false` issues no new lease but still returns a waiting HITL request to a driver that declares `driver.can.hitl`. The answer is `done`, an open lease that `running` leaves out, `hitl`, or `wait`. When nothing is leased or waiting at a HITL request, the `wait` reason is `canTakeLease is false`. Use it to learn about an end while the driver has no room for another step. That `wait` does not mean that nothing is left to run, so call `next` again once the driver has room. Step 2 can still hand back an open lease that the driver has no room for, so keep a queue of the leases the driver has not started.
 
+List those in `queued` too, such as one waiting for a busy checkout. The step's own timeout of each then counts from this call, so waiting does not use it up, and the answer's `deadlines` gives each its new deadline, for example `"deadlines":{"a0ce8107f":"2026-05-01T10:12:00.000Z"}`. The clock restarts only on a call that lists the attempt, so keep calling `next` while it waits, and send the same `queued` with each `report`, since a report can time out a lease whose clock has not restarted lately.
+
 Every `data` answer of `next` has `cancelled`. It lists the attempts in `running` that are no longer open leases of this driver. Stop those processes. An `error` answer has no `cancelled`.
 
-A wrong `running` or `canTakeLease` returns `invalid_json` with `running must be an array of attempt ids` or `canTakeLease must be a boolean`. While one driver holds a lease, another driver gets `wait`, and `reason` names that lease.
+A wrong `running`, `queued` or `canTakeLease` returns `invalid_json` with `running must be an array of attempt ids`, `queued must be an array of attempt ids` or `canTakeLease must be a boolean`. While one driver holds a lease, another driver gets `wait`, and `reason` names that lease.
 
 `report` checks each report against the revision of its own lease, not the run's latest revision. Above, `next` handed out both leases at revision 1. A report for `test` with `"revision":1` moves the run to revision 2. A report for `lint` with `"revision":1` is still accepted and moves it to 3. A report with another revision for an open lease returns `stale_revision`:
 

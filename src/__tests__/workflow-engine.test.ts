@@ -5245,6 +5245,53 @@ describe('deadlines', () => {
     }
   });
 
+  it('counts the timeout of a lease from when its driver last listed it queued', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    command: echo slow
+  - id: other
+    needs: []
+    command: echo other
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      const running = [slow.attempt, other.attempt];
+      vi.setSystemTime(new Date(at(8)));
+      expect(await leaseNext(config, runId, driverA, { running, queued: [slow.attempt] })).toMatchObject({ data: { cancelled: [], deadlines: { [slow.attempt]: at(18) } } });
+      vi.setSystemTime(new Date(at(15)));
+      expect(await leaseNext(config, runId, driverA, { running })).toMatchObject({ data: { cancelled: [] } });
+      expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(8), expiresAt: at(18) } }, { id: 'other' }] });
+      vi.setSystemTime(new Date(at(19)));
+      expect(await leaseNext(config, runId, driverA, { running })).toMatchObject({ data: { cancelled: [slow.attempt] } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout of a lease from a report of its driver that lists it queued', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    command: echo slow
+  - id: other
+    needs: []
+    command: echo other
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      vi.setSystemTime(new Date(at(15)));
+      await reportAttempt(config, runId, { attempt: other.attempt, revision: other.revision, outcome: 'success', driver: driverA, queued: [slow.attempt] });
+      expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(15), expiresAt: at(25) } }, { id: 'other', status: 'succeeded' }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('bounds a workflow step by the timeout of the file it runs when that is shorter', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
