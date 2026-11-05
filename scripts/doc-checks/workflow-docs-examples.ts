@@ -8,6 +8,7 @@ import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { LeaseWireSchema } from '../../src/workflow/lease-wire.js';
 import { syncScorerDefinitions } from '../../src/scorers/cache.js';
+import { DefaultScorers } from '../../src/default-scorers.js';
 import { formatUnknownScorer, syncScorersThenWorkflows } from '../../src/scorers/team-sync.js';
 import { ciRecipesOf, runCommandsOf } from '../ci-recipe.js';
 import { formatScorerDiagnostic } from '../../src/scorers/definition.js';
@@ -586,7 +587,8 @@ for (const page of SCORER_PAGES) {
       const result = await syncScorerDefinitions(config, { dryRun: true });
 
       assert.deepEqual(result.invalid.map(formatScorerDiagnostic), []);
-      assert.equal(result.cached.length, examples.length);
+      // A file named like a default scorer replaces that default, and is no scorer a step lists.
+      assert.equal(result.cached.length, examples.filter(({ file }) => !DefaultScorers.isName(path.posix.basename(file, '.md'))).length);
     },
     cleanup,
   );

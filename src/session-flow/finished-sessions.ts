@@ -205,9 +205,9 @@ async function candidatesOf(config: LocalConfig, { names, judging }: { names: re
 
   if (names.length === 0) {
     const sampling = await SessionWork.samplingScorers(config);
-    const routing = (session: Finished) => (judging?.isRouting ? routingScorers(availableTeamSkills(session.captures) ?? []) : []);
+    const routing = async (session: Finished) => (judging?.isRouting ? routingScorers(config, availableTeamSkills(session.captures) ?? []) : []);
 
-    return { candidates: async (session) => [...await sampling(session), ...routing(session)], demand: 'auto' };
+    return { candidates: async (session) => [...await sampling(session), ...await routing(session)], demand: 'auto' };
   }
 
   const named = await namedScorers(config, names);

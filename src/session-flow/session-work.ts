@@ -267,7 +267,7 @@ async function deliveredSkills(config: LocalConfig, subject: Exclude<Subject, { 
 
 /** One routing question per team skill `subject`'s captures delivered, each a scorer of the session. */
 async function routingQuestions(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>): Promise<SessionScorer[]> {
-  return routingScorers(await deliveredSkills(config, subject) ?? []);
+  return routingScorers(config, await deliveredSkills(config, subject) ?? []);
 }
 
 /**
@@ -283,7 +283,7 @@ async function pinsOf(config: LocalConfig, subject: Exclude<Subject, { kind: 'ru
   const available = await deliveredSkills(config, subject);
 
   for (const name of routing) {
-    const routed = routingQuestionOf(name, available);
+    const routed = await routingQuestionOf(config, name, available);
 
     if (routed.ok) pinned[name] = routed.question.pin;
     else unpinned.set(name, routed.why);

@@ -452,6 +452,21 @@ describe('score plan asks a session\'s routing questions', () => {
     expect(await LabelStore.local(config)).toEqual([expect.objectContaining({ scorer: 'teamai:routing:ops:release', label: 'fit', subject: { platform: 'claude-code', sessionId: 'one' } })]);
   });
 
+  it('labels a routing question with the team\'s scorers/teamai-routing.md, which replaces teamai\'s rubric', async () => {
+    const config = await team({}, { 'teamai-routing': `---
+labels:
+  - { value: helped, score: 1, description: "{{ skill.name }} did what the session asked of it." }
+  - { value: noise, score: 0, description: "{{ skill.name }} was loaded and did nothing." }
+passingScore: 1
+---
+Judge only {{ skill.name }}.
+` });
+    deliveredSession(config);
+    const { answers } = await walk(config, 'session:claude-code:one', { inputs: { scorers: ['teamai:routing:review-notes'], demand: 'named' }, judge: { answer: { label: 'helped', reasoning: 'It wrote the notes.' } } });
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'teamai:routing:review-notes', label: 'helped', code: '' }] } });
+  });
+
   it('refuses a routing name that names no skill the session delivered, and says which it did', async () => {
     const config = await team({}, {});
     deliveredSession(config);
