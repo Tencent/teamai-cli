@@ -6,7 +6,7 @@ import readline from 'node:readline';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { localStepRuntime } from '../workflow/runtimes/local.js';
 import { stdioStepRuntime } from '../workflow/runtimes/stdio.js';
-import { newOpId, type ExecEnd, type ExecRequest, type OpenRequest, type RuntimeOptions, type StepRuntime } from '../workflow/runtimes/step-runtime.js';
+import { newOpId, type ExecEnd, type ExecRequest, type OpenRequest, type Reattached, type RuntimeOptions, type StepRuntime } from '../workflow/runtimes/step-runtime.js';
 import { TOY_RUNTIME } from './helpers/toy-runtime.js';
 
 /**
@@ -50,6 +50,19 @@ async function until(check: () => boolean, ms = 5000): Promise<boolean> {
   }
 
   return check();
+}
+
+/** Reads until `done` holds or `ms` passes, and returns the last value read. */
+async function settled<T>(read: () => Promise<T>, done: (value: T) => boolean, ms = 5000): Promise<T> {
+  const deadline = Date.now() + ms;
+  let value = await read();
+
+  while (!done(value) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    value = await read();
+  }
+
+  return value;
 }
 
 describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
@@ -253,7 +266,10 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
     expect(await second.reattach(opened.handle)).toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'running' }] });
     await second.cancel(request.op);
     expect(await until(() => !pidAlive(shell))).toBe(true);
-    expect(await second.reattach(opened.handle)).toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'cancelled' }] });
+    // The cancel ends when every process of the exec's group is gone, which can be after the shell.
+    const stillRunning = (reattached: Reattached): boolean => reattached.kind === 'alive' && reattached.ops.some((op) => op.state === 'running');
+    expect(await settled(() => second.reattach(opened.handle), (reattached) => !stillRunning(reattached)))
+      .toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'cancelled' }] });
   });
 
   it.runIf(subject.retains)('does not run again an exec id its own restart left running, and ends it when cancelled', async () => {
