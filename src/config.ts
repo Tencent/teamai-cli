@@ -623,6 +623,10 @@ async function readAiSetting(configPath: string): Promise<LocalConfig['ai']> {
  * cannot be used, which is logged.
  */
 export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalConfig | null> {
+  const ephemeral = process.env[EPHEMERAL_CONFIG_ENV];
+
+  // A process of a run with no teamai init reads the config the run built, whichever loader it calls.
+  if (ephemeral) return readEphemeralConfig(ephemeral, process.cwd());
   const configPath = expandHome(getUserConfigPath());
   const content = await readFileSafe(configPath);
 

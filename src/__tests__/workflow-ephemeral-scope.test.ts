@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { autoDetectInit, NotInitializedError } from '../config.js';
+import { autoDetectInit, loadLocalConfig, NotInitializedError, requireInit } from '../config.js';
 import { resolveWorkflowEnv } from '../env-resolution.js';
 import { getDataHome } from '../types.js';
 import { EphemeralScope } from '../workflow/ephemeral-scope.js';
@@ -56,5 +56,22 @@ describe('a run with no teamai init', () => {
 
     await expect(autoDetectInit(elsewhere, { dryRun: true, selfHeal: false, children: false })).rejects.toBeInstanceOf(NotInitializedError);
     expect(fs.existsSync(path.join(os.homedir(), '.teamai', 'workflows'))).toBe(false);
+  });
+
+  it('gives a process of its steps that loads the member config directly the run\'s config too', async () => {
+    const scope = await EphemeralScope.open(checkout());
+    const file = scope.config.ephemeralConfig;
+    expect(file).toBeDefined();
+    vi.stubEnv('TEAMAI_EPHEMERAL_CONFIG', file);
+
+    try {
+      const { localConfig, teamConfig } = await requireInit({ dryRun: true });
+      expect(localConfig.ephemeralConfig).toBe(file);
+      expect(getDataHome(localConfig)).toBe(getDataHome(scope.config));
+      expect(teamConfig.team).toBe(scope.teamConfig.team);
+      expect((await loadLocalConfig({ dryRun: true }))?.ephemeralConfig).toBe(file);
+    } finally {
+      await scope.close();
+    }
   });
 });
