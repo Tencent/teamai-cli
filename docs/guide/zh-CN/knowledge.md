@@ -218,6 +218,20 @@ teamai codebase --lint
 
 没有团队仓库时，给 `teamai import` 和 `teamai codebase` 都加上 `--output <dir>`，两者都用 `<dir>/teamwiki/`。
 
+`--deep-enrich` 运行默认工作流 [`teamai-codebase-deep-enrich`](workflow.md#默认工作流)。你的 AI 工具为每个组件写一份设计文档，一次五个，然后写架构总览和场景序列图。图谱文档不需要 AI。工具没能写出的文档会被点名，其他文档保留，命令以 1 退出。再运行一次，或重试它点名的步骤，就只补写缺少的部分。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具无法运行时，命令失败，不写任何内容。
+
+```text
+$ teamai codebase --deep-enrich --project orders-api
+ℹ Run r3f2a9c41d07b6e15 started. If it stops before it ends, continue it with: teamai workflow resume r3f2a9c41d07b6e15
+ℹ deep-enrich[orders-api]: Phase 1 — Generating 3 component design docs
+⚠ deep-enrich[orders-api]: Skipping component billing: AI call failed (tool: claude): Authentication failed
+...
+Deep enrichment incomplete: project=orders-api, missing component docs: billing
+✖ Step "components[1].ask" failed with tool_failed: AI call failed (tool: claude): Authentication failed
+ℹ Retry it with teamai workflow retry r3f2a9c41d07b6e15 'components[1].ask', then continue the run with teamai workflow resume r3f2a9c41d07b6e15
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+```
+
 在团队仓库里，`--reconcile` 会提交并推送它更新的图谱。你的 `teamwiki/product/` 页面保持原样；图谱没有变化时不推送：
 
 ```text

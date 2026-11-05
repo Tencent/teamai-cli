@@ -20,8 +20,7 @@ import { callToolParallel } from '../tool-launch/call.js';
 import { CallError } from '../tool-launch/member-tools.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { repoIdentity } from '../utils/git.js';
-import { codebaseCmd } from '../codebase-cmd.js';
-import { runHiddenDeepEnrich } from '../deep-enrich.js';
+import { DeepEnrich } from '../deep-enrich.js';
 import { scopeGlobalGraph } from '../graph-aggregate.js';
 import { loadGraphIndex } from '../wiki-engine/core/graph-index.schema.js';
 import {
@@ -381,46 +380,16 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
     expect(output).not.toMatch(/AI enrich produced no manifest; deep-enrich will have no components/);
   });
 
-  it('does not abort deep-enrich for empty evidence after a successful extract', async () => {
+  it('plans deep-enrich for the fallback components after an extract without AI enrich', async () => {
     const root = createWidgetFixture();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
-    process.exitCode = undefined;
 
-    await codebaseCmd({ deepEnrich: true, project: 'widget', output: root, json: true });
+    const planned = await DeepEnrich.plan({ project: 'widget', wikiRoot: path.join(root, 'teamwiki') });
 
-    const output = vi.mocked(console.log).mock.calls.flat().map(String).join('\n');
-    expect(output).not.toMatch(/No components in evidence/);
-    expect(output).not.toMatch(/No components in _manifest\.json/);
-    expect(output).not.toMatch(/Run `teamai codebase --extract` first/);
-
-    const lastJson = [...vi.mocked(console.log).mock.calls]
-      .map(call => String(call[0]))
-      .toReversed()
-      .find(text => text.trim().startsWith('{'));
-    expect(lastJson).toBeTruthy();
-    const report = JSON.parse(lastJson!) as { complete?: boolean; missingComponents?: string[] };
-    expect(report.complete).toBe(false);
-    expect(report.missingComponents?.length).toBeGreaterThan(0);
-    expect(process.exitCode).toBe(1);
-  });
-
-  it('hidden deep-enrich after extract does not abort for missing components', async () => {
-    const root = createWidgetFixture();
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
-    process.exitCode = undefined;
-
-    const result = await runHiddenDeepEnrich({
-      project: 'widget',
-      wikiRoot: path.join(root, 'teamwiki'),
-    });
-
-    expect(result.complete).toBe(false);
-    expect(result.missingComponents.length).toBeGreaterThan(0);
-    expect(process.exitCode).toBe(1);
+    expect(planned?.components.length).toBeGreaterThan(0);
+    expect(planned?.architecture.needed).toBe(true);
   });
 
   it('does not overwrite a successful AI enrich with the fallback', async () => {

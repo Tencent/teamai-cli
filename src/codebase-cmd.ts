@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { GlobalOptions } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
+import type { ShortcutEnd } from './workflow-commands.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
 
@@ -26,6 +27,44 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     status?: boolean;
     reconcile?: boolean;
     deepEnrich?: boolean;
+}
+
+/** How many component docs a deep enrichment asks the tool for at once, as it did before it was a workflow. */
+const DEEP_ENRICH_CONCURRENCY = 5;
+
+/**
+ * Starts teamai-codebase-deep-enrich on `project` of `target`, as `codebase --deep-enrich` and the hidden `deep-enrich`
+ * do, under the import lock of the team repo that holds the teamwiki, as every command that writes it takes.
+ */
+export async function startDeepEnrich({ target, project, maxModules = 0, json, command }: {
+    target: TeamwikiTarget;
+    project: string;
+    maxModules?: number;
+    json: boolean;
+    command: string;
+}): Promise<ShortcutEnd | undefined> {
+    const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
+    const { runShortcut } = await import('./workflow-commands.js');
+    const releaseLock = await lockTeamwiki(target);
+
+    try {
+        return await runShortcut({
+            workflow: 'teamai-codebase-deep-enrich',
+            inputs: { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency: DEEP_ENRICH_CONCURRENCY },
+            command,
+            json,
+        });
+    } finally {
+        await releaseLock();
+    }
+}
+
+/** The teamwiki the hidden `deep-enrich` writes, `--wiki-root` or else the team repo's, with the team repo when it holds it. */
+export async function hiddenDeepEnrichTarget(wikiRoot: string | undefined): Promise<TeamwikiTarget> {
+    const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+    const team = await resolveTeamwiki();
+
+    return wikiRoot === undefined || path.resolve(wikiRoot) === team.wikiRoot ? team : { wikiRoot: path.resolve(wikiRoot) };
 }
 
 // ─── Command handler ─────────────────────────────────────────────────────────
@@ -180,61 +219,34 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             return;
         }
 
-        // In the team repo, write under the import lock and publish deep-enrich
-        // output the way `teamai import` does, so the next `teamai push` does not
-        // find the clone dirty.
+        const ended = await startDeepEnrich({ target, project, json: opts.json === true, command: `teamai codebase --deep-enrich --project ${project}` });
         const team = target.team;
-        const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
-        const releaseLock = team ? await lockTeamwiki(target) : async () => {};
 
-        try {
-            const { deepEnrich } = await import('./deep-enrich.js');
-            const result = await deepEnrich({ project, evidenceDir, wikiRoot: teamwikiDir });
+        // In the team repo, publish deep-enrich output the way `teamai import` does, so the next `teamai push` does not
+        // find the clone dirty.
+        if (team && ended?.outcome === 'succeeded') {
+            const repoPath = team.localConfig.repo.localPath;
 
-            if (opts.json) {
-                console.log(JSON.stringify({
-                    project,
-                    evidenceDir,
-                    complete: result.complete,
-                    missingComponents: result.missingComponents,
-                    missingArchitecture: result.missingArchitecture,
-                }, null, 2));
-            } else if (result.complete) {
-                console.log(`Deep enrichment complete: project=${project}`);
-            } else {
-                const parts: string[] = [];
+            const publishPaths = [
+                path.relative(repoPath, evidenceDir),
+                path.relative(repoPath, path.join(teamwikiDir, 'router.md')),
+                path.relative(repoPath, path.join(teamwikiDir, 'index.md')),
+            ].filter((rel) => rel && !rel.startsWith('..'));
 
-                if (result.missingComponents.length > 0) {
-                    parts.push(`missing component docs: ${result.missingComponents.join(', ')}`);
-                }
+            const { autoPushTeamRepo } = await import('./utils/git.js');
 
-                if (result.missingArchitecture) parts.push('missing architecture.md');
-                console.log(`Deep enrichment incomplete: project=${project}, ${parts.join(', ')}`);
+            const pushed = await autoPushTeamRepo(
+                repoPath,
+                `[teamai] Deep enrich: ${project}`,
+                publishPaths,
+            );
+
+            if (pushed && !opts.json) {
+                const { setStderrOnly } = await import('./utils/logger.js');
+                const previous = setStderrOnly(false);
+                log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
+                setStderrOnly(previous);
             }
-
-            if (!result.complete) process.exitCode = 1;
-
-            if (team) {
-                const repoPath = team.localConfig.repo.localPath;
-
-                const publishPaths = [
-                    path.relative(repoPath, evidenceDir),
-                    path.relative(repoPath, path.join(teamwikiDir, 'router.md')),
-                    path.relative(repoPath, path.join(teamwikiDir, 'index.md')),
-                ].filter((rel) => rel && !rel.startsWith('..'));
-
-                const { autoPushTeamRepo } = await import('./utils/git.js');
-
-                const pushed = await autoPushTeamRepo(
-                    repoPath,
-                    `[teamai] Deep enrich: ${project}`,
-                    publishPaths,
-                );
-
-                if (pushed && !opts.json) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
-            }
-        } finally {
-            await releaseLock();
         }
 
         return;

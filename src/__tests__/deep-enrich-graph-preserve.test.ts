@@ -77,7 +77,7 @@ describe('deepEnrich preserves per-repo graph-index.json (AST edges)', () => {
     expect(before.edges).toHaveLength(2);
     expect(astCount(before)).toBe(1);
 
-    await deepEnrich({ project: 'faketest', evidenceDir, wikiRoot });
+    await deepEnrich({ project: 'faketest', wikiRoot });
 
     const after = JSON.parse(await readFile(graphPath, 'utf8'));
     // The per-repo graph must be untouched by enrichment.

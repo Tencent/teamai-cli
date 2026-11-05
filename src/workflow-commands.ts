@@ -612,16 +612,20 @@ const ShortcutDoneSchema = z.object({
   outputs: z.object({ text: z.string().optional(), exit_code: z.number().int().optional() }).optional(),
 });
 
+/** How a shortcut's run ended, for a command that does more once it has: undefined when it did not start or end. */
+export type ShortcutEnd = z.infer<typeof ShortcutDoneSchema>;
+
 /**
  * Starts `workflow` as the shortcut `command` does, as the CLI, so an agent session runs the command as it did before
  * it was a workflow, on the driver `workflows.driver` names, else local, and inside a workflow attempt on the local
  * driver in this process, as part of the step that runs the command: it shows the
  * lines its steps say as they run, then prints the run's `outputs.text` and exits with its `outputs.exit_code`, 1 when
  * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
- * text. A private run starts no drain.
+ * text. A private run starts no drain. Answers how the run ended, when a driver here drove it to its end.
  */
-export async function runShortcut({ workflow, inputs, command, json }: ShortcutRun): Promise<void> {
+export async function runShortcut({ workflow, inputs, command, json }: ShortcutRun): Promise<ShortcutEnd | undefined> {
   setStderrOnly(true);
+  let ended: ShortcutEnd | undefined;
 
   const refused = (failure: WorkflowFailure): void => {
     if (json) {
@@ -639,7 +643,7 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
   if (!('config' in loaded)) {
     if ('error' in loaded) refused(loaded.error);
 
-    return;
+    return undefined;
   }
 
   const { config } = loaded;
@@ -649,7 +653,7 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
     const conflict = await namespaceConflictOf(config, workflow);
     refused(conflict === undefined ? workflowNotFound(workflow) : { code: 'workflow_namespace_conflict', message: conflict });
 
-    return;
+    return undefined;
   }
 
   // A team file of the default's name replaces it, so it must take what the command gives.
@@ -659,7 +663,7 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
     if (missing.length > 0) {
       refused({ code: 'invalid_inputs', message: `The team's ${cached.relativePath} replaces teamai's ${workflow} and takes no input ${missing.join(' or ')}, which ${command} gives it. Add ${missing.join(' and ')} to its inputs, or remove it to run teamai's default.` });
 
-      return;
+      return undefined;
     }
 
     log.info(`Running the team's ${cached.relativePath}, which replaces teamai's ${workflow}.`);
@@ -691,6 +695,7 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
       else if (text !== undefined && text !== '') process.stdout.write(`${redact(text, { envSecrets: secrets, patterns: false })}\n`);
 
       if (!done.success) return;
+      ended = done.data;
       const exitCode = done.data.outcome === 'succeeded' ? done.data.outputs?.exit_code ?? 0 : 1;
 
       if (exitCode !== 0) await explainFailedSteps(scope, done.data.run, { secrets, isProgressShown: true });
@@ -701,6 +706,8 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
       if (!isPrivate) await drainUnattended(scope, driven);
     },
   });
+
+  return ended;
 }
 
 /** Aborts on the first SIGINT or SIGTERM, so `teamai benchmark try` stops the setup or check it runs. A second one ends the process. */

@@ -579,12 +579,33 @@ Generated: do not edit by hand. Regenerate with
   - `--upgrade-wiki` (hidden) — Migrate docs/team-codebase/ to teamwiki/ graph format
   - `--lint` — Run global consistency lint over the teamwiki knowledge graph, and count the member's asset relations (assets, relations, without a relation, unresolved)
   - `--reconcile` — Reconcile product and code knowledge in teamwiki
-  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence
+  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence: starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs to the team repo
   - `--fix` (hidden) — Deprecated: teamwiki lint has no autofix; runs lint in report-only mode
   - `--status` — Show knowledge-base git baseline (headSha / repoUrl / branch)
   - `--severity <level>` (hidden) — Minimum severity to report: high|medium|low|info
   - `--json` — Output report as JSON (suitable for CI)
   - `--output <path>` (hidden) — Use <path>/teamwiki, as written by `teamai import --output <path>`, instead of the team repo's
+  - `teamai codebase deep-enrich-plan` — A step of a teamai-codebase-deep-enrich run: refuse a symbolic link on the way to the docs, drop the AI docs a newer extract made stale, and list what is still missing. Prints {"components":[{"slug","responsibilities","facts","call_chains","deps"}],"architecture":{"needed","modules","edges","interfaces"}}. Exits 65 when _manifest.json has no component.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
+  - `teamai codebase deep-enrich-write` — A step of a teamai-codebase-deep-enrich run: write one component's design doc, or the architecture overview, from what the AI tool answered, or say why it has none. Prints {"written"}.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--component <slug>` — The component whose doc this is
+    - `--architecture` — The doc is the architecture overview
+    - `--text <markdown>` — What the tool answered
+    - `--failure <message>` — Why the tool could not answer, when it could not
+  - `teamai codebase deep-enrich-graph` — A step of a teamai-codebase-deep-enrich run: write the deterministic graph docs and the G6 triples, and say whether the G5 scenarios are still to be asked for. Prints {"scenarios":{"needed","architecture","call_chains","modules"}}.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
+  - `teamai codebase deep-enrich-finish` — A step of a teamai-codebase-deep-enrich run: write the G5 scenarios from what the AI tool answered, the graph router, the teamwiki indexes and the quality reports, and say which AI docs are still missing. Prints {"text","exit_code","complete","missing_components","missing_architecture"}; exit_code is 1 when a doc is missing.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
+    - `--scenarios <markdown>` — What the tool answered for the scenarios
+    - `--scenarios-failure <message>` — Why the tool could not answer for the scenarios, when it could not
 
 ## review
 

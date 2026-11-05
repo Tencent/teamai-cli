@@ -234,6 +234,20 @@ teamai codebase --lint
 
 Without a team repo, add `--output <dir>` to both `teamai import` and `teamai codebase`; both then use `<dir>/teamwiki/`.
 
+`--deep-enrich` runs the default workflow [`teamai-codebase-deep-enrich`](workflow.md#default-workflows). Your AI tool writes a design doc for each component, five at a time, then the architecture overview and the scenario diagrams. The graph docs need no AI. A doc the tool could not write is named, the others are kept, and the command exits 1. Run it again, or retry the step it names, to write only what is missing. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, it fails and writes nothing.
+
+```text
+$ teamai codebase --deep-enrich --project orders-api
+ℹ Run r3f2a9c41d07b6e15 started. If it stops before it ends, continue it with: teamai workflow resume r3f2a9c41d07b6e15
+ℹ deep-enrich[orders-api]: Phase 1 — Generating 3 component design docs
+⚠ deep-enrich[orders-api]: Skipping component billing: AI call failed (tool: claude): Authentication failed
+...
+Deep enrichment incomplete: project=orders-api, missing component docs: billing
+✖ Step "components[1].ask" failed with tool_failed: AI call failed (tool: claude): Authentication failed
+ℹ Retry it with teamai workflow retry r3f2a9c41d07b6e15 'components[1].ask', then continue the run with teamai workflow resume r3f2a9c41d07b6e15
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+```
+
 In a team repo, `--reconcile` commits and pushes the graph it updates. It leaves your `teamwiki/product/` pages as they are, and pushes nothing when the graph did not change:
 
 ```text

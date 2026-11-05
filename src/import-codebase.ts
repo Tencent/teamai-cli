@@ -645,7 +645,7 @@ export async function reconcileAndDeepEnrich(params: {
   sourceDir: string;
   skipEnrich: boolean;
 }): Promise<boolean> {
-  const { slug, wikiRoot, sourceDir, skipEnrich } = params;
+  const { slug, wikiRoot, skipEnrich } = params;
 
   try {
     const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
@@ -664,7 +664,7 @@ export async function reconcileAndDeepEnrich(params: {
 
   try {
     const { deepEnrich } = await import('./deep-enrich.js');
-    const result = await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
+    const result = await deepEnrich({ project: slug, wikiRoot });
 
     if (result.complete) log.info(`Deep enrich complete: ${slug}`);
 

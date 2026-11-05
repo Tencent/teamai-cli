@@ -1687,14 +1687,14 @@ program
     }
   });
 
-program
+const codebaseCommand = program
   .command('codebase')
   .description('Inspect and maintain the teamwiki that `teamai import` writes')
   .addOption(new Option('--project <name>', 'Codebase slug under teamwiki/evidence/code/, required for --deep-enrich').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph, and count the member\'s asset relations (assets, relations, without a relation, unresolved)')
   .option('--reconcile', 'Reconcile product and code knowledge in teamwiki')
-  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence')
+  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence: starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs to the team repo')
   .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
@@ -1704,6 +1704,107 @@ program
     const globalOpts = program.opts<GlobalOptions>();
     const { codebaseCmd } = await import('./codebase-cmd.js');
     await codebaseCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+/** The target a `codebase deep-enrich-*` verb's flags name; undefined, said and exited 65, when they name none. */
+async function deepEnrichVerbTarget(flags: { wikiRoot: string; codebase: string; maxModules: string }): Promise<import('./deep-enrich.js').DeepEnrichTarget | undefined> {
+  const { DeepEnrich } = await import('./deep-enrich.js');
+  const parsed = DeepEnrich.targetOf(flags);
+
+  if (parsed.ok) return parsed.target;
+  log.error(parsed.message);
+  await rejectVerbInput();
+
+  return undefined;
+}
+
+/** Exits a verb 65, so its step fails input_rejected and no retry is offered. */
+async function rejectVerbInput(): Promise<void> {
+  const { INPUT_REJECTED_EXIT } = await import('./workflow/protocol.js');
+  process.exitCode = INPUT_REJECTED_EXIT;
+}
+
+// The verbs a teamai-codebase-deep-enrich run's steps call.
+codebaseCommand
+  .command('deep-enrich-plan')
+  .description('A step of a teamai-codebase-deep-enrich run: refuse a symbolic link on the way to the docs, drop the AI docs a newer extract made stale, and list what is still missing. Prints {"components":[{"slug","responsibilities","facts","call_chains","deps"}],"architecture":{"needed","modules","edges","interfaces"}}. Exits 65 when _manifest.json has no component.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--max-modules <n>', 'Only the first n components of the manifest; 0 takes every one', '0')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; maxModules: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const planned = await DeepEnrich.plan(target);
+
+    if (planned) {
+      process.stdout.write(`${JSON.stringify(planned)}\n`);
+
+      return;
+    }
+
+    await rejectVerbInput();
+  });
+
+codebaseCommand
+  .command('deep-enrich-write')
+  .description('A step of a teamai-codebase-deep-enrich run: write one component\'s design doc, or the architecture overview, from what the AI tool answered, or say why it has none. Prints {"written"}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--component <slug>', 'The component whose doc this is')
+  .option('--architecture', 'The doc is the architecture overview')
+  .option('--text <markdown>', 'What the tool answered', '')
+  .option('--failure <message>', 'Why the tool could not answer, when it could not', '')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; component?: string; architecture?: boolean; text: string; failure: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget({ ...cmdOpts, maxModules: '0' });
+
+    if (!target) return;
+
+    if ((cmdOpts.component === undefined) === (cmdOpts.architecture !== true)) {
+      log.error('Pass either --component <slug> or --architecture.');
+      await rejectVerbInput();
+
+      return;
+    }
+
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const doc = cmdOpts.component === undefined ? { kind: 'architecture' as const } : { kind: 'component' as const, slug: cmdOpts.component };
+    process.stdout.write(`${JSON.stringify(await DeepEnrich.write(target, doc, { text: cmdOpts.text, failure: cmdOpts.failure }))}\n`);
+  });
+
+codebaseCommand
+  .command('deep-enrich-graph')
+  .description('A step of a teamai-codebase-deep-enrich run: write the deterministic graph docs and the G6 triples, and say whether the G5 scenarios are still to be asked for. Prints {"scenarios":{"needed","architecture","call_chains","modules"}}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--max-modules <n>', 'Only the first n components of the manifest; 0 takes every one', '0')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; maxModules: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    process.stdout.write(`${JSON.stringify(await DeepEnrich.graph(target))}\n`);
+  });
+
+codebaseCommand
+  .command('deep-enrich-finish')
+  .description('A step of a teamai-codebase-deep-enrich run: write the G5 scenarios from what the AI tool answered, the graph router, the teamwiki indexes and the quality reports, and say which AI docs are still missing. Prints {"text","exit_code","complete","missing_components","missing_architecture"}; exit_code is 1 when a doc is missing.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--max-modules <n>', 'Only the first n components of the manifest; 0 takes every one', '0')
+  .option('--scenarios <markdown>', 'What the tool answered for the scenarios', '')
+  .option('--scenarios-failure <message>', 'Why the tool could not answer for the scenarios, when it could not', '')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; maxModules: string; scenarios: string; scenariosFailure: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    process.stdout.write(`${JSON.stringify(await DeepEnrich.finish(target, { text: cmdOpts.scenarios, failure: cmdOpts.scenariosFailure }))}\n`);
   });
 
 
@@ -1758,19 +1859,21 @@ ciCmd
 
 program
   .command('deep-enrich', { hidden: true })
-  .description('Run deep AI knowledge generation for an imported repo')
+  .description('Run deep AI knowledge generation for an imported repo: starts the default workflow teamai-codebase-deep-enrich, as codebase --deep-enrich does, without publishing')
   .requiredOption('--project <slug>', 'Project slug (directory name in evidence/code/)')
   .option('--wiki-root <path>', 'Teamwiki root path')
   .option('--max-modules <n>', 'Max modules to process (cost control)', parseInt)
   .action(async (cmdOpts: { project: string; wikiRoot?: string; maxModules?: number }) => {
-    const { runHiddenDeepEnrich } = await import('./deep-enrich.js');
+    const { hiddenDeepEnrichTarget, startDeepEnrich } = await import('./codebase-cmd.js');
     const { DetachedTeamRepoError } = await import('./utils/git.js');
 
     try {
-      await runHiddenDeepEnrich({
+      await startDeepEnrich({
+        target: await hiddenDeepEnrichTarget(cmdOpts.wikiRoot),
         project: cmdOpts.project,
-        wikiRoot: cmdOpts.wikiRoot,
         maxModules: cmdOpts.maxModules,
+        json: false,
+        command: `teamai deep-enrich --project ${cmdOpts.project}`,
       });
     } catch (error) {
       if (!(error instanceof DetachedTeamRepoError)) throw error;
