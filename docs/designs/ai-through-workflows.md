@@ -216,7 +216,7 @@ teamai-promote-learning                ask      category → content → publish
 teamai-draft-learning-updates          deny     for each stale entry: draft
 teamai-try-scorer                      deny     teamai-score on the session and on its control → report
 teamai-new-scorer                      ask      draft with the person → teamai-try-scorer → approve → pull request
-teamai-share-learnings-from-sessions   ask      choose finished sessions → teamai-share-learnings each
+teamai-share-learnings-from-sessions   ask      session list --finished --all → choose per session → teamai-share-learnings each, unpublished
 ```
 
 Each command keeps its name, flags, output and exit code:
@@ -370,6 +370,11 @@ proposes `scorers/<name>.md` to the team as a pull request.
   its absolute path, and an MR it cannot read also names the failed step. The review threads leave out a comment
   `ci extract-mr` posted by its signature line, so the extraction no longer takes `--comment-marker`. A run with no
   `teamai init` takes `--team-repo`'s `teamai.yaml` and workflows.
+- `session list --finished --all` lists every finished session of this machine from the last `--within` (7 days by
+  default) that no learning was contributed from, whatever the session policies say, with when it was last active and
+  its first prompt, redacted; any run may list them. It was refused before. `session show <id> --source <platform>`
+  prints a session, redacted as `teamai score evidence` reads it, so an agent can share learnings from a session that is
+  not its own; the share skill says so.
 - The session-start MR hint offers `teamai-import-from-mr` with each MR's URL, and describe proposes those MRs to the
   session the hint listed them in. Where a hook may not offer the workflow, such as in a session teamai launched, the
   hint names `import --from-mr` as before.

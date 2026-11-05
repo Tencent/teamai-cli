@@ -1085,6 +1085,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 |---|---|---|
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
+| `teamai-share-learnings-from-sessions` | 逐个询问本机最近 7 天内结束的各工具会话，然后对本人选中的每个会话运行 `teamai-share-learnings`，`publish: false` | 总是：`invoke: ask`，本人同意后 agent 才启动它 |
 | `teamai-score` | 用团队的[评分器](scorers.md#teamai-score-工作流)给一个工作流 pass 或会话打标签。由 [`teamai score`](scorers.md#按需评分) 和 `teamai-share-session` 启动 | 从不：`invoke: deny`，任何 agent 会话都不能启动它 |
 | `teamai-try-scorer` | 通过 `store: false` 的 `teamai-score`，用评分器文件评判一个会话和只含其第一条提示的会话，不保存任何标签。由 [`teamai score --scorer <file>`](scorers.md#试用评分器文件) 启动。私有 | 从不：`invoke: deny` |
 | `teamai-new-scorer` | 与用户一起编写评分器，用 `teamai-try-scorer` 试用，再从[团队工作区](#团队工作区)把 `scorers/<name>.md` 作为拉取请求提交给团队。输入：`session`、`source` | 始终：`invoke: ask`，agent 在用户同意后启动它 |
@@ -1252,6 +1253,33 @@ agent   proposes teamai-share-session: publish and score, no learnings
 | `approve`（可选） | 推荐启动（`--hitl recommend`）下由 agent 回答；选“ask me at optional approvals”（`--hitl person`）时由本人回答；选“answer optional approvals automatically”（`--auto-approve`）时回答 yes |
 
 无人值守的会话从不提供这两个默认工作流，无人值守的 describe 也会拒绝它们：`invoke: ask` 需要有人在场。
+
+### teamai-share-learnings-from-sessions
+
+让 agent 分享之前会话学到的东西（“分享这周会话里的经验”），其他工具的会话也可以。agent 启动不带输入的 `teamai-share-learnings-from-sessions`：
+
+```text
+teamai-share-learnings-from-sessions
+sessions   teamai session list --finished --all --json
+           → 本机最近 7 天内结束、尚未贡献过经验的各工具会话
+pick       每个会话一次。可选选择：share 或 skip，显示来源、最后活动时间和第一条 prompt
+share      每个选中的会话一次，逐个进行 → 运行 teamai-share-learnings，
+           { session, source, publish: false, scorers: [] }
+```
+
+agent 用 [`teamai session show`](dashboard.md#读取已结束的会话) 读取每个选中的会话，和你一起分享其中的经验；`publish: false` 和 `scorers: []` 不归档也不评审。下面是在 Claude Code 会话里的一次运行，本人跳过了一个 Claude Code 会话，分享了一个 Hermes 会话：
+
+```text
+pick[0].ask  claude-code session 7c1e5a2b-…-00000000c001, last active 2026-11-05T05:57:02.000Z
+             First prompt: Rename the config loader; the deploy key is <REDACTED:anthropic>     → skip
+pick[1].ask  hermes session 20261104_091523_c1c2c3d4, last active 2026-11-05T05:57:02.000Z
+             First prompt: Why does the pod restart before it is ready                         → share
+share[0].learning                   for the hermes session 20261104_091523_c1c2c3d4
+share[0].contribute[0]              learnings/delay-the-readiness-probe-until-the-cache-is-warm-2026-11-05-ca2qmf.md
+share[0].share-session.publish      skipped
+```
+
+因为已经从 Hermes 会话贡献了经验，下一次 `session list --finished --all` 不再列出它。文件是安装包里的 `workflows/teamai-share-learnings-from-sessions.yaml`。
 
 ### teamai-session-to-task
 

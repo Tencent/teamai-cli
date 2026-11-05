@@ -375,6 +375,8 @@ teamai session push --source codebuddy                     # --all: every worksp
 teamai session push --session <id> --source claude-code    # exactly that session, scrubbed
 teamai session pull
 teamai session list                                        # --all: every project
+teamai session list --finished --all                       # sessions to share learnings from; --within 3d
+teamai session show <id> --source hermes                   # one of them, redacted
 teamai session search <query>
 teamai session resume <name> --platform claude-code
 ```
@@ -384,6 +386,26 @@ A migration never overwrites. If the target workspace already has a copy of the 
 For a script, `migrate <sessionId> -s <tool> -t <tool> --json` prints one line on stdout, the same `{ "data": ... }` or `{ "error": { "code", "message" } }` shape as `teamai workflow`; progress goes to stderr. `data` has the target `sessionId`, `cwd`, `reused`, and the `fidelity` report. `error.code` names the failure, such as `no_adapter` (unknown tool), `tool_unavailable` (the source or target tool is not installed, or its CLI cannot run), `not_found`, or `unreadable`, and the exit code is 1. `--json` never prompts: a missing id, `-s`, or `-t` fails with `prompt_refused`, and `--push` needs `-y` or `--scrub`.
 
 `--dry-run` previews. `--scrub` redacts before an archive; without it, an interactive run asks and a script needs `-y`. `--all` confirms above 10 sessions (push: 5). `push --session <id>` pushes exactly that session of `--source`, from any workspace, always scrubbed and without a prompt. Archives go to `sessions/repos/<repo>/<author>/` on the team repo's `teamai-reports` branch, under the session's own git remote, or `_unattributed`. A session that a workflow step ran in its own worktree goes under the repository of the checkout that the worktree came from.
+
+### Read a finished session
+
+`session list --finished --all` lists the sessions of every tool that finished on this machine in the last 7 days (`--within 3d` for fewer), leaving out the ones a learning was already contributed from, whatever the [session policies](sharing.md#sessions) say. `session show` prints one, your own or another, redacted the way a judge reads it. Both read SQLite stores such as Hermes's too; reading those needs the `sqlite3` CLI.
+
+```console
+$ teamai session list --finished --all
+  7c1e5a2b-0000-4000-8000-00000000c001  claude-code  2026-11-05T05:57:02.000Z  Rename the config loader; the deploy key is <REDACTED:anthropic>
+  20261104_091523_c1c2c3d4  hermes  2026-11-05T05:57:02.000Z  Why does the pod restart before it is ready
+
+$ teamai session show 20261104_091523_c1c2c3d4 --source hermes
+### user
+Why does the pod restart before it is ready
+
+
+### assistant
+The readiness probe fires before the cache warms up; raise initialDelaySeconds to 20.
+```
+
+With `--json`, `list --finished --all` prints `{"list":[{"session","source","ended","prompt"}]}` and `show` prints `{"session","source","transcript"}`. A session `show` cannot find exits 1 with `{"error":{"code":"session_not_found","message":…}}`. The default workflow [`teamai-share-learnings-from-sessions`](workflow.md#teamai-share-learnings-from-sessions) offers these sessions one by one.
 
 ### What a scrubbed session keeps
 
