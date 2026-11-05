@@ -1,7 +1,7 @@
 // -*- coding: utf-8 -*-
 import { describe, it, expect } from 'vitest';
 
-import { computeConfidence } from '../maintenance/confidence.js';
+import { adoptionRatio, computeConfidence } from '../maintenance/confidence.js';
 
 describe('computeConfidence', () => {
   it('returns 0 for brand new doc with no activity', () => {
@@ -127,5 +127,46 @@ describe('computeConfidence', () => {
     // base = 0.4, recency ≈ 1.0 (from upvote), ratio = 1.0
     // confidence = 0.4*0.4 + 1.0*0.3 + 1.0*0.3 = 0.76
     expect(score).toBe(0.76);
+  });
+});
+
+describe('the adoption estimator (#1391)', () => {
+  const now = () => new Date().toISOString();
+
+  // The worked table of docs/designs/ai-through-workflows.md: 10 recalled sessions each, tool and judge upvotes apart.
+  it.each([
+    ['helm-values', { tool: 6, judged: 3, judge: 1 }, 0.73],
+    ['retry-policy', { tool: 0, judged: 2, judge: 2 }, 1],
+    ['pod-startup', { tool: 0, judged: 0, judge: 0 }, 0],
+  ])('rates %s as the design\'s table does', (_doc, { tool, judged, judge }, ratio) => {
+    const factors = { recalledCount: 10, upvotedCount: tool + judge, judgeUpvotedCount: judge, judgedCount: judged, recalledSessionCount: 10, lastRecalledAt: now() };
+
+    expect(Math.round(adoptionRatio(factors) * 100) / 100).toBe(ratio);
+  });
+
+  it('weighs the ratio into confidence as before: helm-values moves from 0.91 to 0.92', () => {
+    const at = now();
+    const before = computeConfidence({ recalledCount: 10, upvotedCount: 7, lastRecalledAt: at });
+    const after = computeConfidence({ recalledCount: 10, upvotedCount: 7, judgeUpvotedCount: 1, judgedCount: 3, recalledSessionCount: 10, lastRecalledAt: at });
+
+    expect([before, after]).toEqual([0.91, 0.92]);
+  });
+
+  it('reads a doc with no session count as one session per recall, as the ratio did before', () => {
+    expect(adoptionRatio({ recalledCount: 10, upvotedCount: 7, lastRecalledAt: now() })).toBe(0.7);
+  });
+
+  it('never rates above 1 or below 0, and never NaN, whatever the counts', () => {
+    const odd = [
+      { recalledCount: Number.NaN, upvotedCount: 3, lastRecalledAt: now() },
+      { recalledCount: 1, upvotedCount: 9, judgeUpvotedCount: 12, judgedCount: 2, recalledSessionCount: 1, lastRecalledAt: now() },
+      { recalledCount: 1, upvotedCount: -4, judgeUpvotedCount: Number.POSITIVE_INFINITY, judgedCount: 1, lastRecalledAt: now() },
+    ];
+
+    for (const factors of odd) {
+      expect(adoptionRatio(factors)).toBeGreaterThanOrEqual(0);
+      expect(adoptionRatio(factors)).toBeLessThanOrEqual(1);
+      expect(Number.isFinite(computeConfidence(factors))).toBe(true);
+    }
   });
 });

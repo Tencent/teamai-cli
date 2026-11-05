@@ -8,7 +8,7 @@ import { parseYaml } from './utils/yaml.js';
 
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
 import { isJsonObject, type JsonValue } from './types.js';
-import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
+import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteDelta, VoteEntryV2 } from './types.js';
 import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -374,6 +374,75 @@ export async function incrementUpvoted(
   return value ?? [];
 }
 
+/** Move `entry`'s `<counter>_count` and its delta in `data` by `by`, starting the entry when the doc has none. */
+function bump(data: UserVotesV2, docId: string, counter: string, by: number): void {
+  const entry = data.votes[docId] ?? { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' };
+  const delta = data.deltas[docId] ?? { recalled_delta: 0, upvoted_delta: 0 };
+  data.votes[docId] = entry;
+  data.deltas[docId] = delta;
+  entry[`${counter}_count`] = countOf(entry, counter) + by;
+  delta[`${counter}_delta`] = CountSchema.parse(delta[`${counter}_delta`]) + by;
+}
+
+/**
+ * Count one more recalled session for each of `docIds` (#1391): the denominator of the adoption estimator. A doc
+ * whose entry has no session count yet starts from its recalls, which is what the ratio read before, so its confidence
+ * does not jump at the upgrade. The caller credits each (root session, doc) once. Returns false when the votes file
+ * was busy: nothing was counted, and the caller retries.
+ */
+export async function countRecalledSessions(votePath: string, docIds: readonly string[]): Promise<boolean> {
+  if (docIds.length === 0) return true;
+
+  const { acquired } = await withVotesLock(votePath, async () => {
+    const data = await loadUserVotes(votePath);
+
+    for (const docId of new Set(docIds)) {
+      const entry = data.votes[docId];
+      const seed = entry !== undefined && entry.recalled_session_count === undefined ? entry.recalled_count : 0;
+      bump(data, docId, 'recalled_session', seed + 1);
+    }
+
+    await saveUserVotes(votePath, data);
+  });
+
+  return acquired;
+}
+
+/** A judge's verdict on whether one session adopted a recalled doc (#1391). */
+export interface AdoptionVerdict {
+  doc: string;
+  adopted: boolean;
+}
+
+/**
+ * Credit judge verdicts: each counts a judged session for its doc, and an adopted one an upvote, counted in the total
+ * and in `judge_upvoted_count`. The caller credits each (root session, doc) once. Returns false when the votes file
+ * was busy: nothing was credited, and the caller retries.
+ */
+export async function creditJudged(votePath: string, verdicts: readonly AdoptionVerdict[]): Promise<boolean> {
+  if (verdicts.length === 0) return true;
+
+  const { acquired } = await withVotesLock(votePath, async () => {
+    const data = await loadUserVotes(votePath);
+    const now = new Date().toISOString();
+
+    for (const { doc, adopted } of verdicts) {
+      bump(data, doc, 'judged', 1);
+
+      if (!adopted) continue;
+      bump(data, doc, 'upvoted', 1);
+      bump(data, doc, 'judge_upvoted', 1);
+      const entry = data.votes[doc];
+
+      if (entry) entry.last_upvoted_at = now;
+    }
+
+    await saveUserVotes(votePath, data);
+  });
+
+  return acquired;
+}
+
 /**
  * Merge local deltas into a remote votes snapshot.
  * Returns merged result with empty deltas.
@@ -392,39 +461,54 @@ export function mergeDeltas(local: UserVotesV2, remote: UserVotesV2): UserVotesV
   }
 
   for (const [docId, delta] of Object.entries(local.deltas)) {
-    if (!votes[docId]) {
-      votes[docId] = { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' };
-    }
+    const merged = votes[docId] ?? { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' };
+    votes[docId] = merged;
 
-    votes[docId].recalled_count = Math.max(0, votes[docId].recalled_count + delta.recalled_delta);
-    votes[docId].upvoted_count = Math.max(0, votes[docId].upvoted_count + delta.upvoted_delta);
+    for (const [counter, moved] of deltaMoves(delta)) merged[`${counter}_count`] = Math.max(0, countOf(merged, counter) + moved);
 
     const localEntry = local.votes[docId];
 
     if (localEntry) {
-      if (localEntry.last_recalled_at > (votes[docId].last_recalled_at ?? '')) {
-        votes[docId].last_recalled_at = localEntry.last_recalled_at;
+      if (localEntry.last_recalled_at > (merged.last_recalled_at ?? '')) {
+        merged.last_recalled_at = localEntry.last_recalled_at;
       }
 
       if (
         localEntry.last_upvoted_at !== undefined &&
-        localEntry.last_upvoted_at > (votes[docId].last_upvoted_at ?? '')
+        localEntry.last_upvoted_at > (merged.last_upvoted_at ?? '')
       ) {
-        votes[docId].last_upvoted_at = localEntry.last_upvoted_at;
+        merged.last_upvoted_at = localEntry.last_upvoted_at;
       }
     }
 
     // Consistency constraint: a zeroed counter must not retain a timestamp.
-    if (votes[docId].recalled_count === 0) {
-      votes[docId].last_recalled_at = '';
+    if (merged.recalled_count === 0) {
+      merged.last_recalled_at = '';
     }
 
-    if (votes[docId].upvoted_count === 0) {
-      delete votes[docId].last_upvoted_at;
+    if (merged.upvoted_count === 0) {
+      delete merged.last_upvoted_at;
     }
   }
 
   return { version: 2, votes, deltas: {} };
+}
+
+/** A count a delta or an entry holds: a finite number, else 0. */
+const CountSchema = z.number().finite().catch(0);
+
+/** The counters `delta` moves, by name (`judged` for `judged_delta`), and by how much; a zero move is left out. */
+function deltaMoves(delta: VoteDelta): Array<[string, number]> {
+  return Object.entries(delta).flatMap(([key, value]): Array<[string, number]> => {
+    const moved = CountSchema.parse(value);
+
+    return key.endsWith('_delta') && moved !== 0 ? [[key.slice(0, -'_delta'.length), moved]] : [];
+  });
+}
+
+/** The `<counter>_count` of `entry`, 0 when it has none. */
+function countOf(entry: VoteEntryV2, counter: string): number {
+  return CountSchema.parse(entry[`${counter}_count`]);
 }
 
 /** True when the local votes file still has deltas not yet synced to the team repo. */
@@ -446,13 +530,20 @@ function remainingDeltasAfter(
   const remainingDeltas: UserVotesV2['deltas'] = {};
 
   for (const [docId, delta] of Object.entries(current)) {
-    const s = synced[docId];
-    const recalled_delta = delta.recalled_delta - (s?.recalled_delta ?? 0);
-    const upvoted_delta = delta.upvoted_delta - (s?.upvoted_delta ?? 0);
+    const delivered = new Map(deltaMoves(synced[docId] ?? { recalled_delta: 0, upvoted_delta: 0 }));
 
-    if (recalled_delta !== 0 || upvoted_delta !== 0) {
-      remainingDeltas[docId] = { recalled_delta, upvoted_delta };
+    const left = deltaMoves(delta).flatMap(([counter, moved]): Array<[string, number]> => {
+      const remaining = moved - (delivered.get(counter) ?? 0);
+
+      return remaining === 0 ? [] : [[`${counter}_delta`, remaining]];
+    });
+
+    // A counter only the delivered set moved, such as one a downvote took back, is owed back too.
+    for (const [counter, moved] of delivered) {
+      if (!deltaMoves(delta).some(([name]) => name === counter)) left.push([`${counter}_delta`, -moved]);
     }
+
+    if (left.length > 0) remainingDeltas[docId] = { recalled_delta: 0, upvoted_delta: 0, ...Object.fromEntries(left) };
   }
 
   return remainingDeltas;

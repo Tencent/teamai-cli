@@ -21,6 +21,8 @@ import {
   readUserVotesFromContent,
   stageVotesMerge,
   confirmVotesSynced,
+  creditJudged,
+  countRecalledSessions,
 } from '../votes.js';
 import type { UserVotes, UserVotesV2 } from '../types.js';
 
@@ -946,5 +948,64 @@ describe('recallFeedback', () => {
     const after = YAML.parse(fs.readFileSync(votePath, 'utf-8')) as UserVotesV2;
     expect(after.votes['doc-zero'].upvoted_count).toBe(0);
     expect(after.votes['doc-zero'].last_upvoted_at).toBeUndefined();
+  });
+});
+
+describe('adoption counters (#1391)', () => {
+  const votePath = () => path.join(tmpDir, 'jeff.yaml');
+
+  it('merges every *_delta into its *_count, one a later teamai adds included', () => {
+    const local: UserVotesV2 = {
+      version: 2,
+      votes: {},
+      deltas: { 'helm-values': { recalled_delta: 0, upvoted_delta: 1, judge_upvoted_delta: 1, judged_delta: 1, recalled_session_delta: 2, cited_delta: 4 } },
+    };
+    const remote: UserVotesV2 = {
+      version: 2,
+      votes: { 'helm-values': { recalled_count: 10, upvoted_count: 6, last_recalled_at: '2026-06-05T00:00:00Z', judged_count: 2, recalled_session_count: 8 } },
+      deltas: {},
+    };
+
+    expect(mergeDeltas(local, remote).votes['helm-values']).toEqual({
+      recalled_count: 10, upvoted_count: 7, last_recalled_at: '2026-06-05T00:00:00Z',
+      judge_upvoted_count: 1, judged_count: 3, recalled_session_count: 10, cited_count: 4,
+    });
+  });
+
+  it('credits an adopted verdict as a judge upvote within the total, and an ignored one as judged only', async () => {
+    expect(await creditJudged(votePath(), [{ doc: 'pod-startup', adopted: true }, { doc: 'retry-policy', adopted: false }])).toBe(true);
+
+    const { votes, deltas } = await readUserVotes(votePath());
+    expect(votes['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
+    expect(votes['pod-startup']?.last_upvoted_at).toEqual(expect.any(String));
+    expect(votes['retry-policy']).toMatchObject({ upvoted_count: 0, judged_count: 1 });
+    expect(votes['retry-policy']?.judge_upvoted_count ?? 0).toBe(0);
+    expect(deltas['pod-startup']).toMatchObject({ upvoted_delta: 1, judge_upvoted_delta: 1, judged_delta: 1 });
+    expect(deltas['retry-policy']).toMatchObject({ judged_delta: 1 });
+  });
+
+  it('counts a recalled session once per call, starting a doc that has none from its recalls', async () => {
+    await saveUserVotes(votePath(), { version: 2, votes: { 'helm-values': { recalled_count: 7, upvoted_count: 2, last_recalled_at: '2026-06-05T00:00:00Z' } }, deltas: {} });
+
+    expect(await countRecalledSessions(votePath(), ['helm-values', 'new-doc'])).toBe(true);
+    expect(await countRecalledSessions(votePath(), ['helm-values'])).toBe(true);
+
+    const { votes, deltas } = await readUserVotes(votePath());
+    expect(votes['helm-values']?.recalled_session_count).toBe(9);
+    expect(votes['new-doc']?.recalled_session_count).toBe(1);
+    expect(deltas['helm-values']?.recalled_session_delta).toBe(9);
+  });
+
+  it('clears every synced *_delta, keeping what arrived after the snapshot', async () => {
+    const localDir = path.join(tmpDir, 'local-votes');
+    const repoDir = path.join(tmpDir, 'repo');
+    fs.mkdirSync(localDir, { recursive: true });
+    fs.mkdirSync(path.join(repoDir, 'votes'), { recursive: true });
+    await creditJudged(path.join(localDir, 'jeff.yaml'), [{ doc: 'pod-startup', adopted: true }]);
+
+    expect(await syncVotesToTeam(repoDir, 'jeff', localDir)).toBe(true);
+
+    expect((await readUserVotes(path.join(localDir, 'jeff.yaml'))).deltas).toEqual({});
+    expect((await readUserVotes(path.join(repoDir, 'votes', 'jeff.yaml'))).votes['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
   });
 });

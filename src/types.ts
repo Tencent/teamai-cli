@@ -2744,20 +2744,36 @@ export const UserVotesSchema = z.looseObject({
 
 export type UserVotes = z.infer<typeof UserVotesSchema>;
 
-/** Vote entry with dual counters (V2). */
+/** A counter of a vote entry a teamai before #1391 did not write: absent until a delta first moves it. */
+const OptionalCountSchema = z.number().optional().catch(undefined);
+
+/**
+ * Vote entry with dual counters (V2). `upvoted_count` is every upvote, so any reader keeps reading the total; the
+ * adoption estimator (#1391) also reads which of them a judge gave, how many sessions a judge asked about the doc, and
+ * how many sessions recalled it. A counter a later teamai adds is kept as written.
+ */
 const VoteEntryV2Schema = z.looseObject({
   recalled_count: z.number().catch(0),
   upvoted_count: z.number().catch(0),
   last_recalled_at: z.string().catch(''),
   last_upvoted_at: z.string().optional().catch(undefined),
+  judge_upvoted_count: OptionalCountSchema,
+  judged_count: OptionalCountSchema,
+  recalled_session_count: OptionalCountSchema,
 });
 
 export type VoteEntryV2 = z.infer<typeof VoteEntryV2Schema>;
 
-/** Unsynchronized delta for a single document (V2). */
+/**
+ * Unsynchronized delta for a single document (V2): each `<counter>_delta` moves the entry's `<counter>_count` when it
+ * merges, so a counter a later teamai adds travels too.
+ */
 const VoteDeltaSchema = z.looseObject({
   recalled_delta: z.number().catch(0),
   upvoted_delta: z.number().catch(0),
+  judge_upvoted_delta: OptionalCountSchema,
+  judged_delta: OptionalCountSchema,
+  recalled_session_delta: OptionalCountSchema,
 });
 
 export type VoteDelta = z.infer<typeof VoteDeltaSchema>;
