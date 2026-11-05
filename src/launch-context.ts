@@ -140,9 +140,7 @@ export const readSessionRun = ForwardedSessionRunSchema.parse;
  * Who in teamai launched a tool's session, as `TEAMAI_LAUNCHED_BY` carries it: a workflow step, a run confined to a directory, or the
  * module whose AI call started it.
  */
-export type LaunchedBy =
-  | 'workflow' | 'confined' | 'answer'
-  | 'codebase' | 'deep-enrich' | 'enrich-with-ai' | 'import-mr';
+export type LaunchedBy = 'workflow' | 'confined' | 'answer';
 
 /** A tool launched by a workflow step, in the checkout whose pull record has key `checkout`. */
 export type Launch = { by: 'workflow'; tool: string; checkout: string };

@@ -13,7 +13,6 @@ import { executableOf, LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } fro
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
-const DEFAULT_CONCURRENCY = 3;
 
 /** An AI call's answer, and the tool that gave it. */
 export type CallResult = { text: string; tool: LaunchOrderTool; tokens?: TokenUsage };
@@ -32,11 +31,6 @@ export interface CallOptions {
 
 export interface ToolCaller {
   callTool(prompt: string, options: CallOptions): Promise<CallResult>;
-  /**
-   * Runs every call, at most `concurrency` at a time, and returns the parsed answers in input order. When any call or
-   * parse fails, it fails after the others finish, with an AggregateError of each failure.
-   */
-  callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, options: CallOptions & { concurrency?: number }): Promise<T[]>;
 }
 
 export interface ToolCallerDeps {
@@ -160,30 +154,6 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
       }
   };
 
-  async function callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, { concurrency = DEFAULT_CONCURRENCY, ...options }: CallOptions & { concurrency?: number }): Promise<T[]> {
-    // A batch has one tool, so a tool that cannot be picked fails the batch once rather than once per task.
-    await pick(options.scope);
-    const settled: ({ ok: true; value: T } | { ok: false; reason: unknown })[] = [];
-    let next = 0;
 
-    const worker = async (): Promise<void> => {
-      for (let index = next++; index < tasks.length; index = next++) {
-        const task = tasks[index];
-
-        try { settled[index] = { ok: true, value: task.parse((await callTool(task.prompt, options)).text) }; }
-        catch (reason) { settled[index] = { ok: false, reason }; }
-      }
-    };
-
-    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
-    const errors = settled.flatMap((outcome) => outcome.ok ? [] : [outcome.reason]);
-
-    if (errors.length > 0) throw new AggregateError(errors, `${errors.length} AI task(s) failed`);
-
-    return settled.flatMap((outcome) => outcome.ok ? [outcome.value] : []);
-  }
-
-  return { callTool, callToolParallel };
+  return { callTool };
 }
-
-export const { callTool, callToolParallel } = createToolCaller();

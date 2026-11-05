@@ -1,7 +1,7 @@
 import { defineRule } from '@oxlint/plugins';
 import path from 'node:path';
 import { importVisitors } from '../imports.js';
-import { scopedFiles, sourcePath } from '../utils.js';
+import { sourcePath } from '../utils.js';
 
 /** The folders that may launch a tool: the workflow drivers, and the launcher itself. */
 const ALLOWED = ['src/workflow/', 'src/tool-launch/'];
@@ -14,20 +14,12 @@ const LAUNCHERS = {
   'src/tool-launch/confined.ts': ['runConfined', '*'],
 };
 
-/**
- * Callers that launch a tool outside a workflow today. This list may only shrink: move a caller's AI work into a
- * workflow step, then delete its entry. A listed file that no longer imports the launcher is reported, so it is removed.
- */
-const BASELINE = scopedFiles([]);
-
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Launch AI tools only from workflow drivers.' } },
   create(context) {
     const from = sourcePath(context);
 
     if (ALLOWED.some((folder) => from.startsWith(folder)) || from.startsWith('src/__tests__/') || from.endsWith('.test.ts')) return {};
-    const inBaseline = BASELINE.includes(from);
-    let launches = false;
 
     return {
       ...importVisitors(({ node, specifier, typeOnly, names }) => {
@@ -38,13 +30,8 @@ export default defineRule({
         const launching = LAUNCHERS[to];
 
         if (launching !== undefined && !names.some((name) => launching.includes(name))) return;
-        launches = true;
-
-        if (!inBaseline) context.report({ node, message: 'Only a workflow driver launches an AI tool. Run this AI work as a workflow step instead of importing the launcher (docs/designs/ai-through-workflows.md).' });
+        context.report({ node, message: 'Only a workflow driver launches an AI tool. Run this AI work as a workflow step instead of importing the launcher (docs/designs/ai-through-workflows.md).' });
       }),
-      'Program:exit'(node) {
-        if (inBaseline && !launches) context.report({ node, message: 'This file no longer launches an AI tool. Remove it from BASELINE in oxlint-plugin-teamai/rules/launch-through-workflows.js.' });
-      },
     };
   },
 });
