@@ -143,6 +143,14 @@ export const NO_DRY_RUN_PREVIEW = {
   'codebase deep-enrich-graph': 'writes the graph docs of a codebase',
   'codebase deep-enrich-finish': 'writes the scenarios doc, the teamwiki indexes and the quality reports',
   'codebase enrich-write': 'a step of a teamai-codebase-enrich run; writes _manifest.json and _domains.json',
+  'import scan-rules': 'a step of a teamai-import-rules run',
+  'import read-candidate': 'a step of a teamai-import-learnings run',
+  'import classify-reply': 'a step of a teamai-import-learnings run',
+  'import write-learnings': 'writes the accepted items into the team repo or an output directory',
+  'import publish-rules': 'commits and pushes the imported items to the team repo',
+  'import fetch-iwiki': 'writes the downloaded pages into the run directory',
+  'import publish-iwiki': 'links the pages to the teamwiki, then commits and pushes the imported items to the team repo',
+  'import write-sections': 'writes external-knowledge.md or .teamai/pending-review.jsonl',
   'import stage': 'a step of a teamai-import-from-repo run; clones into the cache and writes the staging teamwiki',
   'import publish': 'a step of a teamai-import-from-repo run; writes the teamwiki',
   'import finish-item': 'a step of a teamai-import-from-repo run; records the commit a repository was imported at',
@@ -189,9 +197,12 @@ export function dryRunRefusal(command: Command): string | undefined {
 
     // Match importCmd's source precedence. #960 made --from-org preview-safe.
     if (!opts.fromOrg && !opts.fromRepo && !opts.fromRepoList) {
-      if (opts.fromIwiki) return noDryRunPreview('import --from-iwiki'); // persists the review session
+      // Each classifies with the AI tool and asks a person about each item before anything could be previewed.
+      if (opts.fromIwiki) return noDryRunPreview('import --from-iwiki');
 
-      if (!opts.fromMr && !opts.dir && opts.fromClaude) return noDryRunPreview('import --from-claude'); // persists the review session
+      if (!opts.fromMr && !opts.dir && opts.fromTools) return noDryRunPreview('import --from-tools');
+
+      if (!opts.fromMr && !opts.dir && opts.fromClaude) return noDryRunPreview('import --from-claude');
     }
   }
 

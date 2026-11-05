@@ -541,14 +541,15 @@ Generated: do not edit by hand. Regenerate with
 
 ## import
 
-- `teamai import` — Import knowledge from local directories, remote repos, organizations, MRs, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo
+- `teamai import` — Import knowledge from local directories, remote repos, organizations, MRs, AI tools' rules, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo; --from-tools starts teamai-import-rules and --from-iwiki teamai-import-from-iwiki, which ask you to accept, edit or skip each item unless --all is given
   - `--dir <path>` — Extract code knowledge from a local directory (same as --from-repo but no clone)
-  - `--from-claude` (hidden) — Scan Claude/Cursor rule directories (the Claude root's rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)
+  - `--from-tools` — Import the rule files in the rules directory of every AI coding tool on this machine (~/.claude/rules, ~/.cursor/rules, ~/.codebuddy/rules, ...): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo's rules/, docs/ or learnings/
+  - `--from-claude` (hidden) — Alias of --from-tools
   - `--from-mr <url...>` — Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update
   - `--no-discussions` — Leave the MR's review threads out of the extraction (with --from-mr)
-  - `--from-iwiki <space-id-or-url>` — Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)
-  - `--resume` (hidden) — Resume an interrupted import session
-  - `--all` — Accept all suggestions without interactive confirmation
+  - `--from-iwiki <space-id-or-url>` — Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo's rules/, docs/ or learnings/
+  - `--resume` (hidden) — Replaced by teamai workflow resume <run>, which the import prints when it starts
+  - `--all` — Accept all suggestions without interactive confirmation; needed where no person answers, such as inside a workflow step
   - `--output <path>` (hidden) — Write drafts to this directory instead of pushing to team repo; code knowledge goes to <path>/teamwiki
   - `--from-repo <url>` — Clone a remote repo and generate per-repo codebase summary
   - `--ssh` (hidden) — Force SSH clone even if HTTPS token is available
@@ -571,6 +572,38 @@ Generated: do not edit by hand. Regenerate with
   - `--json` — Output cache status or GC result as JSON
   - `--max-bytes <n>` (hidden) — Override capacity cap for --cache-gc
   - `--stale-days <n>` (hidden) — Threshold for stale-eviction in days (default 30)
+  - `teamai import scan-rules` — A step of a teamai-import-rules run: list the rule files in the user rules directory of every AI coding tool teamai supports. Prints {"candidates":[{"path","file"}]}.
+  - `teamai import read-candidate` — A step of a teamai-import-learnings run: read the start of a file to classify, as much as the AI tool is shown. Prints {"content"}.
+    - `--file <path>` — The file that holds the item's text
+  - `teamai import classify-reply` — A step of a teamai-import-learnings run: read what the AI tool said a file is. A reply that is not the JSON asked for reads as personal, so the file is left out. Prints {"type","title","summary","tags","personal"}.
+    - `--path <path>` — The path the file is shown as
+    - `--reply <text>` — What the AI tool answered
+  - `teamai import write-learnings` — A step of a teamai-import-learnings run: write each item that is not personal and was accepted, or edited with the note as its title, with its type in the frontmatter, into rules/, docs/ or learnings/ of the team repo by that type, or all into one directory. Prints {"kept","written"}.
+    - `--classified <json>` — The results of the classify step
+    - `--reviewed <json>` — The results of the review step; empty accepts every item
+    - `--target <dir>` — The team repo, or the directory every item is written into
+    - `--by-type <bool>` — true writes by type into rules/, docs/ and learnings/ of --target
+  - `teamai import publish-rules` — A step of a teamai-import-rules run: commit and push what the import wrote into the team repo, then say the import is complete. Prints {}.
+    - `--kept <n>` — How many items were not personal
+    - `--written <json>` — The files the import wrote
+    - `--target <dir>` — The team repo, or the directory every item was written into
+    - `--by-type <bool>` — true when --target is the team repo, which is pushed
+  - `teamai import fetch-iwiki` — A step of a teamai-import-from-iwiki run: download the pages of an iWiki space, or one page, into $TEAMAI_RUN_DIR/iwiki/, with TAI_PAT_TOKEN. Prints {"source","documents","candidates":[{"path","file"}],"dual_context"}.
+    - `--source <space-id-or-url>` — A numeric space id, or a page URL holding /p/<id>
+    - `--dual <bool>` — true also prints the pages as the dual sections are asked about
+  - `teamai import publish-iwiki` — A step of a teamai-import-from-iwiki run: link the imported pages to the teamwiki's code knowledge, then commit and push what the import wrote into the team repo. Prints {}.
+    - `--kept <n>` — How many items were not personal
+    - `--written <json>` — The files the import wrote
+    - `--target <dir>` — The team repo, or the directory every item was written into
+    - `--by-type <bool>` — true when --target is the team repo, which is pushed
+    - `--documents <file>` — The JSON file of the documents the fetch-iwiki step printed
+  - `teamai import write-sections` — A step of a teamai-import-from-iwiki run: write the business API, external knowledge and glossary sections the AI tool found into external-knowledge.md, or queue them in .teamai/pending-review.jsonl. Prints {}.
+    - `--source <iwiki-url>` — iwiki://<id>, recorded in each section
+    - `--reply <text>` — What the AI tool answered
+    - `--failure <message>` — Why the AI tool did not answer, when it did not
+    - `--sections-dir <dir>` — The directory that holds external-knowledge.md
+    - `--review-dir <dir>` — The directory whose .teamai/pending-review.jsonl takes the sections with --review
+    - `--review <bool>` — true queues the sections for teamai review instead of writing them
   - `teamai import stage` — A step of a teamai-import-from-repo run: fetch a repository into its clone cache, or read a local checkout, and extract it into a staging teamwiki under $TEAMAI_RUN_DIR, with no AI call. Prints {"slug","stage","updated","enrich","narrate","context","head","finished"}.
     - `--item <json>` — The item: {"kind":"repo"|"dir","source","domain","auth","slug","repo_url","mr_urls"}
     - `--settings <json>` — The run's settings: {"depth","ssh","incremental","skip_enrich","max_files","team_repo"}

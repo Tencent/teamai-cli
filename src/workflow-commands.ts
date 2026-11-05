@@ -628,6 +628,11 @@ export interface ShortcutRun {
   command: string;
   /** Print the run's envelope in place of its text, and the lines its steps say on stderr. */
   json: boolean;
+  /**
+   * Said, and the shortcut exits 1 before it starts, when nobody here can answer the run's choices: it runs inside a
+   * workflow step, in an unattended run, or with no terminal. For a run that asks a person before it writes anything.
+   */
+  nobodyAnswers?: string;
 }
 
 /**
@@ -651,8 +656,15 @@ export type ShortcutEnd = z.infer<typeof ShortcutDoneSchema>;
  * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
  * text. A private run starts no drain. Answers how the run ended, when a driver here drove it to its end.
  */
-export async function runShortcut({ workflow, inputs, command, json }: ShortcutRun): Promise<ShortcutEnd | undefined> {
+export async function runShortcut({ workflow, inputs, command, json, nobodyAnswers }: ShortcutRun): Promise<ShortcutEnd | undefined> {
   setStderrOnly(true);
+
+  if (nobodyAnswers !== undefined && !personAnswers(resolveRunMode(process.env))) {
+    log.error(nobodyAnswers);
+    process.exitCode = 1;
+
+    return undefined;
+  }
 
   const refused = (failure: WorkflowFailure): void => {
     if (json) {

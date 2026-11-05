@@ -19,9 +19,7 @@ const LAUNCHERS = {
  * workflow step, then delete its entry. A listed file that no longer imports the launcher is reported, so it is removed.
  */
 const BASELINE = scopedFiles([
-  'src/import-local.ts',
   'src/import-mr.ts',
-  'src/iwiki-dual.ts',
   'src/scorers/judge.ts',
   'src/votes-judge.ts',
 ]);

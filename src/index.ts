@@ -1624,14 +1624,15 @@ program
 
 const importCommand = program
   .command('import')
-  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo')
+  .description('Import knowledge from local directories, remote repos, organizations, MRs, AI tools\' rules, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo; --from-tools starts teamai-import-rules and --from-iwiki teamai-import-from-iwiki, which ask you to accept, edit or skip each item unless --all is given')
   .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
-  .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (the Claude root\'s rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)').hideHelp())
+  .option('--from-tools', 'Import the rule files in the rules directory of every AI coding tool on this machine (~/.claude/rules, ~/.cursor/rules, ~/.codebuddy/rules, ...): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo\'s rules/, docs/ or learnings/')
+  .addOption(new Option('--from-claude', 'Alias of --from-tools').hideHelp())
   .option('--from-mr <url...>', 'Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update')
   .option('--no-discussions', 'Leave the MR\'s review threads out of the extraction (with --from-mr)')
-  .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
-  .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())
-  .option('--all', 'Accept all suggestions without interactive confirmation')
+  .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo\'s rules/, docs/ or learnings/')
+  .addOption(new Option('--resume', 'Replaced by teamai workflow resume <run>, which the import prints when it starts').hideHelp())
+  .option('--all', 'Accept all suggestions without interactive confirmation; needed where no person answers, such as inside a workflow step')
   .addOption(new Option('--output <path>', 'Write drafts to this directory instead of pushing to team repo; code knowledge goes to <path>/teamwiki').hideHelp())
   .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
   .addOption(new Option('--ssh', 'Force SSH clone even if HTTPS token is available').hideHelp())
@@ -1695,6 +1696,96 @@ async function importVerb<TAnswer>(run: () => Promise<TAnswer>): Promise<void> {
     console.log = stdoutLog;
   }
 }
+
+// The verbs teamai-import-rules and teamai-import-learnings runs' steps call.
+importCommand
+  .command('scan-rules')
+  .description('A step of a teamai-import-rules run: list the rule files in the user rules directory of every AI coding tool teamai supports. Prints {"candidates":[{"path","file"}]}.')
+  .action(async () => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.scanRules());
+  });
+
+importCommand
+  .command('read-candidate')
+  .description('A step of a teamai-import-learnings run: read the start of a file to classify, as much as the AI tool is shown. Prints {"content"}.')
+  .requiredOption('--file <path>', 'The file that holds the item\'s text')
+  .action(async (cmdOpts: { file: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.readCandidate(cmdOpts));
+  });
+
+importCommand
+  .command('classify-reply')
+  .description('A step of a teamai-import-learnings run: read what the AI tool said a file is. A reply that is not the JSON asked for reads as personal, so the file is left out. Prints {"type","title","summary","tags","personal"}.')
+  .requiredOption('--path <path>', 'The path the file is shown as')
+  .requiredOption('--reply <text>', 'What the AI tool answered')
+  .action(async (cmdOpts: { path: string; reply: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(async () => ImportLearnings.classifyReply(cmdOpts));
+  });
+
+importCommand
+  .command('write-learnings')
+  .description('A step of a teamai-import-learnings run: write each item that is not personal and was accepted, or edited with the note as its title, with its type in the frontmatter, into rules/, docs/ or learnings/ of the team repo by that type, or all into one directory. Prints {"kept","written"}.')
+  .requiredOption('--classified <json>', 'The results of the classify step')
+  .option('--reviewed <json>', 'The results of the review step; empty accepts every item', '')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every item is written into')
+  .requiredOption('--by-type <bool>', 'true writes by type into rules/, docs/ and learnings/ of --target')
+  .action(async (cmdOpts: { classified: string; reviewed: string; target: string; byType: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.writeLearnings(cmdOpts));
+  });
+
+importCommand
+  .command('publish-rules')
+  .description('A step of a teamai-import-rules run: commit and push what the import wrote into the team repo, then say the import is complete. Prints {}.')
+  .requiredOption('--kept <n>', 'How many items were not personal')
+  .requiredOption('--written <json>', 'The files the import wrote')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every item was written into')
+  .requiredOption('--by-type <bool>', 'true when --target is the team repo, which is pushed')
+  .action(async (cmdOpts: { kept: string; written: string; target: string; byType: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.publishRules(cmdOpts));
+  });
+
+// The verbs a teamai-import-from-iwiki run's steps call.
+importCommand
+  .command('fetch-iwiki')
+  .description('A step of a teamai-import-from-iwiki run: download the pages of an iWiki space, or one page, into $TEAMAI_RUN_DIR/iwiki/, with TAI_PAT_TOKEN. Prints {"source","documents","candidates":[{"path","file"}],"dual_context"}.')
+  .requiredOption('--source <space-id-or-url>', 'A numeric space id, or a page URL holding /p/<id>')
+  .option('--dual <bool>', 'true also prints the pages as the dual sections are asked about', 'false')
+  .action(async (cmdOpts: { source: string; dual: string }) => {
+    const { ImportFromIwiki } = await import('./import-iwiki.js');
+    await importVerb(() => ImportFromIwiki.fetch(cmdOpts));
+  });
+
+importCommand
+  .command('publish-iwiki')
+  .description('A step of a teamai-import-from-iwiki run: link the imported pages to the teamwiki\'s code knowledge, then commit and push what the import wrote into the team repo. Prints {}.')
+  .requiredOption('--kept <n>', 'How many items were not personal')
+  .requiredOption('--written <json>', 'The files the import wrote')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every item was written into')
+  .requiredOption('--by-type <bool>', 'true when --target is the team repo, which is pushed')
+  .requiredOption('--documents <file>', 'The JSON file of the documents the fetch-iwiki step printed')
+  .action(async (cmdOpts: { kept: string; written: string; target: string; byType: string; documents: string }) => {
+    const { ImportFromIwiki } = await import('./import-iwiki.js');
+    await importVerb(() => ImportFromIwiki.publish(cmdOpts));
+  });
+
+importCommand
+  .command('write-sections')
+  .description('A step of a teamai-import-from-iwiki run: write the business API, external knowledge and glossary sections the AI tool found into external-knowledge.md, or queue them in .teamai/pending-review.jsonl. Prints {}.')
+  .requiredOption('--source <iwiki-url>', 'iwiki://<id>, recorded in each section')
+  .option('--reply <text>', 'What the AI tool answered', '')
+  .option('--failure <message>', 'Why the AI tool did not answer, when it did not', '')
+  .requiredOption('--sections-dir <dir>', 'The directory that holds external-knowledge.md')
+  .requiredOption('--review-dir <dir>', 'The directory whose .teamai/pending-review.jsonl takes the sections with --review')
+  .option('--review <bool>', 'true queues the sections for teamai review instead of writing them', 'false')
+  .action(async (cmdOpts: { source: string; reply: string; failure: string; sectionsDir: string; reviewDir: string; review: string }) => {
+    const { writeSections } = await import('./iwiki-dual.js');
+    await importVerb(() => writeSections(cmdOpts));
+  });
 
 // The verbs a teamai-import-from-repo run's steps call.
 importCommand

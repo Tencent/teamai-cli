@@ -484,7 +484,7 @@ it('fails a batch with the override error itself, before it runs any call', asyn
   vi.stubEnv('TEAMAI_AI_TOOL', 'gemini');
   const { callToolParallel } = only('claude', await echoingClaude());
 
-  await expect(callToolParallel(['a', 'b'].map((prompt) => ({ prompt, parse: (text: string) => text })), { launchedBy: 'import-local' })).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid' });
+  await expect(callToolParallel(['a', 'b'].map((prompt) => ({ prompt, parse: (text: string) => text })), { launchedBy: 'import-mr' })).rejects.toMatchObject({ name: 'CallError', kind: 'override_invalid' });
 });
 
 it('runs a batch of calls in input order and parses each answer', async () => {
@@ -542,7 +542,7 @@ setTimeout(() => {
 it('runs every call of a batch, then fails with each failure', async () => {
   const { callToolParallel } = only('claude', await echoingClaude());
 
-  const batch = callToolParallel(['a', 'fail', 'c'].map((prompt) => ({ prompt, parse: (text: string) => text })), { launchedBy: 'import-local' });
+  const batch = callToolParallel(['a', 'fail', 'c'].map((prompt) => ({ prompt, parse: (text: string) => text })), { launchedBy: 'import-mr' });
 
   await expect(batch).rejects.toMatchObject({ message: '1 AI task(s) failed', errors: [expect.objectContaining({ message: 'AI call failed (tool: claude): refused' })] });
 });

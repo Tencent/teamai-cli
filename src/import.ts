@@ -2,18 +2,14 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { autoDetectInit } from './config.js';
-import { scanCandidates, classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
-import { importFromIWiki } from './import-iwiki.js';
 import { importFromMR } from './import-mr.js';
 import { importFromRepoList } from './import-repo-list.js';
 import { importFromOrg } from './import-org.js';
-import { importFromIWikiDual } from './iwiki-dual.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { pendingLearningsDir, queueWriteRefusal, savePendingLearning } from './utils/pending-learnings.js';
 import type { GlobalOptions } from './types.js';
 import { assertNotReadOnly } from './read-only.js';
 import { log, setSilent } from './utils/logger.js';
-import { autoPushTeamRepo } from './utils/git.js';
 
 /**
  * Extended options for the import command, merging global options with subcommand-specific options.
@@ -21,7 +17,9 @@ import { autoPushTeamRepo } from './utils/git.js';
 interface ImportOptions extends GlobalOptions {
   /** Local directory path for scanning importable files */
   dir?: string;
-  /** Whether to scan Claude/Cursor rule directories */
+  /** Import the rules of every AI coding tool */
+  fromTools?: boolean;
+  /** Alias of fromTools */
   fromClaude?: boolean;
   /** Extract knowledge from one or more merged MR/PR URLs */
   fromMr?: string | string[];
@@ -220,34 +218,17 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
 
       return;
     } else if (opts.fromIwiki) {
-      // 分支 0：--from-iwiki，从 iWiki Space 或单页批量导入
-      const { localConfig } = await autoDetectInit(undefined, { dryRun: opts.dryRun });
-      await importFromIWiki({
-        input: opts.fromIwiki,
-        all: opts.all,
-        outputDir: opts.output,
-        repoPath: localConfig.repo.localPath,
-        dryRun: opts.dryRun,
+      const { ImportFromIwiki } = await import('./import-iwiki.js');
+
+      await ImportFromIwiki.start({
+        source: opts.fromIwiki,
+        dual: opts.iwikiDual ?? false,
+        requireReview: opts.requireReview ?? false,
+        all: opts.all ?? false,
+        output: opts.output,
+        resume: opts.resume ?? false,
+        command: 'teamai import --from-iwiki',
       });
-
-      // 若启用双路模式，追加调用 importFromIWikiDual
-      if (opts.iwikiDual) {
-        try {
-          const dualResult = await importFromIWikiDual({
-            input: opts.fromIwiki,
-            output: opts.output,
-            dryRun: opts.dryRun,
-            requireReview: opts.requireReview ?? false,
-          });
-
-          log.info(
-            `iWiki dual-path complete: sections updated [${dualResult.sectionsUpdated.join(', ')}]` +
-            (dualResult.pendingReview ? ' (pending review)' : ''),
-          );
-        } catch (dualErr) {
-          log.warn(`iWiki dual-path error (non-blocking): ${String(dualErr)}`);
-        }
-      }
     } else if (opts.fromMr && (!Array.isArray(opts.fromMr) || opts.fromMr.length > 0)) {
       // 分支 1：--from-mr <url...>，提取 learning + 增量更新 teamwiki
       // Several URLs in one run: each draft is confirmed on its own, the accepted
@@ -505,33 +486,18 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         target,
         command: 'teamai import --dir',
       });
-    } else if (opts.fromClaude) {
-      // 分支 3b：--from-claude，扫描规则文件并交互式导入
-      const candidates = await scanCandidates({ fromClaude: true, dryRun: opts.dryRun });
+    } else if (opts.fromTools || opts.fromClaude) {
+      const { ImportLearnings } = await import('./import-local.js');
 
-      if (candidates.length === 0) {
-        log.info('no importable files found');
-
-        return;
-      }
-
-      const classified = await classifyWithAI(candidates);
-      const session = await interactiveReview(classified, { all: opts.all, resume: opts.resume });
-      const { localConfig } = await autoDetectInit(undefined, { dryRun: opts.dryRun });
-
-      const { pushed } = await pushAccepted(session, localConfig.repo.localPath, {
-        dryRun: opts.dryRun,
-        outputDir: opts.output,
+      await ImportLearnings.startRules({
+        all: opts.all ?? false,
+        output: opts.output,
+        resume: opts.resume ?? false,
+        command: opts.fromTools ? 'teamai import --from-tools' : 'teamai import --from-claude',
       });
-
-      if (pushed > 0 && !opts.dryRun && !opts.output) {
-        await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from local: claude-rules`);
-      }
-
-      log.success('Import complete');
     } else {
       // 默认：未指定来源，提示用户
-      log.info('Please specify import source: --dir <path>, --from-repo <url>, --from-repo-list <yaml>, --from-org <org>, --from-mr <url>, or --from-iwiki <id>');
+      log.info('Please specify import source: --dir <path>, --from-repo <url>, --from-repo-list <yaml>, --from-org <org>, --from-mr <url>, --from-tools, or --from-iwiki <id>');
 
       return;
     }

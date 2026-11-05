@@ -205,9 +205,9 @@ teamai-codebase-enrich                 deny     enrich modules → domain summar
 teamai-codebase-deep-enrich            deny     component docs (5 at once) → architecture → G5
 teamai-import-from-repo                deny     for each repo or dir: scan → codebase.md → enrich → deep-enrich → write
 teamai-import-from-mr                  ask      for each MR: extract → choose → publish        (mr-hint offers it)
-teamai-import-rules                    deny     rule dirs of every tool → teamai-import-learnings
-teamai-import-from-iwiki               deny     fetch → teamai-import-learnings → dual sections
-teamai-import-learnings                deny     classify (3 at once) → choose per item → push accepted
+teamai-import-rules                    deny     rule dirs of every tool → teamai-import-learnings → push
+teamai-import-from-iwiki               deny     fetch → teamai-import-learnings → push → dual sections
+teamai-import-learnings                deny     classify (3 at once) → choose per item → write accepted by type
 teamai-ci-extract-mr                   deny     teamai-import-from-mr → comment | write → enrich → deep-enrich
 teamai-promote-learning                ask      category → content → publish teamai/push/… → mark promoted
 teamai-draft-learning-updates          deny     for each stale entry: draft
@@ -321,7 +321,7 @@ proposes `scorers/<name>.md` to the team as a pull request.
 | An import that writes teamwiki takes an exclusive lock per wiki root | `utils/import-lock.ts` |
 | A failed classification fails the import instead of importing nothing | `import-local.ts` |
 | `--update-quality` finds skills and reports entries it could not draft | `maintenance/quality-update.ts` |
-| An imported rule, skill or doc lands in its directory (`type:` is written) | `import-local.ts` |
+| An imported rule or doc lands in its directory (`type:` is written) | `import-local.ts` |
 | `--from-org` exits 1 when a repository fails | `import-org.ts` |
 | "Branch pushed" only after a push | `import-codebase.ts` |
 | `ci extract-mr` comments on GitHub Enterprise through `GITHUB_API_URL` | `ci/mr-comment.ts` |
@@ -331,9 +331,17 @@ proposes `scorers/<name>.md` to the team as a pull request.
 ## Behaviour that changes
 
 - Confidence uses the estimator above, so prune and promote may pick other documents.
-- The per-item review of an import is the driver's choice prompt; the options and their order stay.
+- The per-item review of `import --from-tools` and `--from-iwiki` is the driver's choice prompt, `accept`, `edit` or
+  `skip` with an optional note; the options and their order stay, and `edit` takes the note as the title. It needs a
+  terminal: inside a workflow step or with piped input, the import is refused before any AI call and says to pass
+  `--all`. `--resume` is refused with the `teamai workflow resume <run>` that replaces it, and no
+  `~/.teamai/import-session.json` is written. The run's `Run … started` line is on stderr.
+- `import --from-tools` scans the user rules directory of every tool in `TOOLS`, `.mdc` included; `--from-claude` is
+  its hidden alias. The commit says `Import from local: tool rules`. No `teamai init` is refused before any AI call,
+  an `--output` import names each file it wrote by its absolute path, and `--from-iwiki` checks its token before
+  init. `--iwiki-dual` asks for the sections from the pages it already fetched, once the import is pushed.
 - A failed classification and an `--update-quality` entry that could not be drafted exit 1.
-- Imported rules, skills and docs land in `rules/`, `skills/` and `docs/` instead of `learnings/`.
+- Imported rules and docs land in `rules/` and `docs/` instead of `learnings/`; the classifier has no skill type.
 - In a team repo, `codebase --deep-enrich` asks for each component doc once, with no sequential retry of the batch,
   names each failed step with its retry command, and `--json` prints the run envelope. The hidden `deep-enrich` holds
   the import lock. A teamwiki outside a team repo (`--output`, a hidden `--wiki-root`) is written by the same

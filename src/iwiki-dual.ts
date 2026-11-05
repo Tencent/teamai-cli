@@ -1,32 +1,20 @@
 // -*- coding: utf-8 -*-
 /**
- * iWiki 双路模式：在产出 learning 之外，同时产出 codebase suggestions。
- *
- * 将内容写入 docs/team-codebase/external-knowledge.md 的章节锚点。
- * 不替换既有 importFromIWiki，是独立的补充入口。
+ * The dual sections of an iWiki import (`--iwiki-dual`): the business API, external knowledge and glossary the AI tool
+ * found in the pages, written into the managed anchors of docs/team-codebase/external-knowledge.md, or queued for
+ * review. teamai-import-from-iwiki asks the tool; `write-sections` is the step that writes its answer.
  */
 
 import path from 'node:path';
 import fs from 'fs-extra';
 import { z } from 'zod';
 
-import { IWikiClient } from './utils/iwiki-client.js';
-import type { IWikiDocument, IWikiPage } from './utils/iwiki-client.js';
+import type { IWikiDocument } from './utils/iwiki-client.js';
 import { appendPendingReview } from './review-store.js';
-import { getTeamCodebasePaths } from './utils/team-codebase-paths.js';
-import { callTool } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 
-// ─── 常量 ────────────────────────────────────────────────
-
-/** 每页截取的最大字符数。 */
+/** How much of each page the AI tool is shown. */
 const MAX_CONTENT_PER_PAGE = 5000;
-
-/** 并发下载页面数。 */
-const DOWNLOAD_BATCH_SIZE = 5;
-
-/** 默认拉取最大页数。 */
-const DEFAULT_MAX_PAGES = 200;
 
 /** 各章节的中文标题。 */
 const SECTION_TITLES = new Map<string, string>([
@@ -35,28 +23,8 @@ const SECTION_TITLES = new Map<string, string>([
     ['glossary', '术语表'],
 ]);
 
-// ─── 类型 ────────────────────────────────────────────────
+const SECTIONS = ['business-api', 'external-knowledge', 'glossary'] as const;
 
-/** 支持的章节类型。 */
-export type SectionKey = 'business-api' | 'external-knowledge' | 'glossary';
-
-/** importFromIWikiDual 的选项。 */
-export interface IWikiDualOptions {
-    /** Space ID / 页面 URL */
-    input: string;
-    /** PAT；或 TAI_PAT_TOKEN */
-    token?: string;
-    /** 要更新的章节列表，默认全部三章节 */
-    sections?: SectionKey[];
-    /** 自定义产物根（同 P5.x output） */
-    output?: string;
-    dryRun?: boolean;
-    maxPages?: number;
-    /** 默认 false；true 时不直接写盘，进 .teamai/pending-review.jsonl */
-    requireReview?: boolean;
-}
-
-/** AI 抽取的三章节内容。 */
 /** The sections the AI extracted; one that is not text reads as absent, and a reply that is not an object as none. */
 const AiSectionOutputSchema = z.object({
     'business-api': z.string().optional().catch(undefined),
@@ -64,88 +32,11 @@ const AiSectionOutputSchema = z.object({
     'glossary': z.string().optional().catch(undefined),
 });
 
-// ─── 辅助函数 ────────────────────────────────────────────
-
-/**
- * 解析用户输入，识别 Space ID 或页面 ID（与 import-iwiki 保持一致）。
- */
-/** What an iWiki input names: a whole space, or one page. */
-interface IWikiTarget {
-    type: 'space' | 'page';
-    id: string;
-}
-
-function parseIWikiInput(input: string): IWikiTarget {
-    const trimmed = input.trim();
-
-    if (/^\d+$/.test(trimmed)) {
-        return { type: 'space', id: trimmed };
-    }
-
-    const pageMatch = trimmed.match(/\/(?:p|pages)\/([^/?#]+)/);
-
-    if (pageMatch) {
-        return { type: 'page', id: pageMatch[1] };
-    }
-
-    throw new Error(
-        `Unrecognized iWiki input: "${trimmed}". Enter a numeric Space ID or a page URL containing /p/.`,
-    );
-}
-
-/**
- * 批量并发下载文档内容（每批 DOWNLOAD_BATCH_SIZE 个）。
- */
-async function downloadDocuments(
-    client: IWikiClient,
-    pages: IWikiPage[],
-): Promise<IWikiDocument[]> {
-    const documents: IWikiDocument[] = [];
-
-    for (let i = 0; i < pages.length; i += DOWNLOAD_BATCH_SIZE) {
-        const batch = pages.slice(i, i + DOWNLOAD_BATCH_SIZE);
-
-        const results = await Promise.allSettled(
-            batch.map((page) => client.getDocument(page.docid)),
-        );
-
-        for (const result of results) {
-            if (result.status === 'fulfilled') {
-                documents.push(result.value);
-            } else {
-                log.warn(`Failed to download document; skipped: ${String(result.reason)}`);
-            }
-        }
-    }
-
-    return documents;
-}
-
-/**
- * 构建 AI 抽取 prompt。
- */
-function buildExtractionPrompt(docs: IWikiDocument[]): string {
-    const content = docs
+/** The pages as the AI tool is shown them to find the sections. */
+export function buildDualContext(docs: IWikiDocument[]): string {
+    return docs
         .map((d) => `=== ${d.docid} ===\n${d.content.slice(0, MAX_CONTENT_PER_PAGE)}`)
         .join('\n\n');
-
-    return `你是团队知识整理专家，请从以下 iWiki 文档中抽取三类知识，以 JSON 格式输出。
-
-## 文档内容
-
-${content}
-
-## 输出要求
-
-请严格输出以下 JSON 格式，三个字段都是可直接嵌入 Markdown 的内容：
-
-{
-  "business-api": "<关于内部业务 API/接口规范的 Markdown 摘要，无相关内容则为空字符串>",
-  "external-knowledge": "<关于外部系统/第三方知识源的 Markdown 摘要，无相关内容则为空字符串>",
-  "glossary": "<项目术语表 Markdown（| 术语 | 说明 | 格式），无相关内容则为空字符串>"
-}
-
-不要输出 JSON 以外的任何内容。`;
 }
 
 /**
@@ -263,137 +154,89 @@ function buildSkeletonContent(): string {
 `;
 }
 
-// ─── 主入口 ──────────────────────────────────────────────
+/** What `write-sections` is given: the AI tool's reply, or why it gave none, and where the sections go. */
+export interface SectionsFlags {
+    /** `iwiki://<id>`, recorded in each section's anchor. */
+    source: string;
+    reply: string;
+    /** Why the AI tool did not answer, when it did not; the import is done, so this is said and nothing is written. */
+    failure: string;
+    /** The directory holding external-knowledge.md. */
+    sectionsDir: string;
+    /** The directory whose .teamai/pending-review.jsonl takes the sections with --require-review. */
+    reviewDir: string;
+    review: string;
+}
 
 /**
- * 从 iWiki 拉取文档，AI 抽取业务接口/外部知识源/术语表三类内容，
- * 写入 docs/team-codebase/external-knowledge.md 的对应章节锚点。
- *
- * @param opts 双路导入选项
- * @returns    更新的章节列表 + 是否进入 pending-review
+ * `teamai import write-sections`: writes each section the AI tool found into the managed anchors of
+ * external-knowledge.md, creating it with every anchor, or with `review` queues them for `teamai review`. A
+ * reply that is not the JSON asked for writes nothing.
  */
-export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
-    sectionsUpdated: string[];
-    pendingReview: boolean;
-}> {
-    const cwd = process.cwd();
-    const sections: SectionKey[] = opts.sections ?? ['business-api', 'external-knowledge', 'glossary'];
+export async function writeSections(flags: SectionsFlags): Promise<Record<string, never>> {
+    if (flags.failure !== '') {
+        log.warn(`iWiki dual-path error (non-blocking): ${flags.failure}`);
 
-    // 1. 读取 token
-    const token = opts.token ?? process.env['TAI_PAT_TOKEN'];
-
-    if (!token) {
-        throw new Error(
-            'Set the TAI_PAT_TOKEN environment variable (create one at https://tai.it.woa.com/user/pat).',
-        );
+        return {};
     }
 
-    // 2. 解析输入
-    const { type, id } = parseIWikiInput(opts.input);
-    const source = `iwiki://${id}`;
-
-    // 3. 创建客户端
-    const client = new IWikiClient(token);
-
-    // 4. 获取页面列表
-    let pages: IWikiPage[];
-
-    if (type === 'page') {
-        pages = [{ docid: id, title: id }];
-    } else {
-        pages = await client.fetchAllPages(id, { maxPages: opts.maxPages ?? DEFAULT_MAX_PAGES });
-    }
-
-    if (pages.length === 0) {
-        log.warn('iWiki dual import: No pages found.');
-
-        return { sectionsUpdated: [], pendingReview: false };
-    }
-
-    // 5. 下载文档内容
-    const documents = await downloadDocuments(client, pages);
-
-    if (documents.length === 0) {
-        log.warn('iWiki dual import: All document downloads failed.');
-
-        return { sectionsUpdated: [], pendingReview: false };
-    }
-
-    // 6. AI 抽取
-    const prompt = buildExtractionPrompt(documents);
-    const rawOutput = (await callTool(prompt, { launchedBy: 'iwiki-dual' })).text;
-    const jsonStr = extractJson(rawOutput);
-
+    const requireReview = flags.review === 'true';
     let aiOutput: z.infer<typeof AiSectionOutputSchema> = {};
 
     try {
-        aiOutput = AiSectionOutputSchema.safeParse(JSON.parse(jsonStr)).data ?? {};
+        aiOutput = AiSectionOutputSchema.safeParse(JSON.parse(extractJson(flags.reply))).data ?? {};
     } catch (err) {
         log.warn(`iWiki dual import: AI output is not valid JSON; skipped all sections. Error: ${String(err)}`);
+        log.info('iWiki dual-path complete: sections updated []');
 
-        return { sectionsUpdated: [], pendingReview: false };
+        return {};
     }
 
-    // 7. 确定 external-knowledge.md 路径
-    const paths = getTeamCodebasePaths(cwd, opts.output);
-    const filePath = path.join(paths.root, 'external-knowledge.md');
+    const filePath = path.join(flags.sectionsDir, 'external-knowledge.md');
 
-    // 8. 若启用 requireReview，写到 pending-review.jsonl
-    if (opts.requireReview) {
-        if (!opts.dryRun) {
-            const relativeFilePath = path.relative(cwd, filePath);
+    if (requireReview) {
+        const relativeFilePath = path.relative(flags.reviewDir, filePath);
 
-            for (const sectionKey of sections) {
-                const body = aiOutput[sectionKey] ?? '';
-
-                if (!body) continue;
-                await appendPendingReview(cwd, {
-                    kind: 'codebase-section',
-                    target: { file: relativeFilePath, section: sectionKey },
-                    payload: { content: body },
-                    source,
-                });
-            }
-        }
-
-        return { sectionsUpdated: sections, pendingReview: true };
-    }
-
-    // 9. 写入 external-knowledge.md
-    const updatedSections: string[] = [];
-    const ts = new Date().toISOString();
-
-    if (!opts.dryRun) {
-        await fs.ensureDir(paths.root);
-
-        // 首次创建时写骨架
-        const exists = await fs.pathExists(filePath);
-        let content = exists ? await fs.readFile(filePath, 'utf8') : buildSkeletonContent();
-
-        for (const sectionKey of sections) {
+        for (const sectionKey of SECTIONS) {
             const body = aiOutput[sectionKey] ?? '';
 
-            if (!body) {
-                log.warn(`iWiki dual import: Section "${sectionKey}" is empty; skipped.`);
-                continue;
-            }
-
-            content = replaceManagedSection(content, sectionKey, body, source, ts);
-            updatedSections.push(sectionKey);
+            if (!body) continue;
+            await appendPendingReview(flags.reviewDir, {
+                kind: 'codebase-section',
+                target: { file: relativeFilePath, section: sectionKey },
+                payload: { content: body },
+                source: flags.source,
+            });
         }
 
-        if (updatedSections.length > 0) {
-            await fs.writeFile(filePath, content, 'utf8');
-        }
-    } else {
-        for (const sectionKey of sections) {
-            if (aiOutput[sectionKey]) {
-                updatedSections.push(sectionKey);
-            }
-        }
+        log.info(`iWiki dual-path complete: sections updated [${SECTIONS.join(', ')}] (pending review)`);
 
-        log.info(`[dry-run] Sections to update: ${updatedSections.join(', ')}`);
+        return {};
     }
 
-    return { sectionsUpdated: updatedSections, pendingReview: false };
+    const updatedSections: string[] = [];
+    const ts = new Date().toISOString();
+    await fs.ensureDir(flags.sectionsDir);
+    const exists = await fs.pathExists(filePath);
+    let content = exists ? await fs.readFile(filePath, 'utf8') : buildSkeletonContent();
+
+    for (const sectionKey of SECTIONS) {
+        const body = aiOutput[sectionKey] ?? '';
+
+        if (!body) {
+            log.warn(`iWiki dual import: Section "${sectionKey}" is empty; skipped.`);
+            continue;
+        }
+
+        content = replaceManagedSection(content, sectionKey, body, flags.source, ts);
+        updatedSections.push(sectionKey);
+    }
+
+    if (updatedSections.length > 0) {
+        await fs.writeFile(filePath, content, 'utf8');
+    }
+
+    log.info(`iWiki dual-path complete: sections updated [${updatedSections.join(', ')}]`);
+
+    return {};
 }
