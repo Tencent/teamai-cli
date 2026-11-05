@@ -18,13 +18,13 @@ const DEFAULT_CAN = {
 let options;
 const running = new Map();
 
-// Once teamai is gone nobody reads stdout, and writing to it fails with EPIPE. The toy stops writing and keeps
-// recording, so a toy started later still finds every outcome.
-let connected = true;
-process.stdout.on('error', () => { connected = false; });
+// When teamai is gone, a line it would have read goes nowhere: an exec still running keeps going and records its end.
+let stdoutOpen = true;
+
+process.stdout.on('error', () => { stdoutOpen = false; });
 
 function send(message) {
-  if (connected) process.stdout.write(`${JSON.stringify(message)}\n`);
+  if (stdoutOpen) process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 function file(...parts) {
@@ -67,6 +67,11 @@ function pidAlive(pid) {
   } catch {
     return false;
   }
+}
+
+/** The toy that started an exec outlives teamai and records the exec's outcome, so while it lives the exec may still end. */
+function ownerAlive(record) {
+  return record.owner !== undefined && record.owner !== process.pid && pidAlive(record.owner);
 }
 
 function groupAlive(pgid) {
@@ -157,7 +162,7 @@ function exec(request) {
         return;
       }
 
-      if (groupAlive(record.pgid) || (record.owner !== undefined && pidAlive(record.owner))) return;
+      if (groupAlive(record.pgid) || ownerAlive(record)) return;
       clearInterval(wait);
 
       if (fs.existsSync(file('cancel', request.op))) return;
@@ -237,7 +242,10 @@ function reattach(request) {
 
     if (record.outcome?.state === 'cancelled') return { op, state: 'cancelled' };
 
-    return running.has(op) || groupAlive(record.pgid) ? { op, state: 'running' } : { op, state: 'failed', failure: { code: 'runtime_lost', message: `The toy lost exec ${op}.` } };
+    if (running.has(op) || groupAlive(record.pgid) || ownerAlive(record)) return { op, state: 'running' };
+
+    // A cancelled exec whose processes are gone has ended cancelled, though its outcome may not be written yet.
+    return fs.existsSync(file('cancel', op)) ? { op, state: 'cancelled' } : { op, state: 'failed', failure: { code: 'runtime_lost', message: `The toy lost exec ${op}.` } };
   });
 
   send({ event: 'alive', handle: request.handle, ops });

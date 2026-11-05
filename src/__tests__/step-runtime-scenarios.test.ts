@@ -6,7 +6,7 @@ import readline from 'node:readline';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { localStepRuntime } from '../workflow/runtimes/local.js';
 import { stdioStepRuntime } from '../workflow/runtimes/stdio.js';
-import { newOpId, type ExecEnd, type ExecRequest, type OpenRequest, type Reattached, type RuntimeOptions, type StepRuntime } from '../workflow/runtimes/step-runtime.js';
+import { newOpId, type ExecEnd, type ExecRequest, type OpenRequest, type RuntimeOptions, type StepRuntime } from '../workflow/runtimes/step-runtime.js';
 import { TOY_RUNTIME } from './helpers/toy-runtime.js';
 
 /**
@@ -41,28 +41,15 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-async function until(check: () => boolean, ms = 5000): Promise<boolean> {
+async function until(check: () => boolean | Promise<boolean>, ms = 5000): Promise<boolean> {
   const deadline = Date.now() + ms;
 
   while (Date.now() < deadline) {
-    if (check()) return true;
+    if (await check()) return true;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 
   return check();
-}
-
-/** Reads until `done` holds or `ms` passes, and returns the last value read. */
-async function settled<T>(read: () => Promise<T>, done: (value: T) => boolean, ms = 5000): Promise<T> {
-  const deadline = Date.now() + ms;
-  let value = await read();
-
-  while (!done(value) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    value = await read();
-  }
-
-  return value;
 }
 
 describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
@@ -266,10 +253,14 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
     expect(await second.reattach(opened.handle)).toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'running' }] });
     await second.cancel(request.op);
     expect(await until(() => !pidAlive(shell))).toBe(true);
-    // The cancel ends when every process of the exec's group is gone, which can be after the shell.
-    const stillRunning = (reattached: Reattached): boolean => reattached.kind === 'alive' && reattached.ops.some((op) => op.state === 'running');
-    expect(await settled(() => second.reattach(opened.handle), (reattached) => !stillRunning(reattached)))
-      .toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'cancelled' }] });
+    // The operation ends cancelled once no process of it is left, which the runtime may record after the shell is gone.
+    let settled: unknown;
+    expect(await until(async () => {
+      const reattached = await second.reattach(opened.handle);
+      settled = reattached;
+      return reattached.kind !== 'alive' || reattached.ops.some((op) => op.state !== 'running');
+    })).toBe(true);
+    expect(settled).toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'cancelled' }] });
   });
 
   it.runIf(subject.retains)('does not run again an exec id its own restart left running, and ends it when cancelled', async () => {
@@ -343,6 +334,44 @@ describe('the toy step runtime', () => {
 
     expect(await second.exec({ op, handle: 'toy-r0123abcd-a0123abcd', argv: [], env: {}, unset: [], cwd: worktree }, {}))
       .toEqual<ExecEnd>({ kind: 'exited', code: 0, stdout: 'finished' });
+  });
+  it('reads an exec its stopped owner has not recorded yet as running, then as the outcome the owner records', async () => {
+    const worktree = path.join(dir, 'worktree');
+    const state = path.join(dir, 'state');
+    fs.mkdirSync(worktree);
+    const toy = spawn(process.execPath, [TOY_RUNTIME], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const lines: string[] = [];
+    readline.createInterface({ input: toy.stdout }).on('line', (line) => { lines.push(line); });
+    const write = (request: object): void => { toy.stdin.write(`${JSON.stringify(request)}\n`); };
+    const op = newOpId();
+    write({ type: 'init', protocol: 1, mode: 'unattended', options: { state } });
+    write({ type: 'open', op: newOpId(), run: 'r0123abcd', attempt: 'a0123abcd', credentials: {}, view: { worktree, readonly: [], result: path.join(dir, 'out'), toolHome: {} } });
+    expect(await until(() => lines.some((line) => line.includes('"ready"')))).toBe(true);
+    write({ type: 'exec', op, handle: 'toy-r0123abcd-a0123abcd', argv: [process.execPath, '-e', 'setTimeout(() => { process.stdout.write("retained"); require("fs").writeFileSync("ended", ""); }, 300)'], env: {}, unset: [], cwd: worktree });
+    expect(await until(() => lines.some((line) => line.includes(op) && line.includes('"accepted"')))).toBe(true);
+    // The owner cannot record the outcome while it is stopped, though its exec ends.
+    toy.kill('SIGSTOP');
+
+    try {
+      expect(await until(() => fs.existsSync(path.join(worktree, 'ended')))).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const second = stdioStepRuntime({ name: 'toy', command: process.execPath, args: [TOY_RUNTIME] });
+      disposed.push(second);
+      expect(await second.init({ options: { state }, mode: 'unattended' })).toMatchObject({ ok: true });
+
+      expect(await second.reattach('toy-r0123abcd-a0123abcd')).toEqual({ kind: 'alive', ops: [{ op, state: 'running' }] });
+      toy.kill('SIGCONT');
+      let read: unknown;
+      expect(await until(async () => {
+        read = await second.reattach('toy-r0123abcd-a0123abcd');
+
+        return JSON.stringify(read) !== JSON.stringify({ kind: 'alive', ops: [{ op, state: 'running' }] });
+      })).toBe(true);
+      expect(read).toEqual({ kind: 'alive', ops: [{ op, state: 'exited', code: 0, stdout: 'retained' }] });
+    } finally {
+      toy.kill('SIGCONT');
+      toy.stdin.end();
+    }
   });
 });
 
