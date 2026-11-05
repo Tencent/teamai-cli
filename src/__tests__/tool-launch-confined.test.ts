@@ -200,6 +200,62 @@ it('refuses a Codex provider whose key lives in a credential variable teamai blo
   });
 });
 
+it('gives a confined Codex judge the member\'s CODEX_API_KEY, and nothing else it did not ask for', async () => {
+  // Codex reads its credential from CODEX_API_KEY as well as from OPENAI_API_KEY
+  // or ~/.codex/auth.json — "run `codex login` or set CODEX_API_KEY". A member
+  // who signs in that way and has no auth.json has no credential inside the
+  // confined run, and the judge fails with Codex's authentication error.
+  const { dir } = await evidenceDir();
+  const record = path.join(root, 'invocation.json');
+  vi.stubEnv('CODEX_HOME', path.join(root, 'codex-home'));
+  vi.stubEnv('CODEX_API_KEY', 'member-codex-key');
+  vi.stubEnv('OPENAI_API_KEY', 'member-openai-key');
+  vi.stubEnv('CANARY_TOKEN', 'member-shell-secret');
+  vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'member-aws-secret');
+  const codex = await fakeTool('codex', 'codex-cli 0.163.0', `
+const args=process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args, cwd: process.cwd(), env: process.env, stdin }));
+fs.writeFileSync(args[args.indexOf('-o')+1], JSON.stringify({ verdict: 'fixed' }));`);
+
+  const result = await runConfined({ tool: 'codex', dir, prompt: 'Say whether the fix landed.', schema: { type: 'object' }, level: 'verified', timeoutMs: 60_000 }, { resolveTool: machineWith({ codex }) });
+
+  expect(result).toMatchObject({ ok: true, reply: { verdict: 'fixed' } });
+  const { env } = Invocation.parse(JSON.parse(await fs.readFile(record, 'utf8')));
+  expect(env.CODEX_API_KEY).toBe('member-codex-key');
+  expect(env.OPENAI_API_KEY).toBe('member-openai-key');
+  // The canaries must not ride along: confinement limits what the judge reaches.
+  expect(env.CANARY_TOKEN).toBeUndefined();
+  expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  expect(Object.values(env)).not.toEqual(expect.arrayContaining([expect.stringMatching(/member-shell-secret|member-aws-secret/)]));
+  // Nothing outside the common names, Codex's own profile names and the
+  // variables teamai sets itself may reach the child. The suite's own
+  // tracker injects NODE_OPTIONS into every child it starts, so that one is
+  // not teamai's to account for.
+  const allowed = new Set(['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY', 'TEAMAI_LAUNCHED_BY', 'TEAMAI_MODE']);
+  expect(Object.keys(env).filter((key) => !allowed.has(key) && key !== 'NODE_OPTIONS' && key !== '__CF_USER_TEXT_ENCODING')).toEqual([]);
+});
+
+it('leaves a confined Codex judge that has no CODEX_API_KEY alone', async () => {
+  // A member signed in with auth.json, or with OPENAI_API_KEY alone, must get
+  // the environment they had before: the allow-list names a variable, it
+  // does not add one.
+  const { dir } = await evidenceDir();
+  const record = path.join(root, 'invocation.json');
+  vi.stubEnv('CODEX_HOME', path.join(root, 'codex-home'));
+  vi.stubEnv('OPENAI_API_KEY', 'member-openai-key');
+  const codex = await fakeTool('codex', 'codex-cli 0.163.0', `
+const args=process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args, cwd: process.cwd(), env: process.env, stdin }));
+fs.writeFileSync(args[args.indexOf('-o')+1], JSON.stringify({ verdict: 'fixed' }));`);
+
+  const result = await runConfined({ tool: 'codex', dir, prompt: 'Say whether the fix landed.', schema: { type: 'object' }, level: 'verified', timeoutMs: 60_000 }, { resolveTool: machineWith({ codex }) });
+
+  expect(result).toMatchObject({ ok: true, reply: { verdict: 'fixed' } });
+  const { env } = Invocation.parse(JSON.parse(await fs.readFile(record, 'utf8')));
+  expect(env.CODEX_API_KEY).toBeUndefined();
+  expect(env.OPENAI_API_KEY).toBe('member-openai-key');
+});
+
 it('lists the preferred confined tools first and leaves out a tool with no confined profile', async () => {
   const onPath = machineWith({ copilot: '/bin/copilot', 'cursor-agent': '/bin/cursor-agent', claude: '/bin/claude' });
 
