@@ -206,7 +206,7 @@ describe('#1083 workflow run records', () => {
     'cancelled', 'hitl_required', 'loop_exhausted', 'invalid_output', 'invalid_template',
     'invalid_inputs', 'invalid_items', 'item_cycle', 'tool_failed', 'tool_unavailable',
     'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
-    'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
+    'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'unreported_changes', 'bad_session',
     'missing_env', 'env_unavailable', 'env_conflict', 'timeout', 'budget_exceeded', 'budget_unmeasured',
     'setup_failed', 'setup_dirty', 'setup_secret', 'delivery_failed', 'protected_path',
     'trial_prepare_failed', 'clone_prepare_failed',

@@ -657,11 +657,82 @@ export async function replaceConfig(dir: string, from: string): Promise<void> {
   }
 }
 
+/**
+ * The commit `git add` would record for the gitlink at `relative`, or undefined when that path is not a gitlink.
+ * A checkout inside the submodule is that commit. The index commit is the fallback when the checkout cannot be read.
+ */
+async function gitlinkCommit(dir: string, relative: string): Promise<string | undefined> {
+  const listed = await git(dir, ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', relative]);
+
+  if (listed.code !== 0) return undefined;
+
+  const staged = listed.stdout.split('\0').find((line) => {
+    const tab = line.indexOf('\t');
+
+    if (tab < 0 || line.slice(tab + 1) !== relative) return false;
+    const [mode, , stage] = line.slice(0, tab).split(' ');
+
+    return mode === '160000' && stage === '0';
+  });
+
+  if (staged === undefined) return undefined;
+  const indexSha = staged.slice(0, staged.indexOf('\t')).split(' ')[1] ?? '';
+  const head = await git(path.join(dir, relative), ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  const checked = head.code === 0 ? head.stdout.trim() : '';
+
+  return /^[0-9a-f]{40}$/i.test(checked) ? checked : indexSha;
+}
+
+/** The content key of `relative` in `dir`, or `absent` when that path is not there. A gitlink is `gitlink:<commit>`, the commit checked out in it. */
+export async function worktreeContentKey(dir: string, relative: string): Promise<string> {
+  const gitlink = await gitlinkCommit(dir, relative);
+
+  if (gitlink !== undefined && gitlink !== '') return `gitlink:${gitlink}`;
+  const files = await fileManifest(dir, [relative]);
+
+  return files[relative] ?? 'absent';
+}
+
 /** Records the agent files present after team delivery, so that delivery is not a step edit. */
 export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
   const paths = await savedConfigPaths(saved);
   await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir, paths)));
   await fs.writeFile(path.join(saved, '_dirs.json'), JSON.stringify(await agentDirs(dir, paths)));
+}
+
+/**
+ * Paths among `dirty` that still match the overlay `saved` recorded after prepare. Prepare checks the base agent
+ * files out over the branch, so git lists them when that copy differs, and the host did not write them. A missing
+ * overlay matches nothing. `error` is why the record could not be read.
+ */
+export async function unchangedOverlayPaths(dir: string, saved: string, dirty: readonly string[]): Promise<{ paths: ReadonlySet<string> } | { error: string }> {
+  const file = path.join(saved, '_overlay.json');
+
+  if (!await pathExists(file)) return { paths: new Set() };
+
+  let raw: unknown;
+
+  try {
+    raw = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+
+    return { error: `${file} could not be read (${reason})` };
+  }
+
+  const parsed = z.record(z.string(), z.string()).safeParse(raw);
+
+  if (!parsed.success) return { error: `${file} is not a record of the base agent files` };
+  const roots = await savedConfigPaths(saved);
+  const current = await fileManifest(dir, roots);
+  const covered = (relative: string): boolean => roots.some((root) => relative === root || relative.startsWith(`${root}/`));
+  const paths = new Set<string>();
+
+  for (const relative of dirty) {
+    if (covered(relative) && current[relative] === parsed.data[relative]) paths.add(relative);
+  }
+
+  return { paths };
 }
 
 /**
@@ -849,29 +920,59 @@ async function fileManifest(root: string, paths: readonly string[]): Promise<Rec
   return files;
 }
 
-/** Stages every change. `git add -A` skips a submodule whose `ignore` is `all`, so each submodule is also staged by name. */
-async function stageAll(dir: string, runGit: Git = git): Promise<GitResult> {
-  const added = await runGit(dir, ['add', '-A']);
+/** Stages the paths `args` added, then forces any gitlink among them. `git add -A` skips a submodule whose `ignore` is `all`. Pathspecs are literal, so a reported `app/[id]/page.tsx` does not also match `app/i/page.tsx`. */
+async function stageAdded(dir: string, args: string[], runGit: Git, only?: ReadonlySet<string>): Promise<GitResult> {
+  const added = await runGit(dir, ['--literal-pathspecs', ...args]);
 
   if (added.code !== 0) return added;
-  const listed = await runGit(dir, ['ls-files', '-s', '-z']);
+  const listed = await runGit(dir, only === undefined ? ['ls-files', '-s', '-z'] : ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', ...only]);
 
   if (listed.code !== 0) return listed;
-  const modules = gitlinkLines(listed.stdout).map((line) => line.slice(line.indexOf('\t') + 1));
+  const modules = gitlinkLines(listed.stdout).map((line) => line.slice(line.indexOf('\t') + 1)).filter((module) => only === undefined || only.has(module));
 
-  return modules.length > 0 ? runGit(dir, ['add', '-f', '--', ...modules]) : added;
+  return modules.length > 0 ? runGit(dir, ['--literal-pathspecs', 'add', '-f', '--', ...modules]) : added;
 }
 
-/** Commits every change in `dir`, with `runGit` running every git call. */
+/** Stages every change. `git add -A` skips a submodule whose `ignore` is `all`, so each submodule is also staged by name. */
+async function stageAll(dir: string, runGit: Git = git): Promise<GitResult> {
+  return stageAdded(dir, ['add', '-A'], runGit);
+}
+
+/** A path git can be given to `git add`: it is in the worktree, or still in the index. A staged rename's old path and a staged removal are neither, and `git add` rejects them. */
+async function pathCanBeStaged(dir: string, relative: string, runGit: Git): Promise<boolean> {
+  try {
+    await fs.lstat(path.join(dir, relative));
+
+    return true;
+  } catch {
+    return (await runGit(dir, ['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', relative])).code === 0;
+  }
+}
+
+/** Stages `paths` and nothing else. An empty list stages nothing, so a file written after the caller chose the list stays out. */
+async function stagePaths(dir: string, paths: readonly string[], runGit: Git): Promise<GitResult> {
+  if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
+  const present = await Promise.all(paths.map(async (relative) => await pathCanBeStaged(dir, relative, runGit) ? relative : undefined));
+  const stageable = present.filter((relative): relative is string => relative !== undefined);
+
+  if (stageable.length === 0) return { code: 0, stdout: '', stderr: '' };
+
+  return stageAdded(dir, ['add', '-A', '--', ...stageable], runGit, new Set(stageable));
+}
+
+/**
+ * Commits changes in `dir`, with `runGit` running every git call.
+ * `paths` stages only those paths. Absent, every change is staged. An empty list stages nothing.
+ */
 export async function commitWork(
-  dir: string, message: string, fromCommit?: string, runGit: Git = git,
+  dir: string, message: string, fromCommit?: string, runGit: Git = git, paths?: readonly string[],
 ): Promise<{ from: string; to: string; commits: string[] } | { error: string }> {
   const before = fromCommit === undefined ? await runGit(dir, ['rev-parse', 'HEAD']) : { code: 0, stdout: fromCommit, stderr: '' };
 
   if (before.code !== 0) return { error: before.stderr.trim() || 'HEAD could not be read' };
   const from = before.stdout.trim();
   const merging = (await runGit(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
-  const added = await stageAll(dir, runGit);
+  const added = paths === undefined ? await stageAll(dir, runGit) : await stagePaths(dir, paths, runGit);
 
   if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
   const staged = await runGit(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']);
@@ -1144,6 +1245,11 @@ export async function markReadCopy(dir: string, { branch, step }: { branch: stri
   }
 
   return { found: status.lines };
+}
+
+/** Drops the mark a reader left, without putting the worktree back. */
+export async function releaseReadCopy(dir: string): Promise<void> {
+  await clearReadCopyMark(dir);
 }
 
 async function clearReadCopyMark(dir: string): Promise<void> {

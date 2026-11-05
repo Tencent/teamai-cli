@@ -216,8 +216,12 @@ export type Effect =
   | { kind: 'spawn'; attempt: AttemptId; job?: { lease: unknown } }
   /** Stops what the command of `attempt` left running when its runner died, before anything else runs in its place. */
   | { kind: 'stop-left'; attempt: AttemptId }
-  /** Saves the state, which holds `body` as the report of `attempt`, then sends it. */
-  | { kind: 'send'; attempt: AttemptId; body: ReportBody }
+  /**
+   * Saves the state, which holds `body` as the report of `attempt`, then sends it.
+   * `changed`: paths a child result reported, or none when a command in an adopted place was already dirty. Absent, the
+   * report commits an adopted writer's tree as it stands.
+   */
+  | { kind: 'send'; attempt: AttemptId; body: ReportBody; changed?: readonly string[] }
   /** Gives up `steps`, held steps this driver can never take, so the run goes on without them. */
   | { kind: 'give-up'; steps: string[] };
 
@@ -1027,13 +1031,18 @@ export function unqueueRow(state: SkillState, input: { attempt: AttemptId; at: s
 }
 
 /** C7 and C3: `attempt` failed before its step ran: its place or setup (`cause: 'place'`), or its child's model. */
-export function prepareFailedRow(state: SkillState, input: { attempt: AttemptId; body: ReportBody; cause: 'place' | 'model' }): MovedWithEffects<'C3' | 'C7'> | undefined {
+export function prepareFailedRow(state: SkillState, input: { attempt: AttemptId; body: ReportBody; cause: 'place' | 'model'; changed?: readonly string[] }): MovedWithEffects<'C3' | 'C7'> | undefined {
   const open = openAttempt(state, input.attempt);
 
   if (open?.phase !== 'preparing' && open?.phase !== 'running') return undefined;
-  const reporting: AttemptState = { ...baseOf(open), phase: 'reporting', body: input.body };
+  const reporting: Extract<AttemptState, { phase: 'reporting' }> = { ...baseOf(open), phase: 'reporting', body: input.body };
 
-  return { row: input.cause === 'place' ? 'C7' : 'C3', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: input.attempt, body: input.body }] };
+  if (input.changed !== undefined) reporting.changed = [...input.changed];
+  const send: Extract<Effect, { kind: 'send' }> = { kind: 'send', attempt: input.attempt, body: input.body };
+
+  if (input.changed !== undefined) send.changed = input.changed;
+
+  return { row: input.cause === 'place' ? 'C7' : 'C3', state: withAttempt(state, reporting), effects: [send] };
 }
 
 /** C8: the command of `attempt` exited, and `body` reports it. */
@@ -1121,8 +1130,11 @@ export function resendRow(state: SkillState, attempt: AttemptId): MovedWithEffec
   const open = openAttempt(state, attempt);
 
   if (open?.phase !== 'reporting') return undefined;
+  const send: Extract<Effect, { kind: 'send' }> = { kind: 'send', attempt, body: open.body };
 
-  return { row: 'P11', state, effects: [{ kind: 'send', attempt, body: open.body }] };
+  if (open.changed !== undefined) send.changed = open.changed;
+
+  return { row: 'P11', state, effects: [send] };
 }
 
 /**
@@ -1170,9 +1182,9 @@ export function reportRow(state: SkillState, input: { attempt: AttemptId; modelU
 
   if (open.dispatch.confined && !unavailable) body = { ...body, ...childConfinedRun(state, open.dispatch) };
 
-  const { dispatch: _dispatch, ...rest } = open;
+  const reporting: Extract<AttemptState, { phase: 'reporting' }> = { ...baseOf(open), phase: 'reporting', body, changed: [...input.result.changed] };
 
-  return { row: unavailable ? 'P4' : 'P5', state: withAttempt(state, { ...rest, phase: 'reporting', body }), effects: [{ kind: 'send', attempt: open.attempt, body }] };
+  return { row: unavailable ? 'P4' : 'P5', state: withAttempt(state, reporting), effects: [{ kind: 'send', attempt: open.attempt, body, changed: input.result.changed }] };
 }
 
 /**

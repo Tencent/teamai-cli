@@ -17,7 +17,7 @@ import { stageEvidence } from '../../scorers/engine-hooks.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { type CopyContract, type WorkspaceContract } from '../workspace.js';
-import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
+import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, releaseReadCopy, removeWorktree, reopenConfigConflicts, stepCheckout, unchangedOverlayPaths, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, preparedClone, removeClone, type CloneLease } from './clone.js';
 import { openWorktree } from './created.js';
@@ -28,7 +28,8 @@ import { PlaceFinishedSchema, readPlaceRecord, writePlaceRecord, type PlaceRecor
 import { runSetup } from './setup.js';
 import { finishTeamClone, openTeamClone, removeTeamClone, teamKeyOf } from './team.js';
 import { finishDataCheckout, openDataCheckout, removeDataCheckout } from './data.js';
-import { finishWriter, mergeBranches, rememberConflicts, withUnpushed } from './writer.js';
+import { commitPathsOf } from './worktree-snapshot.js';
+import { finishWriter, mergeBranches, recordMergePreparation, rememberConflicts, unreportedChangesMessage, withUnpushed } from './writer.js';
 
 /**
  * The checkout a driver working from `cwd` makes its places in: `checkout`, the one the run started from, unless `cwd`
@@ -464,6 +465,13 @@ async function stageRole(input: {
     const merged = await mergeBranches({ dir, run: base.run, step: lease.step, executor: lease.executor, merge: workspace.merge });
 
     if (merged.kind === 'failed') return merged;
+
+    if (opening.adopted) {
+      const unreadable = await recordMergePreparation(dir);
+
+      if (unreadable) return { kind: 'failed', failure: { code: 'workspace_base', message: `Step "${lease.step}" could not list the merge in ${dir}, so the step did not run. Git said: ${unreadable}.` } };
+    }
+
     const range: Pick<Writer, 'rangeFrom'> = {};
 
     if (rangeFrom) range.rangeFrom = rangeFrom;
@@ -643,6 +651,30 @@ async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { p
   return unrestored ? { abandoned, unrestored: unrestoredConfig(unrestored, dir) } : { abandoned };
 }
 
+/**
+ * Why a command must not start in an adopted place, or undefined when it may. A file written after adopt, such as a
+ * host's background setup, is already there: the command does not run, and nothing is committed. The base agent files
+ * prepare checked out over the branch are not that file when they still match the overlay it recorded. A file the
+ * command itself writes during the run is still committed afterwards.
+ */
+export async function refuseDirtyAdoptedCommand(input: { config: LocalConfig; run: RunId; attempt: AttemptId }): Promise<WorkflowFailure | undefined> {
+  const read = await readPlaceRecord(input.config, input.run, input.attempt);
+
+  if (read.kind !== 'found' || read.record.phase !== 'ready' || !read.record.adopted || read.record.executor !== 'command') return undefined;
+  const { dir, step } = read.record;
+  const listed = await commitPathsOf(dir);
+
+  if ('error' in listed) return { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir} before its command ran, so the command did not run. Git said: ${listed.error}.` };
+  const overlay = await unchangedOverlayPaths(dir, placeFiles(input.config, input.run, input.attempt).overlay, listed.paths);
+
+  if ('error' in overlay) return { code: 'workspace_base', message: `Step "${step}" could not read the base agent files recorded for ${dir} before its command ran, so the command did not run. ${overlay.error}` };
+  const dirty = listed.paths.filter((relative) => !overlay.paths.has(relative)).toSorted((left, right) => left.localeCompare(right));
+
+  if (dirty.length === 0) return undefined;
+
+  return { code: 'unreported_changes', message: unreportedChangesMessage(step, dir, dirty, 'before its command ran, so the command did not run and nothing was committed or pushed.') };
+}
+
 /** How a step ended, as its driver reports it, before its place is finished. */
 export interface StepEnd {
   outcome: 'success' | 'failed';
@@ -659,7 +691,18 @@ type PlaceFinished = z.infer<typeof PlaceFinishedSchema>;
  * committed and pushed, failed steps included. The result is recorded masked with `secrets`, and a second finish
  * returns it. Only an attempt `preparePlace` recorded is finished, so a record gone since fails like an unreadable one.
  */
-export async function finishPlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; end: StepEnd; secrets: Record<string, string> }): Promise<PlaceFinished> {
+export async function finishPlace(input: {
+  config: LocalConfig;
+  lock: RunLock;
+  attempt: AttemptId;
+  end: StepEnd;
+  secrets: Record<string, string>;
+  /**
+   * Paths the skill child's result reported. The check runs only for an adopted writer when this is supplied, including
+   * an empty list. A place TeamAI made ignores it and commits the tree.
+   */
+  changed?: readonly string[];
+}): Promise<PlaceFinished> {
   const { config, lock: { run }, attempt, end, secrets } = input;
   const read = await readPlaceRecord(config, run, attempt);
 
@@ -682,7 +725,7 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
     return { outcome: 'failed', message: failure.message, failure };
   }
 
-  const finished = await finishRole(config, placeFiles(config, run, attempt), recorded, end);
+  const finished = await finishRole(config, placeFiles(config, run, attempt), recorded, end, input.changed);
   await writePlaceRecord(config, { ...baseOf(recorded), phase: 'finished', at: new Date().toISOString(), finished: PlaceFinishedSchema.parse(redactJson(finished, secrets)) });
 
   // Once the step's work is committed, the host's own hooks run again in a place it made.
@@ -758,7 +801,7 @@ function unfinishedPlace(phase: 'opening' | 'preparing' | 'staged' | 'setting-up
   }
 }
 
-async function finishRole(config: LocalConfig, files: PlaceFiles, record: Placed, end: StepEnd): Promise<PlaceFinished> {
+async function finishRole(config: LocalConfig, files: PlaceFiles, record: Placed, end: StepEnd, changed: readonly string[] | undefined): Promise<PlaceFinished> {
   const { place, dir, step, executor } = record;
 
   switch (place.role) {
@@ -772,6 +815,17 @@ async function finishRole(config: LocalConfig, files: PlaceFiles, record: Placed
     }
 
     case 'reader': {
+      // The command did not run: the dirt was already in the adopted place. Putting the copy back would delete it.
+      if (record.adopted && end.failure?.code === 'unreported_changes') {
+        const unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: files.overlay });
+        await releaseReadCopy(dir);
+
+        if (!unrestored) return end;
+        const message = `${end.failure.message} ${unrestoredConfig(unrestored, dir)}`;
+
+        return { outcome: 'failed', message, failure: { ...end.failure, message } };
+      }
+
       const left = await leaveReadCopy({ dir, file: files.snapshot, workspace: place.workspace, found: place.found, saved: files.overlay, attempt: record.attempt, step });
 
       if ('code' in left) return { outcome: 'failed', message: left.message, failure: left };
@@ -824,6 +878,8 @@ async function finishRole(config: LocalConfig, files: PlaceFiles, record: Placed
     case 'writer': {
       const written = await finishWriter({
         dir, step, workspace: place.workspace, conflicts: place.conflicts, saved: files.overlay, failed: end.outcome === 'failed', rangeFrom: place.rangeFrom,
+        reported: record.adopted && changed !== undefined ? changed : undefined,
+        already: end.failure,
       });
 
       const changes = written.changes ? { changes: written.changes } : {};

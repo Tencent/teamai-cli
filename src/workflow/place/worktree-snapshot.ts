@@ -19,22 +19,77 @@ async function gitStatus(workspace: string, run: Git): Promise<{ ok: boolean; te
   return status.code === 0 ? { ok: true, text: status.stdout } : { ok: false, text: status.stderr.trim() };
 }
 
-/** Porcelain records from `git status -z`. A rename's first path is the one in the worktree; the next field is the old path. */
+/**
+ * Porcelain records from `git status -z`. A rename or copy's first path is the one in the worktree; the next field is
+ * the old path, which a snapshot does not hash.
+ */
 function statusEntries(text: string): { mark: string; relative: string }[] {
+  return porcelainRecords(text).map((record) => ({ mark: record.mark, relative: record.paths[0] ?? '' }));
+}
+
+/** Every path in one `git status -z` record. A rename or copy lists the worktree path and then the old path. */
+function porcelainRecords(text: string): { mark: string; paths: string[] }[] {
   const parts = text.split('\0');
-  const entries: { mark: string; relative: string }[] = [];
+  const records: { mark: string; paths: string[] }[] = [];
 
   for (let index = 0; index < parts.length; index += 1) {
     const item = parts[index] ?? '';
 
     if (item.length < 4) continue;
     const mark = item.slice(0, 2);
+    const paths = [item.slice(3)];
 
-    if (mark.includes('R') || mark.includes('C')) index += 1;
-    entries.push({ mark, relative: item.slice(3) });
+    if (mark.includes('R') || mark.includes('C')) {
+      index += 1;
+      const previous = parts[index];
+
+      if (previous !== undefined && previous !== '') paths.push(previous);
+    }
+
+    records.push({ mark, paths });
   }
 
-  return entries;
+  return records;
+}
+
+/** Every path in `text`, from `git status --porcelain -z`, that git would commit, including a rename or copy's old path. */
+export function pathsGitWouldCommit(text: string): string[] {
+  return porcelainRecords(text).flatMap((record) => record.paths);
+}
+
+/** The paths in `dir` that git would commit, or why `git status` could not be read. */
+export async function commitPathsOf(dir: string, run: Git = git): Promise<{ paths: string[] } | { error: string }> {
+  const status = await run(dir, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+
+  if (status.code !== 0) return { error: status.stderr.trim() || 'git status failed' };
+
+  return { paths: pathsGitWouldCommit(status.stdout) };
+}
+
+/**
+ * Paths a merge left staged whose worktree still matches the index. An unstaged edit of a tracked file, a conflict
+ * the step still has to resolve, and a path that is also untracked are not part of that. A staged deletion the host
+ * recreated is both `D ` and `??`, and the untracked record is the host file.
+ */
+export function mergeStagedPaths(text: string): string[] {
+  const records = porcelainRecords(text);
+  const untracked = new Set(records.filter((record) => record.mark === '??' || record.mark === '!!').flatMap((record) => record.paths));
+
+  return records.filter((record) => {
+    const index = record.mark[0] ?? ' ';
+    const worktree = record.mark[1] ?? ' ';
+
+    return index !== ' ' && index !== '?' && worktree === ' ';
+  }).flatMap((record) => record.paths).filter((relative) => !untracked.has(relative));
+}
+
+/** Those paths in `dir`, or why `git status` could not be read. */
+export async function mergeStagedPathsOf(dir: string, run: Git = git): Promise<{ paths: string[] } | { error: string }> {
+  const status = await run(dir, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+
+  if (status.code !== 0) return { error: status.stderr.trim() || 'git status failed' };
+
+  return { paths: mergeStagedPaths(status.stdout) };
 }
 
 async function hashPath(workspace: string, relative: string): Promise<string> {

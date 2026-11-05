@@ -72,7 +72,7 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
         await context.runners.stopLeft(applied.state.run, effect.attempt);
         break;
       case 'send': {
-        const sent = await sendReport(context, lock, applied.state, effect.attempt, effect.body);
+        const sent = await sendReport(context, lock, applied.state, effect.attempt, effect.body, effect.changed);
         applied.state = sent.state;
 
         if (sent.refused) applied.refused = sent.refused;
@@ -106,9 +106,9 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  * Saves `state`, which holds the report `body` of `attempt`, then sends that body under `lock` and applies the engine's
  * answer. A crash after the engine took the report leaves the body stored, and the next tick sends it again (P11).
  */
-async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
+async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody, changed?: readonly string[]): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
-  const answer = await context.client.report(state.run, body, { lock });
+  const answer = await context.client.report(state.run, body, changed === undefined ? { lock } : { lock, changed });
   const taken = traced(context, reportedRow(state, { attempt, reply: reportReply(answer), at: context.now().toISOString() }));
 
   if (!taken) return { state };

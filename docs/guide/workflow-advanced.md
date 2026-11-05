@@ -1264,6 +1264,54 @@ A driver can leave the workspace and its git to TeamAI. `next <run> --prepare --
 
 To prepare an attempt the driver already leased, run `next <run> --prepare --attempt <attempt>`. It answers `wrong_attempt` when the run no longer leases that attempt to the driver. With `--adopt <dir>`, the attempt runs in a place the host made: a clean worktree of this repository on the lease's workspace branch, or detached at its start, as `git worktree add` makes it. A place that does not fit answers `adopt_mismatch`, and the attempt stays leased. TeamAI commits and pushes there as in its own worktree, and never removes the place.
 
+A prompt step's child lists every path it changed, relative to the place, on `changed` in `attempts/<attempt>/result.json`. A rename lists both paths. TeamAI commits those paths. A path git would commit that is missing from the list fails the step with `unreported_changes`: nothing is committed or pushed, and the file stays. That is also the failure when the step ran and reported a failure of its own. A failure from before the step ran, such as a model this session cannot run, stays that failure, and the file is still not committed. A file the preparation merge staged, and that the step left as the merge wrote it, is part of that merge. It does not have to be in the list.
+
+```json
+{"kind":"output","output":"Fixed the null check.","changed":["src/app.ts","src/legacy.ts"]}
+```
+
+`adopt` checks a clean tree. A host setup that writes afterwards is not in that list. The host files below are examples. This repository does not run them. Paseo runs `worktree.setup` from `paseo.json` when it creates the worktree. This one waits, then writes a file git does not ignore:
+
+```json
+{
+  "worktree": {
+    "setup": "sleep 2; echo host > .setup-out"
+  }
+}
+```
+
+T3 runs each `t3.json` script with `runOnWorktreeCreate` the same way:
+
+```json
+{
+  "scripts": [
+    {
+      "name": "Setup Worktree",
+      "command": "echo host > .setup-out",
+      "runOnWorktreeCreate": true
+    }
+  ]
+}
+```
+
+The step then fails:
+
+```text
+Step "fix" left .setup-out in /work/teamai-fix, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.
+```
+
+An install into an ignored directory does not fail. With `node_modules/` in `.gitignore`, this Paseo setup leaves the install in the place and out of the commit:
+
+```json
+{
+  "worktree": {
+    "setup": "npm install"
+  }
+}
+```
+
+A command step has no `changed` list. If the place is already dirty when the command is about to start, the command does not run and the step fails the same way. The base agent files prepare put there are not that dirt: a path that still matches them is left out, the command runs, and finish puts the branch's copies back when the command left them unchanged. A file the command itself writes during the run is still committed. Wait for the host setup to finish before adopt, or make it write only ignored files. A report sent through the CLI, with no child `result.json`, still commits the dirty tree. The skill driver is what supplies the list.
+
 What TeamAI records to prepare an attempt stays on this machine: paths and file fingerprints, with no prompt, env value, or graph.
 
 ## Clone workspaces in your own driver

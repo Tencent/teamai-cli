@@ -10,7 +10,7 @@ import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { DRIVERS_UNDER_TEST, inProcessConformanceClient, runConformanceScenario, type ConformanceClient } from '../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../workflow/conformance/place.js';
-import { inProcessClient, type HostPlaceRequest } from '../workflow/protocol.js';
+import { inProcessClient, refuseDirtyAdoptedCommand, type HostPlaceRequest } from '../workflow/protocol.js';
 import { pull } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
 import { findRunConfig } from '../workflow/run-location.js';
@@ -126,6 +126,16 @@ describe('prepared places through the workflow client', () => {
     const stored = fs.readdirSync(attempts).map((attempt) => fs.readFileSync(path.join(attempts, attempt, 'place.json'), 'utf8')).join('\n');
     expect(stored).not.toContain('Edit the project.'); expect(stored).not.toContain('Untrusted branch instructions.');
   });
+
+  it('commits every change in a place TeamAI made, even when the report lists none of them', async () => {
+    const f = await fixture();
+    const lease = await next(f);
+    fs.writeFileSync(path.join(lease.cwd, 'code.txt'), 'kept\n');
+    expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, { changed: [] }))
+      .toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+    expect(git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toBe('kept');
+  });
+
   it.each(['success', 'failed'] as const)('preserves a prepared writer when origin rejects a %s report push', async (outcome) => {
     const f = await fixture();
     const lease = await next(f);
@@ -427,6 +437,252 @@ steps:
     expect(git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toBe('adopted');
     expect(git(dir, 'status', '--porcelain')).toBe('');
     expect(hooks()).toBe('');
+  });
+
+  it('commits and pushes nothing when an adopted writer leaves a path the child did not report', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('unreported', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    fs.writeFileSync(path.join(dir, 'code.txt'), 'step\n');
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, { changed: ['code.txt'] });
+    const message = `Step "fix" left .setup-out in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.`;
+
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message } } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+    expect(git(dir, 'status', '--porcelain')).toContain('.setup-out');
+    expect(git(dir, 'status', '--porcelain')).toContain('code.txt');
+    expect(() => git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toThrow();
+  });
+
+  it('keeps a failure from before the step ran, and does not commit a host file written after adopt', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('before-step', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    const failure = { code: 'model_unavailable', message: 'Step "fix" needs model missing, which this session cannot run.' };
+    const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', failure, driver: f.driver }, { changed: [] });
+
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+    expect(git(dir, 'status', '--porcelain')).toContain('.setup-out');
+  });
+
+  it('names the host file when a child that ran also failed', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('ran-blocked', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    fs.writeFileSync(path.join(dir, 'code.txt'), 'step\n');
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    const failure = { code: 'blocked', message: 'Could not finish the edit.' };
+    const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', failure, driver: f.driver }, { changed: ['code.txt'] });
+
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message: expect.stringContaining('.setup-out') } } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+    expect(git(dir, 'status', '--porcelain')).toContain('.setup-out');
+  });
+
+  it('names every unreported path', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('several', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    fs.writeFileSync(path.join(dir, 'extra.txt'), 'also\n');
+    const message = `Step "fix" left .setup-out, extra.txt in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.`;
+
+    expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, { changed: [] }))
+      .toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message } } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+  });
+
+  it('commits the paths an adopted writer reported and leaves a gitignored file uncommitted', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('reported', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n');
+    fs.mkdirSync(path.join(dir, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'node_modules', 'pkg', 'index.js'), 'installed\n');
+    fs.writeFileSync(path.join(dir, 'code.txt'), 'step\n');
+    const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, { changed: ['.gitignore', 'code.txt'] });
+
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+    expect(git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toBe('step');
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+    expect(fs.readFileSync(path.join(dir, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('installed\n');
+    expect(git(f.remote, 'ls-tree', '-r', '--name-only', lease.workspace.branch)).not.toContain('node_modules');
+  });
+
+  it('requires the old path of a rename the child reported only by its new path', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('renamed', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    git(dir, 'mv', 'AGENTS.md', 'guide.md');
+    const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, { changed: ['guide.md'] });
+
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message: expect.stringContaining('AGENTS.md') } } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+  });
+
+  it('does not treat the base agent overlay as a host change when a later command is about to run', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Write a change, then check it, in a place the host makes.
+alias: ship
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: Write the change.
+        - id: check
+          needs: [write]
+          command: node -e "process.exit(0)"
+`);
+    const run = RunIdSchema.parse(f.runId);
+    const lease = async (): Promise<{ raw: unknown } & z.infer<typeof LeaseSchema>> => {
+      const answer = await f.client.next(f.runId, body(f));
+      if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+      return { raw: answer.data.lease, ...LeaseSchema.parse(answer.data.lease) };
+    };
+    const write = await lease();
+    const dir = path.join(path.dirname(f.work), 'hosts', 'overlay');
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, write.workspace.start.commit);
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, write.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'Branch instructions.\n');
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'Added on the branch.\n');
+    expect(await f.client.report(f.runId, { attempt: write.attempt, revision: write.revision, outcome: 'success', driver: f.driver }, { changed: ['AGENTS.md', 'CLAUDE.md'] })).toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+
+    const check = await lease();
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepare(lock, check.raw), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    const status = git(dir, 'status', '--porcelain');
+    expect(status).toContain('AGENTS.md');
+    expect(status).toContain('CLAUDE.md');
+    const before = { config: f.config, run, attempt: check.attempt };
+    expect(await refuseDirtyAdoptedCommand(before)).toBeUndefined();
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    const hostFile = await refuseDirtyAdoptedCommand(before);
+    expect(hostFile).toMatchObject({ code: 'unreported_changes', message: expect.stringContaining('.setup-out') });
+    expect(hostFile?.message).not.toContain('AGENTS.md');
+    expect(hostFile?.message).not.toContain('CLAUDE.md');
+    fs.rmSync(path.join(dir, '.setup-out'));
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'host wrote this\n');
+    const edited = await refuseDirtyAdoptedCommand(before);
+    expect(edited).toMatchObject({ code: 'unreported_changes', message: expect.stringContaining('AGENTS.md') });
+    expect(edited?.message).not.toContain('CLAUDE.md');
+    expect(edited?.message).not.toContain('.setup-out');
+  });
+
+  const JOIN = `schemaVersion: v1alpha1
+name: build
+description: Join two sides in a place the host makes.
+alias: ship
+steps:
+  - id: left
+    workspace: new
+    prompt: Write the left side.
+  - id: right
+    needs: []
+    workspace: new
+    prompt: Write the right side.
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Join both sides.
+`;
+
+  /** Runs both sides, then adopts the join at its start with `a.ts` in conflict and `b.ts` staged by the merge. */
+  async function adoptedJoin(name: string) {
+    const f = await fixture(JOIN);
+    for (let side = 0; side < 2; side += 1) {
+      const lease = await next(f);
+      const file = path.join(lease.cwd, 'a.ts');
+      fs.writeFileSync(file, lease.step === 'left' ? 'left\n' : 'right\n');
+      if (lease.step === 'right') fs.writeFileSync(path.join(lease.cwd, 'b.ts'), 'from right\n');
+      expect(await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true } });
+    }
+    const answer = await f.client.next(f.runId, body(f));
+    if (!('data' in answer) || !answer.data.lease) throw new Error(JSON.stringify(answer));
+    const join = { raw: answer.data.lease, ...LeaseSchema.parse(answer.data.lease) };
+    const dir = path.join(path.dirname(f.work), 'hosts', name);
+    git(f.work, 'worktree', 'add', '-q', '--detach', dir, join.workspace.start.commit);
+    const run = RunIdSchema.parse(f.runId);
+    expect(await withRunLock(f.config, run, (lock) => f.client.prepareHostPlace(lock, join.raw, { kind: 'adopt', dir }), { waitMs: 0 })).toMatchObject({ kind: 'prepared', dir });
+    expect(fs.readFileSync(path.join(dir, 'a.ts'), 'utf8')).toContain('<<<<<<<');
+    expect(git(dir, 'status', '--porcelain')).toContain('b.ts');
+    return { f, dir, join };
+  }
+
+  it('commits a preparation merge the child did not report when the child only resolved the conflict', async () => {
+    const { f, dir, join } = await adoptedJoin('merged');
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'resolved\n');
+    expect(await f.client.report(f.runId, { attempt: join.attempt, revision: join.revision, outcome: 'success', driver: f.driver }, { changed: ['a.ts'] }))
+      .toMatchObject({ data: { accepted: true, step: { status: 'succeeded' } } });
+    expect(git(f.remote, 'show', `${join.workspace.branch}:a.ts`)).toBe('resolved');
+    expect(git(f.remote, 'show', `${join.workspace.branch}:b.ts`)).toBe('from right');
+  });
+
+  it('still rejects a preparation merge file the child changed and did not report', async () => {
+    const { f, dir, join } = await adoptedJoin('tampered');
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'resolved\n');
+    fs.writeFileSync(path.join(dir, 'b.ts'), 'tampered\n');
+    const answer = await f.client.report(f.runId, { attempt: join.attempt, revision: join.revision, outcome: 'success', driver: f.driver }, { changed: ['a.ts'] });
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure: { code: 'unreported_changes', message: expect.stringContaining('b.ts') } } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(join.workspace.start.commit);
   });
 
   it.each([

@@ -15,7 +15,7 @@ import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '../../../utils/redact.js';
 import { attemptEnv } from '../../attempt-marker.js';
 import { runConfinedStep, type ConfinedStepEnd, type ConfinedStepLease } from '../../confined-step.js';
-import { commandEnd, type WorkflowClient } from '../../protocol.js';
+import { commandEnd, refuseDirtyAdoptedCommand, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowFailure } from '../../types.js';
 import { HOST_PROFILES } from './host-profiles.js';
@@ -105,10 +105,18 @@ async function runAttempt(context: SkillContext, run: RunId, attempt: AttemptId)
       if (stage.kind === 'gone') return { data: { runner: { attempt, status: stage.status } } };
 
       if (stage.kind === 'run') {
-        const exited = await runCommand(context, run, attempt, stage);
-        const sent = await locked(context, run, (lock) => report(context, lock, attempt, exited));
+        const refusal = await refuseDirtyAdoptedCommand({ config: context.config, run, attempt });
 
-        if (sent.kind === 'gone') return { data: { runner: { attempt, status: sent.status } } };
+        if (refusal) {
+          const sent = await locked(context, run, (lock) => setupFailed(context, lock, attempt, refusal, []));
+
+          if (sent.kind === 'gone') return { data: { runner: { attempt, status: sent.status } } };
+        } else {
+          const exited = await runCommand(context, run, attempt, stage);
+          const sent = await locked(context, run, (lock) => report(context, lock, attempt, exited));
+
+          if (sent.kind === 'gone') return { data: { runner: { attempt, status: sent.status } } };
+        }
       }
 
       if (stage.kind === 'confined') {
@@ -176,10 +184,10 @@ function failedBody(state: SkillState, attempt: AttemptId, revision: number, fai
 }
 
 /** Takes the row of a failure before the step ran, of its place (C7) or its child's model (C3), and sends its report. */
-async function fail(context: SkillContext, lock: RunLock, input: { state: SkillState; attempt: AttemptId; revision: number; failure: WorkflowFailure; cause: 'place' | 'model' }): Promise<Stage> {
-  const { state, attempt, revision, failure, cause } = input;
+async function fail(context: SkillContext, lock: RunLock, input: { state: SkillState; attempt: AttemptId; revision: number; failure: WorkflowFailure; cause: 'place' | 'model'; changed?: readonly string[] }): Promise<Stage> {
+  const { state, attempt, revision, failure, cause, changed } = input;
 
-  return send(context, lock, prepareFailedRow(state, { attempt, body: failedBody(state, attempt, revision, failure), cause }), attempt);
+  return send(context, lock, prepareFailedRow(state, { attempt, body: failedBody(state, attempt, revision, failure), cause, changed }), attempt);
 }
 
 /** Under the lock: prepares the attempt's place (C4 to C7), or sends the report it already has. */
@@ -234,7 +242,7 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
 }
 
 /** Under the lock: reports a setup that failed (C7), or gives up an attempt stopped while it ran (C9). */
-async function setupFailed(context: SkillContext, lock: RunLock, attempt: AttemptId, failure: WorkflowFailure): Promise<Stage> {
+async function setupFailed(context: SkillContext, lock: RunLock, attempt: AttemptId, failure: WorkflowFailure, changed?: readonly string[]): Promise<Stage> {
   const state = await readState(context, lock);
   const open = state && openAttempt(state, attempt);
 
@@ -242,7 +250,7 @@ async function setupFailed(context: SkillContext, lock: RunLock, attempt: Attemp
 
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
 
-  return fail(context, lock, { state, attempt, revision: open.revision, failure, cause: 'place' });
+  return fail(context, lock, { state, attempt, revision: open.revision, failure, cause: 'place', changed });
 }
 
 /**
@@ -258,7 +266,8 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
   const { dir, job: { lease } } = prepared;
-  const failed = (failure: WorkflowFailure, cause: 'place' | 'model'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause });
+  // The step has not run. An empty list keeps a host file written after adopt out of the commit, and the failure stays the one that stopped the step.
+  const failed = (failure: WorkflowFailure, cause: 'place' | 'model'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause, changed: [] });
 
   if (lease.executor === 'command') {
     const scoped = lease.envScope ? await stepEnvironment(context.env, lease.envScope) : { ok: true as const, env: withRunningCli(process.env) };
