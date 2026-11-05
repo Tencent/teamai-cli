@@ -113,6 +113,7 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
 
     if (roles.length === 0) {
         log.error('No roles defined. Aborting.');
+        process.exitCode = 1;
 
         return;
     }
@@ -235,6 +236,7 @@ async function listRoles(options: { json?: boolean }): Promise<void> {
     } catch (e) {
         log.error(e instanceof Error ? e.message : String(e));
         log.info('Run `teamai roles init` to create a roles manifest.');
+        process.exitCode = 1;
 
         return;
     }
@@ -296,6 +298,7 @@ export async function rolesSet(
     } catch (e) {
         log.error(e instanceof Error ? e.message : String(e));
         log.info('Run `teamai roles init` to create a roles manifest first.');
+        process.exitCode = 1;
 
         return;
     }
@@ -305,6 +308,7 @@ export async function rolesSet(
     // Validate primary role
     if (!validIds.has(primaryRole)) {
         log.error(`Unknown role "${primaryRole}". Valid roles: ${[...validIds].join(', ')}`);
+        process.exitCode = 1;
 
         return;
     }
@@ -315,6 +319,7 @@ export async function rolesSet(
     for (const id of additionalRoles) {
         if (!validIds.has(id)) {
             log.error(`Unknown additional role "${id}". Valid roles: ${[...validIds].join(', ')}`);
+            process.exitCode = 1;
 
             return;
         }
@@ -356,6 +361,7 @@ export async function rolesAdd(
 
     if (namespaces.length === 0) {
         log.error('At least one namespace is required. Use --namespaces common,hai');
+        process.exitCode = 1;
 
         return;
     }
@@ -370,6 +376,7 @@ export async function rolesAdd(
         } catch (e) {
             log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
+            process.exitCode = 1;
 
             return;
         }
@@ -377,6 +384,7 @@ export async function rolesAdd(
         // Check duplicate
         if (findRole(manifest, roleId)) {
             log.error(`Role "${roleId}" already exists. Use \`teamai roles update ${roleId}\` to modify it.`);
+            process.exitCode = 1;
 
             return;
         }
@@ -432,12 +440,14 @@ export async function rolesRemove(
         } catch (e) {
             log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
+            process.exitCode = 1;
 
             return;
         }
 
         if (!findRole(manifest, roleId)) {
             log.error(`Role "${roleId}" not found. Valid roles: ${listRoleIds(manifest).join(', ')}`);
+            process.exitCode = 1;
 
             return;
         }
@@ -446,6 +456,7 @@ export async function rolesRemove(
 
         if (remaining.length === 0) {
             log.error('Cannot remove the last role. The manifest requires at least one role.');
+            process.exitCode = 1;
 
             return;
         }
@@ -492,6 +503,7 @@ export async function rolesUpdate(
 
     if (!hasAddNs && !hasRemoveNs && !hasDesc) {
         log.error('Nothing to update. Use --add-namespaces, --remove-namespaces, or --description.');
+        process.exitCode = 1;
 
         return;
     }
@@ -506,6 +518,7 @@ export async function rolesUpdate(
         } catch (e) {
             log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
+            process.exitCode = 1;
 
             return;
         }
@@ -514,6 +527,7 @@ export async function rolesUpdate(
 
         if (!existingRole) {
             log.error(`Role "${roleId}" not found. Valid roles: ${listRoleIds(manifest).join(', ')}`);
+            process.exitCode = 1;
 
             return;
         }
@@ -540,6 +554,7 @@ export async function rolesUpdate(
 
         if (updatedNamespaces.length === 0) {
             log.error('Cannot remove all namespaces. A role must have at least one namespace.');
+            process.exitCode = 1;
 
             return;
         }

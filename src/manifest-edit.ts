@@ -51,14 +51,17 @@ export async function runManifestEdit(
             await withKnowledgeWorktree(localConfig, body);
         }
     } catch (e) {
+        // Every branch is a failed edit: the caller asked for a manifest change
+        // and did not get one, so the exit code says so whichever way it failed.
         if (e instanceof DirtyPreviewError || e instanceof DetachedTeamRepoError) {
             log.error(e.message);
-            process.exitCode = 1;
         } else if (e instanceof EmptyRepoError) {
             log.error(e.message);
         } else {
             log.error(`${label} update failed: ${e instanceof Error ? e.message : String(e)}`);
         }
+
+        process.exitCode = 1;
     }
 }
 
@@ -99,5 +102,6 @@ export async function pushManifestChange(input: {
         await checkoutMaster(repoPath);
     } catch (e) {
         log.error(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
+        process.exitCode = 1;
     }
 }
