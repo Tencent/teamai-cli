@@ -17,7 +17,7 @@ import { stageEvidence } from '../../scorers/engine-hooks.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { type CopyContract, type WorkspaceContract } from '../workspace.js';
-import { clearWorktreeHooks, git, headCommit, markReadCopy, markSetup, releaseReadCopy, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
+import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, releaseReadCopy, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, preparedClone, removeClone, type CloneLease } from './clone.js';
 import { openWorktree } from './created.js';
@@ -28,8 +28,8 @@ import { PlaceFinishedSchema, readPlaceRecord, writePlaceRecord, type PlaceRecor
 import { runSetup } from './setup.js';
 import { finishTeamClone, openTeamClone, removeTeamClone, teamKeyOf } from './team.js';
 import { finishDataCheckout, openDataCheckout, removeDataCheckout } from './data.js';
-import { pathsGitWouldCommit } from './worktree-snapshot.js';
-import { finishWriter, mergeBranches, rememberConflicts, withUnpushed } from './writer.js';
+import { commitPathsOf } from './worktree-snapshot.js';
+import { finishWriter, mergeBranches, rememberConflicts, unreportedChangesMessage, withUnpushed } from './writer.js';
 
 /**
  * The checkout a driver working from `cwd` makes its places in: `checkout`, the one the run started from, unless `cwd`
@@ -654,14 +654,14 @@ export async function refuseDirtyAdoptedCommand(input: { config: LocalConfig; ru
 
   if (read.kind !== 'found' || read.record.phase !== 'ready' || !read.record.adopted || read.record.executor !== 'command') return undefined;
   const { dir, step } = read.record;
-  const status = await git(dir, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+  const listed = await commitPathsOf(dir);
 
-  if (status.code !== 0) return { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir} before its command ran, so the command did not run. Git said: ${status.stderr.trim() || 'git status failed'}.` };
-  const dirty = pathsGitWouldCommit(status.stdout).sort((left, right) => left.localeCompare(right));
+  if ('error' in listed) return { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir} before its command ran, so the command did not run. Git said: ${listed.error}.` };
+  const dirty = listed.paths.toSorted((left, right) => left.localeCompare(right));
 
   if (dirty.length === 0) return undefined;
 
-  return { code: 'unreported_changes', message: `Step "${step}" left ${dirty.join(', ')} in ${dir} before its command ran, so the command did not run and nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.` };
+  return { code: 'unreported_changes', message: unreportedChangesMessage(step, dir, dirty, 'before its command ran, so the command did not run and nothing was committed or pushed.') };
 }
 
 /** How a step ended, as its driver reports it, before its place is finished. */

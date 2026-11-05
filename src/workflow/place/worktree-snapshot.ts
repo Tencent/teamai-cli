@@ -57,6 +57,15 @@ export function pathsGitWouldCommit(text: string): string[] {
   return porcelainRecords(text).flatMap((record) => record.paths);
 }
 
+/** The paths in `dir` that git would commit, or why `git status` could not be read. */
+export async function commitPathsOf(dir: string, run: Git = git): Promise<{ paths: string[] } | { error: string }> {
+  const status = await run(dir, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+
+  if (status.code !== 0) return { error: status.stderr.trim() || 'git status failed' };
+
+  return { paths: pathsGitWouldCommit(status.stdout) };
+}
+
 async function hashPath(workspace: string, relative: string): Promise<string> {
   const full = path.resolve(workspace, relative);
 

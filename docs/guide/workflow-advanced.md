@@ -1270,7 +1270,7 @@ A prompt step's child lists every path it changed, relative to the place, on `ch
 {"kind":"output","output":"Fixed the null check.","changed":["src/app.ts","src/legacy.ts"]}
 ```
 
-`adopt` checks a clean tree. A host setup that writes afterwards is not in that list. Paseo runs `worktree.setup` from `paseo.json` when it creates the worktree. This one waits, then writes a file git does not ignore:
+`adopt` checks a clean tree. A host setup that writes afterwards is not in that list. The host files below are examples. This repository does not run them. Paseo runs `worktree.setup` from `paseo.json` when it creates the worktree. This one waits, then writes a file git does not ignore:
 
 ```json
 {

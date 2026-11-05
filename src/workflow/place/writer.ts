@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { WorkflowFailure } from '../types.js';
 import type { StepChanges } from '../workspace.js';
-import { pathsGitWouldCommit } from './worktree-snapshot.js';
+import { commitPathsOf } from './worktree-snapshot.js';
 import { commitWork, git, mergeBranch, offBranch, pushIfOrigin } from '../worktree.js';
 import { restoreOverlay, unrestoredConfig } from './overlay.js';
 
@@ -180,17 +180,16 @@ export async function finishWriter(input: {
   let paths: readonly string[] | undefined;
 
   if (reported) {
-    const status = await git(dir, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+    const listed = await commitPathsOf(dir);
 
-    if (status.code !== 0) return { failure: { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir}, so nothing was committed or pushed. Git said: ${status.stderr.trim() || 'git status failed'}.` } };
-    const dirty = pathsGitWouldCommit(status.stdout);
-    const missing = dirty.filter((relative) => !reported.includes(relative)).sort((left, right) => left.localeCompare(right));
+    if ('error' in listed) return { failure: { code: 'workspace_base', message: `Step "${step}" could not list changes in ${dir}, so nothing was committed or pushed. Git said: ${listed.error}.` } };
+    const missing = listed.paths.filter((relative) => !reported.includes(relative)).sort((left, right) => left.localeCompare(right));
 
     if (missing.length > 0) {
-      return { failure: already?.code === 'unreported_changes' ? already : { code: 'unreported_changes', message: `Step "${step}" left ${missing.join(', ')} in ${dir}, which the step did not report changing, so nothing was committed or pushed. If your host's setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.` } };
+      return { failure: already?.code === 'unreported_changes' ? already : { code: 'unreported_changes', message: unreportedChangesMessage(step, dir, missing, 'which the step did not report changing, so nothing was committed or pushed.') } };
     }
 
-    paths = dirty;
+    paths = listed.paths;
   }
 
   const committed = await commitWork(dir, `teamai: ${step}`, rangeFrom, git, paths);
@@ -204,6 +203,13 @@ export async function finishWriter(input: {
   const unpushed = `Step "${step}" committed on ${workspace.branch} in ${dir}, but pushing it to origin failed. The commits stay on ${workspace.branch}. Fix what blocked the push, then push ${workspace.branch} from ${dir} or retry the step. Git said: ${pushed.error}`;
 
   return failed ? { changes, unpushed } : { changes, failure: { code: 'push_failed', message: unpushed } };
+}
+
+const HOST_SETUP_ADVICE = 'If your host\'s setup wrote it, make setup write only files git ignores, or wait for it to finish before adopt. Otherwise remove it, then retry the step.';
+
+/** The failure an adopted place shows when `paths` were not part of the step's reported work. `because` is the clause after the path list. */
+export function unreportedChangesMessage(step: string, dir: string, paths: readonly string[], because: string): string {
+  return `Step "${step}" left ${paths.join(', ')} in ${dir}, ${because} ${HOST_SETUP_ADVICE}`;
 }
 
 /** `message` with the sentence a failed step's message adds when its commits could not be pushed. */

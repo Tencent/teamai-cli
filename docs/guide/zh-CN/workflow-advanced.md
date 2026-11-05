@@ -1270,7 +1270,7 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 {"kind":"output","output":"Fixed the null check.","changed":["src/app.ts","src/legacy.ts"]}
 ```
 
-`adopt` 检查的是当时干净的树。宿主在这之后写入的文件不在名单里。Paseo 创建 worktree 时运行 `paseo.json` 的 `worktree.setup`。下面这段先等两秒，再写入一个 git 不会忽略的文件：
+`adopt` 检查的是当时干净的树。宿主在这之后写入的文件不在名单里。下面的宿主配置是例子，本仓库不运行它们。Paseo 创建 worktree 时运行 `paseo.json` 的 `worktree.setup`。下面这段先等两秒，再写入一个 git 不会忽略的文件：
 
 ```json
 {

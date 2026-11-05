@@ -35,7 +35,7 @@ A committing step's brief asks for `changed`: every path the step created, edite
 
 TeamAI commits those paths and pushes the branch. A path git would commit that is not in the list fails the step with `unreported_changes`. Nothing is committed or pushed, and the file stays in the place.
 
-A host that keeps writing after `adopt` hits that. `adopt` saw a clean tree. The script then writes `.setup-out`, which git does not ignore.
+A host that keeps writing after `adopt` hits that. `adopt` saw a clean tree. The script then writes `.setup-out`, which git does not ignore. These host files are examples. This repository does not run them.
 
 Paseo, `paseo.json`, `worktree.setup` sleeps and then writes the file:
 
