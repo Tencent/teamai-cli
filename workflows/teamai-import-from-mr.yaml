@@ -16,6 +16,9 @@ inputs:
   output: boolean
   discussions: boolean
   language: en | zh
+# A caller that publishes nothing has no directory to give.
+defaults:
+  inputs: { dir: "" }
 steps:
   - id: extract
     for_each: { items: inputs.mrs }

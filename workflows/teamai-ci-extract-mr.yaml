@@ -26,7 +26,6 @@ steps:
       mrs: ["{{ inputs.url }}"]
       all: true
       publish: false
-      dir: ""
       output: false
       discussions: "{{ inputs.discussions }}"
       language: "{{ inputs.language }}"
