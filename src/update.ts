@@ -52,6 +52,34 @@ export function resolveRegistryForPackage(pkgName: string): string {
   return PUBLIC_REGISTRY;
 }
 
+const KilledErrorSchema = z.object({ killed: z.literal(true) });
+
+/**
+ * Whether an `execFile` rejection is the install being cut off rather than
+ * npm reporting a problem of its own. Three shapes reach here:
+ *
+ * - the `timeout` firing: Node kills the child with a signal, leaves `code`
+ *   null and puts the bare command line in the message;
+ * - the output cap: an install that writes more than `maxBuffer` fails with
+ *   `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, which on a verbose npm install is
+ *   a long build, not a broken one;
+ * - npm giving up on the registry itself: it exits 1 and prints
+ *   `npm error code ETIMEDOUT`, which Node appends to the message while the
+ *   error code stays 1.
+ *
+ * Only the third names the timeout, so the message still has to be read for it
+ * — npm's own registry timeout has no other tell (#1685).
+ */
+function isInterruptedInstall(cause: unknown, message: string): boolean {
+  const code = errnoCode(cause);
+
+  if (code === 'ETIMEDOUT' || code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return true;
+
+  if (message.includes('ETIMEDOUT')) return true;
+
+  return KilledErrorSchema.safeParse(cause).success;
+}
+
 /**
  * Resolve the npm CLI belonging to the running Node. Bundled runtimes
  * (WorkBuddy/CodeBuddy) ship npm inside their install dir, and their hook
@@ -1192,7 +1220,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
         `--prefix=${target.prefix}`,
         `--registry=${registry}`,
       ],
-      { timeout: INSTALL_TIMEOUT, windowsHide: true },
+      { timeout: INSTALL_TIMEOUT, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
     );
     log.success(`Updated teamai to v${result.latest}`);
 
@@ -1259,8 +1287,8 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     if (msg.includes('EACCES') || errnoCode(e) === 'EACCES') {
       message = 'Permission denied. Run "teamai update" manually with appropriate permissions.';
-    } else if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
-      message = 'Update timed out. Try again later.';
+    } else if (isInterruptedInstall(e, msg)) {
+      message = 'Update was interrupted. Try again later.';
     } else {
       message = `Update failed: ${msg}. Run "teamai update" manually.`;
     }

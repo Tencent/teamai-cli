@@ -666,19 +666,77 @@ describe('doUpdate', () => {
   // ─── Test #14: npm install timeout ────────────────────
 
   it('should warn about timeout on npm install timeout', async () => {
+    // The shape `execFile` actually rejects with when its own timeout fires:
+    // the child is killed with a signal, `code` is null, and the message is
+    // the bare command line. A test that throws `new Error("ETIMEDOUT")`
+    // passes against a classifier that never matches a real timeout (#1685).
+    const timeoutError = Object.assign(new Error('Command failed: npm install -g teamai-cli\n'), {
+      killed: true,
+      signal: 'SIGTERM',
+      code: null,
+    });
     mockedExecSync
       .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
       .mockImplementationOnce(() => {
-        throw new Error('ETIMEDOUT');
+        throw timeoutError;
       });
 
     await doUpdate(null);
 
     expect(mockedLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining('timed out'),
+      expect.stringContaining('interrupted'),
     );
     expect(mockedLog.persist).toHaveBeenCalledWith(
-      expect.stringContaining('timed out'),
+      expect.stringContaining('interrupted'),
+    );
+  });
+
+  it('should not report a verbose install as a failed one', async () => {
+    // A verbose npm install can out-write the output cap before it finishes.
+    // That is a long install, not a broken one, so it must not read as a
+    // generic "Update failed" with the command line as its message (#1685).
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('stdout maxBuffer length exceeded'), {
+          code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+        });
+      });
+
+    await doUpdate(null);
+
+    expect(mockedLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining('interrupted'),
+    );
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('Update failed'),
+    );
+  });
+
+  it('should treat npm giving up on the registry as an interrupted install', async () => {
+    // npm's own network timeout: it exits 1 and prints `npm error code
+    // ETIMEDOUT`, which Node appends to the message while the error code
+    // stays 1. Nothing about that error says "timeout" except the text, so
+    // the classifier has to read the message for this shape (#1685).
+    const npmTimeout = Object.assign(
+      new Error(
+        'Command failed: npm install -g teamai-cli\nnpm error code ETIMEDOUT\nnpm error network request to https://registry.npmjs.org/teamai-cli timed out',
+      ),
+      { killed: false, code: 1 },
+    );
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockImplementationOnce(() => {
+        throw npmTimeout;
+      });
+
+    await doUpdate(null);
+
+    expect(mockedLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining('interrupted'),
+    );
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('Update failed'),
     );
   });
 
