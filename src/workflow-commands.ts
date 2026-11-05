@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
+import { autoDetectInit, isUninitialized, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { startedByPasses } from './scorers/engine-hooks.js';
 import { FINISHED_WORKFLOW } from './scorers/judging-workflows.js';
@@ -178,6 +178,8 @@ async function explainFailedSteps(
   if (run === 'missing' || run === 'corrupt') return;
   const failedIds = run.steps.filter((step) => step.status === 'failed').map((step) => step.id);
   const isolated = isIsolated(run);
+  // A run with no teamai init is removed with its scope when it ends, so nothing can retry it.
+  const isRemoved = config.ephemeralConfig !== undefined;
   // A fan-out or workflow step fails, with no failure of its own, when a step under it fails: name that step instead.
   const failedUnder = (id: string): boolean => failedIds.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
 
@@ -190,7 +192,7 @@ async function explainFailedSteps(
     // command_failed says no more than its message, which names the exit status.
     const code = step.failure?.code === 'command_failed' ? undefined : step.failure?.code;
     const key = JSON.stringify([code, message]);
-    const group = sameWay.get(key) ?? { code, message, ids: [], isRetryable: !isolated && step.failure?.code !== 'input_rejected' };
+    const group = sameWay.get(key) ?? { code, message, ids: [], isRetryable: !isolated && !isRemoved && step.failure?.code !== 'input_rejected' };
     group.ids.push(step.id);
     sameWay.set(key, group);
   }
@@ -218,7 +220,7 @@ async function explainFailedSteps(
 
   if (failure) {
     log.error(redact(`Run ${runId} failed with ${failure.code}: ${failure.message}`, { envSecrets: secrets, patterns: false }));
-    const stopped = isolated ? [] : run.steps.filter((step) => step.status === 'cancelled' && step.failure?.code === failure.code).map((step) => step.id);
+    const stopped = isolated || isRemoved ? [] : run.steps.filter((step) => step.status === 'cancelled' && step.failure?.code === failure.code).map((step) => step.id);
     // The limit stops a workflow step with the steps under it: retrying the one under it reopens the one around it.
     const stoppedUnder = (id: string): boolean => stopped.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
 
@@ -446,6 +448,8 @@ export async function workflowStart(name: string, options: StartOptions): Promis
  */
 export interface ShortcutStart {
   scope?: LocalConfig;
+  /** The config the run starts in, already loaded, as a shortcut found it; it takes the place of `scope`. */
+  ready?: Ready;
   /**
    * A released command's shortcut, which the person or agent asked for rather than the workflow: it starts with no agent
    * evidence, so `invoke` and the nested-start checks do not judge it, and an agent's start is recorded as `cli`.
@@ -496,7 +500,7 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   }
 
   const { timeout } = nonSkill.data;
-  const loaded = await readyStartConfig(name, shortcut.scope);
+  const loaded = shortcut.ready ?? await readyStartConfig(name, shortcut.scope);
 
   if (!('config' in loaded)) {
     refuse(loaded);
@@ -595,7 +599,8 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
 
   const runId = startedRun.data;
 
-  log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
+  // A run with no teamai init is removed with its scope, so it cannot be continued.
+  if (config.ephemeralConfig === undefined) log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
   const local = { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox, progress: shortcut.progress };
   const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => driveRun(config, runId, LOCAL_DRIVER, { cwd: process.cwd(), options: scored }));
 
@@ -645,7 +650,6 @@ export type ShortcutEnd = z.infer<typeof ShortcutDoneSchema>;
  */
 export async function runShortcut({ workflow, inputs, command, json }: ShortcutRun): Promise<ShortcutEnd | undefined> {
   setStderrOnly(true);
-  let ended: ShortcutEnd | undefined;
 
   const refused = (failure: WorkflowFailure): void => {
     if (json) {
@@ -658,14 +662,41 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
     process.exitCode = 1;
   };
 
-  const loaded = await readyStartConfig(workflow);
+  const found = await shortcutReady(workflow);
 
-  if (!('config' in loaded)) {
-    if ('error' in loaded) refused(loaded.error);
+  if (!('ready' in found)) {
+    if ('error' in found) refused(found.error);
 
     return undefined;
   }
 
+  try {
+    return await runShortcutIn(found.ready, { workflow, inputs, command, json }, refused);
+  } finally {
+    await found.close?.();
+  }
+}
+
+/**
+ * The config a shortcut starts its run in: the member's, else, where no teamai init serves this directory, one built for
+ * the run alone (`EphemeralScope`), which `close` removes once the run ended.
+ */
+async function shortcutReady(workflow: string): Promise<{ ready: Ready; close?: () => Promise<void> } | WorkflowEnvelope> {
+  const loaded = await readyStartConfig(workflow);
+
+  if ('config' in loaded) return { ready: loaded };
+
+  if (!('error' in loaded) || loaded.error.code !== 'not_initialized' || await allowRefusal() !== undefined || !await isUninitialized()) return loaded;
+  const { EphemeralScope } = await import('./workflow/ephemeral-scope.js');
+  const scope = await EphemeralScope.open(process.cwd());
+  const env = await resolveWorkflowEnv(scope.config);
+
+  return { ready: { config: scope.config, teamConfig: scope.teamConfig, env, secrets: env.secrets }, close: scope.close };
+}
+
+/** `runShortcut` once its config is ready, saying a refusal through `refused`. */
+async function runShortcutIn(loaded: Ready, { workflow, inputs, command, json }: ShortcutRun, refused: (failure: WorkflowFailure) => void): Promise<ShortcutEnd | undefined> {
+  let ended: ShortcutEnd | undefined;
   const { config } = loaded;
   const cached = await loadCachedWorkflow(config, workflow);
 
@@ -689,15 +720,19 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
     log.info(`Running the team's ${cached.relativePath}, which replaces teamai's ${workflow}.`);
   }
 
-  const isPrivate = cached.definition.private === true;
+  // A run with no teamai init ends with this process, which removes its scope, so another driver could not take it.
+  const isEphemeral = config.ephemeralConfig !== undefined;
+  // A private run's sessions and outputs stay on this machine, and a run with no teamai init leaves nothing behind:
+  // neither has anything to drain.
+  const startsDrain = cached.definition.private !== true && !isEphemeral;
   // Inside a workflow attempt the run is part of the step that runs this command, so the step's own process drives it,
   // under the step's lease, place and timeout, rather than leaving it to the driver workflows.driver names.
-  const decided: DefaultDrive = nestedCall(process.env) === undefined ? await driveByDefault(config) : { kind: 'drive', driver: LOCAL_DRIVER };
+  const decided: DefaultDrive = nestedCall(process.env) === undefined && !isEphemeral ? await driveByDefault(config) : { kind: 'drive', driver: LOCAL_DRIVER };
   const driver = decided.kind === 'drive' ? decided.driver : undefined;
   const say = (line: string): void => { (json ? process.stderr : process.stdout).write(`${line}\n`); };
 
   await startWorkflow(workflow, { driver, inputs: JSON.stringify(inputs) }, {
-    scope: config,
+    ready: loaded,
     asCli: true,
     byDefault: decided,
     progress: say,
@@ -722,8 +757,7 @@ export async function runShortcut({ workflow, inputs, command, json }: ShortcutR
       else await nameRunCopy(scope, done.data.run);
       process.exitCode = exitCode;
 
-      // A private run's sessions and outputs stay on this machine, so there is nothing of it to drain.
-      if (!isPrivate) await drainUnattended(scope, driven);
+      if (startsDrain) await drainUnattended(scope, driven);
     },
   });
 

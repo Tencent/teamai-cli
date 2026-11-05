@@ -86,6 +86,12 @@ export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
  */
 export const RUN_DIR_ENV = 'TEAMAI_RUN_DIR';
 
+/**
+ * The variable every process of a run with no `teamai init` gets: the config file the run built for itself, which
+ * config detection reads in place of any config the process's directory has (`readEphemeralConfig` in `config.ts`).
+ */
+export const EPHEMERAL_CONFIG_ENV = 'TEAMAI_EPHEMERAL_CONFIG';
+
 /** The variable that names who launched a tool's session: `workflow` for a step, `confined` for a run confined to a directory, or the {@link LaunchedBy} caller of one of teamai's own AI calls. */
 export const LAUNCHED_BY_ENV = 'TEAMAI_LAUNCHED_BY';
 

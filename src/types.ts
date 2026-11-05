@@ -1102,6 +1102,11 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
    * knowledge (skills, rules, agents, docs, instructions, learnings, wiki); hooks, MCP, env and models stay the member's.
    */
   stepRole?: string;
+  /**
+   * The config file a run with no `teamai init` built for itself in a temporary directory (`EphemeralScope`). Runtime-only:
+   * every process of the run gets it as `TEAMAI_EPHEMERAL_CONFIG` and loads this config, never one from its directory.
+   */
+  ephemeralConfig?: string;
 };
 
 /**
