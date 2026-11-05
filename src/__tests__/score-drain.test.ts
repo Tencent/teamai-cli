@@ -15,7 +15,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 }));
 
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
-import type { RunMode } from '../launch-context.js';
+import { ATTEMPT_ENV, type RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
 import { dataHomeKey } from '../dashboard-collector.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
@@ -34,7 +34,7 @@ import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/eng
 import { projectRun } from '../workflow/snapshot.js';
 import { readRun, readRuns } from '../workflow/store.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
-import { workflowResume, workflowStart } from '../workflow-commands.js';
+import { runShortcut, workflowResume, workflowStart } from '../workflow-commands.js';
 
 const SCORER = `---
 labels:
@@ -965,6 +965,21 @@ steps:
 
     expect(started.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(started.lines).not.toContain('ℹ Draining before exit (teamai score --drain)');
+  });
+
+  it('does not run at the end of a command\'s run inside a workflow step, even of a workflow that is not private', async () => {
+    const { config } = await team({ 'workflows/mark.yaml': MARK });
+    await syncScorersThenWorkflows(config);
+    vi.stubEnv('CI', 'true');
+    const shortcut = async (): Promise<void> => { await runShortcut({ workflow: 'mark', inputs: {}, command: 'teamai mark', json: true }); };
+
+    const outside = await driveLocally(shortcut);
+    vi.stubEnv(ATTEMPT_ENV, 'r0123456789abcdef/a0123456789');
+    const inside = await driveLocally(shortcut);
+
+    expect(outside.lines).toContain('ℹ Draining before exit (teamai score --drain)');
+    expect(inside.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(inside.lines).not.toContain('ℹ Draining before exit (teamai score --drain)');
   });
 
   it('does not run at the end of an attended local run', async () => {

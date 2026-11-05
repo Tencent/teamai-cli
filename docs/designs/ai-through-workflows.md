@@ -198,7 +198,7 @@ when it holds a `teamai.yaml`, the scope reads it where it is, and its workflows
   shortcut whose run then writes nothing (`preview`) loads the member's config read-only, as `--dry-run` does.
 - A shortcut names its run only when it stops driving it before it ends, interrupted or waiting on a person:
   `Run <id> is still open. Continue it with: teamai workflow resume <id>`. A run that ended prints no run line.
-- A private shortcut run starts no drain.
+- A private shortcut run starts no drain, and neither does a shortcut inside a workflow step, private or not.
 
 ## Workflows
 

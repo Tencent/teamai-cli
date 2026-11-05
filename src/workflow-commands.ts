@@ -707,7 +707,7 @@ export type ShortcutEnd = z.infer<typeof ShortcutDoneSchema>;
  * driver in this process, as part of the step that runs the command: it shows the
  * lines its steps say as they run, then prints the run's `outputs.text` and exits with its `outputs.exit_code`, 1 when
  * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
- * text. A private run starts no drain. Answers how the run ended, when a driver here drove it to its end.
+ * text. A private run, or one inside a workflow step, starts no drain. Answers how the run ended, when a driver here drove it to its end.
  */
 export async function runShortcut({ workflow, inputs, command, json, nobodyAnswers, preview = false, teamRepo }: ShortcutRun): Promise<ShortcutEnd | undefined> {
   setStderrOnly(true);
@@ -802,12 +802,14 @@ async function runShortcutIn(loaded: Ready, { workflow, inputs, command, json }:
 
   // A run with no teamai init ends with this process, which removes its scope, so another driver could not take it.
   const isEphemeral = config.ephemeralConfig !== undefined;
-  // A private run's sessions and outputs stay on this machine, and a run with no teamai init leaves nothing behind:
-  // neither has anything to drain.
-  const startsDrain = cached.definition.private !== true && !isEphemeral;
   // Inside a workflow attempt the run is part of the step that runs this command, so the step's own process drives it,
   // under the step's lease, place and timeout, rather than leaving it to the driver workflows.driver names.
-  const decided: DefaultDrive = nestedCall(process.env) === undefined && !isEphemeral ? await driveByDefault(config) : { kind: 'drive', driver: LOCAL_DRIVER };
+  const isInStep = nestedCall(process.env) !== undefined;
+  // A private run's sessions and outputs stay on this machine, and a run with no teamai init leaves nothing behind:
+  // neither has anything to drain. Inside a step the run is part of another run, whose driver drains when that one
+  // ends, whatever a team's copy of the workflow says about private.
+  const startsDrain = cached.definition.private !== true && !isEphemeral && !isInStep;
+  const decided: DefaultDrive = !isInStep && !isEphemeral ? await driveByDefault(config) : { kind: 'drive', driver: LOCAL_DRIVER };
   const driver = decided.kind === 'drive' ? decided.driver : undefined;
   // Inside a command step, whose stdout is its answer, a line for stdout goes to stderr marked as one, as a verb's does.
   const isStepProgress = process.env[PROGRESS_STREAMS_ENV] === '1';
