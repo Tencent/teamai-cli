@@ -17,7 +17,7 @@ import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
 import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retriedRunsAgain, retryStep } from './workflow/run-controls.js';
 import { isIsolated, runCopyToMerge } from './workflow/workspace.js';
-import { localStrictCan, personAnswers, runLocalDriver, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
+import { localStrictCan, personAnswers, runLocalDriver, STOP_SIGNALS, withDriverLock, type LocalDriverOptions } from './workflow/drivers/local/local-driver.js';
 import { driveRun, unsupportedDriver } from './workflow-drive.js';
 import { awaitsLine, awaitsOf, driveByDefault, leftOpenLine, type DefaultDrive } from './default-driver.js';
 import { LOCAL_DRIVER, parseDriver, type Driver } from './workflow/driver-name.js';
@@ -99,6 +99,42 @@ async function drainUnattended(config: LocalConfig, envelope: WorkflowEnvelope):
 const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed') });
 
 const SucceededDoneSchema = z.object({ run: z.string(), outcome: z.literal('succeeded') });
+
+/**
+ * Says how to continue run `runId` if it is still open when this process stops driving it: once `end` finds it open,
+ * or as a stop signal arrives. A signal no driver handles then ends teamai as it would have, once the line is out.
+ */
+function resumeWhileOpen(config: LocalConfig, runId: string) {
+  let isSaid = false;
+
+  const say = (): void => {
+    if (isSaid) return;
+    isSaid = true;
+    log.info(`Run ${runId} is still open. Continue it with: teamai workflow resume ${runId}`);
+  };
+
+  const onSignal = (signal: NodeJS.Signals): void => {
+    say();
+    stopListening();
+
+    if (process.listenerCount(signal) === 0) process.stderr.write('', () => process.kill(process.pid, signal));
+  };
+
+  const stopListening = (): void => {
+    for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
+  };
+
+  for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
+
+  return {
+    end: async () => {
+      stopListening();
+      const run = await readRun(config, runId);
+
+      if (run !== 'missing' && run !== 'corrupt' && run.status === 'running') say();
+    },
+  };
+}
 
 /** On stderr, the branch a succeeded run whose workflow's header says `workspace: new` left its changes on, and how to bring them in. */
 async function nameRunCopy(config: LocalConfig, runId: string): Promise<void> {
@@ -467,6 +503,8 @@ export interface ShortcutStart {
   progress?: (line: string, stream: 'stdout' | 'stderr') => void;
   /** Says how the run the local driver drove went, or why it did not start, in place of printing the envelope. */
   present?: (config: LocalConfig, driven: WorkflowEnvelope, secrets: Record<string, string>) => Promise<void>;
+  /** Say how to continue the run only when it is still open as this process stops driving it, instead of as it starts. */
+  isResumeSaidWhenOpen?: boolean;
 }
 
 /** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
@@ -598,17 +636,25 @@ export async function startWorkflow(name: string, options: StartOptions, shortcu
   }
 
   const runId = startedRun.data;
-
   // A run with no teamai init is removed with its scope, so it cannot be continued.
-  if (config.ephemeralConfig === undefined) log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
+  const isResumable = config.ephemeralConfig === undefined;
+
+  if (isResumable && !shortcut.isResumeSaidWhenOpen) log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
+  const whileOpen = isResumable && shortcut.isResumeSaidWhenOpen ? resumeWhileOpen(config, runId) : undefined;
   const local = { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox, progress: shortcut.progress };
-  const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => driveRun(config, runId, LOCAL_DRIVER, { cwd: process.cwd(), options: scored }));
 
   if (shortcut.present) {
-    await shortcut.present(config, driven, secrets);
+    try {
+      const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => driveRun(config, runId, LOCAL_DRIVER, { cwd: process.cwd(), options: scored }));
+      await shortcut.present(config, driven, secrets);
 
-    return driven;
+      return driven;
+    } finally {
+      await whileOpen?.end();
+    }
   }
+
+  const driven = await withPassScoring({ config, env }, RunIdSchema.parse(runId), local, (scored) => driveRun(config, runId, LOCAL_DRIVER, { cwd: process.cwd(), options: scored }));
 
   const answered = await shortcut.answer?.(config, runId, driven);
 
@@ -775,6 +821,7 @@ async function runShortcutIn(loaded: Ready, { workflow, inputs, command, json }:
   await startWorkflow(workflow, { driver, inputs: JSON.stringify(inputs) }, {
     ready: loaded,
     asCli: true,
+    isResumeSaidWhenOpen: true,
     byDefault: decided,
     progress: say,
     present: async (scope, driven, secrets) => {

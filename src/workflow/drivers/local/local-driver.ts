@@ -46,7 +46,8 @@ import { isWorkflowError, stepWorkflow, WORKSPACE_MODES } from '../../types.js';
 import { confinedOf, contractClone, type SessionRef } from '../../workspace.js';
 import { headCommit } from '../../worktree.js';
 
-const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
+/** The signals that stop teamai, which the driver passes on to what it runs before it exits. */
+export const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
 
 /** How long the driver waits for a command or prompt before asking the run again; half that while a question is open. */
 let pollMs = 2000;

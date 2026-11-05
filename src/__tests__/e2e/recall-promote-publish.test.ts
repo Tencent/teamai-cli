@@ -296,6 +296,8 @@ process.stdin.on('end', () => {
       expect(result.output.split('Learning "nope" not found or not eligible for promotion.').length - 1, result.output).toBe(1);
       // Running the step again with the same id fails the same way.
       expect(result.output).not.toContain('Retry it with');
+      // The run ended, so there is nothing to continue.
+      expect(result.output).not.toContain('workflow resume');
     }
 
     expect(remotePushBranches()).toBe('');

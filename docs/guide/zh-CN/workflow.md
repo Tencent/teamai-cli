@@ -1100,6 +1100,12 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
 | `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
 
+启动默认工作流的命令（如 `teamai recall promote <id>`）输出的内容和以前一样。只有在运行结束前停下（如按 Ctrl-C）时，它才会说出这次运行：
+
+```text
+ℹ Run r706cf485d20bb53e is still open. Continue it with: teamai workflow resume r706cf485d20bb53e
+```
+
 团队写一个同名文件就会取代默认工作流：
 
 ```console

@@ -46,16 +46,19 @@ function votes(): string {
   return ['version: 2', 'votes:', ...['guide', 'lesson'].map((id) => `  ${id}:\n    recalled_count: 3\n    upvoted_count: 0\n    last_recalled_at: '2026-06-01T00:00:00Z'`), 'deltas: {}', ''].join('\n');
 }
 
-/** A `claude` that answers each prompt with a draft of the entry it names, and fails one that holds `fails`. */
+/**
+ * A `claude` that answers each prompt with a draft of the entry it names, and fails one that holds `fails`. With
+ * `FAKE_CLAUDE_HANGS` it answers nothing for that many milliseconds first.
+ */
 function fakeClaude(bin: string, fails: string | undefined): void {
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
-let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => {
+let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', () => setTimeout(() => {
   const fails = ${JSON.stringify(fails ?? null)};
   if (fails !== null && stdin.includes(fails)) { process.stderr.write('Authentication failed\\n'); process.exit(2); }
   const title = /^# (.+)$/m.exec(stdin)?.[1] ?? 'entry';
   process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: '---\\ndate: 2026-11-04\\n---\\n\\n# ' + title + ', updated\\n', usage: { input_tokens: 10, output_tokens: 5 } }));
-});\n`, { mode: 0o755 });
+}, Number(process.env.FAKE_CLAUDE_HANGS ?? 0)));\n`, { mode: 0o755 });
 }
 
 describe('recall maintenance --update-quality', () => {
@@ -132,7 +135,7 @@ describe('recall maintenance --update-quality', () => {
   });
 
   it('writes a draft beside each stale entry and prints what it wrote', async () => {
-    const { code, stdout } = await run([]);
+    const { code, stdout, stderr } = await run([]);
 
     expect(stdout.split('\n').filter((line) => line !== '')).toEqual([
       ...listing,
@@ -144,6 +147,41 @@ describe('recall maintenance --update-quality', () => {
     ]);
     expect(code).toBe(0);
     expect(fs.readFileSync(path.join(docs, 'lesson.md.draft.md'), 'utf8')).toBe('---\ndate: 2026-11-04\n---\n\n# lesson, updated');
+    // The run ended, so there is nothing to continue.
+    expect(stderr).toBe('');
+  });
+
+  it('says how to continue a run stopped before it ended, and leaves it open', async () => {
+    const bin = fs.mkdtempSync(path.join(sandbox, 'bin-'));
+    fakeClaude(bin, undefined);
+    const child = spawn('node', [CLI, 'recall', 'maintenance', '--update-quality'], {
+      env: { ...process.env, ...GIT_ENV, FORCE_COLOR: '0', HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, TEAMAI_AI_TOOL: '', FAKE_CLAUDE_HANGS: '5000' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: sandbox,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    child.stdin.end();
+    const exited = new Promise<NodeJS.Signals | null>((resolve) => child.on('close', (_code, signal) => resolve(signal)));
+    // The stale entries are listed, then the first draft is asked for: stop teamai while claude thinks.
+    await new Promise<void>((resolve) => child.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString();
+
+      if (stdout.includes('Generating AI-powered update drafts...')) setTimeout(resolve, 1000);
+    }));
+    child.kill('SIGINT');
+
+    expect(await exited).toBe('SIGINT');
+    const hint = /^ℹ Run (r[0-9a-f]{16}) is still open\. Continue it with: teamai workflow resume (r[0-9a-f]{16})$/m.exec(stderr);
+    expect(hint, stderr).not.toBeNull();
+    expect(hint?.[2]).toBe(hint?.[1]);
+    const runFile = path.join(home, '.teamai', 'workflows', 'runs', `${hint?.[1]}.json`);
+    const stopped = JSON.parse(fs.readFileSync(runFile, 'utf8')) as { status: string };
+    expect(stopped.status).toBe('running');
+    // Another test reads every run in this home as one it started.
+    fs.rmSync(runFile);
+    fs.rmSync(runFile.replace(/\.json$/, ''), { recursive: true, force: true });
   });
 
   it('runs inside an agent session as it does in the person\'s terminal', async () => {

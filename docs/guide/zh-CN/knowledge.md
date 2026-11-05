@@ -187,7 +187,6 @@ $ teamai recall promote
 ℹ   - retry-deploys (confidence: 0.94, suggested: rules)
 
 $ teamai recall promote retry-deploys
-ℹ Run r706cf485d20bb53e started. If it stops before it ends, continue it with: teamai workflow resume r706cf485d20bb53e
 ✔ Promotion artifact pushed to branch teamai/push/alice/20261104-230453
 ℹ Create a pull/merge request for teamai/push/alice/20261104-230453 to review the promoted knowledge.
 ✔ Promoted: retry-deploys -> rules/retry-deploys.md
@@ -271,7 +270,6 @@ teamai codebase --lint
 
 ```text
 $ teamai codebase --deep-enrich --project orders-api
-ℹ Run r3f2a9c41d07b6e15 started. If it stops before it ends, continue it with: teamai workflow resume r3f2a9c41d07b6e15
 ℹ deep-enrich[orders-api]: Phase 1 — Generating 3 component design docs
 ⚠ deep-enrich[orders-api]: Skipping component billing: AI call failed (tool: claude): Authentication failed
 ...

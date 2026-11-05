@@ -196,6 +196,8 @@ when it holds a `teamai.yaml`, the scope reads it where it is, and its workflows
   can. Inside a workflow attempt, it drives its private run in the step's own process.
 - `--dry-run` either stops before the start, or passes `dry_run: true` to a workflow whose write steps check it. A
   shortcut whose run then writes nothing (`preview`) loads the member's config read-only, as `--dry-run` does.
+- A shortcut names its run only when it stops driving it before it ends, interrupted or waiting on a person:
+  `Run <id> is still open. Continue it with: teamai workflow resume <id>`. A run that ended prints no run line.
 - A private shortcut run starts no drain.
 
 ## Workflows
@@ -339,7 +341,7 @@ proposes `scorers/<name>.md` to the team as a pull request.
   `skip` with an optional note; the options and their order stay, and `edit` takes the note as the title. It needs a
   terminal: inside a workflow step or with piped input, the import is refused before any AI call and says to pass
   `--all`. `--resume` is refused with the `teamai workflow resume <run>` that replaces it, and no
-  `~/.teamai/import-session.json` is written. The run's `Run … started` line is on stderr.
+  `~/.teamai/import-session.json` is written.
 - `import --from-tools` scans the user rules directory of every tool in `TOOLS`, `.mdc` included; `--from-claude` is
   its hidden alias. The commit says `Import from local: tool rules`. No `teamai init` is refused before any AI call,
   and an `--output` import names each file it wrote by its absolute path. `--iwiki-dual` asks for the sections from

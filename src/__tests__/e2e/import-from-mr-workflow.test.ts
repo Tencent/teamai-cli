@@ -162,7 +162,6 @@ describe('teamai import --from-mr through teamai-import-from-mr', { timeout: 120
       'ℹ Push changes via MR skipped: no teamwiki changes to push',
     ]);
     expect(lines(ran.stderr, sb.root)).toEqual([
-      'ℹ Run <run> started. If it stops before it ends, continue it with: teamai workflow resume <run>',
       '- Fetching MR data...',
       '✔ MR data fetched',
     ]);

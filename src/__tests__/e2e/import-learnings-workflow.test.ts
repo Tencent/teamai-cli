@@ -186,7 +186,8 @@ describe('teamai import of rules and learnings through teamai-import-rules', { t
       `ℹ Wrote: <sb>/home/.teamai/team-repo/docs/${TODAY}-api-guide.md`,
       '✔ Import complete',
     ]);
-    expect(lines(ran.stderr, sb.root)).toEqual(['ℹ Run <run> started. If it stops before it ends, continue it with: teamai workflow resume <run>']);
+    // The run ended, so there is nothing to continue.
+    expect(lines(ran.stderr, sb.root)).toEqual([]);
     expect(published(sb)).toEqual({ subject: '[teamai] Import from local: tool rules', files: [`docs/${TODAY}-api-guide.md`, `rules/${TODAY}-deploy-rule.md`] });
     expect(fs.readFileSync(path.join(sb.teamRepo, 'rules', `${TODAY}-deploy-rule.md`), 'utf8')).toBe([
       '---', 'title: "Deploy rule"', 'type: rule', 'author: import', `date: ${TODAY}`, 'tags: ["t1", "t2"]', '---', '', 'Summary of Deploy rule', '',
