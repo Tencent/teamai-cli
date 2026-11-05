@@ -64,8 +64,26 @@ describe('resolveCliPath', () => {
   it('uses `where` on Windows and returns a launchable path', () => {
     mockedExecFileSync.mockReturnValue(`${GH_EXE}\r\n`);
     expect(resolveCliPath('gh', 'win32')).toBe(GH_EXE);
-    expect(mockedExecFileSync).toHaveBeenCalledWith('where', ['gh'], expect.anything());
+    expect(mockedExecFileSync).toHaveBeenCalledWith('where', ['$PATH:gh'], expect.anything());
   });
+
+  it('searches only PATH on Windows, so a claude.cmd in the working directory is not picked', () => {
+    // `where claude` lists the working directory first; `where $PATH:claude` lists only PATH entries.
+    const installed = 'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd';
+    mockedExecFileSync.mockReturnValue(`${installed}\r\n`);
+    expect(resolveCliPath('claude', 'win32')).toBe(installed);
+    expect(mockedExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockedExecFileSync).toHaveBeenCalledWith('where', ['$PATH:claude'], expect.anything());
+  });
+
+  it.each(['.:claude', 'C:claude', '$PATH:claude', 'claude*', 'claude?'])(
+    'returns null on Windows without running `where` for the pattern %s',
+    (name) => {
+      mockedExecFileSync.mockReturnValue('C:\\checkout\\claude.cmd\r\n');
+      expect(resolveCliPath(name, 'win32')).toBeNull();
+      expect(mockedExecFileSync).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects the MSYS path `which` prints on Windows', () => {
     // The exact string the old `execSync('which gh')` handed to spawnSync.
