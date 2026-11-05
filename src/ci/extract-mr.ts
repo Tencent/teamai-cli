@@ -18,7 +18,7 @@ import { appendPendingReview } from '../review-store.js';
 import { getDefaultBranch, pushRepoDirectly } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
-import { postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
+import { githubApiUrl, postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
 import { readRejections, shouldWrite } from './read-rejections.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 
@@ -60,7 +60,7 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
       const token = process.env['GITHUB_TOKEN'];
 
       if (token) {
-        const resp = await fetch('https://api.github.com/user', {
+        const resp = await fetch(`${githubApiUrl()}/user`, {
           headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'teamai-cli' },
           signal: AbortSignal.timeout(8000),
         });

@@ -23,6 +23,14 @@ const API_TIMEOUT_MS = 15_000;
 // GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
 const MAX_NOTE_PAGES = 20;
 
+/**
+ * The GitHub REST API root: `GITHUB_API_URL`, which GitHub Actions sets to the GitHub Enterprise server's API, else
+ * github.com's.
+ */
+export function githubApiUrl(): string {
+  return (process.env['GITHUB_API_URL']?.trim() || 'https://api.github.com').replace(/\/+$/, '');
+}
+
 // ─── Types ────────────────────────────────────────────────
 
 export interface CommentResult {
@@ -132,7 +140,7 @@ async function githubRequest(path: string, method: string, body?: { body: string
 
   if (!token) throw new Error('GITHUB_TOKEN environment variable is not set');
 
-  const url = `https://api.github.com${path}`;
+  const url = `${githubApiUrl()}${path}`;
 
   const headers = {
     Authorization: `Bearer ${token}`,
