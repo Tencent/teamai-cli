@@ -146,7 +146,7 @@ async function listPushSource(platform: string, cwd: string, all: boolean) {
 // ---------------------------------------------------------------------------
 
 /**
- * Register SessionFlow's 7 subcommands on the `teamai session` command object.
+ * Register SessionFlow's 8 subcommands on the `teamai session` command object.
  */
 /**
  * `teamai session list --finished`: prints the finished sessions to archive and judge, or with `--all` every finished
