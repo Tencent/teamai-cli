@@ -52,6 +52,31 @@ export function resolveRegistryForPackage(pkgName: string): string {
   return PUBLIC_REGISTRY;
 }
 
+const KilledErrorSchema = z.object({ killed: z.literal(true) });
+
+/**
+ * Whether an `execFile` rejection is the install being cut off rather than
+ * npm reporting a problem of its own. Two shapes reach here, and neither
+ * says "timed out":
+ *
+ * - the `timeout` firing: Node kills the child with a signal, leaves `code`
+ *   null and puts the bare command line in the message;
+ * - the output cap: an install that writes more than `maxBuffer` fails with
+ *   `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, which on a verbose npm install is
+ *   a long build, not a broken one.
+ *
+ * Matching on the message never classified either (#1685). `ETIMEDOUT`
+ * still counts: a socket-level timeout from npm is the same story for the
+ * operator — try again later, do not go looking for a permission problem.
+ */
+function isInterruptedInstall(cause: unknown): boolean {
+  const code = errnoCode(cause);
+
+  if (code === 'ETIMEDOUT' || code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return true;
+
+  return KilledErrorSchema.safeParse(cause).success;
+}
+
 /**
  * Resolve the npm CLI belonging to the running Node. Bundled runtimes
  * (WorkBuddy/CodeBuddy) ship npm inside their install dir, and their hook
@@ -1192,7 +1217,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
         `--prefix=${target.prefix}`,
         `--registry=${registry}`,
       ],
-      { timeout: INSTALL_TIMEOUT, windowsHide: true },
+      { timeout: INSTALL_TIMEOUT, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
     );
     log.success(`Updated teamai to v${result.latest}`);
 
@@ -1259,7 +1284,7 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     if (msg.includes('EACCES') || errnoCode(e) === 'EACCES') {
       message = 'Permission denied. Run "teamai update" manually with appropriate permissions.';
-    } else if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
+    } else if (isInterruptedInstall(e)) {
       message = 'Update timed out. Try again later.';
     } else {
       message = `Update failed: ${msg}. Run "teamai update" manually.`;
