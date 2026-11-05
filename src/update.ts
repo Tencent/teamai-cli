@@ -68,8 +68,7 @@ const KilledErrorSchema = z.object({ killed: z.literal(true) });
  *   error code stays 1.
  *
  * Only the third names the timeout, so the message still has to be read for it
- * — dropping that read is what #1726 first did, and it undid a case that
- * worked on main (#1685).
+ * — npm's own registry timeout has no other tell (#1685).
  */
 function isInterruptedInstall(cause: unknown, message: string): boolean {
   const code = errnoCode(cause);
