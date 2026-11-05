@@ -26,7 +26,7 @@ const DEFAULT_LEARNINGS_DIR = path.join(getUserHome(), '.teamai', 'learnings');
  * @returns     Normalized MRData object
  * @throws      Error when the URL does not belong to a known provider
  */
-async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
+export async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
   if (url.includes('github.com')) {
     return fetchGitHubPR(url, opts);
   }
@@ -291,7 +291,7 @@ async function promptConfirm(question: string): Promise<boolean> {
  * @param mrUrl  Full MR / PR URL
  * @returns      Inferred repo .git URL
  */
-function extractRepoUrlFromMrUrl(mrUrl: string): string {
+export function extractRepoUrlFromMrUrl(mrUrl: string): string {
   // GitHub: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
   const ghMatch = mrUrl.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/pull\//);
 

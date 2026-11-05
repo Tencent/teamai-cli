@@ -121,7 +121,7 @@ syncBuiltinESMExports();
       const outputDir = path.join(sandbox, 'output');
       const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
         const child = spawn(process.execPath, [
-          '--import', pathToFileURL(preload).href, CLI, 'import', '--from-mr', 'https://github.com/team/repo/pull/42',
+          CLI, 'import', '--from-mr', 'https://github.com/team/repo/pull/42',
           '--all', '--no-discussions', '--output', outputDir,
         ], {
           cwd: sandbox,
@@ -129,6 +129,8 @@ syncBuiltinESMExports();
             ...process.env, HOME: sandbox, USERPROFILE: sandbox, FORCE_COLOR: '0',
             GITHUB_TOKEN: '', GH_TOKEN: '', FIXTURE_PORT: String(address.port), PROMPT_FILE: promptFile,
             USE_GH: useGh ? '1' : '0', GH_PAGES_FILE: ghPagesFile, FAIL_SECOND_PAGE: failSecondPage ? '1' : '0',
+            // Each step of the run is a process of its own, which loads the fixture too.
+            NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
           },
           stdio: ['ignore', 'pipe', 'pipe'],
         });

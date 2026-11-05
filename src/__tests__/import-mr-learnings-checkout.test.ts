@@ -5,11 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { writeInstallConfig } from './helpers/install-config.js';
 
-// Real-git test (#808): `import --from-mr` queues its learning and publishes it
-// through the learnings checkout, which in self mode lives in the partition and
-// does not exist until something creates it. Only config detection and the MR
-// extraction (network + AI) are faked; the queue, the checkout and the publish
-// are the real code.
+// Real-git test (#808): the publish-mr step of `import --from-mr` queues its
+// learning and publishes it through the learnings checkout, which in self mode
+// lives in the partition and does not exist until something creates it. Only
+// config detection is faked, and the draft the extract step kept is a file; the
+// queue, the checkout and the publish are the real code.
 
 const testRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-import-mr-808-')));
 const businessRoot = path.join(testRoot, 'business');
@@ -31,16 +31,9 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: vi.fn(async () => ({ localConfig, teamConfig: { team: 't', repo: remote } })),
 }));
 
-const IMPORTED = 'mr-note-2026-01-01-aaaaaa.md';
-
-vi.mock('../import-mr.js', () => ({
-  importFromMR: vi.fn(async (opts: { queueLearning?: (filename: string, content: string) => Promise<string> }) => {
-    const content = '# Learning imported from an MR\n';
-    const learningFile = opts.queueLearning ? await opts.queueLearning(IMPORTED, content) : undefined;
-    // No repo URL: the command skips the wiki and push steps.
-    return { learning: { title: 'mr-note', content }, repoUrl: '', learningFile };
-  }),
-}));
+/** contribute's name for the learning: <title-slug>-<date>-<random>.md. */
+const IMPORTED = /^learnings\/mr-note-\d{4}-\d{2}-\d{2}-[a-z0-9]+\.md$/;
+const URL = 'https://github.com/o/r/pull/1';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
@@ -53,10 +46,28 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-const { importCmd } = await import('../import.js');
+const { ImportFromMr } = await import('../import-from-mr.js');
 const { learningsBranch } = await import('../utils/learnings-branch.js');
 const { pendingLearningsDir } = await import('../utils/pending-learnings.js');
-const { importFromMR } = await import('../import-mr.js');
+
+/** The extract step's result for the MR: its draft, or a failure. No repo URL, so no teamwiki update follows. */
+function extracted(outcome: 'success' | 'failed'): string {
+  const file = path.join(testRoot, 'draft.md');
+  fs.writeFileSync(file, '# Learning imported from an MR\n');
+  const outputs = outcome === 'success' ? { title: 'mr-note', file, tags: [], overlaps: [], repo_url: '' } : {};
+
+  return JSON.stringify([{ item: URL, outcome, outputs }]);
+}
+
+/** publish-mr as the step runs it on this install's team repo, or into `drafts`. */
+function publish(flags: { outcome?: 'success' | 'failed'; reviewed?: string; drafts?: string } = {}) {
+  return ImportFromMr.publish({
+    extracted: extracted(flags.outcome ?? 'success'),
+    reviewed: flags.reviewed ?? '',
+    target: flags.drafts ?? localConfig.repo.localPath,
+    drafts: flags.drafts === undefined ? 'false' : 'true',
+  });
+}
 
 /** Files origin has on teamai-learnings. */
 function publishedLearnings(): string[] {
@@ -78,7 +89,7 @@ function git(args: string[], cwd: string): void {
   });
 }
 
-describe('import --from-mr in self mode (#808)', () => {
+describe('import --from-mr\'s publish-mr in self mode (#808)', () => {
   beforeEach(() => {
     fs.mkdirSync(path.join(businessRoot, '.teamai'), { recursive: true });
     fs.writeFileSync(path.join(businessRoot, '.teamai', '.gitignore'), 'learnings-wt/\n');
@@ -102,38 +113,29 @@ describe('import --from-mr in self mode (#808)', () => {
   it('publishes the imported learning when the learnings checkout did not exist yet', async () => {
     expect(fs.existsSync(learningsBranch.dir(localConfig))).toBe(false);
 
-    await importCmd({ fromMr: 'https://github.com/o/r/pull/1' });
+    const { published } = await publish();
 
     // Queued in the partition, not in the checkout, and drained once published.
     expect(pendingLearningsDir(localConfig)).toBe(path.join(dataHome, 'pending-learnings'));
-    expect(publishedLearnings()).toContain(`learnings/${IMPORTED}`);
-    expect(fs.existsSync(path.join(pendingLearningsDir(localConfig), IMPORTED))).toBe(false);
+    expect(published.map((file) => path.dirname(file))).toEqual([pendingLearningsDir(localConfig)]);
+    expect(publishedLearnings().filter((file) => IMPORTED.test(file))).toHaveLength(1);
+    expect(fs.readdirSync(pendingLearningsDir(localConfig))).toEqual([]);
   });
 
   it('leaves the learnings checkout alone when the learning goes to --output', async () => {
-    await importCmd({ fromMr: 'https://github.com/o/r/pull/1', output: path.join(testRoot, 'drafts') });
+    await publish({ drafts: path.join(testRoot, 'drafts') });
 
     expect(fs.existsSync(path.join(learningsBranch.dir(localConfig), '.git'))).toBe(false);
   });
 
   it('publishes no teamai-learnings branch when the extraction fails', async () => {
-    vi.mocked(importFromMR).mockRejectedValueOnce(new Error('MR fetch failed'));
-    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => {
-      throw new Error(`process.exit(${String(code)})`);
-    });
-    try {
-      await expect(importCmd({ fromMr: 'https://github.com/o/r/pull/1' })).rejects.toThrow('process.exit(1)');
-    } finally {
-      exit.mockRestore();
-    }
+    await publish({ outcome: 'failed' });
 
     expect(publishedLearningsBranch()).toBe('');
   });
 
   it('publishes no teamai-learnings branch when no learning is accepted', async () => {
-    vi.mocked(importFromMR).mockResolvedValueOnce({ learning: undefined, repoUrl: '' });
-
-    await importCmd({ fromMr: 'https://github.com/o/r/pull/1' });
+    await publish({ reviewed: JSON.stringify([{ item: { item: URL }, outputs: { choice: 'skip', note: null } }]) });
 
     expect(publishedLearningsBranch()).toBe('');
   });

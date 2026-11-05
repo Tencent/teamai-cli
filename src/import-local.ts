@@ -349,4 +349,4 @@ function startRules(options: LearningsImport): Promise<ShortcutEnd | undefined> 
   return start('teamai-import-rules', {}, options);
 }
 
-export const ImportLearnings = { scanRules, readCandidate, classifyReply, writeLearnings, publishRules, start, startRules, parseFlag, parseBoolean } as const;
+export const ImportLearnings = { scanRules, readCandidate, classifyReply, writeLearnings, publishRules, start, startRules, parseFlag, parseBoolean, NOBODY_REVIEWS } as const;

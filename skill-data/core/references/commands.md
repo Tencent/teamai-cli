@@ -588,6 +588,21 @@ Generated: do not edit by hand. Regenerate with
     - `--written <json>` — The files the import wrote
     - `--target <dir>` — The team repo, or the directory every item was written into
     - `--by-type <bool>` — true when --target is the team repo, which is pushed
+  - `teamai import fetch-mr` — A step of a teamai-import-from-mr run: read a merged MR or PR, with its review threads, as the extraction prompt shows it. Prints {"url","title","description","commits","diff","threads","thread_count","author","date"}.
+    - `--url <url>` — The MR or PR URL: GitHub, TGit or GitLab
+    - `--mrs <json>` — Every MR URL of the run, to say which of them this is
+    - `--threads <bool>` — false leaves the review threads out
+  - `teamai import draft-mr` — A step of a teamai-import-from-mr run: keep the learning the AI tool wrote for an MR in $TEAMAI_RUN_DIR, and say its title, its tags and the existing learnings it overlaps. Prints {"title","file","tags","overlaps","repo_url"}.
+    - `--url <url>` — The MR or PR URL
+    - `--title <title>` — The MR's title, the learning's title when its frontmatter has none
+    - `--reply <markdown>` — What the AI tool answered
+  - `teamai import publish-mr` — A step of a teamai-import-from-mr run: publish each accepted learning, or the edited one under the note as its title, as teamai contribute does, then update and push the teamwiki of each repository whose evidence the team repo holds; or write each into one directory. Prints {"published"}.
+    - `--extracted <json>` — The results of the extract step
+    - `--reviewed <json>` — The results of the review step; empty accepts every draft
+    - `--target <dir>` — The team repo, or the directory every draft is written into
+    - `--drafts <bool>` — true writes each draft into --target as learning.md and publishes nothing
+  - `teamai import finish-mr` — A step of a teamai-import-from-mr run: sum up a run of several MRs and name each that failed. Prints {"text","exit_code","learnings"}: exit_code 1 when an MR failed.
+    - `--extracted <json>` — The results of the extract step
   - `teamai import fetch-iwiki` — A step of a teamai-import-from-iwiki run: download the pages of an iWiki space, or one page, into $TEAMAI_RUN_DIR/iwiki/, with TAI_PAT_TOKEN. Prints {"source","documents","candidates":[{"path","file"}],"dual_context"}.
     - `--source <space-id-or-url>` — A numeric space id, or a page URL holding /p/<id>
     - `--dual <bool>` — true also prints the pages as the dual sections are asked about

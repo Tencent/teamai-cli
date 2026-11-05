@@ -1749,6 +1749,50 @@ importCommand
     await importVerb(() => ImportLearnings.publishRules(cmdOpts));
   });
 
+// The verbs a teamai-import-from-mr run's steps call.
+importCommand
+  .command('fetch-mr')
+  .description('A step of a teamai-import-from-mr run: read a merged MR or PR, with its review threads, as the extraction prompt shows it. Prints {"url","title","description","commits","diff","threads","thread_count","author","date"}.')
+  .requiredOption('--url <url>', 'The MR or PR URL: GitHub, TGit or GitLab')
+  .requiredOption('--mrs <json>', 'Every MR URL of the run, to say which of them this is')
+  .option('--threads <bool>', 'false leaves the review threads out', 'true')
+  .action(async (cmdOpts: { url: string; mrs: string; threads: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(() => ImportFromMr.fetch(cmdOpts));
+  });
+
+importCommand
+  .command('draft-mr')
+  .description('A step of a teamai-import-from-mr run: keep the learning the AI tool wrote for an MR in $TEAMAI_RUN_DIR, and say its title, its tags and the existing learnings it overlaps. Prints {"title","file","tags","overlaps","repo_url"}.')
+  .requiredOption('--url <url>', 'The MR or PR URL')
+  .requiredOption('--title <title>', 'The MR\'s title, the learning\'s title when its frontmatter has none')
+  .requiredOption('--reply <markdown>', 'What the AI tool answered')
+  .action(async (cmdOpts: { url: string; title: string; reply: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(() => ImportFromMr.draft(cmdOpts));
+  });
+
+importCommand
+  .command('publish-mr')
+  .description('A step of a teamai-import-from-mr run: publish each accepted learning, or the edited one under the note as its title, as teamai contribute does, then update and push the teamwiki of each repository whose evidence the team repo holds; or write each into one directory. Prints {"published"}.')
+  .requiredOption('--extracted <json>', 'The results of the extract step')
+  .option('--reviewed <json>', 'The results of the review step; empty accepts every draft', '')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every draft is written into')
+  .requiredOption('--drafts <bool>', 'true writes each draft into --target as learning.md and publishes nothing')
+  .action(async (cmdOpts: { extracted: string; reviewed: string; target: string; drafts: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(() => ImportFromMr.publish(cmdOpts));
+  });
+
+importCommand
+  .command('finish-mr')
+  .description('A step of a teamai-import-from-mr run: sum up a run of several MRs and name each that failed. Prints {"text","exit_code","learnings"}: exit_code 1 when an MR failed.')
+  .requiredOption('--extracted <json>', 'The results of the extract step')
+  .action(async (cmdOpts: { extracted: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(async () => ImportFromMr.finish(cmdOpts));
+  });
+
 // The verbs a teamai-import-from-iwiki run's steps call.
 importCommand
   .command('fetch-iwiki')

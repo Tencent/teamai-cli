@@ -304,11 +304,11 @@ async function allowRefusal(): Promise<WorkflowEnvelope | undefined> {
 }
 
 /** The member's config as `Ready`, or the failure the caller prints. */
-async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
+async function readyConfig(readOnly = false): Promise<Ready | WorkflowEnvelope> {
   const refusal = await allowRefusal();
 
   if (refusal) return refusal;
-  const loaded = await loadConfig();
+  const loaded = await loadConfig(readOnly);
 
   if (!('config' in loaded)) return loaded;
   const env = await resolveWorkflowEnv(loaded.config);
@@ -320,8 +320,8 @@ async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
  * `readyConfig`, or the user scope's when a start of `name` runs there, as {@link resolveStart} decides. With `scope`,
  * that scope's, as a shortcut that found its subject in another scope starts there.
  */
-async function readyStartConfig(name: string, scope?: LocalConfig): Promise<Ready | WorkflowEnvelope> {
-  const loaded = await readyConfig();
+async function readyStartConfig(name: string, scope?: LocalConfig, readOnly = false): Promise<Ready | WorkflowEnvelope> {
+  const loaded = await readyConfig(readOnly);
 
   if (!('config' in loaded)) return loaded;
   const { config } = scope ? { config: scope } : await resolveStart(loaded.config, name);
@@ -633,6 +633,8 @@ export interface ShortcutRun {
    * workflow step, in an unattended run, or with no terminal. For a run that asks a person before it writes anything.
    */
   nobodyAnswers?: string;
+  /** Load the member's config as `--dry-run` does, so nothing migrates it, for a run whose steps write nothing. */
+  preview?: boolean;
 }
 
 /**
@@ -656,7 +658,7 @@ export type ShortcutEnd = z.infer<typeof ShortcutDoneSchema>;
  * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
  * text. A private run starts no drain. Answers how the run ended, when a driver here drove it to its end.
  */
-export async function runShortcut({ workflow, inputs, command, json, nobodyAnswers }: ShortcutRun): Promise<ShortcutEnd | undefined> {
+export async function runShortcut({ workflow, inputs, command, json, nobodyAnswers, preview = false }: ShortcutRun): Promise<ShortcutEnd | undefined> {
   setStderrOnly(true);
 
   if (nobodyAnswers !== undefined && !personAnswers(resolveRunMode(process.env))) {
@@ -677,7 +679,7 @@ export async function runShortcut({ workflow, inputs, command, json, nobodyAnswe
     process.exitCode = 1;
   };
 
-  const found = await shortcutReady(workflow);
+  const found = await shortcutReady(workflow, preview);
 
   if (!('ready' in found)) {
     if ('error' in found) refused(found.error);
@@ -696,8 +698,8 @@ export async function runShortcut({ workflow, inputs, command, json, nobodyAnswe
  * The config a shortcut starts its run in: the member's, else, where no teamai init serves this directory, one built for
  * the run alone (`EphemeralScope`), which `close` removes once the run ended.
  */
-async function shortcutReady(workflow: string): Promise<{ ready: Ready; close?: () => Promise<void> } | WorkflowEnvelope> {
-  const loaded = await readyStartConfig(workflow);
+async function shortcutReady(workflow: string, readOnly: boolean): Promise<{ ready: Ready; close?: () => Promise<void> } | WorkflowEnvelope> {
+  const loaded = await readyStartConfig(workflow, undefined, readOnly);
 
   if ('config' in loaded) return { ready: loaded };
 

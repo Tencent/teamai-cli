@@ -162,14 +162,20 @@ describe('generated workflow skills', () => {
     const first = createDeliveryRecorder();
     await deploy(first);
     const listed = await first.merge(undefined);
-    expect(listed).toEqual({ 'workflow-skills': [skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-session'), skill('check'), skill('gated')] });
+    expect(listed).toEqual({ 'workflow-skills': [skillAt('teamai-import-from-mr'), skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-session'), skill('check'), skill('gated')] });
     const confirmed = createDeliveryRecorder();
     await deploy(confirmed);
     expect(await confirmed.merge(listed)).toEqual(listed);
     await put('gated', null);
     const pruned = createDeliveryRecorder();
     await deploy(pruned);
-    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-session'), skill('check')] });
+    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skillAt('teamai-import-from-mr'), skillAt('teamai-promote-learning'), skillAt('teamai-session-to-task'), skillAt('teamai-share-session'), skill('check')] });
+  });
+
+  it('writes a skill for teamai\'s default teamai-import-from-mr that says when to offer it', async () => {
+    const { deploy, skillAt } = await team({});
+    await deploy();
+    expect(fs.readFileSync(skillAt('teamai-import-from-mr'), 'utf8')).toContain('Use when the person wants learnings from merged MRs or PRs, such as the ones the session-start hint lists.');
   });
 
   it('writes a skill for teamai\'s default teamai-share-session, and none once the team overrides it with invoke: deny', async () => {
