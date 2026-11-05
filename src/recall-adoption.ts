@@ -437,7 +437,10 @@ function viewRoot(index: LogIndex, target: string): RootView {
     }
   }
 
-  return { runs, recalled, adopted: new Set(credited.map((d) => d.key)).size, viaRelation: viaRelationRuns.size, evidence, opened, creditOf, done };
+  // A judge's adopted verdict counts once its upvote is written, as a read counts once credited.
+  const judged = [...index.credits.values()].flatMap((c) => (c.session === target && c.source === 'judge' && c.adopted && c.isWritten ? [c.doc] : []));
+
+  return { runs, recalled, adopted: new Set([...credited.map((d) => d.key), ...judged]).size, viaRelation: viaRelationRuns.size, evidence, opened, creditOf, done };
 }
 
 async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: string): Promise<AdoptionResult> {
@@ -653,7 +656,7 @@ export interface RecallSessionSummary {
   runs: number;
   /** Distinct docs the runs returned. */
   recalled: number;
-  /** Distinct docs the reducer credited: a read still pending is not counted. */
+  /** Distinct docs the reducer credited or a judge found adopted: a read or a verdict still pending is not counted. */
   adopted: number;
   /**
    * Runs in which a countable read opened at least one of the related paths

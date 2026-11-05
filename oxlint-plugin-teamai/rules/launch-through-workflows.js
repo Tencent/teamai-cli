@@ -20,7 +20,6 @@ const LAUNCHERS = {
  */
 const BASELINE = scopedFiles([
   'src/scorers/judge.ts',
-  'src/votes-judge.ts',
 ]);
 
 export default defineRule({

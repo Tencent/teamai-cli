@@ -436,7 +436,7 @@ it('runs the tool of the scope a caller acts for, not of the scope of the workin
   const other = await aiToolFiles({ project: 'codex' }, 'other');
   const caller = createToolCaller({ resolveTool: await threeTools(), resolveScope: async () => here.scope });
 
-  expect(await caller.callTool('hi', { launchedBy: 'votes-judge', scope: other.scope })).toMatchObject({ tool: 'codex' });
+  expect(await caller.callTool('hi', { launchedBy: 'codebase', scope: other.scope })).toMatchObject({ tool: 'codex' });
 });
 
 it('runs the tool the member names now, in a scope where a call ran on the one named before', async () => {

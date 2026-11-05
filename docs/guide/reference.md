@@ -182,7 +182,7 @@ A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, 
 
 #### AI tool (`ai.tool`)
 
-teamai's own AI calls (enrich, codebase, import, promote, the votes judge) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, name a tool id such as `codex`. The first of these that is set wins:
+teamai's own AI calls (enrich, codebase, import, promote) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, name a tool id such as `codex`. The first of these that is set wins:
 
 1. `TEAMAI_AI_TOOL`, for one shell.
 2. `ai.tool` in the config of the workspace or self install the command runs in, `~/.teamai/projects/<slug>/config.yaml`.

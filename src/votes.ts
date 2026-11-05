@@ -15,8 +15,8 @@ import { log } from './utils/logger.js';
 /**
  * Run `fn` while holding an exclusive per-file lock, so the read-modify-write in
  * incrementUpvoted is serialized across processes. This matters because the
- * foreground votesSyncHandler and the detached background votesJudgeHandler
- * (issue #723) can both increment the same votes file: without a lock their
+ * Stop hook's votesSyncHandler and `teamai score write` crediting an adoption
+ * verdict (#1391) can both increment the same votes file: without a lock their
  * load→save windows can overlap and one increment would be lost.
  *
  * Reuses the shared acquireLock/releaseLock (update.ts), which records the owner

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { localAliasesPath } from '../models/aliases.js';
 import { scorerNotes } from '../doctor-scorers.js';
@@ -123,6 +123,17 @@ describe('scorerNotes', () => {
       'Session judging: attended auto, set by scorers/scoring.yaml sessions.attended; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; '
       + 'up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.',
     );
+  });
+
+  it('says TEAMAI_UPVOTE_JUDGE=1 is deprecated and what it reads as, even where the team keeps no scorer (#1391)', async () => {
+    vi.stubEnv('TEAMAI_UPVOTE_JUDGE', '1');
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+
+    expect(await scorerNotes(teamRepo({}))).toEqual([
+      'TEAMAI_UPVOTE_JUDGE=1 is deprecated: no Stop hook judges adoption any more. It reads as scoring.recall_adoption: true and scoring.sessions: { attended: auto } for each key config.yaml leaves unset; set those in config.yaml and unset TEAMAI_UPVOTE_JUDGE.',
+    ]);
   });
 
   it('says nothing when every scorer is valid and known', async () => {

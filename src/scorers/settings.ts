@@ -219,6 +219,13 @@ function isUpvoteJudgeAlias(): boolean {
   return process.env[UPVOTE_JUDGE_ALIAS] === '1';
 }
 
+/** What `teamai doctor` says while TEAMAI_UPVOTE_JUDGE=1 is set. */
+export function upvoteJudgeAliasNotes(): string[] {
+  return isUpvoteJudgeAlias()
+    ? ['TEAMAI_UPVOTE_JUDGE=1 is deprecated: no Stop hook judges adoption any more. It reads as scoring.recall_adoption: true and scoring.sessions: { attended: auto } for each key config.yaml leaves unset; set those in config.yaml and unset TEAMAI_UPVOTE_JUDGE.']
+    : [];
+}
+
 /** recall_adoption: the member config's, or the alias's, over the team's; a machine's false turns it off. */
 function recallAdoptionOf({ config, machine, team, problems }: { config: LocalConfig; machine: LocalConfig['scoring']; team: boolean; problems: string[] }): boolean {
   // The config schema keeps a value that is not true or false as its text.
