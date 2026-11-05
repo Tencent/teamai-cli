@@ -211,6 +211,17 @@ timeout: 45m
 
 `recall` 从不算作一个被更改的 `defaults` 键，matrix 也不能交叉它。不写它时，该 arm 和每个 workflow 克隆一样在没有 recall 下运行。
 
+记录会把这个 arm 的 `recall` 保留下来，因此之后的对比能分清一个 run 测了 recall、另一个没测；只要有 arm 开了它，结果就会多出一列 Recall：
+
+```text
+| Arm | Tool | Model (source) | Recall | Planned | Passed | … |
+| --- | --- | --- | --- | --- | --- | --- |
+| with-relations | claude | claude-opus-5-5 (team) | on | 6 | 4 | … |
+| without-relations | claude | claude-opus-5-5 (team) | on | 6 | 1 | … |
+```
+
+不写它的 arm 读作 `off`。
+
 ### 用 matrix 交叉工具和团队资产
 
 `matrix` 为其值的每种组合生成一个 arm，因此任意两个只差一个值的 arm 只比较这一个值。下面这个例子同时回答：团队资产对每个工具帮助多大，以及带上资产后哪个工具更好：
