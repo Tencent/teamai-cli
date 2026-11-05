@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // oxlint-disable-next-line teamai/workflow-boundaries -- tests the merge snapshot place records before finish
 import { recordMergePreparation } from '../workflow/place/writer.js';
-import { commitWork } from '../workflow/worktree.js';
+import { commitWork, worktreeContentKey } from '../workflow/worktree.js';
 
 const dirs: string[] = [];
 
@@ -109,5 +109,28 @@ describe('commitWork', () => {
     expect(tree).toContain('app/[id]/page.tsx');
     expect(tree).not.toContain('app/i/page.tsx');
     expect(git(dir, 'status', '--porcelain')).toContain('app/i/');
+  });
+
+  it('fingerprints a submodule by the commit checked out in it', async () => {
+    const dir = repo();
+    const origin = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-sub-'));
+    dirs.push(origin);
+    execFileSync('git', ['init', '-q'], { cwd: origin });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: origin });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: origin });
+    fs.writeFileSync(path.join(origin, 'readme.txt'), 'one\n');
+    execFileSync('git', ['add', 'readme.txt'], { cwd: origin });
+    execFileSync('git', ['commit', '-qm', 'one'], { cwd: origin });
+    const first = git(origin, 'rev-parse', 'HEAD').trim();
+    fs.writeFileSync(path.join(origin, 'readme.txt'), 'two\n');
+    execFileSync('git', ['commit', '-qm', 'two', 'readme.txt'], { cwd: origin });
+    const second = git(origin, 'rev-parse', 'HEAD').trim();
+    execFileSync('git', ['clone', '-q', origin, path.join(dir, 'vendor')]);
+    git(path.join(dir, 'vendor'), 'checkout', '-q', first);
+    git(dir, 'update-index', '--add', '--cacheinfo', `160000,${first},vendor`);
+
+    expect(await worktreeContentKey(dir, 'vendor')).toBe(`gitlink:${first}`);
+    git(path.join(dir, 'vendor'), 'checkout', '-q', second);
+    expect(await worktreeContentKey(dir, 'vendor')).toBe(`gitlink:${second}`);
   });
 });
