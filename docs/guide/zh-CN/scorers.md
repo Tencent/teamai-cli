@@ -625,7 +625,7 @@ precision(ops:release) ≈ 31 / (31 + 6) = 84%   不需要时加载了 6 次
 recall(ops:release)    ≈ 31 / (31 + 9) = 78%   需要时没有加载 9 次
 ```
 
-每个技能都用同一份评分标准，只填入技能名和它的命名空间。改写技能描述不会改变评分器的度量，所以改写前后的计数可以直接比较：
+每个技能都用同一份评分标准，只填入技能名。改写技能描述不会改变评分器的度量，所以改写前后的计数可以直接比较：
 
 ```text
 fit     1  <skill> is in skills.used, and the session needed what its description says.
@@ -635,6 +635,8 @@ missed  0  The session needed what the description of <skill> says, <skill> is n
 Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
 ```
 
+这份评分标准是 teamai 的[默认评分器](#默认评分器) `scorers/teamai-routing.md`。团队提交同名文件，就会为每个技能换掉它。
+
 生效的评分器命名空间的 `scoring.yaml` 会覆盖根文件的 `skill_routing`，设为 `false` 时为它的成员关闭路由问题：
 
 ```yaml
@@ -642,7 +644,7 @@ Judge only the team skill <skill>, against its entry in skills.available in evid
 skill_routing: false
 ```
 
-想用自己的评分标准，就保持 `skill_routing` 关闭，为每个技能写一个评分器。下面这个评分器为没有得到 `release` 的会话加了一个 `unavailable` 取值：
+想用单独的方式评判某个技能，就保持 `skill_routing` 关闭，为每个技能写一个评分器。下面这个评分器为没有得到 `release` 的会话加了一个 `unavailable` 取值：
 
 `scorers/ops/routing-release.md`：
 
@@ -724,6 +726,40 @@ skill:   … last turn of an unattended session → teamai score --drain  # 会�
 作为任务的最后一步、在工具退出后运行时，drain 看到的是完整的会话。在会话内部运行时，它按会话此刻的样子评判并发布该会话，之后的对话轮次不会再被评判或发布。
 
 运行和评分标记都保存在 runner 的数据目录中，因此在 drain 之前被终止的 runner 会丢失那次评审。长期运行的虚拟机在每次任务结束时运行 `teamai score --drain`。
+
+## 默认评分器
+
+teamai 为它按条目生成的每类问题附带一份评分标准，作为默认评分器放在安装包里。团队在 `scorers/` 中放一个同名文件，就会在每个成员下次 `teamai pull` 时替换它：
+
+| 默认评分器 | 提出的问题 | 变量 |
+|---|---|---|
+| `scorers/teamai-routing.md` | 会话得到的每个团队技能一个[路由问题](#技能路由) | `skill.name`、`skill.namespace` |
+
+默认评分器是一个评分器文件，文本用 `{{ … }}` 读取变量，按每个条目填入。下面这个评判技能是否值得占用上下文：
+
+`scorers/teamai-routing.md`：
+
+```markdown
+---
+labels:
+  - { value: earned, score: 1, description: "{{ skill.name }} was loaded, and the final reply used what it says." }
+  - { value: skipped, score: 1, description: "{{ skill.name }} was not loaded, and the session did not need it." }
+  - { value: wasted, score: 0, description: "{{ skill.name }} was loaded, and nothing in the final reply used it." }
+  - { value: missed, score: 0, description: "The session needed {{ skill.name }} and did not load it." }
+passingScore: 1
+sessions: true
+---
+Judge only the team skill `{{ skill.name }}`, against its entry in `skills.available` in evidence.json.
+```
+
+文件读取了默认评分器没有提供的变量，或填入变量后不是有效的评分器时，pull 会拒绝它，默认评分器继续生效：
+
+```console
+$ teamai pull
+⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name and skill.namespace; teamai's default runs until the file reads only those
+```
+
+像上面那样，把 frontmatter 里的每个 `{{ … }}` 放在双引号字符串中：pull 会用含引号、冒号和换行的值填入文件，只要有一个值破坏 YAML 就拒绝它。这个文件本身不是评分器：步骤不能列出它，`teamai score --scorer teamai-routing` 也找不到它。评分标准一改，每个问题的评分标准哈希就变了，所以新旧标签分开计数，和[任何评分器](#评分器变更时)一样。
 
 ## teamai-score 工作流
 

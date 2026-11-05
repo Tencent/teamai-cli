@@ -625,7 +625,7 @@ precision(ops:release) ≈ 31 / (31 + 6) = 84%   loaded where it was not needed 
 recall(ops:release)    ≈ 31 / (31 + 9) = 78%   not loaded where it was needed 9 times
 ```
 
-Every skill gets the same rubric, with only the skill's name, and its namespace, filled in. Rewriting a skill's description leaves the scorer's measurement unchanged, so the counts from before and after the change can be compared:
+Every skill gets the same rubric, with only the skill's name filled in. Rewriting a skill's description leaves the scorer's measurement unchanged, so the counts from before and after the change can be compared:
 
 ```text
 fit     1  <skill> is in skills.used, and the session needed what its description says.
@@ -635,6 +635,8 @@ missed  0  The session needed what the description of <skill> says, <skill> is n
 Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
 ```
 
+That rubric is teamai's [default scorer](#default-scorers) `scorers/teamai-routing.md`. A team file of that name changes it for every skill.
+
 An active scorers namespace's `scoring.yaml` overrides the root file's `skill_routing`, and one that sets `false` turns routing off for its members:
 
 ```yaml
@@ -642,7 +644,7 @@ An active scorers namespace's `scoring.yaml` overrides the root file's `skill_ro
 skill_routing: false
 ```
 
-To use your own rubric instead, leave `skill_routing` off and write one scorer per skill. This one adds an `unavailable` value for sessions that were not delivered `release`:
+To judge one skill its own way, leave `skill_routing` off and write one scorer per skill. This one adds an `unavailable` value for sessions that were not delivered `release`:
 
 `scorers/ops/routing-release.md`:
 
@@ -724,6 +726,40 @@ skill:   … last turn of an unattended session → teamai score --drain  # the 
 As the job's last step, after the tool exits, the drain sees the session complete. From inside a session, it judges and publishes that session as it stands, and its later turns are neither judged nor published again.
 
 Runs and scoring marks live in the runner's data home, so a runner killed before its drain loses that judging. A long-lived VM runs `teamai score --drain` at the end of each job.
+
+## Default scorers
+
+teamai ships the rubric of each question it generates per item as a default scorer in the installed package. A team file of the same name in `scorers/` replaces it for every member at their next `teamai pull`:
+
+| Default | Asks | Variables |
+|---|---|---|
+| `scorers/teamai-routing.md` | one [routing question](#skill-routing) per team skill a session was delivered | `skill.name`, `skill.namespace` |
+
+A default is a scorer file whose text reads its variables as `{{ … }}`, filled in for each item. This one judges whether a skill was worth its context:
+
+`scorers/teamai-routing.md`:
+
+```markdown
+---
+labels:
+  - { value: earned, score: 1, description: "{{ skill.name }} was loaded, and the final reply used what it says." }
+  - { value: skipped, score: 1, description: "{{ skill.name }} was not loaded, and the session did not need it." }
+  - { value: wasted, score: 0, description: "{{ skill.name }} was loaded, and nothing in the final reply used it." }
+  - { value: missed, score: 0, description: "The session needed {{ skill.name }} and did not load it." }
+passingScore: 1
+sessions: true
+---
+Judge only the team skill `{{ skill.name }}`, against its entry in `skills.available` in evidence.json.
+```
+
+Pull refuses a file that reads anything but its default's variables, or that is no scorer once they are filled in, and the default keeps running:
+
+```console
+$ teamai pull
+⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name and skill.namespace; teamai's default runs until the file reads only those
+```
+
+Put each `{{ … }}` of the frontmatter inside a double-quoted string, as above: pull fills the file in with values that hold quotes, colons and newlines, and refuses it when one breaks the YAML. The file is not a scorer of its own: no step lists it, and `teamai score --scorer teamai-routing` finds no scorer. A changed rubric is a new rubric hash for each question, so its labels are counted apart from the old ones, as for [any scorer](#when-the-scorer-changes).
 
 ## The teamai-score workflow
 
