@@ -750,7 +750,8 @@ const ROWS: Row[] = [
     project: { 'redis-timeout': 1 },
   },
   {
-    name: '02: day 2, the resumed session recalls again and reads the doc → +1',
+    // #1391: a session credits a doc once, so tool credits never outnumber the sessions that recalled it.
+    name: '02: day 2, the resumed session recalls again and reads the doc → 0',
     trace: async (h) => {
       const { files } = await h.recall('redis timeout');
       await h.read(files[0]);
@@ -759,8 +760,9 @@ const ROWS: Row[] = [
       await h.recall('redis timeout');
       await h.read(files[0]);
       await h.stop();
+      await h.pull();
     },
-    project: { 'redis-timeout': 2 },
+    project: { 'redis-timeout': 1 },
   },
   {
     name: '02: a read 24 h after the run is out of its window → 0',
@@ -2115,6 +2117,17 @@ describe('recall attribution acceptance (#884)', () => {
     await h.pull();
     expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
   }, 30_000);
+
+  it('counts a session that recalled a doc once in its recalled sessions, however often it recalls it', async () => {
+    await h.setUp();
+    await h.recall('redis timeout');
+    await h.stop();
+    await h.recall('redis timeout');
+    await h.stop();
+    await h.pull();
+    const { votes } = await loadUserVotes(path.join(getVotesDir(h.project), 'tester.yaml'));
+    expect(votes['redis-timeout']).toMatchObject({ recalled_count: 2, recalled_session_count: 1 });
+  });
 
   it('11: SubagentStop credits a read locally and pushes nothing mid-turn; the next Stop pushes it', async () => {
     await h.setUp();

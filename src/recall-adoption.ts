@@ -6,7 +6,11 @@
  *   teamai recall ────────────────▶ run ────────────────┼─▶ recall log
  *   Stop / SubagentStop ── creditAdoptedDocs ◀── join ──┤
  *   pull ── drainRecallLog: pending sessions, retention ┘
- *              └─▶ incrementUpvoted (per-session ledger) ─▶ consumed
+ *              ├─▶ incrementUpvoted (per-session ledger) ─▶ consumed, credit
+ *              └─▶ countRecalledSessions ─▶ counted
+ *
+ * A credit line holds a root session's credit of a doc for good, whoever gave
+ * it: a read here, or an adoption label `teamai score write` wrote (#1391).
  *
  * The hook side only classifies the call and appends its lines in one write;
  * it never reads the log. The reducer does the join, at Stop, at SubagentStop
@@ -22,7 +26,7 @@ import { z } from 'zod';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import { appendRecallLines, readRecallLog, recallLogPath } from './recall-log.js';
-import type { Actor, ClaimLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
+import type { Actor, ClaimLine, CreditLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
 import { getVotesDir } from './types.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { isAbsolutePath, pathKey, samePath } from './utils/agent-path.js';
@@ -232,6 +236,10 @@ interface LogIndex {
   claimOf: Map<string, ClaimLine>;
   /** Ids of the evidence already credited. */
   consumed: Set<string>;
+  /** The first credit of each root session and doc, by `creditKey`, with whether its votes were written. */
+  credits: Map<string, CreditLine & { isWritten: boolean }>;
+  /** The root sessions and docs counted in a doc's recalled sessions, by `creditKey`. */
+  counted: Set<string>;
   /** The session a child's work counts for: its links followed up to the root. */
   rootOf: (session: string) => string;
   /** The session a run is settled to, or null when it is unsettled. */
@@ -243,6 +251,9 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
   const claimOf = new Map<string, ClaimLine>();
   const parentOf = new Map<string, string>();
   const consumed = new Set<string>();
+  const credits = new Map<string, CreditLine & { isWritten: boolean }>();
+  const written = new Set<string>();
+  const counted = new Set<string>();
 
   for (const line of lines) {
     if (line.kind === 'claim') {
@@ -254,7 +265,16 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
     } else if (line.kind === 'link') {
       if (!parentOf.has(line.child)) parentOf.set(line.child, line.parent);
     } else if (line.kind === 'consumed') consumed.add(line.evidence);
+    else if (line.kind === 'credit') {
+      const key = creditKey(line.session, line.doc);
+
+      if (!credits.has(key)) credits.set(key, { ...line, isWritten: false });
+
+      if (line.votes === 'written') written.add(line.id);
+    } else if (line.kind === 'counted') counted.add(creditKey(line.session, line.doc));
   }
+
+  for (const credit of credits.values()) credit.isWritten = written.has(credit.id);
 
   // A cycle stops where it closes.
   const rootOf = (session: string): string => {
@@ -271,7 +291,12 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
 
   const ownerOf = (r: RunLine): string | null => claimOf.get(r.run)?.session ?? (r.unambiguous === true ? r.session : null);
 
-  return { lines, claimOf, consumed, rootOf, ownerOf };
+  return { lines, claimOf, consumed, credits, counted, rootOf, ownerOf };
+}
+
+/** The key of a root session's credit of a doc, or of its count in the doc's recalled sessions. */
+function creditKey(session: string, doc: string): string {
+  return `${session}\n${doc}`;
 }
 
 /** Whether `at` falls within the adoption window after the run. */
@@ -419,14 +444,18 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   const { runs, recalled, evidence, opened, creditOf, done } = viewRoot(index, target);
 
   if (runs.length === 0) return { credited: [], recalled };
-  const { consumed } = index;
+  const { consumed, credits } = index;
+  const votePath = path.join(getVotesDir(config), `${config.username}.yaml`);
+
+  if (!await countSessions(config, index, target, runs, votePath)) return { credited: null, recalled };
 
   const keys = new Set<string>();
   const crediting: string[] = [];
 
   for (const e of evidence) {
     if (consumed.has(e.id)) continue;
-    const fresh = opened(e).filter((d) => !done.has(creditOf(d)));
+    // A doc this session credited once, by a read or an adoption label, never credits again (#1391).
+    const fresh = opened(e).filter((d) => !done.has(creditOf(d)) && !credits.has(creditKey(target, d.key)));
 
     if (fresh.length === 0) continue;
 
@@ -437,21 +466,50 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   if (keys.size === 0) return { credited: [], recalled };
 
   const { incrementUpvoted } = await import('./votes.js');
-  const credited = await incrementUpvoted(path.join(getVotesDir(config), `${config.username}.yaml`), [...keys], target);
+  const credited = await incrementUpvoted(votePath, [...keys], target);
 
   if (credited === null) return { credited: null, recalled };
 
   for (const id of crediting) consumed.add(id);
+  const ts = new Date().toISOString();
+  // A key the ledger had already credited is this session's credit too.
+  const creditLines = [...keys].map((doc): CreditLine => ({ kind: 'credit', ts, id: randomUUID(), session: target, doc, source: 'tool', adopted: true, votes: 'written' }));
+
+  for (const line of creditLines) credits.set(creditKey(target, line.doc), { ...line, isWritten: true });
 
   try {
-    const ts = new Date().toISOString();
-    await appendRecallLines(config, crediting.map((evidenceId) => ({ kind: 'consumed', ts, evidence: evidenceId })));
+    await appendRecallLines(config, [...crediting.map((evidenceId): RecallLogLine => ({ kind: 'consumed', ts, evidence: evidenceId })), ...creditLines]);
   } catch (e) {
     // The ledger still holds the credit for its window; past it this evidence could credit again.
     log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { credited, recalled };
+}
+
+/**
+ * Counts root session `target` once in the recalled sessions of each eligible doc its `runs` returned that it was not
+ * counted for yet. False when the votes file was busy: nothing was counted, and the next trigger retries.
+ */
+async function countSessions(config: LocalConfig, index: LogIndex, target: string, runs: readonly RunLine[], votePath: string): Promise<boolean> {
+  const docs = [...new Set(runs.flatMap((r) => r.docs.filter((d) => d.eligible).map((d) => d.key)))].filter((doc) => !index.counted.has(creditKey(target, doc)));
+
+  if (docs.length === 0) return true;
+  const { countRecalledSessions } = await import('./votes.js');
+
+  if (!await countRecalledSessions(votePath, docs)) return false;
+
+  for (const doc of docs) index.counted.add(creditKey(target, doc));
+
+  try {
+    const ts = new Date().toISOString();
+    await appendRecallLines(config, docs.map((doc) => ({ kind: 'counted', ts, session: target, doc })));
+  } catch (e) {
+    // Lost lines count the session again at the next trigger: an overcount of one session, never a lost vote.
+    log.debug(`recall adoption: could not record ${docs.length} counted session(s): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  return true;
 }
 
 /** Eligible docs from this session's settled, linked recall runs, keyed for voting. */
@@ -622,13 +680,20 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
 }
 
 /**
- * Run the reducer for each root session with evidence not yet consumed. It
- * stops at the first busy votes file: the rest stays pending for the next
- * trigger.
+ * Run the reducer for each root session with evidence not yet consumed, or a
+ * recalled doc it was not counted for yet. It stops at the first busy votes
+ * file: the rest stays pending for the next trigger.
  */
 async function creditPendingSessions(config: LocalConfig): Promise<void> {
   const index = indexLog(await readRecallLog(config));
-  const roots = new Set(index.lines.flatMap((l) => l.kind === 'evidence' && !index.consumed.has(l.id) ? [index.rootOf(l.session)] : []));
+
+  const uncounted = index.lines.flatMap((l) => {
+    const owner = l.kind === 'run' ? index.ownerOf(l) : null;
+
+    return l.kind === 'run' && owner !== null && l.docs.some((d) => d.eligible && !index.counted.has(creditKey(index.rootOf(owner), d.key))) ? [index.rootOf(owner)] : [];
+  });
+
+  const roots = new Set([...index.lines.flatMap((l) => l.kind === 'evidence' && !index.consumed.has(l.id) ? [index.rootOf(l.session)] : []), ...uncounted]);
 
   for (const root of roots) {
     if ((await creditRoot(config, index, root)).credited === null) return;
