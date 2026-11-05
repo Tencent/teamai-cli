@@ -414,7 +414,9 @@ describe('post-pull branch previews', () => {
     git(['checkout', '-q', '--no-track', '-b', 'release'], fixture.checkout);
     git(['branch', `--set-upstream-to=${remote}/main`, 'release'], fixture.checkout);
     const roles = await dryRun(fixture, ['roles', 'add', 'remote-role', '--namespaces', 'remote']);
-    expect(roles.code, roles.output).toBe(0);
+    // A dry run answers what the real run would do: the role is taken, so the
+    // preview exits the way `roles add` does rather than reporting a clean run.
+    expect(roles.code, roles.output).toBe(1);
     expect(roles.output).toContain('Role "remote-role" already exists');
     expect(roles.output).not.toContain('Could not fetch');
     const removal = await dryRun(fixture, ['remove', 'rules', 'fresh']);
@@ -499,7 +501,8 @@ describe('post-pull branch previews', () => {
       target = 'remote-role-2';
     }
     const preview = await dryRun(fixture, ['roles', 'add', target, '--namespaces', 'branch']);
-    expect(preview.code, preview.output).toBe(0);
+    // Same rule as above: the preview reports the conflict, so it exits 1.
+    expect(preview.code, preview.output).toBe(1);
     expect(preview.output).toContain(`Role "${target}" already exists`);
     const projects = await dryRun(fixture, ['projects', 'add', 'feature-project', '--namespaces', 'feature']);
     expect(projects.output).toContain('Project "feature-project" already exists');
