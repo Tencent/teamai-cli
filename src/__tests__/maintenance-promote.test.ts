@@ -76,6 +76,22 @@ describe('findPromotionCandidates', () => {
     expect(candidates[0].suggestedCategory).toBe('skills');
   });
 
+  it('never promotes a learning whose votes carry a count that is not a number', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+    makeLearning(learningsDir, 'half-adopted');
+    const recent = new Date().toISOString();
+
+    // Six upvotes of fifteen recalls from three people: enough upvotes and people, far from enough confidence.
+    for (const user of ['alice', 'bob', 'carol']) {
+      fs.writeFileSync(path.join(votesDir, `${user}.yaml`), `version: 2\ndeltas: {}\nvotes:\n  half-adopted:\n    recalled_count: 5\n    upvoted_count: 2\n    judge_upvoted_count: .nan\n    judged_count: .nan\n    last_recalled_at: ${recent}\n    last_upvoted_at: ${recent}\n`);
+    }
+
+    expect(await findPromotionCandidates([learningsDir], votesDir, undefined)).toEqual([]);
+  });
+
   it('suggests the category the learning\'s keywords point to', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     const votesDir = path.join(tmpDir, 'votes');
