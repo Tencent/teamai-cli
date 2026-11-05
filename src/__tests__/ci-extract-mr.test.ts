@@ -30,10 +30,16 @@ vi.mock('../review-store.js', () => ({
   appendPendingReview: (...args: unknown[]) => mockAppendPendingReview(...args),
 }));
 
-const mockImportLocalCheckout = vi.fn();
-vi.mock('../import-codebase.js', () => ({
-  importLocalCheckout: (...args: unknown[]) => mockImportLocalCheckout(...args),
-}));
+const mockStartImport = vi.fn();
+vi.mock('../import-from-repo.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../import-from-repo.js')>();
+  return { ...actual, ImportFromRepo: { ...actual.ImportFromRepo, start: (...args: unknown[]) => mockStartImport(...args) } };
+});
+
+/** How a teamai-import-from-repo run of one checkout ends: it updated the teamwiki, or found nothing to change. */
+function importEnded(updated: boolean) {
+  return { run: 'r1', outcome: 'succeeded', outputs: { text: '', exit_code: 0, imported: [{ source: 'checkout', slug: 'github__org__repo', updated, failed: false }] } };
+}
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
@@ -216,9 +222,9 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
 
     mockImportFromMR.mockReset();
     mockPushRepoDirectly.mockReset();
-    mockImportLocalCheckout.mockReset();
+    mockStartImport.mockReset();
     mockImportFromMR.mockResolvedValue({ learning: undefined, repoUrl: 'https://github.com/org/repo' });
-    mockImportLocalCheckout.mockResolvedValue({ updated: true, deepEnrichComplete: true });
+    mockStartImport.mockResolvedValue(importEnded(true));
   });
 
   afterEach(async () => {
@@ -232,13 +238,12 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
 
     await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo });
 
-    expect(mockImportLocalCheckout).toHaveBeenCalledWith({
-      sourceDir: source,
-      slug: 'github__org__repo',
-      wikiRoot: path.join(teamRepo, 'teamwiki'),
-      incremental: true,
-      repoUrl: 'https://github.com/org/repo',
-      sourceMrUrl: 'https://github.com/org/repo/pull/7',
+    expect(mockStartImport).toHaveBeenCalledWith({
+      mode: 'ci',
+      items: [{ kind: 'dir', dir: source, slug: 'github__org__repo', repoUrl: 'https://github.com/org/repo', mrUrls: ['https://github.com/org/repo/pull/7'] }],
+      settings: { depth: 1, forceSsh: false, incremental: true, skipEnrich: false },
+      target: { wikiRoot: path.join(teamRepo, 'teamwiki') },
+      command: 'teamai ci extract-mr',
     });
     expect(mockPushRepoDirectly).toHaveBeenCalledWith(teamRepo, expect.any(String), ['teamwiki']);
     // Nothing is written into the checkout.
@@ -246,13 +251,13 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
   });
 
   it('pushes no teamwiki/ when the import changed nothing', async () => {
-    mockImportLocalCheckout.mockResolvedValue({ updated: false, deepEnrichComplete: true });
+    mockStartImport.mockResolvedValue(importEnded(false));
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(teamRepo);
 
     await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo });
 
-    expect(mockImportLocalCheckout).toHaveBeenCalled();
+    expect(mockStartImport).toHaveBeenCalled();
     expect(mockPushRepoDirectly).not.toHaveBeenCalled();
   });
 
@@ -265,7 +270,7 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
 
     await ciExtractMr({ url: 'https://github.com/org/repo/pull/8', mode: 'write', teamRepo });
 
-    expect(mockImportLocalCheckout).toHaveBeenCalledWith(expect.objectContaining({ incremental: true }));
+    expect(mockStartImport).toHaveBeenCalledWith(expect.objectContaining({ settings: expect.objectContaining({ incremental: true }) }));
   });
 
   it('finds changed files through the repository default branch when it is not master', async () => {
@@ -284,7 +289,7 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
 
     await ciExtractMr({ url: 'https://github.com/org/repo/pull/9', mode: 'write', teamRepo });
 
-    expect(mockImportLocalCheckout).toHaveBeenCalledWith(expect.objectContaining({ sourceDir: source }));
+    expect(mockStartImport).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({ dir: source })] }));
   });
 
   it('skips the teamwiki update when the team repo is cloned inside the checkout', async () => {
@@ -293,7 +298,7 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
 
     await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo: './team-repo' });
 
-    expect(mockImportLocalCheckout).not.toHaveBeenCalled();
+    expect(mockStartImport).not.toHaveBeenCalled();
     expect(mockPushRepoDirectly).not.toHaveBeenCalled();
   });
 });

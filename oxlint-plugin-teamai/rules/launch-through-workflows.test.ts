@@ -19,9 +19,9 @@ describe('teamai/launch-through-workflows', () => {
   rule.valid('allows a workflow driver to launch', `import { runConfined } from '../../../tool-launch/confined.js'; import { runTool } from '../../../tool-launch/run.js';`, { filename: 'src/workflow/drivers/local/feature.ts' });
   rule.valid('allows the launcher its own modules', `import { runTool } from './run.js';`, { filename: 'src/tool-launch/call.ts' });
   rule.valid('allows tests to drive the launcher', `vi.mock('../tool-launch/call.js'); import { callTool } from '../tool-launch/call.js';`, { filename: 'src/__tests__/feature.test.ts' });
-  rule.valid('allows a caller in the baseline', `import { callTool } from './tool-launch/call.js';`, { filename: 'src/codebase.ts' });
-  rule.valid('allows a dynamic import in a baseline caller', `const { callTool } = await import('../tool-launch/call.js');`, { filename: 'src/maintenance/promote.ts' });
+  rule.valid('allows a caller in the baseline', `import { callTool } from './tool-launch/call.js';`, { filename: 'src/import-local.ts' });
+  rule.valid('allows a dynamic import in a baseline caller', `const { callTool } = await import('./tool-launch/call.js');`, { filename: 'src/import-mr.ts' });
   rule.invalid('reports a baseline caller that no longer launches', `import { isOverrideInvalid } from './tool-launch/member-tools.js';`, (output) => {
     expect(output).toContain('BASELINE');
-  }, { filename: 'src/codebase.ts' });
+  }, { filename: 'src/import-local.ts' });
 });

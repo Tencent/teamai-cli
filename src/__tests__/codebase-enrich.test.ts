@@ -3,17 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../tool-launch/call.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
-  callTool: vi.fn(async () => {
-    throw new Error('mock: AI unavailable');
-  }),
-  callToolParallel: vi.fn(async () => {
-    throw new Error('mock: AI batch unavailable');
-  }),
-}));
-
-import { callToolParallel } from '../tool-launch/call.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { CodebaseEnrich } from '../enrich-with-ai.js';
 import { log } from '../utils/logger.js';
@@ -29,7 +18,6 @@ const DOMAIN_REPLY = '{"domain":"UI kit","description":"renders widgets","keywor
 
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.mocked(callToolParallel).mockReset();
   for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -44,10 +32,6 @@ function twoModuleCheckout(): string {
   fs.writeFileSync(path.join(root, 'lib', 'util.ts'), classes('Util'));
 
   return root;
-}
-
-function moduleNameOf(prompt: string): keyof typeof MODULE_REPLY {
-  return prompt.includes('模块名: lib') ? 'lib' : 'src';
 }
 
 function evidence(root: string): { manifest: unknown; domains: unknown } {
@@ -73,15 +57,9 @@ async function enrichSteps(wikiRoot: string, answers: { module: (name: string) =
 }
 
 describe('teamai-codebase-enrich steps', () => {
-  it('write the same manifest and domains as an extract that enriches in-process', async () => {
-    const inProcess = twoModuleCheckout();
-    vi.mocked(callToolParallel)
-      .mockImplementationOnce(async (tasks) => tasks.map((task) => task.parse(MODULE_REPLY[moduleNameOf(task.prompt)])))
-      .mockImplementationOnce(async (tasks) => tasks.map((task) => task.parse(DOMAIN_REPLY)));
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    await extractCodebase({ path: inProcess, project: 'widget', json: true });
-
+  it('write the manifest and domains AI enrich always wrote', async () => {
     const stepped = twoModuleCheckout();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
     await extractCodebase({ path: stepped, project: 'widget', json: true, skipEnrich: true });
     const ran = await enrichSteps(path.join(stepped, 'teamwiki'), {
       module: (name) => ({ text: MODULE_REPLY[name === 'lib' ? 'lib' : 'src'], failure: '' }),
@@ -91,7 +69,22 @@ describe('teamai-codebase-enrich steps', () => {
     expect(ran.planned.modules.map((item) => item.name)).toEqual(['src', 'lib']);
     expect(ran.summary).toEqual({ count: 2, project: 'widget', modules: 'src: domain=widgets, layer=service, summary=draws widgets\nlib: domain=widgets, layer=data, summary=shared helpers' });
     expect(ran.written).toEqual({ modules: 2, domain: 'UI kit' });
-    expect(evidence(stepped)).toEqual(evidence(inProcess));
+    // What the in-process enrich wrote for these replies before it was a workflow.
+    expect(evidence(stepped)).toEqual({
+      manifest: {
+        schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+        project: 'widget',
+        components: [
+          {
+            slug: 'src', docPath: 'evidence/code/widget/src.md', title: 'src', category: 'service', confidence: 'INFERRED', responsibilities: ['render'],
+            entrypoints: ['App0 (src/app.ts:2)', 'App1 (src/app.ts:3)', 'App2 (src/app.ts:4)', 'App3 (src/app.ts:5)', 'App4 (src/app.ts:6)'],
+          },
+          { slug: 'lib', docPath: 'evidence/code/widget/lib.md', title: 'lib', category: 'data', confidence: 'INFERRED', responsibilities: ['helpers'], entrypoints: [] },
+        ],
+        edges: [{ from: 'src', to: 'lib', relation: 'DEPENDS_ON', confidence: 'EXTRACTED', source: 'code-ast', reason: 'src imports from lib' }],
+      },
+      domains: { domain: 'UI kit', description: 'renders widgets', keywords: ['widget', 'render'], components: ['src', 'lib'] },
+    });
   });
 
   it('plans the facts the module prompt names', async () => {
@@ -110,7 +103,7 @@ describe('teamai-codebase-enrich steps', () => {
     });
   });
 
-  it('keep the fallback manifest when a module could not be asked, as the in-process enrich does', async () => {
+  it('keep the fallback manifest when a module could not be asked', async () => {
     const root = twoModuleCheckout();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
@@ -126,6 +119,20 @@ describe('teamai-codebase-enrich steps', () => {
     expect(ran.written).toEqual({ modules: 0, domain: '' });
     expect(warn).toHaveBeenCalledWith('enrichWithAI: module analysis failed (non-blocking): 1 AI task(s) failed');
     expect(fs.readFileSync(path.join(root, 'teamwiki', 'evidence', 'code', 'widget', '_manifest.json'), 'utf8')).toBe(fallback);
+  });
+
+  it('leave out a module whose reply names no domain and keep the modules whose reply does', async () => {
+    const root = twoModuleCheckout();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
+
+    await enrichSteps(path.join(root, 'teamwiki'), {
+      module: (name) => ({ text: name === 'lib' ? '{"responsibilities":["helpers"],"summary":"shared helpers"}' : MODULE_REPLY.src, failure: '' }),
+      domain: { text: DOMAIN_REPLY, failure: '' },
+    });
+
+    // An array matches only at the same length: lib is left out.
+    expect(evidence(root).manifest).toMatchObject({ components: [{ slug: 'src', category: 'service' }] });
   });
 
   it('write the manifest without a domain when the domain could not be asked', async () => {
