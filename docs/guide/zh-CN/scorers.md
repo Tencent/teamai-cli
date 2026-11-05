@@ -665,6 +665,37 @@ Judge only the team skill `release`, against its entry in `skills.available` in 
 
 设置 [`batch: true`](#批量评审) 后，一次评审调用回答一个会话中要求同一模型和工具的所有评分器。每个评分器各自抽样会话，所以十个按技能、抽样率 25% 的评分器仍会覆盖约 94% 的会话，而只得到约四分之一的回答。抽样率为 100% 时，同样的调用会回答每个评分器。想少花一些，就调低 `daily_limit`，而不是 `samplingRate`。
 
+#### Recall 采纳
+
+采纳问题判断会话是否用了 `teamai recall` 给它、但它从未打开的每篇文档，例如 recall 子 agent 总结过的文档。会话打开过的文档不经评审直接计分。可以为团队开启，也可以只为自己开启：
+
+```yaml
+# 团队仓库中的 scorers/scoring.yaml
+recall_adoption: true
+```
+
+```yaml
+# ~/.teamai/projects/<project>/config.yaml，单个成员
+scoring:
+  recall_adoption: true
+  sessions: { attended: auto }
+```
+
+成员的 `recall_adoption` 优先于团队的。工作区或 self 作用域之下，`~/.teamai/config.yaml` 只能关闭它，因此一台机器永远不会自行开始付费评审。`TEAMAI_UPVOTE_JUDGE=1` 相当于上面的成员设置（只补成员配置没写的键），`teamai doctor` 会提示它已弃用。
+
+结束的根会话为每篇这样的文档得到一个问题 `teamai:adoption:<hash>`，以文档的投票键命名：
+
+```text
+session 7c1e…  recalled: pod-startup-timeouts, helm-values, retry-policy
+opened by a tool call  → helm-values                      credited, no judge
+teamai:adoption:3f9a1c… (pod-startup-timeouts)  → adopted   upvote, judged_count +1
+teamai:adoption:b27e04… (retry-policy)          → ignored   judged_count +1
+```
+
+评审者在证据的 `recalled/<hash>.md` 中读到会话当时拿到的文档：团队知识根目录下 `.md` 文件的前 1,200 个字符。在那里读不到的文档不提问。这些问题共用一次评审启动，并计入 `daily_limit`。每个根会话中一篇文档只计分一次，读取或判定，以先到者为准；按需再次评审只存标签，不再计分。投票文件被占用时，判定先留在 recall 日志中，下一次 `teamai score` 或 `teamai pull` 写入。这些计数如何影响置信度见[知识库](knowledge.md#recall-采纳与-upvote)。
+
+评分标准是[默认评分器](#默认评分器) `scorers/teamai-adoption.md`。
+
 ### teamai-finished-sessions
 
 ```text
@@ -734,6 +765,7 @@ teamai 为它按条目生成的每类问题附带一份评分标准，作为默�
 | 默认评分器 | 提出的问题 | 变量 |
 |---|---|---|
 | `scorers/teamai-routing.md` | 会话得到的每个团队技能一个[路由问题](#技能路由) | `skill.name`、`skill.namespace` |
+| `scorers/teamai-adoption.md` | 会话从未打开的每篇已召回文档一个[采纳问题](#recall-采纳) | `doc.id`、`doc.path`、`doc.file` |
 
 默认评分器是一个评分器文件，文本用 `{{ … }}` 读取变量，按每个条目填入。下面这个评判技能是否值得占用上下文：
 

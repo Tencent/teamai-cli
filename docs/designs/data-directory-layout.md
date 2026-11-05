@@ -981,12 +981,12 @@ diagnostic logging still applies.
 Negative feedback reads the team's votes without persisting a v1 → v2 upgrade there. A successful downvote is recorded in the scope's local votes and reaches the team's reports on sync.
 
 
-The recall hook's vote judge, which starts no git process, reads the same answer
+An adoption question, which starts no git process, reads the same answer
 from git's files: the checkout's `.git` file names its gitdir, whose `commondir`
 leads to the owning repository's git dir, compared (realpath'd) with this
 project's. When they differ, or either cannot be read (a gitdir without
 `commondir` included), the checkout's roots
-leave the judge's allowed read roots; a path with no `.git` is judged as before.
+leave the roots a judge may read a recalled doc from; a path with no `.git` is read as before.
 
 The queue is the same partition directory in both modes, and its learnings were
 written for the previous install's repository. A queue's owner is its install's

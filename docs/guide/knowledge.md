@@ -118,20 +118,28 @@ problems as warnings and still publishes.
 
 ### Recall adoption and upvotes
 
-With `TEAMAI_UPVOTE_JUDGE=1`, the optional judge can also credit guidance used through a summary. Claude-family tools use their transcript; Codex, Muse and ZCode use the Stop payload's final reply and this session's settled recall log. Only eligible recalled docs can receive a vote, once per session.
-
-Opening a document that recall returned counts as one upvote for this session. You can also record it by hand:
+Opening a document that recall returned counts as one upvote for this session. A doc the session used without opening it, through a recall subagent's summary for example, is credited by an [adoption question](scorers.md#recall-adoption) once `recall_adoption` is on. Only eligible recalled docs can receive a vote, once per root session. You can also record it by hand:
 
 ```bash
 teamai recall feedback --positive <docId>
 teamai recall feedback --negative <docId>
 ```
 
+Confidence, which ranks, prunes and promotes a doc, rates how often the sessions that recalled it adopted it. Reads rate every session that recalled the doc; a judge's verdicts rate the rest:
+
+```text
+pod-startup-timeouts   recalled in 10 sessions, upvoted 5 times, 2 of them by a judge, which was asked 4 times
+tool  = 5 − 2 = 3            r = 3 / 10 = 0.3
+judge = 2 / 4 = 0.5          ratio = 0.3 + 0.5 × (1 − 0.3) = 0.65
+```
+
+Before, the ratio was upvotes ÷ recalls, here 0.5. A votes file written before this counts one session per recall.
+
 Local feedback affects ranking on the next index rebuild (for example, `teamai pull`), even when report uploads are disabled or fail. Rebuilds combine confirmed team votes with undelivered local votes. If the votes file is busy, that rebuild uses confirmed votes only.
 
 Index rebuilds reuse unchanged files' parsed tokens. Changes, deletions, source selection and votes still take effect on every build. `~/.teamai/debug.log` reports how many files were reused, rebuilt or dropped. Older indexes and a different Node/ICU version trigger a full parse once.
 
-When the log has runs, `teamai stats` lists the last 10 sessions that ran recall: their runs, the docs recalled and adopted, and how many runs the session opened a `Related:` line's file from.
+When the log has runs, `teamai stats` lists the last 10 sessions that ran recall: their runs, the docs recalled and adopted (read, or judged adopted), and how many runs the session opened a `Related:` line's file from.
 
 ### Enabling / Disabling Recall
 

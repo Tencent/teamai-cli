@@ -102,20 +102,28 @@ related:
 
 ### Recall 采纳与 upvote
 
-设置 `TEAMAI_UPVOTE_JUDGE=1` 后，可选 judge 也能为通过摘要采纳的指导计分。Claude 系工具使用 transcript；Codex、Muse 和 ZCode 使用 Stop 事件的最终回复与本会话已确认的 recall 日志。只有本作用域允许计分的已召回文档能获得 upvote，每个会话至多一次。
-
-这次会话打开了 recall 返回的文档，就计一次 upvote。也可以手动记：
+这次会话打开了 recall 返回的文档，就计一次 upvote。会话没打开却用上的文档（例如通过 recall 子 agent 的总结），在开启 `recall_adoption` 后由[采纳问题](scorers.md#recall-采纳)计分。只有本作用域允许计分的已召回文档能获得 upvote，每个根会话至多一次。也可以手动记：
 
 ```bash
 teamai recall feedback --positive <docId>
 teamai recall feedback --negative <docId>
 ```
 
+置信度决定文档的排序、清理和晋升，它衡量召回过该文档的会话中有多少采纳了它。读取为所有召回过它的会话打分；评审者的判定为其余会话打分：
+
+```text
+pod-startup-timeouts   recalled in 10 sessions, upvoted 5 times, 2 of them by a judge, which was asked 4 times
+tool  = 5 − 2 = 3            r = 3 / 10 = 0.3
+judge = 2 / 4 = 0.5          ratio = 0.3 + 0.5 × (1 − 0.3) = 0.65
+```
+
+此前该比例是 upvote 数 ÷ 召回次数，这里为 0.5。此前写下的投票文件按每次召回一个会话计算。
+
 本地反馈在下次重建索引（例如 `teamai pull`）时影响排序，即使上报被禁用或失败也生效。重建时合并已确认的团队票数和本地未送达的票；若投票文件正被占用，本次重建只使用已确认票数。
 
 重建索引会复用未变文件的解析和分词结果；文件修改、删除、来源选择和票数仍在每次构建时生效。`~/.teamai/debug.log` 会记录复用、重建和移除的文件数。旧索引或不同的 Node/ICU 版本会触发一次完整解析。
 
-`teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话：各会话的运行次数、召回与采纳的文档数，以及会话从 `Related:` 行打开相关文件的运行次数。
+`teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话：各会话的运行次数、召回与采纳（读取过，或被判定采纳）的文档数，以及会话从 `Related:` 行打开相关文件的运行次数。
 
 ### 开启 / 关闭 Recall
 

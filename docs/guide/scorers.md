@@ -665,6 +665,37 @@ Judge only the team skill `release`, against its entry in `skills.available` in 
 
 With [`batch: true`](#batching), one judge launch answers all of a session's scorers that ask for the same model and tool. Each scorer samples sessions on its own, so ten per-skill scorers at 25% still reach about 94% of sessions while getting about a quarter of the answers. At 100%, the same launches answer every scorer. To spend less, lower `daily_limit` instead of `samplingRate`.
 
+#### Recall adoption
+
+Adoption questions ask whether a session used each doc `teamai recall` gave it but it never opened, such as one a recall subagent summarised. A doc the session opened is credited without a judge. Turn them on for the team, or for yourself:
+
+```yaml
+# scorers/scoring.yaml in the team repo
+recall_adoption: true
+```
+
+```yaml
+# ~/.teamai/projects/<project>/config.yaml, one member
+scoring:
+  recall_adoption: true
+  sessions: { attended: auto }
+```
+
+A member's `recall_adoption` wins over the team's. `~/.teamai/config.yaml` below a workspace or self scope can only turn it off, so a machine never starts paid judging. `TEAMAI_UPVOTE_JUDGE=1` reads as the member setting above for each key the member config leaves unset, and `teamai doctor` says it is deprecated.
+
+A finished root session gets one question per such doc, `teamai:adoption:<hash>`, named after the doc's vote key:
+
+```text
+session 7c1e…  recalled: pod-startup-timeouts, helm-values, retry-policy
+opened by a tool call  → helm-values                      credited, no judge
+teamai:adoption:3f9a1c… (pod-startup-timeouts)  → adopted   upvote, judged_count +1
+teamai:adoption:b27e04… (retry-policy)          → ignored   judged_count +1
+```
+
+The judge reads the doc as the session got it, in `recalled/<hash>.md` of the evidence: at most 1,200 characters of a `.md` file under the team's knowledge roots. A doc it cannot read there gets no question. The questions share one judge launch and count toward `daily_limit`. A doc is credited once per root session, by a read or by a verdict, whichever comes first; judging it again on demand stores a label and credits nothing. When the votes file is busy, the verdict waits in the recall log and the next `teamai score` or `teamai pull` writes it. See [Knowledge](knowledge.md#recall-adoption-and-upvotes) for what the counts do to confidence.
+
+The rubric is the [default scorer](#default-scorers) `scorers/teamai-adoption.md`.
+
 ### teamai-finished-sessions
 
 ```text
@@ -734,6 +765,7 @@ teamai ships the rubric of each question it generates per item as a default scor
 | Default | Asks | Variables |
 |---|---|---|
 | `scorers/teamai-routing.md` | one [routing question](#skill-routing) per team skill a session was delivered | `skill.name`, `skill.namespace` |
+| `scorers/teamai-adoption.md` | one [adoption question](#recall-adoption) per recalled doc a session never opened | `doc.id`, `doc.path`, `doc.file` |
 
 A default is a scorer file whose text reads its variables as `{{ … }}`, filled in for each item. This one judges whether a skill was worth its context:
 
