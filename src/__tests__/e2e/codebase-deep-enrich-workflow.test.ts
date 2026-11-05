@@ -229,6 +229,39 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     expect(box.calls().slice(0, 5).map((line) => line.split(' ')[0])).toEqual(['start', 'start', 'end', 'end', 'start']);
   });
 
+  it('writes an --output teamwiki in the checkout with no teamai init, leaving nothing in the member\'s home', async () => {
+    const box = sandbox();
+    fs.cpSync(box.wikiRoot, path.join(box.project, 'wiki', 'teamwiki'), { recursive: true });
+    fs.rmSync(path.join(box.home, '.teamai'), { recursive: true, force: true });
+    const docs = path.join(box.project, 'wiki', 'teamwiki', 'evidence', 'code', 'widget', 'docs');
+
+    const ran = await box.run(['codebase', '--deep-enrich', '--project', 'widget', '--output', './wiki'], { FAKE_FAIL: 'cli' });
+
+    expect(ran.code, ran.stderr).toBe(1);
+    expect(ran.stdout).toContain('Deep enrichment incomplete: project=widget, missing component docs: cli\n');
+    expect(ran.stderr.split('\n')).toEqual(['✖ Step "components[1].ask" failed with tool_failed: AI call failed (tool: claude): Authentication failed', '']);
+    expect(box.calls().filter((line) => line.startsWith('start cli'))).toHaveLength(1);
+    expect(fs.readdirSync(docs)).toContain('api.md');
+    expect(fs.readdirSync(docs)).not.toContain('cli.md');
+    // A run with no init keeps its config and run files out of the member's data home, which holds the log as before.
+    const teamai = path.join(box.home, '.teamai');
+    expect((fs.existsSync(teamai) ? fs.readdirSync(teamai) : []).filter((name) => name !== 'debug.log')).toEqual([]);
+  });
+
+  it('writes an --output teamwiki in the checkout of a member with teamai init, publishing nothing', async () => {
+    const box = sandbox();
+    fs.cpSync(box.wikiRoot, path.join(box.project, 'wiki', 'teamwiki'), { recursive: true });
+    const docs = path.join(box.project, 'wiki', 'teamwiki', 'evidence', 'code', 'widget', 'docs');
+
+    const ran = await box.run(['codebase', '--deep-enrich', '--project', 'widget', '--output', './wiki']);
+
+    expect(ran.code, ran.stderr).toBe(0);
+    expect(ran.stdout).toContain('Deep enrichment complete: project=widget\n');
+    expect(fs.readdirSync(docs)).toContain('cli.md');
+    expect(fs.existsSync(box.docs)).toBe(false);
+    expect(lastCommit(box.remote)).toBe('wiki');
+  });
+
   it('holds the import lock of the team repo while the hidden deep-enrich writes its teamwiki', async () => {
     const box = sandbox();
 

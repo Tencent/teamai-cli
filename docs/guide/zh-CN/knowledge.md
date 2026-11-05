@@ -218,7 +218,7 @@ teamai codebase --lint
 
 没有团队仓库时，给 `teamai import` 和 `teamai codebase` 都加上 `--output <dir>`，两者都用 `<dir>/teamwiki/`。
 
-在团队仓库里，`--deep-enrich` 运行默认工作流 [`teamai-codebase-deep-enrich`](workflow.md#默认工作流)。你的 AI 工具为每个组件写一份设计文档，一次五个，然后写架构总览和场景序列图。图谱文档不需要 AI。工具没能写出的文档会被点名，其他文档保留，命令以 1 退出。再运行一次，或重试它点名的步骤，就只补写缺少的部分。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具无法运行时，命令失败，不写任何内容。
+`--deep-enrich` 运行默认工作流 [`teamai-codebase-deep-enrich`](workflow.md#默认工作流)。你的 AI 工具为每个组件写一份设计文档，一次五个，然后写架构总览和场景序列图。图谱文档不需要 AI。工具没能写出的文档会被点名，其他文档保留，命令以 1 退出。再运行一次，或重试它点名的步骤，就只补写缺少的部分。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具无法运行时，命令失败，不写任何内容。使用 `--output` 且没有 `teamai init` 时，运行使用自己的配置，并在结束时删除它，所以不会点名可重试的步骤：再运行一次命令即可。
 
 ```text
 $ teamai codebase --deep-enrich --project orders-api

@@ -173,11 +173,17 @@ that cannot run as `tool_unconfigured`, and the fallback must not hide it, so an
 ### Runs with no `teamai init`
 
 ```text
-$ teamai ci extract-mr --url https://git.example.com/acme/api/-/merge_requests/42 --output ./out
+$ cd ~/src/orders-api
+$ teamai codebase --deep-enrich --project orders-api --output ./wiki
 ```
 
-Without a config, the start builds one for the run: a temporary data home, the `--team-repo` when given, a `private`
-run. Steps get the same config through their environment.
+Where no config serves the directory, a shortcut's start builds one for the run: a temporary directory holding a
+workspace config for the current checkout, its data home and an empty team repo. The run is driven on the local driver
+in the command's process. Every process of its steps gets the config file as `TEAMAI_EPHEMERAL_CONFIG` and loads it
+instead of resolving one from its directory. The directory is removed when the run ends, so the command prints no
+resume or retry command, starts no drain, and leaves nothing in `~/.teamai`. `workflow start` itself still needs
+`teamai init`. No shortcut that takes `--team-repo` runs as a workflow yet; `ci extract-mr` will give that repo in place
+of the empty one.
 
 ### Shortcuts
 
@@ -327,8 +333,9 @@ proposes `scorers/<name>.md` to the team as a pull request.
 - Imported rules, skills and docs land in `rules/`, `skills/` and `docs/` instead of `learnings/`.
 - In a team repo, `codebase --deep-enrich` asks for each component doc once, with no sequential retry of the batch,
   names each failed step with its retry command, and `--json` prints the run envelope. The hidden `deep-enrich` holds
-  the import lock. A teamwiki outside a team repo (`--output`, a hidden `--wiki-root`) is still written in-process
-  until a run needs no `teamai init` and a step may write outside its checkout.
+  the import lock. A teamwiki outside a team repo (`--output`, a hidden `--wiki-root`) is written by the same
+  workflow, with no `teamai init` needed, and the hidden `deep-enrich` prints the result line there too. A failure
+  several steps share, such as a tool that cannot run, is said once with the step ids.
 
 ## Test seams
 

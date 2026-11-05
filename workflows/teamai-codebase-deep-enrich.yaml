@@ -10,8 +10,8 @@ steps:
   - id: plan
     command: teamai codebase deep-enrich-plan --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --max-modules "$MAX_MODULES"
     env: { WIKI_ROOT: "{{ inputs.wiki_root }}", PROJECT: "{{ inputs.project }}", MAX_MODULES: "{{ inputs.max_modules }}" }
-    # A self-mode teamwiki lives under .teamai/ of this checkout.
-    writes: [.teamai/]
+    # The teamwiki may be in this checkout: under .teamai/ in self mode, or an --output directory.
+    writes: ["{{ inputs.wiki_root }}"]
     output:
       components: [{ slug: string, responsibilities: string, facts: string, call_chains: string, deps: string }]
       architecture: { needed: boolean, modules: string, edges: string, interfaces: string }
@@ -68,7 +68,7 @@ steps:
             SLUG: "{{ item.slug }}"
             TEXT: "{{ steps.ask.outputs.text }}"
             WHY: "{{ steps.ask.failure.message }}"
-          writes: [.teamai/]
+          writes: ["{{ inputs.wiki_root }}"]
   - id: components-tool
     needs: [components]
     # A tool the member names that cannot run fails the run, rather than skipping every doc.
@@ -124,13 +124,13 @@ steps:
       PROJECT: "{{ inputs.project }}"
       TEXT: "{{ steps.architecture.outputs.text }}"
       WHY: "{{ steps.architecture.failure.message }}"
-    writes: [.teamai/]
+    writes: ["{{ inputs.wiki_root }}"]
   - id: graph
     needs: [components, architecture-write]
     if: steps.components.outcome == 'success' || steps.components.outcome == 'failed'
     command: teamai codebase deep-enrich-graph --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --max-modules "$MAX_MODULES"
     env: { WIKI_ROOT: "{{ inputs.wiki_root }}", PROJECT: "{{ inputs.project }}", MAX_MODULES: "{{ inputs.max_modules }}" }
-    writes: [.teamai/]
+    writes: ["{{ inputs.wiki_root }}"]
     output: { scenarios: { needed: boolean, architecture: string, call_chains: string, modules: string } }
   - id: scenarios
     needs: [graph]
@@ -185,7 +185,7 @@ steps:
       MAX_MODULES: "{{ inputs.max_modules }}"
       TEXT: "{{ steps.scenarios.outputs.text }}"
       WHY: "{{ steps.scenarios.failure.message }}"
-    writes: [.teamai/]
+    writes: ["{{ inputs.wiki_root }}"]
     output: { text: string, exit_code: number, complete: boolean, missing_components: [string], missing_architecture: boolean }
 outputs:
   text: steps.finish.outputs.text

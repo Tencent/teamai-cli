@@ -234,7 +234,7 @@ teamai codebase --lint
 
 Without a team repo, add `--output <dir>` to both `teamai import` and `teamai codebase`; both then use `<dir>/teamwiki/`.
 
-In a team repo, `--deep-enrich` runs the default workflow [`teamai-codebase-deep-enrich`](workflow.md#default-workflows). Your AI tool writes a design doc for each component, five at a time, then the architecture overview and the scenario diagrams. The graph docs need no AI. A doc the tool could not write is named, the others are kept, and the command exits 1. Run it again, or retry the step it names, to write only what is missing. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, it fails and writes nothing.
+`--deep-enrich` runs the default workflow [`teamai-codebase-deep-enrich`](workflow.md#default-workflows). Your AI tool writes a design doc for each component, five at a time, then the architecture overview and the scenario diagrams. The graph docs need no AI. A doc the tool could not write is named, the others are kept, and the command exits 1. Run it again, or retry the step it names, to write only what is missing. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, it fails and writes nothing. With `--output` and no `teamai init`, the run uses a config of its own that it removes when it ends, so it names no step to retry: run the command again.
 
 ```text
 $ teamai codebase --deep-enrich --project orders-api

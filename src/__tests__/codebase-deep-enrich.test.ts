@@ -608,28 +608,33 @@ describe('codebase deep-enrich', () => {
     expect(await DeepEnrich.finish(target, { text: '', failure: '' })).toMatchObject({ missing_components: ['Auth'] });
   });
 
-  it('writes an --output teamwiki in this process, with no run, and says what is missing as before', async () => {
+  it('starts teamai-codebase-deep-enrich on an --output teamwiki', async () => {
     const root = createEnrichFixture();
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.mocked(runShortcut).mockResolvedValue({ run: 'r1', outcome: 'succeeded', outputs: { exit_code: 1 } });
 
     await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root });
 
-    expect(runShortcut).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs', 'graph-g1-relations.md'))).toBe(true);
-    expect(log).toHaveBeenCalledWith('Deep enrichment incomplete: project=faketest, missing component docs: Auth, missing architecture.md');
-    expect(process.exitCode).toBe(1);
+    expect(runShortcut).toHaveBeenCalledWith({
+      workflow: 'teamai-codebase-deep-enrich',
+      inputs: { wiki_root: path.join(root, 'teamwiki'), project: 'faketest', max_modules: 0, concurrency: 5 },
+      command: 'teamai codebase --deep-enrich --project faketest',
+      json: false,
+    });
+    expect(callTool).not.toHaveBeenCalled();
+    expect(callToolParallel).not.toHaveBeenCalled();
   });
 
-  it('lets the hidden deep-enrich write a --wiki-root with no teamai init, in this process', async () => {
+  it('starts teamai-codebase-deep-enrich on a hidden --wiki-root with no teamai init', async () => {
     const root = createEnrichFixture();
     vi.mocked(autoDetectInit).mockRejectedValue(new NotInitializedError('teamai is not initialized. Run `teamai init` first.'));
+    vi.mocked(runShortcut).mockResolvedValue({ run: 'r1', outcome: 'succeeded', outputs: { exit_code: 0 } });
     const wikiRoot = path.join(root, 'teamwiki');
 
-    const outcome = await startDeepEnrich({ target: await hiddenDeepEnrichTarget(wikiRoot), project: 'faketest', json: false, command: 'teamai deep-enrich --project faketest' });
+    const ended = await startDeepEnrich({ target: await hiddenDeepEnrichTarget(wikiRoot), project: 'faketest', json: false, command: 'teamai deep-enrich --project faketest' });
 
-    expect(outcome).toMatchObject({ kind: 'in-process', result: { complete: false, missingComponents: ['Auth'] } });
-    expect(runShortcut).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(wikiRoot, 'evidence', 'code', 'faketest', 'docs', 'graph-g1-relations.md'))).toBe(true);
+    expect(ended).toEqual({ run: 'r1', outcome: 'succeeded', outputs: { exit_code: 0 } });
+    expect(runShortcut).toHaveBeenCalledWith(expect.objectContaining({ inputs: { wiki_root: wikiRoot, project: 'faketest', max_modules: 0, concurrency: 5 } }));
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it('rejects a codebase outside evidence/code/ and a max-modules that is not a whole number', () => {
