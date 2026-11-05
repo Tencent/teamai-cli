@@ -129,6 +129,24 @@ describe('teamai import draft-mr', () => {
     expect((await ImportFromMr.draft({ url: URLS[0], title: 'Retry budget', reply: 'just prose' })).title).toBe('Retry budget');
   });
 
+  it.each([
+    { tags: 'agent', said: [] },
+    { tags: 42, said: [] },
+    { tags: { topic: 'agent' }, said: [] },
+    { tags: ['agent', null, 42, { topic: 'retry' }, ['nested'], 'retry'], said: ['agent', 'retry'] },
+  ])('keeps the draft as written and says only its string tags when they are $tags', async ({ tags, said }) => {
+    const reply = `---\ntitle: Retry budget\ntags: ${JSON.stringify(tags)}\n---\nBody`;
+
+    const drafted = await ImportFromMr.draft({ url: URLS[0], title: 'MR title', reply });
+
+    expect(drafted).toMatchObject({ title: 'Retry budget', tags: said });
+    expect(fs.readFileSync(drafted.file, 'utf8')).toBe(reply);
+  });
+
+  it.each([{ title: 42 }, { title: true }, { title: { text: 'x' } }, { title: ['x'] }])('takes the MR title when the frontmatter title is $title', async ({ title }) => {
+    expect((await ImportFromMr.draft({ url: URLS[0], title: 'Retry budget', reply: `---\ntitle: ${JSON.stringify(title)}\n---\nBody` })).title).toBe('Retry budget');
+  });
+
   it('names an overlapping learning of the active project namespace, and none of another', async () => {
     twoProjects();
 

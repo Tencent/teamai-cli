@@ -708,7 +708,7 @@ Generated: do not edit by hand. Regenerate with
 ## ci
 
 - `teamai ci` — CI pipeline integration commands
-  - `teamai ci extract-mr` — Extract knowledge from MR/PR and post as comment or write to team repo
+  - `teamai ci extract-mr` — Extract knowledge from MR/PR and post as comment or write to team repo: starts the default workflow teamai-ci-extract-mr on the local driver, with no teamai init needed; a run with none takes --team-repo's teamai.yaml and workflows
     - `--url <url>` — MR/PR web URL
     - `--mode <mode>` — Operation mode: comment | write | both
     - `--team-repo <path>` — Team knowledge repo path (required for write mode)
@@ -717,3 +717,18 @@ Generated: do not edit by hand. Regenerate with
     - `--output <dir>` — Write artifacts to directory
     - `--individual-comments` — Post each suggestion as separate comment with reaction/resolve support
     - `--no-discussions` — Leave the MR's review threads out of the extraction
+  - `teamai ci comment` — A step of a teamai-ci-extract-mr run: post the drafted learning on the MR, as the comment --marker finds and updates or as its own comment, then the knowledge graph nodes of the source files the merge changed. Prints {}.
+    - `--url <url>` — The MR or PR URL
+    - `--learnings <json>` — The learnings output of the extract step
+    - `--marker <marker>` — The HTML comment the MR comment is found and updated by
+    - `--individual <bool>` — true posts the learning as its own comment, with reaction support
+    - `--preview <bool>` — true says each comment instead of posting it
+  - `teamai ci write` — A step of a teamai-ci-extract-mr run: update the team repo's teamwiki from the merged checkout when a source file changed, write the drafted learning into its learnings/, and commit and push both, leaving out what a reviewer rejected on an individual comment. Prints {}.
+    - `--url <url>` — The MR or PR URL
+    - `--learnings <json>` — The learnings output of the extract step
+    - `--team-repo <path>` — The team repo's checkout
+    - `--individual <bool>` — true reads the reactions on the individual comments
+    - `--preview <bool>` — true says the learning's file and writes and pushes nothing
+  - `teamai ci artifacts` — A step of a teamai-ci-extract-mr run: write the drafted learning into a directory as learning.md. Prints {}.
+    - `--learnings <json>` — The learnings output of the extract step
+    - `--dir <path>` — The directory

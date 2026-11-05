@@ -1676,7 +1676,7 @@ const importCommand = program
     await importCmd({ ...globalOpts, ...cmdOpts });
   });
 
-/** Runs a verb of a teamai-import-from-repo step: prints what it answers as JSON, or says why it failed and exits 1, 65 when its flags are not what the step passes. */
+/** Runs a verb of a workflow step: prints what it answers as JSON, or says why it failed and exits 1, 65 when its flags are not what the step passes. */
 async function importVerb<TAnswer>(run: () => Promise<TAnswer>): Promise<void> {
   setStderrOnly(true);
   const { ImportInputError } = await import('./import-from-repo.js');
@@ -2124,7 +2124,7 @@ const ciCmd = program
 
 ciCmd
   .command('extract-mr')
-  .description('Extract knowledge from MR/PR and post as comment or write to team repo')
+  .description('Extract knowledge from MR/PR and post as comment or write to team repo: starts the default workflow teamai-ci-extract-mr on the local driver, with no teamai init needed; a run with none takes --team-repo\'s teamai.yaml and workflows')
   .requiredOption('--url <url>', 'MR/PR web URL')
   .option('--mode <mode>', 'Operation mode: comment | write | both', 'comment')
   .option('--team-repo <path>', 'Team knowledge repo path (required for write mode)')
@@ -2135,8 +2135,45 @@ ciCmd
   .option('--no-discussions', 'Leave the MR\'s review threads out of the extraction')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
-    const { ciExtractMr } = await import('./ci/extract-mr.js');
-    await ciExtractMr({ ...globalOpts, ...cmdOpts });
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await CiExtractMr.start({ ...globalOpts, ...cmdOpts });
+  });
+
+// The verbs a teamai-ci-extract-mr run's steps call.
+ciCmd
+  .command('comment')
+  .description('A step of a teamai-ci-extract-mr run: post the drafted learning on the MR, as the comment --marker finds and updates or as its own comment, then the knowledge graph nodes of the source files the merge changed. Prints {}.')
+  .requiredOption('--url <url>', 'The MR or PR URL')
+  .requiredOption('--learnings <json>', 'The learnings output of the extract step')
+  .requiredOption('--marker <marker>', 'The HTML comment the MR comment is found and updated by')
+  .requiredOption('--individual <bool>', 'true posts the learning as its own comment, with reaction support')
+  .requiredOption('--preview <bool>', 'true says each comment instead of posting it')
+  .action(async (cmdOpts: { url: string; learnings: string; marker: string; individual: string; preview: string }) => {
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await importVerb(() => CiExtractMr.comment(cmdOpts));
+  });
+
+ciCmd
+  .command('write')
+  .description('A step of a teamai-ci-extract-mr run: update the team repo\'s teamwiki from the merged checkout when a source file changed, write the drafted learning into its learnings/, and commit and push both, leaving out what a reviewer rejected on an individual comment. Prints {}.')
+  .requiredOption('--url <url>', 'The MR or PR URL')
+  .requiredOption('--learnings <json>', 'The learnings output of the extract step')
+  .requiredOption('--team-repo <path>', 'The team repo\'s checkout')
+  .requiredOption('--individual <bool>', 'true reads the reactions on the individual comments')
+  .requiredOption('--preview <bool>', 'true says the learning\'s file and writes and pushes nothing')
+  .action(async (cmdOpts: { url: string; learnings: string; teamRepo: string; individual: string; preview: string }) => {
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await importVerb(() => CiExtractMr.write(cmdOpts));
+  });
+
+ciCmd
+  .command('artifacts')
+  .description('A step of a teamai-ci-extract-mr run: write the drafted learning into a directory as learning.md. Prints {}.')
+  .requiredOption('--learnings <json>', 'The learnings output of the extract step')
+  .requiredOption('--dir <path>', 'The directory')
+  .action(async (cmdOpts: { learnings: string; dir: string }) => {
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await importVerb(() => CiExtractMr.artifacts(cmdOpts));
   });
 
 program

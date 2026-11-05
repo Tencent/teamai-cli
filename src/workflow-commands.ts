@@ -6,7 +6,7 @@ import { startedByPasses } from './scorers/engine-hooks.js';
 import { FINISHED_WORKFLOW } from './scorers/judging-workflows.js';
 import { PassScoring } from './scorers/pass-scoring.js';
 import { Subject } from './scorers/subject.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { log, PROGRESS_STREAMS_ENV, setStderrOnly, writeInfoLine } from './utils/logger.js';
 import { collectEnvSecrets, redact, redactJson } from './utils/redact.js';
 import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, retryCommand, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { claimOffered, publishRun, resumeRun } from './workflow/handoff.js';
@@ -635,6 +635,11 @@ export interface ShortcutRun {
   nobodyAnswers?: string;
   /** Load the member's config as `--dry-run` does, so nothing migrates it, for a run whose steps write nothing. */
   preview?: boolean;
+  /**
+   * The team repo checkout a run where no teamai init serves this directory takes in place of an empty one: its
+   * teamai.yaml, and its workflows, which replace teamai's defaults of the same name.
+   */
+  teamRepo?: string;
 }
 
 /**
@@ -658,7 +663,7 @@ export type ShortcutEnd = z.infer<typeof ShortcutDoneSchema>;
  * the run did not succeed, saying why each failed step failed. With `json`, the envelope is printed in place of the
  * text. A private run starts no drain. Answers how the run ended, when a driver here drove it to its end.
  */
-export async function runShortcut({ workflow, inputs, command, json, nobodyAnswers, preview = false }: ShortcutRun): Promise<ShortcutEnd | undefined> {
+export async function runShortcut({ workflow, inputs, command, json, nobodyAnswers, preview = false, teamRepo }: ShortcutRun): Promise<ShortcutEnd | undefined> {
   setStderrOnly(true);
 
   if (nobodyAnswers !== undefined && !personAnswers(resolveRunMode(process.env))) {
@@ -679,7 +684,7 @@ export async function runShortcut({ workflow, inputs, command, json, nobodyAnswe
     process.exitCode = 1;
   };
 
-  const found = await shortcutReady(workflow, preview);
+  const found = await shortcutReady(workflow, preview, teamRepo);
 
   if (!('ready' in found)) {
     if ('error' in found) refused(found.error);
@@ -698,17 +703,29 @@ export async function runShortcut({ workflow, inputs, command, json, nobodyAnswe
  * The config a shortcut starts its run in: the member's, else, where no teamai init serves this directory, one built for
  * the run alone (`EphemeralScope`), which `close` removes once the run ended.
  */
-async function shortcutReady(workflow: string, readOnly: boolean): Promise<{ ready: Ready; close?: () => Promise<void> } | WorkflowEnvelope> {
+async function shortcutReady(workflow: string, readOnly: boolean, teamRepo: string | undefined): Promise<{ ready: Ready; close?: () => Promise<void> } | WorkflowEnvelope> {
   const loaded = await readyStartConfig(workflow, undefined, readOnly);
 
   if ('config' in loaded) return { ready: loaded };
 
   if (!('error' in loaded) || loaded.error.code !== 'not_initialized' || await allowRefusal() !== undefined || !await isUninitialized()) return loaded;
   const { EphemeralScope } = await import('./workflow/ephemeral-scope.js');
-  const scope = await EphemeralScope.open(process.cwd());
-  const env = await resolveWorkflowEnv(scope.config);
+  const scope = await EphemeralScope.open(process.cwd(), teamRepo);
 
-  return { ready: { config: scope.config, teamConfig: scope.teamConfig, env, secrets: env.secrets }, close: scope.close };
+  try {
+    // The given team repo's workflows replace teamai's defaults, as a pull would make them.
+    if (scope.config.repo.localPath === teamRepo) {
+      const { syncScorersThenWorkflows } = await import('./scorers/team-sync.js');
+      await syncScorersThenWorkflows(scope.config);
+    }
+
+    const env = await resolveWorkflowEnv(scope.config);
+
+    return { ready: { config: scope.config, teamConfig: scope.teamConfig, env, secrets: env.secrets }, close: scope.close };
+  } catch (error) {
+    await scope.close();
+    throw error;
+  }
 }
 
 /** `runShortcut` once its config is ready, saying a refusal through `refused`. */
@@ -746,7 +763,14 @@ async function runShortcutIn(loaded: Ready, { workflow, inputs, command, json }:
   // under the step's lease, place and timeout, rather than leaving it to the driver workflows.driver names.
   const decided: DefaultDrive = nestedCall(process.env) === undefined && !isEphemeral ? await driveByDefault(config) : { kind: 'drive', driver: LOCAL_DRIVER };
   const driver = decided.kind === 'drive' ? decided.driver : undefined;
-  const say = (line: string, stream: 'stdout' | 'stderr'): void => { (json || stream === 'stderr' ? process.stderr : process.stdout).write(`${line}\n`); };
+  // Inside a command step, whose stdout is its answer, a line for stdout goes to stderr marked as one, as a verb's does.
+  const isStepProgress = process.env[PROGRESS_STREAMS_ENV] === '1';
+
+  const say = (line: string, stream: 'stdout' | 'stderr'): void => {
+    if (json || stream === 'stderr') process.stderr.write(`${line}\n`);
+    else if (isStepProgress) writeInfoLine(line);
+    else process.stdout.write(`${line}\n`);
+  };
 
   await startWorkflow(workflow, { driver, inputs: JSON.stringify(inputs) }, {
     ready: loaded,

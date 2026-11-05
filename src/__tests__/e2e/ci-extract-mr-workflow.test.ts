@@ -15,6 +15,8 @@ const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..
 
 const GIT_ENV = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_TERMINAL_PROMPT: '0' };
 
+const TODAY = new Date().toISOString().slice(0, 10);
+
 const LEARNING = '---\ntitle: "Retry uploads on 5xx"\nauthor: dev\ndate: 2026-11-04\ntags: [retry, s3]\nconfidence: 0.85\n---\n\n## Background\nUploads failed under load.\n';
 
 /** The comment `ci extract-mr` posts for {@link LEARNING}, which it reads with no trailing newline, under `marker`. */
@@ -165,7 +167,78 @@ let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('e
   return sb;
 }
 
+function filesUnder(dir: string): string[] {
+  return fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
+    .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name))).sort();
+}
+
+const stdoutLines = (ran: Ran): string[] => ran.stdout.split('\n').filter((line) => line !== '');
+
 describe('teamai ci extract-mr (real CLI, no teamai init)', () => {
+  it('comments on the MR and writes the learning into --output, leaving nothing in HOME', async () => {
+    const sb = await ciMachine();
+    const url = `${sb.api.origin}/group/app/-/merge_requests/7`;
+
+    const ran = await sb.run(['--url', url, '--output', './out']);
+
+    expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    expect(stdoutLines(ran)).toEqual([
+      'ℹ ✅ Learning draft generated: Retry uploads on 5xx',
+      'ℹ    Tags: retry, s3',
+      '✔ MR comment posted',
+      `✔ Artifacts written to: ${path.join(sb.app, 'out')}`,
+    ]);
+    expect(ran.stderr).toContain('MR data fetched');
+    expect(ran.stderr).not.toMatch(/Run r[0-9a-f]{16}|resume|retry/);
+    expect(sb.api.requests.filter((request) => request.method !== 'GET')).toEqual([
+      { method: 'POST', path: '/api/v4/projects/group%2Fapp/merge_requests/7/notes', body: { body: comment('<!-- teamai:ci-extract -->') } },
+    ]);
+    expect(fs.readFileSync(path.join(sb.app, 'out', 'learning.md'), 'utf8')).toBe(LEARNING.trimEnd());
+    expect(sb.prompts()).toHaveLength(1);
+    expect(sb.prompts()[0]).toContain('MR 标题：Retry flaky upload');
+    expect(filesUnder(sb.home).filter((file) => file !== path.join('.teamai', 'debug.log'))).toEqual([]);
+    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('teamai-ephemeral-'))).toEqual([]);
+  });
+
+  it('writes the learning into the team repo given with --team-repo, in its language, and pushes it', async () => {
+    const sb = await ciMachine();
+
+    const ran = await sb.run(['--url', `${sb.api.origin}/group/app/-/merge_requests/7`, '--mode', 'write', '--team-repo', sb.team]);
+
+    expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    expect(stdoutLines(ran)).toEqual([
+      'ℹ ✅ Learning draft generated: Retry uploads on 5xx',
+      'ℹ    Tags: retry, s3',
+      `✔ Learning written: learnings/${TODAY}-Retry-uploads-on-5xx.md`,
+      '✔ Pushed to the team repo',
+    ]);
+    expect(sb.prompts()[0]).toContain('Write in English');
+    expect(git(['log', '-1', '--format=%s', '--name-status', 'main'], sb.remote).split('\n').filter(Boolean)).toEqual([
+      '[teamai] CI extract knowledge from MR', `A\tlearnings/${TODAY}-Retry-uploads-on-5xx.md`,
+    ]);
+    expect(git(['show', `main:learnings/${TODAY}-Retry-uploads-on-5xx.md`], sb.remote)).toBe(LEARNING.trimEnd());
+    expect(git(['status', '--short'], sb.team)).toBe('');
+    expect(sb.api.requests.filter((request) => request.method !== 'GET')).toEqual([]);
+  });
+
+  it('updates the team repo\'s teamwiki from a merge that changed a source file, says each step of it, and pushes it with the learning', async () => {
+    const sb = await ciMachine();
+    fs.mkdirSync(path.join(sb.app, 'src'));
+    fs.writeFileSync(path.join(sb.app, 'src', 'retry.ts'), 'export function retry(times: number) { return times; }\n');
+    git(['add', '-A'], sb.app);
+    git(['commit', '-qm', 'merge !7: retry'], sb.app);
+
+    const ran = await sb.run(['--url', `${sb.api.origin}/group/app/-/merge_requests/7`, '--mode', 'write', '--team-repo', sb.team]);
+
+    expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    expect(ran.stdout).toContain('ℹ teamwiki/ knowledge graph updated: gitlab__group__app');
+    expect(ran.stdout).toContain('ℹ Deep enrich complete: gitlab__group__app');
+    expect(stdoutLines(ran).slice(-2)).toEqual([`✔ Learning written: learnings/${TODAY}-Retry-uploads-on-5xx.md`, '✔ Pushed to the team repo']);
+    const pushed = git(['show', '--name-only', '--format=%s', 'main'], sb.remote).split('\n');
+    expect(pushed).toContain(`learnings/${TODAY}-Retry-uploads-on-5xx.md`);
+    expect(pushed).toContain('teamwiki/evidence/code/gitlab__group__app/_manifest.json');
+  });
+
   it('comments through the GitHub API GITHUB_API_URL names, as GitHub Enterprise sets it', async () => {
     const sb = await ciMachine();
 
@@ -175,6 +248,34 @@ describe('teamai ci extract-mr (real CLI, no teamai init)', () => {
     expect(ran.stdout).toContain('✔ MR comment posted');
     expect(sb.api.requests.filter((request) => request.method !== 'GET')).toEqual([
       { method: 'POST', path: '/api/v3/repos/acme/app/issues/7/comments', body: { body: comment('<!-- teamai:ci-extract -->') } },
+    ]);
+  });
+
+  it('exits 1 with the provider\'s error for an MR it cannot read, before any AI call or comment', async () => {
+    const sb = await ciMachine();
+
+    const ran = await sb.run(['--url', `${sb.api.origin}/group/app/-/merge_requests/8`, '--output', './out']);
+
+    expect(ran.code).toBe(1);
+    expect(ran.stdout + ran.stderr).toContain('GitLab API error 404: {"message":"404 Not found"}');
+    expect(sb.prompts()).toEqual([]);
+    expect(sb.api.requests.filter((request) => request.method !== 'GET')).toEqual([]);
+    expect(fs.existsSync(path.join(sb.app, 'out'))).toBe(false);
+  });
+
+  it('leaves the comment a custom --comment-marker anchors out of the review threads, and updates it by that marker', async () => {
+    const sb = await ciMachine([
+      { id: 'd1', notes: [{ body: comment('<!-- acme -->'), author: { username: 'bot' } }] },
+      { id: 'd2', notes: [{ body: 'Why three retries?', author: { username: 'rev' } }, { body: 'Matches the SLA.', author: { username: 'dev' } }] },
+    ]);
+
+    const ran = await sb.run(['--url', `${sb.api.origin}/group/app/-/merge_requests/7`, '--comment-marker', '<!-- acme -->']);
+
+    expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    expect(sb.prompts()[0]).toContain('Review threads（1）：\n### Thread 1\n- [reviewer rev] Why three retries?\n- [author dev] Matches the SLA.');
+    expect(sb.prompts()[0]).not.toContain('TeamAI Knowledge Extraction');
+    expect(sb.api.requests.filter((request) => request.method !== 'GET')).toEqual([
+      { method: 'POST', path: '/api/v4/projects/group%2Fapp/merge_requests/7/notes', body: { body: comment('<!-- acme -->') } },
     ]);
   });
 });

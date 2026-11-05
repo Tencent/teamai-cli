@@ -1,20 +1,19 @@
+/**
+ * The verbs a teamai-ci-extract-mr run's steps call: ci write updates the teamwiki from the merged checkout through a
+ * teamai-import-from-repo run, then writes the learning and pushes the team repo; ci comment and ci artifacts say or
+ * write the learning the extract step drafted.
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-// ─── Mocks ─────────────────────────────────────────────
-
-const mockImportFromMR = vi.fn();
-vi.mock('../import-mr.js', () => ({
-  importFromMR: (...args: unknown[]) => mockImportFromMR(...args),
-}));
-
 const mockPostOrUpdateMrComment = vi.fn();
-vi.mock('../ci/mr-comment.js', () => ({
-  postOrUpdateMrComment: (...args: unknown[]) => mockPostOrUpdateMrComment(...args),
-}));
+vi.mock('../ci/mr-comment.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ci/mr-comment.js')>();
+  return { ...actual, postOrUpdateMrComment: (...args: unknown[]) => mockPostOrUpdateMrComment(...args) };
+});
 
 const mockPushRepoDirectly = vi.fn();
 vi.mock('../utils/git.js', async (importOriginal) => {
@@ -24,11 +23,6 @@ vi.mock('../utils/git.js', async (importOriginal) => {
     pushRepoDirectly: (...args: unknown[]) => mockPushRepoDirectly(...args),
   };
 });
-
-const mockAppendPendingReview = vi.fn();
-vi.mock('../review-store.js', () => ({
-  appendPendingReview: (...args: unknown[]) => mockAppendPendingReview(...args),
-}));
 
 const mockStartImport = vi.fn();
 vi.mock('../import-from-repo.js', async (importOriginal) => {
@@ -46,154 +40,20 @@ vi.mock('../utils/logger.js', () => ({
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn().mockReturnThis(), fail: vi.fn().mockReturnThis() })),
 }));
 
-import { ciExtractMr } from '../ci/extract-mr.js';
+import { CiExtractMr } from '../ci/extract-mr.js';
 
-// ─── Tests ─────────────────────────────────────────────
+const TODAY = new Date().toISOString().slice(0, 10);
 
-describe('ciExtractMr', () => {
-  let tmpDir: string;
-
-  beforeEach(async () => {
-    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-ci-test-'));
-    mockImportFromMR.mockReset();
-    mockPostOrUpdateMrComment.mockReset();
-    mockPushRepoDirectly.mockReset();
-    mockAppendPendingReview.mockReset();
-
-    mockImportFromMR.mockResolvedValue({
-      learning: { title: 'Test Learning', content: '# Test\n\nContent' },
-      repoUrl: 'https://github.com/org/repo.git',
-    });
-    mockPostOrUpdateMrComment.mockResolvedValue({ created: true, url: 'https://example.com/comment' });
-  });
-
-  afterEach(async () => {
-    await fse.remove(tmpDir);
-  });
-
-  it('comment mode calls postOrUpdateMrComment', async () => {
-    await ciExtractMr({
-      url: 'https://github.com/org/repo/pull/1',
-      mode: 'comment',
-    });
-
-    expect(mockImportFromMR).toHaveBeenCalledWith(expect.objectContaining({
-      url: 'https://github.com/org/repo/pull/1',
-      all: true,
-      dryRun: true,
-    }));
-    // codebase suggestions are no longer posted as a comment (the graph change comment replaced it)
-    expect(mockPostOrUpdateMrComment).toHaveBeenCalledWith(
-      'https://github.com/org/repo/pull/1',
-      expect.objectContaining({ title: 'Test Learning' }),
-      undefined,
-      undefined,
-      undefined,
-    );
-  });
-
-  it('write mode requires --team-repo', async () => {
-    await expect(ciExtractMr({
-      url: 'https://github.com/org/repo/pull/1',
-      mode: 'write',
-    })).rejects.toThrow('write mode requires --team-repo');
-  });
-
-  it('write mode direct: writes the learning and calls pushRepoDirectly', async () => {
-    const teamRepo = path.join(tmpDir, 'team-repo');
-    await fse.ensureDir(path.join(teamRepo, 'docs'));
-    await fse.writeFile(path.join(teamRepo, 'docs', 'codebase.md'), '# Codebase');
-
-    await ciExtractMr({
-      url: 'https://github.com/org/repo/pull/1',
-      mode: 'write',
-      teamRepo,
-      writeMode: 'direct',
-    });
-
-    // the learning file is written
-    const learnings = await fse.readdir(path.join(teamRepo, 'learnings'));
-    expect(learnings.length).toBe(1);
-    expect(learnings[0]).toContain('Test-Learning');
-
-    // push is called (with the learning only, not docs/codebase.md)
-    expect(mockPushRepoDirectly).toHaveBeenCalledWith(
-      teamRepo,
-      expect.stringContaining('[teamai]'),
-      expect.not.arrayContaining(['docs/codebase.md']),
-    );
-  });
-
-  it('write mode pending-review: writes the learning without calling appendPendingReview (codebase suggestions were removed)', async () => {
-    const teamRepo = path.join(tmpDir, 'team-repo');
-    await fse.ensureDir(path.join(teamRepo, 'learnings'));
-
-    await ciExtractMr({
-      url: 'https://git.woa.com/team/project/merge_requests/5',
-      mode: 'write',
-      teamRepo,
-      writeMode: 'pending-review',
-    });
-
-    // the codebase suggestion path was removed, so appendPendingReview is no longer called
-    expect(mockAppendPendingReview).not.toHaveBeenCalled();
-    // the learning is still written
-    const learnings = await fse.readdir(path.join(teamRepo, 'learnings'));
-    expect(learnings.length).toBe(1);
-  });
-
-  it('both mode runs comment and write', async () => {
-    const teamRepo = path.join(tmpDir, 'team-repo');
-    await fse.ensureDir(path.join(teamRepo, 'docs'));
-    await fse.writeFile(path.join(teamRepo, 'docs', 'codebase.md'), '# Codebase');
-
-    await ciExtractMr({
-      url: 'https://github.com/org/repo/pull/2',
-      mode: 'both',
-      teamRepo,
-    });
-
-    expect(mockPostOrUpdateMrComment).toHaveBeenCalled();
-    expect(mockPushRepoDirectly).toHaveBeenCalled();
-  });
-
-  it('the output option writes artifacts', async () => {
-    const outputDir = path.join(tmpDir, 'output');
-
-    await ciExtractMr({
-      url: 'https://github.com/org/repo/pull/1',
-      mode: 'comment',
-      output: outputDir,
-    });
-
-    expect(await fse.pathExists(path.join(outputDir, 'learning.md'))).toBe(true);
-    // the codebase suggestion path was removed, so codebase-suggestions.json is no longer written
-    expect(await fse.pathExists(path.join(outputDir, 'codebase-suggestions.json'))).toBe(false);
-  });
-
-  it('dry-run calls no API', async () => {
-    await ciExtractMr({
-      url: 'https://github.com/org/repo/pull/1',
-      mode: 'comment',
-      dryRun: true,
-    });
-
-    expect(mockPostOrUpdateMrComment).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.anything(),
-      undefined,
-      undefined,
-      true,
-    );
-  });
-});
-
-describe('ciExtractMr write: the teamwiki update goes through teamai import', () => {
+describe('teamai ci write: the teamwiki update goes through teamai import', () => {
   let tmpDir: string;
   let source: string;
+  let learnings: string;
 
   const git = (...args: string[]) =>
     execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: source, stdio: 'ignore' });
+
+  /** The flags the write step passes for MR `url`, writing into `teamRepo`. */
+  const flags = (url: string, teamRepo: string, preview = false) => ({ url, learnings, teamRepo, individual: 'false', preview: String(preview) });
 
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-ci-import-'));
@@ -208,10 +68,13 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     git('commit', '-q', '-m', 'merge');
     vi.spyOn(process, 'cwd').mockReturnValue(source);
 
-    mockImportFromMR.mockReset();
+    // What the extract step drafted.
+    const file = path.join(tmpDir, 'run', 'learning.md');
+    await fse.outputFile(file, '---\ntitle: Test Learning\n---\nContent');
+    learnings = JSON.stringify([{ url: 'https://github.com/org/repo/pull/7', title: 'Test Learning', file, repo_url: 'https://github.com/org/repo' }]);
+
     mockPushRepoDirectly.mockReset();
     mockStartImport.mockReset();
-    mockImportFromMR.mockResolvedValue({ learning: undefined, repoUrl: 'https://github.com/org/repo' });
     mockStartImport.mockResolvedValue(importEnded(true));
   });
 
@@ -220,11 +83,11 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     await fse.remove(tmpDir);
   });
 
-  it('imports the checkout incrementally under the slug import --from-repo uses, then pushes teamwiki/', async () => {
+  it('imports the checkout incrementally under the slug import --from-repo uses, then pushes teamwiki/ with the learning', async () => {
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(teamRepo);
 
-    await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo });
+    await CiExtractMr.write(flags('https://github.com/org/repo/pull/7', teamRepo));
 
     expect(mockStartImport).toHaveBeenCalledWith({
       mode: 'ci',
@@ -233,7 +96,8 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
       target: { wikiRoot: path.join(teamRepo, 'teamwiki') },
       command: 'teamai ci extract-mr',
     });
-    expect(mockPushRepoDirectly).toHaveBeenCalledWith(teamRepo, expect.any(String), ['teamwiki']);
+    expect(mockPushRepoDirectly).toHaveBeenCalledWith(teamRepo, '[teamai] CI extract knowledge from MR', ['teamwiki', `learnings/${TODAY}-Test-Learning.md`]);
+    expect(await fse.readFile(path.join(teamRepo, 'learnings', `${TODAY}-Test-Learning.md`), 'utf8')).toBe('---\ntitle: Test Learning\n---\nContent');
     // Nothing is written into the checkout.
     expect(await fse.pathExists(path.join(source, 'teamwiki'))).toBe(false);
   });
@@ -243,10 +107,10 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(teamRepo);
 
-    await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo });
+    await CiExtractMr.write(flags('https://github.com/org/repo/pull/7', teamRepo));
 
     expect(mockStartImport).toHaveBeenCalled();
-    expect(mockPushRepoDirectly).not.toHaveBeenCalled();
+    expect(mockPushRepoDirectly).toHaveBeenCalledWith(teamRepo, expect.any(String), [`learnings/${TODAY}-Test-Learning.md`]);
   });
 
   it('updates the teamwiki for a merge that only deletes a source file', async () => {
@@ -256,7 +120,7 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(teamRepo);
 
-    await ciExtractMr({ url: 'https://github.com/org/repo/pull/8', mode: 'write', teamRepo });
+    await CiExtractMr.write(flags('https://github.com/org/repo/pull/8', teamRepo));
 
     expect(mockStartImport).toHaveBeenCalledWith(expect.objectContaining({ settings: expect.objectContaining({ incremental: true }) }));
   });
@@ -275,7 +139,7 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(teamRepo);
 
-    await ciExtractMr({ url: 'https://github.com/org/repo/pull/9', mode: 'write', teamRepo });
+    await CiExtractMr.write(flags('https://github.com/org/repo/pull/9', teamRepo));
 
     expect(mockStartImport).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({ dir: source })] }));
   });
@@ -284,9 +148,58 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     const teamRepo = path.join(source, 'team-repo');
     await fse.ensureDir(teamRepo);
 
-    await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo: './team-repo' });
+    await CiExtractMr.write(flags('https://github.com/org/repo/pull/7', teamRepo));
+
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(mockPushRepoDirectly).toHaveBeenCalledWith(teamRepo, expect.any(String), [`learnings/${TODAY}-Test-Learning.md`]);
+  });
+
+  it('with --preview true imports nothing, writes nothing and pushes nothing', async () => {
+    const teamRepo = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(teamRepo);
+
+    await CiExtractMr.write(flags('https://github.com/org/repo/pull/7', teamRepo, true));
 
     expect(mockStartImport).not.toHaveBeenCalled();
     expect(mockPushRepoDirectly).not.toHaveBeenCalled();
+    expect(await fse.pathExists(path.join(teamRepo, 'learnings'))).toBe(false);
+  });
+
+  it('refuses learnings that are not what the step passes', async () => {
+    await expect(CiExtractMr.write({ ...flags('https://github.com/org/repo/pull/7', tmpDir), learnings: '[]' })).rejects.toThrow('--learnings holds no learning');
+  });
+});
+
+describe('teamai ci comment and ci artifacts', () => {
+  let tmpDir: string;
+  let learnings: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-ci-comment-'));
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    const file = path.join(tmpDir, 'learning.md');
+    await fse.outputFile(file, '---\ntitle: Test Learning\n---\nContent');
+    learnings = JSON.stringify([{ url: 'https://github.com/org/repo/pull/1', title: 'Test Learning', file, repo_url: '' }]);
+    mockPostOrUpdateMrComment.mockReset();
+    mockPostOrUpdateMrComment.mockResolvedValue({ created: true });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fse.remove(tmpDir);
+  });
+
+  it('comments the drafted learning under the marker the step passes, and only says it with --preview true', async () => {
+    await CiExtractMr.comment({ url: 'https://github.com/org/repo/pull/1', learnings, marker: '<!-- acme -->', individual: 'false', preview: 'true' });
+
+    expect(mockPostOrUpdateMrComment).toHaveBeenCalledWith('https://github.com/org/repo/pull/1', { title: 'Test Learning', content: '---\ntitle: Test Learning\n---\nContent' }, undefined, '<!-- acme -->', true);
+  });
+
+  it('writes the drafted learning into the directory as learning.md', async () => {
+    const dir = path.join(tmpDir, 'out');
+
+    await CiExtractMr.artifacts({ learnings, dir });
+
+    expect(await fse.readFile(path.join(dir, 'learning.md'), 'utf8')).toBe('---\ntitle: Test Learning\n---\nContent');
   });
 });
