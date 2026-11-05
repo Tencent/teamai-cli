@@ -276,6 +276,8 @@ oncall   sre   未交付
 
 每个会话计三种次数：中途打断（`interrupt`）、拒绝工具调用（`toolReject`）、结束后马上用「不对 / 重来 / wrong」这类词纠正（`correction`）。
 
+对于 Cursor，Stop hook 从会话记录中读取用户中止的 `turn_ended` 事件和用户提问。配额与模型错误不计为打断；重复触发 Stop hook 时保留最新累计次数，不重复累加。
+
 团队可以加自己的词：
 
 ```yaml

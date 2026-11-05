@@ -276,6 +276,8 @@ Below 1100 px wide the list shows one card per skill.
 
 Each session counts three things: an interrupt mid-run (`interrupt`), a denied tool call (`toolReject`), and a correction right after the agent stops, such as "wrong" or "redo" (`correction`).
 
+For Cursor, the Stop hook reads user-aborted `turn_ended` records and human prompts from the transcript. Quota and model errors do not count as interrupts. Repeated Stop hooks keep the latest cumulative count rather than adding it again.
+
 A team adds its own words in `teamai.yaml`:
 
 ```yaml
