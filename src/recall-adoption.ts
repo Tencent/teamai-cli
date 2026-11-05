@@ -658,7 +658,7 @@ const RECALL_LOG_MAX_LINES = 5000;
  * What `teamai pull` does with a scope's recall log. First it credits the
  * sessions whose evidence is still pending, a recovery for a read after the
  * session's last Stop, or a Stop that found the votes file busy (git teams
- * only, as votes are). Then it applies retention under the log's lock (see
+ * only, as votes are). Once those writes succeed, it applies retention under the log's lock (see
  * {@link retainedLines}). Never call it from a hook: the prune may wait
  * seconds for the lock. Failures are logged, not thrown: the next pull
  * retries.
@@ -668,9 +668,11 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
 
   if (config.repo.kind !== 'http') {
     try {
-      await creditPendingSessions(config);
+      if (!await creditPendingSessions(config)) return;
     } catch (e) {
       log.debug(`recall adoption: could not credit pending sessions from ${file}: ${e instanceof Error ? e.message : String(e)}`);
+
+      return;
     }
   }
 
@@ -691,10 +693,10 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
  * recalled doc it was not counted for yet. It stops at the first busy votes
  * file: the rest stays pending for the next trigger.
  */
-async function creditPendingSessions(config: LocalConfig): Promise<void> {
+async function creditPendingSessions(config: LocalConfig): Promise<boolean> {
   const index = indexLog(await readRecallLog(config));
 
-  if (!await writePendingJudgeCredits(config, index)) return;
+  if (!await writePendingJudgeCredits(config, index)) return false;
 
   const uncounted = index.lines.flatMap((l) => {
     const owner = l.kind === 'run' ? index.ownerOf(l) : null;
@@ -705,8 +707,10 @@ async function creditPendingSessions(config: LocalConfig): Promise<void> {
   const roots = new Set([...index.lines.flatMap((l) => l.kind === 'evidence' && !index.consumed.has(l.id) ? [index.rootOf(l.session)] : []), ...uncounted]);
 
   for (const root of roots) {
-    if ((await creditRoot(config, index, root)).credited === null) return;
+    if ((await creditRoot(config, index, root)).credited === null) return false;
   }
+
+  return true;
 }
 
 /** What retention requires of a raw line: a kind and a time. The line itself is kept as written. */

@@ -3,10 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
 
-import { adoptionCandidates, creditAdoptedDocs, creditAdoptionVerdicts } from '../recall-adoption.js';
+import { adoptionCandidates, creditAdoptedDocs, creditAdoptionVerdicts, drainRecallLog } from '../recall-adoption.js';
 import { appendRecallLine, readRecallLog, recallLogPath } from '../recall-log.js';
 import { getVotesDir, type LocalConfig } from '../types.js';
 import { readUserVotes } from '../votes.js';
+import { acquireLock, releaseLock } from '../update.js';
 
 async function recalledSession(): Promise<{ config: LocalConfig; votePath: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-recall-retry-'));
@@ -65,4 +66,24 @@ it('does not judge an ignored document again after its journal markers are remov
   expect(await adoptionCandidates(config, 'root-a')).toEqual([]);
   expect(await creditAdoptionVerdicts(config, 'root-a', [{ doc: 'doc-a', adopted: true }])).toEqual([]);
   expect((await readUserVotes(votePath)).votes['doc-a']).toMatchObject({ judged_count: 1, upvoted_count: 0 });
+});
+
+it('keeps an old pending verdict retryable while the votes file is busy', async () => {
+  const { config, votePath } = await recalledSession();
+  await appendRecallLine(config, {
+    kind: 'credit', ts: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(), id: 'pending-a',
+    session: 'root-a', doc: 'doc-a', source: 'judge', adopted: true, votes: 'pending',
+  });
+  await fs.mkdir(path.dirname(votePath), { recursive: true });
+  expect(await acquireLock(`${votePath}.lock`)).toBe(true);
+
+  try {
+    await drainRecallLog(config);
+  } finally {
+    await releaseLock(`${votePath}.lock`);
+  }
+
+  await drainRecallLog(config);
+
+  expect((await readUserVotes(votePath)).votes['doc-a']).toMatchObject({ judged_count: 1, upvoted_count: 1 });
 });
