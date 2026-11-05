@@ -1085,7 +1085,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 |---|---|---|
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
-| `teamai-share-learnings-from-sessions` | 逐个询问本机最近 7 天内结束的各工具会话，然后对本人选中的每个会话运行 `teamai-share-learnings`，`publish: false` | `teamai-share-learnings` 有 skill 时才有，因为它运行 `teamai-share-learnings`：`invoke: ask`，本人同意后 agent 才启动它 |
+| `teamai-share-learnings-from-sessions` | 逐个询问本机在 `within` 时间内结束的各工具会话，然后对本人选中的每个会话运行 `teamai-share-learnings`，`publish: false`。输入：`within`（默认 `7d`） | `teamai-share-learnings` 有 skill 时才有，因为它运行 `teamai-share-learnings`：`invoke: ask`，本人同意后 agent 才启动它 |
 | `teamai-score` | 用团队的[评分器](scorers.md#teamai-score-工作流)给一个工作流 pass 或会话打标签。由 [`teamai score`](scorers.md#按需评分) 和 `teamai-share-session` 启动 | 从不：`invoke: deny`，任何 agent 会话都不能启动它 |
 | `teamai-try-scorer` | 通过 `store: false` 的 `teamai-score`，用评分器文件评判一个会话和只含其第一条提示的会话，不保存任何标签。由 [`teamai score --scorer <file>`](scorers.md#试用评分器文件) 启动。私有 | 从不：`invoke: deny` |
 | `teamai-new-scorer` | 与用户一起编写评分器，用 `teamai-try-scorer` 试用，再从[团队工作区](#团队工作区)把 `scorers/<name>.md` 作为拉取请求提交给团队。输入：`session`、`source` | 始终：`invoke: ask`，agent 在用户同意后启动它 |
@@ -1256,11 +1256,11 @@ agent   proposes teamai-share-session: publish and score, no learnings
 
 ### teamai-share-learnings-from-sessions
 
-让 agent 分享之前会话学到的东西（“分享这周会话里的经验”），其他工具的会话也可以。agent 启动不带输入的 `teamai-share-learnings-from-sessions`：
+让 agent 分享之前会话学到的东西（“分享这周会话里的经验”），其他工具的会话也可以。agent 启动 `teamai-share-learnings-from-sessions`。它唯一的输入 `within` 决定往回看多久：默认 `7d`，本人要求更长时再加大（“分享这个月会话里的经验”会以 `{"within":"30d"}` 启动）：
 
 ```text
-teamai-share-learnings-from-sessions
-sessions   teamai session list --finished --all --json
+teamai-share-learnings-from-sessions {"within":"7d"}
+sessions   teamai session list --finished --all --within 7d --json
            → 本机最近 7 天内结束、尚未贡献过经验的各工具会话
 pick       每个会话一次。可选选择：share 或 skip，显示来源、最后活动时间和第一条 prompt
 share      每个选中的会话一次，逐个进行 → 运行 teamai-share-learnings，

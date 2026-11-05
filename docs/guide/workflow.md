@@ -1085,7 +1085,7 @@ teamai ships workflows a team gets without writing them:
 |---|---|---|
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
-| `teamai-share-learnings-from-sessions` | asks about each session of any tool that finished on this machine in the last 7 days, then runs `teamai-share-learnings` on each one the person picks, with `publish: false` | while `teamai-share-learnings` has one, since it runs it: `invoke: ask`, so an agent starts it once the person agrees |
+| `teamai-share-learnings-from-sessions` | asks about each session of any tool that finished on this machine within `within`, then runs `teamai-share-learnings` on each one the person picks, with `publish: false`. Inputs: `within` (default `7d`) | while `teamai-share-learnings` has one, since it runs it: `invoke: ask`, so an agent starts it once the person agrees |
 | `teamai-score` | labels one workflow pass or session with the team's [scorers](scorers.md#the-teamai-score-workflow). [`teamai score`](scorers.md#on-demand) and `teamai-share-session` start it | never: `invoke: deny`, so no agent session starts it |
 | `teamai-try-scorer` | tries scorer files on a session and on its first prompt alone, through `teamai-score` with `store: false`, so no label is stored. [`teamai score --scorer <file>`](scorers.md#try-a-scorer-file) starts it. Private | never: `invoke: deny` |
 | `teamai-new-scorer` | writes a scorer with the person, tries it with `teamai-try-scorer`, and proposes `scorers/<name>.md` to the team as a pull request from the [team workspace](#the-team-workspace). Inputs: `session`, `source` | always: `invoke: ask`, so an agent starts it once the person agrees |
@@ -1256,11 +1256,11 @@ An unattended session is never offered either default, and describe refuses them
 
 ### teamai-share-learnings-from-sessions
 
-Ask your agent to share what earlier sessions taught ("share learnings from this week's sessions"), including sessions of another tool. The agent starts `teamai-share-learnings-from-sessions`, which takes no inputs:
+Ask your agent to share what earlier sessions taught ("share learnings from this week's sessions"), including sessions of another tool. The agent starts `teamai-share-learnings-from-sessions`. Its one input, `within`, says how far back to look: `7d` unless the person asks for more ("share learnings from this month's sessions" starts it with `{"within":"30d"}`):
 
 ```text
-teamai-share-learnings-from-sessions
-sessions   teamai session list --finished --all --json
+teamai-share-learnings-from-sessions {"within":"7d"}
+sessions   teamai session list --finished --all --within 7d --json
            → every session of any tool that finished here in the last 7 days, with no learning contributed from it yet
 pick       once per session. Optional choice: share or skip, showing its source, when it was last active and its first prompt
 share      once per session picked, one at a time → runs teamai-share-learnings with

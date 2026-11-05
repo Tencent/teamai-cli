@@ -117,9 +117,9 @@ function captured(install: Install, { platform, sessionId, file, at }: { platfor
     runMode: 'attended', agent: { v: 1, tool: { name: platform }, teamai: '1.0.0', driver: 'session' }, sessionFile: file }));
 }
 
-/** A Claude Code session and a Hermes one, both last active seven hours ago. */
-function finishedSessions(install: Install): void {
-  const at = new Date(Date.now() - 7 * HOUR);
+/** A Claude Code session and a Hermes one, both last active `idle` ago (seven hours unless given). */
+function finishedSessions(install: Install, idle = 7 * HOUR): void {
+  const at = new Date(Date.now() - idle);
   const claude = path.join(install.home, '.claude', 'projects', encodeCwdClaude(install.repo), `${CLAUDE_SESSION}.jsonl`);
   fs.mkdirSync(path.dirname(claude), { recursive: true });
   fs.writeFileSync(claude, [
@@ -145,9 +145,9 @@ function finishedSessions(install: Install): void {
  * Runs the workflow as the agent does: the recommended start, children in a directory TeamAI names, share for the
  * session `picked` names and skip for any other, yes at each other gate. Each dispatch is worked with `work`.
  */
-function shareFromSessions(install: Install, picked: string, work: (step: string, brief: string) => Record<string, unknown>): { run: string; outcome: string; asked: string[] } {
+function shareFromSessions(install: Install, picked: string, work: (step: string, brief: string) => Record<string, unknown>, inputs = '{}'): { run: string; outcome: string; asked: string[] } {
   const [recommended] = DescribeSchema.parse(agentRuns(install, `teamai workflow start --describe ${WORKFLOW} --driver skill`)).describe.ask.question.options;
-  let turn = TurnSchema.parse(agentRuns(install, recommended.start.replace('{inputs}', '{}')).turn);
+  let turn = TurnSchema.parse(agentRuns(install, recommended.start.replace('{inputs}', inputs)).turn);
   const asked: string[] = [];
   for (let call = 0; call < 40; call += 1) {
     const [action] = turn.actions;
@@ -222,5 +222,23 @@ describe(`teamai's default ${WORKFLOW}`, () => {
 
     const after = ListSchema.parse(JSON.parse(teamai(install, ['session', 'list', '--finished', '--all', '--json']).stdout));
     expect(after.list.map(({ session }) => session)).toEqual([CLAUDE_SESSION]);
+  });
+
+  it.skipIf(findSqlite3() === null)('offers sessions older than a week when the run is given a longer within', () => {
+    const install = selfModeInstall();
+    finishedSessions(install, 10 * 24 * HOUR);
+    expect(ListSchema.parse(JSON.parse(teamai(install, ['session', 'list', '--finished', '--all', '--json']).stdout)).list).toEqual([]);
+    const learning = path.join(install.root, 'learning.md');
+
+    const shared = shareFromSessions(install, HERMES_SESSION, () => {
+      fs.writeFileSync(learning, '---\ntitle: Delay the readiness probe until the cache is warm\n---\nThe probe fired before the cache warmed up.\n');
+      return { learnings: [{ title: 'Delay the readiness probe until the cache is warm', file: learning, namespace: '' }] };
+    }, JSON.stringify({ within: '30d' }));
+
+    expect(shared.outcome).toBe('succeeded');
+    expect(shared.asked.filter((question) => question.includes('First prompt:'))).toEqual(expect.arrayContaining([
+      expect.stringContaining(`hermes session ${HERMES_SESSION}`),
+      expect.stringContaining(`claude-code session ${CLAUDE_SESSION}`),
+    ]));
   });
 });

@@ -113,7 +113,7 @@ describe('default workflows', () => {
 
     const fromSessions = await loadCachedWorkflow(config, 'teamai-share-learnings-from-sessions');
     if (!fromSessions) throw new Error('teamai-share-learnings-from-sessions is not runnable');
-    expect(fromSessions.definition).toMatchObject({ invoke: 'ask', steps: [{ id: 'sessions', command: 'teamai session list --finished --all --json' }, { id: 'pick' }, { id: 'share' }] });
+    expect(fromSessions.definition).toMatchObject({ invoke: 'ask', steps: [{ id: 'sessions', command: 'teamai session list --finished --all --within "$WITHIN" --json', env: { WITHIN: '{{ inputs.within }}' } }, { id: 'pick' }, { id: 'share' }] });
     const tree = await loadWorkflowTree(config, fromSessions);
     expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-learnings', 'teamai-share-session', 'teamai-score']);
   });
