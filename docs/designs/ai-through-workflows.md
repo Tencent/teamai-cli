@@ -182,8 +182,8 @@ workspace config for the current checkout, its data home and an empty team repo.
 in the command's process. Every process of its steps gets the config file as `TEAMAI_EPHEMERAL_CONFIG` and loads it
 instead of resolving one from its directory. The directory is removed when the run ends, so the command prints no
 resume or retry command, starts no drain, and leaves nothing in `~/.teamai`. `workflow start` itself still needs
-`teamai init`. No shortcut that takes `--team-repo` runs as a workflow yet; `ci extract-mr` will give that repo in place
-of the empty one.
+`teamai init`. A shortcut may give a team repo checkout in place of the empty one, as `ci extract-mr --team-repo` does:
+when it holds a `teamai.yaml`, the scope reads it where it is, and its workflows replace the defaults of the same name.
 
 ### Shortcuts
 
@@ -325,8 +325,9 @@ proposes `scorers/<name>.md` to the team as a pull request.
 | An imported rule or doc lands in its directory (`type:` is written) | `import-local.ts` |
 | `--from-org` exits 1 when a repository fails | `import-org.ts` |
 | "Branch pushed" only after a push | `import-codebase.ts` |
-| `ci extract-mr` comments on GitHub Enterprise through `GITHUB_API_URL` | `ci/mr-comment.ts` |
+| `ci extract-mr` calls the GitHub API `GITHUB_API_URL` names: comment, reactions, git user | `ci/mr-comment.ts`, `ci/read-rejections.ts`, `ci/extract-mr.ts` |
 | `ci extract-mr --write-mode pending-review` says it has no effect | `ci/extract-mr.ts` |
+| The CI examples check out the merge commit with its parent (`fetch-depth: 2`) | `examples/ci/README.md` |
 | `recall promote <missing id>` exits 1 on both paths | `index.ts`, `maintenance/promotion-publish.ts` |
 | Two imported items of one title on one day keep their own files | `import-local.ts` |
 | `import --from-tools` leaves out the rules teamai delivered, by the delivered-copies ledger | `import-local.ts` |
@@ -363,6 +364,10 @@ proposes `scorers/<name>.md` to the team as a pull request.
   teamwiki lines `Incremental teamwiki update skipped: …` and `Push changes via MR skipped: …` are plain. A failed MR of
   several is named `  failed: <url>` after its step's own error, and a single one names the failed step with its retry
   command. `--output` paths are absolute, and `--dry-run` drafts each MR in a run that neither reviews nor publishes.
+- `ci extract-mr` drafts through `teamai-import-from-mr`, so its `AI analysis` spinner is gone, `--output` is said by
+  its absolute path, and an MR it cannot read also names the failed step. The review threads leave out a comment
+  `ci extract-mr` posted by its signature line, so the extraction no longer takes `--comment-marker`. A run with no
+  `teamai init` takes `--team-repo`'s `teamai.yaml` and workflows.
 - The session-start MR hint offers `teamai-import-from-mr` with each MR's URL, and describe proposes those MRs to the
   session the hint listed them in. Where a hook may not offer the workflow, such as in a session teamai launched, the
   hint names `import --from-mr` as before.

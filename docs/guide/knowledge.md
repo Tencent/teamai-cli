@@ -380,6 +380,8 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ../team-repo --ind
 
 Write mode runs in the merged source checkout. Its code knowledge goes through the same path as `teamai import --dir . --incremental`, into `<team-repo>/teamwiki/evidence/code/<provider>__<owner>__<repo>/`, re-extracting only the changed files. Clone the team repo outside the checkout: otherwise its files would be extracted as source, so this step is skipped.
 
+The command starts the default workflow `teamai-ci-extract-mr`: `teamai-import-from-mr` drafts the learning, then its steps comment, write and push it. A CI job needs no `teamai init`; the run lives in a temporary scope, which takes a `--team-repo` that has a `teamai.yaml` as its team repo, so that repo's `language` and `workflows/` apply. Check out the merge commit with its parent (`fetch-depth: 2`), so git can tell which files changed. GitHub calls go to `GITHUB_API_URL` when it is set. `--write-mode pending-review` has no effect and says so.
+
 Mark a suggestion to drop it: 👎 on GitHub and GitLab, ☝️ on TGit. Templates — GitHub Actions, GitLab CI and 智研/Coding CI — are in [`examples/ci/`](../../examples/ci/README.md).
 
 On GitLab, comment updates search the most recently updated notes first and stop at the first matching marker. This keeps the original pipeline's comment discoverable as it is edited in place. If the marker is still missing after 20 pages and more pages remain, the command fails instead of risking a duplicate.
