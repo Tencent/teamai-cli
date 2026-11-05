@@ -242,7 +242,7 @@ describe('the Improvement Center page', () => {
     const html = renderPage({ improvement: { ...payload(days(1, () => ({}))).improvement, maintenance: { promote, prune: [], stale: [], silent: 0 } } }, '30', 'promote');
 
     expect(html).toContain('data-copy="teamai recall promote retry"');
-    expect(html).toContain('<td>skills</td>');
+    expect(html).toContain('<td data-label="Category">skills</td>');
     expect(html).not.toContain('--category');
   });
 
@@ -269,7 +269,24 @@ describe('the Improvement Center page', () => {
     const promote = [{ docId: 'pod-startup', title: 'Pod startup', category: 'docs', confidence: 0.92, upvoted: 5, users: 2 }];
     const html = renderPage(adopting({ docs: [pod], overriddenScorers: [] }, { promote, prune: [], stale: [], silent: 0 }), '30', 'promote');
 
-    expect(html).toContain('<td>65% · 3 read · 2 / 4 judged</td>');
+    expect(html).toContain('<td data-label="Adoption">65% · 3 read · 2 / 4 judged</td>');
+  });
+
+  it('labels every maintenance cell, so a narrow screen can show each candidate as a card with its Copy button', () => {
+    const promote = [{ docId: 'retry', title: 'Retry with backoff', category: 'skills', confidence: 0.95, upvoted: 6, users: 3 }];
+    const prune = [{ name: 'old.md', confidence: 0.1, lastActivity: '2026-01-01', reason: 'inactive' }];
+    const stale = [{ docId: 'tired', type: 'doc', recalled: 9, upvoted: 0, users: 2 }];
+    const tables = ['promote', 'prune', 'stale'].map((tab) => {
+      const html = renderPage(adopting({ docs: [], overriddenScorers: [] }, { promote, prune, stale, silent: 0 }), '30', tab);
+      return html.slice(html.indexOf('<div class="imp-scroll">'), html.indexOf('</table>', html.indexOf('<div class="imp-scroll">')));
+    });
+
+    for (const table of tables) {
+      expect(table).toContain('<table class="maint-table">');
+      expect(table).not.toMatch(/<td>/);
+    }
+    expect(tables[0]).toContain('<td data-label="Category">skills</td>');
+    expect(tables[0]).toContain('<td data-label="Command"><button class="link copy" data-copy="teamai recall promote retry">');
   });
 
   it('has a zh-CN translation for every message the adoption panel shows', () => {
