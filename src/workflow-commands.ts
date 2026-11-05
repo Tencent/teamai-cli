@@ -181,15 +181,35 @@ async function explainFailedSteps(
   // A fan-out or workflow step fails, with no failure of its own, when a step under it fails: name that step instead.
   const failedUnder = (id: string): boolean => failedIds.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
 
+  // Steps that failed the same way, such as every item of a fan-out on a tool that cannot run, are said once.
+  const sameWay = new Map<string, { code?: string; message?: string; ids: string[]; isRetryable: boolean }>();
+
   for (const step of run.steps) {
     if (step.status !== 'failed' || (!step.failure && failedUnder(step.id))) continue;
     const message = isProgressShown && step.exitCode !== undefined && step.progress?.length ? commandExitMessage(step.exitCode) : step.failure?.message ?? step.message;
     // command_failed says no more than its message, which names the exit status.
     const code = step.failure?.code === 'command_failed' ? undefined : step.failure?.code;
-    const why = code ? ` with ${code}: ${message}` : message ? `: ${message}` : '';
-    log.error(redact(`Step "${step.id}" failed${why}`, { envSecrets: secrets, patterns: false }));
+    const key = JSON.stringify([code, message]);
+    const group = sameWay.get(key) ?? { code, message, ids: [], isRetryable: !isolated && step.failure?.code !== 'input_rejected' };
+    group.ids.push(step.id);
+    sameWay.set(key, group);
+  }
 
-    if (!isolated && step.failure?.code !== 'input_rejected') log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
+  for (const { code, message, ids, isRetryable } of sameWay.values()) {
+    const why = code ? ` with ${code}` : '';
+    const said = message ? `: ${message}` : '';
+    const [only] = ids;
+
+    if (ids.length === 1 && only !== undefined) {
+      log.error(redact(`Step "${only}" failed${why}${said}`, { envSecrets: secrets, patterns: false }));
+
+      if (isRetryable) log.info(`Retry it with ${retryCommand(runId, only)}, then continue the run with teamai workflow resume ${runId}`);
+      continue;
+    }
+
+    log.error(redact(`${ids.length} steps failed${why} (${ids.join(', ')})${said}`, { envSecrets: secrets, patterns: false }));
+
+    if (isRetryable) log.info(`Retry each of them with teamai workflow retry ${runId} <step>, then continue the run with teamai workflow resume ${runId}`);
   }
 
   // The run's own failure, such as its timeout or token budget, fails no step: it stops the steps still running, a step

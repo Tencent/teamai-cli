@@ -185,7 +185,10 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     const ran = await box.run(['codebase', '--deep-enrich', '--project', 'widget'], { TEAMAI_AI_TOOL: 'gemini' });
 
     expect(ran.code, ran.stdout).toBe(1);
-    expect(ran.stderr).toContain('failed with tool_unconfigured: TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.');
+    const failures = ran.stderr.split('\n').filter((line) => line.includes('failed with tool_unconfigured'));
+    expect(failures).toEqual([
+      expect.stringMatching(/^✖ 3 steps failed with tool_unconfigured \(components\[0\]\.ask, components\[1\]\.ask, components\[2\]\.ask\): TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches\./),
+    ]);
     expect(fs.existsSync(box.docs)).toBe(false);
     expect(box.calls()).toEqual([]);
     expect(lastCommit(box.remote)).toBe('wiki');
