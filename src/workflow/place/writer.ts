@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { WorkflowFailure } from '../types.js';
 import type { StepChanges } from '../workspace.js';
-import { commitPathsOf, trackedCommitPathsOf } from './worktree-snapshot.js';
+import { commitPathsOf, mergeStagedPathsOf } from './worktree-snapshot.js';
 import { commitWork, git, mergeBranch, offBranch, pushIfOrigin, worktreeContentKey } from '../worktree.js';
 import { restoreOverlay, unrestoredConfig } from './overlay.js';
 
@@ -216,11 +216,11 @@ async function mergePreparedPath(dir: string): Promise<string> {
 }
 
 /**
- * Records the tracked paths `dir` would commit after prepare's merge. A path that still has this content at finish
- * is the merge, not a file the step or the host wrote. An untracked path is not recorded.
+ * Records the paths prepare's merge left staged, with a worktree that still matches the index. A path that still has
+ * this content at finish is the merge. An unstaged edit of a tracked file is not recorded.
  */
 export async function recordMergePreparation(dir: string): Promise<string | undefined> {
-  const listed = await trackedCommitPathsOf(dir);
+  const listed = await mergeStagedPathsOf(dir);
 
   if ('error' in listed) return listed.error;
   const record: Record<string, string> = {};

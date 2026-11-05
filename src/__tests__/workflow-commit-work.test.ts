@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+// oxlint-disable-next-line teamai/workflow-boundaries -- tests the merge snapshot place records before finish
+import { recordMergePreparation } from '../workflow/place/writer.js';
 import { commitWork } from '../workflow/worktree.js';
 
 const dirs: string[] = [];
@@ -55,5 +57,30 @@ describe('commitWork', () => {
     expect(() => git(dir, 'show', 'HEAD:tracked.txt')).toThrow();
     expect(() => git(dir, 'show', 'HEAD:gone.txt')).toThrow();
     expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
+
+  it('records a file the merge staged and not an unstaged edit of a tracked file', async () => {
+    const dir = repo();
+    const branch = git(dir, 'branch', '--show-current').trim();
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'base\n');
+    git(dir, 'add', 'a.ts');
+    git(dir, 'commit', '-qm', 'base');
+    git(dir, 'checkout', '-q', '-b', 'other');
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'right\n');
+    fs.writeFileSync(path.join(dir, 'b.ts'), 'from right\n');
+    git(dir, 'add', 'a.ts', 'b.ts');
+    git(dir, 'commit', '-qm', 'other');
+    git(dir, 'checkout', '-q', branch);
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'left\n');
+    git(dir, 'commit', '-qm', 'left', 'a.ts');
+    expect(() => git(dir, 'merge', 'other')).toThrow();
+    fs.appendFileSync(path.join(dir, 'tracked.txt'), 'host\n');
+
+    expect(await recordMergePreparation(dir)).toBeUndefined();
+    const recorded = path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'teamai-merge.json').trim());
+    const merge = JSON.parse(fs.readFileSync(recorded, 'utf8'));
+    expect(merge).toHaveProperty('b.ts');
+    expect(merge).not.toHaveProperty('tracked.txt');
+    expect(merge).not.toHaveProperty('a.ts');
   });
 });
