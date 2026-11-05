@@ -56,23 +56,27 @@ const KilledErrorSchema = z.object({ killed: z.literal(true) });
 
 /**
  * Whether an `execFile` rejection is the install being cut off rather than
- * npm reporting a problem of its own. Two shapes reach here, and neither
- * says "timed out":
+ * npm reporting a problem of its own. Three shapes reach here:
  *
  * - the `timeout` firing: Node kills the child with a signal, leaves `code`
  *   null and puts the bare command line in the message;
  * - the output cap: an install that writes more than `maxBuffer` fails with
  *   `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, which on a verbose npm install is
- *   a long build, not a broken one.
+ *   a long build, not a broken one;
+ * - npm giving up on the registry itself: it exits 1 and prints
+ *   `npm error code ETIMEDOUT`, which Node appends to the message while the
+ *   error code stays 1.
  *
- * Matching on the message never classified either (#1685). `ETIMEDOUT`
- * still counts: a socket-level timeout from npm is the same story for the
- * operator — try again later, do not go looking for a permission problem.
+ * Only the third names the timeout, so the message still has to be read for it
+ * — dropping that read is what #1726 first did, and it undid a case that
+ * worked on main (#1685).
  */
-function isInterruptedInstall(cause: unknown): boolean {
+function isInterruptedInstall(cause: unknown, message: string): boolean {
   const code = errnoCode(cause);
 
   if (code === 'ETIMEDOUT' || code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return true;
+
+  if (message.includes('ETIMEDOUT')) return true;
 
   return KilledErrorSchema.safeParse(cause).success;
 }
@@ -1284,8 +1288,8 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
 
     if (msg.includes('EACCES') || errnoCode(e) === 'EACCES') {
       message = 'Permission denied. Run "teamai update" manually with appropriate permissions.';
-    } else if (isInterruptedInstall(e)) {
-      message = 'Update timed out. Try again later.';
+    } else if (isInterruptedInstall(e, msg)) {
+      message = 'Update was interrupted. Try again later.';
     } else {
       message = `Update failed: ${msg}. Run "teamai update" manually.`;
     }

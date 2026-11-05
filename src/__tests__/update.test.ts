@@ -684,10 +684,10 @@ describe('doUpdate', () => {
     await doUpdate(null);
 
     expect(mockedLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining('timed out'),
+      expect.stringContaining('interrupted'),
     );
     expect(mockedLog.persist).toHaveBeenCalledWith(
-      expect.stringContaining('timed out'),
+      expect.stringContaining('interrupted'),
     );
   });
 
@@ -706,7 +706,34 @@ describe('doUpdate', () => {
     await doUpdate(null);
 
     expect(mockedLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining('timed out'),
+      expect.stringContaining('interrupted'),
+    );
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('Update failed'),
+    );
+  });
+
+  it('should treat npm giving up on the registry as an interrupted install', async () => {
+    // npm's own network timeout: it exits 1 and prints `npm error code
+    // ETIMEDOUT`, which Node appends to the message while the error code
+    // stays 1. Nothing about that error says "timeout" except the text, so
+    // the classifier has to read the message for this shape (#1685).
+    const npmTimeout = Object.assign(
+      new Error(
+        'Command failed: npm install -g teamai-cli\nnpm error code ETIMEDOUT\nnpm error network request to https://registry.npmjs.org/teamai-cli timed out',
+      ),
+      { killed: false, code: 1 },
+    );
+    mockedExecSync
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockImplementationOnce(() => {
+        throw npmTimeout;
+      });
+
+    await doUpdate(null);
+
+    expect(mockedLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining('interrupted'),
     );
     expect(mockedLog.warn).not.toHaveBeenCalledWith(
       expect.stringContaining('Update failed'),
