@@ -410,13 +410,31 @@ export function addedOf(judge: Extract<TaskJudge, { kind: 'check' }>, checkFiles
   return [...(judge.add ? [{ kind: 'solution' as const, ...judge.add }] : []), ...(checkFiles ? [checkFiles] : [])];
 }
 
-/** The team a trial's clone installs: the arm's, with the run's asset selection and the arm's recall setting. */
+/**
+ * The team a trial's clone installs: the arm's, with the run's asset selection
+ * and the arm's recall setting. The `never` branch is the point — a new ArmTeam
+ * kind has to be handled here rather than fall through to the last treatment.
+ */
 function cloneTeamOf(team: ArmTeam, selection: TeamSelection, recall: boolean | undefined): CloneTeam {
-  if (team.kind === 'none') return { treatment: 'none' };
-  const treatment = team.kind === 'pulled' ? 'pulled' : team.kind === 'ref' ? team.ref : { without: team.paths };
-  const installed = { revision: team.revision, selection, treatment };
+  // Only the arm's setting adds the key; an arm that named none leaves the
+  // team exactly as every other workflow clone has it.
+  const asked = <T extends CloneTeam>(clone: T): T | (T & { recall: boolean }) => (recall === undefined || clone.treatment === 'none' ? clone : { ...clone, recall });
 
-  return recall === undefined ? installed : { ...installed, recall };
+  switch (team.kind) {
+    case 'none':
+      return { treatment: 'none' };
+    case 'pulled':
+      return asked({ revision: team.revision, selection, treatment: 'pulled' });
+    case 'ref':
+      return asked({ revision: team.revision, selection, treatment: team.ref });
+    case 'without':
+      return asked({ revision: team.revision, selection, treatment: { without: team.paths } });
+    default: {
+      const unhandled: never = team;
+
+      return unhandled;
+    }
+  }
 }
 
 /**

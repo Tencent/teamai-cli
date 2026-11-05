@@ -57,6 +57,9 @@ export type InstalledTeam = Extract<CloneTeam, { revision: string }>;
 /**
  * `commit` is where the clone starts. `repo` keys the commit cache it may be fetched from, never a URL: preparation is
  * offline, from the run's checkout or that cache.
+ *
+ * `team.recall` is a benchmark arm's measurement control, and a workflow may name it too: the compiled benchmark steps
+ * the run stores are read back through this same schema, so a narrower one for the written form cannot tell them apart.
  */
 export const ClonePlaceSchema = z.object({
   commit: CommitSchema,

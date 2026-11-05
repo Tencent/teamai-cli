@@ -15,6 +15,7 @@ import type { BenchmarkSuiteFiles } from '../workflow/conformance-interpreter.js
 import { leaseNext, reconcileRun, reportAttempt } from '../workflow/engine.js';
 import { stepDefinitions } from '../workflow/scope.js';
 import type { DriverCan } from '../workflow/requirements.js';
+import { ClonePlaceSchema } from '../workflow/clone.js';
 import { cancelRun } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
@@ -146,10 +147,11 @@ describe('benchmark plan run', () => {
     // A suite that measures declared relations needs recall on in both arms: that is the
     // only path a relation takes to a session (#1564). A workflow clone keeps it off.
     const recallOf = (run: Awaited<ReturnType<typeof readRun>>): boolean | undefined => {
-      const step = stepDefinitions(run as RunState)('trials.r1.t01.a01');
-      const workspace = step?.workspace as { clone: { team: { recall?: boolean } } } | undefined;
+      const place = stepDefinitions(run as RunState)('trials.r1.t01.a01')?.workspace;
+      if (typeof place !== 'object' || !('clone' in place)) return undefined;
+      const team = ClonePlaceSchema.parse(place.clone).team;
 
-      return workspace?.clone.team.recall;
+      return 'recall' in team ? team.recall : undefined;
     };
 
     const on = await startFix({ armsYaml: '{ name: a01, recall: true }' });

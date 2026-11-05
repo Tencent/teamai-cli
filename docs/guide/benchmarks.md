@@ -43,6 +43,7 @@ setup:
 | `team` | The team assets an arm runs with. See [Arms on other team assets](#arms-on-other-team-assets). |
 | `workflow` | A team workflow each trial runs on the task, instead of one prompt. See [Arms that run a workflow](#arms-that-run-a-workflow). |
 | `role` | A role from `manifest/roles.yaml` each trial's clone runs with. See [Arms that run as a role](#arms-that-run-as-a-role). |
+| `recall` | Whether the arm's trial clones get the team's recall deployment, which every workflow clone leaves off. See [Arms that run with recall](#arms-that-run-with-recall). |
 | `model` | A model alias from `models/aliases.yaml`, resolved for each arm's tool when the run starts, or a model name. |
 | `repetitions` | 1 to 10, 3 by default. |
 | `parallel` | 1 to 32 lanes that baselines and trials run in, 1 by default. See [Parallel lanes](#parallel-lanes). |
@@ -183,6 +184,29 @@ role_unavailable: Arm "review" runs with role review, which manifest/roles.yaml 
 ```
 
 An arm with a role needs team assets for it to select, so the suite refuses `role` with `team: none`. A matrix crosses roles too: `matrix: { tool: [claude, codex], role: [frontend, review] }` makes `claude-frontend`, `claude-review`, `codex-frontend` and `codex-review`. Compare then pairs the two roles on each tool, and the two tools within each role, never a pair that differs in both.
+
+### Arms that run with recall
+
+Does the team's recall help a task at all — say, because a rule declares what its docs and code pages are about? Give the arms recall. Recall is off in a trial's clone, as in every workflow clone; `recall: true` turns it on for that arm's clones, so its sessions see `Related:` lines on the assets they load:
+
+```yaml
+schemaVersion: v1alpha1
+name: relations-help
+description: Do declared relations help a fix land.
+repo: https://github.com/acme/billing.git
+defaults:
+  tool: claude
+  model: strong
+arms:
+  - name: with-relations
+    recall: true
+  - name: baseline
+    recall: false
+repetitions: 3
+timeout: 45m
+```
+
+`recall` is a measurement's control, not a comparison key: it never counts as a changed `defaults` key, and the matrix cannot cross it. Leave it out and the arm runs as every workflow clone does, without recall.
 
 ### Cross tools with team assets
 
