@@ -18,6 +18,7 @@ import {
   type RunTimeVia, type ToolId,
 } from './tools.js';
 import {
+  CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
   WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
@@ -787,10 +788,13 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
 
       case 'cursor-mcp-approval': {
         // Cursor CLI 2026.10.21 cursor-config paths: a blank variable counts as unset.
+        // `init` records both roots, and Cursor's other readers (`sessionStoreDir`,
+        // `cursorConfigDir`) follow the record: a shell that does not export the
+        // variables must not point the gate at another directory.
         const home = rootsOf('cursor', user, host).declared('home', '.cursor');
-        const data = host.env.CURSOR_DATA_DIR?.trim() ? host.env.CURSOR_DATA_DIR : home;
+        const data = recordedToolRootDir(CURSOR_DATA_TOOL_ID, user.toolRoots, host) ?? (host.env.CURSOR_DATA_DIR?.trim() ? host.env.CURSOR_DATA_DIR : home);
         const xdg = host.env.XDG_CONFIG_HOME?.trim() ? host.path.join(host.env.XDG_CONFIG_HOME, 'cursor') : home;
-        const config = host.env.CURSOR_CONFIG_DIR?.trim() ? host.env.CURSOR_CONFIG_DIR : xdg;
+        const config = recordedToolRootDir(CURSOR_CONFIG_TOOL_ID, user.toolRoots, host) ?? (host.env.CURSOR_CONFIG_DIR?.trim() ? host.env.CURSOR_CONFIG_DIR : xdg);
 
         return [{ kind, projects: host.path.join(data, 'projects'), cliConfig: host.path.join(config, 'cli-config.json'), checkout: install.projectRoot }];
       }
