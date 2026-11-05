@@ -45,7 +45,7 @@ async function hint(harness: Harness, sessionId: string, launchedBy?: string): P
   return JSON.parse(output ?? 'null').hookSpecificOutput.additionalContext;
 }
 
-async function proposedInputs(harness: Harness, caller: typeof SESSION_CALL | { session: undefined } = SESSION_CALL): Promise<unknown[]> {
+async function proposedInputs(harness: Harness, caller: Parameters<Harness['call']>[1] = SESSION_CALL): Promise<unknown[]> {
   const described = await harness.call({ kind: 'describe', name: 'teamai-import-from-mr' }, caller);
   if (!('data' in described) || !('describe' in described.data) || described.data.describe.ask.kind !== 'ask') throw new Error(JSON.stringify(described));
 
@@ -86,6 +86,27 @@ describe('the session-start MR hint and describe of teamai-import-from-mr', () =
     expect(mrs).toEqual({ name: 'mrs', type: { type: 'array', items: { type: 'string' } }, why: 'No value: the session-start hint listed no merged MR in this session. Give the MR or PR URLs.' });
     expect(rest.at(-1)).toEqual({ name: 'language', type: { type: 'enum', values: ['en', 'zh'] }, value: 'en', why: 'The language teamai.yaml sets, which the learnings are written in.' });
     expect(await proposedInputs(harness, { session: undefined })).toContainEqual({ name: 'mrs', type: { type: 'array', items: { type: 'string' } }, why: 'No agent session found: give the MR or PR URLs.' });
+  });
+
+  it('keeps proposing to a session the MRs it was offered after another session of the repository is offered newer ones', async () => {
+    const harness = await memberOfAcme();
+    await hint(harness, SESSION);
+    const merged = JSON.stringify([7, 8, 9].map((number) => ({ number, title: `Change ${number}`, url: `https://github.com/acme/app/pull/${number}`, mergedAt: new Date().toISOString() })));
+    fs.writeFileSync(path.join(harness.root, 'bin', 'gh'), `#!/bin/sh\n[ "$1 $2" = "pr list" ] && echo '${merged}'\n`, { mode: 0o755 });
+    await hint(harness, 'another-session');
+
+    expect((await proposedInputs(harness))[0]).toMatchObject({ name: 'mrs', value: [PR7, PR8] });
+    expect((await proposedInputs(harness, { ...SESSION_CALL, session: 'another-session' }))[0]).toMatchObject({ name: 'mrs', value: ['https://github.com/acme/app/pull/9'] });
+  });
+
+  it('reads the offer a cache of one offered session holds', async () => {
+    const harness = await memberOfAcme();
+    await hint(harness, 'another-session');
+    const cache = path.join(harness.root, 'home', '.teamai', 'sessions', 'mr-hint-acme_app.json');
+    const written = JSON.parse(fs.readFileSync(cache, 'utf-8'));
+    fs.writeFileSync(cache, JSON.stringify({ ...written, offered: { session: SESSION, urls: [PR8] } }));
+
+    expect((await proposedInputs(harness))[0]).toMatchObject({ name: 'mrs', value: [PR8] });
   });
 
   it('names the command, and offers no run, in a session teamai launched', async () => {

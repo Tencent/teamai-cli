@@ -41,6 +41,9 @@ const MAX_MRS = 10;
 /** Cache TTL: 30 days. After this, cache is cleared. */
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** The sessions whose offer the cache keeps, the latest ones. */
+const OFFERED_SESSIONS = 20;
+
 /** teamai's default that turns merged MRs into learnings, which the hint offers. */
 const IMPORT_FROM_MR = 'teamai-import-from-mr';
 
@@ -64,8 +67,14 @@ const HintCacheSchema = z.object({
   hintedMrIds: lenientList(z.string()),
   /** ISO 8601 timestamp of last update. */
   updatedAt: z.string(),
-  /** The session the hint last offered teamai-import-from-mr, and the URLs of the MRs it listed, which describe proposes to it. */
-  offered: z.object({ session: z.string(), urls: lenientList(z.string()) }).optional(),
+  /**
+   * The URLs of the MRs the hint listed to each session it offered teamai-import-from-mr, by session id, which describe
+   * proposes to that session. An older cache holds only the session offered last.
+   */
+  offered: z.union([
+    z.record(z.string(), lenientList(z.string())),
+    z.object({ session: z.string(), urls: lenientList(z.string()) }).transform(({ session, urls }) => ({ [session]: urls })),
+  ]).optional(),
 });
 
 type HintCache = z.infer<typeof HintCacheSchema>;
@@ -113,6 +122,16 @@ function loadCache(owner: string, repo: string): HintCache {
     // cache missing or malformed — start fresh
     return { hintedMrIds: [], updatedAt: new Date().toISOString() };
   }
+}
+
+/**
+ * The offers of the cache once session `sessionId` is offered `urls`: read again, so a session of the repository that
+ * saved its own offer since this one loaded the cache keeps it, and only the latest {@link OFFERED_SESSIONS} are kept.
+ */
+function offerTo(owner: string, repo: string, sessionId: string, urls: string[]): Record<string, string[]> {
+  const others = Object.entries(loadCache(owner, repo).offered ?? {}).filter(([session]) => session !== sessionId);
+
+  return Object.fromEntries([...others, [sessionId, urls] as const].slice(-OFFERED_SESSIONS));
 }
 
 /**
@@ -572,7 +591,7 @@ export async function computeMrHintOutput(
 
   // The workflow where a hook may offer it to this session; else the command, as a session teamai launched gets it.
   const offeredTo = session && localConfig && (await WorkflowOffers.offerable(localConfig, IMPORT_FROM_MR, session)) !== undefined ? session : undefined;
-  const offered = offeredTo ? { session: offeredTo.sessionId, urls: newMrs.map((mr) => mr.url) } : cache.offered;
+  const offered = offeredTo ? offerTo(owner, repo, offeredTo.sessionId, newMrs.map((mr) => mr.url)) : cache.offered;
 
   // Update cache with all MR IDs seen this round
   const updatedIds = [...alreadyHinted, ...newMrs.map((mr) => mr.id)];
@@ -607,13 +626,13 @@ function mrsProposal(cwd: string, session: string | undefined): Proposal {
   if (session === undefined) return { why: 'No agent session found: give the MR or PR URLs.' };
   const remote = getGitRemote(cwd);
   const repo = remote === null ? null : parseRemoteToRepo(remote);
-  const offered = repo === null ? undefined : loadCache(repo.owner, repo.repo).offered;
+  const urls = repo === null ? undefined : loadCache(repo.owner, repo.repo).offered?.[session];
 
-  if (offered === undefined || offered.session !== session || offered.urls.length === 0) {
+  if (urls === undefined || urls.length === 0) {
     return { why: 'No value: the session-start hint listed no merged MR in this session. Give the MR or PR URLs.' };
   }
 
-  return { value: offered.urls, why: 'The merged MRs the session-start hint listed in this session.' };
+  return { value: urls, why: 'The merged MRs the session-start hint listed in this session.' };
 }
 
 /**
