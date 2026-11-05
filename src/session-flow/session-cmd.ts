@@ -40,6 +40,7 @@ import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPublish } from './session-publish.js';
+import { SessionWork } from './session-work.js';
 import { FinishedSessions, type FinishedSession, type ShareableSession } from './finished-sessions.js';
 import { autoDetectInit } from '../config.js';
 import type { LocalConfig } from '../types.js';
@@ -197,6 +198,27 @@ function printFinished(list: readonly FinishedSession[]): void {
   if (list.length === 0) console.log('No finished sessions to archive or judge here.');
 
   for (const one of list) console.log(`  ${one.session}  ${one.source}  ${one.publish ? 'publish' : '-'}  ${one.scorers.join(', ') || '-'}`);
+}
+
+/**
+ * `teamai session show`: a session of this machine, the caller's own or not, as a judge of it reads it, with the
+ * subagents it started and every secret this scope knows redacted.
+ */
+async function showSession(sessionId: string, opts: { source: string; cwd?: string; json?: boolean }): Promise<void> {
+  const unread = noAdapter(opts.source, 'read');
+
+  if (unread) return refuseCommand(unread, opts.json);
+  const config = await currentConfig(opts.cwd);
+
+  if (!config) return refuseCommand({ code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no team secrets to redact the session with. Run teamai init.' }, opts.json);
+  const read = await SessionWork.read(config, { platform: opts.source, sessionId });
+
+  if (!read.ok) {
+    return refuseCommand({ code: 'session_not_found', message: `No ${opts.source} session ${safeText(sessionId)} on this machine has anything to show. Run teamai session list --finished --all for the sessions it can show.` }, opts.json);
+  }
+
+  if (opts.json) process.stdout.write(`${JSON.stringify({ session: sessionId, source: opts.source, transcript: read.judged.body })}\n`);
+  else process.stdout.write(`${read.judged.body}\n`);
 }
 
 /** The config of the scope of `cwd`, or of this directory; undefined where teamai is not set up. */
@@ -729,6 +751,18 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
 
       console.log(`\n  ${sessions.length} session(s)\n`);
+    });
+
+  // ── session show ───────────────────────────────────────────
+  sessionCmd
+    .command('show')
+    .description('Print a session of this machine, your own or another, such as one session list --finished --all lists: its transcript and its subagents\', with the secrets this directory\'s teamai knows redacted, as a judge of it reads it. Exits 1 with session_not_found when no session of --source by that id has anything to show.')
+    .argument('<sessionId>', 'Session id, as session list --finished --all prints it')
+    .requiredOption('--source <platform>', 'Platform the session belongs to, such as claude-code, codex or hermes')
+    .option('--cwd <path>', 'Working directory (defaults to current directory)')
+    .option('--json', 'Print {"session","source","transcript"}, or {"error":{"code","message"}}')
+    .action(async (sessionId: string, opts: { source: string; cwd?: string; json?: boolean }) => {
+      await showSession(sessionId, opts);
     });
 
   // ── session resume ─────────────────────────────────────────

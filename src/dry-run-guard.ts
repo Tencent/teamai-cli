@@ -83,6 +83,7 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
   'session push',
   'session pull',
   'session list',
+  'session show',
   'session resume',
   'session search',
   'session rollback',

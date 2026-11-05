@@ -452,6 +452,10 @@ Generated: do not edit by hand. Regenerate with
     - `--publish <policy>` — With --finished: policy (sessions.publish for the session's run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.
     - `--scorers <json>` — With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.
     - `--json` — With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}
+  - `teamai session show <sessionId>` — Print a session of this machine, your own or another, such as one session list --finished --all lists: its transcript and its subagents', with the secrets this directory's teamai knows redacted, as a judge of it reads it. Exits 1 with session_not_found when no session of --source by that id has anything to show.
+    - `--source <platform>` — Platform the session belongs to, such as claude-code, codex or hermes
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--json` — Print {"session","source","transcript"}, or {"error":{"code","message"}}
   - `teamai session resume <sessionName>` — Restore a team session to a local platform
     - `--platform <platform>` — Target platform to restore into
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
