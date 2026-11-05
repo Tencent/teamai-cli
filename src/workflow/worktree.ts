@@ -891,17 +891,17 @@ async function fileManifest(root: string, paths: readonly string[]): Promise<Rec
   return files;
 }
 
-/** Stages the paths `args` added, then forces any gitlink among them. `git add -A` skips a submodule whose `ignore` is `all`. */
+/** Stages the paths `args` added, then forces any gitlink among them. `git add -A` skips a submodule whose `ignore` is `all`. Pathspecs are literal, so a reported `app/[id]/page.tsx` does not also match `app/i/page.tsx`. */
 async function stageAdded(dir: string, args: string[], runGit: Git, only?: ReadonlySet<string>): Promise<GitResult> {
-  const added = await runGit(dir, args);
+  const added = await runGit(dir, ['--literal-pathspecs', ...args]);
 
   if (added.code !== 0) return added;
-  const listed = await runGit(dir, only === undefined ? ['ls-files', '-s', '-z'] : ['ls-files', '-s', '-z', '--', ...only]);
+  const listed = await runGit(dir, only === undefined ? ['ls-files', '-s', '-z'] : ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', ...only]);
 
   if (listed.code !== 0) return listed;
   const modules = gitlinkLines(listed.stdout).map((line) => line.slice(line.indexOf('\t') + 1)).filter((module) => only === undefined || only.has(module));
 
-  return modules.length > 0 ? runGit(dir, ['add', '-f', '--', ...modules]) : added;
+  return modules.length > 0 ? runGit(dir, ['--literal-pathspecs', 'add', '-f', '--', ...modules]) : added;
 }
 
 /** Stages every change. `git add -A` skips a submodule whose `ignore` is `all`, so each submodule is also staged by name. */
@@ -916,7 +916,7 @@ async function pathCanBeStaged(dir: string, relative: string, runGit: Git): Prom
 
     return true;
   } catch {
-    return (await runGit(dir, ['ls-files', '--error-unmatch', '--', relative])).code === 0;
+    return (await runGit(dir, ['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', relative])).code === 0;
   }
 }
 

@@ -67,16 +67,20 @@ export async function commitPathsOf(dir: string, run: Git = git): Promise<{ path
 }
 
 /**
- * Paths a merge left staged whose worktree still matches the index. An unstaged edit of a tracked file, and a
- * conflict the step still has to resolve, are not part of that.
+ * Paths a merge left staged whose worktree still matches the index. An unstaged edit of a tracked file, a conflict
+ * the step still has to resolve, and a path that is also untracked are not part of that. A staged deletion the host
+ * recreated is both `D ` and `??`, and the untracked record is the host file.
  */
 export function mergeStagedPaths(text: string): string[] {
-  return porcelainRecords(text).filter((record) => {
+  const records = porcelainRecords(text);
+  const untracked = new Set(records.filter((record) => record.mark === '??' || record.mark === '!!').flatMap((record) => record.paths));
+
+  return records.filter((record) => {
     const index = record.mark[0] ?? ' ';
     const worktree = record.mark[1] ?? ' ';
 
     return index !== ' ' && index !== '?' && worktree === ' ';
-  }).flatMap((record) => record.paths);
+  }).flatMap((record) => record.paths).filter((relative) => !untracked.has(relative));
 }
 
 /** Those paths in `dir`, or why `git status` could not be read. */

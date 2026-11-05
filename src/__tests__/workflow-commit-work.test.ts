@@ -83,4 +83,31 @@ describe('commitWork', () => {
     expect(merge).not.toHaveProperty('tracked.txt');
     expect(merge).not.toHaveProperty('a.ts');
   });
+
+  it('does not record a staged deletion whose path the host recreated', async () => {
+    const dir = repo();
+    git(dir, 'rm', '-q', 'tracked.txt');
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'host\n');
+
+    expect(await recordMergePreparation(dir)).toBeUndefined();
+    const recorded = path.resolve(dir, git(dir, 'rev-parse', '--git-path', 'teamai-merge.json').trim());
+    const merge = JSON.parse(fs.readFileSync(recorded, 'utf8'));
+    expect(merge).not.toHaveProperty('tracked.txt');
+  });
+
+  it('stages the reported path and not a file a bracket in that path matches', async () => {
+    const dir = repo();
+    fs.mkdirSync(path.join(dir, 'app', '[id]'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'app', 'i'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'app', '[id]', 'page.tsx'), 'page\n');
+    fs.writeFileSync(path.join(dir, 'app', 'i', 'page.tsx'), 'host\n');
+
+    const committed = await commitWork(dir, 'teamai: fix', undefined, undefined, ['app/[id]/page.tsx']);
+
+    expect(committed).not.toHaveProperty('error');
+    const tree = git(dir, 'ls-tree', '-r', '--name-only', 'HEAD');
+    expect(tree).toContain('app/[id]/page.tsx');
+    expect(tree).not.toContain('app/i/page.tsx');
+    expect(git(dir, 'status', '--porcelain')).toContain('app/i/');
+  });
 });
