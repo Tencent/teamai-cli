@@ -6,32 +6,14 @@ import matter from 'gray-matter';
 import { z } from 'zod';
 
 import { callTool } from './tool-launch/call.js';
-import { isOverrideInvalid } from './tool-launch/member-tools.js';
 import { createGit } from './utils/git.js';
 import { stripFrontmatter } from './utils/frontmatter.js';
 import { log } from './utils/logger.js';
-import type { CodebaseSuggestion, LintIssue, LintReport } from './types.js';
+import type { CodebaseSuggestion } from './types.js';
 
 /** 文件扫描截断上限（字符数）。 */
 /** A learning's frontmatter tags; a tag that is not a string reads as undefined. */
 const LearningTagsSchema = z.array(z.string().optional().catch(undefined));
-
-const LintIssueSchema = z.object({
-  severity: z.enum(['high', 'medium', 'low']),
-  category: z.enum(['contradiction', 'outdated', 'orphan', 'missing']),
-  location: z.string(),
-  description: z.string(),
-  suggestion: z.string(),
-}) satisfies z.ZodType<LintIssue>;
-
-/** The lint reply the AI writes; a malformed issue is dropped, and a missing summary takes the default. */
-const LintReplySchema = z.object({
-  summary: z.string().optional().catch(undefined),
-  issues: z.array(LintIssueSchema.nullable().catch(null))
-    .transform((issues) => issues.filter((issue) => issue !== null))
-    .optional()
-    .catch(undefined),
-});
 
 const FILE_TREE_MAX_CHARS = 5000;
 
@@ -433,151 +415,4 @@ export async function generateCodebaseMd(opts: {
   }
 
   return buildFrontmatter(repoPath) + body;
-}
-
-/**
- * 基于 codebase.md 生成精简索引文档。
- * 索引让 LLM 跨会话快速定位章节，无需重读全文。
- *
- * @param codebaseMd  完整 codebase.md 内容（包含 frontmatter）
- * @returns           Markdown 索引（含表格：章节 / 一句摘要 / 关键词）
- */
-export async function generateCodebaseIndex(codebaseMd: string): Promise<string> {
-  const prompt =
-    `请分析以下 codebase.md 文档，提取所有二级章节（## 开头的标题），` +
-    `为每个章节生成：一句摘要（≤30 字）和 3-5 个关键词。\n\n` +
-    `【输出格式要求】严格输出 JSON 数组，不要加任何额外说明：\n` +
-    `[{"section": "章节名", "summary": "摘要", "keywords": ["词1", "词2", "词3"]}]\n\n` +
-    `文档内容：\n<codebase>\n${codebaseMd}\n</codebase>`;
-
-  log.debug('generateCodebaseIndex: 调用 AI 生成索引');
-  const raw = (await callTool(prompt, { launchedBy: 'codebase' })).text;
-
-  const now = new Date().toISOString();
-  const frontmatter = `---\ntitle: Codebase 索引\nlastUpdated: ${now}\n---\n\n`;
-
-  interface IndexEntry {
-    section: string;
-    summary: string;
-    keywords: string[];
-  }
-
-  try {
-    // 从输出中提取 JSON（AI 可能包裹在代码块里）
-    const jsonMatch = raw.match(/\[[\s\S]*\]/);
-
-    if (!jsonMatch) {
-      throw new Error('未找到 JSON 数组');
-    }
-
-    const entries: IndexEntry[] = JSON.parse(jsonMatch[0]);
-
-    const tableRows = entries
-      .map((e) => `| ${e.section} | ${e.summary} | ${e.keywords.join(', ')} |`)
-      .join('\n');
-
-    return (
-      frontmatter +
-      `# Codebase 索引\n\n` +
-      `| 章节 | 摘要 | 关键词 |\n` +
-      `| ---- | ---- | ------ |\n` +
-      tableRows +
-      '\n'
-    );
-  } catch (err) {
-    log.debug(`generateCodebaseIndex: 解析 JSON 失败 — ${String(err)}，原始输出：${raw.slice(0, 200)}`);
-
-    return (
-      frontmatter +
-      `# Codebase 索引\n\n` +
-      `> ⚠️ 索引生成失败，请重新运行 \`teamai import --dir <path>\` 以重新生成。\n`
-    );
-  }
-}
-
-/**
- * 健康检查：让 AI 检测 codebase.md 中的矛盾、过时声明、孤儿模块、缺失关键概念。
- *
- * 不修改文档，只返回问题清单。
- *
- * @param codebaseMd  完整 codebase.md 内容
- * @returns           LintReport，含 issues 数组
- */
-export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
-  const prompt =
-    `请对以下 codebase.md 文档做健康检查，检测：\n` +
-    `1. 矛盾（contradiction）：文档内部自相矛盾的陈述\n` +
-    `2. 过时（outdated）：可能已经不准确的声明\n` +
-    `3. 孤儿（orphan）：提到了但文档其他地方没有解释的模块或概念\n` +
-    `4. 缺失（missing）：重要章节或关键概念未被覆盖\n\n` +
-    `【输出格式要求】严格输出 JSON，不要加任何额外说明：\n` +
-    `{"summary": "一句话总结", "issues": [` +
-    `{"severity": "high|medium|low", "category": "contradiction|outdated|orphan|missing", ` +
-    `"location": "章节名或行号区间", "description": "问题描述", "suggestion": "修复建议"}` +
-    `]}\n\n` +
-    `文档内容：\n<codebase>\n${codebaseMd}\n</codebase>`;
-
-  log.debug('lintCodebaseMd: 调用 AI 做 lint 检查');
-
-  try {
-    const raw = (await callTool(prompt, { launchedBy: 'codebase' })).text;
-
-    // 从输出中提取 JSON 对象
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-
-    if (!jsonMatch) {
-      throw new Error('未找到 JSON 对象');
-    }
-
-    const parsed = LintReplySchema.parse(JSON.parse(jsonMatch[0]));
-
-    return {
-      issues: parsed.issues ?? [],
-      summary: parsed.summary ?? '检查完成',
-    };
-  } catch (err) {
-    if (isOverrideInvalid(err)) throw err;
-    log.debug(`lintCodebaseMd: 解析失败 — ${String(err)}`);
-
-    return { issues: [], summary: '解析失败，无法 lint' };
-  }
-}
-
-/**
- * 将 MR 提炼的变更建议应用到现有 codebase.md 内容。
- *
- * @param current     当前 codebase.md 完整内容
- * @param suggestions MR 提炼的变更建议列表
- * @returns           AI 合并建议后的 codebase.md 完整内容
- * @deprecated 已被 teamwiki 增量更新（extractCodebase + deepEnrich）替代。保留供 `teamai codebase --apply` 使用。
- */
-export async function applyCodebaseSuggestions(
-  current: string,
-  suggestions: CodebaseSuggestion[],
-): Promise<string> {
-  // 过滤掉 action='noop' 的建议
-  const effectiveSuggestions = suggestions.filter((s) => s.action !== 'noop');
-
-  if (effectiveSuggestions.length === 0) {
-    log.debug('applyCodebaseSuggestions: 无有效建议，直接返回原内容');
-
-    return current;
-  }
-
-  const suggestionsJson = JSON.stringify(effectiveSuggestions, null, 2);
-
-  const prompt =
-    `请将以下变更建议合并到 codebase.md 中，保持原有格式和风格：\n\n` +
-    `当前 codebase.md：\n<current>\n${current}\n</current>\n\n` +
-    `变更建议（JSON 列表）：\n<suggestions>\n${suggestionsJson}\n</suggestions>\n\n` +
-    `【输出格式要求】\n` +
-    `- 直接输出完整的 Markdown 文档，从文档第一行（通常是 # 开头的标题）开始\n` +
-    `- 不要输出任何前缀说明、总结、"我已经..."、"更新内容包括..."等描述性文字\n` +
-    `- 保留原文档的所有已有内容，仅按建议新增或修改对应部分\n` +
-    `- 输出必须是可以直接写入文件的完整 codebase.md`;
-
-  log.debug(`applyCodebaseSuggestions: 应用 ${effectiveSuggestions.length} 条建议`);
-  const result = (await callTool(prompt, { launchedBy: 'codebase' })).text;
-
-  return result;
 }

@@ -35,11 +35,6 @@ vi.mock('../import-codebase.js', () => ({
   importLocalCheckout: (...args: unknown[]) => mockImportLocalCheckout(...args),
 }));
 
-const mockApplyCodebaseSuggestions = vi.fn();
-vi.mock('../codebase.js', () => ({
-  applyCodebaseSuggestions: (...args: unknown[]) => mockApplyCodebaseSuggestions(...args),
-}));
-
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn().mockReturnThis(), fail: vi.fn().mockReturnThis() })),
@@ -58,14 +53,12 @@ describe('ciExtractMr', () => {
     mockPostOrUpdateMrComment.mockReset();
     mockPushRepoDirectly.mockReset();
     mockAppendPendingReview.mockReset();
-    mockApplyCodebaseSuggestions.mockReset();
 
     mockImportFromMR.mockResolvedValue({
       learning: { title: 'Test Learning', content: '# Test\n\nContent' },
       repoUrl: 'https://github.com/org/repo.git',
     });
     mockPostOrUpdateMrComment.mockResolvedValue({ created: true, url: 'https://example.com/comment' });
-    mockApplyCodebaseSuggestions.mockResolvedValue('# Updated codebase');
   });
 
   afterEach(async () => {
@@ -128,9 +121,6 @@ describe('ciExtractMr', () => {
     const learnings = await fse.readdir(path.join(teamRepo, 'learnings'));
     expect(learnings.length).toBe(1);
     expect(learnings[0]).toContain('Test-Learning');
-
-    // the graph engine replaced codebase direct mode, so applyCodebaseSuggestions is no longer called
-    // mockApplyCodebaseSuggestions must not be called
 
     // push is called (with the learning only, not docs/codebase.md)
     expect(mockPushRepoDirectly).toHaveBeenCalledWith(

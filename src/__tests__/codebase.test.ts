@@ -45,11 +45,7 @@ vi.mock('../tool-launch/call.js', async (importOriginal) => ({
 
 import fs from 'node:fs';
 import { callTool } from '../tool-launch/call.js';
-import {
-  generateCodebaseMd,
-  generateCodebaseIndex,
-  lintCodebaseMd,
-} from '../codebase.js';
+import { generateCodebaseMd } from '../codebase.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -141,106 +137,3 @@ describe('generateCodebaseMd', () => {
   });
 });
 
-// ─── generateCodebaseIndex ─────────────────────────────────────────────────
-
-describe('generateCodebaseIndex', () => {
-  it('happy path：AI 返回合法 JSON，输出应含表格行', async () => {
-    const validJson = JSON.stringify([
-      { section: '项目概述', summary: '描述项目背景', keywords: ['CLI', 'TypeScript'] },
-      { section: '技术栈', summary: '列出使用的技术', keywords: ['Node.js', 'vitest', 'tsup'] },
-    ]);
-    mockCallTool.mockResolvedValue({ text: validJson, tool: 'claude' });
-
-    const result = await generateCodebaseIndex('# Codebase\n\n## 项目概述\n内容');
-
-    expect(result).toContain('| 章节 | 摘要 | 关键词 |');
-    expect(result).toContain('项目概述');
-    expect(result).toContain('技术栈');
-    expect(result).toContain('lastUpdated:');
-  });
-
-  it('AI 返回非 JSON 时，应不抛异常并返回兜底 markdown', async () => {
-    mockCallTool.mockResolvedValue({ text: '抱歉，我无法生成索引。', tool: 'claude' });
-
-    const result = await generateCodebaseIndex('# Codebase');
-
-    expect(result).toContain('title: Codebase 索引');
-    expect(result).toContain('⚠️');
-  });
-
-  it('AI 返回包裹在代码块中的 JSON 时，应能正确解析', async () => {
-    const validJson = JSON.stringify([
-      { section: '测试覆盖', summary: '测试策略与覆盖率', keywords: ['unit', 'e2e'] },
-    ]);
-    mockCallTool.mockResolvedValue({ text: `\`\`\`json\n${validJson}\n\`\`\``, tool: 'claude' });
-
-    const result = await generateCodebaseIndex('# Codebase\n\n## 测试覆盖\n内容');
-
-    expect(result).toContain('测试覆盖');
-  });
-});
-
-// ─── lintCodebaseMd ────────────────────────────────────────────────────────
-
-describe('lintCodebaseMd', () => {
-  it('happy path：AI 返回合法 JSON，应正确解析 issues 列表', async () => {
-    const validJson = JSON.stringify({
-      summary: '发现 2 个问题',
-      issues: [
-        {
-          severity: 'high',
-          category: 'outdated',
-          location: '技术栈',
-          description: 'Node 版本已过时',
-          suggestion: '更新至 Node 20',
-        },
-        {
-          severity: 'medium',
-          category: 'missing',
-          location: '测试覆盖',
-          description: '缺少 E2E 测试说明',
-          suggestion: '补充 E2E 章节',
-        },
-      ],
-    });
-    mockCallTool.mockResolvedValue({ text: validJson, tool: 'claude' });
-
-    const report = await lintCodebaseMd('# Codebase');
-
-    expect(report.summary).toBe('发现 2 个问题');
-    expect(report.issues).toHaveLength(2);
-    expect(report.issues[0]!.severity).toBe('high');
-    expect(report.issues[0]!.category).toBe('outdated');
-  });
-
-  it('AI 返回非 JSON 时，应不抛异常并返回兜底 report', async () => {
-    mockCallTool.mockResolvedValue({ text: '文档看起来不错！', tool: 'claude' });
-
-    const report = await lintCodebaseMd('# Codebase');
-
-    expect(report.issues).toEqual([]);
-    expect(report.summary).toBe('解析失败，无法 lint');
-  });
-
-  it('callTool 抛出异常时，应不向上传播并返回兜底 report', async () => {
-    mockCallTool.mockRejectedValue(new Error('AI 服务不可用'));
-
-    const report = await lintCodebaseMd('# Codebase');
-
-    expect(report.issues).toEqual([]);
-    expect(report.summary).toBe('解析失败，无法 lint');
-  });
-
-  it('AI 返回包含 JSON 的混合文本时，应能提取 JSON', async () => {
-    const validJson = JSON.stringify({
-      summary: '无问题',
-      issues: [],
-    });
-    mockCallTool.mockResolvedValue({ text: `以下是检查结果：\n${validJson}\n感谢使用。`, tool: 'claude' });
-
-    const report = await lintCodebaseMd('# Codebase');
-
-    expect(report.summary).toBe('无问题');
-    expect(report.issues).toHaveLength(0);
-  });
-});
