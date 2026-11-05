@@ -93,8 +93,10 @@ steps:
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { written: number, labels: [string] }   # labels: the version of each label written, which teamai score answers with
         # Publishes this member's pending labels to teamai-reports. Offline, or with an http team repo, they stay pending.
+        # A run that only tries labels publishes nothing.
         - id: publish
           needs: [write]
+          if: inputs.store
           workspace: { team: { branch: teamai-reports } }
           command: teamai score publish
           deliver: publish

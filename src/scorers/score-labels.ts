@@ -85,6 +85,9 @@ const EntrySchema = z.discriminatedUnion('kind', [
 
 type Entry = z.infer<typeof EntrySchema>;
 
+/** A scorer's entry in a group's labels.json: its label with the reasoning, or the code of why it has none. */
+export type LabelEntry = Entry;
+
 const LabelsFileSchema = z.object({ entries: z.array(EntrySchema) });
 
 const LABELS = 'labels.json';
@@ -289,6 +292,9 @@ async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: M
 }
 
 export const ScoreLabels = {
+  /** The entries `label` left in the group directory `dir`, one per scorer; undefined when it wrote none. */
+  read: readEntries,
+
   /**
    * The labels of the group in `dir`, written with their reasoning to `<dir>/labels.json`, and one entry per scorer
    * without it. A scorer with a check on a delivered pass is refused until its check stage recorded what it found.

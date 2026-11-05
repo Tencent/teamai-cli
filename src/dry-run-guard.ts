@@ -137,6 +137,7 @@ export const NO_DRY_RUN_PREVIEW = {
   'score write': 'writes labels to local storage and closes their marks',
   'score publish': 'stages pending labels in the teamai-reports checkout its step runs in',
   'score settle': 'closes the scoring marks of a group as failed',
+  'score report': 'a step of a teamai-try-scorer run; reads the labels its teamai-score steps left',
   'score subjects': 'reads the marks, whose first read carries judge attempts over into them',
   'codebase deep-enrich-plan': 'a step of a teamai-codebase-deep-enrich run; drops the AI docs a newer extract made stale',
   'codebase deep-enrich-write': 'writes a component design doc or the architecture overview',
