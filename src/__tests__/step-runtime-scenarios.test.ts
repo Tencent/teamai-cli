@@ -273,4 +273,19 @@ describe.each(SUBJECTS)('StepRuntime scenarios: $name', (subject) => {
     await second.cancel(request.op);
     expect(await ending).toEqual<ExecEnd>({ kind: 'cancelled' });
   });
+
+  it.runIf(subject.retains)('ends an exec id its own restart left running with the outcome that exec recorded', async () => {
+    const first = await start();
+    const opened = await first.open(openRequest(), async () => {});
+    if (opened.kind !== 'ready') throw new Error('not opened');
+    const request = execRequest(opened.handle, [process.execPath, '-e', 'require("fs").writeFileSync("started", ""); setTimeout(() => process.stdout.write("finished"), 3000)']);
+    void first.exec(request, {});
+    expect(await until(() => fs.existsSync(path.join(worktree, 'started')))).toBe(true);
+    // The exec outlasts the wait dispose gives the runtime to exit, so the second runtime gets it still running.
+    await first.dispose();
+    const second = await start();
+
+    expect(await second.reattach(opened.handle)).toEqual({ kind: 'alive', ops: [{ op: request.op, state: 'running' }] });
+    expect(await second.exec(request, {})).toEqual<ExecEnd>({ kind: 'exited', code: 0, stdout: 'finished' });
+  });
 });

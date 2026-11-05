@@ -54,6 +54,16 @@ function dieAt(point) {
   return true;
 }
 
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function groupAlive(pgid) {
   try {
     process.kill(-pgid, 0);
@@ -102,11 +112,14 @@ function open(request) {
   send({ op: request.op, event: 'ready' });
 }
 
+function settle(op, outcome) {
+  if (outcome.state === 'exited') send({ op, event: 'exited', code: outcome.code, stdout: outcome.stdout });
+  else send({ op, event: 'cancelled' });
+}
+
 function replay(op, record) {
   send({ op, event: 'accepted' });
-
-  if (record.outcome.state === 'exited') send({ op, event: 'exited', code: record.outcome.code, stdout: record.outcome.stdout });
-  else send({ op, event: 'cancelled' });
+  settle(op, record.outcome);
 }
 
 function exec(request) {
@@ -124,12 +137,22 @@ function exec(request) {
     return;
   }
 
-  // An exec a toy before this one started is answered from its record when its group ends, never run again. A cancel
-  // of it says it ended.
+  // An exec a toy before this one started is never run again. The toy that started it outlives its stdin and records
+  // the outcome, which is replayed here; it is lost only when both that toy and the exec's group are gone without one.
+  // A cancel of it says it ended.
   if (record?.pgid !== undefined) {
     send({ op: request.op, event: 'accepted' });
     const wait = setInterval(() => {
-      if (groupAlive(record.pgid)) return;
+      const now = readJson(opPath(request.op), record);
+
+      if (now.outcome) {
+        clearInterval(wait);
+        settle(request.op, now.outcome);
+
+        return;
+      }
+
+      if (groupAlive(record.pgid) || (record.owner !== undefined && pidAlive(record.owner))) return;
       clearInterval(wait);
 
       if (fs.existsSync(file('cancel', request.op))) return;
@@ -145,7 +168,7 @@ function exec(request) {
   const [command, ...args] = request.argv;
   const child = spawn(command, args, { cwd: request.cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   running.set(request.op, child);
-  writeJson(opPath(request.op), { kind: 'exec', handle: request.handle, pgid: child.pid });
+  writeJson(opPath(request.op), { kind: 'exec', handle: request.handle, pgid: child.pid, owner: process.pid });
   send({ op: request.op, event: 'accepted' });
   let stdout = '';
   child.stdout.setEncoding('utf8').on('data', (data) => { stdout += data; send({ op: request.op, event: 'output', stream: 'stdout', data }); });
