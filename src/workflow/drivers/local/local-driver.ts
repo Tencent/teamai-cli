@@ -920,14 +920,13 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   // Nobody answers here, so the driver offers the run to a person; once it could not, the steps only a person can take fail.
   let handoff: PersonHandoff | undefined = canHitl ? undefined : { kind: 'offers' };
 
-  const report = async (body: ReportBody, lease: Lease): Promise<WorkflowEnvelope | undefined> => {
+  const report = async (body: ReportBody, lease: Lease, changed?: readonly string[]): Promise<WorkflowEnvelope | undefined> => {
     const secrets = env?.secrets ?? await knownSecrets(config);
     await AttemptResult.mask(attemptResultPath(config, runId, lease.attempt), secrets);
 
-    // A command that did not run because the adopted place was already dirty must not then commit that dirt.
-    const answer = body.failure?.code === 'unreported_changes'
-      ? await managedReport({ config, runId, report: body, secrets, lock, changed: [] })
-      : await managedReport({ config, runId, report: body, secrets, lock });
+    const answer = changed === undefined
+      ? await managedReport({ config, runId, report: body, secrets, lock })
+      : await managedReport({ config, runId, report: body, secrets, lock, changed });
 
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
@@ -1224,7 +1223,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         ? unstaged(exited.lease, staged.failure)
         : await commandReport(config, lock, driver, exited.lease, staged.result, turn.secrets);
 
-      const failed = await report(body, exited.lease);
+      // The command did not start. An empty list keeps a host file written after adopt out of the commit.
+      const failed = await report(body, exited.lease, staged.kind === 'unstaged' ? [] : undefined);
 
       if (failed) return failed;
     }

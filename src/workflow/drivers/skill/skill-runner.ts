@@ -266,7 +266,8 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
 
   if (!state || (open?.phase !== 'preparing' && open?.phase !== 'running')) return { kind: 'gone', status: 'gone' };
   const { dir, job: { lease } } = prepared;
-  const failed = (failure: WorkflowFailure, cause: 'place' | 'model'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause });
+  // The step has not run. An empty list keeps a host file written after adopt out of the commit, and the failure stays the one that stopped the step.
+  const failed = (failure: WorkflowFailure, cause: 'place' | 'model'): Promise<Stage> => fail(context, lock, { state, attempt, revision: open.revision, failure, cause, changed: [] });
 
   if (lease.executor === 'command') {
     const scoped = lease.envScope ? await stepEnvironment(context.env, lease.envScope) : { ok: true as const, env: withRunningCli(process.env) };

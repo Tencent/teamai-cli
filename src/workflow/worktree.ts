@@ -867,11 +867,26 @@ async function stageAll(dir: string, runGit: Git = git): Promise<GitResult> {
   return stageAdded(dir, ['add', '-A'], runGit);
 }
 
+/** A path git can be given to `git add`: it is in the worktree, or still in the index. A staged rename's old path and a staged removal are neither, and `git add` rejects them. */
+async function pathCanBeStaged(dir: string, relative: string, runGit: Git): Promise<boolean> {
+  try {
+    await fs.lstat(path.join(dir, relative));
+
+    return true;
+  } catch {
+    return (await runGit(dir, ['ls-files', '--error-unmatch', '--', relative])).code === 0;
+  }
+}
+
 /** Stages `paths` and nothing else. An empty list stages nothing, so a file written after the caller chose the list stays out. */
 async function stagePaths(dir: string, paths: readonly string[], runGit: Git): Promise<GitResult> {
   if (paths.length === 0) return { code: 0, stdout: '', stderr: '' };
+  const present = await Promise.all(paths.map(async (relative) => await pathCanBeStaged(dir, relative, runGit) ? relative : undefined));
+  const stageable = present.filter((relative): relative is string => relative !== undefined);
 
-  return stageAdded(dir, ['add', '-A', '--', ...paths], runGit, new Set(paths));
+  if (stageable.length === 0) return { code: 0, stdout: '', stderr: '' };
+
+  return stageAdded(dir, ['add', '-A', '--', ...stageable], runGit, new Set(stageable));
 }
 
 /**

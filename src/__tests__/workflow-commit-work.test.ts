@@ -39,4 +39,21 @@ describe('commitWork', () => {
     expect(git(dir, 'show', 'HEAD:a.txt')).toBe('a\n');
     expect(git(dir, 'status', '--porcelain')).toBe('?? b.txt\n');
   });
+
+  it('commits a staged rename and a staged removal when the child listed the paths git status shows', async () => {
+    const dir = repo();
+    git(dir, 'mv', 'tracked.txt', 'renamed.txt');
+    fs.writeFileSync(path.join(dir, 'gone.txt'), 'gone\n');
+    git(dir, 'add', 'gone.txt');
+    git(dir, 'commit', '-qm', 'gone');
+    git(dir, 'rm', '-q', 'gone.txt');
+
+    const committed = await commitWork(dir, 'teamai: fix', undefined, undefined, ['renamed.txt', 'tracked.txt', 'gone.txt']);
+
+    expect(committed).not.toHaveProperty('error');
+    expect(git(dir, 'show', 'HEAD:renamed.txt')).toBe('clean\n');
+    expect(() => git(dir, 'show', 'HEAD:tracked.txt')).toThrow();
+    expect(() => git(dir, 'show', 'HEAD:gone.txt')).toThrow();
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
 });

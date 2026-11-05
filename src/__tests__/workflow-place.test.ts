@@ -464,6 +464,28 @@ steps:
     expect(() => git(f.remote, 'show', `${lease.workspace.branch}:code.txt`)).toThrow();
   });
 
+  it('keeps a failure from before the step ran, and does not commit a host file written after adopt', async () => {
+    const f = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Fix in a place the host makes.
+alias: ship
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix it.
+`);
+    const lease = await leased(f);
+    const dir = lease.host('before-step', '-b', lease.workspace.branch);
+    expect(await f.client.next(f.runId, body(f), { prepare: { attempt: lease.attempt, adopt: dir } })).toMatchObject({ data: { lease: { cwd: dir } } });
+    fs.writeFileSync(path.join(dir, '.setup-out'), 'host\n');
+    const failure = { code: 'model_unavailable', message: 'Step "fix" needs model missing, which this session cannot run.' };
+    const answer = await f.client.report(f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', failure, driver: f.driver }, { changed: [] });
+
+    expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed', failure } } });
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(lease.workspace.start.commit);
+    expect(git(dir, 'status', '--porcelain')).toContain('.setup-out');
+  });
+
   it('names every unreported path', async () => {
     const f = await fixture(`schemaVersion: v1alpha1
 name: build

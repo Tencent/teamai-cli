@@ -162,7 +162,7 @@ export async function finishWriter(input: {
    * Absent: commit the tree, as a place TeamAI made does.
    */
   reported?: readonly string[];
-  /** A failure the step already has. Kept when the tree has paths outside `reported` and this is `unreported_changes`. */
+  /** A failure the step already has. Kept when the tree has paths outside `reported`, so that failure is not replaced. */
   already?: WorkflowFailure;
 }): Promise<{ changes?: StepChanges; failure?: WorkflowFailure; unpushed?: string }> {
   const { dir, step, workspace, rangeFrom, conflicts, saved, failed, reported, already } = input;
@@ -186,7 +186,7 @@ export async function finishWriter(input: {
     const missing = listed.paths.filter((relative) => !reported.includes(relative)).sort((left, right) => left.localeCompare(right));
 
     if (missing.length > 0) {
-      return { failure: already?.code === 'unreported_changes' ? already : { code: 'unreported_changes', message: unreportedChangesMessage(step, dir, missing, 'which the step did not report changing, so nothing was committed or pushed.') } };
+      return { failure: already ?? { code: 'unreported_changes', message: unreportedChangesMessage(step, dir, missing, 'which the step did not report changing, so nothing was committed or pushed.') } };
     }
 
     paths = listed.paths;
