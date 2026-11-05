@@ -72,6 +72,7 @@ All notable changes to this project will be documented in this file. See [standa
   - `teamai workflow retry` of a run past its retention is refused `run_expired`, and of a succeeded run whose branches cannot be brought back `branches_not_restored`;
   - `teamai pull` refuses a workflow that reads `pr` on a step without `deliver: pr`.
 - `teamai roles add`, `update`, `remove` and `set`, and `teamai projects add`, `update`, `remove` and `set`, exit 1 when they refuse the change or it fails. They printed the reason and then exited 0, so a script or a CI job read a refusal as success. A refusal covers an unknown role or project, a duplicate id, a call with nothing to update, a namespace list that would leave a role or project with none, and a manifest that cannot be read or validated; a failure covers a preview, a worktree or a push that could not be prepared. A failed push used to leave the manifest written locally with no pull request opened. `roles set` on a team-assigned role exited 1 already, as did a dirty preview or a detached clone that an edit reports before it starts.
+- `teamai roles list` exits 1 as well when the roles manifest is missing or cannot be read, which is where it already printed `✖`; `--json` still exits 0, since it answers with the member's own roles. `teamai projects list` on a team with no projects manifest still exits 0, as that team is not misconfigured.
 
 ### 💥 Breaking Changes
 
