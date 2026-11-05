@@ -297,7 +297,8 @@ export const LAUNCH_ADAPTERS = {
     call: { evidence: 'verified', prompt: 'stdin', args: ({ lastMessageFile }) => ['exec', '--json', '--skip-git-repo-check', '-o', lastMessageFile, '-'], read: readCodexExec },
     // `codex exec --help` of codex-cli 0.165.0: "Intended solely for running in environments that are externally sandboxed".
     step: { evidence: 'verified', unattended: { args: ['--dangerously-bypass-approvals-and-sandbox'], evidence: 'docs' } },
-    confined: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
+    // Codex also signs in with CODEX_API_KEY ("run codex login or set CODEX_API_KEY").
+    confined: { evidence: 'verified', env: ['CODEX_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY'], homeEnv: 'CODEX_HOME', verified: /^codex-cli 0\.163\.0$/, access: 'read' },
   },
   opencode: {
     call: { evidence: 'verified', prompt: 'stdin', args: () => ['run', '--format', 'json'], read: readOpenCodeRun },
