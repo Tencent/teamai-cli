@@ -224,7 +224,7 @@ export interface RelatedAdoptedLearningsOptions {
 }
 
 export async function findRelatedAdoptedLearnings(
-  staleEntry: Pick<StaleEntry, 'docId'>,
+  staleEntry: Pick<StaleEntry, 'docId' | 'path'>,
   votesDir: string,
   learningsDirs: readonly string[],
   options?: RelatedAdoptedLearningsOptions,
@@ -337,7 +337,7 @@ const TopicSchema = z.looseObject({
  * body of every entry in a repository shares that repository's vocabulary, which
  * would make everything look related to everything.
  */
-async function entryTopicTokens(staleEntry: StaleEntry): Promise<Set<string>> {
+async function entryTopicTokens(staleEntry: Pick<StaleEntry, 'docId' | 'path'>): Promise<Set<string>> {
   const tokens = nameTokensOf(staleEntry.docId);
   const content = await readFileSafe(staleEntry.path);
 
