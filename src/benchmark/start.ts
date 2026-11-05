@@ -432,10 +432,11 @@ const NO_MODEL_FIX = {
  * written. An alias that gives the tool no model refuses the start. `source` is `member` when the member's own entry,
  * or their model switch, decided the model.
  */
-async function resolveArm({ name, tool, model, role }: Arm, team: ArmTeam, aliases: () => Promise<ModelAliases>): Promise<ArmResolution> {
+async function resolveArm({ name, tool, model, role, recall }: Arm, team: ArmTeam, aliases: () => Promise<ModelAliases>): Promise<ArmResolution> {
   const roleField = role !== undefined ? { role } : {};
+  const recallField = recall !== undefined ? { recall } : {};
 
-  if (model === undefined) return { ok: true, arm: { name, tool, source: 'team', team, ...roleField } };
+  if (model === undefined) return { ok: true, arm: { name, tool, source: 'team', team, ...roleField, ...recallField } };
   const loaded = await aliases();
   const alias = isModelAlias(loaded, model);
   // An alias maps only the tools teamai knows, so it gives any other tool no model; a model name passes as written.
@@ -447,7 +448,7 @@ async function resolveArm({ name, tool, model, role }: Arm, team: ArmTeam, alias
 
   const source = resolution.step === 'local' || resolution.step === 'switched' ? 'member' : 'team';
 
-  return { ok: true, arm: definedFields<PlannedArm>({ name, tool, model: resolution.model, alias: alias ? model : undefined, effort: resolution.effort, source, team, ...roleField }) };
+  return { ok: true, arm: definedFields<PlannedArm>({ name, tool, model: resolution.model, alias: alias ? model : undefined, effort: resolution.effort, source, team, ...roleField, ...recallField }) };
 }
 
 /**

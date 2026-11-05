@@ -133,7 +133,16 @@ type ArmKey = keyof ArmValues;
 
 const ARM_KEYS = ArmValuesSchema.keyof().options;
 
-const ArmFileSchema = ArmValuesSchema.partial().extend({ name: BenchmarkNameSchema }).strict();
+const ArmFileSchema = ArmValuesSchema.partial().extend({
+  name: BenchmarkNameSchema,
+  /**
+   * Whether the arm's trial clones get the team's recall deployment. Absent: off, as a workflow clone always has been.
+   * A suite that measures declared relations sets it on every arm, because relations reach a session through recall
+   * alone, and without it the arms would differ only in the `related:` text a tool receives unchanged. It is not a
+   * matrix key: it is the measurement's control, not a value the page compares one arm over.
+   */
+  recall: z.boolean().optional(),
+}).strict();
 
 /** Every value of each key crossed with every value of the others, one arm each: what the page compares one key over. */
 const MatrixSchema = z.object({
@@ -510,6 +519,8 @@ export interface Arm {
   workflow?: string;
   /** The team role its trials' clones run with; absent: the member's roles. */
   role?: string;
+  /** Whether its trials' clones get the team's recall deployment; absent: off. */
+  recall?: boolean;
 }
 
 export interface Suite {

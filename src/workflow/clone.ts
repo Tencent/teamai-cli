@@ -33,6 +33,10 @@ export const TeamPathSchema = z.string().refine(
  * Which team assets the clone gets at `revision`: the revision as pulled, the revision a ref named (the ref is only its
  * name), or the revision without some of its files and directories, each a path in the team repo. `none` installs
  * nothing.
+ *
+ * `recall` asks for the team's recall deployment on or off in the clone. Absent: off, as a workflow clone always has
+ * been. A benchmark arm sets it because the measurement compares declared relations, and they reach a session through
+ * recall alone.
  */
 const TreatmentSchema = z.union([
   z.literal('pulled'),
@@ -42,7 +46,7 @@ const TreatmentSchema = z.union([
 
 export const CloneTeamSchema = z.union([
   z.object({ treatment: z.literal('none') }).strict(),
-  z.object({ revision: CommitSchema, selection: TeamSelectionSchema, treatment: TreatmentSchema }).strict(),
+  z.object({ revision: CommitSchema, selection: TeamSelectionSchema, treatment: TreatmentSchema, recall: z.boolean().optional() }).strict(),
 ]);
 
 export type CloneTeam = z.infer<typeof CloneTeamSchema>;

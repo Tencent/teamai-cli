@@ -633,7 +633,7 @@ export async function frozenBenchmark(config: LocalConfig, files: BenchmarkSuite
   const { suite } = parsed;
   // Every team an arm names resolves to RUN_TEAM, as start would resolve it in a team repo at that revision.
   const resolved = (team: TeamChoice): ArmTeam => (team.kind === 'none' ? team : { ...team, revision: RUN_TEAM });
-  const [first, ...rest] = suite.arms.map((arm) => ({ name: arm.name, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), source: 'team' as const, team: resolved(arm.team), ...(arm.role ? { role: arm.role } : {}) }));
+  const [first, ...rest] = suite.arms.map((arm) => ({ name: arm.name, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), source: 'team' as const, team: resolved(arm.team), ...(arm.role ? { role: arm.role } : {}), ...(arm.recall === undefined ? {} : { recall: arm.recall }) }));
   const committed = await commitCheckFiles(commitCacheOf(config, suite.repo), suite);
   if (!committed.ok) return error('check_files_unwritable', committed.failed);
   const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: RUN_TEAM, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, arms: [first, ...rest], scorers: {}, coveredSkills: {} });

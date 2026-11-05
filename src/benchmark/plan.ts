@@ -42,6 +42,8 @@ const PlannedArmSchema = z.object({
   workflow: z.object({ name: z.string().min(1), sourceHash: Sha256 }).strict().optional(),
   /** The team role the arm's trial clones run with, as its suite named it, no longer than a record label; absent: the member's roles. */
   role: RoleIdSchema.refine(isRecordableLabel).optional(),
+  /** Whether the arm's trial clones get the team's recall deployment; absent: off, as a workflow clone always has been. */
+  recall: z.boolean().optional(),
 }).strict();
 
 export type PlannedArm = z.infer<typeof PlannedArmSchema>;
@@ -329,7 +331,7 @@ export function compileBundle(
 
     if (task.judge.kind === 'check') step.if = `steps.${BASELINES}.outputs.${task.id} == 'failed'`;
     // The arm's tool, not the first step's: a workflow arm may open its clone with a command.
-    step.workspace = { clone: { commit: task.startingCommit, repo: suite.repo, team: cloneTeamOf(arm.team, { ...plan.selection, enabledAgents: [arm.tool] }) } };
+    step.workspace = { clone: { commit: task.startingCommit, repo: suite.repo, team: cloneTeamOf(arm.team, { ...plan.selection, enabledAgents: [arm.tool] }, arm.recall) } };
 
     // On the step that opens the clone, so the prompt, a workflow arm's steps and the check all continue it with the role.
     if (arm.role !== undefined) step.role = arm.role;
@@ -408,23 +410,13 @@ export function addedOf(judge: Extract<TaskJudge, { kind: 'check' }>, checkFiles
   return [...(judge.add ? [{ kind: 'solution' as const, ...judge.add }] : []), ...(checkFiles ? [checkFiles] : [])];
 }
 
-/** The team a trial's clone installs: the arm's, with the run's asset selection. */
-function cloneTeamOf(team: ArmTeam, selection: TeamSelection): CloneTeam {
-  switch (team.kind) {
-    case 'none':
-      return { treatment: 'none' };
-    case 'pulled':
-      return { revision: team.revision, selection, treatment: 'pulled' };
-    case 'ref':
-      return { revision: team.revision, selection, treatment: team.ref };
-    case 'without':
-      return { revision: team.revision, selection, treatment: { without: team.paths } };
-    default: {
-      const unhandled: never = team;
+/** The team a trial's clone installs: the arm's, with the run's asset selection and the arm's recall setting. */
+function cloneTeamOf(team: ArmTeam, selection: TeamSelection, recall: boolean | undefined): CloneTeam {
+  if (team.kind === 'none') return { treatment: 'none' };
+  const treatment = team.kind === 'pulled' ? 'pulled' : team.kind === 'ref' ? team.ref : { without: team.paths };
+  const installed = { revision: team.revision, selection, treatment };
 
-      return unhandled;
-    }
-  }
+  return recall === undefined ? installed : { ...installed, recall };
 }
 
 /**
