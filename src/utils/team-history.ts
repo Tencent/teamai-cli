@@ -11,7 +11,7 @@ import { log } from './logger.js';
 //  branch the checkout has (HEAD), as far as the clone has it: a shallow clone
 //  proves less, never more.
 //
-//  Whole files compare by git blob id, without reading a historical blob. A
+//  Whole files compare by git blob id, then by checkout-filtered bytes. A
 //  resource whose render is not its source bytes (an MCP server, a hook entry,
 //  a rendered rule) reads each historical version once and renders it.
 
@@ -120,8 +120,9 @@ export type HistoryRender = (content: Buffer, version: HistoricalVersion) => str
 
 /**
  * Whether `candidate` equals the file at `pathspec` at some revision of HEAD
- * in `repoPath` (without `render`), or teamai's render of it (with). Compared
- * by blob id. Null when git cannot read the history; a version git cannot
+ * in `repoPath` (raw or checkout-filtered bytes without `render`), or teamai's
+ * render of it (with). Compared by blob id. Null when git cannot read the
+ * history; a version git cannot
  * read is skipped.
  */
 export async function matchesHistory(
@@ -137,11 +138,14 @@ export async function matchesHistory(
   const versions = all.filter((version) => version.mode !== '120000');
   const id = await blobIdOf(repoPath, candidate);
 
-  if (!render) return versions.some((v) => v.blob === id);
+  if (!render && versions.some((v) => v.blob === id)) return true;
 
   for (const version of versions) {
-    const content = await readBlob(repoPath, version.blob);
-    const rendered = content === null ? null : render(content, version);
+    const content = render
+      ? await readBlob(repoPath, version.blob)
+      : await readRenderedBlob(repoPath, version.blob, version.path);
+
+    const rendered = content === null ? null : render ? render(content, version) : content;
 
     if (rendered !== null && await blobIdOf(repoPath, rendered) === id) return true;
   }
