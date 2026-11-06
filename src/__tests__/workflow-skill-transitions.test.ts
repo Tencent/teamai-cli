@@ -1805,6 +1805,27 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a stored report sent again after an attempt left its queue in the same tick lists that attempt queued, as the tick\'s next does',
+    rows: ['D9', 'P11'],
+    run: async () => {
+      const reports: unknown[] = [];
+      const recording = (client: WorkflowClient): WorkflowClient => ({ ...client, report: (run, body, options) => { reports.push(body); return client.report(run, body, options); } });
+      const made = await harness({ check: SERVE }, { runners: sleepFaked([]), client: recording });
+      const { turn: { run }, running, queued } = await serving(made);
+      const file = skillStatePath(made.config, run);
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const open = (attempt: string) => saved.attempts.find((entry: { attempt: string }) => entry.attempt === attempt);
+      // The attempt that waited now waits behind one that closed, and comes before an attempt whose report a refusal left stored.
+      const waiting = { ...open(queued.attempt), behind: 'a00000000' };
+      const stored = { ...open(running.attempt), phase: 'reporting', body: { attempt: running.attempt, revision: open(running.attempt).revision, outcome: 'success', driver: saved.driver, exitCode: 0 } };
+      fs.writeFileSync(file, JSON.stringify({ ...saved, attempts: [waiting, stored] }));
+      reports.length = 0;
+      await made.call({ kind: 'next', run, wait: false });
+      expect(reports[0]).toMatchObject({ attempt: running.attempt, queued: [queued.attempt] });
+      return made.rows;
+    },
+  },
+  {
     name: 'a command past its timeout is stopped by its runner at its deadline',
     rows: ['D3', 'C9', 'P9'],
     run: async () => {

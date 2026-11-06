@@ -595,6 +595,14 @@ function agrees(version: RunVersion, end: { outcome: string; prs: string[]; out:
 }
 
 /**
+ * The attempts a call to the engine lists in `queued`, whose own timeout it restarts: each queued one, and each D9
+ * unqueued this tick, which has just started, so its clock restarts once more.
+ */
+export function queuedAttempts(state: SkillState, unqueued: readonly AttemptId[] = []): AttemptId[] {
+  return state.attempts.filter((open) => open.phase === 'queued' || unqueued.includes(open.attempt)).map((open) => open.attempt);
+}
+
+/**
  * The engine `next` of a tick (D1), or R12 while the host question waits. Once the run is done, a `next` that takes no
  * lease (X5) asks whether the engine reopened it or another driver ended it again, but only once `version`, what the
  * run file says now, moved from what the end kept (X7). A runner's check (`role: 'runner'`) takes no lease.
@@ -602,8 +610,7 @@ function agrees(version: RunVersion, end: { outcome: string; prs: string[]; out:
 export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; version?: RunVersion; unqueued?: readonly AttemptId[] }): { row: 'R12' | 'X7' } | { row: 'D1'; request: TickRequest } | (Moved<'X5'> & { request: TickRequest }) {
   const { role, version } = input;
   const running = state.attempts.map((open) => open.attempt);
-  // An attempt D9 unqueued this tick has just started, so its clock restarts once more, on this call.
-  const queued = state.attempts.filter((open) => open.phase === 'queued' || input.unqueued?.includes(open.attempt)).map((open) => open.attempt);
+  const queued = queuedAttempts(state, input.unqueued);
   const autoApprove = state.options.hitl === 'auto-approve';
   const { done } = state;
 

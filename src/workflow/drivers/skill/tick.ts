@@ -19,9 +19,9 @@ import {
   type Literal,
 } from './literals.js';
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
-import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
+import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, readiedRow, reopenedRow, replyRow,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, queuedAttempts, readiedRow, reopenedRow, replyRow,
   deadlineRow, reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
@@ -58,8 +58,8 @@ interface Applied {
   refused?: WorkflowFailure;
 }
 
-/** Applies the effects of a row that moved the run to `start`, in order, under `lock`. */
-export async function applyEffects(context: SkillContext, lock: RunLock, start: SkillState, effects: readonly Effect[]): Promise<Applied> {
+/** Applies the effects of a row that moved the run to `start`, in order, under `lock`. `unqueued`: the attempts D9 unqueued this tick. */
+export async function applyEffects(context: SkillContext, lock: RunLock, start: SkillState, effects: readonly Effect[], unqueued: readonly AttemptId[] = []): Promise<Applied> {
   let applied: Applied = { state: start, spawned: false };
 
   for (const effect of effects) {
@@ -72,7 +72,7 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
         await context.runners.stopLeft(applied.state.run, effect.attempt);
         break;
       case 'send': {
-        const sent = await sendReport(context, lock, applied.state, effect.attempt, effect.body, effect.changed);
+        const sent = await sendReport(context, lock, applied.state, effect, unqueued);
         applied.state = sent.state;
 
         if (sent.refused) applied.refused = sent.refused;
@@ -106,10 +106,10 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  * Saves `state`, which holds the report `body` of `attempt`, then sends that body under `lock` and applies the engine's
  * answer. A crash after the engine took the report leaves the body stored, and the next tick sends it again (P11).
  */
-async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody, changed?: readonly string[]): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
+async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, { attempt, body, changed }: Extract<Effect, { kind: 'send' }>, unqueued: readonly AttemptId[]): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
   // The attempts still waiting for their place keep their whole timeout through this report too.
-  const sent = { ...body, queued: state.attempts.filter((open) => open.phase === 'queued').map((open) => open.attempt) };
+  const sent = { ...body, queued: queuedAttempts(state, unqueued) };
   const answer = await context.client.report(state.run, sent, changed === undefined ? { lock } : { lock, changed });
   const taken = traced(context, reportedRow(state, { attempt, reply: reportReply(answer), at: context.now().toISOString() }));
 
@@ -234,15 +234,15 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   let state = start;
   let spawned = false;
 
+  const unqueued: AttemptId[] = [];
+
   const apply = async (effects: readonly Effect[]): Promise<Applied> => {
-    const applied = await applyEffects(context, lock, state, effects);
+    const applied = await applyEffects(context, lock, state, effects, unqueued);
     state = applied.state;
     spawned = spawned || applied.spawned;
 
     return applied;
   };
-
-  const unqueued: AttemptId[] = [];
 
   for (const open of start.attempts) {
     const moved = traced(context, await attemptCheckRow(context, state, open));
@@ -531,8 +531,7 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
     case 'adopt':
       return adoptRow(state, { attempt: call.attempt, dir: call.dir, at: context.now().toISOString() });
     case 'respond': {
-      const queued = state.attempts.filter((open) => open.phase === 'queued').map((open) => open.attempt);
-      const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver, queued } });
+      const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver, queued: queuedAttempts(state) } });
 
       return respondedRow(state, respondReply(answer));
     }
