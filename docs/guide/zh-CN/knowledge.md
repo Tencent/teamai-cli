@@ -234,7 +234,7 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 `--from-repo-list` 默认最多同时导入 3 个仓库。可用 `--concurrency <n>` 设置上限，值必须是正的安全整数。非法值会在读取仓库清单、准备输出目录之前报错。在你的机器上，它们的 AI 调用同时进行，提取和发布则轮流进行。
 
-`--dir`、`--from-repo`、`--from-repo-list` 和 `--from-org` 运行默认工作流 [`teamai-import-from-repo`](workflow.md#默认工作流)。每个来源先在不调用 AI 的情况下提取，再由你的 AI 工具描述它的模块、写出深度文档，最后整批只重建并发布一次索引。一个仓库失败不会中断其他仓库：整批会点名它，并以 1 退出。一个导入正在写某个 `teamwiki/` 时，写入同一目录的另一个导入会被拒绝；等第一个结束后再运行。用 `teamai workflow resume` 继续的导入，在每个写 `teamwiki/` 的步骤上会重新获取这把锁；另一个导入持有它时，该步骤失败，等那个导入结束后重试即可。
+`--dir`、`--from-repo`、`--from-repo-list` 和 `--from-org` 运行默认工作流 [`teamai-import-from-repo`](workflow.md#默认工作流)。每个来源先在不调用 AI 的情况下提取，再由你的 AI 工具描述它的模块、写出深度文档，最后整批只重建并发布一次索引。一个仓库失败不会中断其他仓库：整批会点名它，并以 1 退出。一个导入正在写某个 `teamwiki/` 时，写入同一目录的另一个导入会被拒绝；等第一个结束后再运行。中途停下、可以用 `teamai workflow resume` 继续的导入，在其运行结束前一直持有这把锁，另一个导入会被拒绝，并提示结束该运行的 `teamai workflow resume <run>` 和 `teamai workflow cancel <run>` 命令。
 
 `--from-mr` 运行默认工作流 [`teamai-import-from-mr`](workflow.md#默认工作流)。你的 AI 工具先为每个 MR 起草一条 learning，然后你逐条审阅：
 

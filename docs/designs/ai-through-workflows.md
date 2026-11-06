@@ -363,9 +363,11 @@ proposes `scorers/<name>.md` to the team as a pull request.
   repositories in the order their steps run, names a failed one with `import failed: <url>` after the failing step's
   own error, and prints its `Batch import complete` line plainly. The deep-enrich retry names the absolute `--output`
   directory. Each line a step says keeps the stream it had, so the pull request lines stay on stderr.
-  An `--output` teamwiki takes the import lock too, beside it. Each step that writes the teamwiki takes the lock as
-  well (`whileTeamwikiLocked`), so a run continued with `workflow resume` holds it; under the command's own hold, which
-  its steps inherit, a step goes on.
+  An `--output` teamwiki takes the import lock too. The lock file is under `~/.teamai/locks`, in no checkout. Each
+  step that writes the teamwiki takes the lock as well (`whileTeamwikiLocked`) and records its run's
+  `$TEAMAI_RUN_DIR` in it, so the run holds the lock between its steps until it ends, also after it stopped and while
+  `workflow resume` continues it; under the command's own hold, which its steps inherit, a step goes on. A run with no
+  `teamai init` cannot be resumed, so its steps record no run and the lock lasts only while a process of it does.
 - `import --from-mr` drafts every MR before the review, which is the driver's choice prompt as for `--from-tools`
   (`edit` takes the note as the title) instead of `Accept learning? [Y/n]`, and is refused the same way without a
   terminal. The prompt always has the review-thread guidance and a `Review threads (N):` section. The `AI analysis`

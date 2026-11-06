@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -277,7 +278,9 @@ describe('teamai import through teamai-import-from-repo', { timeout: 120_000 }, 
     expect(run, listed.stdout + listed.stderr).toBeDefined();
     const teamRepo = path.join(sb.home, '.teamai', 'team-repo');
     const other = { pid: process.pid, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo };
-    fs.writeFileSync(path.join(sb.home, '.teamai', '.teamai-import.lock'), JSON.stringify(other));
+    const lock = path.join(sb.home, '.teamai', 'locks', `import-${createHash('sha256').update(path.resolve(teamRepo)).digest('hex').slice(0, 16)}.lock`);
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, JSON.stringify(other));
 
     const resumed = await sb.run(['workflow', 'resume', run ?? '']);
 

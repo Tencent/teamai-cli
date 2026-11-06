@@ -32,9 +32,10 @@ const fwd = (value: string): string => value.split(path.sep).join('/');
 
 /**
  * A `claude` that logs `start <label> <ms> lock=<bool>` and `end <label> <ms>` for each prompt: the component it names,
- * `architecture` or `g5`. It fails the labels in FAKE_FAIL, and with FAKE_WAIT=n waits, up to 5 s, until n prompts started.
+ * `architecture` or `g5`, and whether an import lock is in `locks`. It fails the labels in FAKE_FAIL, and with
+ * FAKE_WAIT=n waits, up to 5 s, until n prompts started.
  */
-function fakeClaude(bin: string, log: string, lock: string): void {
+function fakeClaude(bin: string, log: string, locks: string): void {
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
 const fs = require('fs');
@@ -42,7 +43,7 @@ const log = ${JSON.stringify(log)};
 let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', async () => {
   const named = /模块: (\\S+)/.exec(stdin);
   const label = named ? named[1] : stdin.includes('技术架构总览') ? 'architecture' : stdin.includes('sequenceDiagram') ? 'g5' : 'other';
-  fs.appendFileSync(log, 'start ' + label + ' ' + Date.now() + ' lock=' + fs.existsSync(${JSON.stringify(lock)}) + '\\n');
+  fs.appendFileSync(log, 'start ' + label + ' ' + Date.now() + ' lock=' + (fs.existsSync(${JSON.stringify(locks)}) && fs.readdirSync(${JSON.stringify(locks)}).length > 0) + '\\n');
   const wait = Number(process.env.FAKE_WAIT || 0);
   const until = Date.now() + 5000;
   while (wait > 0 && Date.now() < until && fs.readFileSync(log, 'utf8').split('\\n').filter((l) => l.startsWith('start ')).length < wait) await new Promise((r) => setTimeout(r, 20));
@@ -76,7 +77,7 @@ function sandbox(): Sandbox {
   const project = path.join(root, 'project');
   const bin = path.join(root, 'bin');
   const log = path.join(root, 'claude.log');
-  fakeClaude(bin, log, path.join(home, '.teamai', '.teamai-import.lock'));
+  fakeClaude(bin, log, path.join(home, '.teamai', 'locks'));
 
   git(['init', '-q', '--bare', '-b', 'main', remote], root);
   git(['init', '-q', '-b', 'main', work], root);
@@ -170,7 +171,7 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     expect(lastCommit(box.remote)).toBe('[teamai] Deep enrich: widget');
   });
 
-  it('publishes the docs of a run that stopped and was finished with workflow resume, leaving the team checkout clean', async () => {
+  it('keeps another import out of a run that stopped, then publishes its docs once workflow resume finishes it, leaving the team checkout clean', async () => {
     const box = sandbox();
     const first = box.start(['codebase', '--deep-enrich', '--project', 'widget'], { FAKE_WAIT: '99' });
     await expect.poll(() => box.calls().some((line) => line.startsWith('start ')), { timeout: 60_000 }).toBe(true);
@@ -179,6 +180,11 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     const listed = await box.run(['workflow', 'resume']);
     const run = /teamai workflow resume (r[0-9a-f]{16})/.exec(listed.stdout + listed.stderr)?.[1];
     expect(run, listed.stdout + listed.stderr).toBeDefined();
+    const other = await box.run(['codebase', '--deep-enrich', '--project', 'widget']);
+    expect(other.code).not.toBe(0);
+    expect(other.stdout + other.stderr).toContain(
+      `, in workflow run ${run ?? ''}. Finish it with teamai workflow resume ${run ?? ''}, or cancel it with teamai workflow cancel ${run ?? ''}, then run this command again.`,
+    );
 
     const resumed = await box.run(['workflow', 'resume', run ?? '']);
 
@@ -186,6 +192,8 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     expect(fs.readdirSync(box.docs)).toContain('architecture.md');
     expect(lastCommit(box.remote)).toBe('[teamai] Deep enrich: widget');
     expect(execFileSync('git', ['status', '--porcelain'], { cwd: path.dirname(box.wikiRoot), encoding: 'utf8' })).toBe('');
+    const again = await box.run(['codebase', '--deep-enrich', '--project', 'widget']);
+    expect(again.code, again.stdout + again.stderr).toBe(0);
   });
 
   it('names a component the tool could not write, writes the others, and exits 1', async () => {
@@ -267,9 +275,11 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     expect(box.calls().filter((line) => line.startsWith('start cli'))).toHaveLength(1);
     expect(fs.readdirSync(docs)).toContain('api.md');
     expect(fs.readdirSync(docs)).not.toContain('cli.md');
-    // A run with no init keeps its config and run files out of the member's data home, which holds the log as before.
+    // A run with no init keeps its config and run files out of the member's data home, which holds the log as before,
+    // and the directory of the machine's import locks, with no lock left in it.
     const teamai = path.join(box.home, '.teamai');
-    expect((fs.existsSync(teamai) ? fs.readdirSync(teamai) : []).filter((name) => name !== 'debug.log')).toEqual([]);
+    expect((fs.existsSync(teamai) ? fs.readdirSync(teamai) : []).filter((name) => name !== 'debug.log' && name !== 'locks')).toEqual([]);
+    expect(fs.readdirSync(path.join(teamai, 'locks'))).toEqual([]);
   });
 
   it('writes an --output teamwiki in the checkout of a member with teamai init, publishing nothing', async () => {
@@ -286,6 +296,21 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     expect(lastCommit(box.remote)).toBe('wiki');
   });
 
+  it('lets another import into an --output teamwiki with no teamai init once a run there stopped, as no resume can finish it', async () => {
+    const box = sandbox();
+    fs.cpSync(box.wikiRoot, path.join(box.project, 'wiki', 'teamwiki'), { recursive: true });
+    fs.rmSync(path.join(box.home, '.teamai'), { recursive: true, force: true });
+    const first = box.start(['codebase', '--deep-enrich', '--project', 'widget', '--output', './wiki'], { FAKE_WAIT: '99' });
+    await expect.poll(() => box.calls().some((line) => line.startsWith('start ')), { timeout: 60_000 }).toBe(true);
+    first.child.kill('SIGKILL');
+    await first.ran;
+
+    const other = await box.run(['codebase', '--deep-enrich', '--project', 'widget', '--output', './wiki']);
+
+    expect(other.code, other.stdout + other.stderr).toBe(0);
+    expect(other.stdout).toContain('Deep enrichment complete: project=widget');
+  });
+
   it('holds the import lock of the team repo while the hidden deep-enrich writes its teamwiki', async () => {
     const box = sandbox();
 
@@ -295,7 +320,7 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
     const starts = box.calls().filter((line) => line.startsWith('start '));
     expect(starts).toHaveLength(5);
     expect(starts.every((line) => line.endsWith(' lock=true'))).toBe(true);
-    expect(fs.existsSync(path.join(box.home, '.teamai', '.teamai-import.lock'))).toBe(false);
+    expect(fs.readdirSync(path.join(box.home, '.teamai', 'locks'))).toEqual([]);
     expect(lastCommit(box.remote)).toBe('wiki');
   });
 });

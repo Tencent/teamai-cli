@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { EPHEMERAL_CONFIG_ENV, RUN_DIR_ENV } from '../launch-context.js';
 import { assertAttachedTeamRepo, createGit } from './git.js';
 
 import type { TeamaiInit } from '../config.js';
@@ -47,16 +48,17 @@ export async function assertTeamwikiWritable(target: TeamwikiTarget | undefined)
  * Hold the exclusive import lock of the teamwiki while writing it, so two imports never write one teamwiki at once and
  * the usage reporter does not reset a team repo mid-import. A teamwiki outside a team repo is locked too.
  *
+ * @param runDir - The `$TEAMAI_RUN_DIR` of the workflow step that writes it: that run then holds the lock until it ends
  * @returns the release function
- * @throws ImportLockHeldError when another live process holds the lock
+ * @throws ImportLockHeldError when another live process or run holds the lock
  */
-export async function lockTeamwiki(target: TeamwikiTarget): Promise<() => Promise<void>> {
+export async function lockTeamwiki(target: TeamwikiTarget, runDir?: string): Promise<() => Promise<void>> {
   const { acquireImportLock } = await import('./import-lock.js');
 
-  if (!target.team) return acquireImportLock(target.wikiRoot);
+  if (!target.team) return acquireImportLock(target.wikiRoot, runDir);
   await assertTeamwikiWritable(target);
 
-  return acquireImportLock(target.team.localConfig.repo.localPath);
+  return acquireImportLock(target.team.localConfig.repo.localPath, runDir);
 }
 
 /** The teamwiki at `wikiRoot`, with the member's team repo when that is the repo holding it. Needs no teamai init. */
@@ -75,13 +77,16 @@ export async function teamwikiAt(wikiRoot: string): Promise<TeamwikiTarget> {
 }
 
 /**
- * Runs `write`, a workflow step that writes the teamwiki at `wikiRoot`, under its import lock, so a run continued with
- * `teamai workflow resume` holds it as the command that started the run did. Under that command's hold, it goes on.
+ * Runs `write`, a workflow step that writes the teamwiki at `wikiRoot`, under its import lock, which its run, named by
+ * `$TEAMAI_RUN_DIR`, then holds until it ends, so a run continued with `teamai workflow resume` keeps other imports
+ * out between its steps as the command that started the run did. Under that command's or that run's hold, it goes on.
+ * A run with no `teamai init` cannot be resumed, so it holds the lock only while a process of it does.
  *
- * @throws ImportLockHeldError when another live process holds the lock
+ * @throws ImportLockHeldError when another live process or run holds the lock
  */
 export async function whileTeamwikiLocked<T>(wikiRoot: string, write: () => Promise<T>): Promise<T> {
-  const release = await lockTeamwiki(await teamwikiAt(wikiRoot));
+  const resumable = process.env[EPHEMERAL_CONFIG_ENV] === undefined;
+  const release = await lockTeamwiki(await teamwikiAt(wikiRoot), resumable ? process.env[RUN_DIR_ENV] : undefined);
 
   try {
     return await write();

@@ -1,15 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { acquireImportLock, isImportInProgress } from '../utils/import-lock.js';
 
 /**
  * Mirrors the lockPathFor formula from the implementation.
- * Lock is placed in the parent of the resolved teamRepoPath.
+ * Lock is placed under the member's ~/.teamai/locks, named from a hash of the resolved teamRepoPath.
  */
 function lockPathFor(teamRepoPath: string): string {
-  return path.join(path.dirname(path.resolve(teamRepoPath)), '.teamai-import.lock');
+  const hash = createHash('sha256').update(path.resolve(teamRepoPath)).digest('hex').slice(0, 16);
+
+  return path.join(os.homedir(), '.teamai', 'locks', `import-${hash}.lock`);
 }
 
 /** Returns true if a file exists at the given absolute path. */
@@ -31,6 +34,7 @@ describe('import-lock', () => {
     root = await mkdtemp(path.join(os.tmpdir(), 'implock-'));
     teamRepo = path.join(root, 'team-repo');
     lockPath = lockPathFor(teamRepo);
+    await mkdir(path.dirname(lockPath), { recursive: true });
   });
 
   afterEach(async () => {
@@ -163,11 +167,72 @@ describe('import-lock', () => {
     expect(await readFile(lockPath, 'utf8')).toBe(taken);
   });
 
+  it('keeps a lock a step of a run left for as long as that run lasts', async () => {
+    const runDir = path.join(root, 'runs', 'r0123abcd', 'scratch');
+    await mkdir(runDir, { recursive: true });
+    const left = JSON.stringify({ pid: 2147483646, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo, runDir }, null, 2);
+    await writeFile(lockPath, left, 'utf8');
+
+    await expect(acquireImportLock(teamRepo)).rejects.toThrow(
+      `Another teamai import is writing this teamwiki (process 2147483646 on ${os.hostname()}), in workflow run r0123abcd. Finish it with teamai workflow resume r0123abcd, or cancel it with teamai workflow cancel r0123abcd, then run this command again.`,
+    );
+    expect(await readFile(lockPath, 'utf8')).toBe(left);
+
+    await rm(path.dirname(runDir), { recursive: true });
+    const release = await acquireImportLock(teamRepo);
+    expect(JSON.parse(await readFile(lockPath, 'utf8')).pid).toBe(process.pid);
+    await release();
+    expect(await fileExists(lockPath)).toBe(false);
+  });
+
+  it('lets every step of a run go on under its lock, and leaves the lock to the run', async () => {
+    const runDir = path.join(root, 'runs', 'r0123abcd', 'scratch');
+    await mkdir(runDir, { recursive: true });
+
+    const first = await acquireImportLock(teamRepo, runDir);
+    await first();
+    await writeFile(lockPath, JSON.stringify({ ...JSON.parse(await readFile(lockPath, 'utf8')), pid: 2147483646 }), 'utf8');
+
+    const next = await acquireImportLock(teamRepo, runDir);
+    await next();
+    expect(JSON.parse(await readFile(lockPath, 'utf8')).runDir).toBe(runDir);
+    await expect(acquireImportLock(teamRepo)).rejects.toThrow('in workflow run r0123abcd');
+  });
+
+  it('records the run of a step that goes on under the hold of the process that started it', async () => {
+    const runDir = path.join(root, 'runs', 'r0123abcd', 'scratch');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(lockPath, JSON.stringify({ pid: process.ppid, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }), 'utf8');
+    const before = process.env.TEAMAI_IMPORT_LOCK_HOLDER;
+    process.env.TEAMAI_IMPORT_LOCK_HOLDER = `${process.ppid}@${os.hostname()}`;
+
+    try {
+      const release = await acquireImportLock(teamRepo, runDir);
+      await release();
+    } finally {
+      if (before === undefined) delete process.env.TEAMAI_IMPORT_LOCK_HOLDER;
+      else process.env.TEAMAI_IMPORT_LOCK_HOLDER = before;
+    }
+
+    expect(JSON.parse(await readFile(lockPath, 'utf8'))).toMatchObject({ pid: process.ppid, teamRepo, runDir });
+  });
+
+  it('writes nothing beside the teamwiki it locks, so an --output teamwiki in a checkout stays clean', async () => {
+    const output = path.join(root, 'project', 'wiki');
+    const holder = path.join(output, 'teamwiki');
+    await mkdir(holder, { recursive: true });
+
+    const release = await acquireImportLock(holder);
+    expect(await readdir(holder)).toEqual([]);
+    expect(await readdir(output)).toEqual(['teamwiki']);
+    expect(await isImportInProgress(holder)).toBe(true);
+    await release();
+  });
+
   it('leaves no directory behind that it created only for the lock', async () => {
     const output = path.join(root, 'out', 'wiki');
 
     const release = await acquireImportLock(path.join(output, 'teamwiki'));
-    expect(await fileExists(path.join(output, '.teamai-import.lock'))).toBe(true);
     await release();
 
     expect(await fileExists(path.join(root, 'out'))).toBe(false);
