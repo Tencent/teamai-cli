@@ -40,7 +40,7 @@ export function detachedRunners(config: LocalConfig): Runners {
       if (!entry) throw new Error('The teamai entry script is unknown, so the runner of a workflow step cannot start. Reinstall teamai.');
 
       const child = spawn(process.execPath, [entry, ...runnerArgs(run, attempt)], {
-        cwd: checkout, detached: process.platform !== 'win32', stdio: 'ignore', windowsHide: true, env: { ...process.env, ...attemptEnv(config, run, attempt, mode) },
+        cwd: checkout, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ...attemptEnv(config, run, attempt, mode) },
       });
 
       const failed = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => { child.once('spawn', () => resolve(undefined)).once('error', resolve); });
