@@ -876,8 +876,10 @@ export function planWorkspace(
   const { ancestors } = splitLevels(levelsTo(run, state.id), state.id);
   const mode = resolveMode(definition, ancestors.map((ancestor) => ancestor.step));
 
-  // A confined step reads its directory; an answer reads the checkout. Neither inherits a copy or resumes a session.
-  if (confinedOf(definition) !== undefined || definition.answer !== undefined) return { mode };
+  // A confined step reads its directory; an answer reads the checkout, or its own copy. Neither inherits a copy or resumes a session.
+  if (confinedOf(definition) !== undefined) return { mode };
+
+  if (definition.answer !== undefined) return mode === 'new' ? planAnswerCopy(run, state, request, handback) : { mode };
   // A role template that gives no role id fails the step before any role it would run with is compared.
   const levels = roleLevelsOf(run, state.id);
 
@@ -985,6 +987,24 @@ export function planWorkspace(
       merge: mode === 'continue' ? changes : rest,
     },
   };
+}
+
+/**
+ * The copy an answer with `workspace: new` reads: a worktree of its own at the run's base, which it must leave as it
+ * found it, as a reader does. No other attempt uses it, so it runs beside the steps in the checkout and in other copies.
+ * A run with no base commit has no repository to copy, so the answer reads the checkout, as one without `workspace` does.
+ */
+function planAnswerCopy(run: RunState, state: StepState, request: WorkspaceRequest, handback: boolean): WorkspacePlan {
+  const base = run.base ?? request.base;
+
+  if (!base) return { mode: 'read-only' };
+  const mode = 'new';
+
+  if (!handback && !(request.modes ?? ['read-only']).includes(mode)) {
+    return { mode, defer: { reason: `step "${state.id}" needs workspace ${mode}, which this driver does not provide`, needs: mode } };
+  }
+
+  return { mode, contract: { mode: 'read-only', base, configCommit: base.commit, branch: branchName(run.id, state.id, state.pass ?? 1), start: { commit: base.commit }, merge: [] } };
 }
 
 /**

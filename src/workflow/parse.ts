@@ -58,10 +58,10 @@ const ACTIONLESS_KEYS = new Set(['id', 'needs', 'if', 'end', 'approve', 'choose'
 const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file', 'with', 'model', 'output', 'end', 'loop', 'break', 'timeout', 'requires', 'workspace', 'continue_on_failure']);
 
 /**
- * What an answer step may carry: one prompt the member's AI tool answers, in the checkout read-only and with no session, so no key
- * that names a tool, an agent, a model, a role, a person or a place.
+ * What an answer step may carry: one prompt the member's AI tool answers, read-only and with no session, in the checkout
+ * or with `workspace: new` in a worktree of its own, so no key that names a tool, an agent, a model, a role or a person.
  */
-const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure']);
+const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure', 'workspace']);
 
 /** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
 const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
@@ -800,6 +800,13 @@ function parseBody(
       }
 
       const confined = workspace instanceof Object && 'confined' in workspace;
+
+      if (answerPair && workspace !== undefined && workspace !== 'new' && !confined) {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair?.value ?? item, `${field}.workspace`, `${stepLabel} answer takes workspace only as new: a worktree of its own, which it reads and leaves as it found it`),
+          code: 'bad_workspace',
+        });
+      }
 
       if (workspacePair && confined) {
         const refuse = (node: Node | null | undefined, where: string, message: string): void => {

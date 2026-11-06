@@ -74,12 +74,12 @@ workflows:
 
 为 1 时，驱动一次运行一个步骤，命令在你的终端里运行，Ctrl-C 会直接到达它。只发给 teamai 的 SIGTERM 或 SIGHUP 会停止命令，等它退出，然后以该信号退出。
 
-未设置 `max_parallel` 时，驱动仍然一次运行一个步骤，只有声明了 `max_parallel` 的 `for_each` 的各项例外：它们并排运行，最多为该数目。这些项运行期间不会启动其他步骤；没有 `max_parallel` 的 `for_each` 一次只运行一项。含有这种 `for_each` 的运行按 `max_parallel` 大于 1 的方式运行：命令没有终端，Ctrl-C 会停止所有命令。answer 项和没有 `workspace` 的命令项共用检出目录，一次只运行一个，即使 fan-out 允许更多并行项目。
+未设置 `max_parallel` 时，驱动仍然一次运行一个步骤，只有声明了 `max_parallel` 的 `for_each` 的各项例外：它们并排运行，最多为该数目。这些项运行期间不会启动其他步骤；没有 `max_parallel` 的 `for_each` 一次只运行一项。含有这种 `for_each` 的运行按 `max_parallel` 大于 1 的方式运行：命令没有终端，Ctrl-C 会停止所有命令。answer 项和没有 `workspace` 的命令项共用检出目录，一次只运行一个，即使 fan-out 允许更多并行项目。给 answer 加上 `workspace: new`，各项就能并排运行。
 
 ```yaml
 schemaVersion: v1alpha1
 name: summarize-modules
-description: Summarize each module, then print the summaries.
+description: Summarize each module, two at a time, then print the summaries.
 inputs:
   modules: [string]
 steps:
@@ -87,6 +87,7 @@ steps:
     for_each: { items: inputs.modules, max_parallel: 2 }
     answer: "Summarize the module {{ item }} in one line."
     output: { text: string }
+    workspace: new
   - id: report
     needs: [summary]
     command: 'echo "$SUMMARIES" >&2'
@@ -99,7 +100,7 @@ $ teamai workflow start summarize-modules --driver local --inputs '{"modules":["
 {"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
 ```
 
-这些回答共用 checkout，所以即使 `max_parallel` 允许同时两个，工具也会依次回答 `api`、`cli`、`web`；三项都完成后 `report` 才启动。其他驱动本来就会并排运行就绪的步骤，所以这一点只适用于本地驱动。
+每个回答读取自己的 worktree，所以工具同时回答 `api` 和 `cli`，然后回答 `web`；三项都完成后 `report` 才启动。其他驱动本来就会并排运行就绪的步骤，所以这一点只适用于本地驱动。
 
 结局取消一个正在运行的命令时，驱动向它及其启动的进程发送 SIGTERM，5 秒后如果其中任何进程仍在运行，再发送 SIGKILL。正在停止的命令仍占用并行槽位，直到它的所有进程退出。
 
@@ -747,13 +748,15 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 ```
 
 - 必须写 `output`。`{ text: string }` 把回答当作文字。其他 output 说明回答中的 JSON，本地驱动会向工具要这个 JSON。
-- 使用的工具和 teamai 自己的 AI 调用相同：先看 `TEAMAI_AI_TOOL`，再看项目的 `ai.tool`，再看本机的，最后是 teamai 能启动的第一个已安装工具。pull 拒绝这个步骤上的 `tool`、`agent`、`model`、`workspace` 和 `session`。
+- 使用的工具和 teamai 自己的 AI 调用相同：先看 `TEAMAI_AI_TOOL`，再看项目的 `ai.tool`，再看本机的，最后是 teamai 能启动的第一个已安装工具。pull 拒绝这个步骤上的 `tool`、`agent`、`model` 和 `session`，以及 `new` 以外的 `workspace`。
 - 这次启动标记为 teamai 自己的，成员的 hooks 不会捕获它。
 - 它占用检出目录直到回答结束，因此使用该目录的回答和命令依次运行，包括 `for_each` 的不同项目。修改检出目录会让回答以 `read_only_dirty` 失败。
+- 加上 `workspace: new` 后，它在自己的 worktree 中回答，该 worktree 位于运行开始时的提交，因此 `for_each` 的各项最多按其 `max_parallel` 并排运行。这个 worktree 不含你未提交的改动，也不含 pull 交付给工具的文件。修改它同样会让回答以 `read_only_dirty` 失败。回答成功后 teamai 删除这个 worktree，运行成功后删除它的分支。
+- 在不是 git 仓库的目录中，没有办法检查回答，所以在本地驱动上，那里的回答互不等待，无论有没有 `workspace: new`。
 - 提示词没有默认超时，请给这个步骤设置一个。
 - 没有安装工具时它以 `tool_unavailable` 失败，成员指定的工具无法运行时以 `tool_unconfigured` 失败，调用失败时以 `tool_failed` 失败，回答里没有 JSON 时以 `invalid_output` 失败。
 
-其他驱动把 answer 步骤当作带 `answer: true`、没有独立工作区的提示词租约。驱动准备租约，在 `cwd` 中回答提示词并报告 outputs；准备过程像其他只读步骤一样占用检出目录并记录快照。
+其他驱动把 answer 步骤当作带 `answer: true`、没有独立工作区的提示词租约；带 `workspace: new` 时，租约带有一个只读的 `workspace` 合约，指向它自己的分支。驱动准备租约，在 `cwd` 中回答提示词并报告 outputs；准备过程像其他只读步骤一样占用检出目录或那个 worktree，并记录快照。
 
 ## 让命令在检出中写入
 

@@ -650,6 +650,31 @@ describe('skill driver', () => {
     expect(await readRun(harness.config, run)).toMatchObject({ status: 'succeeded', steps: [{ id: 'ask', outputs: { text: 'Retries a 502 once.' } }] });
   });
 
+  it('dispatches an answer step with workspace: new to a child in a worktree of its own, and its report settles the step', async () => {
+    const harness = await skillHarness({ summary: SUMMARY.replace('    output: { text: string }\n', '    output: { text: string }\n    workspace: new\n') });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'summary', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [ask] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+    if (!ask) throw new Error(JSON.stringify(chosen));
+    const state = await readRun(harness.config, run);
+    if (typeof state === 'string' || state.checkout === undefined) throw new Error(`run ${run} has no checkout`);
+    expect(fs.realpathSync(ask.dir)).not.toBe(fs.realpathSync(state.checkout));
+    expect(fs.readFileSync(ask.brief, 'utf8')).toContain('Do not change files here');
+
+    await harness.call({ kind: 'ack', run, attempt: ask.attempt });
+    const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(ask.brief, 'utf8'))?.[1];
+    if (!file) throw new Error(`${ask.brief} names no result file`);
+    fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: { text: 'Retries a 502 once.' } }));
+    expect(await harness.call({ kind: 'report', run, attempt: ask.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
+
+    expect(await eventsToDone(harness, run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'ask', outcome: 'success' }));
+    expect(await readRun(harness.config, run)).toMatchObject({ status: 'succeeded', steps: [{ id: 'ask', outputs: { text: 'Retries a 502 once.' } }] });
+  });
+
   it('on h4, where the agent works each step itself, tells it to go on with the run after its report', async () => {
     const harness = await skillHarness({ survey: SURVEY });
     roots.push(harness.root);

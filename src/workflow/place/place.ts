@@ -504,8 +504,8 @@ async function stageRole(input: {
   return overlaid(config, preparing, lease);
 }
 
-/** What the overlay of a lease's copy reads of it: the prompt it adds to, and the role and tool it delivers for. */
-type OverlaidLease = Pick<PlaceLease, 'prompt' | 'role' | 'tool'>;
+/** What the overlay of a lease's copy reads of it: the prompt it adds to, the role and tool it delivers for, and whether an answer, which gets none, reads the copy. */
+type OverlaidLease = Pick<PlaceLease, 'prompt' | 'role' | 'tool' | 'answer'>;
 
 type Opening = Extract<PlaceRecord, { phase: 'opening' }>;
 
@@ -524,9 +524,11 @@ type OpeningBase = Omit<PlaceRecordBase, 'dir' | 'place'>;
  */
 async function overlaid(config: LocalConfig, record: Preparing, lease: OverlaidLease, resume: { resume?: true } = {}): Promise<PlacePrepared> {
   const { root, dir, place, setup, expiresAt, step, executor } = record;
-  const { prompt, role, tool } = lease;
+  const { prompt, role, tool, answer } = lease;
 
-  const failure = await applyOverlay({
+  // An answer is one call teamai marks as its own, which runs no hook and gets its context from its prompt, so its
+  // copy stays as the run's base commit has it, with no team files delivered into it.
+  const failure = answer ? undefined : await applyOverlay({
     root, dir, configCommit: place.workspace.configCommit, saved: placeFiles(config, record.run, record.attempt).overlay, step, executor, role, tool, ...resume,
   });
 

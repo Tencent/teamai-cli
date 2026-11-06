@@ -44,7 +44,7 @@ import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-m
 import type { DriveOptions, DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
 import { isWorkflowError, stepWorkflow, WORKSPACE_MODES } from '../../types.js';
 import { confinedOf, contractClone, type SessionRef } from '../../workspace.js';
-import { headCommit } from '../../worktree.js';
+import { git, headCommit } from '../../worktree.js';
 
 /** The signals that stop teamai, which the driver passes on to what it runs before it exits. */
 export const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
@@ -916,6 +916,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   // never runs beside its cancelled attempt.
   const dying = new Map<string, { step: string; lease: Lease; command: StagedCommand }>();
   const base = await headCommit(root);
+  // Outside a git work tree no snapshot can check an answer, so an answer there holds no place and waits for nothing.
+  const checked = (await git(root, ['rev-parse', '--is-inside-work-tree'])).code === 0;
+  const placeOfLease = (lease: Lease): string => (lease.answer && !checked ? lease.attempt : placeOf(lease, root));
   // The prompts that run, by attempt. A prompt that was stopped before its tool started has nothing to report.
   const prompts = new Map<string, { lease: Lease; controller: AbortController; exit: Promise<ReportBody | undefined> }>();
   let question: { hitl: LocalHitl; controller: AbortController; exit: Promise<{ kind: 'question'; line?: string }> } | undefined;
@@ -1068,9 +1071,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       }
 
       const placesBusy = (): Set<string> => new Set([
-        ...[...inFlight.values()].map(({ lease }) => placeOf(lease, root)),
-        ...[...dying.values()].map(({ lease }) => placeOf(lease, root)),
-        ...[...prompts.values()].map(({ lease }) => placeOf(lease, root)),
+        ...[...inFlight.values()].map(({ lease }) => placeOfLease(lease)),
+        ...[...dying.values()].map(({ lease }) => placeOfLease(lease)),
+        ...[...prompts.values()].map(({ lease }) => placeOfLease(lease)),
       ]);
 
       for (let index = 0; !interactiveRuns() && busy() < maxParallel;) {
@@ -1080,8 +1083,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         if (lease === undefined || command === undefined) break;
 
         if ([...dying.values()].some((stopping) => stopping.step === lease.step)
-          || placesBusy().has(placeOf(lease, root))
-          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOf(earlier, root) === placeOf(lease, root))) {
+          || placesBusy().has(placeOfLease(lease))
+          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOfLease(earlier) === placeOfLease(lease))) {
           index += 1;
           continue;
         }
@@ -1128,7 +1131,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       // interactive one starts only once nothing else runs.
       while (!interactiveRuns() && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
-          && !placesBusy().has(placeOf(lease, root))
+          && !placesBusy().has(placeOfLease(lease))
           && ![...dying.values()].some((stopping) => stopping.step === lease.step)
           && (!lease.interactive || busy() === 0));
 

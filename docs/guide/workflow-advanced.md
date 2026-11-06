@@ -74,12 +74,12 @@ With `max_parallel` above 1:
 
 With 1, the driver runs one step at a time, and a command runs in your terminal, where Ctrl-C reaches it. A SIGTERM or SIGHUP sent to teamai alone stops the command, waits for it, and exits with that signal.
 
-With `max_parallel` unset, the driver still runs one step at a time, except the items of a `for_each` that declares `max_parallel`: they run side by side, up to that number. No other step starts while they run, and a `for_each` with no `max_parallel` runs its items one at a time. A run that has such a `for_each` runs as with `max_parallel` above 1: commands get no terminal, and Ctrl-C stops them all. Answers and command items with no `workspace` share the checkout and run one at a time, even when the fan-out allows more parallel items.
+With `max_parallel` unset, the driver still runs one step at a time, except the items of a `for_each` that declares `max_parallel`: they run side by side, up to that number. No other step starts while they run, and a `for_each` with no `max_parallel` runs its items one at a time. A run that has such a `for_each` runs as with `max_parallel` above 1: commands get no terminal, and Ctrl-C stops them all. Answers and command items with no `workspace` share the checkout and run one at a time, even when the fan-out allows more parallel items. Give an answer `workspace: new` to run the items side by side.
 
 ```yaml
 schemaVersion: v1alpha1
 name: summarize-modules
-description: Summarize each module, then print the summaries.
+description: Summarize each module, two at a time, then print the summaries.
 inputs:
   modules: [string]
 steps:
@@ -87,6 +87,7 @@ steps:
     for_each: { items: inputs.modules, max_parallel: 2 }
     answer: "Summarize the module {{ item }} in one line."
     output: { text: string }
+    workspace: new
   - id: report
     needs: [summary]
     command: 'echo "$SUMMARIES" >&2'
@@ -99,7 +100,7 @@ $ teamai workflow start summarize-modules --driver local --inputs '{"modules":["
 {"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
 ```
 
-The answers share the checkout, so the tool answers `api`, then `cli`, then `web`, although `max_parallel` allows two at once; `report` starts once all three are done. Other drivers already run ready steps side by side, so this applies to the local driver only.
+Each answer reads a worktree of its own, so the tool answers `api` and `cli` at the same time, then `web`; `report` starts once all three are done. Other drivers already run ready steps side by side, so this applies to the local driver only.
 
 When an end cancels a running command, the driver sends SIGTERM to it and the processes it started, then SIGKILL 5 seconds later if any still run. A stopping command keeps its slot until its processes exit.
 
@@ -747,16 +748,21 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 ```
 
 - `output` is required. `{ text: string }` takes the reply as text. Any other output names the JSON the reply holds, and the local driver asks the tool for it.
-- The tool is the one teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model`, `workspace` and `session` on the step.
+- The tool is the one teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model` and `session` on the step, and any `workspace` but `new`.
 - The launch is marked as teamai's own, so the member's hooks do not capture it.
 - It reserves the checkout until it finishes, so answers and commands using that checkout run one at a time, even
   across `for_each` items. A change to the checkout fails the answer `read_only_dirty`.
+- With `workspace: new` it answers in a worktree of its own at the commit the run started from, so the items of a
+  `for_each` run side by side, up to its `max_parallel`. That worktree lacks your uncommitted changes and the files a pull delivers to your tools. A change to it
+  fails the answer `read_only_dirty`. teamai removes the worktree once the answer succeeds, and its branch once the run does.
+- In a directory that is no git repository, nothing can check an answer, so on the local driver answers there do
+  not wait for each other, with or without `workspace: new`.
 - A prompt has no default timeout. Give the step one.
 - It fails `tool_unavailable` when no tool is installed, `tool_unconfigured` when the tool the member names cannot run, `tool_failed` when the call fails, and `invalid_output` when the reply holds no JSON.
 
-Another driver gets an answer step as a prompt lease with `answer: true` and no separate workspace. It prepares
-the lease, answers in `cwd`, and reports the outputs; preparation reserves and snapshots the checkout as for other
-read-only steps.
+Another driver gets an answer step as a prompt lease with `answer: true` and no separate workspace, or with
+`workspace: new` a read-only `workspace` contract on a branch of its own. It prepares the lease, answers in `cwd`, and
+reports the outputs; preparation reserves and snapshots the checkout, or that worktree, as for other read-only steps.
 
 ## Let a command write in the checkout
 

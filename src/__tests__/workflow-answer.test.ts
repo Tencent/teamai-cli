@@ -83,6 +83,20 @@ steps:
     }]);
   });
 
+  it('reads workspace: new on an answer, so it answers in a worktree of its own', () => {
+    const parsed = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: ask
+description: Ask.
+steps:
+  - id: color
+    answer: Name one color.
+    output: { text: string }
+    workspace: new
+`);
+
+    expect(parsed.ok && parsed.definition.steps).toEqual([{ id: 'color', answer: 'Name one color.', output: { type: 'object', fields: { text: { type: 'string' } } }, workspace: 'new' }]);
+  });
+
   it('rejects an answer with another action, with no output, or with a key that names a tool, a place or a session', () => {
     expect(diagnostics(`  - id: both
     answer: Pick one.
@@ -95,15 +109,15 @@ steps:
     needs: []
     answer: Say hello.
     output: { text: string }
-    workspace: new
+    workspace: continue
     tool: claude
     session: continue
 `)).toEqual([
       'workflows/ask.yaml:5: field "steps[0]": a step has exactly one action: command, prompt, prompt_file, answer, or workflow',
       'workflows/ask.yaml:11: field "steps[1].output": step "bare" answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds',
-      'workflows/ask.yaml:16: field "steps[2].workspace": step "placed" answer takes no workspace: the member\'s AI tool answers its prompt with text, in the checkout read-only',
       'workflows/ask.yaml:17: field "steps[2].tool": step "placed" answer takes no tool: the member\'s AI tool answers its prompt with text, in the checkout read-only',
       'workflows/ask.yaml:18: field "steps[2].session": step "placed" answer takes no session: the member\'s AI tool answers its prompt with text, in the checkout read-only',
+      'workflows/ask.yaml:16: field "steps[2].workspace": step "placed" answer takes workspace only as new: a worktree of its own, which it reads and leaves as it found it',
     ]);
   });
 });

@@ -167,7 +167,8 @@ that cannot run as `tool_unconfigured`, and the fallback must not hide it, so an
 
 - On the local driver, with no `workflows.max_parallel`, a `for_each` runs its items in parallel up to its own
   `max_parallel`, which may read `inputs`, and every other step runs one at a time. Other drivers already run ready
-  steps side by side. Answers share the checkout and run one at a time, including across `for_each` items.
+  steps side by side. Answers in the checkout run one at a time, including across `for_each` items; an answer with
+  `workspace: new` reads a worktree of its own and runs beside them.
 - `workflows.max_parallel`, when a member or machine sets it, caps every step on the local driver as before, and the
   open leases of a run on every driver.
 

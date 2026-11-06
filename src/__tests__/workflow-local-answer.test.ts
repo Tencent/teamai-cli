@@ -135,6 +135,29 @@ outputs: { color: steps.ask.outputs.color }
     });
   });
 
+  it('fails an answer that modifies its own worktree, and leaves the checkout as it was', async () => {
+    const { config, workspace, runId, bin } = await answering(COLOR.replace('    timeout: 600s\n', '    workspace: new\n'));
+    const claude = fakeTool(bin, 'claude', { stdout: claudeReply('blue'), before: "fs.writeFileSync('unexpected.md', 'changed');" });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, z.string().parse(runId))).toMatchObject({
+      steps: [{ id: 'ask', status: 'failed', failure: { code: 'read_only_dirty' } }],
+    });
+    expect(fs.realpathSync(claude().cwd)).not.toBe(fs.realpathSync(workspace));
+    expect(fs.existsSync(path.join(workspace, 'unexpected.md'))).toBe(false);
+  });
+
+  it('answers with workspace: new in the directory it runs in when that is no git repository, which it cannot copy', async () => {
+    const { config, workspace, runId, bin } = await answering(COLOR.replace('    timeout: 600s\n', '    workspace: new\n'));
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true, force: true });
+    const claude = fakeTool(bin, 'claude', { stdout: claudeReply('blue') });
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded', outputs: { text: 'blue' } } } });
+    expect(fs.realpathSync(claude().cwd)).toBe(fs.realpathSync(workspace));
+  });
+
   it('waits for a command using the checkout before answering', async () => {
     const { config, workspace, runId, bin } = await answering(`schemaVersion: v1alpha1
 name: build
@@ -202,6 +225,23 @@ describe('for_each items on the local driver with no workflows.max_parallel', ()
 
     expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(order()).toEqual(['start api', 'end api', 'start cli', 'end cli']);
+  });
+
+  it('answers items that each have a worktree of their own beside each other', async () => {
+    const { config, workspace, runId, bin } = await answering(DESCRIBE('{ items: steps.plan.outputs.modules, max_parallel: 2 }\n    workspace: new'));
+    const order = describingTool(bin, 5000);
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(order().slice(0, 2).sort()).toEqual(['start api', 'start cli']);
+  });
+
+  it('answers items beside each other in a directory that is no git repository, where nothing checks them', async () => {
+    const { config, workspace, runId, bin } = await answering(DESCRIBE('{ items: steps.plan.outputs.modules, max_parallel: 2 }\n    workspace: new'));
+    fs.rmSync(path.join(workspace, '.git'), { recursive: true, force: true });
+    const order = describingTool(bin, 5000);
+
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(order().slice(0, 2).sort()).toEqual(['start api', 'start cli']);
   });
 
   it.each([{ maxParallel: undefined }, { maxParallel: 2 }])('gives each queued answer item its whole timeout, with workflows.max_parallel $maxParallel', async ({ maxParallel }) => {
