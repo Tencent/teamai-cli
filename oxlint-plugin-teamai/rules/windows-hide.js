@@ -34,10 +34,17 @@ function keyName(/** @type {ESTree.Node} */ key) {
   return stringLiteralValue(key);
 }
 
-/** Whether `options` is an object literal that sets `windowsHide: true` itself. */
+/**
+ * Whether `options` is an object literal that sets `windowsHide: true` itself,
+ * with no spread or `windowsHide` after it that could set it back.
+ */
 function hidesWindow(/** @type {ESTree.Node} */ options) {
-  return options.type === 'ObjectExpression' && options.properties.some((property) => property.type === 'Property' && !property.computed
-    && keyName(property.key) === 'windowsHide' && property.value.type === 'Literal' && property.value.value === true);
+  if (options.type !== 'ObjectExpression') return false;
+
+  const last = options.properties.findLast((property) => property.type === 'SpreadElement'
+    || (!property.computed && keyName(property.key) === 'windowsHide'));
+
+  return last?.type === 'Property' && last.value.type === 'Literal' && last.value.value === true;
 }
 
 export default defineRule({
@@ -99,7 +106,7 @@ export default defineRule({
           if (!isLauncher(call.callee) || call.arguments.slice(1).some(hidesWindow)) continue;
           context.report({
             node: call,
-            message: 'Pass windowsHide: true in an object literal at this child_process call, so the process opens no console window on Windows. Options built elsewhere still need it written here: { ...options, windowsHide: true }.',
+            message: 'Pass windowsHide: true in an object literal at this child_process call, so the process opens no console window on Windows. Options built elsewhere still need it written here, after any spread: { ...options, windowsHide: true }.',
           });
         }
       },

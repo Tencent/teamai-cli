@@ -32,6 +32,15 @@ const options = { encoding: 'utf8' as const };
 execSync('ls', { ...options, windowsHide: true });
 `);
 
+rule.invalid('rejects windowsHide: true that a later spread or property may override', `
+import { execSync } from 'node:child_process';
+const options = { windowsHide: false };
+execSync('ls', { windowsHide: true, ...options });
+execSync('ls', { windowsHide: true, windowsHide: false });
+`, (output) => {
+  expect(output).toContain('2 errors');
+});
+
 rule.invalid('rejects options passed as a variable, even one that may set windowsHide', `
 import { execSync } from 'node:child_process';
 const options = { encoding: 'utf8' as const, windowsHide: true };
