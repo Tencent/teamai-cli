@@ -1433,6 +1433,7 @@ export const StateSchema = z.object({
    */
   opencodeContextEntries: z.array(z.object({ config: z.string(), entry: z.string() })).optional(),
   lastUpdateCheck: z.string().nullable().default(null),
+  /** Last checked registry version, also when the checking installation was already current. */
   availableUpdate: z.string().nullable().default(null),
 });
 

@@ -286,6 +286,19 @@ describe('isCacheValid', () => {
 // ─── Test #1: Cache hit within 24h, skip npm view ───────
 
 describe('checkForUpdate', () => {
+  it('rechecks a legacy negative cache whose registry version is unknown', async () => {
+    mockedLoadState.mockResolvedValue({ ...defaultState, lastUpdateCheck: new Date().toISOString(), availableUpdate: null });
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+    expect(await checkForUpdate()).toMatchObject({ available: true, latest: '99.0.0', source: 'registry' });
+    expect(mockedExecSync).toHaveBeenCalledOnce();
+  });
+
+  it('stores the registry version even when this installation is already current', async () => {
+    mockedExecSync.mockResolvedValue({ stdout: `${getCurrentVersion()}\n`, stderr: '' });
+    await checkForUpdate();
+    expect(mockedSaveState).toHaveBeenCalledWith(expect.objectContaining({ availableUpdate: getCurrentVersion() }));
+  });
+
   it('should skip npm view when cache is valid', async () => {
     const recentCheck = new Date(Date.now() - 1000).toISOString();
     mockedLoadState.mockResolvedValue({
@@ -301,12 +314,12 @@ describe('checkForUpdate', () => {
     expect(mockedExecSync).not.toHaveBeenCalled();
   });
 
-  it('should skip npm view when cache is valid and no update was available', async () => {
+  it('should reuse the cached registry version when this copy is current', async () => {
     const recentCheck = new Date(Date.now() - 1000).toISOString();
     mockedLoadState.mockResolvedValue({
       ...defaultState,
       lastUpdateCheck: recentCheck,
-      availableUpdate: null, // no update last time — the common case
+      availableUpdate: getCurrentVersion(), // The registry version, even when this copy is current.
     });
 
     const result = await checkForUpdate();
@@ -397,11 +410,11 @@ describe('checkForUpdate', () => {
 // ─── Test #7: Policy=auto, npm install executes ─────────
 
 describe('doUpdate', () => {
-  it('keeps the negative cache for automatic updates', async () => {
+  it('reuses the registry version cache for automatic updates', async () => {
     mockedLoadState.mockResolvedValue({
       ...defaultState,
       lastUpdateCheck: new Date().toISOString(),
-      availableUpdate: null,
+      availableUpdate: getCurrentVersion(),
     });
 
     await doUpdate(null);
