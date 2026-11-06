@@ -250,6 +250,27 @@ describe('delivering a step', () => {
     expect(buildEndRecord(await state(config, runId), remote, 'tester').prs).toEqual(['https://review.acme.internal/changes/4821']);
   });
 
+  it('restarts the clock of a lease its driver lists queued before it delivers what another step reported', async () => {
+    const minutes = (count: number): string => new Date(Date.UTC(2026, 0, 1) + count * 60_000).toISOString();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(minutes(0)));
+      const { config, root, runId } = await fixture(`${FIX_THEN_REVIEW}  - id: slow\n    needs: []\n    timeout: 10m\n    command: echo slow\n`);
+      config.workflows = { tools: {}, max_parallel: 2 };
+      const fix = await take(config, runId);
+      const slow = await leaseNext(config, runId, remote, { ...writable, running: [fix.attempt] });
+      const waiting = LeaseSchema.parse('data' in slow ? slow.data.lease : undefined);
+      expect(waiting.step).toBe('slow');
+      expect(await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: 'https://review.acme.internal/changes/7' })).toMatchObject({ data: { step: { id: 'fix', status: 'delivering' } } });
+      vi.setSystemTime(new Date(minutes(11)));
+      const running = [waiting.attempt];
+      expect(await leaseNext(config, runId, remote, { ...writable, running, queued: running })).toMatchObject({ data: { cancelled: [], deadlines: { [waiting.attempt]: minutes(21) } } });
+      expect((await state(config, runId)).steps).toMatchObject([{ id: 'fix', status: 'succeeded' }, { id: 'review' }, { id: 'slow', status: 'leased', lease: { leasedAt: minutes(11) } }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps the local driver polling while another process delivers, rather than giving up as busy', async () => {
     const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
     const fix = await take(config, runId);

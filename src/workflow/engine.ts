@@ -1821,11 +1821,11 @@ export interface NextOptions {
  * leased. If so, the run lists its request in the same write, so one opened by a process that then stops is looked up,
  * whatever becomes of the step, rather than lost.
  */
-async function markCreating(config: LocalConfig, runId: string, secrets: Record<string, string>, job: DeliveryJob): Promise<'open' | 'refused' | 'busy'> {
+async function markCreating(config: LocalConfig, runId: string, secrets: Record<string, string>, job: DeliveryJob, settle: Settle): Promise<'open' | 'refused' | 'busy'> {
   const marked = await updateRun(config, runId, secrets, async (run): Promise<{ value: 'open' | 'refused' | 'busy'; write?: RunState }> => {
     if (run === 'missing' || run.status !== 'running') return { value: 'refused' };
     const now = new Date().toISOString();
-    const settledRun = reconcileRun(run, now);
+    const settledRun = settle(run, now);
     const step = 'unreadable' in settledRun || 'outcome' in settledRun ? undefined : deliveringStep(run, job.key);
 
     if (!step) return { value: 'refused' };
@@ -1845,13 +1845,16 @@ async function markCreating(config: LocalConfig, runId: string, secrets: Record<
   return marked.status === 'done' ? marked.value : 'busy';
 }
 
+/** How a call reconciles the run at `now`: `reconcileRun`, after what the call itself applies first. */
+type Settle = (run: RunState, now: string) => Settled;
+
 /**
  * Delivers the run's delivering steps one at a time, before `next` answers, whichever driver called it, then looks up
  * each request in `run.creating` once, on an ended run too. The run lock is held to pick a delivery and to apply its
  * outcome, never across git or a provider. While another process of this machine delivers, it holds the delivery lock,
- * and this call leaves the work to it.
+ * and this call leaves the work to it. Each pick and outcome reconciles the run through `settle`.
  */
-async function drainDeliveries(config: LocalConfig, runId: string, secrets: Record<string, string>): Promise<void> {
+async function drainDeliveries(config: LocalConfig, runId: string, secrets: Record<string, string>, settle: Settle): Promise<void> {
   if (!isRunId(runId)) return;
   const loaded = await readRun(config, runId);
 
@@ -1875,7 +1878,7 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
         if (run === 'missing') return { value: undefined };
         const before = JSON.stringify(run);
         const now = new Date().toISOString();
-        const job = nextDelivery(run, (item) => reconcileRun(item, now), branchWriterLeased, waiting, team);
+        const job = nextDelivery(run, (item) => settle(item, now), branchWriterLeased, waiting, team);
         const value = job ? { job } : unresolvedCreate(run, tried, team);
 
         return { value, write: JSON.stringify(run) !== before ? { ...run, updatedAt: now } : undefined };
@@ -1894,7 +1897,7 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
         let outcome: Awaited<ReturnType<typeof deliverPr>>;
 
         try {
-          outcome = await deliverPr(job, () => markCreating(config, runId, secrets, job));
+          outcome = await deliverPr(job, () => markCreating(config, runId, secrets, job, settle));
         } finally {
           if (syncLock !== undefined) await releaseLock(syncLock);
         }
@@ -1903,7 +1906,7 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
         if (outcome === 'busy') return requeued;
 
         if (!outcome.ok && outcome.fault.kind === 'branch_ahead') waiting.push(job.key);
-        apply = (run, now) => completeDelivery(run, job, outcome, (item) => reconcileRun(item, now), branchWriterLeased);
+        apply = (run, now) => completeDelivery(run, job, outcome, (item) => settle(item, now), branchWriterLeased);
       } else {
         const { create, checkout } = picked.value;
         tried.push(create);
@@ -1951,9 +1954,17 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 
   // Resolved once, so the env this `next` offers against and the secrets its writes, deliveries' included, mask agree.
   const env = options.env ?? await resolveWorkflowEnv(config);
-  await drainDeliveries(config, runId, env.secrets);
   const running = new Set(options.running);
   const unstarted = new Set((options.queued ?? []).filter((attempt) => running.has(attempt)));
+
+  // Every reconcile of this call, a delivery's too, first restarts the clocks of the leases the driver lists queued.
+  const settle: Settle = (run, now) => {
+    restartQueued(run, driver, unstarted, now);
+
+    return reconcileRun(run, now);
+  };
+
+  await drainDeliveries(config, runId, env.secrets, settle);
   const can = options.can ?? {};
   const maxParallel = config.workflows?.max_parallel;
   // The end record is queued under the run lock, so the run stores whether it
@@ -2039,12 +2050,10 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     const personHolds = (): Held[] => (handoff?.kind === 'offers' ? waitingForPerson(run, { autoApprove: can.hitl === true || isAutoApproved }) : []);
     const byAgent = can.hitl === true && handoff !== undefined;
 
-    restartQueued(run, driver, unstarted, now);
-
     for (;;) {
       // Ends reached through reports, and deadlines passed, apply before an open lease is handed back, so a restarted
       // driver does not run again what they already stopped, and a lease past its timeout no longer holds the run.
-      const result = reconcileRun(run, now);
+      const result = settle(run, now);
 
       if ('unreadable' in result) return { save: false, envelope: error('run_unreadable', result.unreadable) };
 
