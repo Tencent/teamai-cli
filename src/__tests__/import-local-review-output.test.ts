@@ -90,6 +90,20 @@ describe('teamai import write-learnings', () => {
     expect(fs.readFileSync(path.join(repo, 'rules', `${TODAY}-deploy-rule.md`), 'utf8')).toBe('imported earlier today');
   });
 
+  it('numbers a second item whose title fills the whole name, rather than looking for a free name forever', async () => {
+    const title = 'Always pin the base image digest in every production Dockerfile build';
+    const slug = 'always-pin-the-base-image-digest-in-every-production-dockerf';
+
+    const result = await ImportLearnings.writeLearnings({
+      classified: JSON.stringify([classified('/r/a.md', 'rule', title), classified('/r/b.md', 'rule', title)]),
+      reviewed: '',
+      target: repo,
+      byType: 'true',
+    });
+
+    expect(result.written).toEqual([path.join(repo, 'rules', `${TODAY}-${slug}.md`), path.join(repo, 'rules', `${TODAY}-${slug}-2.md`)]);
+  });
+
   it('says a file it could not write, in English, and goes on', async () => {
     fs.writeFileSync(path.join(repo, 'rules'), 'not a directory');
 

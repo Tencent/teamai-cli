@@ -76,11 +76,11 @@ function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** `<YYYY-MM-DD>-<slug>.md`. */
-function buildFilename(title: string): string {
+/** `<YYYY-MM-DD>-<slug>.md`, or `<YYYY-MM-DD>-<slug>-<n>.md` for the `n`th of one name. The number follows the cut slug, so a long title cannot cut it off. */
+function buildFilename(title: string, n?: number): string {
   const slug = toSlug(title) || 'untitled';
 
-  return `${todayStr()}-${slug}.md`;
+  return `${todayStr()}-${slug}${n === undefined ? '' : `-${n}`}.md`;
 }
 
 /** The file an item is written as: its frontmatter, with the `type:` that routes it, and its summary. */
@@ -261,7 +261,7 @@ async function writeLearnings(flags: { classified: string; reviewed: string; tar
     let destPath = path.join(destDir, buildFilename(title));
 
     // Two items of one title on one day, or one imported earlier today, keep their own files.
-    for (let n = 2; written.includes(destPath) || fs.existsSync(destPath); n += 1) destPath = path.join(destDir, buildFilename(`${title} ${n}`));
+    for (let n = 2; written.includes(destPath) || fs.existsSync(destPath); n += 1) destPath = path.join(destDir, buildFilename(title, n));
 
     try {
       await ensureDir(destDir);
