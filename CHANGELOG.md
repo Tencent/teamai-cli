@@ -76,6 +76,8 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- Background hooks on Windows launch through headless conhost and avoid detached console creation, preventing Windows Terminal windows from opening on each dispatch (for [#1747](https://github.com/Tencent/teamai-cli/issues/1747)).
+
 - `teamai recall maintenance --update-quality` finds a skill that reaches the recall threshold. A skill's vote id is its bare name, while the file is `skills/<name>/SKILL.md` or `skills/<namespace>/<name>/SKILL.md`, so looking the id up as `<id>.md` never matched and every skill was skipped without a word. An entry that clears a threshold and still matches no file is now reported rather than dropped, and the type it is reported under comes from the directory that matched, so it reads `docs`, `rules` or `skills` on Windows too (for [#1735](https://github.com/Tencent/teamai-cli/issues/1735)).
 - The learnings a draft incorporates are chosen by topic instead of by popularity. The most-opened entries used to take every slot before non-learnings were filtered out, so a draft could carry five popular docs and no learning at all, or one about an unrelated subject. A learning whose name, title and tags share no word with the entry is now left out, and a namespaced learning's vote id matches its file on Windows (for [#1735](https://github.com/Tencent/teamai-cli/issues/1735)).
 

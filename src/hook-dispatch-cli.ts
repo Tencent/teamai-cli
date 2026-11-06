@@ -118,7 +118,7 @@ async function spawnBackground(
   await spawnPlainDetached(process.execPath, args, raw, cwd);
 }
 
-/** Plain `detached: true` child, awaiting the STDIN flush before the caller may exit. */
+/** Hidden child (a separate process group on POSIX), awaiting the STDIN flush before exit. */
 async function spawnPlainDetached(
   command: string,
   args: string[],
@@ -127,7 +127,8 @@ async function spawnPlainDetached(
 ): Promise<void> {
   try {
     const child = spawn(command, args, {
-      detached: true,
+      // DETACHED_PROCESS overrides CREATE_NO_WINDOW on Windows.
+      detached: process.platform !== 'win32',
       windowsHide: true,
       stdio: ['pipe', 'ignore', 'ignore'],
       // A cwd that no longer exists (a deleted worktree) fails the spawn, so the
@@ -262,7 +263,10 @@ export async function trySpawnDetachedViaWmi(
     args = [...args, '--stdin-file', payloadFile];
   }
 
-  const commandLine = [command, ...args].map(quoteWindowsArg).join(' ');
+  // ShowWindow alone still hands the console to Windows Terminal. Give the
+  // escaped child a headless console that its descendants can share instead.
+  const conhost = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'conhost.exe');
+  const commandLine = [conhost, '--headless', command, ...args].map(quoteWindowsArg).join(' ');
   // The provider rejects an empty CurrentDirectory with ReturnValue 21, and a
   // hook payload need not carry one (a session-start event often has no cwd).
   // Falls back to the temp dir, which always exists — the child re-resolves its
