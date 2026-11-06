@@ -13,17 +13,26 @@ vi.mock('../config.js', () => ({
   saveStateForScope: (...args: unknown[]) => mockSaveStateForScope(...args),
 }));
 vi.mock('../read-only.js', () => ({ assertNotReadOnly: vi.fn() }));
-vi.mock('../utils/git.js', () => ({
+const gitMocks = vi.hoisted(() => ({
   pullRepo: vi.fn().mockResolvedValue('up to date'),
   pushRepoBranch: vi.fn().mockResolvedValue(true),
   checkoutMaster: vi.fn(),
   generateBranchName: vi.fn().mockReturnValue('teamai/push/alice/1'),
 }));
+vi.mock('../utils/git.js', () => gitMocks);
 vi.mock('../utils/pending-push.js', () => ({
   // A placement merged since the last run: the records change and must be saved.
   reconcilePlacementRecords: vi.fn().mockResolvedValue(true),
 }));
-vi.mock('../push.js', () => ({ createPrWithFallback: vi.fn(), filterExistingTopLevelPaths: vi.fn() }));
+const pushMocks = vi.hoisted(() => ({
+  createPrWithFallback: vi.fn().mockResolvedValue('https://example.test/team/repo/pull/1'),
+  providerOpensPullRequests: vi.fn().mockReturnValue(true),
+}));
+vi.mock('../push.js', () => ({
+  createPrWithFallback: pushMocks.createPrWithFallback,
+  filterExistingTopLevelPaths: vi.fn(),
+  providerOpensPullRequests: pushMocks.providerOpensPullRequests,
+}));
 const handler = {
   scanTeamForPull: vi.fn().mockResolvedValue([{ name: 'vr', type: 'agents' }]),
   scanLocalForPush: vi.fn().mockResolvedValue([]),
@@ -31,9 +40,10 @@ const handler = {
   removeItem: vi.fn().mockResolvedValue(['agents/fe/vr.yaml', 'agents/be/vr.yaml']),
 };
 vi.mock('../resources/index.js', () => ({ getHandler: () => handler }));
+const spinMocks = vi.hoisted(() => ({ succeed: vi.fn(), fail: vi.fn() }));
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-  spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn(), fail: vi.fn() })),
+  spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: spinMocks.succeed, fail: spinMocks.fail })),
 }));
 
 const { remove } = await import('../remove.js');
@@ -200,5 +210,74 @@ describe('teamai remove mcp picks one file', () => {
     expect(handler.removeItem).not.toHaveBeenCalled();
     expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).toContain('Not found (skipping): ghost');
     expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('No matching resources found to remove');
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+/**
+ * A removal that was asked for and did not happen has to fail: a script that
+ * chains the next step on `teamai remove` otherwise reads a refusal as done.
+ * Each of these printed the reason and exited 0.
+ */
+describe('teamai remove exits 1 when nothing was removed', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.exitCode = undefined;
+    mockSaveStateForScope.mockResolvedValue(undefined);
+    handler.publishedNameFor.mockResolvedValue(null);
+    handler.scanTeamForPull.mockResolvedValue([{ name: 'vr', type: 'agents' }]);
+    handler.removeItem.mockResolvedValue(['agents/fe/vr.yaml']);
+  });
+  afterEach(() => { process.exitCode = undefined; });
+
+  it('refuses a resource type it cannot remove', async () => {
+    await remove('hooks', ['vr'], { force: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('Unsupported resource type: hooks');
+  });
+
+  it('refuses a call with no names', async () => {
+    await remove('agents', [], { force: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('No resource names provided');
+  });
+
+  it('exits 1 when the handler removed no file', async () => {
+    handler.removeItem.mockResolvedValue([]);
+
+    await remove('agents', ['vr'], { force: true });
+
+    expect(process.exitCode).toBe(1);
+  });
+
+  // The branch carries the removal, but nothing reviews it: it is not delivered.
+  it('exits 1 when the branch is pushed but no pull request opens', async () => {
+    pushMocks.createPrWithFallback.mockResolvedValueOnce(null);
+
+    await remove('agents', ['vr'], { force: true });
+
+    expect(process.exitCode).toBe(1);
+  });
+
+  // A `git` provider refuses createPullRequest for generic hosts, so null there
+  // is the configured answer, not a failure.
+  it('stays 0 when the provider opens no pull request at all', async () => {
+    pushMocks.providerOpensPullRequests.mockReturnValueOnce(false);
+    pushMocks.createPrWithFallback.mockResolvedValueOnce(null);
+
+    await remove('agents', ['vr'], { force: true });
+
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits 1 when the push itself fails', async () => {
+    gitMocks.pushRepoBranch.mockRejectedValueOnce(new Error('remote rejected'));
+
+    await remove('agents', ['vr'], { force: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(spinMocks.fail).mock.calls.flat().join(' ')).toContain('Git push failed');
   });
 });

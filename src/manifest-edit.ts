@@ -1,6 +1,6 @@
 import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
 import { log, spinner } from './utils/logger.js';
-import { createPrWithFallback } from './push.js';
+import { createPrWithFallback, providerOpensPullRequests } from './push.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 
 // Shared plumbing for the admin commands that edit `manifest/*.yaml`
@@ -91,13 +91,19 @@ export async function pushManifestChange(input: {
 
         log.success(`Pushed branch ${branchName}`);
 
-        await createPrWithFallback(
+        const prUrl = await createPrWithFallback(
             teamConfig,
             localConfig,
             branchName,
             commitMsg,
             prDescription,
         );
+
+        // A branch no one reviews does not deliver the edit, so the manifest
+        // change is not done — unless nothing here opens pull requests at all:
+        // a provider that reaches only git, or a remote that names no hosted
+        // repository.
+        if (!prUrl && providerOpensPullRequests(teamConfig, localConfig)) process.exitCode = 1;
 
         await checkoutMaster(repoPath);
     } catch (e) {

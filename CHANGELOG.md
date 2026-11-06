@@ -81,6 +81,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 💥 Breaking Changes
 
+- **`teamai remove` exits 1 when it removes nothing, and the `roles` and `projects` edits exit 1 when their branch reaches no pull request.** A refusal covers an unsupported resource type, a call with no name, and a name no file matches; a failure covers a handler that deleted no file, a push that failed, and a branch pushed without the pull request that reviews the removal. All of them printed the reason and then exited 0, so a script or a CI job read a refusal, or a removal that never reached the team, as done. A provider that reaches only git, and a checkout whose `repo` and remote both name no hosted repository, open no pull request at all, so those cases stay 0.
 - **`teamai-share-session` and `teamai-share-learnings` no longer take `judge`.** They take the judging offers of the driver that runs them. A team copy that declares or passes `judge` fails to parse until it drops it (for [#1670](https://github.com/Tencent/teamai-cli/issues/1670)).
 - **Labels decided by a stage carry judge kind `stage`.** teamai 0.29.0 and earlier skip those label lines (for [#1670](https://github.com/Tencent/teamai-cli/issues/1670)).
 - **A run can carry `awaits`, and an archived pass of a fan-out item its `item`.** An older teamai refuses to claim a published run that carries either, so upgrade every install that claims a team's runs together (for [#1670](https://github.com/Tencent/teamai-cli/issues/1670)).

@@ -17,7 +17,10 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   ...gitMocks,
 }));
 
-const prMocks = vi.hoisted(() => ({ createPrWithFallback: vi.fn().mockResolvedValue(undefined) }));
+const prMocks = vi.hoisted(() => ({
+  createPrWithFallback: vi.fn().mockResolvedValue('https://example.test/team/repo/pull/1'),
+  providerOpensPullRequests: vi.fn().mockReturnValue(true),
+}));
 vi.mock('../push.js', () => prMocks);
 
 const logMocks = vi.hoisted(() => ({ info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
@@ -144,6 +147,27 @@ describe('pushManifestChange', () => {
     await pushManifestChange(change);
 
     expect(prMocks.createPrWithFallback).toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+  });
+
+  // The branch carries the manifest edit, but nothing reviews it: the change is
+  // not delivered, and the caller has to see that.
+  it('reports a branch that was pushed but never reached a PR', async () => {
+    prMocks.createPrWithFallback.mockResolvedValueOnce(null);
+
+    await pushManifestChange(change);
+
+    expect(process.exitCode).toBe(1);
+  });
+
+  // A `git` provider refuses createPullRequest for generic hosts, so null there
+  // is the configured answer, not a failure.
+  it('stays 0 when the provider opens no pull request at all', async () => {
+    prMocks.providerOpensPullRequests.mockReturnValueOnce(false);
+    prMocks.createPrWithFallback.mockResolvedValueOnce(null);
+
+    await pushManifestChange(change);
+
     expect(process.exitCode).toBe(0);
   });
 });

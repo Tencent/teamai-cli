@@ -3,7 +3,7 @@ import { reconcilePlacementRecords } from './utils/pending-push.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
 import { assertNotReadOnly } from './read-only.js';
 import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
-import { createPrWithFallback, filterExistingTopLevelPaths } from './push.js';
+import { createPrWithFallback, filterExistingTopLevelPaths, providerOpensPullRequests } from './push.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType, LocalConfig, TeamaiConfig, State } from './types.js';
@@ -22,12 +22,14 @@ export async function remove(
 
   if (removable === undefined) {
     log.error(`Unsupported resource type: ${type}. Supported types: ${REMOVABLE_TYPES.join(', ')}`);
+    process.exitCode = 1;
 
     return;
   }
 
   if (names.length === 0) {
     log.error('No resource names provided');
+    process.exitCode = 1;
 
     return;
   }
@@ -58,9 +60,10 @@ export async function remove(
         await withKnowledgeWorktree(localConfig, body);
       }
     } catch (e) {
+      // Every branch is a failed removal: the caller asked to remove something
+      // and nothing was removed, so the exit code says so whichever way it failed.
       if (e instanceof DirtyPreviewError || e instanceof DetachedTeamRepoError) {
         log.error(e.message);
-        process.exitCode = 1;
       } else if (e instanceof PreviewFetchError) {
         refuseUnrefreshedRemoval(names, e);
       } else if (e instanceof EmptyRepoError) {
@@ -68,6 +71,8 @@ export async function remove(
       } else {
         log.error(`Remove failed: ${e instanceof Error ? e.message : String(e)}`);
       }
+
+      process.exitCode = 1;
     }
 
     return;
@@ -251,6 +256,8 @@ async function removeCore(
       console.log(`  - ${n}`);
     }
 
+    process.exitCode = 1;
+
     return;
   }
 
@@ -311,6 +318,7 @@ async function removeCore(
 
   if (totalRemoved === 0) {
     spin.fail('Nothing was removed');
+    process.exitCode = 1;
 
     return;
   }
@@ -345,7 +353,7 @@ async function removeCore(
       spin.succeed(`Removed ${found.length} ${type} from ${totalRemoved} location(s)`);
 
       // Create PR/MR via provider (shared helper — DRY)
-      await createPrWithFallback(
+      const prUrl = await createPrWithFallback(
         teamConfig,
         localConfig,
         branchName,
@@ -353,11 +361,17 @@ async function removeCore(
         `Remove ${found.length} ${type}: ${nameList}`,
       );
 
+      // A branch no one reviews does not deliver the removal, so the removal is
+      // not done — unless nothing here opens pull requests at all: a provider
+      // that reaches only git, or a remote that names no hosted repository.
+      if (!prUrl && providerOpensPullRequests(teamConfig, localConfig)) process.exitCode = 1;
+
       // Switch back to master after PR creation
       await checkoutMaster(localConfig.repo.localPath);
     }
   } catch (e) {
     spin.fail(`Git push failed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exitCode = 1;
 
     return;
   }
