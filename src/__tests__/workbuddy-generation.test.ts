@@ -223,16 +223,17 @@ describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
     return buildChecks(ctx);
   }
 
-  it('fails a check naming the surfaces pull holds and the root they wait for', async () => {
+  it('fails a check naming the one surface pull still holds back, and the root it waits for', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
     const all = await checks();
 
     const installed = all.find((c) => c.name === 'workbuddy is installed');
     expect(await installed?.check()).toBe(true);
     const held = all.filter((c) => c.name.startsWith('workbuddy receives'));
-    expect(held).toHaveLength(1);
+    // Rules, agents and MCP follow the live root now (#1273), so hooks are the
+    // only surface this member is still missing.
+    expect(held.map((c) => c.name)).toEqual(['workbuddy receives hooks']);
     expect(await held[0].check()).toBe(false);
-    for (const surface of ['rules', 'agents', 'MCP servers', 'hooks']) expect(held[0].name).toContain(surface);
     expect(held[0].fix).toContain(path.join(home, '.workbuddy-ai', 'skills'));
     expect(held[0].fix).toContain(`${path.join(home, '.workbuddy')} exists`);
   });
@@ -256,10 +257,10 @@ describe('doctor on a WorkBuddy member with only the 5.7+ root', () => {
 });
 
 /**
- * Pull reports rules as synced only when some tool takes them (#1273): none
- * on a member whose only WorkBuddy root is `.workbuddy-ai/`, while a
- * single-file target such as Codex's `AGENTS.md` counts like a rules
- * directory, and a session hook or extension counts like a file.
+ * Pull reports rules as synced only when some tool takes them (#1273). On
+ * WorkBuddy AI the rules land in the live root, so the member counts like any
+ * other tool; a single-file target such as Codex's `AGENTS.md` counts like a
+ * rules directory, and a session hook or extension counts like a file.
  */
 describe('rulesReceivingTools', () => {
   let root: string;
@@ -287,9 +288,9 @@ describe('rulesReceivingTools', () => {
     toolPaths,
   });
 
-  it('finds no rules target on a member whose only WorkBuddy root is .workbuddy-ai', async () => {
+  it('counts WorkBuddy on a member whose only root is .workbuddy-ai', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
-    expect(await rulesReceivingTools(teamConfig({ workbuddy: DEFAULT_TOOL_PATHS.workbuddy }), localConfig())).toEqual([]);
+    expect(await rulesReceivingTools(teamConfig({ workbuddy: DEFAULT_TOOL_PATHS.workbuddy }), localConfig())).toEqual(['workbuddy']);
   });
 
   it.each(['codex', 'pi'] as const)('counts %s, whose session hook or extension adds the rules in a workspace', async (tool) => {
@@ -304,7 +305,7 @@ describe('rulesReceivingTools', () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
     await fse.ensureDir(path.join(home, '.codex'));
     const toolPaths = { workbuddy: DEFAULT_TOOL_PATHS.workbuddy, codex: DEFAULT_TOOL_PATHS.codex };
-    expect(await rulesReceivingTools(teamConfig(toolPaths), localConfig())).toEqual(['codex']);
+    expect(await rulesReceivingTools(teamConfig(toolPaths), localConfig())).toEqual(['workbuddy', 'codex']);
   });
 });
 

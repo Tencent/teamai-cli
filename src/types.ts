@@ -690,6 +690,12 @@ export const DEFAULT_TOOL_PATHS = {
   // .codebuddy/rules, which the two share (one copy), and in user scope its
   // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
   // (`locate`'s install gate), whatever directory its rules land in.
+  //
+  // `rules` and `agents` are the project-scope values, so `userScope` restates
+  // both for the user scope: the engine resolves them against the app's data
+  // root (`<configDir>/rules`, `<configDir>/agents`), not against the
+  // project's `.codebuddy/`. The restatement is what `applyWorkBuddyLiveRoot`
+  // moves to the live root — the project paths must not follow it.
   workbuddy: {
     skills: '.workbuddy/skills',
     rules: '.codebuddy/rules',
@@ -698,7 +704,7 @@ export const DEFAULT_TOOL_PATHS = {
     agents: '.workbuddy/agents',
     mcp: '.workbuddy/mcp.json',
     mcpProject: '.mcp.json',
-    userScope: { rules: '.workbuddy/rules' },
+    userScope: { rules: '.workbuddy/rules', agents: '.workbuddy/agents' },
   },
   // OpenCode reads project config from <root>/.opencode/ but user config from
   // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
@@ -2936,14 +2942,21 @@ export const DEFAULT_CLAUDE_ROOT = '.claude';
 
 export const CODEX_TOOL_ID = 'codex';
 
-/** WorkBuddy's toolPaths id and pre-5.7 root segment (#946). */
+/**
+ * WorkBuddy's toolPaths id and its data root under $HOME.
+ *
+ * Both roots are the app's, not two generations of one app: `.workbuddy` is
+ * WorkBuddy's, `.workbuddy-ai` is WorkBuddy AI's (the international edition,
+ * a separate install with its own `WorkBuddyAI.exe` and update channel). A
+ * machine can hold both, so which one is live is read, never assumed (#1273).
+ */
 export const WORKBUDDY_TOOL_ID = 'workbuddy';
 export const WORKBUDDY_TOOL_ROOT = '.workbuddy';
 
-/** WorkBuddy 5.7+'s runtime root (#1273). */
-export const WORKBUDDY_NEW_GENERATION_ROOT = '.workbuddy-ai';
+/** WorkBuddy AI's data root — the sibling product's, resolved the same way (#1273). */
+export const WORKBUDDY_AI_ROOT = '.workbuddy-ai';
 
-/** The file WorkBuddy rewrites in the root it starts from, whose timestamp names the live generation (#1273). */
+/** The file the app rewrites in the root it starts from, whose timestamp names the live app (#1273). */
 export const WORKBUDDY_LAST_LAUNCH_FILE = 'last-launch.json';
 
 /** Muse Code (Meta), whose CLI binary is `muse`. */
@@ -3381,12 +3394,11 @@ export function applyToolRoots(
 /**
  * Which WorkBuddy root the app on this machine last started from (#1273).
  *
- * 5.7+ moved its runtime to `.workbuddy-ai/`, so an upgrade leaves `.workbuddy/`
- * behind as a leftover the app stops reading. A downgrade leaves the *new* root
- * behind the same way, and presence cannot tell the two apart — both roots exist
- * in either case. `last-launch.json` can: the app rewrites it in the root it
- * runs from, so the newer timestamp names the live generation, whichever
- * direction the member last moved.
+ * `.workbuddy/` belongs to WorkBuddy and `.workbuddy-ai/` to WorkBuddy AI, and
+ * either can outlive the other: uninstalling one leaves its root behind, and
+ * then both exist while only one has a running app behind it. Presence cannot
+ * tell which. `last-launch.json` can — the app rewrites it in the root it
+ * starts from, so the newer timestamp names the app that is actually there.
  *
  * `undecided` when neither root records a launch — a project directory, or a
  * build that predates the file. Callers then fall back to presence, the only
@@ -3423,31 +3435,37 @@ export function workbuddyLaunchedFrom(
 }
 
 /**
- * WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops reading
- * `.workbuddy/` (#1273), so skills go to the directory the app actually scans
- * — live-verified in the issue (13 team skills showed in the live `/` menu).
- * Which root that is comes from `workbuddyLaunchedFrom`: an upgrade leaves the
- * old root behind, a downgrade leaves the new one, and only the launch record
- * says which of the two the app is running from. When neither root records a
- * launch, the new root existing still wins, the rule this had before (#1290).
- * Only the default skills path swaps, so a team that redirected on purpose
- * keeps its own. Every other surface keeps its `.workbuddy/` path: written
- * there while that root exists, held by `locate` once it is gone. Returns the
- * same object when no swap fires.
+ * WorkBuddy keeps its per-user data under a root the app picks, and the
+ * surfaces teamai writes resolve as fixed leaves under it (#1273): the engine
+ * reads `<configDir>/rules`, `<configDir>/agents` and `<configDir>/mcp.json`
+ * (plus `skills/` beside them). `WORKBUDDY_CONFIG_DIR` names that root at
+ * runtime; the fallback is `~/.workbuddy` for WorkBuddy and `~/.workbuddy-ai`
+ * for WorkBuddy AI, its international edition. Those are two products with a
+ * root each, not two generations of one, so both can sit on one machine.
+ *
+ * Which of the two is running comes from `workbuddyLaunchedFrom`: the launch
+ * record is rewritten in the root the app starts from, so the newer one wins
+ * even when the other product left its root behind. When neither root records
+ * a launch, the new root existing still wins, the rule this had before (#1290).
+ *
+ * Only the four default paths swap, so a team that redirected on purpose keeps
+ * its own. `settings` deliberately stays put — the hooks half of #1273 owns it.
+ * Project scope keeps every project path (only `skills` moves there, as
+ * before): its rules and agents live under the project's `.codebuddy/`, which
+ * no root change touches. Returns the same object when no swap fires.
  */
-function applyWorkBuddyGeneration(
+function applyWorkBuddyLiveRoot(
   toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
   localConfig: { scope?: Scope; projectRoot?: string },
 ): z.infer<typeof ToolPathsTableSchema> {
   const workbuddy = toolPaths[WORKBUDDY_TOOL_ID];
 
-  if (!workbuddy || workbuddy.skills !== '.workbuddy/skills') return toolPaths;
+  if (!workbuddy || workbuddy.skills !== `${WORKBUDDY_TOOL_ROOT}/skills`) return toolPaths;
 
-  const baseDir = localConfig.scope === 'project' && localConfig.projectRoot !== undefined
-    ? localConfig.projectRoot
-    : getUserHome();
-
-  const newRoot = path.join(baseDir, WORKBUDDY_NEW_GENERATION_ROOT);
+  const projectRoot = localConfig.scope === 'project' ? localConfig.projectRoot : undefined;
+  const projectScope = projectRoot !== undefined;
+  const baseDir = projectRoot ?? getUserHome();
+  const newRoot = path.join(baseDir, WORKBUDDY_AI_ROOT);
 
   const launched = workbuddyLaunchedFrom(
     { old: path.join(baseDir, WORKBUDDY_TOOL_ROOT), new: newRoot },
@@ -3460,11 +3478,41 @@ function applyWorkBuddyGeneration(
     },
   );
 
-  if (launched === 'new' || (launched === 'undecided' && fs.existsSync(newRoot))) {
-    return { ...toolPaths, [WORKBUDDY_TOOL_ID]: { ...workbuddy, skills: `${WORKBUDDY_NEW_GENERATION_ROOT}/skills` } };
+  if (launched !== 'new' && !(launched === 'undecided' && fs.existsSync(newRoot))) return toolPaths;
+
+  if (projectScope) {
+    return { ...toolPaths, [WORKBUDDY_TOOL_ID]: { ...workbuddy, skills: `${WORKBUDDY_AI_ROOT}/skills` } };
   }
 
-  return toolPaths;
+  return { ...toolPaths, [WORKBUDDY_TOOL_ID]: moveWorkbuddyUserPaths(workbuddy) };
+}
+
+/**
+ * The WorkBuddy user paths that move with the live root: skills, the MCP file,
+ * and the user rules and agents `userScope` restates for the engine's
+ * `<configDir>/…` leaves. Each value moves only while it still holds its
+ * default, so a team override survives.
+ */
+function moveWorkbuddyUserPaths(
+  workbuddy: z.infer<typeof ToolPathsSchema>,
+): z.infer<typeof ToolPathsSchema> {
+  const moved = (value: string | undefined, leaf: string): string | undefined =>
+    value === `${WORKBUDDY_TOOL_ROOT}/${leaf}` ? `${WORKBUDDY_AI_ROOT}/${leaf}` : value;
+
+  const userScope = workbuddy.userScope;
+
+  if (userScope === undefined) return { ...workbuddy, skills: `${WORKBUDDY_AI_ROOT}/skills` };
+
+  return {
+    ...workbuddy,
+    skills: `${WORKBUDDY_AI_ROOT}/skills`,
+    mcp: moved(workbuddy.mcp, 'mcp.json'),
+    userScope: {
+      ...userScope,
+      rules: userScope.rules === null ? null : moved(userScope.rules, 'rules'),
+      agents: moved(userScope.agents, 'agents'),
+    },
+  };
 }
 
 /**
@@ -3492,10 +3540,10 @@ export function scopedToolPaths(
   localConfig: { scope?: Scope; toolRoots?: Readonly<Record<string, string>> },
   at?: HomePaths,
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
-  const generationAdjusted = applyWorkBuddyGeneration(teamConfig.toolPaths, localConfig);
+  const liveRootAdjusted = applyWorkBuddyLiveRoot(teamConfig.toolPaths, localConfig);
 
-  if (localConfig.scope !== 'user') return generationAdjusted;
-  const rooted = applyToolRoots(generationAdjusted, localConfig.toolRoots, at);
+  if (localConfig.scope !== 'user') return liveRootAdjusted;
+  const rooted = applyToolRoots(liveRootAdjusted, localConfig.toolRoots, at);
   const out: Record<string, z.infer<typeof ToolPathsSchema>> = {};
 
   for (const [tool, paths] of Object.entries(rooted)) {
@@ -3524,10 +3572,10 @@ export function scopedToolPaths(
 
   if (copilot?.hooks) out[COPILOT_TOOL_ID] = { ...copilot, hooks: `hooks/${path.basename(copilot.hooks)}` };
 
-  // Re-apply the WorkBuddy generation swap after the user-scope merge: a
+  // Re-apply the live-root swap after the user-scope merge: a
   // `userScope.skills` carrying the default `.workbuddy/skills` restores the
-  // unread old path over the adjusted one (#1290).
-  return applyWorkBuddyGeneration(out, localConfig);
+  // other product's path over the live one (#1290).
+  return applyWorkBuddyLiveRoot(out, localConfig);
 }
 
 /** True when the local config is single-repo mode (the business repo is the team repo). */

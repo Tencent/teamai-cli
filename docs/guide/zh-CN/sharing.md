@@ -422,9 +422,9 @@ Antigravity 的用户级 server 写入 `~/.gemini/config/mcp_config.json`。项�
 
 agy 支持 stdio 和 HTTP server，不写 `type`；`sse` server 不会写给 agy，pull 会给出警告。`agy mcp list` 只显示用户文件里的 server，插件里的 server 在会话中可用。
 
-WorkBuddy 按顺序使用第一个已存在的用户文件：`~/.workbuddy/.mcp.json`、`~/.workbuddy/mcp.json`、`~/.codebuddy.json`。`CODEBUDDY_CONFIG_DIR` 会移动最后一个文件。项目使用 `.mcp.json`，仅有 `mcp.json` 时使用后者。开启 `sharing.gitExclude` 后，server 写入 `.codebuddy.json` 的 `projects[<项目路径>].mcpServers`。这些路径基于 CodeBuddy 2.168.0 引擎，尚未认证 WorkBuddy 启动器的主目录绑定。Pull 只从旧项目文件 `.workbuddy/mcp.json` 移除未被修改的 teamai 条目。
+WorkBuddy 按顺序使用第一个已存在的用户文件：活根下的 `.mcp.json`、`mcp.json`（活根是 `.workbuddy/` 还是 `.workbuddy-ai/`，见下），然后是 `~/.codebuddy.json`。`CODEBUDDY_CONFIG_DIR` 会移动最后一个文件。项目使用 `.mcp.json`，仅有 `mcp.json` 时使用后者。开启 `sharing.gitExclude` 后，server 写入 `.codebuddy.json` 的 `projects[<项目路径>].mcpServers`。这些路径基于 CodeBuddy 2.168.0 引擎，尚未认证 WorkBuddy 启动器的主目录绑定。Pull 只从旧项目文件 `.workbuddy/mcp.json` 移除未被修改的 teamai 条目。
 
-WorkBuddy 从 `.workbuddy-ai/` 启动时（5.7+ 把运行时移到那里；降级会把这个目录留成不被使用的残留，和升级留下 `.workbuddy/` 是一个道理），默认技能路径改为 `.workbuddy-ai/skills`。启动根取自两个根各自的 `last-launch.json`，所以残留目录不会让它搬家。其他内容仍要等 `.workbuddy/` 存在才写入，所以只有 `.workbuddy-ai/` 的成员收不到规则、团队指令、agent、MCP server 和钩子，`teamai doctor` 会以 `workbuddy receives ...` 失败并列出被搁置的项。
+`.workbuddy/` 和 `.workbuddy-ai/` 是两个产品各自的数据根，不是同一个产品的两代：WorkBuddy AI 是独立安装，有自己的可执行文件和更新通道，卸载任一个都会把它自己的根留下。启动根取自两个根各自的 `last-launch.json`——应用会在它启动的那个根里重写这个文件——所以残留目录不会让任何路径搬家。当 `.workbuddy-ai/` 是活的根时，用户作用域的 skills、rules、团队指令、agents 和 MCP 文件都跟着移过去；项目作用域仍用 `.codebuddy/` 下的路径。钩子仍写 `.workbuddy/settings.json`，所以活根是 `.workbuddy-ai/` 的成员只有钩子被搁置，`teamai doctor` 会以 `workbuddy receives hooks` 失败。两边都没有 `last-launch.json` 时沿用旧规则：`.workbuddy-ai/` 存在就赢。
 
 工具主目录或配置的 MCP 路径改变时，pull 保留旧副本并提示一次。确认没有工具读取后再删除。Doctor 会报告工具不读取的映射、已移动的文件，以及仅在项目根目录启动会话时才读取的项目 MCP。MCP 通道未知的内部版本只显示提示，不猜测配置路径。
 

@@ -1,9 +1,11 @@
 /**
- * The WorkBuddy generation swap inside `locate` (#1273): WorkBuddy 5.7+ moved
- * its runtime to `.workbuddy-ai/` and stops reading `.workbuddy/`, so when the
- * new root is the live generation, skills must land where the app scans and
- * the new root must count as install proof. These run against the in-memory
- * `Host` (no filesystem), mirroring locate-matrix's style.
+ * The WorkBuddy root swap inside `locate` (#1273): `.workbuddy/` belongs to
+ * WorkBuddy and `.workbuddy-ai/` to WorkBuddy AI (its international edition),
+ * a second product rather than a newer generation, and either can outlive the
+ * other. Whichever records the newer launch is the live one, and the surfaces
+ * teamai writes must land where that app looks and count as install proof.
+ * These run against the in-memory `Host` (no filesystem), mirroring
+ * locate-matrix's style.
  */
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -22,7 +24,7 @@ function hostWith(existing: readonly string[], launches: Readonly<Record<string,
     cwd: () => ROOT,
     exists: async (dir: string) => set.has(dir),
     realpath: async (file: string) => file,
-    readText: async () => null, existsNow: () => false,
+    readText: async () => null, existsNow: (dir: string) => set.has(dir),
     readTextNow: (file: string) => launches[file] ?? null,
     readOpenclawConfig: async () => ({ kind: 'missing' }),
     userToolRoots: async () => undefined,
@@ -90,11 +92,12 @@ describe('locate carries the WorkBuddy 5.7+ generation (#1273)', () => {
 });
 
 describe('the live root is the one the app launched from, not the one that exists (#1273)', () => {
-  // An upgrade leaves `.workbuddy/` behind; a downgrade leaves `.workbuddy-ai/`
-  // behind. Presence cannot tell them apart, so `last-launch.json` does: the app
-  // rewrites it in the root it runs from and the leftover keeps a stale one.
+  // Uninstalling one app leaves its root behind, so both can exist while only
+  // one has a running app behind it. Presence cannot tell which, so
+  // `last-launch.json` does: the app rewrites it in the root it starts from and
+  // the leftover keeps a stale one.
 
-  it('downgrade: both roots, the old one launched last, so skills go back to it', async () => {
+  it('both roots, .workbuddy launched last, so skills go back to it', async () => {
     const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
       [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-11-06T00:24:14.713Z'),
       [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
@@ -105,7 +108,7 @@ describe('the live root is the one the app launched from, not the one that exist
     expect(where.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: true });
   });
 
-  it('upgrade: both roots, the new one launched last, so skills stay on it (#1290)', async () => {
+  it('both roots, .workbuddy-ai launched last, so skills stay on it (#1290)', async () => {
     const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
       [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-10-27T09:29:19.843Z'),
       [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
@@ -155,7 +158,7 @@ describe('the live root is the one the app launched from, not the one that exist
     expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
   });
 
-  it('a downgraded member keeps every other surface on the old root too', async () => {
+  it('a member running .workbuddy keeps every surface on the old root too', async () => {
     const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
       [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-11-06T00:24:14.713Z'),
       [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
@@ -167,10 +170,12 @@ describe('the live root is the one the app launched from, not the one that exist
   });
 });
 
-describe('only skills accept the new root as install proof (#1290)', () => {
-  // Only skills have verified 5.7+ delivery evidence (the 13-skill `/` menu
-  // check in #1273). Every other surface keeps requiring `.workbuddy/`, so a
-  // 5.7-only member fails closed instead of writing into the dead layout.
+describe('the live root is install proof for every surface teamai writes (#1273)', () => {
+  // A project's rules and agents live under its own `.codebuddy/`, which no
+  // root change touches, so project scope keeps probing `.workbuddy/` there.
+  // User scope is the opposite: every leaf teamai writes hangs off the app's
+  // data root, so it follows the live one. Hooks stay on `.workbuddy/` until
+  // their half of #1273 lands — that is why they are not in this table.
   const PATHS = {
     workbuddy: {
       skills: '.workbuddy/skills',
@@ -180,7 +185,7 @@ describe('only skills accept the new root as install proof (#1290)', () => {
     },
   };
 
-  it('rules stay fail-closed when only .workbuddy-ai exists', async () => {
+  it('project rules stay fail-closed when only .workbuddy-ai exists', async () => {
     const host = hostWith([`${ROOT}/.workbuddy-ai`]);
     const install = installOf({ toolPaths: PATHS }, { scope: 'project', projectRoot: ROOT, repo: {} });
     const where = await locate('workbuddy', 'rules', install, host);
@@ -188,7 +193,7 @@ describe('only skills accept the new root as install proof (#1290)', () => {
     expect(writable(where)).toBeNull();
   });
 
-  it('mcp stays fail-closed when only .workbuddy-ai exists', async () => {
+  it('project mcp stays fail-closed when only .workbuddy-ai exists', async () => {
     const host = hostWith([`${ROOT}/.workbuddy-ai`]);
     const install = installOf({ toolPaths: PATHS }, { scope: 'project', projectRoot: ROOT, repo: {} });
     const where = await locate('workbuddy', 'mcp', install, host);
@@ -204,25 +209,36 @@ describe('only skills accept the new root as install proof (#1290)', () => {
     expect(writable(where)).not.toBeNull();
   });
 
-  it('user scope, .workbuddy-ai-only home: a team rule and an MCP server find no target, so no .workbuddy/ is created (#1290)', async () => {
-    // The reviewer's exact scenario: every surface configured (rules and an
-    // MCP server, via the default entry that carries them all), the home
-    // holding only the 5.7+ root. Rules and MCP stay fail-closed — pull
-    // finds no writable target for either, so nothing ever creates
-    // `.workbuddy/` — while skills still take the new root on the same
-    // member.
+  it('user scope, .workbuddy-ai-only home: rules, agents and MCP follow it, so no .workbuddy/ is created', async () => {
+    // The reviewer's exact scenario, with the answer #1273 settled: every
+    // surface configured and the home holding only the second app's root. All
+    // of them land in that root — the engine reads `<root>/rules`,
+    // `<root>/agents` and `<root>/mcp.json` — so pull never creates a
+    // `.workbuddy/` on a WorkBuddy AI-only machine.
     const host = hostWith([`${HOME}/.workbuddy-ai`]);
     const install = installOf({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user', repo: {} });
-    // Two explicit calls, not a loop: `writable()` narrows by resource, so a
+    // Separate calls, not a loop: `writable()` narrows by resource, so a
     // union-typed `Location<'mcp' | 'rules'>` does not type-check.
     const rules = await locate('workbuddy', 'rules', install, host);
-    expect(rules.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: false });
-    expect(writable(rules)).toBeNull();
+    expect(rules.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy-ai`, met: true });
+    expect(writable(rules)?.path).toBe(`${HOME}/.workbuddy-ai/rules`);
     const mcp = await locate('workbuddy', 'mcp', install, host);
-    expect(mcp.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: false });
-    expect(writable(mcp)).toBeNull();
+    expect(writable(mcp)?.path).toBe(`${HOME}/.workbuddy-ai/.mcp.json`);
+    const agents = await locate('workbuddy', 'agents', install, host);
+    expect(writable(agents)?.path).toBe(`${HOME}/.workbuddy-ai/agents`);
     const skills = await locate('workbuddy', 'skills', install, host);
     expect(ownOf(skills)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
     expect(writable(skills)).not.toBeNull();
+  });
+
+  it('user scope, .workbuddy live: the same surfaces stay on it', async () => {
+    const host = hostWith([`${HOME}/.workbuddy`]);
+    const install = installOf({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user', repo: {} });
+    const rules = await locate('workbuddy', 'rules', install, host);
+    expect(writable(rules)?.path).toBe(`${HOME}/.workbuddy/rules`);
+    const mcp = await locate('workbuddy', 'mcp', install, host);
+    expect(writable(mcp)?.path).toBe(`${HOME}/.workbuddy/.mcp.json`);
+    const agents = await locate('workbuddy', 'agents', install, host);
+    expect(writable(agents)?.path).toBe(`${HOME}/.workbuddy/agents`);
   });
 });

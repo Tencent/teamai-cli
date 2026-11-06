@@ -21,7 +21,7 @@ import {
   CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
   workbuddyLaunchedFrom,
-  WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
+  WORKBUDDY_AI_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
 } from './types.js';
 import { absoluteOn, defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
@@ -89,6 +89,13 @@ export function installOf(
 
 /** Resources `locate` answers for. */
 export type Resource = 'skills' | 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks' | 'sessions';
+
+/**
+ * The WorkBuddy surfaces whose path is a leaf under the app's live data root
+ * (#1273). Hooks are absent on purpose: they still land in `.workbuddy/`, so
+ * probing the live root for them would report a delivery the member never got.
+ */
+const LIVE_WORKBUDDY_ROOT_RESOURCES: ReadonlySet<Resource> = new Set(['skills', 'rules', 'blocks', 'agents', 'mcp']);
 
 /** The resources that carry knowledge, rather than a channel the member's roles grant or a session store. */
 export const KNOWLEDGE_RESOURCES = ['skills', 'rules', 'blocks', 'agents'] as const satisfies readonly Resource[];
@@ -549,6 +556,20 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
   const relocated = (relative: string): string =>
     scopedToolPaths({ toolPaths: { [tool]: { skills: relative } } }, { scope: 'user', toolRoots: install.toolRoots }, at)[tool]?.skills ?? relative;
 
+  // WorkBuddy's live data root, resolved through `Host` rather than `fs`, so
+  // `locate` answers about the machine it is inspecting. `scopedToolPaths`
+  // applies the same rule for pull and push; this is its read-only twin for the
+  // user-scope leaves (#1273). Project scope keeps the default root — the swap
+  // there is a project path, not the member's data root.
+  const liveRoot = known === WORKBUDDY_TOOL_ID && install.scope === 'user' ? liveWorkbuddyRoot(base, host) : null;
+
+  // A path that still spells the default root moves to the live one; a team
+  // override spells something else and keeps it.
+  const liveRelative = (relative: string): string | null =>
+    liveRoot !== null && relative.startsWith(`${WORKBUDDY_TOOL_ROOT}/`)
+      ? join(liveRoot, relative.slice(WORKBUDDY_TOOL_ROOT.length + 1))
+      : null;
+
   return {
     base,
     home,
@@ -560,13 +581,19 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
 
       if (install.scope !== 'user') return join(base, relative);
 
+      const live = liveRelative(relative);
+
+      if (live !== null) return live;
+
       // User-scope Copilot paths are relative to its home.
       return tool === 'copilot' && home ? join(home.dir, relative) : underHome(relative);
     },
     declared: (from, relative) => {
       if (from === 'project') return join(base, relative);
 
-      return underHome(install.scope === 'user' ? relocated(relative) : relative);
+      const live = install.scope === 'user' ? liveRelative(relative) : null;
+
+      return live ?? underHome(install.scope === 'user' ? relocated(relative) : relative);
     },
     codebuddyConfigDir: movedToolHome('codebuddy', host) ?? host.home,
     join,
@@ -591,15 +618,17 @@ export async function userViewOf(install: Install, host: Host = realHost()): Pro
 /**
  * The WorkBuddy root the app on this machine runs from (#1273).
  *
- * The two roots' `last-launch.json` timestamps name it, so a downgrade is read
- * correctly: the app rewrites that record in the root it starts from, and the
- * root it left keeps a stale one. With no record on either side — a project
- * directory, or a build that predates the file — presence decides, the only
- * evidence there was before (#1290).
+ * `.workbuddy/` is WorkBuddy's data root and `.workbuddy-ai/` is WorkBuddy
+ * AI's; either can outlive the other, and both exist once one of them is
+ * uninstalled. Their `last-launch.json` timestamps name the live one — the app
+ * rewrites that record in the root it starts from, and the root it left keeps
+ * a stale one. With no record on either side — a project directory, or a build
+ * that predates the file — presence decides, the only evidence there was
+ * before (#1290).
  */
-async function liveWorkbuddyRoot(roots: Roots, host: Host): Promise<string> {
-  const oldRoot = roots.join(roots.base, WORKBUDDY_TOOL_ROOT);
-  const newRoot = roots.join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT);
+function liveWorkbuddyRoot(base: string, host: Host): string {
+  const oldRoot = host.path.join(base, WORKBUDDY_TOOL_ROOT);
+  const newRoot = host.path.join(base, WORKBUDDY_AI_ROOT);
 
   const launched = workbuddyLaunchedFrom(
     { old: oldRoot, new: newRoot },
@@ -609,7 +638,7 @@ async function liveWorkbuddyRoot(roots: Roots, host: Host): Promise<string> {
 
   if (launched !== 'undecided') return launched === 'new' ? newRoot : oldRoot;
 
-  return await host.exists(newRoot) ? newRoot : oldRoot;
+  return host.existsNow(newRoot) ? newRoot : oldRoot;
 }
 
 async function gatesOf(tool: string, install: Install, host: Host, roots: Roots = rootsOf(tool, install, host), resource?: Resource): Promise<Gate[]> {
@@ -655,17 +684,22 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
       case 'home':
         return probe(home.dir);
       case 'own-root':
-        // WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
-        // reading `.workbuddy/` (#1273), so skills belong in the root the app
-        // actually launches from — which is not simply the new root: a
-        // downgrade leaves `.workbuddy-ai/` behind exactly as an upgrade
-        // leaves `.workbuddy/`. That root is the install proof too. But only
-        // for skills, the one surface with verified 5.7+ delivery evidence
-        // (the 13-skill `/` menu check in #1273). Every other surface keeps
-        // requiring the old root and fails closed on a 5.7-only member until
-        // its real 5.7+ path is confirmed (#1290).
-        if (resource === 'skills' && tool === WORKBUDDY_TOOL_ID) {
-          return probe(await liveWorkbuddyRoot(roots, host));
+        // WorkBuddy and WorkBuddy AI keep a root each (`.workbuddy/` and
+        // `.workbuddy-ai/`), and either can be left behind by the other, so the
+        // live root is read from `last-launch.json` rather than assumed (#1273).
+        // Every user-scope surface teamai writes resolves under it —
+        // `<root>/skills`, `/rules`, `/agents`, `/mcp.json` — so the install
+        // proof sits there too. Skills already moved this way in both scopes;
+        // the other surfaces only have a user-scope leaf, so a project keeps
+        // probing the root it writes. Hooks are absent from the set on purpose:
+        // their path belongs to the hooks half of #1273 and still writes
+        // `.workbuddy/`.
+        if (
+          tool === WORKBUDDY_TOOL_ID
+          && resource !== undefined && LIVE_WORKBUDDY_ROOT_RESOURCES.has(resource)
+          && (resource === 'skills' || install.scope === 'user')
+        ) {
+          return probe(liveWorkbuddyRoot(roots.base, host));
         }
 
         return probe(join(roots.base, home.root));
@@ -874,18 +908,18 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
 
   let own: string | null = configured;
 
-  // WorkBuddy 5.7+ scans skills from `.workbuddy-ai/skills` and stops reading
-  // `.workbuddy/` (#1273), so on an install whose live generation is the new
-  // root, skills land where the app scans. Only the default path swaps —
+  // WorkBuddy and WorkBuddy AI keep a root each, and skills are scanned from
+  // `<root>/skills` in both (#1273), so they land in the live root rather than
+  // in whichever root the paths happen to name. Only the default path swaps —
   // a team that redirected skills on purpose keeps its own. User scope may
   // already carry the swapped default (`scopedToolPaths`), so both spellings
   // count; whichever one it carries, the live root decides where the app
-  // looks (#1290, and a downgrade swaps it back).
+  // looks (#1290, and a member running the other app swaps it back).
   if (tool === WORKBUDDY_TOOL_ID) {
     const relative = roots.paths?.skills;
 
-    if (relative === `${WORKBUDDY_TOOL_ROOT}/skills` || relative === `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`) {
-      own = host.path.join(await liveWorkbuddyRoot(roots, host), 'skills');
+    if (relative === `${WORKBUDDY_TOOL_ROOT}/skills` || relative === `${WORKBUDDY_AI_ROOT}/skills`) {
+      own = host.path.join(liveWorkbuddyRoot(roots.base, host), 'skills');
     }
   }
 
@@ -925,12 +959,12 @@ async function locateRules(tool: string, install: Install, host: Host): Promise<
 
   // An earlier release copied team rules verbatim into any configured rules directory (#993).
   if (channel === 'none' || channel === 'unknown') {
-    return { channel, retired: dir === null ? [] : [{ place: { kind: 'dir', path: dir }, was: 'configured' }], gates: await gatesOf(tool, install, host, roots) };
+    return { channel, retired: dir === null ? [] : [{ place: { kind: 'dir', path: dir }, was: 'configured' }], gates: await gatesOf(tool, install, host, roots, 'rules') };
   }
 
   // A team entry written before the tool's rules moved (#938, #946) still names a directory the tool never reads: teamai writes there as the entry says, and doctor fails it.
   if (dir !== null && channel.channel !== 'dir') {
-    return { channel: 'files', own: { kind: 'dir', path: dir }, activation: null, reads: [], readGates: [], retired: [], gates: await gatesOf(tool, install, host, roots) };
+    return { channel: 'files', own: { kind: 'dir', path: dir }, activation: null, reads: [], readGates: [], retired: [], gates: await gatesOf(tool, install, host, roots, 'rules') };
   }
 
   switch (channel.channel) {
@@ -944,7 +978,7 @@ async function locateRules(tool: string, install: Install, host: Host): Promise<
         reads: await readsOf(channel.reads, roots, host),
         readGates: [],
         retired: [],
-        gates: await gatesOf(tool, install, host, roots),
+        gates: await gatesOf(tool, install, host, roots, 'rules'),
       };
 
       return retiredActivation === undefined ? location : { ...location, retiredActivation };
@@ -959,7 +993,7 @@ async function locateRules(tool: string, install: Install, host: Host): Promise<
     case 'session-hook':
     case 'extension':
     case 'plugin':
-      return runTimeOf(channel, [], await gatesOf(tool, await userViewOf(install, host), host));
+      return runTimeOf(channel, [], await gatesOf(tool, await userViewOf(install, host), host, undefined, 'rules'));
     default: {
       const unhandled: never = channel;
 
@@ -983,9 +1017,9 @@ async function locateBlocks(tool: string, install: Install, host: Host): Promise
   // An earlier release wrote the blocks into any claudemd the team mapped.
   const configured: Retired<FilePlace> | null = claudemd === null ? null : { place: memberFile(claudemd), was: 'configured' };
 
-  if (channel === 'none' || channel === 'unknown') return { channel, retired: settled(null, [...earlier, configured], p), gates: await gatesOf(tool, install, host, roots) };
+  if (channel === 'none' || channel === 'unknown') return { channel, retired: settled(null, [...earlier, configured], p), gates: await gatesOf(tool, install, host, roots, 'blocks') };
 
-  if (channel.channel !== 'file') return runTimeOf(channel, settled(null, [...earlier, configured], p), await gatesOf(tool, await userViewOf(install, host), host));
+  if (channel.channel !== 'file') return runTimeOf(channel, settled(null, [...earlier, configured], p), await gatesOf(tool, await userViewOf(install, host), host, undefined, 'blocks'));
 
   const [file, other] = install.gitExclude && channel.gitExcluded !== undefined
     ? [channel.gitExcluded, channel.file] : [channel.file, channel.gitExcluded];
@@ -1008,7 +1042,7 @@ async function locateBlocks(tool: string, install: Install, host: Host): Promise
     reads: await readsOf(channel.reads, roots, host),
     readGates: [],
     retired: settled(own, [...earlier, otherPlace === null ? null : { place: otherPlace, was: 'git-exclude' }, configured], p),
-    gates: [...await gatesOf(tool, install, host, roots), ...gates],
+    gates: [...await gatesOf(tool, install, host, roots, 'blocks'), ...gates],
   };
 }
 
@@ -1098,7 +1132,7 @@ async function activationOf(activation: Activation | undefined, tool: string, in
 async function locateAgents(tool: string, install: Install, host: Host): Promise<Location<'agents'>> {
   const channel = channelsOf(tool).agents[install.scope];
   const roots = rootsOf(tool, install, host);
-  const gates = await gatesOf(tool, install, host, roots);
+  const gates = await gatesOf(tool, install, host, roots, 'agents');
   const dir = roots.configured('agents');
   const own: DirPlace | null = dir === null ? null : { kind: 'dir', path: dir };
 
@@ -1232,7 +1266,7 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
   const { mcp } = channelsOf(tool);
   const roots = rootsOf(tool, install, host);
   const p = host.path;
-  const gates = await gatesOf(tool, install, host, roots);
+  const gates = await gatesOf(tool, install, host, roots, 'mcp');
 
   if (install.scope === 'user') {
     const channel = mcp.user;
