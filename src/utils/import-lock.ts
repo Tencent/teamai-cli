@@ -5,6 +5,7 @@ import os from 'node:os';
 import { z } from 'zod';
 import { memberHome } from './home.js';
 import { log } from './logger.js';
+import { withFileLock } from '../update.js';
 
 /** Duration after which a lock file is considered stale and safe to ignore. */
 const LOCK_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours; a lock older than this is stale
@@ -119,6 +120,14 @@ async function refusal(lockPath: string): Promise<string> {
     + `Wait for it to finish, then run this command again. If no import is running, remove ${lockPath}.`;
 }
 
+/** How long an import waits for another one taking a stale lock over, or releasing one, before it refuses or leaves it. */
+const TAKEOVER_WAIT = { attempts: 20, delayMs: 50 };
+
+/** The lock that serializes judging the lock at `lockPath` stale, removing it and creating it anew, and releasing it. */
+function takeoverPath(lockPath: string): string {
+  return `${lockPath}.takeover`;
+}
+
 /** Removes the lock file at `lockPath` only while it still holds `raw`, so a lock another process took meanwhile stays. */
 async function removeIfUnchanged(lockPath: string, raw: string, failure: string): Promise<void> {
   try {
@@ -194,9 +203,11 @@ export async function acquireImportLock(holder: string, runDir?: string): Promis
           return async () => {};
         }
 
-        if (await isImportInProgress(holder) || !(await createLockFile(lockPath, meta))) {
-          throw new ImportLockHeldError(await refusal(lockPath));
-        }
+        // One import at a time judges the lock stale, removes it and creates its own, so two that find it stale at once
+        // cannot both take it over.
+        const taken = await withFileLock(takeoverPath(lockPath), TAKEOVER_WAIT, async () => !(await isImportInProgress(holder)) && await createLockFile(lockPath, meta));
+
+        if (!taken.held || !taken.value) throw new ImportLockHeldError(await refusal(lockPath));
       }
 
       process.env[LOCK_HOLDER_ENV] = `${meta.pid}@${meta.host}`;
@@ -219,12 +230,14 @@ export async function acquireImportLock(holder: string, runDir?: string): Promis
 
     if (next === 0) {
       refCounts.delete(lockPath);
-      const held = await readLock(lockPath);
-
       // A step of this process's run may have rewritten its lock; one another process took over, or a run that has not ended holds, stays.
-      if (held !== undefined && held.meta.pid === process.pid && held.meta.host === os.hostname() && !(await isRunLive(held.meta))) {
-        await removeIfUnchanged(lockPath, held.raw, 'Failed to remove lock file');
-      }
+      await withFileLock(takeoverPath(lockPath), TAKEOVER_WAIT, async () => {
+        const held = await readLock(lockPath);
+
+        if (held !== undefined && held.meta.pid === process.pid && held.meta.host === os.hostname() && !(await isRunLive(held.meta))) {
+          await removeIfUnchanged(lockPath, held.raw, 'Failed to remove lock file');
+        }
+      });
     } else {
       refCounts.set(lockPath, next);
     }

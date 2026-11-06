@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile, stat } from 'node:fs/
 import path from 'node:path';
 import os from 'node:os';
 import { acquireImportLock, isImportInProgress } from '../utils/import-lock.js';
+import { acquireLock, releaseLock } from '../update.js';
 
 /**
  * Mirrors the lockPathFor formula from the implementation.
@@ -129,6 +130,20 @@ describe('import-lock', () => {
       `Another teamai import is writing this teamwiki (process ${process.ppid} on ${os.hostname()}). Wait for it to finish, then run this command again. If no import is running, remove ${lockPath}.`,
     );
     expect(await readFile(lockPath, 'utf8')).toBe(held);
+  });
+
+  it('leaves a stale lock to the import already taking it over, and refuses', async () => {
+    const stale = JSON.stringify({ pid: 2147483646, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }, null, 2);
+    await writeFile(lockPath, stale, 'utf8');
+    const takeover = `${lockPath}.takeover`;
+    expect(await acquireLock(takeover)).toBe(true);
+
+    try {
+      await expect(acquireImportLock(teamRepo)).rejects.toThrow('Another teamai import is writing this teamwiki');
+      expect(await readFile(lockPath, 'utf8')).toBe(stale);
+    } finally {
+      await releaseLock(takeover);
+    }
   });
 
   it('goes on under the hold of the process that started it, and leaves that lock in place', async () => {
