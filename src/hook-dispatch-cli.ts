@@ -652,6 +652,9 @@ export async function hookDispatchCli(
     // launch — its exit is what takes the host's job object down.
     await settling;
   } catch (e) {
-    log.warn(`hook-dispatch: unexpected error: ${e instanceof Error ? e.message : String(e)}`);
+    const message = `hook-dispatch: unexpected error: ${e instanceof Error ? e.message : String(e)}`;
+    log.warn(message);
+    // A git hook is silent and a detached child discards its stderr: debug.log is their only trace.
+    log.persist(message);
   }
 }

@@ -26,7 +26,7 @@ const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, 
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { reconcileHooks } = await import('../hooks.js');
-const { log } = await import('../utils/logger.js');
+const { log, setSilent, _resetState, _setLogFilePath } = await import('../utils/logger.js');
 const { commitFile, initRepo, recordDelivery } = await import('./helpers/delivered-checkout.js');
 
 describe('readStdin', () => {
@@ -88,6 +88,26 @@ describe('hookDispatchCli', () => {
       process.chdir(previousCwd);
       fs.rmSync(root, { recursive: true, force: true });
       persist.mockRestore();
+    }
+  });
+
+  it('records an unexpected dispatch failure in debug.log while a silent hook prints nothing', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-dispatch-failure-'));
+    const logFile = path.join(root, 'debug.log');
+    const resolveScope = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor')
+      .mockRejectedValue(new Error('scope lookup failed'));
+    const printed = vi.spyOn(console, 'error').mockImplementation(() => {});
+    _setLogFilePath(logFile);
+    try {
+      await expect(hookDispatchCli('post-merge', 'git', '*')).resolves.toBeUndefined();
+      expect(fs.readFileSync(logFile, 'utf8')).toContain('hook-dispatch: unexpected error: scope lookup failed');
+      expect(printed).not.toHaveBeenCalled();
+    } finally {
+      _resetState();
+      setSilent(false);
+      printed.mockRestore();
+      resolveScope.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
   it('skips claude hooks only when the other host has its own teamai hooks', async () => {
