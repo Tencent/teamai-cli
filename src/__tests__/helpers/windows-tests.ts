@@ -15,6 +15,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/cursor-tool-roots.test.ts',
   'src/__tests__/cursor-transcript-stop.test.ts',
   'src/__tests__/dsh-hooks.test.ts',
+  'src/__tests__/git-process-tree.test.ts',
   'src/__tests__/hermes-config.test.ts',
   'src/__tests__/hermes-hooks.test.ts',
   'src/__tests__/home-normalize.test.ts',

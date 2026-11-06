@@ -16,7 +16,8 @@ const mockGit = {
   outputHandler: vi.fn().mockReturnThis(),
 };
 
-vi.mock('simple-git', () => ({
+vi.mock('simple-git', async (importOriginal) => ({
+  ...await importOriginal<typeof import('simple-git')>(),
   simpleGit: () => mockGit,
 }));
 

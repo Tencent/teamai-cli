@@ -11,7 +11,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { assertAttachedTeamRepo, createGit, getDefaultBranch, getHeadCommit, hasCommits, readBlobs } from './git.js';
+import { assertAttachedTeamRepo, createGit, createGitWithBlockTimeout, getDefaultBranch, getHeadCommit, hasCommits, readBlobs } from './git.js';
 import { pathExists } from './fs.js';
 import { log } from './logger.js';
 import {
@@ -194,7 +194,7 @@ export type ReportsOriginRead =
  */
 export async function fetchReportsOriginFile(dir: string, relPath: string, update?: ReportsWriteContext): Promise<ReportsOriginRead> {
   if (update?.isOriginFresh !== true) {
-    const git = createGit(dir);
+    const git = createGitWithBlockTimeout(dir);
 
     try {
       const heads = await git.listRemote(['--heads', 'origin', REPORTS_BRANCH]);

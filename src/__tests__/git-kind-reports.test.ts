@@ -1014,7 +1014,7 @@ describe('git-kind reports: a stalled origin', () => {
       return { files: ['stats/alice.yaml'], message: '[teamai] Update stats for alice' };
     });
 
-    expect(result).toMatchObject({ status: 'failed', reason: expect.stringMatching(/block timeout/) });
+    expect(result).toMatchObject({ status: 'failed', reason: expect.stringMatching(/^git push --progress origin teamai-reports .*stalled: no output for 1s/) });
     // One stalled fetch and one stalled push; retrying the push would add a
     // stalled fetch and push per attempt, 10s or more.
     expect(Date.now() - start).toBeLessThan(6_000);
