@@ -340,6 +340,46 @@ describe('pull keeps a delivered copy the member changed (#822 item 5)', () => {
     expect(output).toContain(`Kept ${worktreeRule}: you changed it, and the version teamai would deploy there (rules/team-rule.md) has changed since.`);
   });
 
+  it('recovers CRLF skill copies without delivery records after updates and removals (#1743)', async () => {
+    teamCommit((repo) => {
+      fs.mkdirSync(path.join(repo, 'skills', 'team-skill', 'references'));
+      fs.writeFileSync(path.join(repo, 'skills', 'team-skill', 'references', 'notes.md'), 'Notes one\n');
+      fs.cpSync(path.join(repo, 'skills', 'team-skill'), path.join(repo, 'skills', 'obsolete'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'skills', 'obsolete', 'SKILL.md'), SKILL_MD.replaceAll('team-skill', 'obsolete'));
+    });
+    const clone = path.join(projectRoot, '.teamai', 'team-repo');
+    git(['config', 'core.autocrlf', 'true'], clone);
+    // Re-check out existing files too, just as a fresh Windows clone would.
+    git(['rm', '-r', '--cached', '.'], clone);
+    git(['reset', '--hard', 'HEAD'], clone);
+    await pull();
+    const notes = path.join(claudeSkill(), 'references', 'notes.md');
+    expect(read(notes)).toBe('Notes one\r\n');
+    const state = JSON.parse(read(statePath())) as { lastPullByWorkspace: Record<string, { delivered?: unknown }> };
+    for (const record of Object.values(state.lastPullByWorkspace)) delete record.delivered;
+    fs.writeFileSync(statePath(), JSON.stringify(state, null, 2));
+    // One unproven file must still protect the whole other tool's skill.
+    const edited = path.join(projectRoot, '.cursor', 'skills', 'team-skill', 'references', 'notes.md');
+    fs.writeFileSync(edited, 'My notes\r\n');
+    teamCommit((repo) => {
+      fs.writeFileSync(path.join(repo, 'skills', 'team-skill', 'references', 'notes.md'), 'Notes two\n');
+      fs.rmSync(path.join(repo, 'skills', 'obsolete'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'skills', '.removed'), 'obsolete\n');
+    });
+    await pull();
+    expect(read(notes)).toBe('Notes two\r\n');
+    expect(read(edited)).toBe('My notes\r\n');
+    for (const tool of ['.claude', '.cursor']) {
+      expect(fs.existsSync(path.join(projectRoot, tool, 'skills', 'obsolete'))).toBe(false);
+    }
+    // Remove the intentionally edited copy before checking delivery health.
+    fs.rmSync(path.join(projectRoot, '.cursor', 'skills', 'team-skill'), { recursive: true });
+    await pull();
+    const doctor = await runCLI(['doctor'], projectRoot, home);
+    expect(doctor.output).not.toContain('matches no team version');
+    expect(doctor.output).not.toContain('you changed this copy');
+  });
+
   it('keeps an edited copy teamai has no record of as the member\'s, and updates the unedited ones (#993)', async () => {
     await pull();
     // The state an older CLI leaves: a checkout record without `delivered`.
