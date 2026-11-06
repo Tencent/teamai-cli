@@ -670,12 +670,13 @@ async function createTeamDeepEnrichFixture(project = 'auth'): Promise<{ clone: s
 }
 
 describe('codebase deep-enrich in a team repo', () => {
-  it('starts teamai-codebase-deep-enrich on the team teamwiki, five components at a time, and publishes what its run wrote', async () => {
+  it('starts teamai-codebase-deep-enrich on the team teamwiki, five components at a time, whose run publishes what it wrote', async () => {
     const { clone, remote } = await createTeamDeepEnrichFixture();
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const wikiRoot = path.join(clone, 'teamwiki');
     vi.mocked(runShortcut).mockImplementation(async () => {
       await deepEnrichSteps(clone, () => UNAVAILABLE, 'auth');
+      await DeepEnrich.publish({ project: 'auth', wikiRoot });
 
       return { run: 'r1', outcome: 'succeeded', outputs: { exit_code: 1 } };
     });
@@ -684,7 +685,7 @@ describe('codebase deep-enrich in a team repo', () => {
 
     expect(runShortcut).toHaveBeenCalledWith({
       workflow: 'teamai-codebase-deep-enrich',
-      inputs: { wiki_root: wikiRoot, project: 'auth', max_modules: 0, concurrency: 5 },
+      inputs: { wiki_root: wikiRoot, project: 'auth', max_modules: 0, concurrency: 5, publish: true },
       command: 'teamai codebase --deep-enrich --project auth',
       json: false,
     });

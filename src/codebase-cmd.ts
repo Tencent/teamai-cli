@@ -37,21 +37,26 @@ const DEEP_ENRICH_CONCURRENCY = 5;
  * teamai-codebase-deep-enrich run, under the import lock of the team repo when one holds the teamwiki, as every command
  * that writes it takes. Another teamwiki needs no teamai init: the run then builds a config of its own.
  */
-export async function startDeepEnrich({ target, project, maxModules = 0, json, command }: {
+export async function startDeepEnrich({ target, project, maxModules = 0, publish = false, json, command }: {
     target: TeamwikiTarget;
     project: string;
     maxModules?: number;
+    /** Have the run commit and push the docs to the team repo that holds the teamwiki. */
+    publish?: boolean;
     json: boolean;
     command: string;
 }): Promise<ShortcutEnd | undefined> {
     const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
     const { runShortcut } = await import('./workflow-commands.js');
     const releaseLock = await lockTeamwiki(target);
+    const given = { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency: DEEP_ENRICH_CONCURRENCY };
+    // Only a publishing run passes publish, so a team's own teamai-codebase-deep-enrich need not declare it.
+    const inputs = publish ? { ...given, publish } : given;
 
     try {
         return await runShortcut({
             workflow: 'teamai-codebase-deep-enrich',
-            inputs: { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency: DEEP_ENRICH_CONCURRENCY },
+            inputs,
             command,
             json,
         });
@@ -219,35 +224,9 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             return;
         }
 
-        const ended = await startDeepEnrich({ target, project, json: opts.json === true, command: `teamai codebase --deep-enrich --project ${project}` });
-        const team = target.team;
-
-        // In the team repo, publish deep-enrich output the way `teamai import` does, so the next `teamai push` does not
+        // In the team repo, the run publishes the docs the way `teamai import` does, so the next `teamai push` does not
         // find the clone dirty.
-        if (team && ended?.outcome === 'succeeded') {
-            const repoPath = team.localConfig.repo.localPath;
-
-            const publishPaths = [
-                path.relative(repoPath, evidenceDir),
-                path.relative(repoPath, path.join(teamwikiDir, 'router.md')),
-                path.relative(repoPath, path.join(teamwikiDir, 'index.md')),
-            ].filter((rel) => rel && !rel.startsWith('..'));
-
-            const { autoPushTeamRepo } = await import('./utils/git.js');
-
-            const pushed = await autoPushTeamRepo(
-                repoPath,
-                `[teamai] Deep enrich: ${project}`,
-                publishPaths,
-            );
-
-            if (pushed && !opts.json) {
-                const { setStderrOnly } = await import('./utils/logger.js');
-                const previous = setStderrOnly(false);
-                log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
-                setStderrOnly(previous);
-            }
-        }
+        await startDeepEnrich({ target, project, publish: target.team !== undefined, json: opts.json === true, command: `teamai codebase --deep-enrich --project ${project}` });
 
         return;
     }

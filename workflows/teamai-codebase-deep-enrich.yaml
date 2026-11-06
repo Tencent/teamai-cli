@@ -4,7 +4,10 @@ description: Write the deep knowledge docs of a codebase teamai import extracted
 invoke: deny
 private: true
 # wiki_root is the teamwiki directory, project the codebase under evidence/code/; max_modules 0 takes every component.
-inputs: { wiki_root: string, project: string, max_modules: number, concurrency: number }
+# publish commits and pushes the docs to the team repo that holds wiki_root, for a caller that does not publish them.
+inputs: { wiki_root: string, project: string, max_modules: number, concurrency: number, publish: boolean }
+defaults:
+  inputs: { publish: false }
 ends: { unconfigured-tool: failed }
 steps:
   - id: plan
@@ -187,6 +190,12 @@ steps:
       WHY: "{{ steps.scenarios.failure.message }}"
     writes: ["{{ inputs.wiki_root }}"]
     output: { text: string, exit_code: number, complete: boolean, missing_components: [string], missing_architecture: boolean }
+  - id: publish
+    needs: [finish]
+    if: inputs.publish && steps.finish.outcome == 'success'
+    command: teamai codebase deep-enrich-publish --wiki-root "$WIKI_ROOT" --codebase "$PROJECT"
+    env: { WIKI_ROOT: "{{ inputs.wiki_root }}", PROJECT: "{{ inputs.project }}" }
+    writes: ["{{ inputs.wiki_root }}"]
 outputs:
   text: steps.finish.outputs.text
   exit_code: steps.finish.outputs.exit_code

@@ -1306,5 +1306,31 @@ async function finish(target: DeepEnrichTarget, scenarios: DocReply): Promise<De
   };
 }
 
+/**
+ * The `publish` step: commits and pushes the codebase's evidence and docs, with the teamwiki's router.md and index.md, to
+ * the team repo that holds the teamwiki, so the next `teamai push` does not find the clone dirty. A teamwiki no team
+ * repo holds has nothing to push.
+ */
+async function publish(target: DeepEnrichTarget): Promise<{ pushed: boolean }> {
+  const { teamwikiAt } = await import('./utils/teamwiki-root.js');
+  const { team } = await teamwikiAt(target.wikiRoot);
+
+  if (!team) return { pushed: false };
+  const repoPath = team.localConfig.repo.localPath;
+
+  const paths = [evidenceDirOf(target), path.join(target.wikiRoot, 'router.md'), path.join(target.wikiRoot, 'index.md')].flatMap((published) => {
+    const relative = path.relative(repoPath, published);
+
+    return relative === '' || relative.startsWith('..') ? [] : [relative];
+  });
+
+  const { autoPushTeamRepo } = await import('./utils/git.js');
+  const pushed = await autoPushTeamRepo(repoPath, `[teamai] Deep enrich: ${target.project}`, paths);
+
+  if (pushed) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
+
+  return { pushed };
+}
+
 /** The steps of teamai's default teamai-codebase-deep-enrich workflow, each a `codebase` verb. */
-export const DeepEnrich = { targetOf, plan, write, graph, finish } as const;
+export const DeepEnrich = { targetOf, plan, write, graph, finish, publish } as const;

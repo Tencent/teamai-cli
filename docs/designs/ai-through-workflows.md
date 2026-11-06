@@ -352,7 +352,8 @@ proposes `scorers/<name>.md` to the team as a pull request.
 - A failed classification and an `--update-quality` entry that could not be drafted exit 1.
 - Imported rules and docs land in `rules/` and `docs/` instead of `learnings/`; the classifier has no skill type.
 - In a team repo, `codebase --deep-enrich` asks for each component doc once, with no sequential retry of the batch,
-  names each failed step with its retry command, and `--json` prints the run envelope. The hidden `deep-enrich` holds
+  names each failed step with its retry command, and `--json` prints the run envelope. Its run publishes the docs in a
+  `publish` step (input `publish`), so a run finished with `workflow resume` publishes them too. The hidden `deep-enrich` holds
   the import lock. A teamwiki outside a team repo (`--output`, a hidden `--wiki-root`) is written by the same
   workflow, with no `teamai init` needed, and the hidden `deep-enrich` prints the result line there too. A failure
   several steps share, such as a tool that cannot run, is said once with the step ids.

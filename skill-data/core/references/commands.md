@@ -662,7 +662,7 @@ Generated: do not edit by hand. Regenerate with
   - `--upgrade-wiki` (hidden) — Migrate docs/team-codebase/ to teamwiki/ graph format
   - `--lint` — Run global consistency lint over the teamwiki knowledge graph, and count the member's asset relations (assets, relations, without a relation, unresolved)
   - `--reconcile` — Reconcile product and code knowledge in teamwiki
-  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs; an --output teamwiki is written by this process
+  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, which publishes the docs; an --output teamwiki is written by this process
   - `--fix` (hidden) — Deprecated: teamwiki lint has no autofix; runs lint in report-only mode
   - `--status` — Show knowledge-base git baseline (headSha / repoUrl / branch)
   - `--severity <level>` (hidden) — Minimum severity to report: high|medium|low|info
@@ -689,6 +689,9 @@ Generated: do not edit by hand. Regenerate with
     - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
     - `--scenarios <markdown>` — What the tool answered for the scenarios
     - `--scenarios-failure <message>` — Why the tool could not answer for the scenarios, when it could not
+  - `teamai codebase deep-enrich-publish` — A step of a teamai-codebase-deep-enrich run: commit and push the codebase's evidence and docs, with the teamwiki's router.md and index.md, to the team repo that holds the teamwiki. Prints {"pushed"}.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
   - `teamai codebase enrich-plan` — A step of a teamai-codebase-enrich run: list the modules of a codebase with at least five facts in the teamwiki's facts cache, which the last extract wrote. Prints {"modules":[{"name","files","components","interfaces"}],"interfaces"}.
     - `--wiki-root <dir>` — The teamwiki directory the codebase was extracted into
     - `--codebase <slug>` — The codebase, its directory under evidence/code/

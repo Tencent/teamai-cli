@@ -297,10 +297,10 @@ $ teamai codebase --deep-enrich --project orders-api
 ℹ deep-enrich[orders-api]: Phase 1 — Generating 3 component design docs
 ⚠ deep-enrich[orders-api]: Skipping component billing: AI call failed (tool: claude): Authentication failed
 ...
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
 Deep enrichment incomplete: project=orders-api, missing component docs: billing
 ✖ Step "components[1].ask" failed with tool_failed: AI call failed (tool: claude): Authentication failed
 ℹ Retry it with teamai workflow retry r3f2a9c41d07b6e15 'components[1].ask', then continue the run with teamai workflow resume r3f2a9c41d07b6e15
-✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
 ```
 
 In a team repo, `--reconcile` commits and pushes the graph it updates. It leaves your `teamwiki/product/` pages as they are, and pushes nothing when the graph did not change:

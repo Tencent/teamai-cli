@@ -1919,7 +1919,7 @@ const codebaseCommand = program
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph, and count the member\'s asset relations (assets, relations, without a relation, unresolved)')
   .option('--reconcile', 'Reconcile product and code knowledge in teamwiki')
-  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, then publishes the docs; an --output teamwiki is written by this process')
+  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, which publishes the docs; an --output teamwiki is written by this process')
   .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
@@ -2036,6 +2036,21 @@ codebaseCommand
     const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
     const finished = await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.finish(target, { text: cmdOpts.scenarios, failure: cmdOpts.scenariosFailure }));
     process.stdout.write(`${JSON.stringify(finished)}\n`);
+  });
+
+codebaseCommand
+  .command('deep-enrich-publish')
+  .description('A step of a teamai-codebase-deep-enrich run: commit and push the codebase\'s evidence and docs, with the teamwiki\'s router.md and index.md, to the team repo that holds the teamwiki. Prints {"pushed"}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget({ ...cmdOpts, maxModules: '0' });
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    process.stdout.write(`${JSON.stringify(await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.publish(target)))}\n`);
   });
 
 async function codebaseEnrichVerbTarget(flags: { wikiRoot: string; codebase: string }): Promise<import('./enrich-with-ai.js').CodebaseEnrichTarget | undefined> {

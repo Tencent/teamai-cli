@@ -144,6 +144,7 @@ export const NO_DRY_RUN_PREVIEW = {
   'codebase deep-enrich-write': 'writes a component design doc or the architecture overview',
   'codebase deep-enrich-graph': 'writes the graph docs of a codebase',
   'codebase deep-enrich-finish': 'writes the scenarios doc, the teamwiki indexes and the quality reports',
+  'codebase deep-enrich-publish': 'commits and pushes the deep-enrich docs to the team repo that holds the wiki',
   'codebase enrich-write': 'a step of a teamai-codebase-enrich run; writes _manifest.json and _domains.json',
   'import scan-rules': 'a step of a teamai-import-rules run',
   'import read-candidate': 'a step of a teamai-import-learnings run',

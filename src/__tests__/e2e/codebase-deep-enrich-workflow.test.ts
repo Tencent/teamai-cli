@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -60,6 +60,8 @@ interface Sandbox {
   docs: string;
   log: string;
   run: (args: string[], extra?: Record<string, string>) => Promise<Ran>;
+  /** Starts the CLI as `run` does, and gives the process with what it ended with. */
+  start: (args: string[], extra?: Record<string, string>) => { child: ChildProcess; ran: Promise<Ran> };
   calls: () => string[];
 }
 
@@ -108,6 +110,21 @@ function sandbox(): Sandbox {
 
   const wikiRoot = path.join(localPath, 'teamwiki');
 
+  const start = (args: string[], extra?: Record<string, string>): { child: ChildProcess; ran: Promise<Ran> } => {
+    const child = spawn('node', [CLI, ...args], {
+      env: { ...process.env, ...GIT_ENV, FORCE_COLOR: '0', HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, TEAMAI_AI_TOOL: '', ...extra },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: project,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    child.stdin.end();
+
+    return { child, ran: new Promise((resolve) => { child.on('close', (code) => resolve({ code, stdout, stderr })); }) };
+  };
+
   return {
     home,
     project,
@@ -115,19 +132,8 @@ function sandbox(): Sandbox {
     wikiRoot,
     docs: path.join(wikiRoot, 'evidence', 'code', 'widget', 'docs'),
     log,
-    run: (args, extra) => new Promise((resolve) => {
-      const child = spawn('node', [CLI, ...args], {
-        env: { ...process.env, ...GIT_ENV, FORCE_COLOR: '0', HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, TEAMAI_AI_TOOL: '', ...extra },
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: project,
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-      child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-      child.stdin.end();
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    }),
+    run: (args, extra) => start(args, extra).ran,
+    start,
     calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []),
   };
 }
@@ -155,13 +161,31 @@ describe('codebase --deep-enrich through teamai-codebase-deep-enrich', () => {
       'ℹ deep-enrich[widget]: Phase 4 — Generating AI graph docs (G5/G6)',
       'ℹ deep-enrich[widget]: Phase 5 — Index enhancement',
       '✔ deep-enrich[widget]: Deep knowledge generation complete',
-      'Deep enrichment complete: project=widget',
       `✔ Pushed to team knowledge repo (${fwd(box.remote)})`,
+      'Deep enrichment complete: project=widget',
       '',
     ]);
     expect(fs.readdirSync(box.docs).toSorted()).toEqual([...GRAPH_DOCS, 'api.md', 'architecture.md', 'cli.md', 'graph-g5-scenarios.md', 'web.md'].toSorted());
     expect(fs.readFileSync(path.join(box.docs, 'cli.md'), 'utf8')).toBe('# cli doc');
     expect(lastCommit(box.remote)).toBe('[teamai] Deep enrich: widget');
+  });
+
+  it('publishes the docs of a run that stopped and was finished with workflow resume, leaving the team checkout clean', async () => {
+    const box = sandbox();
+    const first = box.start(['codebase', '--deep-enrich', '--project', 'widget'], { FAKE_WAIT: '99' });
+    await expect.poll(() => box.calls().some((line) => line.startsWith('start ')), { timeout: 60_000 }).toBe(true);
+    first.child.kill('SIGKILL');
+    await first.ran;
+    const listed = await box.run(['workflow', 'resume']);
+    const run = /teamai workflow resume (r[0-9a-f]{16})/.exec(listed.stdout + listed.stderr)?.[1];
+    expect(run, listed.stdout + listed.stderr).toBeDefined();
+
+    const resumed = await box.run(['workflow', 'resume', run ?? '']);
+
+    expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
+    expect(fs.readdirSync(box.docs)).toContain('architecture.md');
+    expect(lastCommit(box.remote)).toBe('[teamai] Deep enrich: widget');
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: path.dirname(box.wikiRoot), encoding: 'utf8' })).toBe('');
   });
 
   it('names a component the tool could not write, writes the others, and exits 1', async () => {
