@@ -309,3 +309,8 @@ jobs:
       # is the 8.3 form and `where` returns the long form.
       - name: Provider CLI .cmd shim
         run: npx vitest run src/__tests__/providers-cli-cmd.test.ts
+
+      # A non-detached Windows child may end with its parent's job. The WMI
+      # case writes ~/.teamai in the runner's own profile, so it stays last.
+      - name: Background work outlives its parent
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/background-lifetime-windows.test.ts
