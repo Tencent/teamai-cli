@@ -182,6 +182,16 @@ describe('import-lock', () => {
     expect(await readFile(lockPath, 'utf8')).toBe(taken);
   });
 
+  it('keeps the lock of a run stopped for longer than the TTL while that run lasts', async () => {
+    const runDir = path.join(root, 'runs', 'r0123abcd', 'scratch');
+    await mkdir(runDir, { recursive: true });
+    const left = JSON.stringify({ pid: 2147483646, host: os.hostname(), startedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(), teamRepo, runDir }, null, 2);
+    await writeFile(lockPath, left, 'utf8');
+
+    await expect(acquireImportLock(teamRepo)).rejects.toThrow('in workflow run r0123abcd');
+    expect(await readFile(lockPath, 'utf8')).toBe(left);
+  });
+
   it('keeps a lock a step of a run left for as long as that run lasts', async () => {
     const runDir = path.join(root, 'runs', 'r0123abcd', 'scratch');
     await mkdir(runDir, { recursive: true });

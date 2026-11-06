@@ -247,13 +247,12 @@ export async function acquireImportLock(holder: string, runDir?: string): Promis
 /**
  * Check whether an import is currently in progress for the given team repo.
  *
- * Intended to be called by reportUsage before executing git reset --hard.
- * Returns true when a live import lock is detected, in which case the caller
- * should skip the reset and pull to avoid overwriting uncommitted import artifacts.
+ * It removes a stale lock it finds, so only acquireImportLock calls it, holding the takeover lock that
+ * serializes that removal with every acquire and release.
  *
  * Detection strategy:
- * - Same host: use process.kill(pid, 0) to probe whether the locking process is alive, and
- *   whether the run directory of the workflow run that holds it is still there.
+ * - A workflow run on this host that has not ended, its run directory still there, holds it at any age.
+ * - Same host: use process.kill(pid, 0) to probe whether the locking process is alive.
  * - Different host: cannot probe remotely; treat any non-stale lock as active.
  * - Stale lock (older than LOCK_TTL_MS): treat as abandoned and clean up.
  * - Malformed lock: fall back to file mtime; a fresh but unreadable file is treated
@@ -277,6 +276,9 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
   try {
     const meta = ImportLockFieldsSchema.parse(JSON.parse(raw));
 
+    // A run stopped for longer than the TTL still holds it until it is resumed to its end or cancelled.
+    if (await isRunLive(meta)) return true;
+
     // Check TTL.
     const parsed = Date.parse(meta.startedAt ?? '');
     const age = Number.isNaN(parsed) ? Infinity : Date.now() - parsed;
@@ -290,7 +292,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
 
     if (meta.host === os.hostname()) {
       // Same host: probe the locking process via signal 0.
-      if ((meta.pid !== undefined && isProcessAlive(meta.pid)) || await isRunLive(meta)) {
+      if (meta.pid !== undefined && isProcessAlive(meta.pid)) {
         return true;
       }
 
