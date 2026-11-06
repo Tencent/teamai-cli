@@ -3264,7 +3264,7 @@ export async function resolveInstructionBlocks(
   const recallEnabled = isRecallEnabled(localConfig, config);
 
   const blocks: InstructionBlocks = {
-    recall: recallEnabled ? compileRecallRulesBlock() : null,
+    recall: recallEnabled ? compileRecallRulesBlock(config.language) : null,
     directRecall: recallEnabled ? compileDirectRecallRulesBlock() : null,
   };
 
@@ -3457,9 +3457,10 @@ export function compileDirectRecallRulesBlock(): string {
  *   2. Declare which doc_ids were actually consulted at task completion.
  *
  * Delivered to the instruction targets of tools with the subagent (an
- * `agents` path) — see syncManagedInstructions.
+ * `agents` path) — see syncManagedInstructions. `teamai.yaml` `language: en`
+ * drops the Chinese self-exemption, as it does in the recall rule (#1014).
  */
-export function compileRecallRulesBlock(): string {
+export function compileRecallRulesBlock(language?: 'en' | 'zh'): string {
     const lines = [
         TEAMAI_RECALL_RULES_START,
         '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
@@ -3467,8 +3468,10 @@ export function compileRecallRulesBlock(): string {
         '## Team Knowledge Recall (teamai)',
         '',
         '> **Self-exemption (must read first):** If you ARE the `teamai-recall` subagent yourself, this rule does NOT apply to you — do not invoke `teamai-recall` (or any recall) again. Proceed directly to performing the knowledge search that is your task. This prevents infinite subagent recursion in tools (e.g. Cursor) whose always-apply rules leak into subagent sessions.',
-        '>',
-        '> **自豁免（务必先读）：** 如果你自己就是 `teamai-recall` subagent，本规则对你不适用——不要再调用 `teamai-recall`（或任何 recall），直接执行你本职的知识检索任务。此举防止在（如 Cursor 等）会把 always-apply 规则泄漏进 subagent 会话的工具中发生无限递归。',
+        ...(language === 'en' ? [] : [
+            '>',
+            '> **自豁免（务必先读）：** 如果你自己就是 `teamai-recall` subagent，本规则对你不适用——不要再调用 `teamai-recall`（或任何 recall），直接执行你本职的知识检索任务。此举防止在（如 Cursor 等）会把 always-apply 规则泄漏进 subagent 会话的工具中发生无限递归。',
+        ]),
         '',
         '**Before** starting a task that involves code changes, debugging,',
         'or design decisions, you **SHOULD** invoke the `teamai-recall`',
