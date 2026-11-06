@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { AgentObservation } from '../agent-observation.js';
-import { benchmarkRecord, type BenchmarkRecord, type TrialResult } from '../benchmark/result.js';
+import { benchmarkRecord, BenchmarkRunRecordSchema, type BenchmarkRecord, type TrialResult } from '../benchmark/result.js';
 import { planOfRun } from '../benchmark/run-plan.js';
 import { benchmarkTable, formatBenchmarkTable } from '../benchmark/table.js';
 import { leaseNext, reportAttempt } from '../workflow/engine.js';
@@ -204,6 +204,34 @@ describe('benchmark arm role', () => {
     const text = formatBenchmarkTable(benchmarkTable(recordOf([CLAUDE_ARM], [{}])));
 
     expect(text).toContain('| Arm | Tool | Model (source) | Planned |');
+  });
+});
+
+describe('benchmark arm recall', () => {
+  const RECALL = { name: 'with-recall', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: RUN_TEAM }, recall: true } as const;
+
+  it('names each arm recall in a Recall column once an arm runs with it, and the arms without it as off', () => {
+    const text = formatBenchmarkTable(benchmarkTable(recordOf([RECALL, { ...CLAUDE_ARM, name: 'plain' }], [{ arm: 'with-recall' }, { arm: 'plain' }])));
+
+    expect(text).toContain('| Arm | Tool | Model (source) | Recall | Planned |');
+    expect(text).toContain('| with-recall | claude | tool default (team) | on | 1 |');
+    expect(text).toContain('| plain | claude | claude-opus-4-1 (team) | off | 1 |');
+  });
+
+  it('prints no Recall column when no arm runs with recall', () => {
+    expect(formatBenchmarkTable(benchmarkTable(recordOf([CLAUDE_ARM], [{}])))).toContain('| Arm | Tool | Model (source) | Planned |');
+  });
+
+  it('keeps the recall an arm was written with when a record is read back', () => {
+    const written = {
+      schemaVersion: 1 as const, run: 'r', outcome: 'succeeded' as const, teamaiVersion: '1.0.0', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:10:00Z',
+      workflow: { name: 'teamai-benchmark', origin: { source: 'team' as const }, sourceHash: 'h' },
+      ...recordOf([RECALL], [{}]).benchmark,
+    };
+
+    // The writer puts the plan's arms on the record; readers parse it back, and a field this schema omits is dropped
+    // there, so the arm would read as never having had recall.
+    expect(BenchmarkRunRecordSchema.parse(JSON.parse(JSON.stringify(written)))).toEqual(written);
   });
 });
 
