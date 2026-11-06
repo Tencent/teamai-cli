@@ -6,7 +6,23 @@ Each rule below spans more than one file. The rule names the code that owns it, 
 
 ## Workflow first
 
-A feature that orchestrates AI work ships as a default workflow in `workflows/`, which a team replaces with a file of the same name. Its command only starts that workflow, on the driver `workflows.driver` names (`runShortcut`, `driveByDefault`). Only drivers launch AI tools: a feature asks one through an `answer` or `prompt` step, and `teamai/launch-through-workflows` fails an import of the launcher (`src/tool-launch/`) outside `src/workflow/`. The engine never branches on a feature: every key a feature needs is generic, and any workflow can use it. Reuse a workflow as a `workflow:` step instead of copying its steps. The rules contributors follow are in [AGENTS.md](../../AGENTS.md#rules) and [CONTRIBUTING.md](../../.github/CONTRIBUTING.md#coding-style).
+A feature that orchestrates AI work ships as a default workflow in `workflows/`, which a team replaces with a file of the same name. Its command only starts that workflow, on the driver `workflows.driver` names (`runShortcut`, `driveByDefault`). Only drivers launch AI tools: a feature asks one through an `answer` or `prompt` step, and `teamai/launch-through-workflows` fails an import of the launcher (`src/tool-launch/`), or a process call that runs a tool's executable, outside `src/workflow/`. The engine never branches on a feature: every key a feature needs is generic, and any workflow can use it. Reuse a workflow as a `workflow:` step instead of copying its steps. The rules contributors follow are in [AGENTS.md](../../AGENTS.md#rules) and [CONTRIBUTING.md](../../.github/CONTRIBUTING.md#coding-style).
+
+The features migrated this way, each with the default workflow its command starts:
+
+| Command | Default workflow |
+|---|---|
+| `teamai import --dir`, `--from-repo`, `--from-repo-list`, `--from-org` | `teamai-import-from-repo`, which runs `teamai-codebase-enrich` and `teamai-codebase-deep-enrich` per repository |
+| `teamai codebase --deep-enrich` | `teamai-codebase-deep-enrich` |
+| `teamai import --from-tools`, `--from-claude` | `teamai-import-rules`, which runs `teamai-import-learnings` |
+| `teamai import --from-iwiki` | `teamai-import-from-iwiki`, which runs `teamai-import-learnings` |
+| `teamai import --from-mr` | `teamai-import-from-mr` |
+| `teamai ci extract-mr` | `teamai-ci-extract-mr`, which runs `teamai-import-from-mr` |
+| `teamai recall maintenance --update-quality` | `teamai-draft-learning-updates` |
+| `teamai recall promote <learning>` | `teamai-promote-learning` |
+| `teamai score --scorer <file>` | `teamai-try-scorer`; `teamai-new-scorer` drafts a scorer with a person and runs it |
+| Recall adoption and skill routing judgments | generated questions of `teamai-score` (`scorers/teamai-adoption.md`, `scorers/teamai-routing.md`) |
+| Sharing learnings from earlier sessions | `teamai-share-learnings-from-sessions`, which runs `teamai-share-learnings` |
 
 ## Judgment is a scorer
 
