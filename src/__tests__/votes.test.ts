@@ -955,7 +955,8 @@ describe('adoption counters (#1391)', () => {
     expect(deltas['retry-policy']).toMatchObject({ judged_delta: 1 });
   });
 
-  // Recall counts a doc's recall when it runs, so the session counted first is already among its 7 recalls.
+  // Recall counts a doc's recall when it runs, so the session counted first is already among its 7 recalls. The delta
+  // carries only the sessions: the team file starts from its own recalls.
   it('counts each recalled session once, starting a doc that has none from its recalls', async () => {
     await saveUserVotes(votePath(), { version: 2, votes: { 'helm-values': { recalled_count: 7, upvoted_count: 2, last_recalled_at: '2026-06-05T00:00:00Z' } }, deltas: {} });
 
@@ -965,7 +966,28 @@ describe('adoption counters (#1391)', () => {
     const { votes, deltas } = await readUserVotes(votePath());
     expect(votes['helm-values']?.recalled_session_count).toBe(8);
     expect(votes['new-doc']?.recalled_session_count).toBe(1);
-    expect(deltas['helm-values']?.recalled_session_delta).toBe(8);
+    expect(deltas['helm-values']?.recalled_session_delta).toBe(2);
+  });
+
+  // Each machine recalls the doc once in a new session. The team file's 100 recalls predate session counting.
+  it.each([['fresh', 'seasoned'], ['seasoned', 'fresh']])('starts the team session count from its recalls once, when the %s machine syncs first', async (...order) => {
+    const repoDir = path.join(tmpDir, 'repo');
+    const remotePath = path.join(repoDir, 'votes', 'jeff.yaml');
+    const legacy = { recalled_count: 100, upvoted_count: 30, last_recalled_at: '2026-06-05T00:00:00Z' };
+    await saveUserVotes(remotePath, { version: 2, votes: { 'helm-values': legacy }, deltas: {} });
+    await saveUserVotes(path.join(tmpDir, 'seasoned', 'jeff.yaml'), { version: 2, votes: { 'helm-values': legacy }, deltas: {} });
+
+    const counts = [];
+
+    for (const machine of order) {
+      const localPath = path.join(tmpDir, machine, 'jeff.yaml');
+      await incrementRecalled(localPath, ['helm-values']);
+      await countRecalledSessions({ votePath: localPath, sessionId: machine, docIds: ['helm-values'] });
+      await syncVotesToTeam(repoDir, 'jeff', path.join(tmpDir, machine));
+      counts.push((await readUserVotes(remotePath)).votes['helm-values']?.recalled_session_count);
+    }
+
+    expect(counts).toEqual([101, 102]);
   });
 
   it('clears every synced *_delta, keeping what arrived after the snapshot', async () => {

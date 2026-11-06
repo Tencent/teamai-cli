@@ -364,9 +364,10 @@ function bump(data: UserVotesV2, docId: string, counter: string, by: number): vo
 /**
  * Count one more recalled session for each of `docIds` (#1391): the denominator of the adoption estimator. A doc
  * whose entry has no session count yet starts from its recalls, which is what the ratio read before, so its confidence
- * does not jump at the upgrade; recall counted this session's recall when it ran, so it is among them. The identity
- * is stored with the counter, so retries count each (root session, doc) once. Returns false when the votes file was
- * busy: nothing was counted, and the caller retries.
+ * does not jump at the upgrade; recall counted this session's recall when it ran, so it is among them. The delta
+ * carries only the session: the team file starts its own count from its own recalls when the delta merges. The
+ * identity is stored with the counter, so retries count each (root session, doc) once. Returns false when the votes
+ * file was busy: nothing was counted, and the caller retries.
  */
 export async function countRecalledSessions({ votePath, sessionId, docIds }: { votePath: string; sessionId: string; docIds: readonly string[] }): Promise<boolean> {
   if (docIds.length === 0) return true;
@@ -379,9 +380,11 @@ export async function countRecalledSessions({ votePath, sessionId, docIds }: { v
     if (fresh.length === 0) return;
 
     for (const docId of fresh) {
+      const recalls = data.votes[docId]?.recalled_session_count === undefined ? data.votes[docId]?.recalled_count : undefined;
+      bump(data, docId, 'recalled_session', 1);
       const entry = data.votes[docId];
-      const startsFromRecalls = entry !== undefined && entry.recalled_session_count === undefined;
-      bump(data, docId, 'recalled_session', startsFromRecalls ? Math.max(1, entry.recalled_count) : 1);
+
+      if (entry && recalls !== undefined) entry.recalled_session_count = Math.max(1, recalls);
       counted.add(docId);
     }
 
@@ -486,6 +489,9 @@ export function mergeDeltas(local: UserVotesV2, remote: UserVotesV2): UserVotesV
   for (const [docId, delta] of Object.entries(local.deltas)) {
     const merged = votes[docId] ?? { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' };
     votes[docId] = merged;
+
+    // An entry with no session count reads its recalls as sessions; the delta's sessions come after them.
+    if (merged.recalled_session_count === undefined && CountSchema.parse(delta.recalled_session_delta) !== 0) merged.recalled_session_count = merged.recalled_count;
 
     for (const [counter, moved] of deltaMoves(delta)) merged[`${counter}_count`] = Math.max(0, countOf(merged, counter) + moved);
 
