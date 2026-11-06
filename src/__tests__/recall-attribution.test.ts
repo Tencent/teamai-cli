@@ -473,8 +473,9 @@ class Harness {
       // process; the mocked spawn above does nothing, so simulate that pass
       // here. post-tool-use needs it since recall-attribution and
       // dashboard-report moved to the background (#1216) — without this the
-      // attribution these tests assert never runs.
-      if (!options.background && event === 'post-tool-use') {
+      // attribution these tests assert never runs. Stop and SessionEnd push
+      // the votes there (votes-push).
+      if (!options.background && ['post-tool-use', 'stop', 'session-end'].includes(event)) {
         // readStdinFile removes the file; the real parent hands the child a
         // fresh serialization of the same payload, so rewrite it here.
         fs.writeFileSync(stdinFile, JSON.stringify({ session_id: SESSION, ...(cwd ? { cwd } : {}), ...payload }));

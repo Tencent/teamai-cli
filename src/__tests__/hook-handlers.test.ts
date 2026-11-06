@@ -266,11 +266,11 @@ describe('hook-handlers registry', () => {
     expect(inline).toEqual([]);
   });
 
-  it('session-end records the final dashboard snapshot and dispatches the webhook in the background, and syncs votes in the foreground', () => {
+  it('session-end records the final dashboard snapshot, dispatches the webhook and pushes votes in the background, and credits votes in the foreground', () => {
     const handlers = buildHandlerRegistry().filter((r) => r.event === 'session-end');
     // Copilot fires SessionEnd (not Stop), so the webhook handler must run here
     // too — otherwise those sessions emit no session-stop notification (#702).
-    // votes-sync credits and pushes the last turn's reads (#884).
+    // votes-sync credits the last turn's reads, votes-push pushes them (#884).
     expect(handlers).toEqual([
       expect.objectContaining({
         matcher: '*',
@@ -287,6 +287,13 @@ describe('hook-handlers registry', () => {
         gitOnly: true,
         requiresConfig: true,
         handler: expect.objectContaining({ name: 'votes-sync' }),
+      }),
+      expect.objectContaining({
+        matcher: '*',
+        background: true,
+        gitOnly: true,
+        requiresConfig: true,
+        handler: expect.objectContaining({ name: 'votes-push' }),
       }),
     ]);
     expect(handlers[2].background).toBeUndefined();
@@ -1181,12 +1188,13 @@ describe('hook-handlers registry', () => {
     expect(todo!.timeoutMs).toBeLessThan(3_000);
   });
 
-  it('marks contribute-check, mr-hint, and votes-sync as gitOnly', () => {
+  it('marks contribute-check, mr-hint, votes-sync and votes-push as gitOnly', () => {
     const registry = buildHandlerRegistry();
     const gitOnly = registry.filter((r) => r.gitOnly === true).map((r) => r.handler.name);
     expect(gitOnly).toContain('contribute-check');
     expect(gitOnly).toContain('mr-hint');
     expect(gitOnly).toContain('votes-sync');
+    expect(gitOnly).toContain('votes-push');
   });
 
   it('filterHandlersForConfig drops gitOnly handlers for http source', () => {
@@ -1298,10 +1306,10 @@ describe('hook-handlers registry', () => {
     expect(result).toContain('Adopted team knowledge this session');
   });
 
-  it('votes-sync skips updateReports when there are no pending vote deltas', async () => {
+  it('votes-push skips updateReports when there are no pending vote deltas', async () => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
-      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+      (r) => r.event === 'stop' && r.handler.name === 'votes-push',
     )!.handler;
 
     reportsBranchMocks.updateReports.mockClear();
@@ -1312,10 +1320,38 @@ describe('hook-handlers registry', () => {
     expect(reportsBranchMocks.updateReports).not.toHaveBeenCalled();
   });
 
-  it('votes-sync writes votes through updateReports when deltas are pending', async () => {
+  // A fetch and a push to a remote a few seconds away do not fit the 4.5 s
+  // foreground budget: the dispatcher's exit then cut the push and left the
+  // vote commit unpushed, on every Stop until a pull carried it.
+  it('votes-sync leaves pending votes to the detached pass instead of pushing inline', async () => {
+    const handler = buildHandlerRegistry().find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+    voteMocks.hasPendingVoteDeltas.mockResolvedValue(true);
+
+    try {
+      await handler.execute({ session_id: 'sid-inline-push', cwd: '/x' }, 'claude', scope);
+    } finally {
+      voteMocks.hasPendingVoteDeltas.mockResolvedValue(false);
+    }
+
+    expect(reportsBranchMocks.updateReports).not.toHaveBeenCalled();
+  });
+
+  it('votes-push runs detached at Stop and SessionEnd, with more time than the foreground cap', () => {
+    const registry = buildHandlerRegistry();
+
+    for (const event of ['stop', 'session-end']) {
+      const reg = registry.find((r) => r.event === event && r.handler.name === 'votes-push');
+      expect(reg).toMatchObject({ background: true, gitOnly: true, requiresConfig: true });
+      expect(reg!.timeoutMs).toBeGreaterThan(4_500);
+    }
+  });
+
+  it('votes-push writes votes through updateReports when deltas are pending', async () => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
-      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+      (r) => r.event === 'stop' && r.handler.name === 'votes-push',
     )!.handler;
 
     const syncedDeltas = { 'doc-a': { recalled_delta: 0, upvoted_delta: 1 } };
@@ -1353,10 +1389,10 @@ describe('hook-handlers registry', () => {
     expect(voteMocks.confirmVotesSynced).toHaveBeenCalledWith(expect.any(String), syncedDeltas);
   });
 
-  it('votes-sync keeps the deltas pending when the reports push is not delivered (#1027)', async () => {
+  it('votes-push keeps the deltas pending when the reports push is not delivered (#1027)', async () => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
-      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+      (r) => r.event === 'stop' && r.handler.name === 'votes-push',
     )!.handler;
 
     voteMocks.hasPendingVoteDeltas.mockResolvedValueOnce(true);
