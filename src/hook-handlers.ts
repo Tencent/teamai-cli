@@ -67,8 +67,9 @@ export interface HandlerRegistration {
  * unified <5s cap guarantees that with margin. Healthy endpoints answer in well
  * under a second, so this is invisible in normal use; it only bounds the worst
  * case (slow/unreachable endpoint). Any network side-effect truncated here (e.g.
- * a large first-time resource sync, vote-delta push) is completed later by the
- * background (detached) pass, which is not awaited by the host.
+ * a large first-time resource sync) is completed later by the background
+ * (detached) pass, which is not awaited by the host. The vote push runs there
+ * from the start (votes-push): the exit after a timeout here cuts a git push.
  */
 const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
 
@@ -85,6 +86,14 @@ const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
  * resource downloads. Foreground local-agent runs use FOREGROUND_HOOK_TIMEOUT_MS.
  */
 const LOCAL_AGENT_TIMEOUT_MS = 15_000;
+
+/**
+ * Background (detached) vote push: a fetch, then a push of the reports branch
+ * with its fetch + rebase retries, each a round trip to the team remote that a
+ * credential helper or a proxy can stretch to seconds. Detached, so it never
+ * delays the host Stop.
+ */
+const VOTES_PUSH_TIMEOUT_MS = 30_000;
 
 /**
  * Budget for the detached session-start pull.
@@ -746,7 +755,7 @@ const votesSyncHandler: HookHandler = {
 
     try {
       const { creditAdoptedDocs } = await import('./recall-adoption.js');
-      const { syncVotesToTeam, pruneUpvoteLedger } = await import('./votes.js');
+      const { pruneUpvoteLedger } = await import('./votes.js');
       const { getVotesDir } = await import('./types.js');
       const votesDir = getVotesDir(localConfig);
       const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
@@ -763,13 +772,14 @@ const votesSyncHandler: HookHandler = {
       // next Stop retries). Inherited user-scope docs stay read-only.
       const { credited, recalled } = await creditAdoptedDocs(localConfig, sessionId);
       const adoptedDocIds = credited ?? [];
-      // A subagent's end is not the end of the turn: the main agent waits on
-      // this hook, so it only credits locally. The ledger prune and the vote
-      // push, a git round trip, wait for the next Stop or pull.
+      // This handler only credits locally: the vote push, a fetch and a push to
+      // the team remote, is votes-push's, in the detached pass of Stop and
+      // SessionEnd. A subagent's end is not the end of the turn either: the
+      // main agent waits on this hook, so the ledger prune waits for the next Stop.
       const hookEvent = stdinString(stdin, 'hook_event_name')?.toLowerCase() ?? '';
       const subagentStop = hookEvent === 'subagentstop';
-      // Copilot's SessionEnd ends the session: it pushes as Stop does, but no
-      // one reads its reply, so it prints no summary.
+      // Copilot's SessionEnd ends the session: no one reads its reply, so it
+      // prints no summary.
       const sessionEnd = hookEvent === 'sessionend';
 
       // Bound the in-file session ledger even in the default (judge-off) config,
@@ -777,62 +787,6 @@ const votesSyncHandler: HookHandler = {
       // so would never prune (issue #723 review). This runs every Stop, is locked,
       // and only writes when it actually drops a stale entry.
       if (!subagentStop) await pruneUpvoteLedger(votePath).catch(() => undefined);
-
-      const { usesBranchWorktree } = await import('./types.js');
-
-      if (subagentStop) {
-        // Nothing to push now: see above.
-      } else if (usesBranchWorktree(localConfig)) {
-        // Votes are report data → the teamai-reports orphan branch, written
-        // through an isolated worktree (never the default branch / active tree).
-        // Stop fires every turn: skip the fetch when nothing is pending.
-        try {
-          const { hasPendingVoteDeltas, stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('./votes.js');
-
-          if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
-            const { updateReports, readReportsOriginFile } = await import('./utils/reports-branch.js');
-            await updateReports(localConfig, async (wt, { onDelivered }) => {
-              // Origin's confirmed snapshot is the merge base, never the
-              // worktree copy: that copy may already hold this machine's own
-              // merged-but-unpushed deltas, and merging onto it again would
-              // count them twice on a retry (#1027).
-              const origin = await readReportsOriginFile(wt, `votes/${localConfig.username}.yaml`);
-
-              const staged = await stageVotesMerge(
-                wt,
-                localConfig.username,
-                votesDir,
-                origin === null ? null : readUserVotesFromContent(origin),
-              );
-
-              if (!staged) {
-                return {
-                  files: [],
-                  message: `[teamai] Update votes for ${localConfig.username}`,
-                };
-              }
-
-              // Deltas are dropped only once origin holds them, and under the
-              // reports lock, so a concurrent sync cannot stage the same deltas
-              // between this publish and this clear. A busy lock, a failed
-              // push, or a crash before delivery keeps them pending for the
-              // next Stop (#1027).
-              onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
-
-              return {
-                files: [`votes/${localConfig.username}.yaml`],
-                message: `[teamai] Update votes for ${localConfig.username}`,
-              };
-            });
-          }
-        } catch {
-          // Push failed — the deltas stay pending and retry next session
-        }
-      } else {
-        await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => {
-          // Push failed — will retry next session
-        });
-      }
 
       // A/B measurement (opt-in): one line per Stop. `adopted` is the count
       // newly credited this turn (after per-session dedup), so summing the log
@@ -879,6 +833,75 @@ const votesSyncHandler: HookHandler = {
       // MUST be traceable: a swallowed error here is exactly why upvote
       // collection could fail silently for an entire team (see #723). Log it.
       log.debug(`votes-sync handler failed: ${(error instanceof Error ? error.stack : undefined) ?? String(error)}`);
+    }
+
+    return null;
+  },
+};
+
+/**
+ * Push the vote deltas this machine still owes the team, in the detached pass
+ * of Stop and SessionEnd. Inline, a fetch and a push to a remote a few seconds
+ * away outlast FOREGROUND_HOOK_TIMEOUT_MS, and the dispatcher's exit cut the
+ * push and left the vote commit unpushed. This pass starts beside votes-sync,
+ * so a credit it writes after this pass read the deltas goes with the next
+ * Stop or pull.
+ */
+const votesPushHandler: HookHandler = {
+  name: 'votes-push',
+  async execute(_stdin, _tool, localConfig) {
+    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+
+    try {
+      const { getVotesDir, usesBranchWorktree } = await import('./types.js');
+      const { syncVotesToTeam, hasPendingVoteDeltas, stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('./votes.js');
+      const votesDir = getVotesDir(localConfig);
+      const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
+
+      if (!usesBranchWorktree(localConfig)) {
+        await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir);
+      } else if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
+        // Votes are report data → the teamai-reports orphan branch, written
+        // through an isolated worktree (never the default branch / active tree).
+        // Stop fires every turn: skip the fetch when nothing is pending.
+        const { updateReports, readReportsOriginFile } = await import('./utils/reports-branch.js');
+        await updateReports(localConfig, async (wt, { onDelivered }) => {
+          // Origin's confirmed snapshot is the merge base, never the
+          // worktree copy: that copy may already hold this machine's own
+          // merged-but-unpushed deltas, and merging onto it again would
+          // count them twice on a retry (#1027).
+          const origin = await readReportsOriginFile(wt, `votes/${localConfig.username}.yaml`);
+
+          const staged = await stageVotesMerge(
+            wt,
+            localConfig.username,
+            votesDir,
+            origin === null ? null : readUserVotesFromContent(origin),
+          );
+
+          if (!staged) {
+            return {
+              files: [],
+              message: `[teamai] Update votes for ${localConfig.username}`,
+            };
+          }
+
+          // Deltas are dropped only once origin holds them, and under the
+          // reports lock, so a concurrent sync cannot stage the same deltas
+          // between this publish and this clear. A busy lock, a failed
+          // push, or a crash before delivery keeps them pending for the
+          // next Stop (#1027).
+          onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
+
+          return {
+            files: [`votes/${localConfig.username}.yaml`],
+            message: `[teamai] Update votes for ${localConfig.username}`,
+          };
+        });
+      }
+    } catch (error) {
+      // The deltas stay pending for the next Stop or pull.
+      log.debug(`votes-push handler failed: ${(error instanceof Error ? error.stack : undefined) ?? String(error)}`);
     }
 
     return null;
@@ -1245,9 +1268,10 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'session-end', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     // Copilot's last turn can end with SessionEnd and no Stop, so the recall
-    // reducer runs here too and pushes the votes (#884). A Stop before it
-    // already credited the same reads, and the ledger counts a doc once.
+    // reducer runs here too, and votes-push pushes in the detached pass (#884).
+    // A Stop before it already credited the same reads, and the ledger counts a doc once.
     { event: 'session-end', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'session-end', matcher: '*', handler: votesPushHandler, timeoutMs: VOTES_PUSH_TIMEOUT_MS, background: true, gitOnly: true, requiresConfig: true },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back
@@ -1258,6 +1282,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // the declared timeout).
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_BUDGET_MS, background: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'stop', matcher: '*', handler: votesPushHandler, timeoutMs: VOTES_PUSH_TIMEOUT_MS, background: true, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
