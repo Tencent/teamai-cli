@@ -941,7 +941,7 @@ export async function autoPushViaMR(
   opts: { initPush?: boolean } = {},
 ): Promise<string | null> {
   try {
-    const branchName = generateBranchName(localConfig.username);
+    const branchName = await unusedBranchName(repoPath, localConfig.username);
     const pushed = await pushRepoBranch(repoPath, message, files, branchName, { initPush: opts.initPush });
 
     if (!pushed) {
