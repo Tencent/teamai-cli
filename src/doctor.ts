@@ -264,12 +264,12 @@ const GATED_SURFACES = [['rules', 'rules'], ['blocks', 'team instructions'], ['a
 
 /**
  * A tool can take its skills while its other surfaces wait for a root that is
- * not there: on WorkBuddy 5.7+, skills land under `.workbuddy-ai/`, while
- * everything else still needs `.workbuddy/` (#1273). Pull writes none of those,
- * and the delivery checks skip a tool whose gate is unmet, so with
- * `<tool> is installed` passing on the skills root doctor would stay green.
- * Hooks count when the hook writer finds none of its install roots and one of
- * them is a root the other surfaces wait for.
+ * not there: on WorkBuddy 5.7+, skills land in whichever root the app launches
+ * from, while everything else still needs `.workbuddy/` (#1273). Pull writes
+ * none of those, and the delivery checks skip a tool whose gate is unmet, so
+ * with `<tool> is installed` passing on the skills root doctor would stay
+ * green. Hooks count when the hook writer finds none of its install roots and
+ * one of them is a root the other surfaces wait for.
  */
 async function buildHeldSurfaceChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, toolPaths, hookToolPaths, baseDir } = ctx;

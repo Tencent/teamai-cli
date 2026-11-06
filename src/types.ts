@@ -2943,6 +2943,9 @@ export const WORKBUDDY_TOOL_ROOT = '.workbuddy';
 /** WorkBuddy 5.7+'s runtime root (#1273). */
 export const WORKBUDDY_NEW_GENERATION_ROOT = '.workbuddy-ai';
 
+/** The file WorkBuddy rewrites in the root it starts from, whose timestamp names the live generation (#1273). */
+export const WORKBUDDY_LAST_LAUNCH_FILE = 'last-launch.json';
+
 /** Muse Code (Meta), whose CLI binary is `muse`. */
 export const MUSE_TOOL_ID = 'muse';
 
@@ -3376,14 +3379,61 @@ export function applyToolRoots(
 }
 
 /**
+ * Which WorkBuddy root the app on this machine last started from (#1273).
+ *
+ * 5.7+ moved its runtime to `.workbuddy-ai/`, so an upgrade leaves `.workbuddy/`
+ * behind as a leftover the app stops reading. A downgrade leaves the *new* root
+ * behind the same way, and presence cannot tell the two apart — both roots exist
+ * in either case. `last-launch.json` can: the app rewrites it in the root it
+ * runs from, so the newer timestamp names the live generation, whichever
+ * direction the member last moved.
+ *
+ * `undecided` when neither root records a launch — a project directory, or a
+ * build that predates the file. Callers then fall back to presence, the only
+ * evidence there was before this check.
+ */
+export function workbuddyLaunchedFrom(
+  roots: { readonly old: string; readonly new: string },
+  readText: (file: string) => string | null,
+  joinPath: (dir: string, file: string) => string = path.join,
+): 'old' | 'new' | 'undecided' {
+  const launchedAt = (root: string): number | undefined => {
+    const text = readText(joinPath(root, WORKBUDDY_LAST_LAUNCH_FILE));
+
+    if (text === null) return undefined;
+
+    try {
+      const record = z.object({ timestamp: z.string() }).safeParse(JSON.parse(text));
+      const at = record.success ? Date.parse(record.data.timestamp) : Number.NaN;
+
+      return Number.isNaN(at) ? undefined : at;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const oldAt = launchedAt(roots.old);
+  const newAt = launchedAt(roots.new);
+
+  if (oldAt === undefined) return newAt === undefined ? 'undecided' : 'new';
+
+  if (newAt === undefined) return 'old';
+
+  return newAt >= oldAt ? 'new' : 'old';
+}
+
+/**
  * WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops reading
  * `.workbuddy/` (#1273), so skills go to the directory the app actually scans
  * — live-verified in the issue (13 team skills showed in the live `/` menu).
- * The new root wins whenever it exists, because an upgrade leaves the old one
- * behind as an unread leftover. Only the default skills path swaps, so a team
- * that redirected on purpose keeps its own. Every other surface keeps its
- * `.workbuddy/` path: written there while that root exists, held by `locate`
- * once it is gone. Returns the same object when no swap fires.
+ * Which root that is comes from `workbuddyLaunchedFrom`: an upgrade leaves the
+ * old root behind, a downgrade leaves the new one, and only the launch record
+ * says which of the two the app is running from. When neither root records a
+ * launch, the new root existing still wins, the rule this had before (#1290).
+ * Only the default skills path swaps, so a team that redirected on purpose
+ * keeps its own. Every other surface keeps its `.workbuddy/` path: written
+ * there while that root exists, held by `locate` once it is gone. Returns the
+ * same object when no swap fires.
  */
 function applyWorkBuddyGeneration(
   toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
@@ -3397,10 +3447,20 @@ function applyWorkBuddyGeneration(
     ? localConfig.projectRoot
     : getUserHome();
 
-  // The new root present means 5.7+ is the live generation (an upgrade leaves
-  // `.workbuddy/` behind as a leftover the app no longer reads), so it wins
-  // even when both roots exist (#1290).
-  if (fs.existsSync(path.join(baseDir, WORKBUDDY_NEW_GENERATION_ROOT))) {
+  const newRoot = path.join(baseDir, WORKBUDDY_NEW_GENERATION_ROOT);
+
+  const launched = workbuddyLaunchedFrom(
+    { old: path.join(baseDir, WORKBUDDY_TOOL_ROOT), new: newRoot },
+    (file) => {
+      try {
+        return fs.readFileSync(file, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+  );
+
+  if (launched === 'new' || (launched === 'undecided' && fs.existsSync(newRoot))) {
     return { ...toolPaths, [WORKBUDDY_TOOL_ID]: { ...workbuddy, skills: `${WORKBUDDY_NEW_GENERATION_ROOT}/skills` } };
   }
 

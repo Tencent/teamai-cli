@@ -14,7 +14,7 @@ import type { Host } from '../tool-home.js';
 const HOME = '/home/member';
 const ROOT = '/repo/project';
 
-function hostWith(existing: readonly string[]): Host {
+function hostWith(existing: readonly string[], launches: Readonly<Record<string, string>> = {}): Host {
   const set = new Set(existing);
   return {
     platform: 'linux', path: path.posix, home: HOME, profileHome: HOME,
@@ -22,11 +22,15 @@ function hostWith(existing: readonly string[]): Host {
     cwd: () => ROOT,
     exists: async (dir: string) => set.has(dir),
     realpath: async (file: string) => file,
-    readText: async () => null, existsNow: () => false, readTextNow: () => null,
+    readText: async () => null, existsNow: () => false,
+    readTextNow: (file: string) => launches[file] ?? null,
     readOpenclawConfig: async () => ({ kind: 'missing' }),
     userToolRoots: async () => undefined,
   };
 }
+
+/** What WorkBuddy writes in the root it starts from, as `last-launch.json` holds it. */
+const launch = (timestamp: string): string => JSON.stringify({ version: '5.9.3', build: 'd4692421', timestamp });
 
 const DEFAULT_PATHS = { workbuddy: { skills: '.workbuddy/skills' } };
 
@@ -82,6 +86,84 @@ describe('locate carries the WorkBuddy 5.7+ generation (#1273)', () => {
     const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
     const where = await locate('workbuddy', 'skills', install, host);
     expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy/skills`);
+  });
+});
+
+describe('the live root is the one the app launched from, not the one that exists (#1273)', () => {
+  // An upgrade leaves `.workbuddy/` behind; a downgrade leaves `.workbuddy-ai/`
+  // behind. Presence cannot tell them apart, so `last-launch.json` does: the app
+  // rewrites it in the root it runs from and the leftover keeps a stale one.
+
+  it('downgrade: both roots, the old one launched last, so skills go back to it', async () => {
+    const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
+      [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-11-06T00:24:14.713Z'),
+      [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
+    });
+    const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
+    const where = await locate('workbuddy', 'skills', install, host);
+    expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy/skills`);
+    expect(where.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: true });
+  });
+
+  it('upgrade: both roots, the new one launched last, so skills stay on it (#1290)', async () => {
+    const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
+      [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-10-27T09:29:19.843Z'),
+      [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
+    });
+    const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
+    const where = await locate('workbuddy', 'skills', install, host);
+    expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
+    expect(where.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy-ai`, met: true });
+  });
+
+  it('only the old root records a launch, though the new root exists: the old root is live', async () => {
+    const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
+      [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-11-06T00:24:14.713Z'),
+    });
+    const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
+    const where = await locate('workbuddy', 'skills', install, host);
+    expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy/skills`);
+  });
+
+  it('only the new root records a launch: the new root is live', async () => {
+    const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
+      [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
+    });
+    const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
+    const where = await locate('workbuddy', 'skills', install, host);
+    expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
+  });
+
+  it('both records unreadable: presence decides, as before (#1290)', async () => {
+    const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
+      [`${HOME}/.workbuddy/last-launch.json`]: '{ not json',
+      [`${HOME}/.workbuddy-ai/last-launch.json`]: JSON.stringify({ version: '5.9.4' }),
+    });
+    const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
+    const where = await locate('workbuddy', 'skills', install, host);
+    expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
+  });
+
+  it('equal timestamps keep the new root, the direction the swap already had', async () => {
+    const at = '2026-11-02T12:25:00.628Z';
+    const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
+      [`${HOME}/.workbuddy/last-launch.json`]: launch(at),
+      [`${HOME}/.workbuddy-ai/last-launch.json`]: launch(at),
+    });
+    const install = installOf({ toolPaths: DEFAULT_PATHS }, { scope: 'user', repo: {} });
+    const where = await locate('workbuddy', 'skills', install, host);
+    expect(ownOf(where)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
+  });
+
+  it('a downgraded member keeps every other surface on the old root too', async () => {
+    const host = hostWith([`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`], {
+      [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-11-06T00:24:14.713Z'),
+      [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
+    });
+    const install = installOf({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user', repo: {} });
+    const rules = await locate('workbuddy', 'rules', install, host);
+    expect(rules.gates).toContainEqual({ kind: 'installed', probe: `${HOME}/.workbuddy`, met: true });
+    expect(writable(rules)).not.toBeNull();
   });
 });
 

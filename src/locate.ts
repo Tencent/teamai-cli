@@ -20,6 +20,7 @@ import {
 import {
   CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
+  workbuddyLaunchedFrom,
   WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
 } from './types.js';
@@ -587,6 +588,30 @@ export async function userViewOf(install: Install, host: Host = realHost()): Pro
   return { toolPaths: install.toolPaths, agents: install.agents, toolRoots, gitExclude: install.gitExclude, scope: 'user' };
 }
 
+/**
+ * The WorkBuddy root the app on this machine runs from (#1273).
+ *
+ * The two roots' `last-launch.json` timestamps name it, so a downgrade is read
+ * correctly: the app rewrites that record in the root it starts from, and the
+ * root it left keeps a stale one. With no record on either side — a project
+ * directory, or a build that predates the file — presence decides, the only
+ * evidence there was before (#1290).
+ */
+async function liveWorkbuddyRoot(roots: Roots, host: Host): Promise<string> {
+  const oldRoot = roots.join(roots.base, WORKBUDDY_TOOL_ROOT);
+  const newRoot = roots.join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT);
+
+  const launched = workbuddyLaunchedFrom(
+    { old: oldRoot, new: newRoot },
+    (file) => host.readTextNow(file),
+    (dir, file) => host.path.join(dir, file),
+  );
+
+  if (launched !== 'undecided') return launched === 'new' ? newRoot : oldRoot;
+
+  return await host.exists(newRoot) ? newRoot : oldRoot;
+}
+
 async function gatesOf(tool: string, install: Install, host: Host, roots: Roots = rootsOf(tool, install, host), resource?: Resource): Promise<Gate[]> {
   const selected: Gate = { kind: 'selected', met: !isAgentExcluded(install.agents, tool) };
   const installed = await installedGateOf(tool, install, host, roots, resource);
@@ -631,16 +656,16 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
         return probe(home.dir);
       case 'own-root':
         // WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
-        // reading `.workbuddy/` (#1273): the new root present means 5.7+ is
-        // the live generation (an upgrade leaves the old root behind as an
-        // unread leftover), so it is the install proof even when both exist —
-        // but only for skills, the one surface with verified 5.7+ delivery
-        // evidence (the 13-skill `/` menu check in #1273). Every other
-        // surface keeps requiring the old root and fails closed on a
-        // 5.7-only member until its real 5.7+ path is confirmed (#1290).
-        if (resource === 'skills' && tool === WORKBUDDY_TOOL_ID
-          && await host.exists(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
-          return probe(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT));
+        // reading `.workbuddy/` (#1273), so skills belong in the root the app
+        // actually launches from — which is not simply the new root: a
+        // downgrade leaves `.workbuddy-ai/` behind exactly as an upgrade
+        // leaves `.workbuddy/`. That root is the install proof too. But only
+        // for skills, the one surface with verified 5.7+ delivery evidence
+        // (the 13-skill `/` menu check in #1273). Every other surface keeps
+        // requiring the old root and fails closed on a 5.7-only member until
+        // its real 5.7+ path is confirmed (#1290).
+        if (resource === 'skills' && tool === WORKBUDDY_TOOL_ID) {
+          return probe(await liveWorkbuddyRoot(roots, host));
         }
 
         return probe(join(roots.base, home.root));
@@ -854,13 +879,13 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
   // root, skills land where the app scans. Only the default path swaps —
   // a team that redirected skills on purpose keeps its own. User scope may
   // already carry the swapped default (`scopedToolPaths`), so both spellings
-  // count (#1290: the new root wins even when an upgrade left both behind).
+  // count; whichever one it carries, the live root decides where the app
+  // looks (#1290, and a downgrade swaps it back).
   if (tool === WORKBUDDY_TOOL_ID) {
     const relative = roots.paths?.skills;
 
-    if ((relative === `${WORKBUDDY_TOOL_ROOT}/skills` || relative === `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`)
-      && await host.exists(roots.join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
-      own = roots.join(roots.base, `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`);
+    if (relative === `${WORKBUDDY_TOOL_ROOT}/skills` || relative === `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`) {
+      own = host.path.join(await liveWorkbuddyRoot(roots, host), 'skills');
     }
   }
 

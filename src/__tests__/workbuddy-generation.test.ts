@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -24,7 +25,7 @@ import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
 import { isInstalled } from './helpers/install-gate.js';
 import { rulesReceivingTools } from '../resources/rules.js';
-import { DEFAULT_TOOL_PATHS, scopedToolPaths } from '../types.js';
+import { DEFAULT_TOOL_PATHS, scopedToolPaths, workbuddyLaunchedFrom } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /**
@@ -104,6 +105,33 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
   const defaultTeam = { toolPaths: { workbuddy: { skills: '.workbuddy/skills' } } };
   const paths = (team: unknown, scope: 'user' | 'project' = 'user', projectRoot?: string) =>
     scopedToolPaths(team as never, { scope, ...(projectRoot ? { projectRoot } : {}) });
+
+  /** A root holding the record WorkBuddy rewrites every time it starts from it. */
+  const launchIn = async (dir: string, timestamp: string): Promise<void> => {
+    await fse.ensureDir(dir);
+    await fse.writeFile(
+      path.join(dir, 'last-launch.json'),
+      JSON.stringify({ version: '5.9.3', build: 'd4692421', timestamp }),
+    );
+  };
+
+  it('follows the root the app launched from when a downgrade left both behind', async () => {
+    await launchIn(path.join(home, '.workbuddy'), '2026-11-06T00:24:14.713Z');
+    await launchIn(path.join(home, '.workbuddy-ai'), '2026-11-02T12:25:00.628Z');
+    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy/skills');
+  });
+
+  it('follows the new root when the launch records say it is the live one', async () => {
+    await launchIn(path.join(home, '.workbuddy'), '2026-10-27T09:29:19.843Z');
+    await launchIn(path.join(home, '.workbuddy-ai'), '2026-11-02T12:25:00.628Z');
+    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy-ai/skills');
+  });
+
+  it('reads a stale new root as a leftover when only the old root ever launched', async () => {
+    await launchIn(path.join(home, '.workbuddy'), '2026-11-06T00:24:14.713Z');
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy/skills');
+  });
 
   it('delivers to .workbuddy-ai/skills when only the 5.7+ root exists', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy-ai'));
@@ -277,5 +305,75 @@ describe('rulesReceivingTools', () => {
     await fse.ensureDir(path.join(home, '.codex'));
     const toolPaths = { workbuddy: DEFAULT_TOOL_PATHS.workbuddy, codex: DEFAULT_TOOL_PATHS.codex };
     expect(await rulesReceivingTools(teamConfig(toolPaths), localConfig())).toEqual(['codex']);
+  });
+});
+
+/**
+ * The decision `scopedToolPaths` and `locate` share (#1273): an upgrade leaves
+ * `.workbuddy/` behind, a downgrade leaves `.workbuddy-ai/`, and only the
+ * launch record separates the two. `undecided` hands the caller back its
+ * presence rule, which is what every install without the file keeps using.
+ */
+describe('workbuddyLaunchedFrom', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-wb-launch-'));
+  });
+  afterEach(async () => {
+    await fse.remove(root);
+  });
+
+  const readText = (file: string): string | null => {
+    try {
+      return fs.readFileSync(file, 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  const write = async (dir: string, body: string): Promise<void> => {
+    await fse.ensureDir(dir);
+    await fse.writeFile(path.join(dir, 'last-launch.json'), body);
+  };
+  const launch = (timestamp: string): string => JSON.stringify({ version: '5.9.3', build: 'd4692421', timestamp });
+  const decide = () => workbuddyLaunchedFrom(
+    { old: path.join(root, '.workbuddy'), new: path.join(root, '.workbuddy-ai') },
+    readText,
+  );
+
+  it('names the old root when a downgrade launched it last', async () => {
+    await write(path.join(root, '.workbuddy'), launch('2026-11-06T00:24:14.713Z'));
+    await write(path.join(root, '.workbuddy-ai'), launch('2026-11-02T12:25:00.628Z'));
+    expect(decide()).toBe('old');
+  });
+
+  it('names the new root when an upgrade launched it last', async () => {
+    await write(path.join(root, '.workbuddy'), launch('2026-10-27T09:29:19.843Z'));
+    await write(path.join(root, '.workbuddy-ai'), launch('2026-11-02T12:25:00.628Z'));
+    expect(decide()).toBe('new');
+  });
+
+  it('takes the one root that recorded a launch', async () => {
+    await write(path.join(root, '.workbuddy'), launch('2026-11-06T00:24:14.713Z'));
+    expect(decide()).toBe('old');
+  });
+
+  it('is undecided when neither root recorded one', async () => {
+    await fse.ensureDir(path.join(root, '.workbuddy'));
+    await fse.ensureDir(path.join(root, '.workbuddy-ai'));
+    expect(decide()).toBe('undecided');
+  });
+
+  it('ignores a record with no usable timestamp', async () => {
+    await write(path.join(root, '.workbuddy'), '{"version":"5.9.3"}');
+    await write(path.join(root, '.workbuddy-ai'), 'not json at all');
+    expect(decide()).toBe('undecided');
+  });
+
+  it('keeps the new root on equal timestamps, the direction the swap had', async () => {
+    const at = launch('2026-11-02T12:25:00.628Z');
+    await write(path.join(root, '.workbuddy'), at);
+    await write(path.join(root, '.workbuddy-ai'), at);
+    expect(decide()).toBe('new');
   });
 });
