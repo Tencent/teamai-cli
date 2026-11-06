@@ -81,6 +81,15 @@ teamai pull
 
 This only affects your machine.
 
+The same list excludes a team MCP server by name, for a member who already runs their own server of that name:
+
+```bash
+teamai skill exclude add tracker
+teamai pull
+```
+
+`pull` then leaves that server out, and `teamai doctor` stops reporting it.
+
 ### Push local resources
 
 ```bash

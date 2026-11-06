@@ -71,10 +71,10 @@ Generated: do not edit by hand. Regenerate with
     - `--all` — Print every skill the CLI serves
   - `teamai skill path <name>` — Print the packaged directory of a built-in skill (for scripts and templates)
   - `teamai skill show <name>` — Show skill metadata: source / contributors / installed agents / description
-  - `teamai skill exclude` — Manage per-user skill exclusion (skip sync without affecting team repo)
-    - `teamai skill exclude list` — List excluded skills
-    - `teamai skill exclude add <skills...>` — Add skill(s) to the exclude list
-    - `teamai skill exclude remove <skills...>` — Remove skill(s) from the exclude list
+  - `teamai skill exclude` — Manage per-user skill and MCP server exclusion (skip sync without affecting team repo)
+    - `teamai skill exclude list` — List excluded skills and MCP servers
+    - `teamai skill exclude add <skills...>` — Add skill(s) or MCP server(s) to the exclude list
+    - `teamai skill exclude remove <skills...>` — Remove skill(s) or MCP server(s) from the exclude list
 
 ## members
 

@@ -339,7 +339,7 @@ skillCmd
 
 const excludeCmd = skillCmd
   .command('exclude')
-  .description('Manage per-user skill exclusion (skip sync without affecting team repo)')
+  .description('Manage per-user skill and MCP server exclusion (skip sync without affecting team repo)')
   .action(async () => {
     const globalOpts = program.opts<GlobalOptions>();
     const { excludeList } = await import('./exclude.js');
@@ -348,7 +348,7 @@ const excludeCmd = skillCmd
 
 excludeCmd
   .command('list')
-  .description('List excluded skills')
+  .description('List excluded skills and MCP servers')
   .action(async () => {
     const globalOpts = program.opts<GlobalOptions>();
     const { excludeList } = await import('./exclude.js');
@@ -357,7 +357,7 @@ excludeCmd
 
 excludeCmd
   .command('add <skills...>')
-  .description('Add skill(s) to the exclude list')
+  .description('Add skill(s) or MCP server(s) to the exclude list')
   .action(async (skills: string[]) => {
     const globalOpts = program.opts<GlobalOptions>();
     const { excludeAdd } = await import('./exclude.js');
@@ -366,7 +366,7 @@ excludeCmd
 
 excludeCmd
   .command('remove <skills...>')
-  .description('Remove skill(s) from the exclude list')
+  .description('Remove skill(s) or MCP server(s) from the exclude list')
   .action(async (skills: string[]) => {
     const globalOpts = program.opts<GlobalOptions>();
     const { excludeRemove } = await import('./exclude.js');
