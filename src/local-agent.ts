@@ -1555,7 +1555,7 @@ async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> 
     }
 
     const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'],
-      { detached: true, windowsHide: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId, TEAMAI_PLUGIN_TOOL: tool } });
+      { detached: process.platform !== 'win32', windowsHide: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId, TEAMAI_PLUGIN_TOOL: tool } });
 
     child.unref();
   } catch (e) { log.debug(`[local-agent] plugin reconcile spawn skipped: ${messageOf(e)}`); }

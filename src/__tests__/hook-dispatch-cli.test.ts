@@ -260,7 +260,8 @@ describe('hookDispatchCli', () => {
     }
   });
 
-  it('starts the background pass from the temp dir when the payload cwd no longer exists', async () => {
+  it.each(['linux', 'win32'] as const)('starts the background pass hidden on %s when the payload cwd no longer exists', async (platform) => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
     // spawn() fails on a missing cwd, and that error is swallowed: no background
     // handler (session-start pull, webhook, update check) would run at all.
     const stdinFile = path.join(os.tmpdir(), `gone-cwd-hook-${process.pid}-${Date.now()}.json`);
@@ -273,15 +274,19 @@ describe('hookDispatchCli', () => {
       stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
       unref: vi.fn(),
     });
+    if (platform === 'win32') mockSpawn.mockReturnValueOnce(fakePowerShell(3, undefined, 'ReturnValue=21'));
 
     try {
       await hookDispatchCli('stop', 'claude', '*', { stdinFile });
-      expect(mockSpawn).toHaveBeenCalledOnce();
+      expect(mockSpawn).toHaveBeenCalledTimes(platform === 'win32' ? 2 : 1);
+      const plainOptions = mockSpawn.mock.calls.at(-1)![2];
+      expect(plainOptions).toMatchObject({ detached: platform !== 'win32', windowsHide: true });
       // The same fallback the Windows WMI launch uses: a directory that exists
       // and belongs to no project, so a handler still reading the process cwd
       // (the session-start pull) cannot land in the launcher's project.
-      expect(mockSpawn.mock.calls[0][2]).toMatchObject({ cwd: os.tmpdir() });
+      expect(plainOptions).toMatchObject({ cwd: os.tmpdir() });
     } finally {
+      platformSpy.mockRestore();
       process.chdir(originalCwd);
       fs.rmSync(stdinFile, { force: true });
     }
@@ -580,6 +585,7 @@ describe('trySpawnDetachedViaWmi', () => {
     const script = argv[argv.length - 1];
     expect(script).toContain("[wmiclass]'Win32_Process'");
     expect(script).toContain('ShowWindow = [uint16]0');
+    expect(script).toContain(`${path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'conhost.exe')} --headless`);
     // the command line is one string, so args with spaces are quoted for CreateProcess…
     expect(script).toContain('"a b"');
     // …while the working directory is a plain (PowerShell-literal) path argument
