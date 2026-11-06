@@ -49,5 +49,21 @@ describe('benchmark arm recall', () => {
     expect(without?.paths.filter((file) => recallFiles.includes(file))).toEqual([]);
     // Both arms ran the same task on the same tool.
     expect(launches).toHaveLength(2);
+
+    // The record the run wrote keeps which arms ran with recall, so a reader of it, not only a watcher of the clone, can
+    // tell a run that measured recall from one that did not.
+    const runId = (envelope(ran).data?.done as { run?: string } | undefined)?.run;
+    expect(runId, 'the run answers its id').toBeDefined();
+    const record = fixture.benchmarkRecord(String(runId)) as { arms: Array<{ name: string; recall?: boolean }> };
+    expect(record.arms.map(({ name, recall }) => ({ name, recall }))).toEqual([
+      { name: 'with-recall', recall: true },
+      { name: 'baseline', recall: undefined },
+    ]);
+
+    // And the report the run prints shows it, so the record's own text says which arms ran with recall.
+    const text = (envelope(ran).data?.done as { outputs?: { text?: string } } | undefined)?.outputs?.text ?? '';
+    expect(text).toContain('| Arm | Tool | Model (source) | Recall | Planned |');
+    expect(text).toMatch(/\| with-recall \| claude \|[^|]+\| on \|/);
+    expect(text).toMatch(/\| baseline \| claude \|[^|]+\| off \|/);
   }, 240_000);
 });
