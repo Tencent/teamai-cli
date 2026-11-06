@@ -39,6 +39,8 @@ autoUpdate: false
 updatePolicy: skip    # auto, prompt, or skip
 ```
 
+The update handler records `ok` for a completed update, `skipped` when no install is needed or allowed, and `failed` for a failed check, install or hook refresh. Automatic hooks record unsupported install layouts at debug level. Run `teamai update` to see their manual upgrade instructions.
+
 For OpenClaw's default workspace, `doctor` checks the whole `AGENTS.md`, including personal text, against `agents.defaults.bootstrapMaxChars` and `bootstrapTotalMaxChars` in the resolved `openclaw.json`. Their defaults are 20,000 and 60,000 characters. Shorten the file or review these limits if it would be truncated or skipped; `pull` does not truncate your instructions. Per-agent overrides require checking that agent's configuration separately.
 
 OpenCode hooks use the Node executable and TeamAI entry recorded by `teamai hooks inject` or `teamai pull`, so a service does not need `teamai` on PATH. After moving or reinstalling Node or TeamAI, run either command again and restart OpenCode.

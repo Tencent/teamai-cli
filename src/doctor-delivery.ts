@@ -1083,7 +1083,8 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   const { buildHandlerRegistry } = await import('./hook-handlers.js');
   const envHint = buildHandlerRegistry().find((registration) => registration.handler.name === 'team-env-hint');
   const reply = await envHint?.handler.execute({ hook_event_name: 'SessionStart' }, 'cursor', localConfig) ?? null;
-  const envText = reply === null ? '' : String(JSON.parse(reply)?.hookSpecificOutput?.additionalContext ?? '');
+  const textReply = z.string().safeParse(reply);
+  const envText = !textReply.success ? '' : String(JSON.parse(textReply.data)?.hookSpecificOutput?.additionalContext ?? '');
   const length = (envText === '' ? text : `${text}\n${envText}`).trim().length;
   checks.push({
     name: 'Team rules and the team env hint fit one Cursor hook reply',

@@ -41,9 +41,12 @@ export interface HookHandler {
    * when none applies (teamai not set up there, or its config unreadable).
    * Handlers read their scope from it, never from the process cwd: the
    * dispatcher's chdir into the hook's cwd can fail (#752).
+   * A skipped action contributes no host output and keeps its own diagnostic outcome.
    */
-  execute(stdin: HookStdin, tool: string, config: LocalConfig | null): Promise<string | null>;
+  execute(stdin: HookStdin, tool: string, config: LocalConfig | null): Promise<string | null | { outcome: 'skipped' }>;
 }
+
+const SkippedHookSchema = z.object({ outcome: z.literal('skipped') });
 
 export interface HandlerRegistration {
   event: string;
@@ -235,9 +238,10 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
 
           return withTimeout(reg.handler.execute(stdin, tool, config.localConfig), timeoutMs, reg.handler.name).then(
             (value) => {
-              record('ok');
+              const skipped = SkippedHookSchema.safeParse(value).success;
+              record(skipped ? 'skipped' : 'ok');
 
-              return value;
+              return skipped ? null : z.string().nullable().parse(value);
             },
             (cause: unknown) => {
               // The message duplicates what hook-dispatch-cli already logs for a
