@@ -460,7 +460,46 @@ async function createPrWithFallback(
   }
 }
 
-export { createPrWithFallback };
+/**
+ * Whether `createPrWithFallback` had a pull/merge request it could open.
+ *
+ * Two things decide it. The provider must open them: generic git reaches only
+ * the transport and refuses `createPullRequest`, so the fallback answers null
+ * on every push there — by configuration, not by failure. `pullRequests` does
+ * not answer this: it marks how delivery finds the request of a branch before
+ * it opens one, so a provider that cannot list them leaves it null while still
+ * creating them, which `cnb` does. And a repo must come out of the same two
+ * inputs the fallback parses, the team's `repo` and then the checkout's remote:
+ * a filesystem path or a host no provider knows names none, so no pull request
+ * was ever open to fail.
+ *
+ * Called only after `createPrWithFallback`, which resolves the same provider
+ * and parses the same two inputs first.
+ */
+function providerOpensPullRequests(
+  teamConfig: { repo: string; provider?: string },
+  localConfig: { repo: { remote: string }; provider?: string },
+): boolean {
+  const provider = getProvider(localConfig.provider ?? teamConfig.provider);
+
+  if (provider.name === 'git') return false;
+
+  for (const input of [teamConfig.repo, localConfig.repo.remote]) {
+    if (!input?.trim()) continue;
+
+    try {
+      provider.parseRepoInput(input);
+
+      return true;
+    } catch {
+      // The next input is the one the fallback parses next.
+    }
+  }
+
+  return false;
+}
+
+export { createPrWithFallback, providerOpensPullRequests };
 
 type PushRepoStatus = {
   conflicted?: string[];
