@@ -114,9 +114,9 @@ describe('recall maintenance and recall promote under --dry-run (#900)', () => {
     expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-promote-learning', inputs: { learning, category: '' }, command: `teamai recall promote ${learning}`, json: false });
   });
 
-  it('recall maintenance --update-quality starts its run without the flag', async () => {
+  it('recall maintenance --update-quality starts its run without the flag, writing under the knowledge checkout', async () => {
     await run(['recall', 'maintenance', '--update-quality']);
     const m = await mocks();
-    expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-draft-learning-updates', inputs: {}, command: 'teamai recall maintenance --update-quality', json: false });
+    expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-draft-learning-updates', inputs: { knowledge_root: '/team-repo' }, command: 'teamai recall maintenance --update-quality', json: false });
   });
 });

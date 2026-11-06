@@ -110,12 +110,12 @@ describe('recall maintenance --update-quality', () => {
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  const run = (args: string[], fails?: string, extra?: Record<string, string>): Promise<Ran> => {
+  const run = (args: string[], fails?: string, extra?: Record<string, string>, cwd = sandbox): Promise<Ran> => {
     const bin = fs.mkdtempSync(path.join(sandbox, 'bin-'));
     fakeClaude(bin, fails);
     for (const id of ['guide', 'lesson']) fs.rmSync(path.join(docs, `${id}.md.draft.md`), { force: true });
 
-    return runCLI(['recall', 'maintenance', '--update-quality', ...args], { home, cwd: sandbox, bin, extra });
+    return runCLI(['recall', 'maintenance', '--update-quality', ...args], { home, cwd, bin, extra });
   };
 
   const listing = [
@@ -149,6 +149,18 @@ describe('recall maintenance --update-quality', () => {
     expect(fs.readFileSync(path.join(docs, 'lesson.md.draft.md'), 'utf8')).toBe('---\ndate: 2026-11-04\n---\n\n# lesson, updated');
     // The run ended, so there is nothing to continue.
     expect(stderr).toBe('');
+  });
+
+  it('writes the drafts from inside the team checkout that holds the knowledge', async () => {
+    const { code, stdout, stderr } = await run([], undefined, undefined, path.dirname(docs));
+
+    expect(stdout.split('\n').filter((line) => line !== '').slice(-3)).toEqual([
+      `✔   Draft written: ${path.join(docs, 'guide.md')}.draft.md`,
+      `✔   Draft written: ${path.join(docs, 'lesson.md')}.draft.md`,
+      'Review drafts, then rename .draft.md -> .md to apply updates.',
+    ]);
+    expect(code, stderr).toBe(0);
+    expect(fs.existsSync(path.join(docs, 'lesson.md.draft.md'))).toBe(true);
   });
 
   it('says how to continue a run stopped before it ended, and leaves it open', async () => {

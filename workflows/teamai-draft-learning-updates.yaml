@@ -3,6 +3,8 @@ name: teamai-draft-learning-updates
 description: Draft an update of each doc, rule and skill the team recalls often but rarely adopts, written beside it as <entry>.draft.md for a person to review. teamai recall maintenance --update-quality starts it.
 invoke: deny
 private: true
+# knowledge_root is the checkout holding the entries, the team repo or a project's .teamai/; the drafts land under it.
+inputs: { knowledge_root: string }
 steps:
   - id: stale
     command: teamai recall maintenance stale
@@ -46,8 +48,7 @@ steps:
           needs: [ask]
           command: teamai recall maintenance write-draft --path "$ENTRY" --draft "$DRAFT"
           env: { ENTRY: "{{ item.path }}", DRAFT: "{{ steps.ask.outputs.text }}" }
-          # A project's knowledge lives under .teamai/: the draft lands there when that checkout is this one.
-          writes: [.teamai/]
+          writes: ["{{ inputs.knowledge_root }}"]
           output: { draft: string }
   - id: report
     needs: [draft]

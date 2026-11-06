@@ -2267,10 +2267,13 @@ const maintenanceCmd = recallCmd
       return;
     }
 
-    // The other modes come first, as below. Its steps resolve the checkouts they read themselves.
+    // The other modes come first, as below. Its steps resolve the checkouts they read themselves; the run is told where the drafts land.
     if (cmdOpts.updateQuality && !cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.dryRun) {
+      const paths = await maintenanceVerbPaths({ dryRun: false });
+
+      if (!paths) return;
       const { runShortcut } = await import('./workflow-commands.js');
-      await runShortcut({ workflow: 'teamai-draft-learning-updates', inputs: {}, command: 'teamai recall maintenance --update-quality', json: cmdOpts.json === true });
+      await runShortcut({ workflow: 'teamai-draft-learning-updates', inputs: { knowledge_root: paths.repoPath }, command: 'teamai recall maintenance --update-quality', json: cmdOpts.json === true });
 
       return;
     }
