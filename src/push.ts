@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
 import {
-  createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, unusedBranchName,
+  createGit, pullRepo, pushRepoBranch, checkoutMaster, unusedBranchName,
   resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit, hashObject,
 } from './utils/git.js';
 import { reconcilePlacementRecords, dropClosedPendingPushes,
@@ -2759,7 +2759,7 @@ async function pushTeamConfigOnly(
   }
 
   const pushSpin = (await spinner('Pushing team config...')).start();
-  const branchName = options.branch ?? generateBranchName(localConfig.username);
+  const branchName = options.branch ?? await unusedBranchName(localConfig.repo.localPath, localConfig.username);
   const commitMsg = `[teamai] Update team config from ${localConfig.username}`;
 
   try {
