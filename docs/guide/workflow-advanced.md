@@ -774,7 +774,7 @@ steps:
     writes: ["docs/api/{{ inputs.area }}/"]
 ```
 
-A file the command writes under `docs/api/<area>/` stays in the checkout, and the step succeeds. A change anywhere else still fails it `read_only_dirty`, and a moved HEAD is never kept.
+A file the command writes under `docs/api/<area>/` stays in the checkout, and the step succeeds. So does a commit it adds on the branch the checkout is on, when every path the commit changes is under `writes`, as when it publishes what it wrote. A change anywhere else still fails it `read_only_dirty`, and so does any other move of HEAD: a switch, a detach, a reset.
 
 A command that writes into a directory the caller names, which may be outside the checkout, lists the input:
 

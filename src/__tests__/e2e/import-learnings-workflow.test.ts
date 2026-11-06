@@ -59,7 +59,7 @@ interface Sandbox {
   remote: string;
   log: string;
   env: Record<string, string>;
-  run: (args: string[], options?: { env?: Record<string, string> }) => Promise<Ran>;
+  run: (args: string[], options?: { env?: Record<string, string>; cwd?: string }) => Promise<Ran>;
 }
 
 /** A member with a teamai init whose team repo has a local bare remote, Claude rules in ~/.claude/rules, and the fake tool on PATH. */
@@ -99,8 +99,8 @@ function sandbox(): Sandbox {
     GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', ...GIT_ENV,
   };
 
-  const run = (args: string[], options: { env?: Record<string, string> } = {}): Promise<Ran> => new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd: path.join(root, 'project'), env: { ...env, ...options.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const run = (args: string[], options: { env?: Record<string, string>; cwd?: string } = {}): Promise<Ran> => new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args], { cwd: options.cwd ?? path.join(root, 'project'), env: { ...env, ...options.env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
@@ -210,6 +210,18 @@ describe('teamai import of rules and learnings through teamai-import-rules', { t
       '✔ Import complete',
     ]);
     expect(published(sb).files).toEqual([`docs/${TODAY}-api-guide.md`, `learnings/${TODAY}-retry-lesson.md`, `rules/${TODAY}-deploy-rule.md`]);
+  });
+
+  it('publishes the rules it imports when run from inside the team checkout, and leaves that checkout clean', async () => {
+    const sb = sandbox();
+
+    const ran = await sb.run(['import', '--from-tools', '--all'], { cwd: sb.teamRepo });
+
+    expect(ran.code, ran.stdout + ran.stderr).toBe(0);
+    expect(lines(ran.stderr, sb.root)).toEqual([]);
+    expect(published(sb).files).toEqual([`docs/${TODAY}-api-guide.md`, `rules/${TODAY}-deploy-rule.md`]);
+    expect(git(['status', '--porcelain'], sb.teamRepo)).toBe('');
+    expect(git(['rev-parse', 'HEAD'], sb.teamRepo)).toBe(git(['rev-parse', 'main'], sb.remote));
   });
 
   it('fails with exit 1 and writes nothing when the AI tool cannot classify a file', async () => {

@@ -290,6 +290,32 @@ describe('writes in the checkout', () => {
     expect(await report(elsewhere, () => fs.writeFileSync(path.join(elsewhere, 'page.md'), 'page\n'))).toMatchObject({ data: { step: { id: 'write', status: 'succeeded' } } });
   });
 
+  it('keeps a commit the command adds on its branch when every path it changes is under writes, and fails any other move of HEAD', async () => {
+    const { config, checkout, client } = await fixture({ draft: DRAFT });
+    const report = async (change: (dir: string) => void): Promise<unknown> => {
+      const run = await started(client, 'draft', checkout, { area: 'docs' });
+      const lease = await nextLease(client, run);
+
+      return withRunLock(config, run, async (lock) => {
+        await client.prepare(lock, lease);
+        change(checkout);
+
+        return client.report(run, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver }, { lock });
+      }, { waitMs: 0 });
+    };
+
+    const commit = (dir: string, file: string): void => {
+      fs.writeFileSync(path.join(dir, file), `${file}\n`);
+      git(dir, 'add', file);
+      git(dir, 'commit', '-q', '-m', file);
+    };
+
+    expect(await report((dir) => commit(dir, 'docs/published.md'))).toMatchObject({ data: { step: { id: 'write', status: 'succeeded' } } });
+    expect(await report((dir) => commit(dir, 'NOTES.md'))).toMatchObject({ data: { step: { id: 'write', status: 'failed' } } });
+    git(checkout, 'reset', '-q', '--hard', 'HEAD~1');
+    expect(await report((dir) => git(dir, 'switch', '-q', '-c', 'side'))).toMatchObject({ data: { step: { id: 'write', status: 'failed' } } });
+  });
+
   it('fails a step whose writes renders a path outside the checkout before it runs', async () => {
     const { checkout, client } = await fixture({ draft: DRAFT });
     const run = await started(client, 'draft', checkout, { area: '../elsewhere' });
