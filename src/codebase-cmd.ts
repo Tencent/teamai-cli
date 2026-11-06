@@ -62,21 +62,9 @@ export async function startDeepEnrich({ target, project, maxModules = 0, json, c
 
 /** The teamwiki the hidden `deep-enrich` writes, `--wiki-root` or else the team repo's, with the team repo when it holds it. */
 export async function hiddenDeepEnrichTarget(wikiRoot: string | undefined): Promise<TeamwikiTarget> {
-    const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+    const { resolveTeamwiki, teamwikiAt } = await import('./utils/teamwiki-root.js');
 
-    if (wikiRoot === undefined) return resolveTeamwiki();
-    const { NotInitializedError } = await import('./config.js');
-    const own = path.resolve(wikiRoot);
-
-    try {
-        const team = await resolveTeamwiki();
-
-        return team.wikiRoot === own ? team : { wikiRoot: own };
-    } catch (error) {
-        // A --wiki-root needs no teamai init, as before.
-        if (error instanceof NotInitializedError) return { wikiRoot: own };
-        throw error;
-    }
+    return wikiRoot === undefined ? resolveTeamwiki() : teamwikiAt(wikiRoot);
 }
 
 // ─── Command handler ─────────────────────────────────────────────────────────

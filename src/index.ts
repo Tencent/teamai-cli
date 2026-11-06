@@ -1865,7 +1865,8 @@ importCommand
   .option('--narrative-failure <message>', 'Why the tool could not answer for the narrative, when it could not', '')
   .action(async (cmdOpts: { item: string; settings: string; wikiRoot: string; stage: string; slug: string; narrative: string; narrativeFailure: string }) => {
     const { ImportFromRepo } = await import('./import-from-repo.js');
-    await importVerb(() => ImportFromRepo.publish(cmdOpts));
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    await importVerb(() => whileTeamwikiLocked(cmdOpts.wikiRoot, () => ImportFromRepo.publish(cmdOpts)));
   });
 
 importCommand
@@ -1894,7 +1895,8 @@ importCommand
   .option('--skipped <n>', 'How many entries of the list were skipped before the run', '0')
   .action(async (cmdOpts: { mode: string; wikiRoot: string; settings: string; skipped: string; results: string }) => {
     const { ImportFromRepo } = await import('./import-from-repo.js');
-    await importVerb(() => ImportFromRepo.finish(cmdOpts));
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    await importVerb(() => whileTeamwikiLocked(cmdOpts.wikiRoot, () => ImportFromRepo.finish(cmdOpts)));
   });
 
 program
@@ -1960,7 +1962,8 @@ codebaseCommand
 
     if (!target) return;
     const { DeepEnrich } = await import('./deep-enrich.js');
-    const planned = await DeepEnrich.plan(target);
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    const planned = await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.plan(target));
 
     if (planned) {
       process.stdout.write(`${JSON.stringify(planned)}\n`);
@@ -1995,7 +1998,9 @@ codebaseCommand
 
     const { DeepEnrich } = await import('./deep-enrich.js');
     const doc = cmdOpts.component === undefined ? { kind: 'architecture' as const } : { kind: 'component' as const, slug: cmdOpts.component };
-    process.stdout.write(`${JSON.stringify(await DeepEnrich.write(target, doc, { text: cmdOpts.text, failure: cmdOpts.failure }))}\n`);
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    const written = await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.write(target, doc, { text: cmdOpts.text, failure: cmdOpts.failure }));
+    process.stdout.write(`${JSON.stringify(written)}\n`);
   });
 
 codebaseCommand
@@ -2010,7 +2015,8 @@ codebaseCommand
 
     if (!target) return;
     const { DeepEnrich } = await import('./deep-enrich.js');
-    process.stdout.write(`${JSON.stringify(await DeepEnrich.graph(target))}\n`);
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    process.stdout.write(`${JSON.stringify(await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.graph(target)))}\n`);
   });
 
 codebaseCommand
@@ -2027,7 +2033,9 @@ codebaseCommand
 
     if (!target) return;
     const { DeepEnrich } = await import('./deep-enrich.js');
-    process.stdout.write(`${JSON.stringify(await DeepEnrich.finish(target, { text: cmdOpts.scenarios, failure: cmdOpts.scenariosFailure }))}\n`);
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    const finished = await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.finish(target, { text: cmdOpts.scenarios, failure: cmdOpts.scenariosFailure }));
+    process.stdout.write(`${JSON.stringify(finished)}\n`);
   });
 
 async function codebaseEnrichVerbTarget(flags: { wikiRoot: string; codebase: string }): Promise<import('./enrich-with-ai.js').CodebaseEnrichTarget | undefined> {

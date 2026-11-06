@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -80,6 +80,8 @@ interface Sandbox {
   /** The team repo's bare remote, when the sandbox has a teamai init. */
   remote: string;
   run: (args: string[], options?: { cwd?: string; env?: Record<string, string> }) => Promise<Ran>;
+  /** Starts the CLI as `run` does, and gives the process with what it ended with. */
+  start: (args: string[], options?: { cwd?: string; env?: Record<string, string> }) => { child: ChildProcess; ran: Promise<Ran> };
 }
 
 /**
@@ -129,16 +131,19 @@ function sandbox({ init = false }: { init?: boolean } = {}): Sandbox {
     GIT_CONFIG_KEY_1: `url.file://${b}.insteadOf`, GIT_CONFIG_VALUE_1: URL_B,
   };
 
-  const run = (args: string[], options: { cwd?: string; env?: Record<string, string> } = {}): Promise<Ran> => new Promise((resolve) => {
+  const start = (args: string[], options: { cwd?: string; env?: Record<string, string> } = {}): { child: ChildProcess; ran: Promise<Ran> } => {
     const child = spawn(process.execPath, [CLI, ...args], { cwd: options.cwd ?? path.join(root, 'project'), env: { ...env, ...options.env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
     child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
 
-  return { root, home, log, remote, run };
+    return { child, ran: new Promise((resolve) => { child.on('close', (code) => resolve({ code, stdout, stderr })); }) };
+  };
+
+  const run = (args: string[], options: { cwd?: string; env?: Record<string, string> } = {}): Promise<Ran> => start(args, options).ran;
+
+  return { root, home, log, remote, run, start };
 }
 
 /** The labels of the tool calls in the order they started. */
@@ -256,6 +261,28 @@ describe('teamai import through teamai-import-from-repo', { timeout: 120_000 }, 
     expect(second.stdout + second.stderr).toContain('Another teamai import is writing this teamwiki');
     expect(firstRan.code, firstRan.stdout + firstRan.stderr).toBe(0);
     expect(fs.readdirSync(path.join(sb.root, 'project', 'out', 'teamwiki', 'evidence', 'code'))).toEqual(['git__team__svc-a']);
+  });
+
+  it('refuses to write the teamwiki from a resumed import while another import holds its lock', async () => {
+    const sb = sandbox({ init: true });
+    const hold = path.join(sb.root, 'hold');
+    fs.writeFileSync(hold, '');
+    const first = sb.start(['import', '--from-repo', URL_A], { env: { FAKE_HOLD: hold } });
+    await expect.poll(() => fs.existsSync(sb.log) && calls(sb.log).length > 0, { timeout: 60_000 }).toBe(true);
+    first.child.kill('SIGKILL');
+    await first.ran;
+    fs.rmSync(hold);
+    const listed = await sb.run(['workflow', 'resume']);
+    const run = /teamai workflow resume (r[0-9a-f]{16})/.exec(listed.stdout + listed.stderr)?.[1];
+    expect(run, listed.stdout + listed.stderr).toBeDefined();
+    const teamRepo = path.join(sb.home, '.teamai', 'team-repo');
+    const other = { pid: process.pid, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo };
+    fs.writeFileSync(path.join(sb.home, '.teamai', '.teamai-import.lock'), JSON.stringify(other));
+
+    const resumed = await sb.run(['workflow', 'resume', run ?? '']);
+
+    expect(resumed.stdout + resumed.stderr).toContain('Another teamai import is writing this teamwiki');
+    expect(fs.existsSync(path.join(teamRepo, 'teamwiki', 'evidence', 'code', 'git__team__svc-a'))).toBe(false);
   });
 
   it('does not say a branch was pushed when the push to the team repo fails', async () => {

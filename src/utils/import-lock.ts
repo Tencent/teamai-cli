@@ -59,6 +59,27 @@ function lockPathFor(holder: string): string {
   return path.join(path.dirname(path.resolve(holder)), '.teamai-import.lock');
 }
 
+/**
+ * Names the process that holds an import lock, `<pid>@<host>`. The steps of the run that process drives inherit it, so
+ * a step that locks the teamwiki goes on under its hold instead of refusing.
+ */
+const LOCK_HOLDER_ENV = 'TEAMAI_IMPORT_LOCK_HOLDER';
+
+/** Whether the lock file at `lockPath` names the process that started this one with its hold, as LOCK_HOLDER_ENV says. */
+async function isHeldAbove(lockPath: string): Promise<boolean> {
+  const above = process.env[LOCK_HOLDER_ENV];
+
+  if (above === undefined || above === `${process.pid}@${os.hostname()}`) return false;
+
+  try {
+    const meta = ImportLockFieldsSchema.parse(JSON.parse(await readFile(lockPath, 'utf8')));
+
+    return `${meta.pid}@${meta.host}` === above;
+  } catch {
+    return false;
+  }
+}
+
 /** Another live process holds the import lock of a teamwiki. */
 export class ImportLockHeldError extends Error {
   readonly name = 'ImportLockHeldError';
@@ -95,6 +116,8 @@ async function createLockFile(lockPath: string, meta: ImportLockMeta): Promise<b
  * nested acquire/release pairs do not prematurely delete the lock file written
  * by the outermost caller. The lock file is only created on the first acquire
  * (ref count 0 → 1) and only deleted on the last release (ref count 1 → 0).
+ * Re-entrant for a workflow step too: a process that inherited the holder's
+ * LOCK_HOLDER_ENV goes on under its hold, and its release leaves the file.
  *
  * A lock another live process holds refuses the acquire; one left by a process that is gone, or older than the TTL, is
  * taken over. A lock file that cannot be written at all is logged at debug level and the import goes on.
@@ -122,6 +145,8 @@ export async function acquireImportLock(holder: string): Promise<() => Promise<v
 
       // isImportInProgress removes a lock whose process is gone or that is stale, which this process then takes.
       if (!(await createLockFile(lockPath, meta))) {
+        if (await isHeldAbove(lockPath)) return async () => {};
+
         if (await isImportInProgress(holder)) {
           throw new ImportLockHeldError(`Another teamai import is writing this teamwiki${await holderOf(lockPath)}. `
             + `Wait for it to finish, then run this command again. If no import is running, remove ${lockPath}.`);
@@ -129,6 +154,8 @@ export async function acquireImportLock(holder: string): Promise<() => Promise<v
 
         await writeFile(lockPath, JSON.stringify(meta, null, 2), 'utf8');
       }
+
+      process.env[LOCK_HOLDER_ENV] = `${meta.pid}@${meta.host}`;
     } catch (e) {
       if (e instanceof ImportLockHeldError) throw e;
       log.debug(`[import-lock] Failed to write lock file ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);

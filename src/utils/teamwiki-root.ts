@@ -58,3 +58,34 @@ export async function lockTeamwiki(target: TeamwikiTarget): Promise<() => Promis
 
   return acquireImportLock(target.team.localConfig.repo.localPath);
 }
+
+/** The teamwiki at `wikiRoot`, with the member's team repo when that is the repo holding it. Needs no teamai init. */
+export async function teamwikiAt(wikiRoot: string): Promise<TeamwikiTarget> {
+  const { NotInitializedError } = await import('../config.js');
+  const own = path.resolve(wikiRoot);
+
+  try {
+    const team = await resolveTeamwiki();
+
+    return team.wikiRoot === own ? team : { wikiRoot: own };
+  } catch (error) {
+    if (error instanceof NotInitializedError) return { wikiRoot: own };
+    throw error;
+  }
+}
+
+/**
+ * Runs `write`, a workflow step that writes the teamwiki at `wikiRoot`, under its import lock, so a run continued with
+ * `teamai workflow resume` holds it as the command that started the run did. Under that command's hold, it goes on.
+ *
+ * @throws ImportLockHeldError when another live process holds the lock
+ */
+export async function whileTeamwikiLocked<T>(wikiRoot: string, write: () => Promise<T>): Promise<T> {
+  const release = await lockTeamwiki(await teamwikiAt(wikiRoot));
+
+  try {
+    return await write();
+  } finally {
+    await release();
+  }
+}

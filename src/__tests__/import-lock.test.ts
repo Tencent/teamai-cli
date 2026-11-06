@@ -127,6 +127,23 @@ describe('import-lock', () => {
     expect(await readFile(lockPath, 'utf8')).toBe(held);
   });
 
+  it('goes on under the hold of the process that started it, and leaves that lock in place', async () => {
+    const held = JSON.stringify({ pid: process.ppid, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }, null, 2);
+    await writeFile(lockPath, held, 'utf8');
+    const before = process.env.TEAMAI_IMPORT_LOCK_HOLDER;
+    process.env.TEAMAI_IMPORT_LOCK_HOLDER = `${process.ppid}@${os.hostname()}`;
+
+    try {
+      const release = await acquireImportLock(teamRepo);
+      await release();
+    } finally {
+      if (before === undefined) delete process.env.TEAMAI_IMPORT_LOCK_HOLDER;
+      else process.env.TEAMAI_IMPORT_LOCK_HOLDER = before;
+    }
+
+    expect(await readFile(lockPath, 'utf8')).toBe(held);
+  });
+
   it('takes the lock over from a process that is gone', async () => {
     await writeFile(lockPath, JSON.stringify({ pid: 2147483646, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }), 'utf8');
 
