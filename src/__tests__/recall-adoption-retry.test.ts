@@ -130,3 +130,24 @@ it('keeps a recalled session through the pull whose retention drops its lines', 
   expect(await readRecallLog(config)).toEqual([]);
   expect((await readUserVotes(votePath)).votes['doc-a']?.recalled_session_count).toBe(1);
 });
+
+it('credits no verdict for a session the recall log no longer names', async () => {
+  const { config, votePath } = await recalledSession();
+  // The score run asked its question, then waited past the recall log's retention.
+  await fs.writeFile(recallLogPath(config), '');
+
+  expect(await creditAdoptionVerdicts(config, 'root-a', [{ doc: 'doc-a', adopted: true }])).toEqual([]);
+  expect((await readUserVotes(votePath)).votes['doc-a']).toBeUndefined();
+});
+
+it('forgets an adoption credit at the pull after the recall log stopped naming its session', async () => {
+  const { config, votePath } = await recalledSession();
+  await creditAdoptionVerdicts(config, 'root-a', [{ doc: 'doc-a', adopted: false }]);
+  await fs.writeFile(recallLogPath(config), '');
+
+  await drainRecallLog(config);
+
+  const votes = await readUserVotes(votePath);
+  expect(votes.adoptionCredits?.['root-a']).toBeUndefined();
+  expect(votes.votes['doc-a']).toMatchObject({ judged_count: 1 });
+});

@@ -396,18 +396,22 @@ export async function countRecalledSessions({ votePath, sessionId, docIds }: { v
 }
 
 /**
- * Forget the recalled-session identities of sessions the recall log no longer names. Only lines naming a session yield
- * a count for it, so the caller passes every session its log names before that log's retention drops lines. A reducer
- * that read lines before an earlier retention has finished by then. Returns false when the votes file was busy:
- * nothing was forgotten.
+ * Forget the recalled-session and adoption-credit identities of sessions the recall log no longer names. Only lines
+ * naming a session yield a count or a credit for it, so the caller passes every session its log names before that
+ * log's retention drops lines. A reducer that read lines before an earlier retention has finished by then. Returns
+ * false when the votes file was busy: nothing was forgotten.
  */
-export async function forgetRecalledSessions({ votePath, named }: { votePath: string; named: ReadonlySet<string> }): Promise<boolean> {
+export async function forgetSessionIdentities({ votePath, named }: { votePath: string; named: ReadonlySet<string> }): Promise<boolean> {
   const { acquired } = await withVotesLock(votePath, async () => {
     const data = await loadUserVotes(votePath);
-    const sessions = Object.keys(data.recalledSessions ?? {});
+    const sessions = [...Object.keys(data.recalledSessions ?? {}), ...Object.keys(data.adoptionCredits ?? {})];
 
     if (sessions.every((session) => named.has(session))) return;
-    data.recalledSessions = Object.fromEntries(Object.entries(data.recalledSessions ?? {}).filter(([session]) => named.has(session)));
+    const keepNamed = (ledger: Record<string, string[]>) => Object.fromEntries(Object.entries(ledger).filter(([session]) => named.has(session)));
+
+    if (data.recalledSessions) data.recalledSessions = keepNamed(data.recalledSessions);
+
+    if (data.adoptionCredits) data.adoptionCredits = keepNamed(data.adoptionCredits);
     await saveUserVotes(votePath, data);
   });
 

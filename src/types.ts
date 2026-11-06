@@ -2861,7 +2861,7 @@ export const UserVotesV2Schema = z.looseObject({
   votes: voteTableSchema(VoteEntryV2Schema).nullish().transform((table) => table ?? {}),
   deltas: VoteDeltasSchema.nullish().transform((table) => table ?? {}),
   upvotedSessions: UpvoteLedgerSchema.optional().catch(undefined),
-  // Each identity shares one atomic write with its counters. `pull` forgets a recalled session once the recall log stopped naming it (forgetRecalledSessions); adoption credits are kept for good.
+  // Each identity shares one atomic write with its counters. `pull` forgets both once the recall log stopped naming the session (forgetSessionIdentities).
   recalledSessions: z.record(z.string(), VoteIdsSchema).optional(),
   adoptionCredits: z.record(z.string(), VoteIdsSchema).optional(),
   pendingSync: PendingVoteSyncSchema.optional().catch(undefined),

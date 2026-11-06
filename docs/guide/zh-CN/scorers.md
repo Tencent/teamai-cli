@@ -696,7 +696,7 @@ teamai:adoption:3f9a1c… (pod-startup-timeouts)  → adopted   upvote, judged_c
 teamai:adoption:b27e04… (retry-policy)          → ignored   judged_count +1
 ```
 
-评审者在证据的 `recalled/<hash>.md` 中读到会话当时拿到的文档：团队知识根目录下 `.md` 文件的前 1,200 个字符。在那里读不到的文档不提问。这些问题共用一次评审启动，并计入 `daily_limit`。每个根会话中一篇文档只计分一次，读取或判定，以先到者为准；按需再次评审只存标签，不再计分。投票文件被占用时，判定先留在 recall 日志中，下一次 `teamai score` 或 `teamai pull` 写入。这些计数如何影响置信度见[知识库](knowledge.md#recall-采纳与-upvote)。
+评审者在证据的 `recalled/<hash>.md` 中读到会话当时拿到的文档：团队知识根目录下 `.md` 文件的前 1,200 个字符。在那里读不到的文档不提问。这些问题共用一次评审启动，并计入 `daily_limit`。每个根会话中一篇文档只计分一次，读取或判定，以先到者为准；按需再次评审只存标签，不再计分。投票文件被占用时，判定先留在 recall 日志中，下一次 `teamai score` 或 `teamai pull` 写入。recall 日志中的每行最多保留 30 天。日志删掉某会话的全部记录后，再写入的判定不计分，因此暂停这么久的评分运行不会记入采纳；`teamai pull` 也会忘掉该会话已计分的文档。这些计数如何影响置信度见[知识库](knowledge.md#recall-采纳与-upvote)。
 
 评分标准是[默认评分器](#默认评分器) `scorers/teamai-adoption.md`。
 

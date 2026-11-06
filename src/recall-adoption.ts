@@ -29,7 +29,7 @@ import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import { appendRecallLines, readRecallLog, recallLogPath } from './recall-log.js';
 import type { Actor, ClaimLine, CreditLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
 import { getVotesDir } from './types.js';
-import { forgetRecalledSessions, readUserVotes, type AdoptionVerdict } from './votes.js';
+import { forgetSessionIdentities, readUserVotes, type AdoptionVerdict } from './votes.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { isAbsolutePath, pathKey, samePath } from './utils/agent-path.js';
 import { rewriteJsonl } from './utils/jsonl-store.js';
@@ -549,11 +549,19 @@ export async function adoptionCandidates(config: LocalConfig, sessionId: string)
  * Credits `verdicts` on root session `sessionId` (#1391): each claims the session and doc with a pending judge credit,
  * unless a read or an earlier label holds one, then writes the votes of the claims that stand, and marks them written.
  * Judge credits a busy votes file left pending before are written first. Returns the verdicts credited now, or null
- * when the votes file was busy: the claims stay pending, and the next adoption write or `pull` writes them.
+ * when the votes file was busy: the claims stay pending, and the next adoption write or `pull` writes them. A session
+ * no line of the recall log names any more is credited nothing: `pull` may have forgotten its adoption credits.
  */
 export async function creditAdoptionVerdicts(config: LocalConfig, sessionId: string, verdicts: readonly AdoptionVerdict[]): Promise<AdoptionVerdict[] | null> {
   const before = indexLog(await readRecallLog(config));
   const root = before.rootOf(sessionId);
+
+  if (!before.lines.some((line) => sessionsOf(line).includes(root))) {
+    log.debug(`recall adoption: not crediting ${verdicts.length} adoption verdict(s) of session ${root}: the recall log no longer names it`);
+
+    return [];
+  }
+
   const ts = new Date().toISOString();
   const held = await durableCredits(config, root);
 
@@ -724,17 +732,17 @@ async function creditPendingSessions(config: LocalConfig): Promise<boolean> {
 }
 
 /**
- * Forget the recalled-session identities of the sessions no line of the log names. It runs before retention, so a
- * session whose last lines this pull drops is forgotten at the next one. Only adoption credits are kept for good: a
- * pinned adoption question can be written long after its session's lines are gone.
+ * Forget the recalled-session and adoption-credit identities of the sessions no line of the log names. It runs before
+ * retention, so a session whose last lines this pull drops is forgotten at the next one. A verdict written later for
+ * such a session credits nothing (see {@link creditAdoptionVerdicts}).
  */
 async function forgetUnnamedSessions(config: LocalConfig): Promise<void> {
   const votePath = path.join(getVotesDir(config), `${config.username}.yaml`);
   const named = new Set((await readRecallLog(config)).flatMap(sessionsOf));
-  const { recalledSessions } = await readUserVotes(votePath);
+  const { recalledSessions, adoptionCredits } = await readUserVotes(votePath);
 
-  if (Object.keys(recalledSessions ?? {}).every((session) => named.has(session))) return;
-  await forgetRecalledSessions({ votePath, named });
+  if ([...Object.keys(recalledSessions ?? {}), ...Object.keys(adoptionCredits ?? {})].every((session) => named.has(session))) return;
+  await forgetSessionIdentities({ votePath, named });
 }
 
 /** The sessions a line names, any of which a reducer may count or credit from it. */
