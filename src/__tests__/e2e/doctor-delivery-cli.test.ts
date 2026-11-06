@@ -236,6 +236,9 @@ describe('teamai doctor delivery checks (e2e)', () => {
     expect(mcp.ok).toBe(false);
     expect(mcp.fix).toContain("not the team's definition: jira");
     expect(mcp.fix).toContain('--force');
+    // The other way to green, for a member who keeps their own server on purpose
+    // (#1746): the exclude list already covers a team server by name.
+    expect(mcp.fix).toContain('teamai skill exclude add jira');
   });
 
   it('reports an agent copy left behind by an older spec', () => {

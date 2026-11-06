@@ -81,6 +81,15 @@ teamai pull
 
 只影响本机。
 
+同一份列表也按名字排除团队的 MCP server——适用于已经自己在跑同名 server 的成员：
+
+```bash
+teamai skill exclude add tracker
+teamai pull
+```
+
+`pull` 之后就不再投放这个 server，`teamai doctor` 也不再报它。
+
 ### 推送本地资源
 
 ```bash

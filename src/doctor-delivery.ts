@@ -1904,7 +1904,11 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
           + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
           + `parses as no variables at all. Then run \`teamai pull\`.${declare}`]),
       ...member.map((name) => describeKeptMemberServer(name, target.file)),
-      ...member.length > 0 ? ['Or run `teamai mcp inject --force` to replace it with the team\'s.'] : []];
+      // `teamai skill exclude` is the documented way to keep a server of one's own under a team name (#1746): `pull` skips
+      // it by name, and doctor stops reporting it, so a member whose setup differs deliberately goes green without
+      // overwriting either side.
+      ...member.length > 0 ? [`Or run \`teamai skill exclude add ${member.join(' ')}\` to keep yours and stop delivering the team's, `
+        + 'or `teamai mcp inject --force` to replace yours with the team\'s.'] : []];
 
     checks.push({
       name: `MCP servers delivered to ${mcpTargetAgent(target)}`,
