@@ -132,6 +132,7 @@ export function getParentPid(pid: number): number | undefined {
     // macOS/BSD fallback: ps -o ppid= -p <pid>
     try {
         const out = execSync(`ps -o ppid= -p ${pid}`, {
+            windowsHide: true,
             encoding: 'utf-8',
             timeout: 2000,
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -164,6 +165,7 @@ export function getProcessComm(pid: number): string | undefined {
     // macOS/BSD fallback
     try {
         const out = execSync(`ps -o comm= -p ${pid}`, {
+            windowsHide: true,
             encoding: 'utf-8',
             timeout: 2000,
             stdio: ['pipe', 'pipe', 'pipe'],

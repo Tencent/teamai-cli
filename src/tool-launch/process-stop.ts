@@ -9,7 +9,7 @@ export function processStarts(): Map<number, string> | undefined {
   let stdout: string;
 
   try {
-    stdout = execFileSync('ps', ['-A', '-o', 'pid=,lstart='], { encoding: 'utf8' });
+    stdout = execFileSync('ps', ['-A', '-o', 'pid=,lstart='], { windowsHide: true, encoding: 'utf8' });
   } catch {
     return undefined;
   }
@@ -215,7 +215,7 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
 
   const stop = async (initial: NodeJS.Signals): Promise<T> => {
     if (process.platform === 'win32' && child.pid !== undefined) {
-      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
 
       return exit;
     }
@@ -224,7 +224,7 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
       let stdout = '';
 
       try {
-        stdout = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,lstart='], { encoding: 'utf8' });
+        stdout = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,lstart='], { windowsHide: true, encoding: 'utf8' });
       } catch {
         // ps may be unavailable in minimal environments; fall back to stopping only the shell.
       }

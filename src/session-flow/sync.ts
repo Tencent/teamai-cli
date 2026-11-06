@@ -143,6 +143,7 @@ export function getGitAuthor(cwd?: string): string {
   for (const key of ['user.name', 'user.email']) {
     try {
       const result = execFileSync('git', ['config', key], {
+        windowsHide: true,
         cwd: cwd ?? process.cwd(),
         encoding: 'utf-8',
         timeout: 3000,
@@ -173,6 +174,7 @@ export function getGitAuthor(cwd?: string): string {
 export function getRepoIdentity(cwd?: string): string | null {
   try {
     const raw = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      windowsHide: true,
       cwd: cwd ?? process.cwd(),
       encoding: 'utf-8',
       timeout: 3000,
@@ -1663,6 +1665,7 @@ export class SyncManager {
   private runGit(args: string[], check = true): string {
     try {
       return execFileSync('git', args, {
+        windowsHide: true,
         cwd: this.repoRoot,
         encoding: 'utf-8',
         timeout: 30_000,

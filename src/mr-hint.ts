@@ -162,6 +162,7 @@ function saveCache(owner: string, repo: string, cache: HintCache): void {
 export function getGitRemote(cwd: string): string | null {
   try {
     const result = spawnSync('git', ['remote', 'get-url', 'origin'], {
+      windowsHide: true,
       cwd,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -390,7 +391,7 @@ async function listGitHubMergedMRs(
         '--limit', String(MAX_MRS),
         '--json', 'number,title,url,mergedAt',
       ],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 },
+      { windowsHide: true, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 },
     );
 
     if (result.status === 0 && result.stdout.trim()) {

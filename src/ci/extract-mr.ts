@@ -109,8 +109,8 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
   }
 
   try {
-    execFileSync('git', ['config', 'user.name', name], { cwd: repoPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', email], { cwd: repoPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', name], { windowsHide: true, cwd: repoPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', email], { windowsHide: true, cwd: repoPath, stdio: 'ignore' });
     log.debug(`Git user: ${name} <${email}>`);
   } catch {
     log.debug('git config failed (not a git repo); skipping');
@@ -187,7 +187,7 @@ async function changedSourceFiles(businessRepo: string): Promise<string[]> {
     try {
       const diffOutput = execFileSync(
         'git', args,
-        { cwd: businessRepo, encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] },
+        { windowsHide: true, cwd: businessRepo, encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] },
       );
 
       const changedFiles = diffOutput.trim().split('\n')

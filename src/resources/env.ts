@@ -430,12 +430,12 @@ export class EnvHandler extends ResourceHandler {
         execFileAsync(
           'git',
           ['ls-files', '-z', '--modified', '--others', '--exclude-standard', '--', 'env'],
-          { cwd: repoPath },
+          { windowsHide: true, cwd: repoPath },
         ),
         execFileAsync(
           'git',
           ['ls-files', '-z', '--others', '--exclude-standard', '--', 'env'],
-          { cwd: repoPath },
+          { windowsHide: true, cwd: repoPath },
         ),
       ]);
 

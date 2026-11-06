@@ -655,6 +655,7 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
   // through a symlink pre-planted at that exact name.
   try {
     const r = spawnSync(sqlite3, [dbPath], {
+      windowsHide: true,
       input: stmts.join('\n'),
       maxBuffer: 32 * 1024 * 1024,
       timeout: 30_000,
@@ -704,7 +705,7 @@ export function cursorComposerExists(composerId: string, cwd?: string): { ok: tr
   }
 
   try {
-    const r = spawnSync(sqlite3, [dbPath], { input: `PRAGMA busy_timeout=5000;\n${sql}`, timeout: 30_000 });
+    const r = spawnSync(sqlite3, [dbPath], { windowsHide: true, input: `PRAGMA busy_timeout=5000;\n${sql}`, timeout: 30_000 });
 
     if (r.status !== 0) {
       const stderr = (r.stderr?.toString() ?? '').trim();
@@ -745,6 +746,7 @@ export function unregisterCursorComposer(composerId: string): RegisterResult {
 
   try {
     const r = spawnSync(sqlite3, [dbPath], {
+      windowsHide: true,
       input: sql,
       maxBuffer: 32 * 1024 * 1024,
       timeout: 30_000,
