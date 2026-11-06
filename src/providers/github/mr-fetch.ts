@@ -327,15 +327,18 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
 
     const rawDiff = diffResult.stdout;
 
+    // gh pr view requests commits(first: 100), so a full result may omit later commits.
+    const commits = prView.commits?.length === 100
+      ? (await readPages(ghApiGet, `/repos/${owner}/${repo}/pulls/${number}/commits`, GitHubApiCommitSchema))
+        .map((c) => ({ hash: c.sha, message: c.commit.message.split('\n')[0] }))
+      : (prView.commits ?? []).map((c) => ({ hash: c.oid, message: c.messageHeadline }));
+
     mr = {
       title: prView.title,
       description: prView.body ?? '',
       author: prView.author?.login,
       mergedAt: prView.mergedAt ?? undefined,
-      commits: (prView.commits ?? []).map((c) => ({
-        hash: c.oid,
-        message: c.messageHeadline,
-      })),
+      commits,
       diff: rawDiff.slice(0, 50000),
       url,
     };
