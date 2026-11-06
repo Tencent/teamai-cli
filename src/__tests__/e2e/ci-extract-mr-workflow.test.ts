@@ -85,6 +85,8 @@ esac
 interface Sandbox {
   root: string;
   home: string;
+  /** TMPDIR of every run, so a run's ephemeral scope is looked for here rather than among every test's. */
+  tmp: string;
   app: string;
   team: string;
   remote: string;
@@ -112,7 +114,9 @@ async function ciMachine(threads: unknown[] = []): Promise<Sandbox> {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ci-extract-mr-')));
   const home = path.join(root, 'home');
   const bin = path.join(root, 'bin');
+  const tmp = path.join(root, 'tmp');
   fs.mkdirSync(home);
+  fs.mkdirSync(tmp);
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(root, 'gitconfig'), '[user]\n\tname = t\n\temail = t@t\n[init]\n\tdefaultBranch = main\n');
   fs.writeFileSync(path.join(bin, 'gh'), FAKE_GH, { mode: 0o755 });
@@ -145,7 +149,7 @@ let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('e
   const api = await fakeApi(threads);
   const { port } = new URL(api.origin);
   const env = {
-    HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+    HOME: home, USERPROFILE: home, TMPDIR: tmp, TMP: tmp, TEMP: tmp, PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin`,
     GIT_CONFIG_GLOBAL: path.join(root, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C.UTF-8', NO_COLOR: '1', FORCE_COLOR: '0', TERM: 'dumb',
     GITLAB_URL: api.origin, TEAMAI_GITLAB_HOST: `127.0.0.1:${port}`, GITLAB_API_PREFIX: 'api/v4', GITLAB_TOKEN: 'fixture-token',
   };
@@ -161,7 +165,7 @@ let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('e
   });
 
   const prompts = (): string[] => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => String(JSON.parse(line))) : []);
-  const sb = { root, home, app, team, remote, api, prompts, run };
+  const sb = { root, home, tmp, app, team, remote, api, prompts, run };
   sandboxes.push(sb);
 
   return sb;
@@ -197,7 +201,7 @@ describe('teamai ci extract-mr (real CLI, no teamai init)', () => {
     expect(sb.prompts()).toHaveLength(1);
     expect(sb.prompts()[0]).toContain('MR 标题：Retry flaky upload');
     expect(filesUnder(sb.home).filter((file) => file !== path.join('.teamai', 'debug.log'))).toEqual([]);
-    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('teamai-ephemeral-'))).toEqual([]);
+    expect(fs.readdirSync(sb.tmp).filter((name) => name.startsWith('teamai-ephemeral-'))).toEqual([]);
   });
 
   it('writes the learning into the team repo given with --team-repo, in its language, and pushes it', async () => {
