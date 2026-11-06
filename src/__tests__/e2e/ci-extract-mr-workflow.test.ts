@@ -53,7 +53,7 @@ async function fakeApi(threads: unknown[] = []): Promise<Api> {
       else if (method === 'POST') res.end(JSON.stringify({ id: 55, body: '', html_url: 'https://ghe.example/acme/app/pull/7#issuecomment-55' }));
       else if (route.endsWith('/notes') || route.endsWith('/comments')) res.end('[]');
       else if (route.endsWith('/discussions')) res.end(JSON.stringify(threads));
-      else if (route.endsWith('/commits')) res.end(JSON.stringify([{ id: 'abc1234567890', title: 'retry uploads', message: 'retry uploads' }]));
+      else if (route.endsWith('/commits')) res.end(JSON.stringify([{ id: 'abc12345', title: 'retry uploads', message: 'retry uploads' }]));
       else if (route.endsWith('/changes')) res.end(JSON.stringify({ changes: [{ new_path: 'up.ts', diff: '+retry(3)\n' }] }));
       else if (route.endsWith('/merge_requests/7')) res.end(JSON.stringify({ title: 'Retry flaky upload', description: 'Uploads fail under load.', author: { username: 'dev' }, merged_at: '2026-11-04T10:00:00Z' }));
       else if (route.endsWith('/user')) res.end(JSON.stringify({ username: 'ci-bot' }));
