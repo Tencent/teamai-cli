@@ -24,7 +24,7 @@ interface ImportLockMeta {
 }
 
 /**
- * The lock fields isImportInProgress reads. A mistyped field, or a JSON value that is not an
+ * The lock fields judgeLock reads. A mistyped field, or a JSON value that is not an
  * object, reads as absent, as a bare property read did; a null document is malformed.
  */
 const ImportLockFieldsSchema = z
@@ -191,7 +191,7 @@ export async function acquireImportLock(holder: string, runDir?: string): Promis
     try {
       await mkdir(path.dirname(lockPath), { recursive: true });
 
-      // isImportInProgress removes a lock whose process is gone or that is stale; another import may create it first.
+      // judgeLock removes a lock whose process is gone or that is stale; another import may create it first.
       if (!(await createLockFile(lockPath, meta))) {
         const held = (await readLock(lockPath))?.meta;
 
@@ -205,7 +205,7 @@ export async function acquireImportLock(holder: string, runDir?: string): Promis
 
         // One import at a time judges the lock stale, removes it and creates its own, so two that find it stale at once
         // cannot both take it over.
-        const taken = await withFileLock(takeoverPath(lockPath), TAKEOVER_WAIT, async () => !(await isImportInProgress(holder)) && await createLockFile(lockPath, meta));
+        const taken = await withFileLock(takeoverPath(lockPath), TAKEOVER_WAIT, async () => !(await judgeLock(lockPath)) && await createLockFile(lockPath, meta));
 
         if (!taken.held || !taken.value) throw new ImportLockHeldError(await refusal(lockPath));
       }
@@ -247,8 +247,8 @@ export async function acquireImportLock(holder: string, runDir?: string): Promis
 /**
  * Check whether an import is currently in progress for the given team repo.
  *
- * It removes a stale lock it finds, so only acquireImportLock calls it, holding the takeover lock that
- * serializes that removal with every acquire and release.
+ * It removes a stale lock it finds under the takeover lock, which serializes that removal with every acquire and
+ * release; while another import holds the takeover lock, it reports an import in progress.
  *
  * Detection strategy:
  * - A workflow run on this host that has not ended, its run directory still there, holds it at any age.
@@ -263,7 +263,13 @@ export async function acquireImportLock(holder: string, runDir?: string): Promis
  */
 export async function isImportInProgress(teamRepoPath: string): Promise<boolean> {
   const lockPath = lockPathFor(teamRepoPath);
+  const judged = await withFileLock(takeoverPath(lockPath), TAKEOVER_WAIT, () => judgeLock(lockPath));
 
+  return !judged.held || judged.value;
+}
+
+/** Whether the lock at `lockPath` is live, removing it when it is stale. Its caller holds the takeover lock. */
+async function judgeLock(lockPath: string): Promise<boolean> {
   let raw: string;
 
   try {

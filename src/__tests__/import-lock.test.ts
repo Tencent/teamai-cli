@@ -182,6 +182,20 @@ describe('import-lock', () => {
     expect(await readFile(lockPath, 'utf8')).toBe(taken);
   });
 
+  it('leaves a stale lock alone while an import is taking it over, and reports an import in progress', async () => {
+    const stale = JSON.stringify({ pid: 2147483646, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }, null, 2);
+    await writeFile(lockPath, stale, 'utf8');
+    const takeover = `${lockPath}.takeover`;
+    expect(await acquireLock(takeover)).toBe(true);
+
+    try {
+      expect(await isImportInProgress(teamRepo)).toBe(true);
+      expect(await readFile(lockPath, 'utf8')).toBe(stale);
+    } finally {
+      await releaseLock(takeover);
+    }
+  });
+
   it('keeps the lock of a run stopped for longer than the TTL while that run lasts', async () => {
     const runDir = path.join(root, 'runs', 'r0123abcd', 'scratch');
     await mkdir(runDir, { recursive: true });
