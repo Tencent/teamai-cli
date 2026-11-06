@@ -1699,6 +1699,35 @@ describe('materializeRef — branch materialization from git', () => {
       await fse.remove(destDir);
     }
   });
+  it('reads a single-repo team from .teamai/ on the branch, so the review reports its problems', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      const teamYaml = path.join(gitRepo, '.teamai', 'teamai.yaml');
+      await fse.outputFile(path.join(gitRepo, 'src', 'app.ts'), 'export {};\n');
+      await fse.outputFile(teamYaml, 'team: acme\nmode: self\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'app and team');
+      git('checkout', '-q', '-b', 'team-change');
+      await fse.appendFile(teamYaml, 'sessions:\n  publish:\n    unattended: always\n');
+      git('commit', '-q', '-am', 'team change');
+      git('checkout', '-q', '-');
+
+      await materializeRef(path.join(gitRepo, '.teamai'), 'team-change', destDir);
+      const review = await reviewBranchDir('team-change', destDir);
+
+      expect(review.findings).toEqual([
+        { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.unattended is "always", not off, ask or auto, so it is ignored' },
+      ]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
   it('reports nothing about sessions when the branch teamai.yaml is not valid YAML', async () => {
     const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
     try {
