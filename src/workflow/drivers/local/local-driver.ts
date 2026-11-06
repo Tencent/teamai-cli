@@ -1270,7 +1270,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         if (exited.line === undefined) return { error: { code: 'interrupted', message: 'The HITL question closed without an answer. Continue with teamai workflow resume.' } };
         const [choice = '', ...words] = exited.line.trim().split(/\s+/);
         const provenance = respondProvenance({ kind: 'terminal', caller: callerProvenance(process.env, { isTTY: true }) });
-        const response: ResponseInput = { step: questionHitl.step, pass: questionHitl.pass, choice, provenance };
+        const response: ResponseInput = { step: questionHitl.step, pass: questionHitl.pass, choice, provenance, queued: { driver, attempts: held.map((lease) => lease.attempt) } };
 
         if (words.length > 0) response.note = words.join(' ');
         const answer = await respondToHitl(config, runId, turn.secrets, response);

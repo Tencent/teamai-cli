@@ -6,7 +6,7 @@ import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
 import {
-  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, retryCommand, runData, withRun, workflowLabel,
+  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, restartQueued, retryCommand, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isRecord, isTruthy, pathValue } from './expression.js';
@@ -178,6 +178,8 @@ export interface ResponseInput {
   pass?: number;
   /** A required gate refuses an answer an agent may have sent. */
   provenance: Provenance;
+  /** As `next`'s `queued`: the open leases of the driver that sent the answer that it holds but has not started, whose own timeout counts from this answer. */
+  queued?: { driver: DriverIdentity; attempts: readonly string[] };
 }
 
 function agentInPath(run: RunState, state: StepState, options: readonly string[], cause: AgentCause): WorkflowEnvelope {
@@ -204,6 +206,8 @@ function agentInPath(run: RunState, state: StepState, options: readonly string[]
 export async function respondToHitl(config: LocalConfig, runId: string, secrets: Record<string, string>, input: ResponseInput): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
+
+    if (input.queued) restartQueued(run, input.queued.driver, new Set(input.queued.attempts), now);
     const result = reconcileRun(run, now);
 
     if ('unreadable' in result) return error('run_unreadable', result.unreadable);

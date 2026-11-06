@@ -14,7 +14,7 @@ import { getCurrentVersion } from '../package-info.js';
 import { expectedOutput, outputMismatch, OutputSchemaSchema } from '../workflow/output.js';
 import { CAN_KEYS, type DriverCan } from '../workflow/requirements.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { cancelRun, retryStep } from '../workflow/run-controls.js';
+import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
@@ -5287,6 +5287,30 @@ describe('deadlines', () => {
       vi.setSystemTime(new Date(at(15)));
       await reportAttempt(config, runId, { attempt: other.attempt, revision: other.revision, outcome: 'success', driver: driverA, queued: [slow.attempt] });
       expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(15), expiresAt: at(25) } }, { id: 'other', status: 'succeeded' }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout of a lease from an answer that lists it queued for its driver', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    command: echo slow
+  - id: gate
+    needs: []
+    approve: Go on?
+    command: echo gate
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA, { can: { hitl: true } }));
+      expect(await leaseNext(config, runId, driverA, { running: [slow.attempt], queued: [slow.attempt], can: { hitl: true } })).toMatchObject({ data: { hitl: { step: 'gate' } } });
+      vi.setSystemTime(new Date(at(15)));
+      const provenance = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
+      const answered = await respondToHitl(config, runId, await knownSecrets(config), { step: 'gate', choice: 'yes', pass: 1, provenance, queued: { driver: driverA, attempts: [slow.attempt] } });
+      expect(answered).not.toHaveProperty('error');
+      expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(15), expiresAt: at(25) } }, { id: 'gate' }] });
     } finally {
       vi.useRealTimers();
     }

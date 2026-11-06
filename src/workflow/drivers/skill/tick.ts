@@ -531,7 +531,8 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
     case 'adopt':
       return adoptRow(state, { attempt: call.attempt, dir: call.dir, at: context.now().toISOString() });
     case 'respond': {
-      const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver } });
+      const queued = state.attempts.filter((open) => open.phase === 'queued').map((open) => open.attempt);
+      const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver, queued } });
 
       return respondedRow(state, respondReply(answer));
     }

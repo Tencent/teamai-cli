@@ -293,6 +293,13 @@ steps:
     command: sleep 300
 `;
 
+// SERVE with an optional approval beside it, which the agent answers while one command waits behind the other.
+const SERVE_GATED = `${SERVE}  - id: go
+    needs: []
+    approve: Go on?
+    command: node -e "process.exit(0)"
+`;
+
 const TIMED = `schemaVersion: v1alpha1
 name: check
 description: Serve the app for half a minute
@@ -611,8 +618,8 @@ function sleepFaked(stops: string[]) {
 }
 
 /** Starts SERVE: the turn, and its attempt that runs and the one that waits behind it. */
-async function serving(made: Awaited<ReturnType<typeof harness>>) {
-  const turn = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+async function serving(made: Awaited<ReturnType<typeof harness>>, hitl?: 'recommend') {
+  const turn = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false, hitl }, inputs: undefined }));
   const running = turn.running.find((entry) => entry.phase === 'running');
   const queued = turn.running.find((entry) => entry.phase === 'queued');
   if (!running || !queued) throw new Error(JSON.stringify(turn));
@@ -1780,6 +1787,20 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
         { kind: 'stopped', step: running.step, attempt: running.attempt, why: 'cancelled' },
       ]));
       expect(stops).toEqual([`${run}/${running.attempt}`]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'an answer the agent gives while an attempt waits behind another lists that attempt queued, so its timeout counts from the answer',
+    rows: ['H2'],
+    run: async () => {
+      const responds: unknown[] = [];
+      const recording = (client: WorkflowClient): WorkflowClient => ({ ...client, respond: (run, step, choice, options) => { responds.push(options.via); return client.respond(run, step, choice, options); } });
+      const made = await harness({ check: SERVE_GATED }, { runners: sleepFaked([]), client: recording });
+      const { turn, queued } = await serving(made, 'recommend');
+      expect(turn.actions).toContainEqual(expect.objectContaining({ kind: 'choose', about: 'gate', step: 'go' }));
+      await turnOf(await made.call({ kind: 'respond', run: turn.run, step: 'go', choice: 'yes', pass: 1 }));
+      expect(responds).toEqual([expect.objectContaining({ kind: 'skill', queued: [queued.attempt] })]);
       return made.rows;
     },
   },

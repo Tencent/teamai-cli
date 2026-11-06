@@ -50,7 +50,8 @@ export type StartedRun = z.infer<typeof StartedRunSchema>;
  */
 export type RespondVia =
   | { kind: 'process'; caller: CallerProvenance; json?: unknown }
-  | Extract<Via, { kind: 'skill' }>;
+  /** `queued`: as `next`'s, the skill driver's open leases that wait for their place. */
+  | Extract<Via, { kind: 'skill' }> & { queued: readonly string[] };
 
 /**
  * What an engine `done` answers from: a run file's status; its revision, which each settled report and each retry bumps;
@@ -673,7 +674,10 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock, changed: options?.changed }), parsed.ignored);
     },
     respond: async (runId, step, choice, { via, ...answer }) => {
-      if (via.kind === 'skill') return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via) });
+      if (via.kind === 'skill') {
+        return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via), queued: { driver: via.driver, attempts: via.queued } });
+      }
+
       const { evidence } = via.caller;
 
       if (evidence.kind === 'attempt') return { error: nestedWorkflowError({ kind: 'marker', attempt: evidence.attempt }) };

@@ -1690,7 +1690,7 @@ function turnTerms(
 }
 
 /** Restarts the own timeout of each open lease of `driver` whose attempt `queued` lists, before anything reconciles the run. */
-function restartQueued(run: RunState, driver: DriverIdentity, queued: ReadonlySet<string>, now: string): void {
+export function restartQueued(run: RunState, driver: DriverIdentity, queued: ReadonlySet<string>, now: string): void {
   for (const step of run.steps) {
     if (step.status === 'leased' && sameDriver(step.lease.driver, driver) && queued.has(step.lease.attempt)) restartClock(step.lease, now);
   }

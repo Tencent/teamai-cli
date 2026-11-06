@@ -461,6 +461,36 @@ steps:
     expect(typeof run === 'object' && run.steps[0]?.answer).toMatchObject({ choice: 'yes', note: 'Keep the flag', channel: 'tty', agent: false });
   });
 
+  it('counts the timeout of a step waiting for the checkout from the answer to a question asked meanwhile', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Answer while a step waits for the checkout.
+steps:
+  - id: first
+    command: node -e "setTimeout(() => {}, 3000)"
+  - id: second
+    needs: []
+    timeout: 1s
+    command: echo second
+  - id: go
+    needs: []
+    approve: Go on?
+    command: echo go
+`);
+    config.workflows!.max_parallel = 2;
+    onTestFinished(() => _setDriverPollMs(20));
+    const question = vi.fn(async () => {
+      _setDriverPollMs(10_000);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return 'yes';
+    });
+    const result = await runLocalDriver(config, runId, workspace, { hitl: true, question });
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'second')).toMatchObject({ status: 'succeeded' });
+    expect(result).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(question).toHaveBeenCalledTimes(1);
+  });
+
   it('aborts a question when another process answers its HITL request', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build
