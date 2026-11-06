@@ -471,12 +471,28 @@ function hookIds(hook: CodexHookTrustRequest['hooks'][number]): string[] {
 }
 
 /** Where `hooks/list` puts the first cwd's hooks; a reply without them lists none. */
-const HooksListReplySchema = z.object({ data: z.tuple([z.object({ hooks: JsonValueSchema })], JsonValueSchema) });
+const HooksListReplySchema = z.object({
+  data: z.tuple([z.object({ hooks: JsonValueSchema, errors: JsonValueSchema.optional() })], JsonValueSchema),
+});
+
+/** The messages of the config errors `hooks/list` reports for a cwd; entries without a string message are skipped. */
+const ListErrorMessagesSchema = z
+  .array(z.object({ message: z.string() }).transform((e) => e.message).catch(''))
+  .catch([])
+  .transform((messages) => messages.filter((m) => m !== ''));
 
 async function listHooks(server: AppServer, cwd: string): Promise<HookInfo[]> {
   const listed = HooksListReplySchema.safeParse(await server.request('hooks/list', { cwds: [canonical(cwd)] }));
 
-  if (!listed.success || listed.data.data[0].hooks === null) return [];
+  if (!listed.success) return [];
+
+  // Codex answers with no hooks and `errors` when it cannot load its config for the cwd. That says nothing
+  // about trust, so report the Codex error instead of letting every hook read as "not loaded".
+  const errors = ListErrorMessagesSchema.parse(listed.data.data[0].errors);
+
+  if (errors.length > 0) throw new AppServerError(`Codex could not load its config for ${cwd}: ${errors.join('; ')}`);
+
+  if (listed.data.data[0].hooks === null) return [];
   // A hook with another handler, such as `mcp_tool`, is listed without a command; teamai writes none of those.
   const hooks = lenientList(HookInfoSchema).safeParse(listed.data.data[0].hooks);
 
