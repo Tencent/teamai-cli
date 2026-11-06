@@ -248,7 +248,7 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
-`--from-repo-list` keeps up to 3 imports in progress by default. `--concurrency <n>` sets this limit and must be a positive safe integer. Invalid values fail before the repo list is read or output is prepared. Their AI calls, extracting and publishing all use your checkout, so they take turns.
+`--from-repo-list` runs up to 3 imports at once by default. `--concurrency <n>` sets this limit and must be a positive safe integer. Invalid values fail before the repo list is read or output is prepared. On your machine their AI calls run side by side, while extracting and publishing take turns.
 
 `--dir`, `--from-repo`, `--from-repo-list` and `--from-org` run the default workflow [`teamai-import-from-repo`](workflow.md#default-workflows). Each source is extracted with no AI, your AI tool describes its modules and writes its deep docs, and the indexes are rebuilt and published once for the whole batch. A repository that fails does not stop the others: the batch names it and exits 1. While one import writes a `teamwiki/`, another import into it is refused; run it again once the first has finished. An import you continue with `teamai workflow resume` takes the lock again at each step that writes the `teamwiki/`, and such a step fails while another import holds it; retry it once that import has finished.
 
@@ -290,7 +290,7 @@ teamai codebase --lint
 
 Without a team repo, add `--output <dir>` to both `teamai import` and `teamai codebase`; both then use `<dir>/teamwiki/`.
 
-`--deep-enrich` runs the default workflow [`teamai-codebase-deep-enrich`](workflow.md#default-workflows). Your AI tool writes a design doc for each component, one after another, then the architecture overview and the scenario diagrams. The graph docs need no AI. A doc the tool could not write is named, the others are kept, and the command exits 1. Run it again, or retry the step it names, to write only what is missing. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, it fails and writes nothing. With `--output` and no `teamai init`, the run uses a config of its own that it removes when it ends, so it names no step to retry: run the command again.
+`--deep-enrich` runs the default workflow [`teamai-codebase-deep-enrich`](workflow.md#default-workflows). Your AI tool writes a design doc for each component, five at a time, then the architecture overview and the scenario diagrams. The graph docs need no AI. A doc the tool could not write is named, the others are kept, and the command exits 1. Run it again, or retry the step it names, to write only what is missing. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, it fails and writes nothing. With `--output` and no `teamai init`, the run uses a config of its own that it removes when it ends, so it names no step to retry: run the command again.
 
 ```text
 $ teamai codebase --deep-enrich --project orders-api

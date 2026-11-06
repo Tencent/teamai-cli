@@ -34,6 +34,8 @@ steps:
             {"domain": "业务域名称(如计费/调度/存储/网关/测试)", "responsibilities": ["职责1", "职责2", "职责3"], "layer": "entry|orchestration|service|data", "summary": "一句话描述该模块的核心功能"}
           output: { text: string }
           timeout: 600s
+          # A worktree of its own lets the modules' answers run beside each other.
+          workspace: new
           continue_on_failure: true
   - id: modules-tool
     needs: [modules]
@@ -67,6 +69,8 @@ steps:
       {"domain": "域名", "description": "一句话描述", "keywords": ["关键词1", "关键词2"]}
     output: { text: string }
     timeout: 600s
+    # In an item of teamai-import-from-repo, a worktree of its own lets it run beside the other items' answers.
+    workspace: new
     # The manifest is written without a domain when the tool could not name one.
     continue_on_failure: true
   - id: domain-tool

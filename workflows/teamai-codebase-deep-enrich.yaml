@@ -60,6 +60,8 @@ steps:
             直接输出 Markdown，不要任何前言或解释。
           output: { text: string }
           timeout: 600s
+          # A worktree of its own lets the components' answers run beside each other.
+          workspace: new
           continue_on_failure: true
         - id: write
           needs: [ask]
@@ -113,6 +115,8 @@ steps:
       直接输出 Markdown，不要任何前言或解释。
     output: { text: string }
     timeout: 600s
+    # In an item of teamai-import-from-repo, a worktree of its own lets it run beside the other items' answers.
+    workspace: new
     continue_on_failure: true
   - id: architecture-tool
     needs: [architecture]
@@ -173,6 +177,8 @@ steps:
       ## 场景 2: ...
     output: { text: string }
     timeout: 600s
+    # In an item of teamai-import-from-repo, a worktree of its own lets it run beside the other items' answers.
+    workspace: new
     continue_on_failure: true
   - id: scenarios-tool
     needs: [scenarios]

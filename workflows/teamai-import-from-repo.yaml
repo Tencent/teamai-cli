@@ -120,6 +120,8 @@ steps:
             </context>
           output: { text: string }
           timeout: 600s
+          # A worktree of its own lets the items' narratives run beside each other.
+          workspace: new
           # The evidence is published without the narrative when the tool could not write one; publish says why.
           continue_on_failure: true
         - id: narrative-tool

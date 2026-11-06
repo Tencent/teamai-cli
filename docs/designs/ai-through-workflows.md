@@ -207,12 +207,12 @@ when it holds a `teamai.yaml`, the scope reads it where it is, and its workflows
 ```text
 workflow                               invoke   what it composes
 teamai-codebase-enrich                 deny     enrich modules → domain summary
-teamai-codebase-deep-enrich            deny     component docs → architecture → G5
+teamai-codebase-deep-enrich            deny     component docs (5 at once) → architecture → G5
 teamai-import-from-repo                deny     for each repo or dir: scan → codebase.md → enrich → deep-enrich → write
 teamai-import-from-mr                  ask      for each MR: extract → choose → publish        (mr-hint offers it)
 teamai-import-rules                    deny     rule dirs of every tool → teamai-import-learnings → push
 teamai-import-from-iwiki               deny     fetch → teamai-import-learnings → push → dual sections
-teamai-import-learnings                deny     classify → choose per item → write accepted by type
+teamai-import-learnings                deny     classify (3 at once) → choose per item → write accepted by type
 teamai-ci-extract-mr                   deny     teamai-import-from-mr → comment | write → enrich → deep-enrich
 teamai-promote-learning                ask      category → content → publish teamai/push/… → mark promoted
 teamai-draft-learning-updates          deny     for each stale entry: draft
