@@ -90,6 +90,8 @@ teamai pull
 
 `pull` 之后就不再投放这个 server，`teamai doctor` 也不再报它。
 
+这份列表按**名字**排，不分类型：排除 `tracker` 会同时排掉团队里叫 `tracker` 的 skill 和 MCP server。
+
 ### 推送本地资源
 
 ```bash
