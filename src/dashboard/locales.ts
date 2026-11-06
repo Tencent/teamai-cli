@@ -722,6 +722,7 @@ export const dashboardMessages = {
   "Model": "模型",
   "Agent definition": "智能体定义",
   "Role": "角色",
+  "Recall": "召回",
   "Project": "项目",
   "Tag": "标签分类",
   "Fingerprint": "指纹",
