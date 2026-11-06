@@ -31,7 +31,7 @@ describe('execPluginCommand', () => {
     expect(spawnMock).toHaveBeenCalledWith(
       'bash',
       ['-lc', 'printf installed'],
-      { stdio: ['ignore', 'ignore', 'pipe'] },
+      { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] },
     );
   });
 });

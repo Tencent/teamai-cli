@@ -128,7 +128,7 @@ export async function ensureCnbInstalled(): Promise<void> {
   const spin = (await spinner('Installing cnb CLI (@cnbcool/cnb-cli)...')).start();
 
   try {
-    execSync('npm install -g @cnbcool/cnb-cli', { stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 });
+    execSync('npm install -g @cnbcool/cnb-cli', { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 });
 
     if (!isCnbInstalled()) throw new Error('cnb not found on PATH after install');
     spin.succeed('cnb CLI installed');

@@ -69,7 +69,7 @@ export function gfExec(
     };
 
     if (options.timeoutMs) inherited.timeout = options.timeoutMs;
-    const result = spawnSync('bash', ['-c', cmd], inherited);
+    const result = spawnSync('bash', ['-c', cmd], { ...inherited, windowsHide: true });
 
     return { stdout: '', stderr: '', status: result.status ?? 1 };
   }
@@ -82,7 +82,7 @@ export function gfExec(
   };
 
   if (options?.timeoutMs) captured.timeout = options.timeoutMs;
-  const result = spawnSync('bash', ['-c', cmd], captured);
+  const result = spawnSync('bash', ['-c', cmd], { ...captured, windowsHide: true });
 
   return {
     stdout: (result.stdout ?? '').toString().trim(),
@@ -98,6 +98,7 @@ function getGfPath(): string {
   // Prefer our managed install
   try {
     const stat = execSync(`test -x "${gfBinPath()}" && echo ok`, {
+      windowsHide: true,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -109,7 +110,7 @@ function getGfPath(): string {
 
   // Fall back to system PATH
   try {
-    const which = execSync('which gf', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const which = execSync('which gf', { windowsHide: true, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
 
     if (which.trim()) return which.trim();
   } catch {
@@ -223,7 +224,7 @@ export async function ensureGfInstalled(): Promise<void> {
     // headers so we can verify integrity before touching tar.
     execSync(
       `curl -fsSL -D "${headerPath}" -o "${tarballPath}" "${url}"`,
-      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 },
+      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 },
     );
 
     // Verify SHA-256 against the mirror's advertised digest (the content-
@@ -250,11 +251,12 @@ export async function ensureGfInstalled(): Promise<void> {
 
     // Extract the verified tarball.
     execSync(`tar xz -f "${tarballPath}" -C "${dir}"`, {
+      windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     // Verify installation
-    execSync(`test -x "${gfBinPath()}"`, { stdio: ['pipe', 'pipe', 'pipe'] });
+    execSync(`test -x "${gfBinPath()}"`, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
     spin.succeed(`gf CLI installed to ${dir}`);
   } catch (e) {

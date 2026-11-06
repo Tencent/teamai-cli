@@ -145,6 +145,7 @@ function spawnScript(
   env?: NodeJS.ProcessEnv,
 ): ChildProcess {
   const child = spawn(process.execPath, [scriptPath], {
+    windowsHide: true,
     cwd: repoPath,
     stdio,
     env: {

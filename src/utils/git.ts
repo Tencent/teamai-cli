@@ -99,7 +99,7 @@ function lookUpGit(pathEnv: string): string {
 function spawnsByPath(candidate: string): boolean {
   if (isNativeExecutable(candidate)) return true;
 
-  return spawnSync(candidate, ['--version'], { stdio: 'ignore', timeout: 10_000 }).error === undefined;
+  return spawnSync(candidate, ['--version'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 }).error === undefined;
 }
 
 /** ELF, Mach-O (thin or universal): a format the kernel starts without an interpreter. */
@@ -243,7 +243,7 @@ export async function readBlobs(repoPath: string, specs: readonly string[]): Pro
   if (specs.length === 0) return [];
 
   const out = await new Promise<Buffer | null>((resolve) => {
-    const child = execFile(gitBinary(), ['-C', repoPath, 'cat-file', '--batch'], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 },
+    const child = execFile(gitBinary(), ['-C', repoPath, 'cat-file', '--batch'], { windowsHide: true, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 },
       (error, stdout) => resolve(error ? null : stdout));
 
     child.stdin?.end(`${specs.join('\n')}\n`);
