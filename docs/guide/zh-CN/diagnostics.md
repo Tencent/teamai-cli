@@ -25,7 +25,7 @@ teamai remove rules <name> --force
 
 即使在单仓库模式，ZCode CLI 也从 `~/.zcode/cli/config.json` 读取 hooks。`hooks inject` 会迁移旧项目文件中属于 teamai 的条目，保留个人设置，并限制团队 hooks 只在所属项目运行。`hooks list` 和 `doctor` 检查同一个 HOME 文件。
 
-手动执行 `teamai update`、`teamai update --check` 或 `teamai update --dry-run` 时，总会查询 npm registry。如果无法访问 registry，会报告过去 12 小时内的上次检查结果，没有时则说明更新状态未知。自动检查会复用最长 12 小时的检查结果。`--dry-run` 不保存检查结果，也不安装更新。
+手动执行 `teamai update`、`teamai update --check` 或 `teamai update --dry-run` 时，总会查询 npm registry。如果无法访问 registry，会报告过去 12 小时内的上次检查结果，没有时则说明更新状态未知。自动检查会复用最长 12 小时的 registry 版本，并分别与每份安装的版本比较。旧格式的缓存 null 无法说明 registry 版本，因此会重新检查。`--dry-run` 不保存检查结果，也不安装更新。
 
 自动更新在会话结束时跑。团队可以关掉，成员可以改自己的策略。CLI 是整台机器共用的，所以有 user scope 时由它的配置和团队决定，否则由会话所在的 workspace 决定：
 
