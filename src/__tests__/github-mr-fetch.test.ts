@@ -186,6 +186,55 @@ describe('GitHub PR review threads (#1187)', () => {
 });
 
 describe('GitHub PR gh CLI path', () => {
+  function paginatedGh(count: number, failedPage?: string): string[] {
+    const commits = Array.from({ length: count }, (_, i) => ({
+      sha: `commit-${i + 1}`, commit: { message: `Change ${i + 1}\n\nDetails` },
+    }));
+    const pages: string[] = [];
+    vi.mocked(ghExec).mockImplementation((args) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { status: 0, stderr: '', stdout: JSON.stringify({
+          title: 'Paginated PR', commits: commits.slice(0, 100).map((c) => ({ oid: c.sha, messageHeadline: c.commit.message.split('\n')[0] })),
+        }) };
+      }
+      if (args[0] === 'pr' && args[1] === 'diff') return { status: 0, stdout: 'diff', stderr: '' };
+      if (args[0] === 'api') {
+        pages.push(args[1]);
+        if (args[1].endsWith('page=2') && failedPage !== undefined) return { status: 0, stdout: failedPage, stderr: '' };
+        const url = new URL(args[1], 'https://api.github.com');
+        const page = Number(url.searchParams.get('page'));
+        return { status: 0, stderr: '', stdout: JSON.stringify(commits.slice((page - 1) * 100, page * 100)) };
+      }
+      throw new Error(`Unexpected gh call: ${args}`);
+    });
+    return pages;
+  }
+
+  it.each([0, 1, 99, 100, 101, 250])('preserves all %i commit headlines when gh pr view reaches its 100-commit limit', async (count) => {
+    const rest = mockResponses(PR, 403, 'REST should not be needed');
+    const pages = paginatedGh(count);
+    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false });
+    expect(mr.commits).toEqual(Array.from({ length: count }, (_, i) => ({ hash: `commit-${i + 1}`, message: `Change ${i + 1}` })));
+    expect(pages).toEqual(count < 100 ? [] : Array.from({ length: Math.floor(count / 100) + 1 }, (_, i) => `repos/team/repo/pulls/42/commits?per_page=100&page=${i + 1}`));
+    expect(rest).toEqual([]);
+  });
+
+  it.each(['not JSON', '{"message":"Not a commit list"}'])('does not extract partial gh history when a later page is unreadable (%s)', async (page) => {
+    mockResponses(PR, 403, 'REST unavailable');
+    const pages = paginatedGh(101, page);
+    await expect(fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false })).rejects.toThrow('GitHub API error 403');
+    expect(pages).toHaveLength(2);
+  });
+
+  it('retries the whole commit history through REST when a gh commit page is unreadable', async () => {
+    const commits = Array.from({ length: 101 }, (_, i) => ({ sha: `rest-${i}`, commit: { message: `REST change ${i}` } }));
+    const rest = mockResponses(undefined, 200, '', undefined, commits);
+    paginatedGh(101, 'not JSON');
+    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false });
+    expect(mr.commits).toEqual(commits.map((c) => ({ hash: c.sha, message: c.commit.message })));
+    expect(rest.filter((url) => url.includes('/commits?'))).toEqual([`${PR}/commits?per_page=100&page=1`, `${PR}/commits?per_page=100&page=2`]);
+  });
+
   it('calls ghExec with argument arrays and preserves pr view metadata and diff', async () => {
     const mockGhExec = vi.mocked(ghExec);
     mockGhExec.mockImplementation((args) => {

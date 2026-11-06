@@ -175,7 +175,7 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 `--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
-GitHub 导入从 `gh` 回退到 REST 时，会按每页 100 个提交继续读取，最多返回 [GitHub 此接口限制的 250 个提交](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request)。任一提交页失败都会使该 PR 在 AI 提炼前失败。
+GitHub 导入在 `gh pr view` 达到 100 个提交的上限时，或回退到 REST 时，会按每页 100 个提交继续读取，最多返回 [GitHub 此接口限制的 250 个提交](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request)。通过 `gh` 读取提交页失败时会回退到 REST。如果 REST 无法读取该 PR，导入会在 AI 提炼前以退出码 1 失败，且不为该 PR 写入 learning。这改变了 `gh pr view` 返回满 100 条、后续提交却无法读取时的退出码：此前会只带着前 100 条提交标题退出 0。脚本需要处理失败，并在修复访问权限或请求故障后重试。
 
 GitLab MR 导入会按每页 50 个继续读取提交，而不是只读取第一页，最多读取 100 页。每个 GitLab MR API 请求都有 30 秒期限，包含读取响应正文。元信息超时会使该 MR 失败；commits、diff 或评审 threads 超时则省略相应可选数据并继续处理。提交和评审 threads 的每一页都有独立期限。后续提交页失败时会省略整个提交列表，不把不完整的历史交给提炼流程。
 
