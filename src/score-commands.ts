@@ -4,16 +4,17 @@ import { isScorerFile } from './scorers/definition.js';
 import { NamedSubject, type NamedPass } from './scorers/named-subject.js';
 import { ScoreAnswer } from './scorers/score-answer.js';
 import { Subject } from './scorers/subject.js';
-import { scoreSession, type SessionDemand } from './session-flow/scoring.js';
-import type { LocalConfig } from './types.js';
+import type { SessionDemand } from './session-flow/scoring.js';
+import { TryScorer, type TryInputs } from './scorers/try-scorer.js';
+import { JsonObjectSchema, type LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
 import { DataBranches } from './utils/data-branches.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
-import { startWorkflow } from './workflow-commands.js';
-import { driveByDefault } from './default-driver.js';
-import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
+import { shortcutDriver, startWorkflow } from './workflow-commands.js';
+import { SCORE_WORKFLOW, TRY_SCORER_WORKFLOW } from './scorers/judging-workflows.js';
+import { z } from 'zod';
 
 export interface ScoreOptions {
   run?: string;
@@ -114,7 +115,15 @@ function refusedWith(refusal: { code: string; message: string }): WorkflowEnvelo
 }
 
 /** What a `teamai score` call answers: an envelope, or the teamai-score run it starts. */
-type Scored = WorkflowEnvelope | { start: ScoreStart };
+/** A teamai-try-scorer run that tries the scorer files `files` names, as given, on a session. */
+interface TryStart {
+  config: LocalConfig;
+  subject: Subject;
+  files: readonly string[];
+  inputs: TryInputs;
+}
+
+type Scored = WorkflowEnvelope | { start: ScoreStart } | { tryFiles: TryStart };
 
 /** Whether `options` name a pass: `--run`, `--step` or `--pass`. */
 function namesPass(options: ScoreOptions): boolean {
@@ -163,7 +172,7 @@ function askOf(options: ScoreOptions): 'pass' | 'session' | 'push' | 'none' {
   return options.push ? 'push' : 'none';
 }
 
-/** The teamai-score run that judges the session `options` name, or a scorer file judged here. */
+/** The teamai-score run that judges the session `options` name, or the teamai-try-scorer run that tries scorer files on it. */
 async function sessionScore(options: ScoreOptions): Promise<Scored> {
   const demand = sessionDemandOf(options);
 
@@ -172,16 +181,16 @@ async function sessionScore(options: ScoreOptions): Promise<Scored> {
 
   if (!loaded.ok) return loaded.envelope;
 
-  // A scorer file's label is only tried, never stored, so it is judged here and starts no teamai-score run.
+  // A scorer file's label is only tried, never stored: a teamai-try-scorer run judges it, and stores nothing.
   if (demand.scorers.some(isScorerFile)) {
-    if (options.driver !== undefined) return failure('invalid_arguments', '--driver picks who drives a teamai-score run, and a scorer file is judged here without one. Leave out --driver.');
     const cached = demand.scorers.find((scorer) => !isScorerFile(scorer));
 
-    if (cached !== undefined) return failure('invalid_arguments', `A scorer file is tried here, and --scorer ${cached} is judged by a teamai-score run. Score them in separate commands.`);
+    if (cached !== undefined) return failure('invalid_arguments', `A scorer file is tried by a teamai-try-scorer run, which stores nothing, and --scorer ${cached} is judged by a teamai-score run. Score them in separate commands.`);
 
     if (demand.label !== undefined) return failure('invalid_arguments', `--label is stored, and the label of the scorer file ${demand.scorers.find(isScorerFile)} is never stored. Pass the name of a scorer teamai pull cached.`);
+    const prepared = await TryScorer.prepare(loaded.config, demand);
 
-    return scoreSession(loaded.config, demand);
+    return prepared.ok ? { tryFiles: { config: prepared.config, subject: prepared.subject, files: demand.scorers, inputs: prepared.inputs } } : refusedWith(prepared);
   }
 
   const named = await NamedSubject.ofSession(loaded.config, demand);
@@ -252,6 +261,7 @@ export async function scoreCommand(options: ScoreOptions): Promise<void> {
   const scored = await score(options);
 
   if ('start' in scored) await startScore(scored.start, options.driver);
+  else if ('tryFiles' in scored) await startTry(scored.tryFiles, options.driver);
   else writeEnvelope(scored);
 }
 
@@ -300,17 +310,51 @@ function insteadOf(start: ScoreStart, driver: string | undefined): string {
 async function startScore(start: ScoreStart, driver: string | undefined): Promise<void> {
   const { named } = start;
   const inputs = { subject: Subject.format(named.subject), scorers: start.scorers, label: start.label ?? '', batch: start.batch, demand: 'named' };
-  const decided = driver === undefined ? await driveByDefault(named.config) : undefined;
-  const chosen = decided === undefined ? driver : decided.kind === 'drive' ? decided.driver : undefined;
+  const { driver: chosen, byDefault } = await shortcutDriver(named.config, driver);
 
   await startWorkflow(SCORE_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(inputs) }, {
     scope: named.config,
-    byDefault: decided,
+    byDefault,
     instead: insteadOf(start, driver),
     answer: async (config, runId, driven) => {
       const answered = await ScoreAnswer.of(config, runId, driven, start.scorers);
 
       return answered && start.push && 'data' in answered ? pushed(config, answered) : answered;
+    },
+  });
+}
+
+/** What a teamai-try-scorer run ends with: the envelope `teamai score` prints, and the lines a person reads. */
+const TriedSchema = z.object({ data: z.object({ done: z.object({ outputs: z.object({
+  answer: z.union([z.object({ data: JsonObjectSchema }), z.object({ error: z.object({ code: z.string(), message: z.string() }) })]),
+  text: z.string(),
+  // A team's own teamai-try-scorer may not output warnings.
+  warnings: z.string().default(''),
+}) }) }) });
+
+/**
+ * Starts teamai-try-scorer on the session, on the driver `driver` names or the default one, as `startScore` does. The
+ * answer is the envelope its report gave, with each file's lines on stderr; a run that did not end says why it stopped.
+ */
+async function startTry(start: TryStart, driver: string | undefined): Promise<void> {
+  const { driver: chosen, byDefault } = await shortcutDriver(start.config, driver);
+  const words = ['teamai', 'score', ...subjectWords(start.subject), ...start.files.flatMap((file) => ['--scorer', file]), ...(start.inputs.batch ? ['--batch'] : [])];
+
+  await startWorkflow(TRY_SCORER_WORKFLOW, { driver: chosen === 'none' ? undefined : chosen, inputs: JSON.stringify(start.inputs) }, {
+    scope: start.config,
+    byDefault,
+    instead: `The person runs ${words.map(shellWord).join(' ')} in their own terminal, and the agent drafts and tries a scorer with /teamai-new-scorer.`,
+    answer: async (_config, _runId, driven) => {
+      const tried = TriedSchema.safeParse(driven);
+
+      if (!tried.success) return undefined;
+      const { answer, text, warnings } = tried.data.data.done.outputs;
+
+      for (const line of text.split('\n').filter(Boolean)) log.info(line);
+
+      for (const line of warnings.split('\n').filter(Boolean)) log.warn(line);
+
+      return answer;
     },
   });
 }

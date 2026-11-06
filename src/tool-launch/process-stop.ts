@@ -164,8 +164,8 @@ export interface GroupedCommand {
  * `group` for `stopRecordedGroup`, so a stop reaches everything it started even after its starter died. A command that
  * cannot be spawned exits 127, the shell's status for a command it cannot run, with the error at the end of its stderr.
  */
-export function startGroupedCommand(input: { command: string; cwd: string; env: NodeJS.ProcessEnv; detached: boolean; group: string }): GroupedCommand {
-  const { command, cwd, env, detached, group } = input;
+export function startGroupedCommand(input: { command: string; cwd: string; env: NodeJS.ProcessEnv; detached: boolean; group: string; onStderr?: (chunk: string) => void }): GroupedCommand {
+  const { command, cwd, env, detached, group, onStderr } = input;
   const child = spawn(command, { ...commandShell(env), cwd, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
   if (detached) recordGroup(child, group);
@@ -175,7 +175,7 @@ export function startGroupedCommand(input: { command: string; cwd: string; env: 
     let stderr = '';
     let output = '';
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; output += chunk; });
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; output += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; output += chunk; onStderr?.(chunk); });
     child.on('error', (error) => resolve({ exitCode: 127, stdout, stderr: `${stderr}${error.message}`, output }));
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
   });

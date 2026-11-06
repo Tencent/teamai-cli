@@ -17,18 +17,14 @@ vi.mock('../utils/prompt.js', () => ({
 }));
 
 vi.mock('../codebase.js', () => ({
-    generateCodebaseMd: vi.fn().mockResolvedValue(
-        '---\ntitle: Test Repo\nlastUpdated: 2024-01-01T00:00:00.000Z\n---\n\n## 项目概述\n固定的项目概述内容，不会改变。\n\n## 技术栈\nTypeScript + vitest',
-    ),
+    gatherRepoContext: vi.fn().mockResolvedValue('repository context'),
 }));
 
 vi.mock('../codebase-extract.js', () => ({
     extractCodebase: vi.fn(),
 }));
 
-vi.mock('../deep-enrich.js', () => ({
-    deepEnrich: vi.fn(),
-}));
+vi.mock('../workflow-commands.js', () => ({ runShortcut: vi.fn() }));
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -37,10 +33,10 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 // ─── Imports (after mocks) ──────────────────────────────
 
-import { importFromRepo } from '../import-repo.js';
 import { shallowClone, shallowFetch } from '../clone.js';
 import { extractCodebase } from '../codebase-extract.js';
-import { deepEnrich } from '../deep-enrich.js';
+import { runShortcut } from '../workflow-commands.js';
+import { runImportSteps, type ImportStepAnswers } from './helpers/import-steps.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -66,6 +62,9 @@ const DETERMINISTIC_OVERVIEW = [
     '',
 ].join('\n');
 
+/** What the tool answers for the repository's narrative, with a frontmatter of its own. */
+const NARRATIVE = '---\ntitle: Test Repo\nlastUpdated: 2024-01-01T00:00:00.000Z\n---\n\n## 项目概述\n固定的项目概述内容，不会改变。\n\n## 技术栈\nTypeScript + vitest';
+
 // ─── Helpers ────────────────────────────────────────────
 
 async function makeWorkdir(): Promise<string> {
@@ -76,18 +75,36 @@ async function makeWorkdir(): Promise<string> {
 
 // ─── Tests ──────────────────────────────────────────────
 
-describe('importFromRepo — AI narrative appended to overview.md', () => {
+describe('import --from-repo — AI narrative appended to overview.md', () => {
     let workdir: string;
     let output: string;
     let evidenceDir: string;
     let writesManifest: boolean;
+    let deep: NonNullable<ImportStepAnswers['deep']>;
     const TEST_URL = 'https://github.com/owner/mergetest';
+
+    /** The steps of an import of TEST_URL into `<output>/teamwiki`, as `mode` (the command that started it) runs them. */
+    const importFromRepo = async ({ incremental = false, skipEnrich = false, mode = 'repo' }: { incremental?: boolean; skipEnrich?: boolean; mode?: string } = {}) => runImportSteps({
+        workflow: 'teamai-import-from-repo',
+        command: 'teamai import --from-repo',
+        json: false,
+        inputs: {
+            wiki_root: path.join(output, 'teamwiki'),
+            mode,
+            items: [{ kind: 'repo', source: TEST_URL, domain: '', auth: '', slug: '', repo_url: '', mr_urls: [] }],
+            settings: { depth: 1, ssh: false, incremental, skip_enrich: skipEnrich, max_files: 0, team_repo: '' },
+            skipped: 0,
+            concurrency: 1,
+        },
+    }, { narrative: () => ({ text: NARRATIVE, failure: '' }), deep: (slug) => deep(slug) });
 
     beforeEach(async () => {
         workdir = await makeWorkdir();
         output = path.join(workdir, '.teamai', 'team-repo');
         evidenceDir = path.join(output, 'teamwiki', 'evidence', 'code', SLUG);
         writesManifest = false;
+        deep = () => 'complete';
+        vi.mocked(runShortcut).mockImplementation(async (run) => runImportSteps(run, { narrative: () => ({ text: NARRATIVE, failure: '' }), deep: (slug) => deep(slug) }));
         vi.spyOn(process, 'cwd').mockReturnValue(workdir);
         process.env.TEAMAI_CACHE_DIR = path.join(workdir, 'cache');
 
@@ -124,7 +141,7 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
     });
 
     it('AI 叙事追加到 teamwiki evidence overview.md 末尾', async () => {
-        await importFromRepo({ url: TEST_URL, output });
+        await importFromRepo();
 
         const overviewPath = path.join(evidenceDir, 'overview.md');
         expect(await fs.pathExists(overviewPath)).toBe(true);
@@ -140,9 +157,7 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
 
     it('import --from-repo exits 1 and names the retry command when deep enrich leaves AI docs missing', async () => {
         writesManifest = true;
-        vi.mocked(deepEnrich).mockResolvedValue({
-            project: SLUG, complete: false, missingComponents: ['src'], missingArchitecture: true,
-        });
+        deep = () => 'incomplete';
         const lines: string[] = [];
         const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
         try {
@@ -159,37 +174,46 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         expect(await fs.pathExists(path.join(evidenceDir, 'overview.md'))).toBe(true);
     });
 
-    it('reports an unfinished deep enrich to its caller and leaves the exit status to it', async () => {
+    it('says a failed deep-enrich run in the exit code, with no retry hint for a command that publishes the import itself', async () => {
         writesManifest = true;
-        vi.mocked(deepEnrich).mockRejectedValue(new Error('teamwiki is locked'));
+        deep = () => ({ failure: 'teamwiki is locked' });
+        const lines: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+        let ended: Awaited<ReturnType<typeof importFromRepo>>;
+        try {
+            ended = await importFromRepo({ mode: 'update' });
+        } finally {
+            spy.mockRestore();
+        }
 
-        expect(await importFromRepo({ url: TEST_URL, output })).toBe(false);
-        expect(process.exitCode).toBeUndefined();
+        expect(ended.outputs).toMatchObject({ exit_code: 1, imported: [{ slug: SLUG, updated: true, failed: false }] });
+        expect(lines.join('\n')).toContain(`Deep enrich failed for ${SLUG}: teamwiki is locked`);
+        expect(lines.join('\n')).not.toContain('Deep enrich incomplete');
     });
 
     it('docs/team-codebase/repos/ 不再被创建', async () => {
-        await importFromRepo({ url: TEST_URL, output });
+        await importFromRepo();
 
         const oldPath = path.join(output, 'docs', 'team-codebase', 'repos', `${SLUG}.md`);
         expect(await fs.pathExists(oldPath)).toBe(false);
     });
 
     it('skipEnrich 时不追加 AI 叙事', async () => {
-        await importFromRepo({ url: TEST_URL, output, skipEnrich: true });
+        await importFromRepo({ skipEnrich: true });
 
         const content = await fs.readFile(path.join(evidenceDir, 'overview.md'), 'utf8');
         expect(content).not.toContain('## AI Architecture Narrative');
     });
 
     it('--output <dir> writes <dir>/teamwiki, not a sibling of <dir>', async () => {
-        await importFromRepo({ url: TEST_URL, output, skipEnrich: true });
+        await importFromRepo({ skipEnrich: true });
 
         expect(await fs.pathExists(path.join(output, 'teamwiki', 'evidence', 'code', SLUG, 'overview.md'))).toBe(true);
         expect(await fs.pathExists(path.join(workdir, '.teamai', 'teamwiki'))).toBe(false);
     });
 
     it('extracts in a staging dir: the clone cache gets no teamwiki/, the codebase keeps its own graph and caches', async () => {
-        await importFromRepo({ url: TEST_URL, output, skipEnrich: true });
+        await importFromRepo({ skipEnrich: true });
 
         const cacheDir = path.join(workdir, 'cache', 'github', 'owner', 'mergetest');
         expect(vi.mocked(extractCodebase).mock.calls[0]?.[0]).toMatchObject({ path: cacheDir, project: SLUG });
@@ -201,19 +225,30 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
     });
 
     it('fails before cloning when there is neither a team repo nor --output', async () => {
-        await expect(importFromRepo({ url: TEST_URL })).rejects.toThrow('no config in test');
+        const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+        const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const { importCmd } = await import('../import.js');
+            await importCmd({ fromRepo: TEST_URL });
+            expect(exit).toHaveBeenCalledWith(1);
+        } finally {
+            exit.mockRestore();
+            error.mockRestore();
+        }
+
         expect(shallowClone).not.toHaveBeenCalled();
+        expect(runShortcut).not.toHaveBeenCalled();
     });
 
     it('retries extraction after a failed import of the same commit', async () => {
         vi.mocked(extractCodebase).mockRejectedValueOnce(new Error('write failed'));
         vi.mocked(shallowFetch).mockResolvedValue({ sha: CLONE_SHA });
-        const options = { url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true };
+        const options = { incremental: true, skipEnrich: true };
         const lastSyncPath = path.join(workdir, 'cache', 'github', 'owner', 'mergetest', 'LAST_SYNC');
         await fs.ensureDir(path.join(path.dirname(lastSyncPath), '.git'));
         await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
 
-        await expect(importFromRepo(options)).rejects.toThrow('Knowledge extraction failed: write failed');
+        expect((await importFromRepo(options)).outputs).toMatchObject({ exit_code: 1, imported: [{ failed: true }] });
         expect(await fs.readFile(lastSyncPath, 'utf8')).toContain('previous-sha');
 
         await importFromRepo(options);
@@ -229,17 +264,17 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         await fs.writeFile(path.join(cacheDir, 'LAST_SYNC'), `${CLONE_SHA}\n2024-01-01T00:00:00.000Z\n`);
 
         // Another --output (or team repo) imported this commit; this one has nothing yet.
-        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
+        await importFromRepo({ incremental: true, skipEnrich: true });
         expect(extractCodebase).toHaveBeenCalledTimes(1);
         expect(await fs.pathExists(path.join(evidenceDir, 'overview.md'))).toBe(true);
 
         // Now it holds the commit, so the next run skips it.
-        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
+        await importFromRepo({ incremental: true, skipEnrich: true });
         expect(extractCodebase).toHaveBeenCalledTimes(1);
     });
 
     it('seeds the codebase\'s own baseline, so an incremental run extracts incrementally', async () => {
-        await importFromRepo({ url: TEST_URL, output, skipEnrich: true, skipAutoPush: true });
+        await importFromRepo({ skipEnrich: true });
         vi.mocked(shallowFetch).mockResolvedValue({ sha: 'cafebabe1234567890abcdef1234567890abcdef' });
 
         let seededManifest: unknown = null;
@@ -247,20 +282,20 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
             seededManifest = await fs.readJson(path.join(opts.outputRoot!, 'teamwiki', 'source-manifest.json')).catch(() => null);
             return true;
         });
-        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
+        await importFromRepo({ incremental: true, skipEnrich: true });
 
         expect(vi.mocked(extractCodebase).mock.calls.map(([opts]) => opts.incremental)).toEqual([false, true]);
         expect(seededManifest).toMatchObject({ project: SLUG, headSha: CLONE_SHA });
     });
 
     it('keeps the published evidence when an incremental run finds no source changes', async () => {
-        await importFromRepo({ url: TEST_URL, output, skipEnrich: true, skipAutoPush: true });
+        await importFromRepo({ skipEnrich: true });
         const before = await fs.readFile(path.join(evidenceDir, 'overview.md'), 'utf8');
         vi.mocked(shallowFetch).mockResolvedValue({ sha: 'cafebabe1234567890abcdef1234567890abcdef' });
         // A commit that touched no source file: the extractor writes nothing.
         vi.mocked(extractCodebase).mockResolvedValueOnce(false);
 
-        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
+        await importFromRepo({ incremental: true, skipEnrich: true });
 
         expect(await fs.readFile(path.join(evidenceDir, 'overview.md'), 'utf8')).toBe(before);
         expect(await fs.pathExists(path.join(evidenceDir, '.indices', 'graph-index.json'))).toBe(true);

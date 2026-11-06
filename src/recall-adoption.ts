@@ -6,7 +6,12 @@
  *   teamai recall ────────────────▶ run ────────────────┼─▶ recall log
  *   Stop / SubagentStop ── creditAdoptedDocs ◀── join ──┤
  *   pull ── drainRecallLog: pending sessions, retention ┘
- *              └─▶ incrementUpvoted (per-session ledger) ─▶ consumed
+ *              ├─▶ creditRecallAdoptions (durable ledger) ─▶ consumed, credit
+ *              └─▶ countRecalledSessions ─▶ counted
+ *
+ * The votes file holds each root session's credit of a doc for good, whoever
+ * gave it: a read here, or an adoption label `teamai score write` wrote (#1391).
+ * Credit and counted lines project that state into the journal for reporting.
  *
  * The hook side only classifies the call and appends its lines in one write;
  * it never reads the log. The reducer does the join, at Stop, at SubagentStop
@@ -22,8 +27,9 @@ import { z } from 'zod';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import { appendRecallLines, readRecallLog, recallLogPath } from './recall-log.js';
-import type { Actor, ClaimLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
+import type { Actor, ClaimLine, CreditLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
 import { getVotesDir } from './types.js';
+import { forgetSessionIdentities, readUserVotes, type AdoptionVerdict } from './votes.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { isAbsolutePath, pathKey, samePath } from './utils/agent-path.js';
 import { rewriteJsonl } from './utils/jsonl-store.js';
@@ -232,6 +238,10 @@ interface LogIndex {
   claimOf: Map<string, ClaimLine>;
   /** Ids of the evidence already credited. */
   consumed: Set<string>;
+  /** The first credit of each root session and doc, by `creditKey`, with whether its votes were written. */
+  credits: Map<string, CreditLine & { isWritten: boolean }>;
+  /** The root sessions and docs counted in a doc's recalled sessions, by `creditKey`. */
+  counted: Set<string>;
   /** The session a child's work counts for: its links followed up to the root. */
   rootOf: (session: string) => string;
   /** The session a run is settled to, or null when it is unsettled. */
@@ -243,6 +253,9 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
   const claimOf = new Map<string, ClaimLine>();
   const parentOf = new Map<string, string>();
   const consumed = new Set<string>();
+  const credits = new Map<string, CreditLine & { isWritten: boolean }>();
+  const written = new Set<string>();
+  const counted = new Set<string>();
 
   for (const line of lines) {
     if (line.kind === 'claim') {
@@ -254,7 +267,16 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
     } else if (line.kind === 'link') {
       if (!parentOf.has(line.child)) parentOf.set(line.child, line.parent);
     } else if (line.kind === 'consumed') consumed.add(line.evidence);
+    else if (line.kind === 'credit') {
+      const key = creditKey(line.session, line.doc);
+
+      if (!credits.has(key)) credits.set(key, { ...line, isWritten: false });
+
+      if (line.votes === 'written') written.add(line.id);
+    } else if (line.kind === 'counted') counted.add(creditKey(line.session, line.doc));
   }
+
+  for (const credit of credits.values()) credit.isWritten = written.has(credit.id);
 
   // A cycle stops where it closes.
   const rootOf = (session: string): string => {
@@ -271,7 +293,19 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
 
   const ownerOf = (r: RunLine): string | null => claimOf.get(r.run)?.session ?? (r.unambiguous === true ? r.session : null);
 
-  return { lines, claimOf, consumed, rootOf, ownerOf };
+  return { lines, claimOf, consumed, credits, counted, rootOf, ownerOf };
+}
+
+/** The key of a root session's credit of a doc, or of its count in the doc's recalled sessions. */
+function creditKey(session: string, doc: string): string {
+  return `${session}\n${doc}`;
+}
+
+/** Durable credits survive the recall journal's retention and an interrupted completion append. */
+async function durableCredits(config: LocalConfig, session: string): Promise<Set<string>> {
+  const votes = await readUserVotes(path.join(getVotesDir(config), `${config.username}.yaml`));
+
+  return new Set(votes.adoptionCredits?.[session] ?? []);
 }
 
 /** Whether `at` falls within the adoption window after the run. */
@@ -283,10 +317,9 @@ function inWindow(at: number, run: RunLine): boolean {
 
 /**
  * The reducer: credit the docs `sessionId` adopted, through the per-session
- * upvote ledger, and mark the evidence that credited them consumed so it never
- * votes again. Evidence the ledger already credited this session is consumed
- * too, and a run's doc is credited once: a later read of it counts for
- * nothing, even after the ledger's window. When the votes file is busy
+ * durable adoption ledger, and mark the evidence that credited them consumed so it never
+ * votes again. A run's doc is credited once: a later read of it counts for
+ * nothing, even after the journal is pruned. When the votes file is busy
  * nothing is consumed, so the next trigger (Stop, SubagentStop or `pull`)
  * retries.
  *
@@ -411,7 +444,10 @@ function viewRoot(index: LogIndex, target: string): RootView {
     }
   }
 
-  return { runs, recalled, adopted: new Set(credited.map((d) => d.key)).size, viaRelation: viaRelationRuns.size, evidence, opened, creditOf, done };
+  // A judge's adopted verdict counts once its upvote is written, as a read counts once credited.
+  const judged = [...index.credits.values()].flatMap((c) => (c.session === target && c.source === 'judge' && c.adopted && c.isWritten ? [c.doc] : []));
+
+  return { runs, recalled, adopted: new Set([...credited.map((d) => d.key), ...judged]).size, viaRelation: viaRelationRuns.size, evidence, opened, creditOf, done };
 }
 
 async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: string): Promise<AdoptionResult> {
@@ -419,39 +455,144 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   const { runs, recalled, evidence, opened, creditOf, done } = viewRoot(index, target);
 
   if (runs.length === 0) return { credited: [], recalled };
-  const { consumed } = index;
+  const { consumed, credits } = index;
+  const votePath = path.join(getVotesDir(config), `${config.username}.yaml`);
+
+  if (!await countSessions(config, index, target, runs, votePath)) return { credited: null, recalled };
+  const held = await durableCredits(config, target);
 
   const keys = new Set<string>();
+  // Docs the votes file credited whose journal markers an interrupted append lost: marked again, never counted again.
+  const unmarked = new Set<string>();
   const crediting: string[] = [];
 
   for (const e of evidence) {
     if (consumed.has(e.id)) continue;
-    const fresh = opened(e).filter((d) => !done.has(creditOf(d)));
+    // A doc this session credited once, by a read or an adoption label, never credits again (#1391).
+    const fresh = opened(e).filter((d) => !done.has(creditOf(d)) && !credits.has(creditKey(target, d.key)));
 
     if (fresh.length === 0) continue;
 
-    for (const d of fresh) keys.add(d.key);
+    for (const d of fresh) (held.has(d.key) ? unmarked : keys).add(d.key);
     crediting.push(e.id);
   }
 
-  if (keys.size === 0) return { credited: [], recalled };
+  if (crediting.length === 0) return { credited: [], recalled };
 
-  const { incrementUpvoted } = await import('./votes.js');
-  const credited = await incrementUpvoted(path.join(getVotesDir(config), `${config.username}.yaml`), [...keys], target);
+  const ts = new Date().toISOString();
+  const lineOf = (doc: string): CreditLine => ({ kind: 'credit', ts, id: randomUUID(), session: target, doc, source: 'tool', adopted: true, votes: 'written' });
+  const creditLines = [...keys].map(lineOf);
+  const { creditRecallAdoptions } = await import('./votes.js');
+  const credited = await creditRecallAdoptions({ votePath, credits: creditLines });
 
   if (credited === null) return { credited: null, recalled };
 
   for (const id of crediting) consumed.add(id);
+  const marked = [...creditLines, ...[...unmarked].map(lineOf)];
+
+  // A key the ledger had already credited is this session's credit too.
+  for (const line of marked) credits.set(creditKey(target, line.doc), { ...line, isWritten: true });
 
   try {
-    const ts = new Date().toISOString();
-    await appendRecallLines(config, crediting.map((evidenceId) => ({ kind: 'consumed', ts, evidence: evidenceId })));
+    await appendRecallLines(config, [...crediting.map((evidenceId): RecallLogLine => ({ kind: 'consumed', ts, evidence: evidenceId })), ...marked]);
   } catch (e) {
-    // The ledger still holds the credit for its window; past it this evidence could credit again.
+    // The votes file holds the credit identity, so a retry cannot increment it again.
     log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  return { credited, recalled };
+  return { credited: credited.map((credit) => credit.doc), recalled };
+}
+
+/**
+ * Counts root session `target` once in the recalled sessions of each eligible doc its `runs` returned that it was not
+ * counted for yet. False when the votes file was busy: nothing was counted, and the next trigger retries.
+ */
+async function countSessions(config: LocalConfig, index: LogIndex, target: string, runs: readonly RunLine[], votePath: string): Promise<boolean> {
+  const docs = [...new Set(runs.flatMap((r) => r.docs.filter((d) => d.eligible).map((d) => d.key)))].filter((doc) => !index.counted.has(creditKey(target, doc)));
+
+  if (docs.length === 0) return true;
+  const { countRecalledSessions } = await import('./votes.js');
+
+  if (!await countRecalledSessions({ votePath, sessionId: target, docIds: docs })) return false;
+
+  for (const doc of docs) index.counted.add(creditKey(target, doc));
+
+  try {
+    const ts = new Date().toISOString();
+    await appendRecallLines(config, docs.map((doc) => ({ kind: 'counted', ts, session: target, doc })));
+  } catch (e) {
+    // The votes file holds the identity too, so a retry restores the marker without counting again.
+    log.debug(`recall adoption: could not record ${docs.length} counted session(s): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  return true;
+}
+
+/**
+ * The eligible docs root session `sessionId`'s runs returned that no countable read of the session opened, credited or
+ * still pending, and that the session holds no credit of: what an adoption question asks of (#1391). None for a
+ * session another session started: its runs count under the root's.
+ */
+export async function adoptionCandidates(config: LocalConfig, sessionId: string): Promise<RecalledDoc[]> {
+  const index = indexLog(await readRecallLog(config));
+
+  if (index.rootOf(sessionId) !== sessionId) return [];
+  const { runs, evidence, opened } = viewRoot(index, sessionId);
+  const read = new Set(evidence.flatMap(opened).map((d) => d.key));
+  const held = await durableCredits(config, sessionId);
+  const docs = runs.flatMap((r) => r.docs).filter((d) => d.eligible && !read.has(d.key) && !index.credits.has(creditKey(sessionId, d.key)) && !held.has(d.key));
+
+  return [...new Map(docs.map((d) => [d.key, d] as const)).values()];
+}
+
+/**
+ * Credits `verdicts` on root session `sessionId` (#1391): each claims the session and doc with a pending judge credit,
+ * unless a read or an earlier label holds one, then writes the votes of the claims that stand, and marks them written.
+ * Judge credits a busy votes file left pending before are written first. Returns the verdicts credited now, or null
+ * when the votes file was busy: the claims stay pending, and the next adoption write or `pull` writes them. A session
+ * no line of the recall log names any more is credited nothing: `pull` may have forgotten its adoption credits.
+ */
+export async function creditAdoptionVerdicts(config: LocalConfig, sessionId: string, verdicts: readonly AdoptionVerdict[]): Promise<AdoptionVerdict[] | null> {
+  const before = indexLog(await readRecallLog(config));
+  const root = before.rootOf(sessionId);
+
+  if (!before.lines.some((line) => sessionsOf(line).includes(root))) {
+    log.debug(`recall adoption: not crediting ${verdicts.length} adoption verdict(s) of session ${root}: the recall log no longer names it`);
+
+    return [];
+  }
+
+  const ts = new Date().toISOString();
+  const held = await durableCredits(config, root);
+
+  const claims = [...new Map(verdicts.map((v) => [v.doc, v] as const)).values()].flatMap((v): CreditLine[] => (before.credits.has(creditKey(root, v.doc)) || held.has(v.doc)
+    ? []
+    : [{ kind: 'credit', ts, id: randomUUID(), session: root, doc: v.doc, source: 'judge', adopted: v.adopted, votes: 'pending' }]));
+
+  if (claims.length > 0) await appendRecallLines(config, claims);
+  // Read again: of two writers claiming one session and doc, the first line stands.
+  const ok = await writePendingJudgeCredits(config, indexLog(await readRecallLog(config)));
+
+  if (!ok) return null;
+
+  return claims.map((c) => ({ doc: c.doc, adopted: c.adopted }));
+}
+
+/**
+ * Writes the votes of every judge credit in `index` still pending, then marks them written. False when the votes file
+ * was busy: they stay pending.
+ */
+async function writePendingJudgeCredits(config: LocalConfig, index: LogIndex): Promise<boolean> {
+  const pending = [...index.credits.values()].filter((c) => c.source === 'judge' && !c.isWritten);
+
+  if (pending.length === 0) return true;
+  const { creditRecallAdoptions } = await import('./votes.js');
+
+  if (await creditRecallAdoptions({ votePath: path.join(getVotesDir(config), `${config.username}.yaml`), credits: pending }) === null) return false;
+  const ts = new Date().toISOString();
+  await appendRecallLines(config, pending.map(({ isWritten: _isWritten, ...c }): CreditLine => ({ ...c, ts, votes: 'written' })));
+
+  return true;
 }
 
 /** Eligible docs from this session's settled, linked recall runs, keyed for voting. */
@@ -460,71 +601,6 @@ export async function recalledDocsForSession(config: LocalConfig, sessionId: str
   const { runs } = viewRoot(index, index.rootOf(sessionId));
 
   return [...new Map(runs.flatMap(r => r.docs.filter(d => d.eligible).map(d => [d.key, d] as const))).values()];
-}
-
-/**
- * The vote key of a doc `sessionId`'s runs printed, by the path they printed
- * it at (however it is written), settled and linked as the reducer does; or
- * undefined when none printed it. The upvote judge maps the transcript
- * parser's ids (a `File:` basename such as `setup` or `SKILL`) through it.
- */
-export async function recalledKeyOf(config: LocalConfig, sessionId: string): Promise<(printed: string) => string | undefined> {
-  const index = indexLog(await readRecallLog(config));
-  const { runs } = viewRoot(index, index.rootOf(sessionId));
-  const keys = new Map(runs.flatMap((r) => r.docs.map((d) => [pathKey(d.path), d.key] as const)));
-
-  return (printed) => keys.get(pathKey(printed));
-}
-
-/**
- * The `File:` path `sessionId`'s runs printed for a recalled doc, looked up by
- * the vote key its run recorded (`learnings/setup`, `redis-timeout`) or by the
- * `File:` basename the transcript parser names it (`setup`, `redis-timeout`);
- * undefined when none of the session's runs printed it, or when a basename is
- * ambiguous (see below).
- *
- * The upvote judge grounds its verdict on each recalled doc's real content,
- * read from this path. When recall ran inside a subagent (the recommended
- * path), the main transcript carries only the `recalled-doc-ids` comment — not
- * the `File:` lines — so the parser cannot supply the path and the judge would
- * drop every candidate as ungrounded. The recall log always has the path the
- * run printed, so the handler backfills from here (#723).
- *
- * The id the judge passes is the transcript parser's form: a `File:` basename
- * (`setup`), via transcript-parser's extractRecalledDocIds. A basename is NOT
- * unique — a session can recall both `learnings/setup.md` and
- * `docs/learnings/setup.md` — so an ambiguous basename (two distinct recalled
- * paths) resolves to undefined: the candidate stays ungrounded rather than be
- * judged against, and credited to, the wrong doc. Only when the id is not a
- * known basename at all does it fall back to an exact vote-key match, for a
- * caller that already holds the full key.
- */
-export async function recalledPathOf(config: LocalConfig, sessionId: string): Promise<(id: string) => string | undefined> {
-  const index = indexLog(await readRecallLog(config));
-  const { runs } = viewRoot(index, index.rootOf(sessionId));
-  // basename → the distinct docs the session recalled under it, keyed by the
-  // normalized path (pathKey, as recalledKeyOf keys its map) so one doc printed
-  // two equivalent ways is not counted as two; the value is the readable path.
-  // Only a basename with exactly one distinct doc resolves unambiguously.
-  const docsByBasename = new Map<string, Map<string, string>>();
-  // Exact vote key → path (keys are unique), a fallback for a full-key id.
-  const byKey = new Map<string, string>();
-
-  for (const r of runs) {
-    for (const d of r.docs) {
-      if (!byKey.has(d.key)) byKey.set(d.key, d.path);
-      const base = path.basename(d.path).replace(/\.md$/i, '');
-      (docsByBasename.get(base) ?? docsByBasename.set(base, new Map()).get(base)!).set(pathKey(d.path), d.path);
-    }
-  }
-
-  return (id) => {
-    const docs = docsByBasename.get(id);
-
-    if (docs) return docs.size === 1 ? [...docs.values()][0] : undefined;
-
-    return byKey.get(id);
-  };
 }
 
 /** One root session's recall activity, as `teamai stats` shows it. */
@@ -537,7 +613,7 @@ export interface RecallSessionSummary {
   runs: number;
   /** Distinct docs the runs returned. */
   recalled: number;
-  /** Distinct docs the reducer credited: a read still pending is not counted. */
+  /** Distinct docs the reducer credited or a judge found adopted: a read or a verdict still pending is not counted. */
   adopted: number;
   /**
    * Runs in which a countable read opened at least one of the related paths
@@ -594,8 +670,8 @@ const RECALL_LOG_MAX_LINES = 5000;
  * What `teamai pull` does with a scope's recall log. First it credits the
  * sessions whose evidence is still pending, a recovery for a read after the
  * session's last Stop, or a Stop that found the votes file busy (git teams
- * only, as votes are). Then it applies retention under the log's lock (see
- * {@link retainedLines}). Never call it from a hook: the prune may wait
+ * only, as votes are). Once those writes succeed, it forgets the recalled sessions the log no longer names (see
+ * {@link forgetUnnamedSessions}), then applies retention under the log's lock (see {@link retainedLines}). Never call it from a hook: the prune may wait
  * seconds for the lock. Failures are logged, not thrown: the next pull
  * retries.
  */
@@ -604,10 +680,18 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
 
   if (config.repo.kind !== 'http') {
     try {
-      await creditPendingSessions(config);
+      if (!await creditPendingSessions(config)) return;
     } catch (e) {
       log.debug(`recall adoption: could not credit pending sessions from ${file}: ${e instanceof Error ? e.message : String(e)}`);
+
+      return;
     }
+  }
+
+  try {
+    await forgetUnnamedSessions(config);
+  } catch (e) {
+    log.debug(`recall adoption: could not forget recalled sessions ${file} no longer names: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Taking the lock creates its directory: a scope that never recalled gets none.
@@ -622,16 +706,60 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
 }
 
 /**
- * Run the reducer for each root session with evidence not yet consumed. It
- * stops at the first busy votes file: the rest stays pending for the next
- * trigger.
+ * Write the votes of judge credits a busy votes file left pending, then run
+ * the reducer for each root session with evidence not yet consumed, or a
+ * recalled doc it was not counted for yet. It stops at the first busy votes
+ * file: the rest stays pending for the next trigger.
  */
-async function creditPendingSessions(config: LocalConfig): Promise<void> {
+async function creditPendingSessions(config: LocalConfig): Promise<boolean> {
   const index = indexLog(await readRecallLog(config));
-  const roots = new Set(index.lines.flatMap((l) => l.kind === 'evidence' && !index.consumed.has(l.id) ? [index.rootOf(l.session)] : []));
+
+  if (!await writePendingJudgeCredits(config, index)) return false;
+
+  const uncounted = index.lines.flatMap((l) => {
+    const owner = l.kind === 'run' ? index.ownerOf(l) : null;
+
+    return l.kind === 'run' && owner !== null && l.docs.some((d) => d.eligible && !index.counted.has(creditKey(index.rootOf(owner), d.key))) ? [index.rootOf(owner)] : [];
+  });
+
+  const roots = new Set([...index.lines.flatMap((l) => l.kind === 'evidence' && !index.consumed.has(l.id) ? [index.rootOf(l.session)] : []), ...uncounted]);
 
   for (const root of roots) {
-    if ((await creditRoot(config, index, root)).credited === null) return;
+    if ((await creditRoot(config, index, root)).credited === null) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Forget the recalled-session and adoption-credit identities of the sessions no line of the log names. It runs before
+ * retention, so a session whose last lines this pull drops is forgotten at the next one. A verdict written later for
+ * such a session credits nothing (see {@link creditAdoptionVerdicts}).
+ */
+async function forgetUnnamedSessions(config: LocalConfig): Promise<void> {
+  const votePath = path.join(getVotesDir(config), `${config.username}.yaml`);
+  const named = new Set((await readRecallLog(config)).flatMap(sessionsOf));
+  const { recalledSessions, adoptionCredits } = await readUserVotes(votePath);
+
+  if ([...Object.keys(recalledSessions ?? {}), ...Object.keys(adoptionCredits ?? {})].every((session) => named.has(session))) return;
+  await forgetSessionIdentities({ votePath, named });
+}
+
+/** The sessions a line names, any of which a reducer may count or credit from it. */
+function sessionsOf(line: RecallLogLine): string[] {
+  switch (line.kind) {
+    case 'run': return line.session === null ? [] : [line.session];
+    case 'claim':
+    case 'evidence':
+    case 'credit':
+    case 'counted': return [line.session];
+    case 'link': return [line.child, line.parent];
+    case 'consumed': return [];
+    default: {
+      const unhandled: never = line;
+
+      return unhandled;
+    }
   }
 }
 

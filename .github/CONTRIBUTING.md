@@ -101,6 +101,9 @@ Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosit
 - Prefer async/await over callbacks.
 - Keep commands in `src/*.ts` thin — heavy lifting lives in `src/resources/` or `src/utils/`.
 - Workflow first: a feature that orchestrates AI work ships as a default workflow in `workflows/`, which a team can replace. Put what a team may change in that YAML, keep only invariants in code, and make its command a shortcut that starts the workflow. Add no new CLI command when an existing one can take an option (see AGENTS.md).
+- Shortcut on the default driver: a feature command starts its default workflow on the driver `workflows.driver` names, local when unset, and adds no `--driver` flag.
+- No AI call outside a workflow: only drivers launch AI tools, so a feature asks one through an `answer` or `prompt` step. `teamai/launch-through-workflows` enforces it in `npm run lint`.
+- Judgment goes through scorers: anything that judges AI work is a scorer judged by `teamai-score`. A rubric teamai ships is a default scorer in `scorers/`, which a team can replace; code keeps only its contract (see AGENTS.md).
 - Compose workflows: reuse an existing workflow as a `workflow:` step rather than copying its steps, and write a new one so another workflow can run it as a step, with inputs and outputs that say what it takes and gives.
 - Avoid narrating comments ("// increment counter"). Comments should explain _why_, not _what_; `teamai/no-low-value-comments` rejects one that only repeats the name below it.
 

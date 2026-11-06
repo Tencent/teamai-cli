@@ -8,15 +8,16 @@ import { parseYaml } from './utils/yaml.js';
 
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
 import { isJsonObject, type JsonValue } from './types.js';
-import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
+import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteDelta, VoteEntryV2 } from './types.js';
+import type { CreditLine } from './recall-log.js';
 import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
 /**
  * Run `fn` while holding an exclusive per-file lock, so the read-modify-write in
  * incrementUpvoted is serialized across processes. This matters because the
- * foreground votesSyncHandler and the detached background votesJudgeHandler
- * (issue #723) can both increment the same votes file: without a lock their
+ * Stop hook's votesSyncHandler and `teamai score write` crediting an adoption
+ * verdict (#1391) can both increment the same votes file: without a lock their
  * load→save windows can overlap and one increment would be lost.
  *
  * Reuses the shared acquireLock/releaseLock (update.ts), which records the owner
@@ -96,30 +97,6 @@ function pruneLedger(ledger: UpvoteLedger, now: number): boolean {
   }
 
   return changed;
-}
-
-/**
- * The doc-ids already credited for `sessionId` in the in-file ledger. Read-only
- * (no lock needed — a stale read only means a candidate is judged one extra time,
- * never a double-count, since incrementUpvoted dedups under the lock). The judge
- * uses this to skip docs the foreground pass already upvoted, so it does not burn
- * a local-CLI call on a candidate that would dedup to nothing (issue #723 review).
- */
-export async function creditedDocIdsForSession(votePath: string, sessionId: string): Promise<Set<string>> {
-  try {
-    // Read WITHOUT loadUserVotes: on a v1 file loadUserVotes performs an
-    // unlocked auto-migration write, which could clobber a concurrent locked
-    // increment with a stale snapshot (issue #723 review). This read-only helper
-    // parses the YAML directly and never writes; the ledger only exists in v2
-    // files anyway, so a v1/absent/corrupt file simply yields an empty set.
-    const content = await readFileSafe(votePath);
-
-    if (!content) return new Set();
-
-    return new Set(readUserVotesFromContent(content).upvotedSessions?.[sessionId]?.docIds ?? []);
-  } catch {
-    return new Set();
-  }
 }
 
 /**
@@ -374,6 +351,128 @@ export async function incrementUpvoted(
   return value ?? [];
 }
 
+/** Move `entry`'s `<counter>_count` and its delta in `data` by `by`, starting the entry when the doc has none. */
+function bump(data: UserVotesV2, docId: string, counter: string, by: number): void {
+  const entry = data.votes[docId] ?? { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' };
+  const delta = data.deltas[docId] ?? { recalled_delta: 0, upvoted_delta: 0 };
+  data.votes[docId] = entry;
+  data.deltas[docId] = delta;
+  entry[`${counter}_count`] = countOf(entry, counter) + by;
+  delta[`${counter}_delta`] = CountSchema.parse(delta[`${counter}_delta`]) + by;
+}
+
+/**
+ * Count one more recalled session for each of `docIds` (#1391): the denominator of the adoption estimator. A doc
+ * whose entry has no session count yet starts from its recalls, which is what the ratio read before, so its confidence
+ * does not jump at the upgrade; recall counted this session's recall when it ran, so it is among them. The delta
+ * carries only the session: the team file starts its own count from its own recalls when the delta merges. The
+ * identity is stored with the counter, so retries count each (root session, doc) once. Returns false when the votes
+ * file was busy: nothing was counted, and the caller retries.
+ */
+export async function countRecalledSessions({ votePath, sessionId, docIds }: { votePath: string; sessionId: string; docIds: readonly string[] }): Promise<boolean> {
+  if (docIds.length === 0) return true;
+
+  const { acquired } = await withVotesLock(votePath, async () => {
+    const data = await loadUserVotes(votePath);
+    const counted = new Set(data.recalledSessions?.[sessionId] ?? []);
+    const fresh = [...new Set(docIds)].filter((docId) => !counted.has(docId));
+
+    if (fresh.length === 0) return;
+
+    for (const docId of fresh) {
+      const recalls = data.votes[docId]?.recalled_session_count === undefined ? data.votes[docId]?.recalled_count : undefined;
+      bump(data, docId, 'recalled_session', 1);
+      const entry = data.votes[docId];
+
+      if (entry && recalls !== undefined) entry.recalled_session_count = Math.max(1, recalls);
+      counted.add(docId);
+    }
+
+    data.recalledSessions = { ...data.recalledSessions, [sessionId]: [...counted] };
+    await saveUserVotes(votePath, data);
+  });
+
+  return acquired;
+}
+
+/**
+ * Forget the recalled-session and adoption-credit identities of sessions the recall log no longer names. Only lines
+ * naming a session yield a count or a credit for it, so the caller passes every session its log names before that
+ * log's retention drops lines. A reducer that read lines before an earlier retention has finished by then. Returns
+ * false when the votes file was busy: nothing was forgotten.
+ */
+export async function forgetSessionIdentities({ votePath, named }: { votePath: string; named: ReadonlySet<string> }): Promise<boolean> {
+  const { acquired } = await withVotesLock(votePath, async () => {
+    const data = await loadUserVotes(votePath);
+    const sessions = [...Object.keys(data.recalledSessions ?? {}), ...Object.keys(data.adoptionCredits ?? {})];
+
+    if (sessions.every((session) => named.has(session))) return;
+    const keepNamed = (ledger: Record<string, string[]>) => Object.fromEntries(Object.entries(ledger).filter(([session]) => named.has(session)));
+
+    if (data.recalledSessions) data.recalledSessions = keepNamed(data.recalledSessions);
+
+    if (data.adoptionCredits) data.adoptionCredits = keepNamed(data.adoptionCredits);
+    await saveUserVotes(votePath, data);
+  });
+
+  return acquired;
+}
+
+/** A judge's verdict on whether one session adopted a recalled doc (#1391). */
+export interface AdoptionVerdict {
+  doc: string;
+  adopted: boolean;
+}
+
+/** The recall journal fields whose effect the votes file deduplicates. */
+export type RecallAdoptionCredit = Pick<CreditLine, 'session' | 'doc' | 'source' | 'adopted'>;
+
+/**
+ * Credit recall adoption once per root session and doc, keeping the identity with the counters. A judge verdict
+ * counts a judged session and, when adopted, a judge upvote within the total. Returns the newly credited inputs,
+ * or null when the votes file was busy and nothing was credited.
+ */
+export async function creditRecallAdoptions({ votePath, credits }: { votePath: string; credits: readonly RecallAdoptionCredit[] }): Promise<RecallAdoptionCredit[] | null> {
+  if (credits.length === 0) return [];
+
+  const { acquired, value } = await withVotesLock(votePath, async () => {
+    const data = await loadUserVotes(votePath);
+    const now = new Date().toISOString();
+    const ledger = { ...data.adoptionCredits };
+    const fresh: RecallAdoptionCredit[] = [];
+
+    for (const credit of credits) {
+      const { doc, adopted, session, source } = credit;
+      const seen = new Set(ledger[session] ?? []);
+
+      if (seen.has(doc)) continue;
+      seen.add(doc);
+      ledger[session] = [...seen];
+      fresh.push(credit);
+
+      if (source === 'judge') bump(data, doc, 'judged', 1);
+
+      if (adopted) {
+        bump(data, doc, 'upvoted', 1);
+
+        if (source === 'judge') bump(data, doc, 'judge_upvoted', 1);
+
+        const entry = data.votes[doc];
+
+        if (entry) entry.last_upvoted_at = now;
+      }
+    }
+
+    if (fresh.length === 0) return [];
+    data.adoptionCredits = ledger;
+    await saveUserVotes(votePath, data);
+
+    return fresh;
+  });
+
+  return acquired ? value ?? [] : null;
+}
+
 /**
  * Merge local deltas into a remote votes snapshot.
  * Returns merged result with empty deltas.
@@ -392,39 +491,57 @@ export function mergeDeltas(local: UserVotesV2, remote: UserVotesV2): UserVotesV
   }
 
   for (const [docId, delta] of Object.entries(local.deltas)) {
-    if (!votes[docId]) {
-      votes[docId] = { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' };
-    }
+    const merged = votes[docId] ?? { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' };
+    votes[docId] = merged;
 
-    votes[docId].recalled_count = Math.max(0, votes[docId].recalled_count + delta.recalled_delta);
-    votes[docId].upvoted_count = Math.max(0, votes[docId].upvoted_count + delta.upvoted_delta);
+    // An entry with no session count reads its recalls as sessions; the delta's sessions come after them.
+    if (merged.recalled_session_count === undefined && CountSchema.parse(delta.recalled_session_delta) !== 0) merged.recalled_session_count = merged.recalled_count;
+
+    for (const [counter, moved] of deltaMoves(delta)) merged[`${counter}_count`] = Math.max(0, countOf(merged, counter) + moved);
 
     const localEntry = local.votes[docId];
 
     if (localEntry) {
-      if (localEntry.last_recalled_at > (votes[docId].last_recalled_at ?? '')) {
-        votes[docId].last_recalled_at = localEntry.last_recalled_at;
+      if (localEntry.last_recalled_at > (merged.last_recalled_at ?? '')) {
+        merged.last_recalled_at = localEntry.last_recalled_at;
       }
 
       if (
         localEntry.last_upvoted_at !== undefined &&
-        localEntry.last_upvoted_at > (votes[docId].last_upvoted_at ?? '')
+        localEntry.last_upvoted_at > (merged.last_upvoted_at ?? '')
       ) {
-        votes[docId].last_upvoted_at = localEntry.last_upvoted_at;
+        merged.last_upvoted_at = localEntry.last_upvoted_at;
       }
     }
 
     // Consistency constraint: a zeroed counter must not retain a timestamp.
-    if (votes[docId].recalled_count === 0) {
-      votes[docId].last_recalled_at = '';
+    if (merged.recalled_count === 0) {
+      merged.last_recalled_at = '';
     }
 
-    if (votes[docId].upvoted_count === 0) {
-      delete votes[docId].last_upvoted_at;
+    if (merged.upvoted_count === 0) {
+      delete merged.last_upvoted_at;
     }
   }
 
   return { version: 2, votes, deltas: {} };
+}
+
+/** A count a delta or an entry holds: a finite number, else 0. */
+const CountSchema = z.number().finite().catch(0);
+
+/** The counters `delta` moves, by name (`judged` for `judged_delta`), and by how much; a zero move is left out. */
+function deltaMoves(delta: VoteDelta): Array<[string, number]> {
+  return Object.entries(delta).flatMap(([key, value]): Array<[string, number]> => {
+    const moved = CountSchema.parse(value);
+
+    return key.endsWith('_delta') && moved !== 0 ? [[key.slice(0, -'_delta'.length), moved]] : [];
+  });
+}
+
+/** The `<counter>_count` of `entry`, 0 when it has none. */
+function countOf(entry: VoteEntryV2, counter: string): number {
+  return CountSchema.parse(entry[`${counter}_count`]);
 }
 
 /** True when the local votes file still has deltas not yet synced to the team repo. */
@@ -446,13 +563,20 @@ function remainingDeltasAfter(
   const remainingDeltas: UserVotesV2['deltas'] = {};
 
   for (const [docId, delta] of Object.entries(current)) {
-    const s = synced[docId];
-    const recalled_delta = delta.recalled_delta - (s?.recalled_delta ?? 0);
-    const upvoted_delta = delta.upvoted_delta - (s?.upvoted_delta ?? 0);
+    const delivered = new Map(deltaMoves(synced[docId] ?? { recalled_delta: 0, upvoted_delta: 0 }));
 
-    if (recalled_delta !== 0 || upvoted_delta !== 0) {
-      remainingDeltas[docId] = { recalled_delta, upvoted_delta };
+    const left = deltaMoves(delta).flatMap(([counter, moved]): Array<[string, number]> => {
+      const remaining = moved - (delivered.get(counter) ?? 0);
+
+      return remaining === 0 ? [] : [[`${counter}_delta`, remaining]];
+    });
+
+    // A counter only the delivered set moved, such as one a downvote took back, is owed back too.
+    for (const [counter, moved] of delivered) {
+      if (!deltaMoves(delta).some(([name]) => name === counter)) left.push([`${counter}_delta`, -moved]);
     }
+
+    if (left.length > 0) remainingDeltas[docId] = { recalled_delta: 0, upvoted_delta: 0, ...Object.fromEntries(left) };
   }
 
   return remainingDeltas;

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow } from '../workflow/cache.js';
 import type { SyncWorkflowResult } from '../workflow/cache.js';
@@ -1317,7 +1318,7 @@ steps:
     const result = await syncScorersThenWorkflows(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/review.yaml:12: field "steps[1].prompt_file": step "review" prompt_file template {{ length(steps.build.result) }}: "steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr',
+      'workflows/review.yaml:12: field "steps[1].prompt_file": step "review" prompt_file template {{ length(steps.build.result) }}: "steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.failure, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr',
     ]);
     expect(result.invalid.map((diagnostic) => diagnostic.code)).toEqual(['bad_template']);
     expect(result.unrunnable).toEqual(['workflows/review.yaml']);
@@ -1966,6 +1967,63 @@ steps:
       'workflows/ship.yaml:17: field "steps[2].with.issue": step "compile" with.issue is not an input workflow "build" declares',
     ]);
     expect(result.cached).toEqual(['build', 'check']);
+  });
+
+  it('lets a step leave out an input its workflow gives a default, and still names one with no default', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'check', `schemaVersion: v1alpha1
+name: check
+description: Check the issue.
+inputs: { issue: number, strict: boolean }
+defaults:
+  inputs: { strict: false }
+steps:
+  - id: lint
+    command: node lint.js
+`);
+    writeWorkflow(config, 'ship', `schemaVersion: v1alpha1
+name: ship
+description: Ship the issue.
+steps:
+  - id: check
+    workflow: check
+    with: { issue: 42 }
+  - id: bare
+    needs: []
+    workflow: check
+    with: { strict: true }
+`);
+
+    const result = await syncAndStart(config);
+
+    expect(result.invalid.map(formatDiagnostic)).toEqual([
+      'workflows/ship.yaml:11: field "steps[1].with": step "bare" with does not pass input "issue", which workflow "check" declares as number',
+    ]);
+  });
+
+  it('reads a cached definition from before input defaults, whose every input is required', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'check', `schemaVersion: v1alpha1
+name: check
+description: Check the issue.
+inputs: { issue: number, strict: boolean }
+defaults:
+  inputs: { strict: false }
+steps:
+  - id: lint
+    command: node lint.js
+`);
+    await syncScorersThenWorkflows(config);
+    const secrets = await knownSecrets(config);
+    expect(await startRun(config, 'check', { issue: 1 }, { secrets })).toMatchObject({ data: { run: expect.any(String) } });
+
+    const file = cacheFiles(config).find((each) => path.basename(each) === 'check.json') ?? '';
+    const cached = z.object({ definition: z.object({ defaults: z.unknown() }).passthrough() }).passthrough().parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+    const { defaults: _defaults, ...older } = cached.definition;
+    fs.writeFileSync(file, JSON.stringify({ ...cached, definition: older }));
+
+    expect(await startRun(config, 'check', { issue: 1 }, { secrets })).toEqual({ error: { code: 'invalid_inputs', message: 'inputs.strict is missing' } });
+    expect(await startRun(config, 'check', { issue: 1, strict: true }, { secrets })).toMatchObject({ data: { run: expect.any(String) } });
   });
 
   it('names an input a step does not pass by the type its workflow declares, however it nests', async () => {

@@ -1,22 +1,13 @@
 // -*- coding: utf-8 -*-
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import matter from 'gray-matter';
 
-import { findPromotionCandidates, executePromotion } from '../maintenance/promote.js';
-import { CallError, callTool } from '../tool-launch/call.js';
+import { chooseCategory, findPromotionCandidates, markPromoted, writePromotion } from '../maintenance/promote.js';
 import type { UserVotesV2 } from '../types.js';
-
-vi.mock('../tool-launch/call.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
-  callTool: vi.fn(async (prompt: string) => ({
-    tool: 'claude',
-    text: prompt.includes('Classify') ? 'skills' : '---\ntitle: promoted content\ntags: [test]\ndate: 2026-07-03\n---\nPromoted by AI.',
-  })),
-}));
 
 let tmpDir: string;
 
@@ -28,10 +19,10 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeLearning(dir: string, id: string, opts: { date?: string; title?: string } = {}): void {
+function makeLearning(dir: string, id: string, opts: { date?: string; title?: string; body?: string } = {}): void {
   const date = opts.date ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const title = opts.title ?? id;
-  const content = matter.stringify('How to do something step-by-step.', { title, date, tags: ['workflow'] });
+  const content = matter.stringify(opts.body ?? 'How to do something step-by-step.', { title, date, tags: ['workflow'] });
   fs.writeFileSync(path.join(dir, `${id}.md`), content);
 }
 
@@ -83,7 +74,35 @@ describe('findPromotionCandidates', () => {
     expect(candidates.length).toBeGreaterThan(0);
     expect(candidates[0].docId).toBe('great-doc');
     expect(candidates[0].suggestedCategory).toBe('skills');
-    expect(callTool).toHaveBeenCalledWith(expect.stringContaining('Classify'), expect.objectContaining({ launchedBy: 'recall-promote' }));
+  });
+
+  it('never promotes a learning whose votes carry a count that is not a number', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+    makeLearning(learningsDir, 'half-adopted');
+    const recent = new Date().toISOString();
+
+    // Six upvotes of fifteen recalls from three people: enough upvotes and people, far from enough confidence.
+    for (const user of ['alice', 'bob', 'carol']) {
+      fs.writeFileSync(path.join(votesDir, `${user}.yaml`), `version: 2\ndeltas: {}\nvotes:\n  half-adopted:\n    recalled_count: 5\n    upvoted_count: 2\n    judge_upvoted_count: .nan\n    judged_count: .nan\n    last_recalled_at: ${recent}\n    last_upvoted_at: ${recent}\n`);
+    }
+
+    expect(await findPromotionCandidates([learningsDir], votesDir, undefined)).toEqual([]);
+  });
+
+  it('suggests the category the learning\'s keywords point to', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+    makeLearning(learningsDir, 'pin-versions', { body: 'Always pin dependency versions; never float them. A team convention.' });
+    makeHighVotes(votesDir, 'pin-versions');
+
+    const candidates = await findPromotionCandidates([learningsDir], votesDir, undefined);
+
+    expect(candidates.map((c) => [c.docId, c.suggestedCategory])).toEqual([['pin-versions', 'rules']]);
   });
 
   it('skips already-promoted learnings', async () => {
@@ -139,126 +158,102 @@ describe('findPromotionCandidates', () => {
   });
 });
 
-describe('executePromotion', () => {
-  it('dry-run does not create files', async () => {
+const ready = (learningsDir: string) => ({ docId: 'ready', filename: 'ready.md', path: path.join(learningsDir, 'ready.md') });
+
+describe('writePromotion', () => {
+  it('writes nothing in a dry run, not even the category directory (#900)', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
-    fs.mkdirSync(learningsDir, { recursive: true });
-    makeLearning(learningsDir, 'candidate');
-
-    const candidate = {
-      docId: 'candidate',
-      filename: 'candidate.md',
-      path: path.join(learningsDir, 'candidate.md'),
-      confidence: 0.95,
-      upvotedCount: 10,
-      userCount: 3,
-      title: 'candidate',
-      suggestedCategory: 'skills' as const,
-    };
-
-    const { targetPath, marked } = await executePromotion(candidate, tmpDir, { dryRun: true });
-    expect(targetPath).toContain(path.join('skills', 'candidate', 'SKILL.md'));
-    expect(marked).toBeNull();
-    expect(fs.existsSync(path.join(tmpDir, 'skills', 'candidate', 'SKILL.md'))).toBe(false);
-    // Not even the category directory: a preview creates nothing (#900).
-    expect(fs.existsSync(path.join(tmpDir, 'skills'))).toBe(false);
-  });
-
-  it('copies file and marks original with promoted_to', async () => {
-    const learningsDir = path.join(tmpDir, 'learnings');
-    const skillsDir = path.join(tmpDir, 'skills');
     fs.mkdirSync(learningsDir, { recursive: true });
     makeLearning(learningsDir, 'ready');
 
-    const candidate = {
-      docId: 'ready',
-      filename: 'ready.md',
-      path: path.join(learningsDir, 'ready.md'),
-      confidence: 0.95,
-      upvotedCount: 10,
-      userCount: 3,
-      title: 'ready',
-      suggestedCategory: 'skills' as const,
-    };
+    const { relativePath } = await writePromotion(ready(learningsDir), tmpDir, { category: 'skills', dryRun: true });
 
-    const { marked } = await executePromotion(candidate, tmpDir, { category: 'skills' });
-    expect(marked).toBe(path.join(learningsDir, 'ready.md'));
-
-    expect(fs.existsSync(path.join(skillsDir, 'ready', 'SKILL.md'))).toBe(true);
-
-    // Original should have promoted_to in frontmatter
-    const original = fs.readFileSync(path.join(learningsDir, 'ready.md'), 'utf-8');
-    const { data } = matter(original);
-    expect(data.promoted_to).toBe('skills/ready/SKILL.md');
-    expect(fs.readFileSync(path.join(skillsDir, 'ready', 'SKILL.md'), 'utf-8')).toContain('Promoted by AI.');
-    expect(callTool).toHaveBeenCalledWith(expect.stringContaining('promoting a team learning'), expect.objectContaining({ launchedBy: 'recall-promote' }));
-  });
-  it('promotes a namespaced learning keeping the namespace in target path', async () => {
-    const learningsDir = path.join(tmpDir, 'learnings');
-    const skillsDir = path.join(tmpDir, 'skills');
-    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
-
-    const nsFile = path.join('k8s', 'helm-values.md');
-    const absPath = path.join(learningsDir, nsFile);
-    fs.writeFileSync(absPath, matter.stringify('Step by step procedure', { title: 'helm-values', date: '2026-01-01' }));
-
-    const candidate = {
-      docId: path.join('k8s', 'helm-values'),
-      filename: nsFile,
-      path: absPath,
-      confidence: 0.95,
-      upvotedCount: 10,
-      userCount: 3,
-      title: 'helm-values',
-      suggestedCategory: 'skills' as const,
-    };
-
-    const { targetPath, marked } = await executePromotion(candidate, tmpDir, { category: 'skills' });
-    expect(marked).toBe(absPath);
-    expect(targetPath).toBe(path.join(tmpDir, 'skills', 'k8s', 'helm-values', 'SKILL.md'));
-    expect(fs.existsSync(path.join(skillsDir, 'k8s', 'helm-values', 'SKILL.md'))).toBe(true);
-
-    const original = fs.readFileSync(absPath, 'utf-8');
-    const { data } = matter(original);
-    expect(data.promoted_to).toBe('skills/k8s/helm-values/SKILL.md');
+    expect(relativePath).toBe('skills/ready/SKILL.md');
+    expect(fs.existsSync(path.join(tmpDir, 'skills'))).toBe(false);
   });
 
-  it('normalizes path separators in candidate filename when promoting', async () => {
+  it('writes the rewritten content, as a skill named after the learning', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
-    const skillsDir = path.join(tmpDir, 'skills');
-    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
+    fs.mkdirSync(learningsDir, { recursive: true });
+    makeLearning(learningsDir, 'ready');
 
+    const { targetPath } = await writePromotion(ready(learningsDir), tmpDir, { category: 'skills', content: '---\ntitle: Ready\n---\nRewritten for the team.\n' });
+
+    expect(targetPath).toBe(path.join(tmpDir, 'skills', 'ready', 'SKILL.md'));
+    const written = matter(fs.readFileSync(targetPath, 'utf-8'));
+    expect(written.data.name).toBe('ready');
+    expect(written.content).toContain('Rewritten for the team.');
+  });
+
+  it('writes the learning as written when there is no rewritten content', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    makeLearning(learningsDir, 'ready');
+
+    const { targetPath } = await writePromotion(ready(learningsDir), tmpDir, { category: 'docs' });
+
+    expect(targetPath).toBe(path.join(tmpDir, 'docs', 'ready.md'));
+    expect(fs.readFileSync(targetPath, 'utf-8')).toBe(fs.readFileSync(path.join(learningsDir, 'ready.md'), 'utf-8'));
+  });
+
+  it('keeps the namespace of a namespaced learning, whatever its path separator', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    fs.mkdirSync(path.join(learningsDir, 'k8s'), { recursive: true });
     const absPath = path.join(learningsDir, 'k8s', 'helm-values.md');
     fs.writeFileSync(absPath, matter.stringify('Step by step procedure', { title: 'helm-values', date: '2026-01-01' }));
 
-    const candidate = {
-      docId: 'k8s/helm-values',
-      filename: path.join('k8s', 'helm-values.md'),
-      path: absPath,
-      confidence: 0.95,
-      upvotedCount: 10,
-      userCount: 3,
-      title: 'helm-values',
-      suggestedCategory: 'skills' as const,
-    };
+    const { targetPath } = await writePromotion({ docId: 'k8s/helm-values', filename: path.join('k8s', 'helm-values.md'), path: absPath }, tmpDir, { category: 'skills' });
 
-    const { targetPath } = await executePromotion(candidate, tmpDir, { category: 'skills' });
     expect(targetPath).toBe(path.join(tmpDir, 'skills', 'k8s', 'helm-values', 'SKILL.md'));
-    expect(fs.existsSync(path.join(skillsDir, 'k8s', 'helm-values', 'SKILL.md'))).toBe(true);
-
-    const original = fs.readFileSync(absPath, 'utf-8');
-    const { data } = matter(original);
-    expect(data.promoted_to).toBe('skills/k8s/helm-values/SKILL.md');
+    expect(fs.existsSync(targetPath)).toBe(true);
   });
 
-  it('fails, writing nothing, when the member names an AI tool teamai cannot run', async () => {
+  it('overwrites nothing', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     fs.mkdirSync(learningsDir, { recursive: true });
     makeLearning(learningsDir, 'ready');
-    vi.mocked(callTool).mockRejectedValueOnce(new CallError('override_invalid', 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.'));
-    const candidate = { docId: 'ready', filename: 'ready.md', path: path.join(learningsDir, 'ready.md'), confidence: 0.95, upvotedCount: 10, userCount: 3, title: 'ready', suggestedCategory: 'skills' as const };
+    fs.mkdirSync(path.join(tmpDir, 'docs'));
+    fs.writeFileSync(path.join(tmpDir, 'docs', 'ready.md'), 'the team\'s own\n');
 
-    await expect(executePromotion(candidate, tmpDir, { category: 'skills' })).rejects.toThrow('TEAMAI_AI_TOOL is "gemini"');
-    expect(fs.existsSync(path.join(tmpDir, 'skills'))).toBe(false);
+    await expect(writePromotion(ready(learningsDir), tmpDir, { category: 'docs' })).rejects.toThrow('Promotion target already exists: docs/ready.md. Nothing was overwritten.');
+    expect(fs.readFileSync(path.join(tmpDir, 'docs', 'ready.md'), 'utf-8')).toBe('the team\'s own\n');
+  });
+});
+
+describe('markPromoted', () => {
+  it('marks the learning with promoted_to, where it lives when that is the write root', async () => {
+    const learningsDir = path.join(tmpDir, 'learnings');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    makeLearning(learningsDir, 'ready');
+
+    const marked = await markPromoted(ready(learningsDir), 'skills/ready/SKILL.md', learningsDir);
+
+    expect(marked).toBe(path.join(learningsDir, 'ready.md'));
+    expect(matter(fs.readFileSync(marked, 'utf-8')).data.promoted_to).toBe('skills/ready/SKILL.md');
+  });
+
+  it('marks a learning of a root nothing pushes in the write root, so the mark is kept', async () => {
+    const readOnlyDir = path.join(tmpDir, 'delivered');
+    const writeDir = path.join(tmpDir, 'learnings');
+    fs.mkdirSync(readOnlyDir, { recursive: true });
+    makeLearning(readOnlyDir, 'ready');
+
+    const marked = await markPromoted(ready(readOnlyDir), 'docs/ready.md', writeDir);
+
+    expect(marked).toBe(path.join(writeDir, 'ready.md'));
+    expect(matter(fs.readFileSync(marked, 'utf-8')).data.promoted_to).toBe('docs/ready.md');
+    expect(fs.readFileSync(path.join(readOnlyDir, 'ready.md'), 'utf-8')).not.toContain('promoted_to');
+  });
+});
+
+describe('chooseCategory', () => {
+  it('takes the category the person gave, else the AI\'s with its reason, else the keywords\' suggestion', () => {
+    expect(chooseCategory({ given: 'docs', chosen: 'rules', reason: 'It states a constraint.', suggested: 'skills' })).toEqual({ category: 'docs', reason: 'Chosen with --category.' });
+    expect(chooseCategory({ given: '', chosen: 'rules', reason: 'It states a constraint.', suggested: 'skills' })).toEqual({ category: 'rules', reason: 'It states a constraint.' });
+    expect(chooseCategory({ given: '', chosen: '', reason: '', suggested: 'skills' })).toEqual({ category: 'skills', reason: 'Suggested by the learning\'s keywords, since the AI could not choose.' });
+  });
+
+  it('refuses a category that is not skills, rules or docs', () => {
+    expect(() => chooseCategory({ given: 'wiki', chosen: '', reason: '', suggested: 'skills' })).toThrow('Invalid promotion category "wiki". Use skills, rules, or docs.');
   });
 });

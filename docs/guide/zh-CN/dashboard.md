@@ -375,6 +375,8 @@ teamai session push --source codebuddy                     # --all：该平台�
 teamai session push --session <id> --source claude-code    # 只推送这一个会话，已脱敏
 teamai session pull
 teamai session list                                        # --all：全部项目
+teamai session list --finished --all                       # 可分享经验的会话；--within 3d
+teamai session show <id> --source hermes                   # 其中一个，已脱敏
 teamai session search <query>
 teamai session resume <name> --platform claude-code
 ```
@@ -384,6 +386,26 @@ teamai session resume <name> --platform claude-code
 脚本可用 `migrate <sessionId> -s <工具> -t <工具> --json`：stdout 只输出一行，格式与 `teamai workflow` 相同，即 `{ "data": ... }` 或 `{ "error": { "code", "message" } }`；进度信息走 stderr。`data` 包含目标 `sessionId`、`cwd`、`reused` 和 `fidelity` 报告。`error.code` 标明失败原因，如 `no_adapter`（未知工具）、`tool_unavailable`（源工具或目标工具未安装，或其 CLI 无法运行）、`not_found`、`unreadable`，退出码为 1。`--json` 从不询问：缺少会话 id、`-s` 或 `-t` 时以 `prompt_refused` 失败，`--push` 需要 `-y` 或 `--scrub`。
 
 `--dry-run` 只预览。`--scrub` 先脱敏再归档；不加时，交互运行会询问，脚本需要 `-y`。`--all` 超过 10 条要确认（push 为 5 条）。`push --session <id>` 只推送 `--source` 的这一个会话，不限工作区，总会脱敏，也不询问。归档在团队仓库 `teamai-reports` 分支的 `sessions/repos/<repo>/<author>/`，按会话自己的 git remote；否则归入 `_unattributed`。工作流步骤在自己工作树里运行的会话，归到该工作树所属检出目录的仓库下。
+
+### 读取已结束的会话
+
+`session list --finished --all` 列出本机最近 7 天内结束的各工具会话（`--within 3d` 可缩短），不管[会话策略](sharing.md#会话)怎么设，已经用它贡献过经验的会话不列出。`session show` 打印其中一个，不论是不是你自己的会话，脱敏方式与评审读取时相同。两者也能读取 Hermes 这样的 SQLite 存储，读取时需要 `sqlite3` CLI。
+
+```console
+$ teamai session list --finished --all
+  7c1e5a2b-0000-4000-8000-00000000c001  claude-code  2026-11-05T05:57:02.000Z  Rename the config loader; the deploy key is <REDACTED:anthropic>
+  20261104_091523_c1c2c3d4  hermes  2026-11-05T05:57:02.000Z  Why does the pod restart before it is ready
+
+$ teamai session show 20261104_091523_c1c2c3d4 --source hermes
+### user
+Why does the pod restart before it is ready
+
+
+### assistant
+The readiness probe fires before the cache warms up; raise initialDelaySeconds to 20.
+```
+
+加 `--json` 时，`list --finished --all` 输出 `{"list":[{"session","source","ended","prompt"}]}`，`show` 输出 `{"session","source","transcript"}`。`show` 找不到的会话以 1 退出，输出 `{"error":{"code":"session_not_found","message":…}}`。默认工作流 [`teamai-share-learnings-from-sessions`](workflow.md#teamai-share-learnings-from-sessions) 逐个询问是否分享这些会话。
 
 ### 脱敏后的会话保留什么
 

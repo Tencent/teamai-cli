@@ -672,14 +672,14 @@ type TreeFailure = { code: 'workflow_recursion' | 'workflow_not_found' | 'invali
 
 /**
  * Why step `step` of workflow `parent` cannot start `child` with the inputs its `with` names, or undefined when they
- * fit. Every declared input is required, so the names alone tell, before any value renders: a run that would fail
+ * fit. Every declared input without a default is required, so the names alone tell, before any value renders: a run that would fail
  * there, after the steps before it already ran, never starts.
  */
 function withMismatch(parent: string, { step, with: passed }: Pick<WorkflowRun, 'step' | 'with'>, child: WorkflowDefinition): TreeFailure | undefined {
   const names = Object.keys(passed ?? {});
   const declared = Object.keys(child.inputs ?? {});
   const extra = names.filter((name) => !declared.includes(name));
-  const missing = declared.filter((name) => !names.includes(name));
+  const missing = declared.filter((name) => !names.includes(name) && !Object.hasOwn(child.defaults?.inputs ?? {}, name));
 
   const message = extra.length > 0
     ? `Workflow "${parent}" step "${step}" passes ${extra.join(', ')} to workflow "${child.name}", which does not declare them. Make the two agree, then pull again.`

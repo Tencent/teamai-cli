@@ -83,12 +83,12 @@ describe('import --from-repo --dry-run (#900 C3)', () => {
     });
   }
 
-  /** What a dry run must leave as it was: the cache, the team repo and the lock beside it. */
+  /** What a dry run must leave as it was: the cache, the team repo and the import locks. */
   function snapshot() {
     return {
       cache: tree(cacheRoot),
       teamRepo: tree(teamRepo),
-      lock: fs.existsSync(path.join(path.dirname(teamRepo), '.teamai-import.lock')),
+      locks: tree(path.join(home, '.teamai', 'locks')),
     };
   }
 

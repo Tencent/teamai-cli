@@ -71,7 +71,6 @@ directly to construct a short response (≤500 chars):
 ```
 Relevant knowledge: <title from --check output>
 Suggested files: <sources from --check output>
-<!-- teamai:recalled-doc-ids: [] -->
 ```
 
 **Stop here** — skip Steps 1–5 entirely.
@@ -319,8 +318,6 @@ If no candidate files section was returned, omit this heading entirely.
 ### Gaps (if relevant)
 
 ⚠️ <gap description> — do not guess answers for this area.
-
-<!-- teamai:recalled-doc-ids: [<id1>, <id2>, ...] -->
 ```
 
 **When nothing covers the subject**, use this variant instead of the numbered
@@ -348,8 +345,6 @@ Rejected matches:
 
 ⚠️ <gap description> — do not guess answers for this area.
 <Point to the tool or skill that would answer it, if one is obvious.>
-
-<!-- teamai:recalled-doc-ids: [<only entries listed under Partial coverage>] -->
 ```
 
 A task with several requirements is often part-covered: report the covered part
@@ -378,9 +373,6 @@ rather than dropping the reasoning.
 - **Gaps section**: only include if `gaps/detected.md` was relevant to the
   query. This tells the main conversation to stop and ask the user rather
   than hallucinating.
-- The trailing HTML comment **must** list every doc_id you returned —
-  the opt-in upvote judge reads it from the conversation transcript at the
-  Stop hook.
 
 ## Hard rules
 

@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { parseMrUrl } from './mr-comment.js';
+import { githubApiUrl, parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
@@ -68,7 +68,7 @@ async function githubRequest(path: string): Promise<Response> {
 
   if (!token) throw new Error('GITHUB_TOKEN is not set');
 
-  return fetch(`https://api.github.com${path}`, {
+  return fetch(`${githubApiUrl()}${path}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',

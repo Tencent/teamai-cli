@@ -28,7 +28,7 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { projectDataHome } from '../utils/partition.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
-import { scoreSession } from '../session-flow/scoring.js';
+import { tryScorer } from './helpers/score-run.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 import * as cliPaths from '../utils/cli-path.js';
@@ -105,9 +105,9 @@ function plantSubagentEdit(cwd: string): void {
 }
 
 /**
- * A Claude judge on PATH that answers as model `m1`, with `{ label: answer }` or the batch answer it is given, keeps the
+ * A Claude judge on PATH that answers as model `m1`, with `{ answer: { label: answer } }` or the batch answer it is given, keeps the
  * prompt file and the transcript file of its first call, on the whole session, in `<root>/judged.md` and
- * `<root>/judged-transcript.md`, the transcript file of its call `n` in `<root>/transcript-<n>.md`, and counts its calls
+ * `<root>/judged-transcript.md`, the files it could read then in `<root>/judged-files.json`, the transcript file of its call `n` in `<root>/transcript-<n>.md`, and counts its calls
  * in `<root>/calls`.
  */
 function fakeClaude(answer: string | Record<string, unknown>, version = '2.1.308 (Claude Code)'): void {
@@ -122,11 +122,12 @@ const calls = ${JSON.stringify(path.join(root, 'calls'))};
 const call = (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').length : 0) + 1;
 if (call === 1) fs.copyFileSync(process.argv[at + 1], ${JSON.stringify(path.join(root, 'judged.md'))});
 if (call === 1) fs.copyFileSync(transcript, ${JSON.stringify(path.join(root, 'judged-transcript.md'))});
+if (call === 1) fs.writeFileSync(${JSON.stringify(path.join(root, 'judged-files.json'))}, JSON.stringify(fs.readdirSync('.', { recursive: true }).sort()));
 fs.copyFileSync(transcript, ${JSON.stringify(root)} + '/transcript-' + call + '.md');
 fs.appendFileSync(calls, 'x');
 process.stdin.resume(); process.stdin.on('end', () => {
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'm1' }));
-console.log(JSON.stringify({ type: 'result', structured_output: ${JSON.stringify(typeof answer === 'string' ? { label: answer, reasoning: 'the reasoning' } : answer)} }));
+console.log(JSON.stringify({ type: 'result', structured_output: ${JSON.stringify({ answer: typeof answer === 'string' ? { label: answer, reasoning: 'the reasoning' } : answer })} }));
 });\n`, { mode: 0o755 });
   vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
 }
@@ -179,14 +180,27 @@ describe('teamai score --session', () => {
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('good');
 
-    expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({
+    expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({
       label: { scorer: 'quality', file: 'draft/quality.md', subject: { platform: 'claude-code', sessionId: SESSION }, label: 'good', score: 1, passed: true, stored: false },
     });
     expect(fs.existsSync(labelsFile())).toBe(false);
-    expect(fs.readFileSync(path.join(root, 'judged.md'), 'utf8')).toContain('Add retries to the client');
+    expect(fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8')).toContain('Add retries to the client');
   });
 
-  it('says which judge tools the scorer\'s alias has no model for, and in which file', async () => {
+  it('names a scorer file outside the current directory by its absolute path', async () => {
+    const config = await fixture();
+    plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
+    fakeClaude('good');
+    quality();
+    const outside = path.join(root, 'elsewhere', 'quality.md');
+    fs.mkdirSync(path.dirname(outside));
+    fs.writeFileSync(outside, SCORER);
+    vi.mocked(process.cwd).mockReturnValue(path.join(root, 'draft'));
+
+    expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [outside] }))).toMatchObject({ label: { scorer: 'quality', file: outside } });
+  });
+
+  it('holds the judge, and says why, when the scorer\'s alias has no model for any judge tool here', async () => {
     const config = await fixture();
     fs.mkdirSync(path.join(config.repo.localPath, 'models'));
     fs.writeFileSync(path.join(config.repo.localPath, 'models', 'aliases.yaml'), 'aliases:\n  fast:\n    codebuddy: cb-model\n');
@@ -194,13 +208,14 @@ describe('teamai score --session', () => {
     fakeClaude('good');
     vi.stubEnv('PATH', [path.join(root, 'bin'), '/usr/bin', '/bin'].join(path.delimiter));
 
-    expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('samplingRate: 0', 'samplingRate: 0\nmodel: fast'))] })).toEqual({ error: {
-      code: 'judge_model_unavailable',
-      message: 'Scorer "quality" asks for model alias "fast", which has no model for claude in models/aliases.yaml. Add one, or remove model from the scorer.',
+    expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('samplingRate: 0', 'samplingRate: 0\nmodel: fast'))] })).toEqual({ error: {
+      code: 'confined_pending',
+      message: expect.stringContaining('asks for model alias "fast", which has no model for claude in models/aliases.yaml.'),
     } });
+    expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
   });
 
-  it('says why the tool default judges when the member\'s ~ entry turns the scorer\'s alias off', async () => {
+  it('holds the judge, and says why, when the member\'s ~ entry turns the scorer\'s alias off', async () => {
     const config = await fixture();
     fs.mkdirSync(path.join(config.repo.localPath, 'models'));
     fs.writeFileSync(path.join(config.repo.localPath, 'models', 'aliases.yaml'), 'aliases:\n  fast:\n    claude: haiku\n');
@@ -208,11 +223,12 @@ describe('teamai score --session', () => {
     fs.writeFileSync(localAliasesPath(), 'aliases:\n  fast:\n    claude: ~\n');
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('good');
-    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('samplingRate: 0', 'samplingRate: 0\nmodel: fast'))] }));
-    const notes = printed.mock.calls.map((call) => call.join(' ')).filter((text) => text.includes('ℹ') && text.includes('model alias'));
-    expect(notes).toEqual([expect.stringContaining(`Scorer "quality" asks for model alias "fast", which ${localAliasesPath()} turns off for claude, so claude judges with its default model.`)]);
+    expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('samplingRate: 0', 'samplingRate: 0\nmodel: fast'))] })).toEqual({ error: {
+      code: 'confined_pending',
+      message: expect.stringContaining(`asks for model alias "fast", which ${localAliasesPath()} turns off for claude.`),
+    } });
+    expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
   });
 
   it('names only the files a session evidence directory holds', async () => {
@@ -220,10 +236,10 @@ describe('teamai score --session', () => {
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
-    const judged = fs.readFileSync(path.join(root, 'judged.md'), 'utf8');
-    expect(judged).toContain('hold the same evidence: transcripts/session.md and evidence.json.');
-    expect(judged).not.toContain('diff.patch');
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    const files: unknown = JSON.parse(fs.readFileSync(path.join(root, 'judged-files.json'), 'utf8'));
+    expect(files).toEqual(expect.arrayContaining(['evidence.json', path.join('transcripts', 'session.md')]));
+    expect(files).not.toContain('diff.patch');
   });
 
   it('never guesses the session: outside any session and without --session it fails before any judge runs', async () => {
@@ -231,7 +247,7 @@ describe('teamai score --session', () => {
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('good');
 
-    expect(await scoreSession(config, { scorers: [quality()] })).toEqual({
+    expect(await tryScorer(config, { scorers: [quality()] })).toEqual({
       error: { code: 'session_required', message: 'Pass --session <id>; scoring never guesses the session.' },
     });
     expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
@@ -243,7 +259,7 @@ describe('teamai score --session', () => {
     fakeClaude('good');
     vi.stubEnv('CLAUDE_CODE_SESSION_ID', SESSION);
 
-    expect(data(await scoreSession(config, { scorers: [quality()] }))).toMatchObject({
+    expect(data(await tryScorer(config, { scorers: [quality()] }))).toMatchObject({
       label: { subject: { platform: 'claude-code', sessionId: SESSION }, label: 'good' },
     });
   });
@@ -253,7 +269,7 @@ describe('teamai score --session', () => {
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('good');
 
-    expect(await scoreSession(config, { session: SESSION, scorers: [quality()] })).toEqual({
+    expect(await tryScorer(config, { session: SESSION, scorers: [quality()] })).toEqual({
       error: { code: 'source_required', message: expect.stringMatching(/^Pass --source with --session .*Found in: claude-code\.$/) },
     });
     expect(fs.existsSync(path.join(root, 'judged.md'))).toBe(false);
@@ -269,7 +285,7 @@ describe('teamai score --session', () => {
       capturedAt: '2026-10-20T10:00:00.000Z', agent: { v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'session' } }));
     fakeClaude('good');
 
-    expect(data(await scoreSession(config, { session: SESSION, scorers: [quality()] }))).toMatchObject({
+    expect(data(await tryScorer(config, { session: SESSION, scorers: [quality()] }))).toMatchObject({
       label: { subject: { platform: 'claude-code', sessionId: SESSION } },
     });
   });
@@ -280,8 +296,8 @@ describe('teamai score --session', () => {
     plantSubagentEdit(path.join(root, 'app'));
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
-    expect(fs.readFileSync(path.join(root, 'judged.md'), 'utf8')).toMatch(/## Subagent \(depth 1[^)]*\)[\s\S]*\[tool_call\] edit_file .*retryWithBackoff/);
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    expect(fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8')).toMatch(/## Subagent \(depth 1[^)]*\)[\s\S]*\[tool_call\] edit_file .*retryWithBackoff/);
   });
 
   it('fails without a label when no tool here can judge', async () => {
@@ -291,7 +307,7 @@ describe('teamai score --session', () => {
     fs.mkdirSync(empty);
     vi.stubEnv('PATH', empty);
 
-    expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] })).toEqual({
+    expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] })).toEqual({
       error: { code: 'judge_tool_unavailable', message: `No installed tool can run a scorer judge with every tool turned off. Install one teamai runs confined: ${CONFINED_TOOLS.join(', ')}.` },
     });
     expect(CONFINED_TOOLS).toEqual(expect.arrayContaining(['claude', 'codex', 'opencode', 'codebuddy', 'cursor', 'pi', 'agy']));
@@ -310,7 +326,7 @@ describe('teamai score --session', () => {
     }
     fakeClaude('good');
 
-    expect(await scoreSession(config, { session: '0000000000bb', source: 'codex', scorers: [quality()] })).toEqual({
+    expect(await tryScorer(config, { session: '0000000000bb', source: 'codex', scorers: [quality()] })).toEqual({
       error: { code: 'session_ambiguous', message: `--session 0000000000bb names more than one codex session: ${ids.join(', ')}. Pass the whole id of one.` },
     });
     expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
@@ -329,7 +345,7 @@ describe('teamai score --session', () => {
     }
     fakeClaude('good');
 
-    expect(await scoreSession(config, { session: '0000000000bb', source: 'codex', scorers: [quality()] })).toEqual({
+    expect(await tryScorer(config, { session: '0000000000bb', source: 'codex', scorers: [quality()] })).toEqual({
       error: { code: 'session_ambiguous', message: `--session 0000000000bb names more than one codex session: ${ids.join(', ')}. Pass the whole id of one.` },
     });
     expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
@@ -353,7 +369,7 @@ describe('teamai score --session', () => {
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: id, source: 'codex', scorers: [quality()] }));
+    data(await tryScorer(config, { session: id, source: 'codex', scorers: [quality()] }));
     expect(printed.mock.calls.map((call) => call.join(' ')).join('\n')).toContain('First prompt: Add retries to the client');
   });
 
@@ -364,14 +380,14 @@ describe('teamai score --session', () => {
     const output = (): string => printed.mock.calls.map((call) => call.join(' ')).join('\n');
 
     fakeClaude('good');
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     expect(output()).toContain(`in ${path.join(root, 'app')}`);
     expect(output()).toContain('First prompt: Add retries to the client');
     expect(output()).toContain('quality from draft/quality.md: good (score 1, passed). Not stored: a scorer file\'s label is only tried.');
 
     printed.mockClear();
     fakeClaude('bad');
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     expect(output()).toContain('quality from draft/quality.md: bad (score 0, did not pass)');
   });
 
@@ -380,37 +396,34 @@ describe('teamai score --session', () => {
     plantClaudeSession(path.join(root, 'app'), `Start here. ${'Add the retry loop to the client. '.repeat(9_000)}`);
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
-    const judged = fs.readFileSync(path.join(root, 'judged.md'), 'utf8');
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    const judged = fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8');
     expect(judged).toContain('Start here.');
     expect(judged).toContain('Added the retries.');
     expect(Number(/\[\.\.\. (\d+) characters of evidence were cut here/.exec(judged)?.[1])).toBeGreaterThan(100_000);
   });
 
-  it('gives the judge a transcript file cut as the prompt\'s evidence is, with one note of how much was cut', async () => {
+  it('gives the judge a transcript file cut to 200,000 characters, with one note of how much was cut', async () => {
     const config = await fixture();
     const prose = 'Add the retry loop to the client. '.repeat(6_000);
     plantClaudeSession(path.join(root, 'app'), `Start here. ${prose}MIDDLE_OF_THE_SESSION ${prose}`);
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
-    const judged = fs.readFileSync(path.join(root, 'judged.md'), 'utf8');
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     const transcript = fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8');
     expect(transcript.length).toBeLessThanOrEqual(200_000);
     expect(transcript).not.toContain('MIDDLE_OF_THE_SESSION');
-    expect(judged).toContain(transcript);
-    expect(judged.match(/characters of evidence were cut here/g)).toHaveLength(1);
+    expect(transcript.match(/characters of evidence were cut here/g)).toHaveLength(1);
   });
 
-  it('prints no label when the answer names no label of the scorer, and keeps the raw answer', async () => {
+  it('prints no label when the answer names no label of the scorer, and stores none', async () => {
     const config = await fixture();
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('excellent');
 
-    const answer = await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] });
+    const answer = await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] });
     expect(answer).toEqual({ error: { code: 'judge_answer_invalid', message: expect.stringContaining('"excellent" is not a label of scorer quality') } });
-    expect(fs.readdirSync(path.join(root, 'data', 'scores', 'raw'))).toHaveLength(1);
-    expect(fs.readdirSync(path.join(root, 'data', 'scores', 'evidence'))).toEqual([]);
+    expect(fs.existsSync(labelsFile())).toBe(false);
   });
 
   it('names the scorer file it cannot read, and runs no judge', async () => {
@@ -419,7 +432,7 @@ describe('teamai score --session', () => {
     vi.spyOn(process, 'cwd').mockReturnValue(root);
     fakeClaude('good');
 
-    expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/nope.md'] })).toEqual({
+    expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/nope.md'] })).toEqual({
       error: { code: 'scorer_not_found', message: 'draft/nope.md: could not be read' },
     });
     expect(fs.existsSync(path.join(root, 'judged.md'))).toBe(false);
@@ -431,7 +444,7 @@ describe('teamai score --session', () => {
     const files: [string, string] = [quality(), draft(SCORER, 'tests').file];
     fakeClaude({ quality: { label: 'good', reasoning: 'r1' }, tests: { label: 'bad', reasoning: 'r2' } });
 
-    expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: files, batch: true }))).toMatchObject({
+    expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: files, batch: true }))).toMatchObject({
       labels: [{ scorer: 'quality', label: 'good' }, { scorer: 'tests', label: 'bad' }],
     });
     expect(fs.readFileSync(path.join(root, 'calls'), 'utf8')).toBe('xx');
@@ -444,7 +457,7 @@ describe('teamai score --session', () => {
     const files: [string, string] = [quality(), draft(SCORER, 'tests').file];
     fakeClaude({ quality: { label: 'good', reasoning: 'r1' }, tests: { label: 'bad', reasoning: 'r2' } });
 
-    expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: files }))).toMatchObject({
+    expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: files }))).toMatchObject({
       labels: [{ scorer: 'quality', label: 'good' }, { scorer: 'tests', label: 'bad' }],
     });
     expect(fs.readFileSync(path.join(root, 'calls'), 'utf8')).toBe('xx');
@@ -470,7 +483,7 @@ describe('teamai score --session', () => {
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     expect(printed.mock.calls.map((call) => call.join(' ')).join('\n')).toContain(`First prompt: ${asked}`);
   });
 
@@ -490,7 +503,7 @@ describe('teamai score --session', () => {
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     expect(printed.mock.calls.map((call) => call.join(' ')).join('\n')).toContain('First prompt: /review-notes check the README');
   });
 
@@ -500,7 +513,7 @@ describe('teamai score --session', () => {
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     expect(printed.mock.calls.map((call) => call.join(' ')).join('\n')).toContain('First prompt: /review check whether attempts < 3 in src/client.ts');
   });
 
@@ -510,7 +523,7 @@ describe('teamai score --session', () => {
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     const output = printed.mock.calls.map((call) => call.join(' ')).join('\n');
     expect(output).toMatch(/First prompt: Add retries with key /);
     expect(output).not.toContain('sk-ABCDEFGH1234567890abcdefghij');
@@ -526,9 +539,9 @@ describe('teamai score --session', () => {
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
 
-    expect(fs.readFileSync(path.join(root, 'judged.md'), 'utf8')).toContain('Add retries against');
+    expect(fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8')).toContain('Add retries against');
     for (const text of [fs.readFileSync(path.join(root, 'judged.md'), 'utf8'), fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8'), printed.mock.calls.flat().join('\n')]) {
       expect(text).not.toContain(dsn);
     }
@@ -543,7 +556,7 @@ describe('teamai score --session', () => {
     plantClaudeSession(path.join(root, 'app'), 'Add retries');
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('Judge the session.', `Judge the session. Never print ${dsn}.`))] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('Judge the session.', `Judge the session. Never print ${dsn}.`))] }));
 
     const judged = fs.readFileSync(path.join(root, 'judged.md'), 'utf8');
     expect(judged).toContain('Judge the session. Never print');
@@ -562,7 +575,7 @@ describe('teamai score --session', () => {
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     fakeClaude('good');
 
-    data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('Judge the session.', `Judge the session. Never print ${personal} or ${team}.`))] }));
+    data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('Judge the session.', `Judge the session. Never print ${personal} or ${team}.`))] }));
 
     expect(fs.readFileSync(path.join(root, 'judged.md'), 'utf8')).toContain('Judge the session. Never print');
     for (const text of [fs.readFileSync(path.join(root, 'judged.md'), 'utf8'), fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8'), printed.mock.calls.flat().join('\n')]) {
@@ -578,7 +591,7 @@ describe('teamai score --session', () => {
       subject: { platform: 'claude-code', sessionId: SESSION }, judge: { kind: 'human' }, scoredAt: '2026-10-20T12:00:00.000Z',
     }, reasoning: 'Did not.' }]);
 
-    expect(data(await scoreSession(elsewhere, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({
+    expect(data(await tryScorer(elsewhere, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({
       stored: [{ rubric: { sourceHash: 'h1' }, label: 'bad', judge: { kind: 'human' } }],
     });
     expect(parseScoreLabels(fs.readFileSync(path.join(userHome, 'scores', 'labels.jsonl'), 'utf8'))).toHaveLength(1);
@@ -619,19 +632,19 @@ describe('teamai score --session', () => {
     plantClaudeSession(ws, 'Add retries to the client');
     fakeClaude('good', '2.0.0 (Claude Code)');
 
-    expect(await scoreSession(workspace, { session: SESSION, source: 'claude-code', scorers: [quality()] })).toEqual({
-      error: { code: 'judge_tool_unavailable', message: 'claude 2.0.0 (Claude Code) has no verified judge profile. Install a supported version or use another driver. scorers/checkout/scoring.yaml isolation asks for verified.' },
+    expect(await tryScorer(workspace, { session: SESSION, source: 'claude-code', scorers: [quality()] })).toEqual({
+      error: { code: 'confined_pending', message: 'step "session.score[0].judge" runs confined at verified, which no offer in this driver\'s can.confined reaches' },
     });
   });
 
-  it('names the scorer file that asks for a verified judge when no tool here judges at verified', async () => {
+  it('holds the judge of a scorer file that asks for a verified judge when no tool here judges at verified', async () => {
     const config = await fixture();
     plantClaudeSession(path.join(root, 'app'), 'Add retries to the client');
     fakeClaude('good', '2.0.0 (Claude Code)');
 
-    expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('samplingRate: 0', 'samplingRate: 0\nisolation: verified'))] })).toEqual({ error: {
-      code: 'judge_tool_unavailable',
-      message: 'claude 2.0.0 (Claude Code) has no verified judge profile. Install a supported version or use another driver. draft/quality.md isolation asks for verified.',
+    expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality(SCORER.replace('samplingRate: 0', 'samplingRate: 0\nisolation: verified'))] })).toEqual({ error: {
+      code: 'confined_pending',
+      message: 'step "session.score[0].judge" runs confined at verified, which no offer in this driver\'s can.confined reaches',
     } });
   });
 
@@ -643,8 +656,8 @@ describe('teamai score --session', () => {
       fakeClaude('good');
       const bin = path.join(root, 'bin', 'claude');
       const fixed = fs.readFileSync(bin, 'utf8');
-      const judging = fixed.replace('structured_output: {"label":"good"',
-        `structured_output: { label: fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8').includes(${JSON.stringify(work)}) ? 'good' : ${JSON.stringify(otherwise)}`);
+      const judging = fixed.replace('structured_output: {"answer":{"label":"good"',
+        `structured_output: { answer: { label: fs.readFileSync(require('node:path').join('transcripts', 'session.md'), 'utf8').includes(${JSON.stringify(work)}) ? 'good' : ${JSON.stringify(otherwise)}`);
       if (judging === fixed) throw new Error('fakeClaude no longer writes the answer this helper rewrites');
       fs.writeFileSync(bin, judging);
     }
@@ -659,7 +672,7 @@ describe('teamai score --session', () => {
       const before = store();
       fakeClaudeJudgingWork('Added the retries.');
 
-      const tried = data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
+      const tried = data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
       expect(tried).toEqual({
         label: {
           scorer: 'quality', file: 'draft/quality.md', subject: { platform: 'claude-code', sessionId: SESSION },
@@ -678,7 +691,7 @@ describe('teamai score --session', () => {
       const { file, store } = draft();
       fakeClaude('good');
 
-      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }))).toMatchObject({
+      expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [file] }))).toMatchObject({
         label: { passed: true, stored: false }, stored: [], control: { label: 'good', score: 1, passed: true, warning: WARNING },
       });
       expect(fs.readFileSync(path.join(root, 'calls'), 'utf8')).toBe('xx');
@@ -695,7 +708,7 @@ describe('teamai score --session', () => {
       const { file } = draft(SCORER.replace('passingScore: 0.5', 'passingScore: 2'));
       fakeClaude('good');
 
-      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] })).toEqual({
+      expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [file] })).toEqual({
         error: { code: 'scorer_invalid', message: 'draft/quality.md: passingScore must have at least one label at or above it and one below it' },
       });
       expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
@@ -707,7 +720,7 @@ describe('teamai score --session', () => {
       const { file } = draft();
       fakeClaudeJudgingWork('Added the retries.', 'excellent');
 
-      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }))).toMatchObject({
+      expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [file] }))).toMatchObject({
         label: { label: 'good', stored: false },
         control: { error: { code: 'judge_answer_invalid', message: expect.stringContaining('"excellent" is not a label of scorer quality') } },
       });
@@ -720,7 +733,7 @@ describe('teamai score --session', () => {
       fs.copyFileSync(path.join(root, 'draft', 'quality.md'), path.join(root, 'draft', 'quality'));
       fakeClaude('good');
 
-      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/quality'] })).toEqual({
+      expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/quality'] })).toEqual({
         error: { code: 'scorer_invalid', message: expect.stringMatching(/^draft\/quality: not a scorer file;/) },
       });
       expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
@@ -732,7 +745,7 @@ describe('teamai score --session', () => {
       draft(DRAFT, 'README');
       fakeClaude('good');
 
-      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/README.md'] })).toEqual({
+      expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: ['./draft/README.md'] })).toEqual({
         error: { code: 'scorer_invalid', message: expect.stringMatching(/^draft\/README\.md: not a scorer file;/) },
       });
       expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
@@ -744,7 +757,7 @@ describe('teamai score --session', () => {
       const { file } = draft();
       fakeClaude('good');
 
-      const held = await whileLabelsLocked(config, () => scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
+      const held = await whileLabelsLocked(config, () => tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [file] }));
       expect(held).toMatchObject({ data: { label: { label: 'good', stored: false }, control: { passed: true } } });
     });
 
@@ -754,7 +767,7 @@ describe('teamai score --session', () => {
       const files: [string, string] = [draft().file, draft(DRAFT, 'tests').file];
       fakeClaude({ quality: { label: 'good', reasoning: 'r1' }, tests: { label: 'bad', reasoning: 'r2' } });
 
-      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: files, batch: true }))).toMatchObject({
+      expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: files, batch: true }))).toMatchObject({
         labels: [{ scorer: 'quality', stored: false }, { scorer: 'tests', stored: false }],
         stored: { quality: [], tests: [] },
         control: { quality: { label: 'good', passed: true, warning: WARNING }, tests: { label: 'bad', passed: false } },
@@ -768,7 +781,7 @@ describe('teamai score --session', () => {
       const files: [string, string] = [draft().file, draft(DRAFT, 'quality', 'other').file];
       fakeClaude('good');
 
-      expect(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: files })).toEqual({ error: {
+      expect(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: files })).toEqual({ error: {
         code: 'invalid_arguments', message: '--scorer draft/quality.md and --scorer other/quality.md are both scorer quality. Judge them in separate commands.',
       } });
       expect(fs.existsSync(path.join(root, 'calls'))).toBe(false);
@@ -823,7 +836,7 @@ describe('teamai score --session', () => {
 
     async function usedBy(config: LocalConfig): Promise<unknown> {
       fakeClaude('good');
-      return usedOn(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
+      return usedOn(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }));
     }
 
     it('names a team skill loaded through the skill tool and one whose SKILL.md was read, and no skill outside the team repo', async () => {
@@ -846,10 +859,10 @@ describe('teamai score --session', () => {
       plantClaudeSession(cwd, 'Review the change');
       plantSkills(cwd, config, ['review'], ['review']);
       fakeClaude('good');
-      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).not.toHaveProperty('label.used');
+      expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).not.toHaveProperty('label.used');
 
       appendCalls(path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(cwd), `${SESSION}.jsonl`), cwd, [{ name: 'Skill', input: { skill: 'review' } }]);
-      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({ label: { used: { skills: ['review'] } } });
+      expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({ label: { used: { skills: ['review'] } } });
     });
 
     it('still names a team skill the session loaded after a later pull removed it from the team repo and the checkout', async () => {
@@ -880,9 +893,9 @@ describe('teamai score --session', () => {
       fakeClaude('good');
 
       loadAt('2026-10-20T10:00:06.000Z');
-      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).not.toHaveProperty('label.used');
+      expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).not.toHaveProperty('label.used');
       loadAt('2026-10-20T10:00:02.000Z');
-      expect(data(await scoreSession(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({ label: { used: { skills: ['review'] } } });
+      expect(data(await tryScorer(config, { session: SESSION, source: 'claude-code', scorers: [quality()] }))).toMatchObject({ label: { used: { skills: ['review'] } } });
     });
 
     it('names no skill its captures did not record as delivered, though the team repo has one of its name', async () => {
@@ -929,7 +942,7 @@ describe('teamai score --session', () => {
         ...items.map((payload) => ({ type: 'response_item', payload })),
       ].map((record) => line({ timestamp: '2026-10-20T10:00:01.000Z', ...record })).join(''));
       fakeClaude('good');
-      return usedOn(await scoreSession(config, { session: id, source: 'codex', scorers: [quality()] }));
+      return usedOn(await tryScorer(config, { session: id, source: 'codex', scorers: [quality()] }));
     }
 
     it('names a team skill a Codex prompt mentions as $name', async () => {
@@ -1174,7 +1187,7 @@ describe('teamai score --team-session', () => {
     const name = await pushed(getReportsDir(config), { author: 'alice' });
     fakeClaude('good');
 
-    expect(data(await scoreSession(config, { teamSession: { name }, scorers: [quality()] }))).toMatchObject({
+    expect(data(await tryScorer(config, { teamSession: { name }, scorers: [quality()] }))).toMatchObject({
       label: { subject: { platform: 'claude-code', sessionId: ALICE_SESSION }, label: 'good' },
     });
     expect(fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8')).toContain('Added the retries.');
@@ -1189,7 +1202,7 @@ describe('teamai score --team-session', () => {
     fs.writeFileSync(file, JSON.stringify({ ...meta, origin: { ...meta.origin, cwd: '/home/dev/app' } }));
     fakeClaude('good');
 
-    expect(data(await scoreSession(config, { teamSession: { name }, scorers: [quality()] }))).toMatchObject({
+    expect(data(await tryScorer(config, { teamSession: { name }, scorers: [quality()] }))).toMatchObject({
       label: { label: 'good', subject: { platform: 'claude-code', sessionId: ALICE_SESSION } },
     });
   });
@@ -1200,7 +1213,7 @@ describe('teamai score --team-session', () => {
     const name = await pushed(getReportsDir(config), { author: 'alice', prompt: `deploy with ${token}` });
     fakeClaude('good');
 
-    data(await scoreSession(config, { teamSession: { name }, scorers: [quality()] }));
+    data(await tryScorer(config, { teamSession: { name }, scorers: [quality()] }));
     const judged = fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8');
     expect(judged).toContain('deploy with <REDACTED');
     expect(judged).not.toContain(token);
@@ -1210,7 +1223,7 @@ describe('teamai score --team-session', () => {
     const config = await fixture(undefined, 'git');
     const legacyOnly = await pushed(config.repo.localPath, { author: 'carol', sessionId: 'c0000000-0000-4000-8000-00000000000c' });
     fakeClaude('good');
-    const label = async (name: string, author?: string) => scoreSession(config, { teamSession: { name, ...(author ? { author } : {}) }, scorers: [quality()] });
+    const label = async (name: string, author?: string) => tryScorer(config, { teamSession: { name, ...(author ? { author } : {}) }, scorers: [quality()] });
 
     expect(data(await label(legacyOnly))).toMatchObject({ label: { subject: { sessionId: 'c0000000-0000-4000-8000-00000000000c' } } });
 
@@ -1232,7 +1245,7 @@ describe('teamai score --team-session', () => {
     const config = await fixture(undefined, 'git');
     await pushed(getReportsDir(config), { author: 'alice' });
 
-    expect(await scoreSession(config, { teamSession: { name: 'claude-code_no-such-session_20261020' }, scorers: [quality()] })).toEqual({ error: {
+    expect(await tryScorer(config, { teamSession: { name: 'claude-code_no-such-session_20261020' }, scorers: [quality()] })).toEqual({ error: {
       code: 'session_not_found',
       message: `No session claude-code_no-such-session_20261020 is pushed for ${getRepoIdentity(process.cwd()) ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`,
     } });
@@ -1242,7 +1255,7 @@ describe('teamai score --team-session', () => {
     const config = await fixture(undefined, 'git');
     const name = await pushed(getReportsDir(config), { author: 'alice', sessionId: '' });
 
-    expect(await scoreSession(config, { teamSession: { name }, scorers: [quality()] })).toEqual({ error: {
+    expect(await tryScorer(config, { teamSession: { name }, scorers: [quality()] })).toEqual({ error: {
       code: 'session_not_found', message: `The pushed session ${name} records no platform or session id it ran as, so it cannot be scored.`,
     } });
     expect(fs.existsSync(path.join(root, 'data', 'scores', 'labels.jsonl'))).toBe(false);
@@ -1251,7 +1264,7 @@ describe('teamai score --team-session', () => {
   it('refuses a team that keeps no session archive, such as an http team', async () => {
     const config = await fixture(undefined, 'http');
 
-    expect(await scoreSession(config, { teamSession: { name: 'claude-code_fix-the-retry-loop_20261020' }, scorers: [quality()] })).toEqual({ error: {
+    expect(await tryScorer(config, { teamSession: { name: 'claude-code_fix-the-retry-loop_20261020' }, scorers: [quality()] })).toEqual({ error: {
       code: 'unsupported_repo', message: 'This team keeps no session archive here, so it has no pushed session to score. Score a session on this machine with --session <id>.',
     } });
   });

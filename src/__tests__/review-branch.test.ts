@@ -1318,7 +1318,7 @@ describe('reviewBranchDir — scorers', () => {
     const scoring = (file: string, message: string) => ({ level: 'fail', check: 'scorers', path: `scorers/${file}`, message });
     expect(review.findings).toEqual([
       scoring('dev/scoring.yaml', 'scorers/dev/scoring.yaml: batch is "maybe", not true or false, so it is ignored'),
-      scoring('dev/scoring.yaml', 'scorers/dev/scoring.yaml: "isolaton" is not a scoring setting (batch, isolation, sessions, skill_routing, daily_limit), so it is ignored'),
+      scoring('dev/scoring.yaml', 'scorers/dev/scoring.yaml: "isolaton" is not a scoring setting (batch, isolation, sessions, skill_routing, recall_adoption, daily_limit), so it is ignored'),
       scoring('qa/scoring.yaml', expect.stringMatching(/^scorers\/qa\/scoring\.yaml is not valid YAML: /)),
       scoring('shared/scoring.yaml', 'scorers/shared/scoring.yaml isolation is "strict", which is not verified or best-effort, so it counts as verified'),
     ]);

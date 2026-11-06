@@ -1,47 +1,42 @@
 /**
- * iWiki 导入入口。
- *
- * 负责从 iWiki 拉取页面并转换为候选列表，
- * 分类、审查、推送均复用 import-local.ts 的现有函数。
+ * The default workflow `teamai-import-from-iwiki`, which `teamai import --from-iwiki` starts: the `teamai import`
+ * verbs its steps call fetch the pages into the run's directory for teamai-import-learnings to classify, and publish
+ * what it wrote, linked to the teamwiki's code knowledge.
  */
 
 import path from 'node:path';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
-import { classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
+import { z } from 'zod';
+
+import { ImportLearnings, type Candidate, type LearningsImport } from './import-local.js';
+import { buildDualContext } from './iwiki-dual.js';
+import { RUN_DIR_ENV } from './launch-context.js';
 import { IWikiClient } from './utils/iwiki-client.js';
 import type { IWikiDocument, IWikiPage } from './utils/iwiki-client.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists } from './utils/fs.js';
+import type { ShortcutEnd } from './workflow-commands.js';
 
-// ─── 内部辅助函数 ──────────────────────────────────────────────
+const WORKFLOW = 'teamai-import-from-iwiki';
 
-/**
- * 解析用户输入，识别 Space ID 或页面 ID。
- *
- * - 纯数字 → space id
- * - 含 `/p/` 或 `/pages/` 的 URL → page id
- * - 其他格式 → 抛出 Error
- *
- * @param input  用户输入的 Space ID 或页面 URL
- * @returns      解析结果 `{ type, id }`
- * @throws       无法识别格式时抛出 Error
- */
+/** Said when the token every iWiki request carries is not set. */
+const TOKEN_MISSING = 'Please set TAI_PAT_TOKEN environment variable (get it at: https://tai.it.woa.com/user/pat)';
+
 /** What an iWiki input names: a whole space, or one page. */
 interface IWikiTarget {
   type: 'space' | 'page';
   id: string;
 }
 
+/** A numeric space id, or a URL holding `/p/<id>` or `/pages/<id>`. */
 function parseIWikiInput(input: string): IWikiTarget {
   const trimmed = input.trim();
 
-  // 纯数字视为 space id
   if (/^\d+$/.test(trimmed)) {
     return { type: 'space', id: trimmed };
   }
 
-  // URL 中含 /p/<id> 或 /pages/<id>
   const pageMatch = trimmed.match(/\/(?:p|pages)\/([^/?#]+)/);
 
   if (pageMatch) {
@@ -54,41 +49,10 @@ function parseIWikiInput(input: string): IWikiTarget {
   );
 }
 
-/**
- * 将 IWikiDocument 转换为 classifyWithAI 期望的候选格式。
- *
- * path 使用虚拟路径 `iwiki://p/<docid>`，rawContent 取前 3000 字符。
- *
- * @param doc  iWiki 文档对象
- * @returns    候选格式对象
- */
-/** A document as classifyWithAI takes it. */
-interface ClassifyCandidate {
-  path: string;
-  rawContent: string;
-}
-
-function docToCandidate(doc: IWikiDocument): ClassifyCandidate {
-  return {
-    path: `iwiki://p/${doc.docid}`,
-    rawContent: doc.content.slice(0, 3000),
-  };
-}
-
-// ─── 并发下载辅助 ──────────────────────────────────────────────
-
-/** 每批并发下载的默认文档数量。 */
+/** How many documents are downloaded at once. */
 const DOWNLOAD_BATCH_SIZE = 5;
 
-/**
- * 按批次并发下载文档，每批最多 DOWNLOAD_BATCH_SIZE 个并发请求。
- *
- * 使用 Promise.allSettled 保证单页失败不中断整体。
- *
- * @param client  IWikiClient 实例
- * @param pages   待下载的页面信息列表
- * @returns       成功下载的 IWikiDocument[]
- */
+/** The documents of `pages`, a batch at a time; a page that cannot be downloaded is said and skipped. */
 async function downloadDocuments(
   client: IWikiClient,
   pages: IWikiPage[],
@@ -114,57 +78,41 @@ async function downloadDocuments(
   return documents;
 }
 
-// ─── 导出函数 ──────────────────────────────────────────────────
+const DocumentsSchema = z.array(z.object({ docid: z.string(), title: z.string(), content: z.string(), url: z.string() }));
+
+/** What `fetch-iwiki` prints: where the documents are, each one to classify, and the text the dual sections are asked about. */
+interface Fetched {
+  source: string;
+  /** The JSON file of every document, '' when none was downloaded. */
+  documents: string;
+  candidates: Candidate[];
+  dual_context: string;
+}
 
 /**
- * 从 iWiki 导入文档到团队仓库。
- *
- * 步骤：获取页面列表 → 下载内容 → AI 分类 → 交互审查 → 推送。
- *
- * @param opts              导入选项
- * @param opts.input        Space ID 或页面 URL
- * @param opts.token        PAT Token，优先用此值，否则读 process.env['TAI_PAT_TOKEN']
- * @param opts.all          true 时跳过交互，全部接受
- * @param opts.outputDir    指定输出目录，覆盖自动路由
- * @param opts.repoPath     团队仓库本地路径
- * @param opts.dryRun       true 时仅预览，不写入文件
- * @param opts.maxPages     最大抓取页数，默认 200
+ * `teamai import fetch-iwiki`: downloads the pages `source` names into `$TEAMAI_RUN_DIR/iwiki/`, one file per document to
+ * classify and a JSON file of them all. Says why there is nothing to import when no page was found or downloaded.
  */
-export async function importFromIWiki(opts: {
-  input: string;
-  token?: string;
-  all?: boolean;
-  outputDir?: string;
-  repoPath: string;
-  dryRun?: boolean;
-  maxPages?: number;
-}): Promise<void> {
-  // 1. 读取 token
-  const token = opts.token ?? process.env['TAI_PAT_TOKEN'];
+async function fetch({ source, dual }: { source: string; dual: string }): Promise<Fetched> {
+  const token = process.env['TAI_PAT_TOKEN'];
 
-  if (!token) {
-    throw new Error(
-      'Please set TAI_PAT_TOKEN environment variable (get it at: https://tai.it.woa.com/user/pat)',
-    );
-  }
+  if (!token) throw new Error(TOKEN_MISSING);
+  const runDir = process.env[RUN_DIR_ENV];
 
-  // 2. 解析输入
-  const { type, id } = parseIWikiInput(opts.input);
-
-  // 3. 创建客户端
+  if (!runDir) throw new Error(`teamai import fetch-iwiki is a step of a ${WORKFLOW} run, which sets ${RUN_DIR_ENV}. Run teamai import --from-iwiki instead.`);
+  const isDual = ImportLearnings.parseBoolean('--dual', dual);
+  const { type, id } = parseIWikiInput(source);
   const client = new IWikiClient(token);
-
-  // 4. 获取页面列表
+  const none: Fetched = { source: `iwiki://${id}`, documents: '', candidates: [], dual_context: '' };
   let pages: IWikiPage[];
 
   if (type === 'page') {
-    // 单页模式：用占位符，后续直接下载该页
     pages = [{ docid: id, title: id }];
   } else {
     const fetchSpinner = await spinner(`Fetching iWiki Space (${id}) page tree...`);
 
     try {
-      pages = await client.fetchAllPages(id, { maxPages: opts.maxPages ?? 200 });
+      pages = await client.fetchAllPages(id, { maxPages: 200 });
       fetchSpinner.succeed(`Page tree fetched: ${pages.length} pages`);
     } catch (err: unknown) {
       fetchSpinner.fail(`Page tree fetch failed: ${String(err)}`);
@@ -175,10 +123,9 @@ export async function importFromIWiki(opts: {
   if (pages.length === 0) {
     log.warn('no pages found, import aborted');
 
-    return;
+    return none;
   }
 
-  // 5. 并发下载文档内容
   const downloadSpin = await spinner(`Downloading iWiki documents (${pages.length} pages)...`);
   let documents: IWikiDocument[];
 
@@ -193,40 +140,44 @@ export async function importFromIWiki(opts: {
   if (documents.length === 0) {
     log.warn('all document downloads failed, import aborted');
 
-    return;
+    return none;
   }
 
-  // 6. 转换为候选格式
-  const candidates = documents.map(docToCandidate);
+  const dir = path.join(runDir, 'iwiki');
+  await mkdir(dir, { recursive: true });
+  const candidates: Candidate[] = [];
 
-  // 7. AI 分类
-  const classified = await classifyWithAI(candidates);
+  for (const doc of documents) {
+    const file = path.join(dir, `${doc.docid.replace(/[^\w.-]/g, '_')}.md`);
+    await writeFile(file, doc.content, 'utf-8');
+    candidates.push({ path: `iwiki://p/${doc.docid}`, file });
+  }
 
-  if (classified.length === 0) {
+  const documentsFile = path.join(dir, 'documents.json');
+  await writeFile(documentsFile, JSON.stringify(documents), 'utf-8');
+
+  return { ...none, documents: documentsFile, candidates, dual_context: isDual ? buildDualContext(documents) : '' };
+}
+
+/**
+ * `teamai import publish-iwiki`: once teamai-import-learnings wrote the items into the team repo, links the documents to
+ * the teamwiki's code knowledge, then commits and pushes. An import into another directory pushes nothing.
+ */
+async function publish(flags: { kept: string; written: string; target: string; byType: string; documents: string }): Promise<Record<string, never>> {
+  if (Number(flags.kept) === 0) {
     log.warn('no valid entries after AI classification, import aborted');
 
-    return;
+    return {};
   }
 
-  // 8. 交互式审查
-  const session = await interactiveReview(classified, { all: opts.all });
-
-  // 9. 推送
-  const repoPath = opts.repoPath;
-  await pushAccepted(session, repoPath, {
-    dryRun: opts.dryRun,
-    outputDir: opts.outputDir,
-  });
-
-  // A preview or an --output import leaves the team repo untouched.
-  if (opts.dryRun || opts.outputDir) {
+  if (!ImportLearnings.parseBoolean('--by-type', flags.byType)) {
     log.success('iWiki import complete');
 
-    return;
+    return {};
   }
 
-  // 10. 与 teamwiki 代码知识建立 MAPS_TO 关系（在 push 之前，确保结果被推送）
-  const teamwikiRoot = path.join(repoPath, 'teamwiki');
+  const documents = ImportLearnings.parseFlag(DocumentsSchema, '--documents', await readFile(flags.documents, 'utf-8'), WORKFLOW);
+  const teamwikiRoot = path.join(flags.target, 'teamwiki');
 
   if (await pathExists(path.join(teamwikiRoot, '.indices', 'graph-index.json'))) {
     try {
@@ -242,12 +193,34 @@ export async function importFromIWiki(opts: {
     }
   }
 
-  // 11. 自动推送所有产物到团队仓库
   const { autoPushTeamRepo } = await import('./utils/git.js');
-  await autoPushTeamRepo(repoPath, `[teamai] Import from iWiki: ${documents.map(d => d.title).slice(0, 3).join(', ')}`);
+  await autoPushTeamRepo(flags.target, `[teamai] Import from iWiki: ${documents.map(d => d.title).slice(0, 3).join(', ')}`);
 
   log.success('iWiki import complete');
+
+  return {};
 }
+
+/**
+ * `teamai import --from-iwiki`: imports the pages `source` names through a teamai-import-from-iwiki run, and with
+ * `dual` the codebase sections into docs/team-codebase/ of this directory, or `output`.
+ */
+async function start(options: LearningsImport & { source: string; dual: boolean; requireReview: boolean }): Promise<ShortcutEnd | undefined> {
+  const { getTeamCodebasePaths } = await import('./utils/team-codebase-paths.js');
+  const cwd = process.cwd();
+
+  return ImportLearnings.start(WORKFLOW, {
+    source: options.source,
+    dual: options.dual,
+    sections_dir: path.resolve(getTeamCodebasePaths(cwd, options.output).root),
+    review_dir: cwd,
+    require_review: options.requireReview,
+  }, options, () => {
+    if (!process.env['TAI_PAT_TOKEN']) throw new Error(TOKEN_MISSING);
+  });
+}
+
+export const ImportFromIwiki = { fetch, publish, start } as const;
 
 // ─── iWiki↔Codebase Reconciliation ────────────────────────────
 

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { benchmarkFixture, envelope, said, TEAM_URL, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
+import { benchmarkFixture, envelope, said, TEAM_URL, type BenchmarkFixture, type CliResult } from '../helpers/benchmark-fixture.js';
 
 const fixtures: BenchmarkFixture[] = [];
 
@@ -246,6 +246,26 @@ describe('a plan of an unknown schemaVersion', () => {
     expect(report).toMatchObject({ status: 'failed', message: expect.stringContaining(FUTURE) });
   }, 180_000);
 
+});
+
+describe('the driver workflows.driver names', () => {
+  it('is the one benchmark run and self-improvement run start for: none leaves each run open for any driver', async () => {
+    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
+    fixtures.push(fixture);
+    fixture.pushTeam({ 'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\nprovider: git\nworkflows:\n  driver: none\n` });
+    const pulled = await fixture.teamai(['pull']);
+
+    const benchmark = await fixture.teamai(['benchmark', 'run', 'fix']);
+    const improvement = await fixture.teamai(['self-improvement', 'run', 'fix-rate', '--suite', 'fix']);
+    const left = (ran: CliResult) => z.object({ run: z.string() }).passthrough().parse(envelope(ran).data).run;
+
+    expect(pulled.code, said(pulled)).toBe(0);
+    expect(benchmark.code, said(benchmark)).toBe(0);
+    expect(benchmark.stderr).toContain(`Left open: run ${left(benchmark)} of teamai-benchmark, which workflows.driver none leaves to any driver.`);
+    expect(improvement.code, said(improvement)).toBe(0);
+    expect(improvement.stderr).toContain(`Left open: run ${left(improvement)} of teamai-self-improvement, which workflows.driver none leaves to any driver.`);
+    expect(fixture.toolLaunches()).toEqual([]);
+  }, 180_000);
 });
 
 describe('the benchmark workflow', () => {

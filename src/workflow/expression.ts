@@ -43,7 +43,7 @@ export type ExpressionPath =
   | { root: 'item'; fields: PathField[]; column: number }
   /** The id of the root run, which a sub-workflow shares. */
   | { root: 'run'; fields: ['id']; column: number }
-  | { root: 'steps'; step: string; field: 'outcome' | 'end' | 'outputs' | 'passes' | 'results' | 'branches' | 'choice' | 'note' | 'pr'; fields: PathField[]; column: number };
+  | { root: 'steps'; step: string; field: 'outcome' | 'end' | 'failure' | 'outputs' | 'passes' | 'results' | 'branches' | 'choice' | 'note' | 'pr'; fields: PathField[]; column: number };
 
 /** `<`, `<=`, `>` and `>=` compare two numbers; with anything else they are false. */
 const COMPARISONS = {
@@ -105,6 +105,8 @@ export interface ExpressionStep {
   end?: string;
   outputs?: unknown;
   pr?: DeliveredPr;
+  /** Why the current pass failed: its code, such as `tool_unconfigured`, and its message. */
+  failure?: { code: string; message: string };
   /** Every settled pass of the step, earliest first: those a loop ran again, then the current one once it settled. */
   passes?: ExpressionPass[];
   /** The current pass's HITL choice, when answered. */
@@ -303,7 +305,7 @@ function parsePath(token: { text: string; column: number }): ExpressionPath {
 
   if (step === undefined || isIndex(step) || !field) throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
 
-  if (field === 'outputs' || field === 'passes' || field === 'results' || field === 'branches' || field === 'pr') return { root, step, field, fields, column: token.column };
+  if (field === 'outputs' || field === 'passes' || field === 'results' || field === 'branches' || field === 'pr' || field === 'failure') return { root, step, field, fields, column: token.column };
 
   if ((field === 'outcome' || field === 'end' || field === 'choice' || field === 'note') && fields.length === 0) return { root, step, field, fields, column: token.column };
 
@@ -314,7 +316,7 @@ function parsePath(token: { text: string; column: number }): ExpressionPath {
   throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
 }
 
-const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr';
+const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.failure, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr';
 
 /**
  * A type pull knows for a value before the run: a declared shorthand, or `unknown`, which any value fits, such as the
@@ -328,6 +330,7 @@ export type DeclaredType =
 
 const UNKNOWN: DeclaredType = { type: 'unknown' };
 const PR: DeclaredType = { type: 'object', fields: { url: { type: 'string' } } };
+const FAILURE: DeclaredType = { type: 'object', fields: { code: { type: 'string' }, message: { type: 'string' } } };
 
 /**
  * The type the `output` a step declares gives `steps.<id>.<field>`, or undefined when it gives none: outcome and end
@@ -368,6 +371,7 @@ export function stepFieldSchema(field: Extract<ExpressionPath, { root: 'steps' }
     case 'results': return forEach ? results : undefined;
     case 'branches': return { type: 'array', items: { type: 'string' } };
     case 'pr': return forEach ? undefined : PR;
+    case 'failure': return FAILURE;
   }
 }
 

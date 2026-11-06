@@ -292,6 +292,8 @@ function currentStep(step: StepState): ExpressionStep {
 
   if (settled(step)) current.outcome = visibleOutcome(step);
 
+  if (settled(step) && 'failure' in step && step.failure) current.failure = { code: step.failure.code, message: step.failure.message };
+
   if ('end' in step && step.end !== undefined) current.end = step.end;
 
   if ('outputs' in step && step.outputs !== undefined) current.outputs = step.outputs;

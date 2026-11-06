@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { syncScorersThenWorkflows } from '../../scorers/team-sync.js';
 import { resolveWorkflowEnv } from '../../env-resolution.js';
 import type { RunMode } from '../../launch-context.js';
-import { memberTools } from '../../tool-launch/call.js';
+import { memberTools } from '../../tool-launch/member-tools.js';
 import { getUserConfigPath, TeamaiConfigBaseSchema, type LocalConfig } from '../../types.js';
 import type { ToolId } from '../../tools.js';
 import type { AgentEvidence } from '../../workflow/attempt-marker.js';

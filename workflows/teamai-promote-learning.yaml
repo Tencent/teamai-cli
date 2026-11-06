@@ -1,0 +1,100 @@
+schemaVersion: v1alpha1
+name: teamai-promote-learning
+description: Promote an adopted, high-confidence learning to a skill, rule or doc - the AI picks the category unless the person gave one, rewrites the learning for it and opens a pull request that says why, then marks it promoted. Use when the person asks to promote a learning that teamai recall promote lists.
+invoke: ask
+private: true
+inputs: { learning: string, category: string }
+ends: { unconfigured-tool: failed }
+steps:
+  - id: learning
+    command: teamai recall maintenance promote-candidate --learning "$ID"
+    env: { ID: "{{ inputs.learning }}" }
+    output: { title: string, content: string, suggested: string }
+  - id: ask-category
+    needs: [learning]
+    if: inputs.category == ''
+    answer: |-
+      Classify the following team knowledge entry into exactly ONE category, and give the reason in one sentence:
+
+      - "skills" — reusable workflows, SOPs, step-by-step procedures, CLI recipes, operational playbooks
+      - "rules" — mandatory constraints, coding standards, conventions, best practices that MUST be followed
+      - "docs" — architecture decisions, system design, background context, reference documentation
+
+      Title: {{ steps.learning.outputs.title }}
+
+      Content:
+      {{ steps.learning.outputs.content }}
+    output: { category: skills | rules | docs, reason: string }
+    timeout: 30s
+    continue_on_failure: true
+  - id: category
+    needs: [learning, ask-category]
+    # When the AI could not choose, the keywords' suggestion is used, unless it names a tool that cannot run.
+    if: steps.ask-category.failure.code != 'tool_unconfigured'
+    command: teamai recall maintenance promote-category --given "$GIVEN" --chosen "$CHOSEN" --reason "$REASON" --suggested "$SUGGESTED"
+    env:
+      GIVEN: "{{ inputs.category }}"
+      CHOSEN: "{{ steps.ask-category.outputs.category }}"
+      REASON: "{{ steps.ask-category.outputs.reason }}"
+      SUGGESTED: "{{ steps.learning.outputs.suggested }}"
+    output: { category: string, reason: string }
+  - id: content
+    needs: [category]
+    answer: |-
+      You are a technical knowledge engineer promoting a team learning into formal knowledge.
+
+      The following "learning" has been repeatedly validated by the team (high confidence, adopted by multiple members). Transform it into the {{ steps.category.outputs.category }} form below:
+
+      - skills: a reusable skill/SOP. Format it with:
+        - A clear "when to use" trigger description
+        - Step-by-step numbered procedure
+        - Expected outcome
+        - Common pitfalls to avoid
+        Remove any references to specific dates, people, or one-off incidents. Make it timeless and reusable.
+      - rules: a team rule/constraint. Format it with:
+        - A one-line rule statement (imperative: "Always X" / "Never Y")
+        - Rationale: why this matters (1-2 sentences)
+        - Examples of correct and incorrect usage
+        Remove anecdotal context. State the constraint as an absolute standard.
+      - docs: a reference document. Format it with:
+        - Context: what system/component this describes
+        - Key concepts and their relationships
+        - Architecture decisions and their rationale
+        - Current state (as of promotion date)
+        Remove personal narrative. Write as objective technical documentation.
+
+      Original learning (title: "{{ steps.learning.outputs.title }}"):
+      ---
+      {{ steps.learning.outputs.content }}
+      ---
+
+      Output ONLY the transformed markdown content (including YAML frontmatter with title, tags, date set to today). Do NOT include the original learning's confidence or vote-related fields in the frontmatter.
+    output: { text: string }
+    timeout: 60s
+    continue_on_failure: true
+  - id: unconfigured-tool
+    needs: [ask-category, content]
+    # A tool the member names that cannot run fails the run instead of falling back.
+    if: steps.ask-category.failure.code == 'tool_unconfigured' || steps.content.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+  - id: publish
+    needs: [content]
+    # When the AI could not rewrite it, the learning is published as written, unless it names a tool that cannot run.
+    if: steps.content.outcome == 'success' || steps.content.failure.code != 'tool_unconfigured'
+    command: teamai recall maintenance promote-publish --learning "$ID" --category "$CATEGORY" --reason "$REASON" --content "$CONTENT" --content-failure "$WHY"
+    env:
+      ID: "{{ inputs.learning }}"
+      CATEGORY: "{{ steps.category.outputs.category }}"
+      REASON: "{{ steps.category.outputs.reason }}"
+      CONTENT: "{{ steps.content.outputs.text }}"
+      WHY: "{{ steps.content.failure.message }}"
+    # A project's knowledge lives under .teamai/: the review branch is written there when that checkout is this one.
+    writes: [.teamai/]
+    output: { target: string, exit_code: number }
+  - id: mark
+    needs: [publish]
+    command: teamai recall maintenance promote-mark --learning "$ID" --published "$PUBLISHED"
+    env: { ID: "{{ inputs.learning }}", PUBLISHED: "{{ steps.publish.outputs }}" }
+    writes: [.teamai/]
+    output: { exit_code: number }
+outputs: { exit_code: steps.mark.outputs.exit_code }

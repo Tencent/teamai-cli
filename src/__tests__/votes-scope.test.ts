@@ -37,8 +37,6 @@ vi.mock('../update.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../update.js')>()),
   doUpdate: vi.fn(async () => undefined),
 }));
-// The opt-in adoption judge (#723) asks a local CLI; here it adopts every candidate.
-vi.mock('../votes-judge.js', () => ({ judgeAdoption: vi.fn(async (_reply: string, ids: string[]) => ids) }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
 // Each team's reports checkout sits beside its clone, where getReportsDir puts it;
 // a write lands there instead of being pushed. The mock publishes immediately:
@@ -79,6 +77,7 @@ const { reportUsage } = await import('../team-push.js');
 const { recallFeedback } = await import('../votes.js');
 const { resolveVizRoot } = await import('../viz.js');
 const { recall } = await import('../recall.js');
+const { creditAdoptionVerdicts } = await import('../recall-adoption.js');
 const { appendRecallLine } = await import('../recall-log.js');
 
 let tmp: string;
@@ -266,16 +265,12 @@ describe('votes stay with the scope they were cast in (#787)', () => {
     expect(teamVotes(user)).toEqual({ 'doc-u': 1 });
   });
 
-  it('an upvote the adoption judge records in project A reaches only project A\'s team', async () => {
+  it('an upvote an adoption verdict credits in project A reaches only project A\'s team', async () => {
     const user = userScope();
     const a = await projectA();
     await feedbackIn(outsideAnyProject(), 'doc-u');
-    vi.stubEnv('TEAMAI_UPVOTE_JUDGE', '1');
-    try {
-      await stop(a.root, a.config, 'doc-judged', false);
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    await stop(a.root, a.config, 'doc-judged', false);
+    expect(await creditAdoptionVerdicts(a.config, 'sid-doc-judged', [{ doc: 'doc-judged', adopted: true }])).toEqual([{ doc: 'doc-judged', adopted: true }]);
     await report(user);
     await report(a.config);
 

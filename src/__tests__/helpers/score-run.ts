@@ -6,6 +6,14 @@ import { attemptEnv } from '../../workflow/attempt-marker.js';
 import { leaseNext, reportAttempt, startRun } from '../../workflow/engine.js';
 import type { ConfinedRunReport } from '../../workflow/step-state.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../../workflow/types.js';
+import { TryScorer } from '../../scorers/try-scorer.js';
+import { TRY_SCORER_WORKFLOW } from '../../scorers/judging-workflows.js';
+import type { SessionDemand } from '../../session-flow/scoring.js';
+import { confinedOffers } from '../../tool-launch/confined.js';
+import { runConfinedStep } from '../../workflow/confined-step.js';
+import { RunIdSchema } from '../../workflow/store.js';
+import { LeaseWireSchema } from '../../workflow/lease-wire.js';
+import { log } from '../../utils/logger.js';
 
 const external: DriverIdentity = { kind: 'external', machine: 'judge', workspace: '/judge' };
 const LeaseSchema = z.object({ attempt: z.string(), revision: z.number(), step: z.string(), prompt: z.string().optional() });
@@ -102,5 +110,63 @@ async function driveScore(config: LocalConfig, subject: string, scorers: readonl
     if (id === 'write' || !verb.ok) return verb;
     answers.set(lease.step, verb);
     dataOf(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: external, outputs: verb.output, ...(id === 'judge' ? { confined: JUDGED } : {}) }));
+  }
+}
+
+/** The `teamai score` verb a command step of a teamai-score or teamai-try-scorer run calls, given the env it was leased with. */
+async function verbOf(id: string, env: Record<string, string>, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  switch (id) {
+    case 'plan': return ScoreVerbs.plan({ subject: env.SUBJECT, scorers: env.SCORERS, batch: env.BATCH, demand: env.DEMAND }, ctx);
+    case 'evidence': return ScoreVerbs.evidence({ subject: env.SUBJECT, scorers: env.GROUP }, ctx);
+    case 'check': case 'ci': case 'protected': return ScoreVerbs.stage({ stage: id, evidence: env.DIR, wait: '2h' }, ctx);
+    case 'label': return ScoreVerbs.label({ evidence: env.DIR, answer: env.ANSWER, judge: env.JUDGE }, ctx);
+    case 'write': return ScoreVerbs.write({ evidence: env.DIR }, ctx);
+    case 'settle': return ScoreVerbs.settle({ subject: env.SUBJECT, scorers: env.GROUP }, ctx);
+    case 'report': return ScoreVerbs.report({ labels: env.LABELS, control: env.CONTROL }, ctx);
+    default: throw new Error(`no teamai score verb runs step ${id}`);
+  }
+}
+
+const TriedEndSchema = z.object({ done: z.object({ outputs: z.object({
+  answer: z.union([z.object({ data: z.record(z.string(), z.unknown()) }), z.object({ error: z.object({ code: z.string(), message: z.string() }) })]),
+  text: z.string(),
+}) }) });
+
+/**
+ * What `teamai score --session --scorer <file>` answers, driven here: the teamai-try-scorer run it starts, each command
+ * step by its verb and each judge on the confined tools found on PATH, as the local driver runs them. A judge no tool
+ * resolves ends it `confined_pending`, as the local driver stops on it; a run that ends with no report answers its end.
+ */
+export async function tryScorer(from: LocalConfig, demand: SessionDemand): Promise<WorkflowEnvelope> {
+  const prepared = await TryScorer.prepare(from, demand);
+  if (!prepared.ok) return { error: { code: prepared.code, message: prepared.message } };
+  const { config } = prepared;
+  const secrets = await knownSecrets(config);
+  const runId = RunIdSchema.parse(dataOf(await startRun(config, TRY_SCORER_WORKFLOW, prepared.inputs, { secrets, startedBy: 'person' })).run);
+  const can = { confined: await confinedOffers(), workspace: ['team' as const] };
+  for (;;) {
+    const answer = await leaseNext(config, runId, external, { can });
+    if ('error' in answer) return answer;
+    const held = z.object({ wait: z.object({ reason: z.string() }) }).safeParse(answer.data);
+    // The local driver stops on a judge no tool here can take, and says why.
+    if (held.success) return { error: { code: 'confined_pending', message: held.data.wait.reason } };
+    if (answer.data.lease === undefined) {
+      const tried = TriedEndSchema.safeParse(answer.data);
+      if (!tried.success) return answer;
+      // The lines `teamai score` prints of the run's report.
+      for (const line of tried.data.done.outputs.text.split('\n').filter(Boolean)) log.info(line);
+      return tried.data.done.outputs.answer;
+    }
+    const lease = LeaseWireSchema.parse(answer.data.lease);
+    const id = { attempt: lease.attempt, revision: lease.revision, driver: external };
+    if (lease.confined) {
+      const ended = await runConfinedStep({ config, run: runId, lease: { ...lease, confined: lease.confined }, secrets });
+      if (ended.kind === 'unresolved') return { error: { code: 'confined_pending', message: ended.reason } };
+      dataOf(await reportAttempt(config, runId, { ...id, ...ended.report }));
+      continue;
+    }
+    const ctx = { env: attemptEnv(config, runId, lease.attempt, 'unattended'), current: config, now: new Date().toISOString() };
+    const verb = await verbOf(lease.step.split('.').at(-1) ?? lease.step, lease.env ?? {}, ctx);
+    dataOf(await reportAttempt(config, runId, verb.ok ? { ...id, outcome: 'success', outputs: verb.output } : { ...id, outcome: 'failed', message: verb.message, failure: { code: verb.code, message: verb.message } }));
   }
 }

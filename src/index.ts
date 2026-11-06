@@ -1,12 +1,14 @@
 import { createRequire } from 'node:module';
+import { format } from 'node:util';
 import { Command, Option } from 'commander';
-import { setVerbose, setSilent, log } from './utils/logger.js';
+import { setVerbose, setSilent, setStderrOnly, log, writeInfoLine } from './utils/logger.js';
 import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import { ensureBundledRuntimeOnPath } from './bundled-runtime.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
+import type { PromotionCandidate } from './maintenance/promote.js';
 import type { ScoreOptions } from './score-commands.js';
-import type { EvidenceOptions, LabelOptions, PlanOptions, StageOptions, SubjectsOptions, WriteOptions } from './score-verbs.js';
+import type { EvidenceOptions, LabelOptions, PlanOptions, ReportOptions, StageOptions, SubjectsOptions, WriteOptions } from './score-verbs.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
@@ -850,7 +852,7 @@ workflowCmd
   .option('--no-judge', 'With --driver skill: leave the scored steps unjudged on this machine, as the describe reply offered')
   .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs, such as default=claude,review=codex. With --driver local the run remembers them on this install, and resume uses them. With --driver skill: only default=<tool>, the tool this coding session works in, which judges its scored steps and which its steps\' models resolve for when teamai installs agents for it. Pass it when the describe reply says the session names no tool')
   .option('--auto-approve', 'Answer optional approve HITL requests yes and choose requests with their default, for this run: with --driver local the run remembers it on this install, and resume uses it. A required approval still goes to the person')
-  .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.')
+  .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required, except one the workflow\'s defaults.inputs gives a value.')
   .option('--timeout <duration>', 'The longest the run may take, such as 30m or 2h: its steps stop and it fails with timeout once the shorter of this and the workflow\'s own timeout passes. Its finally steps still run after.')
   .option('--sandbox', 'With --driver local, declare this machine a sandbox for this run: a disposable host such as a CI runner or container, where benchmark trials and steps that need sandbox isolation may run. The run remembers it on this install, and resume uses it; a claim on another machine does not. workflows.sandbox in config declares it for every process.')
   .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean; sandbox?: boolean; timeout?: string }) => {
@@ -864,7 +866,7 @@ workflowCmd
   .option('--prepare', 'Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team assets and runs setup, and answers the lease with cwd, where the driver runs the step. So is a step that runs with a team role (role on its lease): teamai delivers the role into its copy. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true.')
   .option('--attempt <attempt>', 'With --prepare: prepare this attempt, which an earlier next leased this driver, instead of taking a new lease. wrong_attempt when the run no longer leases it to the driver. With --driver skill: the attempt of a place action, with --adopt')
   .option('--adopt <dir>', 'With --prepare --attempt: prepare the attempt in <dir>, a place the host made: a clean worktree of this repository on the lease\'s workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it')
-  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt\'s turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
+  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), queued, those of them it has not started, whose own timeout then counts from this call (the answer gives their deadlines in deadlines), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt\'s turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
   .option('--driver <kind>', 'skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next')
   .option('--wait', 'With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.')
   .option('--takeover', 'With --driver skill: drive the run from this coding session instead of the one that drives it. Run it only when the person agrees, after an orchestrator_active answer')
@@ -879,7 +881,7 @@ workflowCmd
 workflowCmd
   .command('report <run>')
   .description('Report the outcome of a leased step. Prints a JSON envelope.')
-  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver. A prompt step\'s report also sends tool, the tool the driver launched, and durationMs (milliseconds around the tool launch) and cost ({"amount":0.12,"unit":"USD"}, only as the tool stated it) when known, and limit (timeout, budget or max_turns) when a limit in its lease\'s limits stopped the tool.')
+  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver. A prompt step\'s report also sends tool, the tool the driver launched, and durationMs (milliseconds around the tool launch) and cost ({"amount":0.12,"unit":"USD"}, only as the tool stated it) when known, and limit (timeout, budget or max_turns) when a limit in its lease\'s limits stopped the tool. queued, as on next: the attempts of its other open leases it has not started, whose own timeout then counts from this report.')
   .option('--driver <kind>', 'skill: report an attempt of a run the current coding session drives, as its turn printed the command')
   .option('--attempt <id>', 'With --driver skill: the attempt to report')
   .option('--model-unavailable', 'With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable')
@@ -891,7 +893,7 @@ workflowCmd
 workflowCmd
   .command('respond <run> <step> <choice>')
   .description('Answer a waiting approve (yes/no) or choose HITL request. A required HITL request accepts only the person\'s answer: from their own terminal, or declared by a driver UI, sent from outside an agent session. Prints one JSON envelope.')
-  .option('--json <payload>', 'Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses.')
+  .option('--json <payload>', 'Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses. queued, as on next: the attempts of its open leases it has not started, whose own timeout then counts from this answer.')
   .option('--driver <kind>', 'skill: answer an optional gate of a run the current coding session drives, as its choose action prints it, and print the turn. Records the agent\'s answer, which a required HITL request refuses')
   .option('--note <text>', 'Keep a note with the answer, readable as steps.<id>.note')
   .option('--pass <n>', 'Answer only this positive pass number; rejects an answered or replaced HITL request')
@@ -952,7 +954,7 @@ selfImprovementCmd
   .command('run <scorer>')
   .description('Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team\'s workflows/teamai-self-improvement.yaml replaces teamai\'s default, and must take inputs scorer and suite. The default reads digest --json --scorer and improves only when it says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin. Its prompt step needs a sandbox, and runs in a fresh clone of the team repo on teamai/self-improvement/<scorer>, whose pull request it opens or updates. Prints the run\'s done envelope.')
   .option('--suite <dir>', 'The suite the regression tasks go in, which the team repo\'s default branch must have', 'benchmarks/regressions')
-  .option('--driver <kind>', 'The driver that runs it: local (default), or skill, which only a team workflow with invoke: allow or ask accepts; teamai\'s default denies agents')
+  .option('--driver <kind>', 'The driver that runs it: local, or skill, which only a team workflow with invoke: allow or ask accepts; teamai\'s default denies agents. Without it, workflows.driver decides, else local')
   .option('--tools <list>', 'The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude')
   .option('--sandbox', 'With --driver local, declare this machine a sandbox for this run, where the prompt step, which edits files without asking, may run. The run remembers it on this install, so workflow resume keeps it. workflows.sandbox in config declares it for every process.')
   .action(async (scorer: string, cmdOpts: { suite: string; driver?: string; tools?: string; sandbox?: boolean }) => {
@@ -967,7 +969,7 @@ const benchmarkCmd = program
 benchmarkCmd
   .command('run <suite>')
   .description('Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false} ("member" with --member-aliases; the ids --task and --arm name; true with --fail-on-regression) and the suite\'s timeout as --timeout, and drive it. A team\'s workflows/teamai-benchmark.yaml replaces teamai\'s default, and must take input suite; it gets aliases, tasks, arms and fail_on_regression only when it declares them. Prints the run\'s done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or a finally step, its report or its regression gate, failed or was cancelled; a record still pending publication never changes the exit code.')
-  .option('--driver <kind>', 'The driver that runs it: local (default), or skill')
+  .option('--driver <kind>', 'The driver that runs it: local, or skill. Without it, workflows.driver decides, else local')
   .option('--sandbox', 'With --driver local, declare this machine a sandbox for this run, where the trials, which need strict sandbox isolation, may run. The run remembers it on this install, so workflow resume keeps it. workflows.sandbox in config declares it for every process.')
   .option('--member-aliases', 'Resolve each arm\'s model alias with your own ~/.teamai/models/aliases.yaml over the team\'s models/aliases.yaml, which alone resolves them otherwise: starts the workflow with input aliases member instead of team. The results table and the record show member as the source of a model your file decided.')
   .option('--task <id>', 'Run only this task of the suite: one baseline and its trials. Repeatable. Starts the workflow with input tasks, [] without it; a team file that takes no input tasks is refused.', (value: string, previous: string[]) => previous.concat(value), [])
@@ -1017,7 +1019,7 @@ benchmarkCmd
 
 const scoreCmd = program
   .command('score')
-  .description('Label a workflow pass or a finished agent session with team scorers (scorers/<name>.md). --run <id>, --session <id> or --team-session <name>, with --scorer, starts the default workflow teamai-score for that subject with demand named (no sampling; a failed or expired judgment opens again), on the driver --driver or workflows.driver names, else local, and prints the labels it wrote. A run for a driver this machine does not run waits for it, and the command says how to drive it here. A person starts it from their own terminal: from an agent session the start answers invoke_denied, and an agent judges its session with /teamai-share-session instead. The pass, session, scorers and --label value are checked before any run starts. When only a judge step no tool here can run is left, it exits 1 with judge_pending and the labels already written; a scorer with no label exits 1 with its code. A scorer file (--scorer ./scorers/x.md) is tried here instead, and its label is never stored. Prints one JSON envelope; --drain prints lines.')
+  .description('Label a workflow pass or a finished agent session with team scorers (scorers/<name>.md). --run <id>, --session <id> or --team-session <name>, with --scorer, starts the default workflow teamai-score for that subject with demand named (no sampling; a failed or expired judgment opens again), on the driver --driver or workflows.driver names, else local, and prints the labels it wrote. A run for a driver this machine does not run waits for it, and the command says how to drive it here. A person starts it from their own terminal: from an agent session the start answers invoke_denied, and an agent judges its session with /teamai-share-session instead. The pass, session, scorers and --label value are checked before any run starts. When only a judge step no tool here can run is left, it exits 1 with judge_pending and the labels already written; a scorer with no label exits 1 with its code. A scorer file (--scorer ./scorers/x.md) starts the default workflow teamai-try-scorer instead, which judges the session and its first prompt alone and stores no label; from an agent session it answers invoke_denied, and an agent tries a scorer with /teamai-new-scorer. Prints one JSON envelope; --drain prints lines.')
   .option('--run <id>', 'Label a pass of this run on demand, with --scorer: a scorer a step of the run lists, read at the team revision the run started from. Refused with step_ambiguous, step_not_found or pass_not_found as --step and --pass say, and with evidence_missing, naming each, when a commit or a session the pass recorded is no longer on this machine; no run starts and no label is written.')
   .option('--step <path>', 'With --run: the step path, such as review or check.review; optional when the run lists the scorers on one step only')
   .option('--pass <n>', 'With --run: the pass to judge; default the step\'s latest succeeded pass')
@@ -1026,8 +1028,8 @@ const scoreCmd = program
   .option('--team-session <name>', 'Judge a session a member pushed with session push instead of one on this machine, by the name session list prints for this directory\'s repository: read from teamai-reports, else from the archive the team kept on its default branch before, and redacted before a judge reads it. Run session pull first for the newest. Its label is about the session where it ran, so it pairs with that session\'s labels from the machine that ran it, and records no agent. Not with --session or --source')
   .option('--author <name>', 'With --team-session: who pushed it, when two members pushed a session with that name')
   .option('--label <value>', 'Label the session by hand with this value of the one --scorer: the teamai-score run skips the stages and the judge, score and passed come from the scorer, and no reasoning is kept. A value the scorer does not list fails before any run starts and lists the ones it does. Honoured only in a run a person started. A hand label and a model label of a session are kept side by side, so rescoring with the model never replaces yours; the dashboard Scorers page shows how often the model judge agrees with hand labels. Not with a scorer file or --batch')
-  .option('--scorer <name>', 'With --run: a scorer a step of the run lists, read at the team revision the run started from. With --session or --team-session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md, judged here with no run. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Files and scorer names go in separate commands. Repeatable.', (value: string, previous: string[]) => previous.concat(value), [])
-  .option('--driver <driver>', 'With --run, --session or --team-session: the driver of the teamai-score run, local or none, which only starts the run and leaves it to any driver\'s workflow next. Without it, workflows.driver decides, else local')
+  .option('--scorer <name>', 'With --run: a scorer a step of the run lists, read at the team revision the run started from. With --session or --team-session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md, tried by a teamai-try-scorer run. A file\'s label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session\'s first prompt alone (control). Files and scorer names go in separate commands. Repeatable.', (value: string, previous: string[]) => previous.concat(value), [])
+  .option('--driver <driver>', 'With --run, --session or --team-session: the driver of the teamai-score run, or of the teamai-try-scorer run a scorer file starts, local or none, which only starts the run and leaves it to any driver\'s workflow next. Without it, workflows.driver decides, else local')
   .option('--batch', 'With --run or --session: the scorers share one judge launch when they take the same model, stages and preferred tool; a scorer with a check never does')
   .option('--push', 'Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after the labels of --run or --session. Labels only: never the session, the prompt or the judge\'s reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push. Also pushes what a workflow step with deliver: publish left on this machine while origin could not take it.')
   .option('--drain', 'What every unattended job runs before it ends, alone, in every scope this directory reaches: in unattended mode, finish each session captured unattended here; start the default workflow teamai-finished-sessions on the driver workflows.driver names, else local (a run for a driver this machine does not run waits for it), which archives, scrubbed, and judges the finished sessions as sessions.publish and scoring.sessions say, and starts teamai-score again for each pass and session whose judging lapsed (a failed judgment final and never retried); publish pending labels and workflow run records; where sessions.publish is auto for this run mode, archive the step sessions of its ended runs on teamai-reports; report usage to stats/<member>.yaml. Prints a line per kind of work and what it left for other drivers; exits 1 only when a judgment, a publish or that run failed, and what stayed pending goes on the next --drain.')
@@ -1107,6 +1109,16 @@ scoreCmd
   .action(async (_cmdOpts, command: Command) => {
     const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
     await scoreVerbCommand((ctx) => ScoreVerbs.settle(command.optsWithGlobals<EvidenceOptions>(), ctx));
+  });
+
+scoreCmd
+  .command('report')
+  .description('A step of a teamai-try-scorer run: the label each scorer file gave the session, read with its reasoning from the labels.json its teamai-score step left, beside the labels this scope keeps of that scorer on the session and the control\'s verdict on the session\'s first prompt alone. Stores nothing. Prints {"answer","text"}: answer is the envelope teamai score --scorer <file> prints, {"data":{"label","stored","control"}} for one file, by scorer for several, or {"error"} when the session got no label; text says it in lines.')
+  .option('--labels <json>', 'The labels output of the teamai-score step that judged the session')
+  .option('--control <json>', 'The labels output of the teamai-score step that judged its control')
+  .action(async (_cmdOpts, command: Command) => {
+    const { ScoreVerbs, scoreVerbCommand } = await import('./score-verbs.js');
+    await scoreVerbCommand((ctx) => ScoreVerbs.report(command.optsWithGlobals<ReportOptions>(), ctx));
   });
 
 scoreCmd
@@ -1620,16 +1632,17 @@ program
     }
   });
 
-program
+const importCommand = program
   .command('import')
-  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki')
+  .description('Import knowledge from local directories, remote repos, organizations, MRs, AI tools\' rules, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo; --from-tools starts teamai-import-rules and --from-iwiki teamai-import-from-iwiki, which ask you to accept, edit or skip each item unless --all is given')
   .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
-  .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (the Claude root\'s rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)').hideHelp())
+  .option('--from-tools', 'Import the rule files in the rules directory of every AI coding tool on this machine (~/.claude/rules, ~/.cursor/rules, ~/.codebuddy/rules, ...): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo\'s rules/, docs/ or learnings/')
+  .addOption(new Option('--from-claude', 'Alias of --from-tools').hideHelp())
   .option('--from-mr <url...>', 'Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update')
   .option('--no-discussions', 'Leave the MR\'s review threads out of the extraction (with --from-mr)')
-  .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
-  .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())
-  .option('--all', 'Accept all suggestions without interactive confirmation')
+  .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo\'s rules/, docs/ or learnings/')
+  .addOption(new Option('--resume', 'Replaced by teamai workflow resume <run>, which the import prints when it starts').hideHelp())
+  .option('--all', 'Accept all suggestions without interactive confirmation; needed where no person answers, such as inside a workflow step')
   .addOption(new Option('--output <path>', 'Write drafts to this directory instead of pushing to team repo; code knowledge goes to <path>/teamwiki').hideHelp())
   .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
   .addOption(new Option('--ssh', 'Force SSH clone even if HTTPS token is available').hideHelp())
@@ -1673,6 +1686,219 @@ program
     await importCmd({ ...globalOpts, ...cmdOpts });
   });
 
+/** Runs a verb of a workflow step: prints what it answers as JSON, or says why it failed and exits 1, 65 when its flags are not what the step passes. */
+async function importVerb<TAnswer>(run: () => Promise<TAnswer>): Promise<void> {
+  setStderrOnly(true);
+  const { ImportInputError } = await import('./import-from-repo.js');
+  // Only JSON goes to stdout: the lines the extractor prints are the step's progress, kept on the stream they were for.
+  const { log: stdoutLog } = console;
+  console.log = (...args: unknown[]) => writeInfoLine(format(...args));
+
+  try {
+    const answer = await run();
+    process.stdout.write(`${JSON.stringify(answer)}\n`);
+  } catch (error) {
+    log.error(error instanceof Error ? error.message : String(error));
+
+    if (error instanceof ImportInputError) await rejectVerbInput();
+    else process.exitCode = 1;
+  } finally {
+    console.log = stdoutLog;
+  }
+}
+
+// The verbs teamai-import-rules and teamai-import-learnings runs' steps call.
+importCommand
+  .command('scan-rules')
+  .description('A step of a teamai-import-rules run: list the rule files in the user rules directory of every AI coding tool teamai supports. Prints {"candidates":[{"path","file"}]}.')
+  .action(async () => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.scanRules());
+  });
+
+importCommand
+  .command('read-candidate')
+  .description('A step of a teamai-import-learnings run: read the start of a file to classify, as much as the AI tool is shown. Prints {"content"}.')
+  .requiredOption('--file <path>', 'The file that holds the item\'s text')
+  .action(async (cmdOpts: { file: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.readCandidate(cmdOpts));
+  });
+
+importCommand
+  .command('classify-reply')
+  .description('A step of a teamai-import-learnings run: read what the AI tool said a file is. A reply that is not the JSON asked for reads as personal, so the file is left out. Prints {"type","title","summary","tags","personal"}.')
+  .requiredOption('--path <path>', 'The path the file is shown as')
+  .requiredOption('--reply <text>', 'What the AI tool answered')
+  .action(async (cmdOpts: { path: string; reply: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(async () => ImportLearnings.classifyReply(cmdOpts));
+  });
+
+importCommand
+  .command('write-learnings')
+  .description('A step of a teamai-import-learnings run: write each item that is not personal and was accepted, or edited with the note as its title, with its type in the frontmatter, into rules/, docs/ or learnings/ of the team repo by that type, or all into one directory. Prints {"kept","written"}.')
+  .requiredOption('--classified <json>', 'The results of the classify step')
+  .option('--reviewed <json>', 'The results of the review step; empty accepts every item', '')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every item is written into')
+  .requiredOption('--by-type <bool>', 'true writes by type into rules/, docs/ and learnings/ of --target')
+  .action(async (cmdOpts: { classified: string; reviewed: string; target: string; byType: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.writeLearnings(cmdOpts));
+  });
+
+importCommand
+  .command('publish-rules')
+  .description('A step of a teamai-import-rules run: commit and push what the import wrote into the team repo, then say the import is complete. Prints {}.')
+  .requiredOption('--kept <n>', 'How many items were not personal')
+  .requiredOption('--written <json>', 'The files the import wrote')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every item was written into')
+  .requiredOption('--by-type <bool>', 'true when --target is the team repo, which is pushed')
+  .action(async (cmdOpts: { kept: string; written: string; target: string; byType: string }) => {
+    const { ImportLearnings } = await import('./import-local.js');
+    await importVerb(() => ImportLearnings.publishRules(cmdOpts));
+  });
+
+// The verbs a teamai-import-from-mr run's steps call.
+importCommand
+  .command('fetch-mr')
+  .description('A step of a teamai-import-from-mr run: read a merged MR or PR, with its review threads, as the extraction prompt shows it. Prints {"url","title","description","commits","diff","threads","thread_count","author","date"}.')
+  .requiredOption('--url <url>', 'The MR or PR URL: GitHub, TGit or GitLab')
+  .requiredOption('--mrs <json>', 'Every MR URL of the run, to say which of them this is')
+  .option('--threads <bool>', 'false leaves the review threads out', 'true')
+  .action(async (cmdOpts: { url: string; mrs: string; threads: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(() => ImportFromMr.fetch(cmdOpts));
+  });
+
+importCommand
+  .command('draft-mr')
+  .description('A step of a teamai-import-from-mr run: keep the learning the AI tool wrote for an MR in $TEAMAI_RUN_DIR, and say its title, its tags and the existing learnings it overlaps. Prints {"title","file","tags","overlaps","repo_url"}.')
+  .requiredOption('--url <url>', 'The MR or PR URL')
+  .requiredOption('--title <title>', 'The MR\'s title, the learning\'s title when its frontmatter has none')
+  .requiredOption('--reply <markdown>', 'What the AI tool answered')
+  .action(async (cmdOpts: { url: string; title: string; reply: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(() => ImportFromMr.draft(cmdOpts));
+  });
+
+importCommand
+  .command('publish-mr')
+  .description('A step of a teamai-import-from-mr run: publish each accepted learning, or the edited one under the note as its title, as teamai contribute does, then update and push the teamwiki of each repository whose evidence the team repo holds; or write each into one directory. Prints {"published"}.')
+  .requiredOption('--extracted <json>', 'The results of the extract step')
+  .option('--reviewed <json>', 'The results of the review step; empty accepts every draft', '')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every draft is written into')
+  .requiredOption('--drafts <bool>', 'true writes each draft into --target as learning.md and publishes nothing')
+  .action(async (cmdOpts: { extracted: string; reviewed: string; target: string; drafts: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(() => ImportFromMr.publish(cmdOpts));
+  });
+
+importCommand
+  .command('finish-mr')
+  .description('A step of a teamai-import-from-mr run: sum up a run of several MRs and name each that failed. Prints {"text","exit_code","learnings"}: exit_code 1 when an MR failed.')
+  .requiredOption('--extracted <json>', 'The results of the extract step')
+  .action(async (cmdOpts: { extracted: string }) => {
+    const { ImportFromMr } = await import('./import-from-mr.js');
+    await importVerb(async () => ImportFromMr.finish(cmdOpts));
+  });
+
+// The verbs a teamai-import-from-iwiki run's steps call.
+importCommand
+  .command('fetch-iwiki')
+  .description('A step of a teamai-import-from-iwiki run: download the pages of an iWiki space, or one page, into $TEAMAI_RUN_DIR/iwiki/, with TAI_PAT_TOKEN. Prints {"source","documents","candidates":[{"path","file"}],"dual_context"}.')
+  .requiredOption('--source <space-id-or-url>', 'A numeric space id, or a page URL holding /p/<id>')
+  .option('--dual <bool>', 'true also prints the pages as the dual sections are asked about', 'false')
+  .action(async (cmdOpts: { source: string; dual: string }) => {
+    const { ImportFromIwiki } = await import('./import-iwiki.js');
+    await importVerb(() => ImportFromIwiki.fetch(cmdOpts));
+  });
+
+importCommand
+  .command('publish-iwiki')
+  .description('A step of a teamai-import-from-iwiki run: link the imported pages to the teamwiki\'s code knowledge, then commit and push what the import wrote into the team repo. Prints {}.')
+  .requiredOption('--kept <n>', 'How many items were not personal')
+  .requiredOption('--written <json>', 'The files the import wrote')
+  .requiredOption('--target <dir>', 'The team repo, or the directory every item was written into')
+  .requiredOption('--by-type <bool>', 'true when --target is the team repo, which is pushed')
+  .requiredOption('--documents <file>', 'The JSON file of the documents the fetch-iwiki step printed')
+  .action(async (cmdOpts: { kept: string; written: string; target: string; byType: string; documents: string }) => {
+    const { ImportFromIwiki } = await import('./import-iwiki.js');
+    await importVerb(() => ImportFromIwiki.publish(cmdOpts));
+  });
+
+importCommand
+  .command('write-sections')
+  .description('A step of a teamai-import-from-iwiki run: write the business API, external knowledge and glossary sections the AI tool found into external-knowledge.md, or queue them in .teamai/pending-review.jsonl. Prints {}.')
+  .requiredOption('--source <iwiki-url>', 'iwiki://<id>, recorded in each section')
+  .option('--reply <text>', 'What the AI tool answered', '')
+  .option('--failure <message>', 'Why the AI tool did not answer, when it did not', '')
+  .requiredOption('--sections-dir <dir>', 'The directory that holds external-knowledge.md')
+  .requiredOption('--review-dir <dir>', 'The directory whose .teamai/pending-review.jsonl takes the sections with --review')
+  .option('--review <bool>', 'true queues the sections for teamai review instead of writing them', 'false')
+  .action(async (cmdOpts: { source: string; reply: string; failure: string; sectionsDir: string; reviewDir: string; review: string }) => {
+    const { writeSections } = await import('./iwiki-dual.js');
+    await importVerb(() => writeSections(cmdOpts));
+  });
+
+// The verbs a teamai-import-from-repo run's steps call.
+importCommand
+  .command('stage')
+  .description('A step of a teamai-import-from-repo run: fetch a repository into its clone cache, or read a local checkout, and extract it into a staging teamwiki under $TEAMAI_RUN_DIR, with no AI call. Prints {"slug","stage","updated","enrich","narrate","context","head","finished"}.')
+  .requiredOption('--item <json>', 'The item: {"kind":"repo"|"dir","source","domain","auth","slug","repo_url","mr_urls"}')
+  .requiredOption('--settings <json>', 'The run\'s settings: {"depth","ssh","incremental","skip_enrich","max_files","team_repo"}')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the item is imported into')
+  .action(async (cmdOpts: { item: string; settings: string; wikiRoot: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    await importVerb(() => ImportFromRepo.stage(cmdOpts));
+  });
+
+importCommand
+  .command('publish')
+  .description('A step of a teamai-import-from-repo run: publish an item\'s staged evidence into the teamwiki, with the narrative the AI tool wrote for a repository and the domain its list entry names, then reconcile the teamwiki. Prints {"deep"}: whether deep enrich follows.')
+  .requiredOption('--item <json>', 'The item, as the stage step got it')
+  .requiredOption('--settings <json>', 'The run\'s settings, as the stage step got them')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the item is imported into')
+  .requiredOption('--stage <dir>', 'The staging directory the stage step printed')
+  .requiredOption('--slug <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--narrative <markdown>', 'What the tool answered for a repository\'s narrative', '')
+  .option('--narrative-failure <message>', 'Why the tool could not answer for the narrative, when it could not', '')
+  .action(async (cmdOpts: { item: string; settings: string; wikiRoot: string; stage: string; slug: string; narrative: string; narrativeFailure: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    await importVerb(() => whileTeamwikiLocked(cmdOpts.wikiRoot, () => ImportFromRepo.publish(cmdOpts)));
+  });
+
+importCommand
+  .command('finish-item')
+  .description('A step of a teamai-import-from-repo run: say how an item\'s deep enrich ended and record the commit a repository was imported at. Prints {"deep_complete"}.')
+  .requiredOption('--item <json>', 'The item, as the stage step got it')
+  .requiredOption('--settings <json>', 'The run\'s settings, as the stage step got them')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the item is imported into')
+  .requiredOption('--mode <mode>', 'The command that started the run: dir, repo, list, org, update or ci')
+  .requiredOption('--slug <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--head <sha>', 'The commit a repository was fetched at', '')
+  .option('--deep <complete>', 'What the deep-enrich run said: true, false, or empty when none ran', '')
+  .option('--deep-failure <message>', 'Why the deep-enrich run failed, when it did: the deep enrich did not finish', '')
+  .action(async (cmdOpts: { item: string; settings: string; wikiRoot: string; mode: string; slug: string; head: string; deep: string; deepFailure: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    await importVerb(() => ImportFromRepo.finishItem(cmdOpts));
+  });
+
+importCommand
+  .command('finish')
+  .description('A step of a teamai-import-from-repo run: once every item settled, rebuild the teamwiki indexes, publish the batch to the team repo, and sum it up. Prints {"text","exit_code","imported"}; exit_code is 1 when an item failed or its deep enrich did not finish.')
+  .requiredOption('--mode <mode>', 'The command that started the run: dir, repo, list, org, update or ci')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki the items were imported into')
+  .requiredOption('--settings <json>', 'The run\'s settings')
+  .requiredOption('--results <json>', 'The results of the imports step')
+  .option('--skipped <n>', 'How many entries of the list were skipped before the run', '0')
+  .action(async (cmdOpts: { mode: string; wikiRoot: string; settings: string; skipped: string; results: string }) => {
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    await importVerb(() => whileTeamwikiLocked(cmdOpts.wikiRoot, () => ImportFromRepo.finish(cmdOpts)));
+  });
+
 program
   .command('mr-hint', { hidden: true })
   
@@ -1686,14 +1912,14 @@ program
     }
   });
 
-program
+const codebaseCommand = program
   .command('codebase')
   .description('Inspect and maintain the teamwiki that `teamai import` writes')
   .addOption(new Option('--project <name>', 'Codebase slug under teamwiki/evidence/code/, required for --deep-enrich').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph, and count the member\'s asset relations (assets, relations, without a relation, unresolved)')
   .option('--reconcile', 'Reconcile product and code knowledge in teamwiki')
-  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence')
+  .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, which publishes the docs; an --output teamwiki is written by this process')
   .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
@@ -1703,6 +1929,197 @@ program
     const globalOpts = program.opts<GlobalOptions>();
     const { codebaseCmd } = await import('./codebase-cmd.js');
     await codebaseCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+/** The target a `codebase deep-enrich-*` verb's flags name; undefined, said and exited 65, when they name none. */
+async function deepEnrichVerbTarget(flags: { wikiRoot: string; codebase: string; maxModules: string }): Promise<import('./deep-enrich.js').DeepEnrichTarget | undefined> {
+  const { DeepEnrich } = await import('./deep-enrich.js');
+  const parsed = DeepEnrich.targetOf(flags);
+
+  if (parsed.ok) return parsed.target;
+  log.error(parsed.message);
+  await rejectVerbInput();
+
+  return undefined;
+}
+
+/** Exits a verb 65, so its step fails input_rejected and no retry is offered. */
+async function rejectVerbInput(): Promise<void> {
+  const { INPUT_REJECTED_EXIT } = await import('./workflow/protocol.js');
+  process.exitCode = INPUT_REJECTED_EXIT;
+}
+
+// The verbs a teamai-codebase-deep-enrich run's steps call.
+codebaseCommand
+  .command('deep-enrich-plan')
+  .description('A step of a teamai-codebase-deep-enrich run: refuse a symbolic link on the way to the docs, drop the AI docs a newer extract made stale, and list what is still missing. Prints {"components":[{"slug","responsibilities","facts","call_chains","deps"}],"architecture":{"needed","modules","edges","interfaces"}}. Exits 65 when _manifest.json has no component.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--max-modules <n>', 'Only the first n components of the manifest; 0 takes every one', '0')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; maxModules: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    const planned = await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.plan(target));
+
+    if (planned) {
+      process.stdout.write(`${JSON.stringify(planned)}\n`);
+
+      return;
+    }
+
+    await rejectVerbInput();
+  });
+
+codebaseCommand
+  .command('deep-enrich-write')
+  .description('A step of a teamai-codebase-deep-enrich run: write one component\'s design doc, or the architecture overview, from what the AI tool answered, or say why it has none. Prints {"written"}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--component <slug>', 'The component whose doc this is')
+  .option('--architecture', 'The doc is the architecture overview')
+  .option('--text <markdown>', 'What the tool answered', '')
+  .option('--failure <message>', 'Why the tool could not answer, when it could not', '')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; component?: string; architecture?: boolean; text: string; failure: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget({ ...cmdOpts, maxModules: '0' });
+
+    if (!target) return;
+
+    if ((cmdOpts.component === undefined) === (cmdOpts.architecture !== true)) {
+      log.error('Pass either --component <slug> or --architecture.');
+      await rejectVerbInput();
+
+      return;
+    }
+
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const doc = cmdOpts.component === undefined ? { kind: 'architecture' as const } : { kind: 'component' as const, slug: cmdOpts.component };
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    const written = await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.write(target, doc, { text: cmdOpts.text, failure: cmdOpts.failure }));
+    process.stdout.write(`${JSON.stringify(written)}\n`);
+  });
+
+codebaseCommand
+  .command('deep-enrich-graph')
+  .description('A step of a teamai-codebase-deep-enrich run: write the deterministic graph docs and the G6 triples, and say whether the G5 scenarios are still to be asked for. Prints {"scenarios":{"needed","architecture","call_chains","modules"}}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--max-modules <n>', 'Only the first n components of the manifest; 0 takes every one', '0')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; maxModules: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    process.stdout.write(`${JSON.stringify(await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.graph(target)))}\n`);
+  });
+
+codebaseCommand
+  .command('deep-enrich-finish')
+  .description('A step of a teamai-codebase-deep-enrich run: write the G5 scenarios from what the AI tool answered, the graph router, the teamwiki indexes and the quality reports, and say which AI docs are still missing. Prints {"text","exit_code","complete","missing_components","missing_architecture"}; exit_code is 1 when a doc is missing.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .option('--max-modules <n>', 'Only the first n components of the manifest; 0 takes every one', '0')
+  .option('--scenarios <markdown>', 'What the tool answered for the scenarios', '')
+  .option('--scenarios-failure <message>', 'Why the tool could not answer for the scenarios, when it could not', '')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; maxModules: string; scenarios: string; scenariosFailure: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    const finished = await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.finish(target, { text: cmdOpts.scenarios, failure: cmdOpts.scenariosFailure }));
+    process.stdout.write(`${JSON.stringify(finished)}\n`);
+  });
+
+codebaseCommand
+  .command('deep-enrich-publish')
+  .description('A step of a teamai-codebase-deep-enrich run: commit and push the codebase\'s evidence and docs, with the teamwiki\'s router.md and index.md, to the team repo that holds the teamwiki. Prints {"pushed"}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string }) => {
+    setStderrOnly(true);
+    const target = await deepEnrichVerbTarget({ ...cmdOpts, maxModules: '0' });
+
+    if (!target) return;
+    const { DeepEnrich } = await import('./deep-enrich.js');
+    const { whileTeamwikiLocked } = await import('./utils/teamwiki-root.js');
+    process.stdout.write(`${JSON.stringify(await whileTeamwikiLocked(target.wikiRoot, () => DeepEnrich.publish(target)))}\n`);
+  });
+
+async function codebaseEnrichVerbTarget(flags: { wikiRoot: string; codebase: string }): Promise<import('./enrich-with-ai.js').CodebaseEnrichTarget | undefined> {
+  const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+  const parsed = CodebaseEnrich.targetOf(flags);
+
+  if (parsed.ok) return parsed.target;
+  log.error(parsed.message);
+  await rejectVerbInput();
+
+  return undefined;
+}
+
+async function moduleRepliesOf(results: string): Promise<import('./enrich-with-ai.js').ModuleReply[] | undefined> {
+  const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+  const parsed = CodebaseEnrich.repliesOf(results);
+
+  if (parsed.ok) return parsed.replies;
+  log.error(parsed.message);
+  await rejectVerbInput();
+
+  return undefined;
+}
+
+// The verbs a teamai-codebase-enrich run's steps call.
+codebaseCommand
+  .command('enrich-plan')
+  .description('A step of a teamai-codebase-enrich run: list the modules of a codebase with at least five facts in the teamwiki\'s facts cache, which the last extract wrote. Prints {"modules":[{"name","files","components","interfaces"}],"interfaces"}.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory the codebase was extracted into')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string }) => {
+    setStderrOnly(true);
+    const target = await codebaseEnrichVerbTarget(cmdOpts);
+
+    if (!target) return;
+    const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+    process.stdout.write(`${JSON.stringify(await CodebaseEnrich.plan(target))}\n`);
+  });
+
+codebaseCommand
+  .command('enrich-summary')
+  .description('A step of a teamai-codebase-enrich run: read what the AI tool answered about each module, for the domain prompt. Prints {"count","project","modules"}; count is 0 when a module could not be asked or no answer parsed, and nothing is to be written.')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .requiredOption('--results <json>', 'The results of the modules step')
+  .action(async (cmdOpts: { codebase: string; results: string }) => {
+    setStderrOnly(true);
+    const replies = await moduleRepliesOf(cmdOpts.results);
+
+    if (!replies) return;
+    const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+    process.stdout.write(`${JSON.stringify(CodebaseEnrich.summary(cmdOpts.codebase, replies))}\n`);
+  });
+
+codebaseCommand
+  .command('enrich-write')
+  .description('A step of a teamai-codebase-enrich run: write _manifest.json and _domains.json beside the codebase\'s evidence from what the AI tool answered. Prints {"modules","domain"}; modules is 0 when nothing was written.')
+  .requiredOption('--wiki-root <dir>', 'The teamwiki directory the codebase was extracted into')
+  .requiredOption('--codebase <slug>', 'The codebase, its directory under evidence/code/')
+  .requiredOption('--results <json>', 'The results of the modules step')
+  .option('--domain <json>', 'What the tool answered for the domain', '')
+  .option('--domain-failure <message>', 'Why the tool could not answer for the domain, when it could not', '')
+  .action(async (cmdOpts: { wikiRoot: string; codebase: string; results: string; domain: string; domainFailure: string }) => {
+    setStderrOnly(true);
+    const target = await codebaseEnrichVerbTarget(cmdOpts);
+    const replies = target && await moduleRepliesOf(cmdOpts.results);
+
+    if (!target || !replies) return;
+    const { CodebaseEnrich } = await import('./enrich-with-ai.js');
+    process.stdout.write(`${JSON.stringify(await CodebaseEnrich.write(target, replies, { text: cmdOpts.domain, failure: cmdOpts.domainFailure }))}\n`);
   });
 
 
@@ -1740,36 +2157,75 @@ const ciCmd = program
 
 ciCmd
   .command('extract-mr')
-  .description('Extract knowledge from MR/PR and post as comment or write to team repo')
+  .description('Extract knowledge from MR/PR and post as comment or write to team repo: starts the default workflow teamai-ci-extract-mr on the local driver, with no teamai init needed; a run with none takes --team-repo\'s teamai.yaml and workflows')
   .requiredOption('--url <url>', 'MR/PR web URL')
   .option('--mode <mode>', 'Operation mode: comment | write | both', 'comment')
   .option('--team-repo <path>', 'Team knowledge repo path (required for write mode)')
   .option('--comment-marker <marker>', 'HTML comment anchor for idempotent updates', '<!-- teamai:ci-extract -->')
-  .option('--write-mode <mode>', 'Write strategy: direct | pending-review', 'direct')
+  .option('--write-mode <mode>', 'Write strategy: direct; pending-review has no effect and writes as direct does', 'direct')
   .option('--output <dir>', 'Write artifacts to directory')
   .option('--individual-comments', 'Post each suggestion as separate comment with reaction/resolve support')
   .option('--no-discussions', 'Leave the MR\'s review threads out of the extraction')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
-    const { ciExtractMr } = await import('./ci/extract-mr.js');
-    await ciExtractMr({ ...globalOpts, ...cmdOpts });
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await CiExtractMr.start({ ...globalOpts, ...cmdOpts });
+  });
+
+// The verbs a teamai-ci-extract-mr run's steps call.
+ciCmd
+  .command('comment')
+  .description('A step of a teamai-ci-extract-mr run: post the drafted learning on the MR, as the comment --marker finds and updates or as its own comment, then the knowledge graph nodes of the source files the merge changed. Prints {}.')
+  .requiredOption('--url <url>', 'The MR or PR URL')
+  .requiredOption('--learnings <json>', 'The learnings output of the extract step')
+  .requiredOption('--marker <marker>', 'The HTML comment the MR comment is found and updated by')
+  .requiredOption('--individual <bool>', 'true posts the learning as its own comment, with reaction support')
+  .requiredOption('--preview <bool>', 'true says each comment instead of posting it')
+  .action(async (cmdOpts: { url: string; learnings: string; marker: string; individual: string; preview: string }) => {
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await importVerb(() => CiExtractMr.comment(cmdOpts));
+  });
+
+ciCmd
+  .command('write')
+  .description('A step of a teamai-ci-extract-mr run: update the team repo\'s teamwiki from the merged checkout when a source file changed, write the drafted learning into its learnings/, and commit and push both, leaving out what a reviewer rejected on an individual comment. Prints {}.')
+  .requiredOption('--url <url>', 'The MR or PR URL')
+  .requiredOption('--learnings <json>', 'The learnings output of the extract step')
+  .requiredOption('--team-repo <path>', 'The team repo\'s checkout')
+  .requiredOption('--individual <bool>', 'true reads the reactions on the individual comments')
+  .requiredOption('--preview <bool>', 'true says the learning\'s file and writes and pushes nothing')
+  .action(async (cmdOpts: { url: string; learnings: string; teamRepo: string; individual: string; preview: string }) => {
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await importVerb(() => CiExtractMr.write(cmdOpts));
+  });
+
+ciCmd
+  .command('artifacts')
+  .description('A step of a teamai-ci-extract-mr run: write the drafted learning into a directory as learning.md. Prints {}.')
+  .requiredOption('--learnings <json>', 'The learnings output of the extract step')
+  .requiredOption('--dir <path>', 'The directory')
+  .action(async (cmdOpts: { learnings: string; dir: string }) => {
+    const { CiExtractMr } = await import('./ci/extract-mr.js');
+    await importVerb(() => CiExtractMr.artifacts(cmdOpts));
   });
 
 program
   .command('deep-enrich', { hidden: true })
-  .description('Run deep AI knowledge generation for an imported repo')
+  .description('Run deep AI knowledge generation for an imported repo, as codebase --deep-enrich does, without publishing: the default workflow teamai-codebase-deep-enrich, on the team repo\'s teamwiki or another --wiki-root, which needs no teamai init')
   .requiredOption('--project <slug>', 'Project slug (directory name in evidence/code/)')
   .option('--wiki-root <path>', 'Teamwiki root path')
   .option('--max-modules <n>', 'Max modules to process (cost control)', parseInt)
   .action(async (cmdOpts: { project: string; wikiRoot?: string; maxModules?: number }) => {
-    const { runHiddenDeepEnrich } = await import('./deep-enrich.js');
+    const { hiddenDeepEnrichTarget, startDeepEnrich } = await import('./codebase-cmd.js');
     const { DetachedTeamRepoError } = await import('./utils/git.js');
 
     try {
-      await runHiddenDeepEnrich({
+      await startDeepEnrich({
+        target: await hiddenDeepEnrichTarget(cmdOpts.wikiRoot),
         project: cmdOpts.project,
-        wikiRoot: cmdOpts.wikiRoot,
         maxModules: cmdOpts.maxModules,
+        json: false,
+        command: `teamai deep-enrich --project ${cmdOpts.project}`,
       });
     } catch (error) {
       if (!(error instanceof DetachedTeamRepoError)) throw error;
@@ -1789,14 +2245,15 @@ recallCmd
     await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative, dryRun: globalOpts.dryRun });
   });
 
-recallCmd
+const maintenanceCmd = recallCmd
   .command('maintenance')
   .description('Automatic maintenance of team knowledge base')
   .option('--prune', 'Remove low-confidence learnings')
   .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', parseFloat)
   .option('--archive', 'Move to archive/ instead of deleting')
   .option('--confidence-writeback', 'Update frontmatter confidence scores')
-  .option('--update-quality', 'Find stale docs/rules/skills and suggest updates')
+  .option('--update-quality', 'Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. --dry-run only lists the entries')
+  .option('--json', 'With --update-quality: print the run\'s JSON envelope instead of its text')
   .option('--dry-run', 'Show what would be done without making changes')
   .action(async (localOpts) => {
     // The root program takes `--dry-run` wherever it is written, so this
@@ -1806,6 +2263,17 @@ recallCmd
 
     if (!cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.updateQuality) {
       log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
+
+      return;
+    }
+
+    // The other modes come first, as below. Its steps resolve the checkouts they read themselves; the run is told where the drafts land.
+    if (cmdOpts.updateQuality && !cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.dryRun) {
+      const paths = await maintenanceVerbPaths({ dryRun: false });
+
+      if (!paths) return;
+      const { runShortcut } = await import('./workflow-commands.js');
+      await runShortcut({ workflow: 'teamai-draft-learning-updates', inputs: { knowledge_root: paths.repoPath }, command: 'teamai recall maintenance --update-quality', json: cmdOpts.json === true });
 
       return;
     }
@@ -1876,118 +2344,104 @@ recallCmd
     }
 
     if (cmdOpts.updateQuality) {
-      const { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, generateUpdateDraft } = await import('./maintenance/index.js');
-      const { writeFile } = await import('./utils/fs.js');
-
-      const entries = await findStaleEntries(votesDir, {
-        docs: `${repoPath}/docs`,
-        rules: `${repoPath}/rules`,
-        skills: `${repoPath}/skills`,
-      });
-
-      reportStaleEntries(entries);
-
-      if (entries.length === 0 || cmdOpts.dryRun) return;
-
-      log.info('\nGenerating AI-powered update drafts...');
-
-      for (const entry of entries) {
-        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs, {
-          namespaces: learningsNamespaces,
-        });
-
-        const draft = await generateUpdateDraft(entry, related);
-
-        if (draft) {
-          const draftPath = `${entry.path}.draft.md`;
-          await writeFile(draftPath, draft);
-          log.success(`  Draft written: ${draftPath}`);
-        }
-      }
-
-      log.info('\nReview drafts, then rename .draft.md -> .md to apply updates.');
+      // Listing makes no AI call, so a dry run lists here and starts no run.
+      const { findStaleEntries, reportStaleEntries } = await import('./maintenance/index.js');
+      reportStaleEntries(await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` }));
 
       return;
     }
   });
 
+// The verbs a teamai-draft-learning-updates run's steps call.
+maintenanceCmd
+  .command('stale')
+  .description('A step of a teamai-draft-learning-updates run: list the docs, rules and skills recalled often but rarely adopted, as --update-quality --dry-run does, on stderr. Prints {"entries":[{"doc_id","path","type","recalled_count","upvoted_count","user_count"}]}.')
+  .action(async () => {
+    setStderrOnly(true);
+    const paths = await maintenanceVerbPaths({ dryRun: false });
+
+    if (!paths) return;
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.stale(paths.votesDir, paths.repoPath))}\n`);
+  });
+
+maintenanceCmd
+  .command('draft-context')
+  .description('A step of a teamai-draft-learning-updates run: the content of one stale entry, and the learnings members adopted instead, as the prompt shows them. Prints {"content","related"}; related is empty when no learning was adopted. Fails when the entry cannot be read.')
+  .requiredOption('--path <file>', 'The entry, as stale printed its path')
+  .requiredOption('--doc-id <id>', 'The entry\'s doc_id, as stale printed it')
+  .action(async (cmdOpts: { path: string; docId: string }) => {
+    setStderrOnly(true);
+    // The stale step refreshed the checkouts this run reads.
+    const paths = await maintenanceVerbPaths({ dryRun: true });
+
+    if (!paths) return;
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const namespaces = await safeDeliveredLearningsNamespaces(paths.config, 'recall maintenance');
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.context({ path: cmdOpts.path, docId: cmdOpts.docId }, paths.votesDir, paths.learningsReadDirs, namespaces))}\n`);
+  });
+
+maintenanceCmd
+  .command('write-draft')
+  .description('A step of a teamai-draft-learning-updates run: write a draft update of one stale entry beside it, as <entry>.draft.md. Prints {"draft"}, its path.')
+  .requiredOption('--path <file>', 'The entry, as stale printed its path')
+  .requiredOption('--draft <text>', 'The draft\'s content')
+  .action(async (cmdOpts: { path: string; draft: string }) => {
+    setStderrOnly(true);
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(await DraftLearningUpdates.writeDraft(cmdOpts.path, cmdOpts.draft))}\n`);
+  });
+
+maintenanceCmd
+  .command('draft-report')
+  .description('A step of a teamai-draft-learning-updates run: from the results of its draft step, what --update-quality prints: each entry it could not draft, and how to apply the drafts. Prints {"text","exit_code"}; exit_code is 1 when an entry could not be drafted.')
+  .requiredOption('--results <json>', 'The draft step\'s results, as a JSON array')
+  .action(async (cmdOpts: { results: string }) => {
+    setStderrOnly(true);
+    const { DraftLearningUpdates } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(DraftLearningUpdates.report(DraftLearningUpdates.parseResults(cmdOpts.results)))}\n`);
+  });
+
 recallCmd
   .command('promote [learningId]')
-  .description('Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted')
-  .addOption(new Option('--category <cat>', 'Target category: skills | rules | docs; skills use <learningId>/SKILL.md').choices(['skills', 'rules', 'docs']))
+  .description('List the learnings ready to promote, high-confidence and adopted by several members, each with the category its keywords suggest; listing makes no AI call. With a learning id: starts the default workflow teamai-promote-learning on the driver workflows.driver names, else local. The AI picks the category, unless --category gives it, and rewrites the learning for it; the result is pushed on a review branch with a pull request that says the category and why, then the learning is marked promoted. Exits 1 when the learning is not a candidate. --dry-run only says where it would go')
+  .addOption(new Option('--category <cat>', 'Target category: skills | rules | docs; skills use <learningId>/SKILL.md. Without it, the AI picks one').choices(['skills', 'rules', 'docs']))
   .option('--dry-run', 'Show what would be done without making changes')
-  .action(async (learningId, localOpts) => {
+  .action(async (learningId: string | undefined, localOpts) => {
     // As in `recall maintenance`: `--dry-run` reaches the root's options only (#900).
     const cmdOpts = { ...program.opts<GlobalOptions>(), ...localOpts };
-    const { autoDetectInit } = await import('./config.js');
-    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
-    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
-    const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
 
     if (learningId && !cmdOpts.dryRun) {
-      const { promoteAndPublish } = await import('./maintenance/promotion-publish.js');
-      await promoteAndPublish(learningId, localConfig, teamConfig, {
-        category: cmdOpts.category,
-        namespaces: learningsNamespaces,
-      });
+      const { runShortcut } = await import('./workflow-commands.js');
+      await runShortcut({ workflow: 'teamai-promote-learning', inputs: { learning: learningId, category: cmdOpts.category ?? '' }, command: `teamai recall promote ${learningId}`, json: false });
 
       return;
     }
 
-    const {
-      findPromotionCandidates,
-      executePromotion,
-      fetchPromotionRefs,
-    } = await import('./maintenance/index.js');
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
+    const listed = await promotionListing(localConfig, { dryRun: cmdOpts.dryRun === true });
 
-    // An HTTP team repo has no git checkout: its directory may sit in the business repo.
-    const { usesBranchWorktree, getKnowledgeDir } = await import('./types.js');
-    const knowledgeCheckout = usesBranchWorktree(localConfig) ? getKnowledgeDir(localConfig) : undefined;
-    let paths: MaintenancePaths | undefined;
+    if (!listed) return;
+    const { paths, candidates } = listed;
 
-    if (knowledgeCheckout && !cmdOpts.dryRun) {
-      // A fetch beside a pull in the same clone pushes the pull into its reset
-      // fallback, so the checkouts and the review branches share one hold of the sync lock.
-      const refreshForListing = async () => {
-        const refreshed = await maintenancePathsOrExit(localConfig, { holdsSyncLock: true });
+    if (learningId) {
+      const { PromotionCategorySchema, writePromotion } = await import('./maintenance/index.js');
+      const candidate = candidates.find((c) => c.docId === learningId);
 
-        if (refreshed) {
-          await fetchPromotionRefs(knowledgeCheckout).catch((cause: unknown) => {
-            log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${cause instanceof Error ? cause.message : String(cause)}`);
-          });
-        }
+      if (!candidate) {
+        log.error(`Learning "${learningId}" not found or not eligible for promotion.`);
+        process.exitCode = 1;
 
-        return refreshed;
-      };
-
-      const { syncLockPath } = await import('./utils/learnings-publish.js');
-      const { withFileLock } = await import('./update.js');
-      const lock = syncLockPath(localConfig);
-
-      const listed = lock === null
-        ? { held: true as const, value: await refreshForListing() }
-        : await withFileLock(lock, { attempts: 1, delayMs: 0 }, refreshForListing);
-
-      if (listed.held) {
-        paths = listed.value;
-      } else {
-        log.warn('Another teamai pull/push is in progress, so candidates follow the last fetch.');
-        // As a dry run does: both checkouts as they are, neither refreshed nor created.
-        paths = await maintenancePathsOrExit(localConfig, { dryRun: true });
+        return;
       }
-    } else {
-      paths = await maintenancePathsOrExit(localConfig, { dryRun: cmdOpts.dryRun });
+
+      const category = PromotionCategorySchema.optional().parse(cmdOpts.category) ?? candidate.suggestedCategory;
+      await writePromotion(candidate, paths.repoPath, { category, dryRun: true });
+
+      return;
     }
-
-    if (!paths) return;
-
-    const {
-      repoPath, votesDir, learningsReadDirs, learningsWriteDir,
-    } = paths;
-
-    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, {
-      namespaces: learningsNamespaces,
-    });
 
     if (candidates.length === 0) {
       log.info('No learnings eligible for promotion yet.');
@@ -1995,34 +2449,151 @@ recallCmd
       return;
     }
 
-    if (!learningId) {
-      log.info(`${candidates.length} learning(s) eligible for promotion:`);
+    log.info(`${candidates.length} learning(s) eligible for promotion:`);
 
-      for (const c of candidates) {
-        log.info(`  - ${c.docId} (confidence: ${c.confidence.toFixed(2)}, suggested: ${c.suggestedCategory})`);
-      }
-
-      log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
-
-      return;
+    for (const c of candidates) {
+      log.info(`  - ${c.docId} (confidence: ${c.confidence.toFixed(2)}, suggested: ${c.suggestedCategory})`);
     }
 
-    const candidate = candidates.find((c) => c.docId === learningId);
-
-    if (!candidate) {
-      log.error(`Learning "${learningId}" not found or not eligible for promotion.`);
-
-      return;
-    }
-
-    await executePromotion(candidate, repoPath, {
-      // SAFETY: --category is declared with .choices(['skills', 'rules', 'docs']), so Commander admits nothing else.
-      category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
-      dryRun: cmdOpts.dryRun,
-      learningsWriteDir,
-    });
+    log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
   });
 
+// The verbs a teamai-promote-learning run's steps call. They sit here rather than under `recall promote`, whose
+// learning id would otherwise be taken for a verb of the same name.
+maintenanceCmd
+  .command('promote-candidate')
+  .description('A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Exits 65, which fails its step as input_rejected, when it is not a candidate; fails when this workspace cannot publish one.')
+  .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
+  .action(async (cmdOpts: { learning: string }) => {
+    setStderrOnly(true);
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: false });
+    const { assertCanPromote } = await import('./maintenance/promotion-publish.js');
+    assertCanPromote(localConfig);
+    const listed = await promotionListing(localConfig, { dryRun: false });
+
+    if (!listed) return;
+    const candidate = listed.candidates.find((entry) => entry.docId === cmdOpts.learning);
+
+    // The learning id is the run's input, so the run fails as one whose input was rejected, which no retry changes.
+    if (!candidate) {
+      const { INPUT_REJECTED_EXIT } = await import('./workflow/protocol.js');
+      log.error(`Learning "${cmdOpts.learning}" not found or not eligible for promotion.`);
+      process.exitCode = INPUT_REJECTED_EXIT;
+
+      return;
+    }
+
+    const { readFileSafe } = await import('./utils/fs.js');
+    process.stdout.write(`${JSON.stringify({ title: candidate.title, content: await readFileSafe(candidate.path) ?? '', suggested: candidate.suggestedCategory })}\n`);
+  });
+
+maintenanceCmd
+  .command('promote-category')
+  .description('A step of a teamai-promote-learning run: the category to promote to, and why: --given, else --chosen, else, when the AI could not choose, --suggested. Prints {"category","reason"}.')
+  .requiredOption('--given <cat>', 'The category recall promote --category gave, or \'\'')
+  .requiredOption('--chosen <cat>', 'The category the AI chose, or \'\' when it did not run or could not choose')
+  .requiredOption('--reason <text>', 'Why the AI chose it, or \'\'')
+  .addOption(new Option('--suggested <cat>', 'The category the learning\'s keywords suggest').choices(['skills', 'rules', 'docs']).makeOptionMandatory())
+  .action(async (cmdOpts: { given: string; chosen: string; reason: string; suggested: string }) => {
+    setStderrOnly(true);
+    const { chooseCategory, PromotionCategorySchema } = await import('./maintenance/index.js');
+    process.stdout.write(`${JSON.stringify(chooseCategory({ ...cmdOpts, suggested: PromotionCategorySchema.parse(cmdOpts.suggested) }))}\n`);
+  });
+
+maintenanceCmd
+  .command('promote-publish')
+  .description('A step of a teamai-promote-learning run: write the promoted entry, push it on a teamai/push/ review branch, and open a pull request whose body says the category and why. With an empty --content the learning is published as written. Prints {"target","exit_code"}; exit_code is 1 when no pull request could be opened.')
+  .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
+  .addOption(new Option('--category <cat>', 'The category to promote to, as the category step chose it').choices(['skills', 'rules', 'docs']).makeOptionMandatory())
+  .requiredOption('--reason <text>', 'Why it is promoted to that category, as the pull request says it')
+  .requiredOption('--content <text>', 'The learning rewritten for its category, or \'\' to publish it as written')
+  .option('--content-failure <message>', 'Why the AI could not rewrite it, said when --content is empty', '')
+  .action(async (cmdOpts: { learning: string; category: string; reason: string; content: string; contentFailure: string }) => {
+    setStderrOnly(true);
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: false });
+    const { PromotionCategorySchema } = await import('./maintenance/index.js');
+    const { PromoteLearning } = await import('./maintenance/promotion-publish.js');
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+
+    const published = await PromoteLearning.publish(cmdOpts.learning, localConfig, teamConfig, {
+      category: PromotionCategorySchema.parse(cmdOpts.category),
+      reason: cmdOpts.reason,
+      content: cmdOpts.content === '' ? { kind: 'as-written', why: cmdOpts.contentFailure } : { kind: 'rewritten', text: cmdOpts.content },
+      namespaces: await safeDeliveredLearningsNamespaces(localConfig, 'recall promote'),
+    });
+
+    process.stdout.write(`${JSON.stringify(published)}\n`);
+  });
+
+maintenanceCmd
+  .command('promote-mark')
+  .description('A step of a teamai-promote-learning run: mark the learning as promoted to the entry publish pushed, and publish the mark to the learnings branch. Prints {"exit_code"}; it is 1 when the pull request or the mark could not be published.')
+  .requiredOption('--learning <id>', 'The learning id, as recall promote lists it')
+  .requiredOption('--published <json>', 'What the publish step printed: {"target","exit_code"}')
+  .action(async (cmdOpts: { learning: string; published: string }) => {
+    setStderrOnly(true);
+    const { autoDetectInit } = await import('./config.js');
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: false });
+    const { PromoteLearning } = await import('./maintenance/promotion-publish.js');
+    const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+    const namespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
+    process.stdout.write(`${JSON.stringify(await PromoteLearning.mark(cmdOpts.learning, PromoteLearning.parsePublished(cmdOpts.published), localConfig, { namespaces }))}\n`);
+  });
+
+/**
+ * The learnings ready to promote, as `recall promote` lists them, with the paths it read them from. Outside a dry run
+ * the checkouts and the review branches are refreshed first, under one hold of the sync lock; while another sync holds
+ * it, they are listed as last fetched. Undefined once the failure is said.
+ */
+async function promotionListing(localConfig: LocalConfig, options: { dryRun: boolean }): Promise<{ paths: MaintenancePaths; candidates: PromotionCandidate[] } | undefined> {
+  const { findPromotionCandidates, fetchPromotionRefs } = await import('./maintenance/index.js');
+  const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
+  const namespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
+  // An HTTP team repo has no git checkout: its directory may sit in the business repo.
+  const { usesBranchWorktree, getKnowledgeDir } = await import('./types.js');
+  const knowledgeCheckout = usesBranchWorktree(localConfig) ? getKnowledgeDir(localConfig) : undefined;
+  let paths: MaintenancePaths | undefined;
+
+  if (knowledgeCheckout && !options.dryRun) {
+    // A fetch beside a pull in the same clone pushes the pull into its reset
+    // fallback, so the checkouts and the review branches share one hold of the sync lock.
+    const refreshForListing = async () => {
+      const refreshed = await maintenancePathsOrExit(localConfig, { holdsSyncLock: true });
+
+      if (refreshed) {
+        await fetchPromotionRefs(knowledgeCheckout).catch((cause: unknown) => {
+          log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${cause instanceof Error ? cause.message : String(cause)}`);
+        });
+      }
+
+      return refreshed;
+    };
+
+    const { syncLockPath } = await import('./utils/learnings-publish.js');
+    const { withFileLock } = await import('./update.js');
+    const lock = syncLockPath(localConfig);
+
+    const listed = lock === null
+      ? { held: true as const, value: await refreshForListing() }
+      : await withFileLock(lock, { attempts: 1, delayMs: 0 }, refreshForListing);
+
+    if (listed.held) {
+      paths = listed.value;
+    } else {
+      log.warn('Another teamai pull/push is in progress, so candidates follow the last fetch.');
+      // As a dry run does: both checkouts as they are, neither refreshed nor created.
+      paths = await maintenancePathsOrExit(localConfig, { dryRun: true });
+    }
+  } else {
+    paths = await maintenancePathsOrExit(localConfig, { dryRun: options.dryRun });
+  }
+
+  if (!paths) return undefined;
+
+  return { paths, candidates: await findPromotionCandidates(paths.learningsReadDirs, paths.votesDir, knowledgeCheckout, { namespaces }) };
+}
 
 /**
  * The maintenance paths, or undefined with exit code 1 when teamai refuses a
@@ -2033,6 +2604,15 @@ recallCmd
  * reports or learnings lock cannot be taken, so the checkout cannot be checked,
  * and while a pull/push holds the sync lock, so neither is refreshed.
  */
+/** The maintenance paths of the scope a verb runs in, with its config, or undefined once the failure is said. */
+async function maintenanceVerbPaths(options: { dryRun: boolean }): Promise<(MaintenancePaths & { config: LocalConfig }) | undefined> {
+  const { autoDetectInit } = await import('./config.js');
+  const { localConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
+  const paths = await maintenancePathsOrExit(localConfig, options);
+
+  return paths && { ...paths, config: localConfig };
+}
+
 async function maintenancePathsOrExit(
   localConfig: LocalConfig,
   options: { dryRun?: boolean; holdsSyncLock?: boolean },

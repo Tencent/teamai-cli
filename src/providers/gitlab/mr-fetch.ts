@@ -173,7 +173,6 @@ async function fetchGitLabDiscussions(
   enc: string,
   mrIid: string,
   headers: Record<string, string>,
-  commentMarker?: string,
 ): Promise<MRThread[]> {
   const threads: MRThread[] = [];
 
@@ -193,7 +192,7 @@ async function fetchGitLabDiscussions(
     if (!resp.headers.get('x-next-page')) break;
   }
 
-  return pruneThreads(threads, commentMarker);
+  return pruneThreads(threads);
 }
 
 /**
@@ -296,7 +295,7 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
 
   if (opts.discussions !== false) {
     try {
-      discussions = await fetchGitLabDiscussions(apiBase, enc, mrIid, headers, opts.commentMarker);
+      discussions = await fetchGitLabDiscussions(apiBase, enc, mrIid, headers);
     } catch (err) {
       log.warn(`Review threads not read (${err instanceof Error ? err.message : String(err)}); the learning is extracted without them`);
     }

@@ -7,7 +7,7 @@ import { chooseJudgeModel } from './scorers/judge-model.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { Marks } from './scorers/marks.js';
 import { requiredIsolation, unknownIsolationText } from './scorers/isolation.js';
-import { scopeScoring, type SessionScoring } from './scorers/settings.js';
+import { scopeScoring, upvoteJudgeAliasNotes, type SessionScoring } from './scorers/settings.js';
 import { RUN_MODES } from './launch-context.js';
 import { SessionPolicy, type PolicySource } from './session-flow/session-policy.js';
 import type { LocalConfig } from './types.js';
@@ -105,6 +105,7 @@ export async function scorerNotes(localConfig: LocalConfig, { resolveTool }: { r
     const unavailable = scored ? scoringUnavailable(localConfig) : undefined;
 
     return [
+      ...upvoteJudgeAliasNotes(),
       ...(unavailable ? [unavailable] : scored ? [...await scoringNotes(localConfig, result.scorers.verified), await judgeToolsNote(resolveTool)] : []),
       ...result.scorers.invalid.map((diagnostic) => `Invalid scorer: ${formatScorerDiagnostic(diagnostic)}`),
       ...result.unknownScorers.map((unknown) => `Unknown scorer: ${formatUnknownScorer(unknown)}`),

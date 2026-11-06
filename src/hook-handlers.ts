@@ -87,14 +87,6 @@ const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
 const LOCAL_AGENT_TIMEOUT_MS = 15_000;
 
 /**
- * Background (detached) upvote LLM-judge (issue #723, opt-in). It shells out to
- * the local signed-in CLI (judgeAdoption caps that call at 30s), so it needs a
- * budget slightly above that to also parse + write + sync votes. Detached, so it
- * never delays the host Stop.
- */
-const VOTES_JUDGE_TIMEOUT_MS = 45_000;
-
-/**
  * Budget for the detached session-start pull.
  *
  * A background handler's timeout is not advisory: the dispatch pass settles on
@@ -764,8 +756,8 @@ const votesSyncHandler: HookHandler = {
       // returned, within 24 h after the run: the reducer joins the recall log's
       // runs, claims and evidence, which PostToolUse recorded (#884). No
       // transcript is needed, so hosts that send none vote too. A doc adopted
-      // without opening its file (a subagent summary) is left to the opt-in
-      // judge (TEAMAI_UPVOTE_JUDGE). Stop fires every turn: the per-session
+      // without opening its file (a subagent summary) is left to the session's
+      // adoption question (recall_adoption). Stop fires every turn: the per-session
       // ledger in incrementUpvoted credits a doc once, and only the docs this
       // call credited come back (none when the votes file was busy, and the
       // next Stop retries). Inherited user-scope docs stay read-only.
@@ -893,205 +885,6 @@ const votesSyncHandler: HookHandler = {
   },
 };
 
-/**
- * Optional background LLM-judge for upvote adoption (issue #723, design option 1).
- *
- * The foreground votesSyncHandler credits adoption from tool-use evidence (the
- * agent opened a recalled doc's file). But the recommended recall path injects
- * the subagent's summary as text, so the main agent often adopts a doc WITHOUT
- * opening it — leaving no tool-use trace. This detached pass asks the local
- * signed-in CLI whether the latest reply substantively used each recalled doc,
- * then upvotes the subset. Docs already in the session's upvote ledger are
- * never sent to it, so it and the foreground pass never double-count (#884).
- *
- * Properties:
- *   - background: true → runs detached, never blocks the host Stop (UX ~0s).
- *   - Uses the user's local CLI (subscription), not a platform API key.
- *   - Opt-in via TEAMAI_UPVOTE_JUDGE=1 so default behavior is unchanged; a
- *     reviewer can decide whether to enable it by default after evaluating cost.
- *   - Judgement gated to recalled doc-ids; fails soft (no upvote on any error).
- *   - Each recalled doc is upvoted at most once per session (the ledger); a
- *     doc the judge rejected is judged again on a later Stop, and a killed
- *     run records nothing so the next Stop retries (crash-safe).
- */
-const votesJudgeHandler: HookHandler = {
-  name: 'votes-judge',
-  async execute(stdin, _tool, localConfig) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
-
-    // Opt-in only. Keeps the default path identical to the tool-use-only fix.
-    if (process.env.TEAMAI_UPVOTE_JUDGE !== '1') return null;
-
-    const transcriptPath = stdinString(stdin, 'transcript_path') ?? null;
-    const finalReply = stdinString(stdin, 'last_assistant_message')?.trim() ?? '';
-
-    if (!transcriptPath && !finalReply) return null;
-
-    try {
-      const sessionId = deriveSessionId(stdin, { includeCwd: true });
-      const dispatchSessionId = deriveDispatchSessionId(stdin, _tool);
-
-      // Parse and filter candidates BEFORE claiming the session. Stop fires
-      // every turn, including turns before any recall has happened; claiming on
-      // such an early Stop would burn the once-per-session marker and prevent the
-      // judge from ever running on the later turns that DO have recalls. So we
-      // only spend the claim once there is real work to do.
-      const { parseTranscriptForVotes } = await import('./transcript-parser.js');
-      // A Claude transcript stays the evidence whenever it shows a recall, even
-      // when the payload also carries the final reply (Claude Code sends both).
-      // Codex, Muse and ZCode send the reply, and their session files (Codex's
-      // rollout arrives as `transcript_path`) are not Claude transcripts, so
-      // with no recall found there, the settled recall log is the evidence.
-      const fromTranscript = transcriptPath ? await parseTranscriptForVotes(transcriptPath) : null;
-      let voteData = fromTranscript;
-
-      if (finalReply && !fromTranscript?.recalledDocIds.length) {
-        const { recalledDocsForSession } = await import('./recall-adoption.js');
-        const docs = await recalledDocsForSession(localConfig, dispatchSessionId);
-        voteData = {
-          finalAssistantText: finalReply,
-          recalledDocIds: docs.map(d => d.key),
-          recalledDocPaths: Object.fromEntries(docs.map(d => [d.key, d.path])),
-          recalledDocScopes: Object.fromEntries(docs.map(d => [d.key, d.scope])),
-        };
-      }
-
-      if (!voteData || voteData.recalledDocIds.length === 0) return null;
-
-      // The session's upvote ledger holds every doc the hook path (or an earlier
-      // judge pass) upvoted for it: those are not judged again (#884).
-      const recalledSet = new Set(voteData.recalledDocIds);
-      const { getVotesDir, usesBranchWorktree } = await import('./types.js');
-      const votesDir = getVotesDir(localConfig);
-      const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
-      // The dispatcher starts this detached pass before the foreground
-      // votes-sync credits the turn, so run the same reducer pass first: a doc
-      // opened in this turn is then in the ledger and never sent to the judge.
-      // Safe to run twice: the ledger and consumed marks dedupe it.
-      const { creditAdoptedDocs, recalledKeyOf, recalledPathOf } = await import('./recall-adoption.js');
-      await creditAdoptedDocs(localConfig, dispatchSessionId);
-      const { creditedDocIdsForSession } = await import('./votes.js');
-      const ledgerCredited = await creditedDocIdsForSession(votePath, sessionId);
-      // Resolve each recalled doc's `File:` path. The parser fills it from the
-      // `File:` lines of a recall region in the transcript, but recall that ran
-      // inside a subagent (the recommended path) injects only the
-      // `recalled-doc-ids` comment into the main transcript, not the `File:`
-      // lines — so the parser's path is missing there. The recall log always has
-      // the path the run printed, so fall back to it (#723). The transcript
-      // path, when present, still wins. Both the vote-key mapping below and the
-      // judge's excerpt grounding read from this, so a subagent-recalled nested
-      // doc is keyed and judged the same as a main-agent one.
-      const pathOf = await recalledPathOf(localConfig, dispatchSessionId);
-      const docPaths = { ...voteData.recalledDocPaths };
-
-      for (const id of voteData.recalledDocIds) {
-        if (docPaths[id] === undefined) {
-          const printed = pathOf(id);
-
-          if (printed !== undefined) docPaths[id] = printed;
-        }
-      }
-
-      // The parser names a doc by its `File:` basename (`setup`, a skill's
-      // `SKILL`); the ledger and the votes use the key its run recorded
-      // (`learnings/setup`, `retry`). A path no run printed keeps the parser's id.
-      const printedKey = await recalledKeyOf(localConfig, dispatchSessionId);
-
-      const keyOf = (id: string): string => {
-        const printed = docPaths[id];
-
-        return (printed !== undefined ? printedKey(printed) : undefined) ?? id;
-      };
-
-      // Same scope guard as the foreground handler: while a project is active,
-      // a doc recalled from the inherited USER scope is read-only, so the judge
-      // must not upvote it into the project team either (issue #723 review).
-      const scopeEligible = new Set(
-        eligibleUpvotes(voteData.recalledDocIds, voteData.recalledDocScopes, localConfig.scope),
-      );
-
-      // Dedup is ledger-only: a doc already in the shared per-session upvote
-      // ledger is never sent to the judge again. A recalled doc that was NOT
-      // adopted is re-judged on a later Stop (the judge is opt-in, so this cost
-      // is acceptable). There is no per-session marker to clean up, so a killed
-      // detached run leaves no stuck state; later turns can still judge NEW docs,
-      // and a positive verdict only lands once incrementUpvoted succeeds
-      // atomically (sessionId-scoped) — preventing any double credit.
-      const toJudge = voteData.recalledDocIds.filter(
-        (id) => scopeEligible.has(id) && !ledgerCredited.has(keyOf(id)),
-      );
-
-      if (toJudge.length === 0) return null;
-
-      // The judge reads recalled doc excerpts; restrict those reads to trusted
-      // knowledge roots so an unauthenticated transcript cannot make it read an
-      // arbitrary local file (issue #723 review): the same roots recall reads
-      // from, which a resolution failure narrows to the clone and the user
-      // mirror, never to a disabled judge (the excerpt read is fail-closed).
-      const { knowledgeRoots } = await import('./utils/learnings-roots.js');
-      const roots = await knowledgeRoots(localConfig);
-
-      // docPaths is backfilled from the recall log above, so a subagent-recalled
-      // doc the transcript gave no `File:` line for is still grounded here (#723).
-      const { judgeAdoption } = await import('./votes-judge.js');
-      const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, docPaths, roots, localConfig);
-
-      // Gate again to recalled (defensive; judgeAdoption already restricts to toJudge).
-      const verified = adopted.filter((id) => recalledSet.has(id));
-
-      if (verified.length === 0) return null;
-
-      const { incrementUpvoted, syncVotesToTeam, hasPendingVoteDeltas, stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('./votes.js');
-      // Pass sessionId so judge credits enter the SAME per-session ledger the
-      // foreground handler uses, preventing a later foreground open from
-      // double-counting the same doc (issue #723 review).
-      const credited = await incrementUpvoted(votePath, [...new Set(verified.map(keyOf))], sessionId);
-
-      if (credited === null || credited.length === 0) return null;
-
-      // Sync using the same path as the foreground handler.
-      if (usesBranchWorktree(localConfig)) {
-        if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
-          const { updateReports, readReportsOriginFile } = await import('./utils/reports-branch.js');
-          await updateReports(localConfig, async (wt, { onDelivered }) => {
-            // See the votes-sync handler: origin's snapshot is the merge base
-            // and the deltas are cleared only on delivery, under the lock (#1027).
-            const origin = await readReportsOriginFile(wt, `votes/${localConfig.username}.yaml`);
-
-            const staged = await stageVotesMerge(
-              wt,
-              localConfig.username,
-              votesDir,
-              origin === null ? null : readUserVotesFromContent(origin),
-            );
-
-            if (!staged) {
-              return {
-                files: [],
-                message: `[teamai] Update votes for ${localConfig.username}`,
-              };
-            }
-
-            onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
-
-            return {
-              files: [`votes/${localConfig.username}.yaml`],
-              message: `[teamai] Update votes for ${localConfig.username}`,
-            };
-          }).catch(() => undefined);
-        }
-      } else {
-        await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => undefined);
-      }
-    } catch (error) {
-      // Best-effort supplement; never surface failures.
-      log.debug(`votes-judge handler failed: ${(error instanceof Error ? error.stack : undefined) ?? String(error)}`);
-    }
-
-    return null;
-  },
-};
-
 /** `teamai.yaml` `language` for this scope, when that file can be read. */
 async function teamAgentLanguage(config: LocalConfig | null): Promise<'en' | 'zh' | undefined> {
   const { loadTeamAgentLanguage } = await import('./config.js');
@@ -1123,10 +916,13 @@ const todowriteHintHandler: HookHandler = {
 
 const mrHintHandler: HookHandler = {
   name: 'mr-hint',
-  async execute(_stdin, _tool, config) {
+  async execute(stdin, _tool, config) {
     const { computeMrHintOutput } = await import('./mr-hint.js');
+    // The session the hint may offer teamai-import-from-mr to, as the Stop hook's reminder resolves it.
+    const { readSessionRun, sessionRun } = await import('./launch-context.js');
+    const session = { sessionId: deriveSessionId(stdin, { includeCwd: true }), cwd: resolveHookCwd(stdin) ?? process.cwd(), run: readSessionRun(stdin) ?? sessionRun(process.env) };
 
-    return computeMrHintOutput(await teamAgentLanguage(config), config);
+    return computeMrHintOutput(await teamAgentLanguage(config), config, session);
   },
 };
 
@@ -1462,9 +1258,6 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // the declared timeout).
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_BUDGET_MS, background: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
-    // Optional background LLM-judge (issue #723). Opt-in via TEAMAI_UPVOTE_JUDGE=1;
-    // detached so it never delays the Stop. gitOnly (HTTP teams skip upvotes).
-    { event: 'stop', matcher: '*', handler: votesJudgeHandler, timeoutMs: VOTES_JUDGE_TIMEOUT_MS, background: true, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },

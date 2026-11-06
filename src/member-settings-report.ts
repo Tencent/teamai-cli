@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfig } from './config.js';
 import { RUN_MODES, type RunMode } from './launch-context.js';
 import { SessionPolicy } from './session-flow/session-policy.js';
-import { memberTools } from './tool-launch/call.js';
+import { memberTools } from './tool-launch/member-tools.js';
 import { resolveDefaultDriver } from './default-driver.js';
 import { DEFAULT_RETENTION, resolveRetention } from './workflow/retention.js';
 import {

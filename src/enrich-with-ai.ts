@@ -1,11 +1,13 @@
 import path from 'node:path';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 
 import { z } from 'zod';
 
-import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
-import { assertSafeResourceName } from './utils/path-safety.js';
+import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
+import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
+import { loadFactsCache, loadInterfacesCache } from './wiki-engine/code-knowledge/code-incremental.js';
+import { pathExists } from './utils/fs.js';
 import type { CodeFact } from './wiki-engine/adapters/index.js';
 import type { InterfaceInventory } from './wiki-engine/interface-scanner.js';
 import type { CodebaseOutputManifestV2, ManifestComponentV2, ManifestEdgeV2, ManifestEdgeSource } from './wiki-engine/manifest-schema.js';
@@ -40,52 +42,41 @@ const DomainAIResultSchema = z.object({
   keywords: z.array(z.string()).optional().catch(undefined),
 });
 
+type DomainAIResult = z.infer<typeof DomainAIResultSchema>;
+
 function sanitizeForPrompt(text: string): string {
   return text.replace(/[\n\r]/g, ' ').replace(/[<>]/g, '').slice(0, 200);
 }
 
-function buildModulePrompt(moduleName: string, moduleFacts: CodeFact[], interfaceInventory: InterfaceInventory): string {
+/** What the prompt about one module names: each field is the text the prompt puts after its label. */
+export interface ModuleBrief {
+  name: string;
+  files: string;
+  components: string;
+  interfaces: string;
+}
+
+function moduleBrief(moduleName: string, moduleFacts: CodeFact[], interfaceInventory: InterfaceInventory): ModuleBrief {
   const components = moduleFacts.filter(f => f.kind === 'component').slice(0, 10);
   const interfaces = interfaceInventory.entries.filter(e => e.component === moduleName);
   const fileList = [...new Set(moduleFacts.map(f => f.file))].slice(0, 15);
 
-  return `<context>
-模块名: ${sanitizeForPrompt(moduleName)}
-文件列表: ${fileList.join(', ')}
-组件 (top 10): ${components.map(c => c.name).join(', ')}
-接口: ${interfaces.map(i => `${i.type}:${i.count}`).join(', ') || '无'}
-</context>
-
-分析上述代码模块，输出严格 JSON，不要任何解释文字:
-{"domain": "业务域名称(如计费/调度/存储/网关/测试)", "responsibilities": ["职责1", "职责2", "职责3"], "layer": "entry|orchestration|service|data", "summary": "一句话描述该模块的核心功能"}`;
+  return {
+    name: sanitizeForPrompt(moduleName),
+    files: fileList.join(', '),
+    components: components.map(c => c.name).join(', '),
+    interfaces: interfaces.map(i => `${i.type}:${i.count}`).join(', ') || '无',
+  };
 }
 
-function buildDomainPrompt(
-  project: string,
-  moduleResults: Array<{ name: string; result: ModuleAIResult }>,
-  interfaceInventory: InterfaceInventory,
-): string {
-  const modules = moduleResults.map(m =>
+function interfacesSummary(interfaceInventory: InterfaceInventory): string {
+  return interfaceInventory.entries.map(e => `${e.component}:${e.type}:${e.count}`).join(', ') || '无';
+}
+
+function modulesSummary(moduleResults: Array<{ name: string; result: ModuleAIResult }>): string {
+  return moduleResults.map(m =>
     `${m.name}: domain=${m.result.domain}, layer=${m.result.layer}, summary=${m.result.summary}`
   ).join('\n');
-
-  const ifSummary = interfaceInventory.entries.map(e => `${e.component}:${e.type}:${e.count}`).join(', ');
-
-  return `<context>
-项目名: ${sanitizeForPrompt(project)}
-模块分析:
-${modules}
-
-接口清单: ${ifSummary || '无'}
-</context>
-
-这是一个代码仓库的分析结果。请判断该仓库整体属于哪个业务域，并给出：
-1. domain: 该仓库的核心业务域名称（如 API网关/计费引擎/流程编排/推理服务/配置管理/部署工具/测试框架/数据管理/网关代理 等）
-2. description: 一句话描述该仓库的核心职责（不超过30字）
-3. keywords: 5-10个路由关键词（用于AI检索时路由到该仓库）
-
-输出严格 JSON，不要任何解释文字:
-{"domain": "域名", "description": "一句话描述", "keywords": ["关键词1", "关键词2"]}`;
 }
 
 function parseJSON<T>(raw: string, schema: z.ZodType<T>): T | null {
@@ -230,73 +221,26 @@ export function describeEvidenceManifest(source: 'ai' | 'fallback' | 'none', com
   return undefined;
 }
 
-export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | null> {
-  const moduleEntries = [...ctx.modules.entries()].filter(([, facts]) => facts.length >= 5);
+function qualifyingModules(modules: Map<string, CodeFact[]>): Array<[string, CodeFact[]]> {
+  return [...modules.entries()].filter(([, facts]) => facts.length >= 5);
+}
 
-  if (moduleEntries.length === 0) {
-    log.debug('enrichWithAI: no qualifying modules, skipping');
-
-    return null;
-  }
-
-  log.debug(`enrichWithAI: ${moduleEntries.length} modules`);
-
-  // Step 1: AI enrichment per module (parallel)
-  const tasks = moduleEntries.map(([moduleName, moduleFacts]) => ({
-    prompt: buildModulePrompt(moduleName, moduleFacts, ctx.interfaceInventory),
-    parse: (raw: string) => {
-      const result = parseJSON(raw, ModuleAIResultSchema);
-
-      return result ? { name: moduleName, result } : null;
-    },
-  }));
-
-  let moduleResults: Array<{ name: string; result: ModuleAIResult }>;
-
-  try {
-    const results = await callToolParallel(tasks, { launchedBy: 'enrich-with-ai', concurrency: 3 });
-    moduleResults = results.filter((r): r is { name: string; result: ModuleAIResult } => r !== null);
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.warn(`enrichWithAI: module analysis failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
-
-    return null;
-  }
-
-  if (moduleResults.length === 0) {
-    log.debug('enrichWithAI: all module analyses returned null');
-
-    return null;
-  }
-
-  // Step 2: Repo-level domain classification (single call)
+function enrichResultOf(
+  ctx: Pick<EnrichContext, 'project' | 'facts' | 'interfaceInventory'>,
+  moduleResults: Array<{ name: string; result: ModuleAIResult }>,
+  domainResult: DomainAIResult | null | undefined,
+): EnrichResult {
   let domains: Array<{ name: string; components: string[]; apiCount: number }> = [];
   let repoDomain = '';
   let repoDescription = '';
   let repoKeywords: string[] = [];
 
-  try {
-    const domainPrompt = buildDomainPrompt(ctx.project, moduleResults, ctx.interfaceInventory);
-
-    const domainTasks = [{
-      prompt: domainPrompt,
-      parse: (raw: string) => {
-        return parseJSON(raw, DomainAIResultSchema);
-      },
-    }];
-
-    const [domainResult] = await callToolParallel(domainTasks, { launchedBy: 'enrich-with-ai', concurrency: 1 });
-
-    if (domainResult) {
-      repoDomain = domainResult.domain;
-      repoDescription = domainResult.description ?? '';
-      repoKeywords = domainResult.keywords ?? [];
-      const apiCount = ctx.interfaceInventory.entries.reduce((sum, e) => sum + e.count, 0);
-      domains = [{ name: repoDomain, components: moduleResults.map(m => m.name), apiCount }];
-    }
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.debug('enrichWithAI: domain classification failed, continuing without');
+  if (domainResult) {
+    repoDomain = domainResult.domain;
+    repoDescription = domainResult.description ?? '';
+    repoKeywords = domainResult.keywords ?? [];
+    const apiCount = ctx.interfaceInventory.entries.reduce((sum, e) => sum + e.count, 0);
+    domains = [{ name: repoDomain, components: moduleResults.map(m => m.name), apiCount }];
   }
 
   // Step 3: Build manifest V2
@@ -363,6 +307,173 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
 
   return { manifest, domains, repoDomain, repoDescription, repoKeywords };
 }
+
+/**
+ * Write what AI enrich found beside the evidence: `_manifest.json`, and `_domains.json` for rebuildWikiIndex.
+ * Returns the domain it recorded.
+ */
+export async function writeEnrichResult(result: EnrichResult, evidenceDir: string): Promise<string> {
+  await writeManifest(result.manifest, evidenceDir);
+
+  const domainMeta = {
+    domain: result.repoDomain || (result.domains[0]?.name ?? ''),
+    description: result.repoDescription || '',
+    keywords: result.repoKeywords || [],
+    components: result.domains[0]?.components ?? [],
+  };
+
+  await writeFile(path.join(evidenceDir, '_domains.json'), JSON.stringify(domainMeta, null, 2), 'utf-8');
+
+  return domainMeta.domain;
+}
+
+/** The teamwiki and codebase a teamai-codebase-enrich step reads, from its flags. */
+export interface CodebaseEnrichTarget {
+  project: string;
+  wikiRoot: string;
+}
+
+function targetOf(flags: { wikiRoot: string; codebase: string }): { ok: true; target: CodebaseEnrichTarget } | { ok: false; message: string } {
+  const wikiRoot = path.resolve(flags.wikiRoot);
+  const codeRoot = path.join(wikiRoot, 'evidence', 'code');
+
+  try {
+    assertWithinRoot(codeRoot, path.join(codeRoot, flags.codebase));
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+
+  return { ok: true, target: { project: flags.codebase, wikiRoot } };
+}
+
+/**
+ * Where the codebase's facts and interfaces caches are: its own `evidence/code/<slug>/.indices/` once import published
+ * it, else the teamwiki's `.indices/`, where an extract writes them, when the teamwiki's source manifest says the last
+ * extract was of this codebase. Undefined when neither holds them.
+ */
+async function indicesDirOf(target: CodebaseEnrichTarget): Promise<string | undefined> {
+  const own = path.join(target.wikiRoot, 'evidence', 'code', target.project, '.indices');
+
+  if (await pathExists(path.join(own, 'facts-cache.json'))) return own;
+
+  try {
+    const manifest = SourceManifestSchema.safeParse(JSON.parse(await readFile(path.join(target.wikiRoot, 'source-manifest.json'), 'utf-8')));
+
+    return manifest.data?.project === target.project ? path.join(target.wikiRoot, '.indices') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What the extract left in the codebase's facts and interfaces caches, as the in-process enrich sees it. */
+async function extractedContext(target: CodebaseEnrichTarget): Promise<EnrichContext> {
+  const indicesDir = await indicesDirOf(target);
+
+  if (!indicesDir) return { project: target.project, facts: [], interfaceInventory: { entries: [], scannedAt: '' }, modules: new Map() };
+  const [facts, interfaceInventory] = await Promise.all([loadFactsCache(indicesDir), loadInterfacesCache(indicesDir)]);
+
+  return { project: target.project, facts, interfaceInventory, modules: groupFactsByModule(facts) };
+}
+
+/** The modules to ask about, and the interfaces line the domain prompt names. */
+export interface CodebaseEnrichPlan {
+  modules: ModuleBrief[];
+  interfaces: string;
+}
+
+async function plan(target: CodebaseEnrichTarget): Promise<CodebaseEnrichPlan> {
+  const ctx = await extractedContext(target);
+  const modules = qualifyingModules(ctx.modules).map(([name, facts]) => moduleBrief(name, facts, ctx.interfaceInventory));
+
+  log.debug(modules.length === 0 ? 'enrichWithAI: no qualifying modules, skipping' : `enrichWithAI: ${modules.length} modules`);
+
+  return { modules, interfaces: interfacesSummary(ctx.interfaceInventory) };
+}
+
+/** What the tool answered about one module, or why it could not. */
+export interface ModuleReply {
+  name: string;
+  text: string;
+  failure: string;
+}
+
+// The results of the modules step: each item is a module brief, and its outputs say what the tool answered.
+const ModuleResultsSchema = z.array(z.object({
+  item: z.object({ name: z.string() }),
+  outputs: z.object({ text: z.string().nullish(), failure: z.string().nullish() }).nullish(),
+}));
+
+function repliesOf(raw: string): { ok: true; replies: ModuleReply[] } | { ok: false; message: string } {
+  let json: unknown;
+
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false, message: '--results is not JSON. Pass the results of the modules step.' };
+  }
+
+  const parsed = ModuleResultsSchema.safeParse(json);
+
+  if (!parsed.success) return { ok: false, message: `--results is not the results of the modules step: ${parsed.error.message}` };
+
+  return {
+    ok: true,
+    replies: parsed.data.map(({ item, outputs }) => ({ name: item.name, text: outputs?.text ?? '', failure: outputs?.failure ?? '' })),
+  };
+}
+
+/** The modules whose reply parsed, or none when a module could not be asked, as the in-process enrich keeps none. */
+function answeredModules(replies: ModuleReply[]): Array<{ name: string; result: ModuleAIResult }> {
+  if (replies.some(reply => reply.failure !== '')) return [];
+
+  return replies.flatMap(({ name, text }) => {
+    const result = parseJSON(text, ModuleAIResultSchema);
+
+    return result ? [{ name, result }] : [];
+  });
+}
+
+/** What the domain prompt names; `count` 0 means there is nothing to ask about or write. */
+export interface CodebaseEnrichSummary {
+  count: number;
+  project: string;
+  modules: string;
+}
+
+function summary(project: string, replies: ModuleReply[]): CodebaseEnrichSummary {
+  const failed = replies.filter(reply => reply.failure !== '').length;
+  const answered = answeredModules(replies);
+
+  if (failed > 0) log.warn(`enrichWithAI: module analysis failed (non-blocking): ${failed} AI task(s) failed`);
+  else if (replies.length > 0 && answered.length === 0) log.debug('enrichWithAI: all module analyses returned null');
+
+  return { count: answered.length, project: sanitizeForPrompt(project), modules: modulesSummary(answered) };
+}
+
+/** What a teamai-codebase-enrich run wrote: how many modules its manifest has, and the domain. */
+export interface CodebaseEnrichWritten {
+  modules: number;
+  domain: string;
+}
+
+async function write(target: CodebaseEnrichTarget, replies: ModuleReply[], domain: { text: string; failure: string }): Promise<CodebaseEnrichWritten> {
+  const answered = answeredModules(replies);
+
+  if (answered.length === 0) return { modules: 0, domain: '' };
+  const ctx = await extractedContext(target);
+
+  if (domain.failure !== '') log.debug('enrichWithAI: domain classification failed, continuing without');
+  const result = enrichResultOf(ctx, answered, domain.failure === '' ? parseJSON(domain.text, DomainAIResultSchema) : null);
+  const evidenceDir = path.join(target.wikiRoot, 'evidence', 'code', target.project);
+  assertWithinRoot(target.wikiRoot, evidenceDir);
+  const recorded = await writeEnrichResult(result, evidenceDir);
+  log.info(`AI enrich: ${result.manifest.components.length} modules, domain=${recorded || 'uncategorized'}`);
+
+  return { modules: result.manifest.components.length, domain: recorded };
+}
+
+/** The steps of a teamai-codebase-enrich run, which the hidden `teamai codebase enrich-*` verbs call. */
+export const CodebaseEnrich = { targetOf, plan, repliesOf, summary, write } as const;
 
 export interface EdgeProvenance {
   relation: string;

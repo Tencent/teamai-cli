@@ -18,8 +18,6 @@ import type { LocalConfig } from './types.js';
 import { getConfiguredRemoteUrl, getHeadState, getRemoteUrl, remotesMatch, type HeadState } from './utils/git.js';
 import type { OutputSchema } from './workflow/types.js';
 
-const SESSION_TO_TASK = 'teamai-session-to-task';
-
 /** The inputs teamai proposes values for, by name: a team override that declares one as a string gets it filled. */
 const CONTRACT = ['session', 'source', 'suite', 'start', 'solution'] as const;
 
@@ -144,16 +142,14 @@ const NO_SESSION: Record<ContractInput, Proposal> = {
 };
 
 /**
- * What describe proposes for the declared `inputs` of the workflow `name` resolves to, by input: for
- * teamai-session-to-task, each string input the contract names, from {@link offer} for the calling session in `cwd`;
- * with no agent session, only why. Nothing for another workflow or another input.
+ * What describe proposes for the declared `inputs` of teamai-session-to-task, by input: each string input the contract
+ * names, from {@link offer} for the calling session in `cwd`; with no agent session, only why. Nothing for another input.
  */
 async function proposals(
   config: LocalConfig,
-  { name, inputs }: { name: string; inputs: Readonly<Record<string, OutputSchema>> },
+  { inputs }: { inputs: Readonly<Record<string, OutputSchema>> },
   caller: { session: string | undefined; tool: string | undefined; cwd: string },
 ): Promise<Record<string, Proposal>> {
-  if (name !== SESSION_TO_TASK) return {};
   const matching = Object.entries(inputs).flatMap(([input, type]) => (isContractInput(input) && type.type === 'string' ? [input] : []));
 
   if (matching.length === 0) return {};

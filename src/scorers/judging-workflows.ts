@@ -1,5 +1,5 @@
 /**
- * The names of teamai's default workflows that judge. A team file of either name replaces teamai's, and a step that runs
+ * The names of teamai's default workflows that judge. A team file of one of these names replaces teamai's, and a step that runs
  * one is never judged itself.
  */
 
@@ -9,7 +9,10 @@ export const SCORE_WORKFLOW = 'teamai-score';
 /** Archives and judges a data home's finished sessions, each through a teamai-score step. */
 export const FINISHED_WORKFLOW = 'teamai-finished-sessions';
 
-export const JUDGING_WORKFLOWS: readonly string[] = [SCORE_WORKFLOW, FINISHED_WORKFLOW];
+/** Tries scorer files on a finished session and on its control, through two teamai-score steps that store nothing. */
+export const TRY_SCORER_WORKFLOW = 'teamai-try-scorer';
+
+export const JUDGING_WORKFLOWS: readonly string[] = [SCORE_WORKFLOW, FINISHED_WORKFLOW, TRY_SCORER_WORKFLOW];
 
 /** The steps of each plan group of teamai-score, its `score` for_each, that teamai reads by id, and a team file keeps. */
 export type ScoreItemStep = 'evidence' | 'judge' | 'label' | 'write' | 'publish' | 'settle';

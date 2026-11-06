@@ -237,6 +237,14 @@ describe('renderReport', () => {
     expect(occurrences).toBeGreaterThanOrEqual(3);
   });
 
+  it('offers each promotable learning as a command that lets the AI choose its category', () => {
+    const promote = [{ docId: 'retry', filename: 'retry.md', path: '/retry.md', title: 'Retry', suggestedCategory: 'skills' as const, confidence: 0.95, upvotedCount: 6, userCount: 3 }];
+    const html = renderReport(makeVizData({ maintenance: { promote, prune: [], stale: [] } }));
+
+    expect(html).toContain('<code>teamai recall promote retry</code>');
+    expect(html).not.toContain('--category');
+  });
+
   it('shows "All entries have been recalled at least once." when silent is empty', () => {
     const html = renderReport(makeVizData({ silent: [] }));
     expect(html).toContain('All entries have been recalled at least once.');

@@ -5,6 +5,10 @@ import path from 'node:path';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
+import { DefaultScorers } from '../default-scorers.js';
+import { adoptionRatio, aggregateConfidenceFactors } from '../maintenance/confidence.js';
+import { defaultScorerRubric } from '../scorers/cache.js';
+import type { LocalConfig } from '../types.js';
 
 const WINDOW_DAYS = 30;
 const HISTORY_DAYS = 180;
@@ -18,6 +22,12 @@ export interface DayPoint { date: string; ended: number; succeeded: number; corr
 /** `uses` is the all-time count members published; stats carry no per-day skill counts. */
 export interface SkillUse { name: string; namespace?: string; uses: number; users: number; lastUsed: string | null }
 
+/**
+ * How the sessions that recalled a doc used it (#1391): reads (tool credits) rate every session that recalled it, and a
+ * judge's adoption verdicts rate the rest; `ratio` is the share confidence uses, to two places.
+ */
+export interface DocAdoption { docId: string; recalledSessions: number; toolCredits: number; judgeCredits: number; judged: number; ratio: number }
+
 export interface ImprovementData {
   window: { days: number; from: string; to: string; latestStats: string | null };
   members: number;
@@ -29,6 +39,12 @@ export interface ImprovementData {
     prune: Array<{ name: string; confidence: number; lastActivity: string; reason: string }>;
     stale: Array<{ docId: string; type: string; recalled: number; upvoted: number; users: number }>;
     silent: number;
+  };
+  adoption: {
+    /** Docs some session recalled or upvoted, most recalled sessions first. */
+    docs: DocAdoption[];
+    /** teamai's default scorers the team replaced with a file of the same name. */
+    overriddenScorers: Array<{ name: string; file: string }>;
   };
 }
 
@@ -60,6 +76,27 @@ interface MaintenanceInput {
   promote: Array<{ docId: string; title: string; suggestedCategory: string; confidence: number; upvotedCount: number; userCount: number }>;
   prune: Array<{ filename: string; confidence: number; lastActivity: string; reason: string }>;
   stale: Array<{ docId: string; type: string; recalledCount: number; upvotedCount: number; userCount: number }>;
+}
+
+async function docAdoption(votesDir: string): Promise<DocAdoption[]> {
+  const docs = [...await aggregateConfidenceFactors(votesDir)].flatMap(([docId, f]): DocAdoption[] => {
+    const judgeCredits = f.judgeUpvotedCount ?? 0;
+    const recalledSessions = f.recalledSessionCount ?? f.recalledCount;
+
+    return recalledSessions > 0 || f.upvotedCount > 0
+      ? [{ docId, recalledSessions, toolCredits: Math.max(0, f.upvotedCount - judgeCredits), judgeCredits, judged: f.judgedCount ?? 0, ratio: Math.round(adoptionRatio(f) * 100) / 100 }]
+      : [];
+  });
+
+  return docs.sort((a, b) => b.recalledSessions - a.recalledSessions || a.docId.localeCompare(b.docId)).slice(0, LIST_LIMIT);
+}
+
+/** The default scorers `scope`'s team replaced; none without a scope (`--repo`). */
+async function overriddenScorers(scope: LocalConfig | undefined): Promise<ImprovementData['adoption']['overriddenScorers']> {
+  if (scope === undefined) return [];
+  const rubrics = await Promise.all(DefaultScorers.NAMES.map(async (name) => ({ name, ...await defaultScorerRubric(scope, name) })));
+
+  return rubrics.flatMap(({ name, file, overridden }) => (overridden ? [{ name, file }] : []));
 }
 
 const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
@@ -114,7 +151,7 @@ async function teamSkills(knowledgeRoot: string): Promise<Map<string, string>> {
  * any member published activity for, not at "now", so a team that has not pushed lately still shows its days.
  */
 export async function buildImprovement(
-  paths: { statsDir: string; knowledgeRoot: string },
+  paths: { statsDir: string; knowledgeRoot: string; votesDir: string; scope?: LocalConfig },
   maintenance: MaintenanceInput,
   silent: number,
 ): Promise<ImprovementData> {
@@ -222,5 +259,6 @@ export async function buildImprovement(
       stale: maintenance.stale.slice(0, LIST_LIMIT).map((c) => ({ docId: c.docId, type: c.type, recalled: c.recalledCount, upvoted: c.upvotedCount, users: c.userCount })),
       silent,
     },
+    adoption: { docs: await docAdoption(paths.votesDir), overriddenScorers: await overriddenScorers(paths.scope) },
   };
 }

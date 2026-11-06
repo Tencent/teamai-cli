@@ -17,10 +17,11 @@ import {
   recallFeedback,
   hasPendingVoteDeltas,
   pruneUpvoteLedger,
-  creditedDocIdsForSession,
   readUserVotesFromContent,
   stageVotesMerge,
   confirmVotesSynced,
+  creditRecallAdoptions,
+  countRecalledSessions,
 } from '../votes.js';
 import type { UserVotes, UserVotesV2 } from '../types.js';
 
@@ -424,34 +425,6 @@ describe('pruneUpvoteLedger (bounded even in judge-off config)', () => {
     // firstTs unchanged; the same doc is still deduped.
     expect(after2.upvotedSessions.sLong.firstTs).toBe(firstTs1);
     expect(await incrementUpvoted(filePath, ['doc-a'], 'sLong')).toEqual([]);
-  });
-});
-
-describe('creditedDocIdsForSession (#6: read-only, no v1 migration write)', () => {
-  it('reads the session ledger from a v2 file', async () => {
-    const filePath = path.join(tmpDir, 'user.yaml');
-    await incrementUpvoted(filePath, ['doc-a', 'doc-b'], 'sX');
-    const got = await creditedDocIdsForSession(filePath, 'sX');
-    expect([...got].sort()).toEqual(['doc-a', 'doc-b']);
-  });
-
-  it('does NOT migrate/rewrite a v1 file (no unlocked write that could clobber a concurrent increment)', async () => {
-    const filePath = path.join(tmpDir, 'legacy.yaml');
-    // A v1 votes file (no version:2). loadUserVotes would migrate+save this;
-    // creditedDocIdsForSession must not.
-    const v1 = 'votes:\n  doc-a:\n    at: "2026-01-01T00:00:00Z"\n';
-    fs.writeFileSync(filePath, v1);
-    const before = fs.readFileSync(filePath, 'utf-8');
-    const got = await creditedDocIdsForSession(filePath, 'sX');
-    expect([...got]).toEqual([]); // v1 has no ledger
-    expect(fs.readFileSync(filePath, 'utf-8')).toBe(before); // untouched
-  });
-
-  it('returns empty for a missing or corrupt file without throwing', async () => {
-    expect([...await creditedDocIdsForSession(path.join(tmpDir, 'nope.yaml'), 's')]).toEqual([]);
-    const bad = path.join(tmpDir, 'bad.yaml');
-    fs.writeFileSync(bad, ': : not yaml : :');
-    expect([...await creditedDocIdsForSession(bad, 's')]).toEqual([]);
   });
 });
 
@@ -946,5 +919,87 @@ describe('recallFeedback', () => {
     const after = YAML.parse(fs.readFileSync(votePath, 'utf-8')) as UserVotesV2;
     expect(after.votes['doc-zero'].upvoted_count).toBe(0);
     expect(after.votes['doc-zero'].last_upvoted_at).toBeUndefined();
+  });
+});
+
+describe('adoption counters (#1391)', () => {
+  const votePath = () => path.join(tmpDir, 'jeff.yaml');
+
+  it('merges every *_delta into its *_count, one a later teamai adds included', () => {
+    const local: UserVotesV2 = {
+      version: 2,
+      votes: {},
+      deltas: { 'helm-values': { recalled_delta: 0, upvoted_delta: 1, judge_upvoted_delta: 1, judged_delta: 1, recalled_session_delta: 2, cited_delta: 4 } },
+    };
+    const remote: UserVotesV2 = {
+      version: 2,
+      votes: { 'helm-values': { recalled_count: 10, upvoted_count: 6, last_recalled_at: '2026-06-05T00:00:00Z', judged_count: 2, recalled_session_count: 8 } },
+      deltas: {},
+    };
+
+    expect(mergeDeltas(local, remote).votes['helm-values']).toEqual({
+      recalled_count: 10, upvoted_count: 7, last_recalled_at: '2026-06-05T00:00:00Z',
+      judge_upvoted_count: 1, judged_count: 3, recalled_session_count: 10, cited_count: 4,
+    });
+  });
+
+  it('credits an adopted verdict as a judge upvote within the total, and an ignored one as judged only', async () => {
+    expect(await creditRecallAdoptions({ votePath: votePath(), credits: [{ session: 'first', source: 'judge', doc: 'pod-startup', adopted: true }, { session: 'first', source: 'judge', doc: 'retry-policy', adopted: false }] })).toHaveLength(2);
+
+    const { votes, deltas } = await readUserVotes(votePath());
+    expect(votes['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
+    expect(votes['pod-startup']?.last_upvoted_at).toEqual(expect.any(String));
+    expect(votes['retry-policy']).toMatchObject({ upvoted_count: 0, judged_count: 1 });
+    expect(votes['retry-policy']?.judge_upvoted_count ?? 0).toBe(0);
+    expect(deltas['pod-startup']).toMatchObject({ upvoted_delta: 1, judge_upvoted_delta: 1, judged_delta: 1 });
+    expect(deltas['retry-policy']).toMatchObject({ judged_delta: 1 });
+  });
+
+  // Recall counts a doc's recall when it runs, so the session counted first is already among its 7 recalls. The delta
+  // carries only the sessions: the team file starts from its own recalls.
+  it('counts each recalled session once, starting a doc that has none from its recalls', async () => {
+    await saveUserVotes(votePath(), { version: 2, votes: { 'helm-values': { recalled_count: 7, upvoted_count: 2, last_recalled_at: '2026-06-05T00:00:00Z' } }, deltas: {} });
+
+    expect(await countRecalledSessions({ votePath: votePath(), sessionId: 'first', docIds: ['helm-values', 'new-doc'] })).toBe(true);
+    expect(await countRecalledSessions({ votePath: votePath(), sessionId: 'second', docIds: ['helm-values'] })).toBe(true);
+
+    const { votes, deltas } = await readUserVotes(votePath());
+    expect(votes['helm-values']?.recalled_session_count).toBe(8);
+    expect(votes['new-doc']?.recalled_session_count).toBe(1);
+    expect(deltas['helm-values']?.recalled_session_delta).toBe(2);
+  });
+
+  // Each machine recalls the doc once in a new session. The team file's 100 recalls predate session counting.
+  it.each([['fresh', 'seasoned'], ['seasoned', 'fresh']])('starts the team session count from its recalls once, when the %s machine syncs first', async (...order) => {
+    const repoDir = path.join(tmpDir, 'repo');
+    const remotePath = path.join(repoDir, 'votes', 'jeff.yaml');
+    const legacy = { recalled_count: 100, upvoted_count: 30, last_recalled_at: '2026-06-05T00:00:00Z' };
+    await saveUserVotes(remotePath, { version: 2, votes: { 'helm-values': legacy }, deltas: {} });
+    await saveUserVotes(path.join(tmpDir, 'seasoned', 'jeff.yaml'), { version: 2, votes: { 'helm-values': legacy }, deltas: {} });
+
+    const counts = [];
+
+    for (const machine of order) {
+      const localPath = path.join(tmpDir, machine, 'jeff.yaml');
+      await incrementRecalled(localPath, ['helm-values']);
+      await countRecalledSessions({ votePath: localPath, sessionId: machine, docIds: ['helm-values'] });
+      await syncVotesToTeam(repoDir, 'jeff', path.join(tmpDir, machine));
+      counts.push((await readUserVotes(remotePath)).votes['helm-values']?.recalled_session_count);
+    }
+
+    expect(counts).toEqual([101, 102]);
+  });
+
+  it('clears every synced *_delta, keeping what arrived after the snapshot', async () => {
+    const localDir = path.join(tmpDir, 'local-votes');
+    const repoDir = path.join(tmpDir, 'repo');
+    fs.mkdirSync(localDir, { recursive: true });
+    fs.mkdirSync(path.join(repoDir, 'votes'), { recursive: true });
+    await creditRecallAdoptions({ votePath: path.join(localDir, 'jeff.yaml'), credits: [{ session: 'first', source: 'judge', doc: 'pod-startup', adopted: true }] });
+
+    expect(await syncVotesToTeam(repoDir, 'jeff', localDir)).toBe(true);
+
+    expect((await readUserVotes(path.join(localDir, 'jeff.yaml'))).deltas).toEqual({});
+    expect((await readUserVotes(path.join(repoDir, 'votes', 'jeff.yaml'))).votes['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
   });
 });

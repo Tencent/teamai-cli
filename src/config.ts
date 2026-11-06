@@ -30,6 +30,7 @@ import {
 import { readFileIfExists, readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
 import { nearestGitEntry, resolveAnchors } from './utils/git.js';
 import { getUserHome } from './utils/home.js';
+import { EPHEMERAL_CONFIG_ENV } from './launch-context.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { log } from './utils/logger.js';
 import { listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
@@ -622,6 +623,10 @@ async function readAiSetting(configPath: string): Promise<LocalConfig['ai']> {
  * cannot be used, which is logged.
  */
 export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalConfig | null> {
+  const ephemeral = process.env[EPHEMERAL_CONFIG_ENV];
+
+  // A process of a run with no teamai init reads the config the run built, whichever loader it calls.
+  if (ephemeral) return readEphemeralConfig(ephemeral, process.cwd());
   const configPath = expandHome(getUserConfigPath());
   const content = await readFileSafe(configPath);
 
@@ -658,7 +663,7 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
   // The overlaid roles are the team's, read fresh on every load. Writing them
   // would leave a stale copy behind once the assignment changes or the file
   // goes, and a stale copy is exactly what a member must not be able to keep.
-  const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, stepRole: _stepRole, ...persisted } = withLocalRoles(config);
+  const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, stepRole: _stepRole, ephemeralConfig: _ephemeralConfig, ...persisted } = withLocalRoles(config);
   const localSettings = overlay?.local ?? MemberSettingsSchema.parse(persisted);
 
   const settings = { ...localSettings };
@@ -752,6 +757,20 @@ export class UnreadableProjectConfigError extends Error {
   constructor(problem: string) {
     super(describeUnreadableConfig(problem));
     this.name = 'UnreadableProjectConfigError';
+  }
+}
+
+/**
+ * Whether no teamai install serves `cwd`: detection finds no config at all, rather than one it cannot read or use. Reads
+ * only: nothing is migrated or self-healed.
+ */
+export async function isUninitialized(cwd?: string): Promise<boolean> {
+  try {
+    await autoDetectInit(cwd, { dryRun: true, selfHeal: false, suppressMigrationNotice: true, children: false });
+
+    return false;
+  } catch (error) {
+    return error instanceof NotInitializedError;
   }
 }
 
@@ -1070,6 +1089,10 @@ async function findProjectConfig(
   options: LoadOptions,
 ): Promise<LocalConfig | null> {
   const dir = cwd ?? process.cwd();
+  const ephemeral = process.env[EPHEMERAL_CONFIG_ENV];
+
+  // A process of a run with no teamai init reads the config the run built, wherever it runs.
+  if (ephemeral) return readEphemeralConfig(ephemeral, dir);
 
   // Resolve git anchors FIRST so the result never depends on which directory of
   // the repo we run from (issue #374 review): a repo with both a partition and a
@@ -1110,6 +1133,17 @@ async function findProjectConfig(
   // Not a git repo: fall back to a legacy `.teamai` directly at `dir` (also runs
   // the self-heal bootstrap for a freshly-cloned single-repo project).
   return readConfigFrom(path.join(dir, '.teamai'), dir, dir, onUnreadable, options);
+}
+
+/**
+ * The config a run with no `teamai init` built at `file` for itself, as a process of the run in `cwd` reads it: in place
+ * of any config `cwd` has, with the run's checkout or worktree as its workspace. Null once the run removed it.
+ */
+export async function readEphemeralConfig(file: string, cwd: string): Promise<LocalConfig | null> {
+  const anchors = await resolveAnchors(cwd);
+  const config = await readConfigFrom(path.dirname(file), anchors?.workspaceRoot ?? cwd);
+
+  return config && { ...config, ephemeralConfig: file };
 }
 
 /**

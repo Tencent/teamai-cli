@@ -56,7 +56,7 @@ describe('import --from-mr with a stalled GitLab response body', () => {
       });
       expect(result.code, result.output).toBe(1);
       expect(result.output).toContain('Import from MR complete: 0 succeeded, 2 failed');
-      for (const url of urls) expect(result.output).toContain(`import from MR failed: ${url}`);
+      for (const url of urls) expect(result.output).toContain(`  failed: ${url}`);
       expect(seen).toEqual([
         '/api/v4/projects/group%2Frepo/merge_requests/41',
         '/api/v4/projects/group%2Frepo/merge_requests/42',

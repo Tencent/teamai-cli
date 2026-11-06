@@ -15,6 +15,7 @@ One document per feature design, in English. The status column says how far each
 | Implemented | [Skill serving](skill-serving.md) — built-in skill content shipped with the CLI (`teamai skill get`) | #678 |
 | Implemented | [Scoring on any driver](scoring-any-driver.md) — every driver runs the judging workflows; `local` is only the default | #1700 |
 | Implemented, living | [Team secrets](team-secrets.md) — describes only what the current version does | #875, #879 |
+| In progress | [Every AI call through a workflow](ai-through-workflows.md) — generation is a default workflow, judgment is a scorer, only drivers launch tools | #1589, #1391 |
 | In progress | [Multi-project management](multi-project-management.md) — `project` as a dimension orthogonal to `role`; P1/P2 shipped (`--project`, `manifest/projects.yaml`) | #375 |
 | Proposal | [Management backend](management-backend.md) — a backend for members who do not use Git | #341 |
 | Historical plan | [Git-native memory](git-native-memory.md) — March 2026 planning note; recall and voting have since shipped and are documented in the [Usage Guide](../guide/knowledge.md#knowledge-capture--retrieval) | — |

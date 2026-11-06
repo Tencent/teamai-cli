@@ -25,7 +25,7 @@ import { acquireLock, releaseLock } from '../update.js';
 import { startRun } from '../workflow/engine.js';
 import { publishRun } from '../workflow/handoff.js';
 import { driverLockPath, readRun, runFilePath, runsDir } from '../workflow/store.js';
-import { benchmarkRun, workflowNext, workflowPublish, workflowReport, workflowResume, workflowRetry, workflowStart } from '../workflow-commands.js';
+import { benchmarkRun, workflowNext, workflowPublish, workflowReport, workflowRespond, workflowResume, workflowRetry, workflowStart } from '../workflow-commands.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { knownSecrets } from '../env-resolution.js';
 import { skillHarness } from './helpers/skill-harness.js';
@@ -98,6 +98,49 @@ afterEach(() => {
 });
 
 describe('workflow json payloads', () => {
+  it('rejects a respond payload whose queued is not an array of attempt ids', async () => {
+    const { config, runId } = await startBuild();
+    state.config = config;
+
+    const rejected = await capture(() => workflowRespond(runId, 'one', 'yes', { json: JSON.stringify({ driver, queued: 'a00000000' }) }));
+
+    expect(rejected).toEqual({ error: { code: 'invalid_json', message: 'queued must be an array of attempt ids' } });
+  });
+
+  it('counts the timeout of a lease from a respond that lists it queued for the driver that sent it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    vi.setSystemTime(new Date('2026-05-01T10:00:00.000Z'));
+    const config = testConfig();
+    state.config = config;
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'gated.yaml'), `schemaVersion: v1alpha1
+name: gated
+description: A slow step and a gate beside it.
+steps:
+  - id: slow
+    timeout: 10m
+    command: echo slow
+  - id: gate
+    needs: []
+    approve: Go on?
+    command: echo gate
+`);
+    await syncScorersThenWorkflows(config);
+    const started = await startRun(config, 'gated', {}, { secrets: await knownSecrets(config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const asked = { ...driver, can: { hitl: true } };
+    const leased = z.object({ data: z.object({ lease: z.object({ attempt: z.string() }) }) }).parse(await capture(() => workflowNext(runId, { json: JSON.stringify({ driver: asked }) })));
+    const { attempt } = leased.data.lease;
+    expect(await capture(() => workflowNext(runId, { json: JSON.stringify({ driver: asked, running: [attempt], queued: [attempt] }) }))).toMatchObject({ data: { hitl: { step: 'gate' } } });
+
+    vi.setSystemTime(new Date('2026-05-01T10:15:00.000Z'));
+    const answered = await capture(() => workflowRespond(runId, 'gate', 'yes', { pass: '1', json: JSON.stringify({ driver, queued: [attempt] }) }));
+
+    expect(answered).not.toHaveProperty('error');
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: '2026-05-01T10:15:00.000Z', expiresAt: '2026-05-01T10:25:00.000Z' } }, { id: 'gate' }] });
+  });
+
   it('claims a remotely published run through next before a local run file exists', async () => {
     const config = testConfig();
     state.config = config;
@@ -155,6 +198,7 @@ describe('workflow json payloads', () => {
   it.each([
     ['running that is not an array', { running: 'a00000000' }, 'running must be an array of attempt ids'],
     ['running that holds a number', { running: [1] }, 'running must be an array of attempt ids'],
+    ['queued that is not an array', { queued: 'a00000000' }, 'queued must be an array of attempt ids'],
     ['canTakeLease that is not a boolean', { canTakeLease: 'false' }, 'canTakeLease must be a boolean'],
     ['a base without a commit', { base: { ref: 'main' } }, 'base must include commit, and ref when it is set must not be empty'],
     ['a base with an empty ref', { base: { ref: '', commit: 'c0ffee' } }, 'base must include commit, and ref when it is set must not be empty'],

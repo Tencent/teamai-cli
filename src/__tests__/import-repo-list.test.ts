@@ -8,13 +8,10 @@ import { stringify as yamlStringify } from 'yaml';
 
 // ─── Mocks ──────────────────────────────────────────────
 
-vi.mock('../import-repo.js', async (importOriginal) => ({
-    repoSlugForUrl: (await importOriginal<typeof import('../import-repo.js')>()).repoSlugForUrl,
-    importFromRepo: vi.fn().mockResolvedValue(true),
-}));
+vi.mock('../workflow-commands.js', () => ({ runShortcut: vi.fn() }));
 
 vi.mock('../import-codebase.js', async (importOriginal) => ({
-    failIncompleteDeepEnrich: (await importOriginal<typeof import('../import-codebase.js')>()).failIncompleteDeepEnrich,
+    ...(await importOriginal<typeof import('../import-codebase.js')>()),
     refreshTeamwikiIndexes: vi.fn().mockResolvedValue(undefined),
     publishTeamwikiViaMR: vi.fn().mockResolvedValue(undefined),
 }));
@@ -27,11 +24,47 @@ vi.mock('../config.js', async (importOriginal) => ({
 // ─── Imports（after mocks）──────────────────────────────
 
 import { importFromRepoList } from '../import-repo-list.js';
-import { importFromRepo } from '../import-repo.js';
+import { ImportFromRepo } from '../import-from-repo.js';
+import { runShortcut } from '../workflow-commands.js';
 import { DetachedTeamRepoError } from '../utils/git.js';
 import { autoDetectInit } from '../config.js';
 import { LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
 import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from '../import-codebase.js';
+
+// ─── Helpers ────────────────────────────────────────────
+
+/** The `items` input entry of a repository the list names. */
+function repoItem(url: string, entry: { domain?: string; auth?: string } = {}) {
+    return { kind: 'repo', source: url, domain: entry.domain ?? '', auth: entry.auth ?? '', slug: '', repo_url: '', mr_urls: [] };
+}
+
+/** The settings input of a list import, with `team_repo` the team repo that holds the teamwiki. */
+function settings(teamRepo = ''): string {
+    return JSON.stringify({ depth: 1, ssh: false, incremental: false, skip_enrich: false, max_files: 0, team_repo: teamRepo });
+}
+
+/** The inputs of the run `runShortcut` was asked to start. */
+function startedInputs(): Record<string, unknown> {
+    const [run] = vi.mocked(runShortcut).mock.calls[0] ?? [];
+
+    if (!run) throw new Error('No run was started');
+
+    return run.inputs;
+}
+
+/** Collects what the batch says on stdout while `body` runs. */
+async function linesOf(body: () => Promise<unknown>): Promise<string> {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+
+    try {
+        await body();
+    } finally {
+        spy.mockRestore();
+    }
+
+    return lines.join('\n');
+}
 
 // ─── Tests ──────────────────────────────────────────────
 
@@ -66,7 +99,7 @@ describe('importFromRepoList', () => {
             const output = path.join(tmpDir, 'out');
             await expect(importFromRepoList({ listPath: path.join(tmpDir, 'missing.yaml'), concurrency, output }))
                 .rejects.toThrow('--concurrency must be a positive safe integer');
-            expect(importFromRepo).not.toHaveBeenCalled();
+            expect(runShortcut).not.toHaveBeenCalled();
             expect(await fs.pathExists(output)).toBe(false);
         },
     );
@@ -79,154 +112,100 @@ describe('importFromRepoList', () => {
                 importFromRepoList({ listPath, concurrency: 0, dryRun: true }),
                 new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Batch is still pending')), 250); }),
             ])).rejects.toThrow('--concurrency must be a positive safe integer');
-            expect(importFromRepo).not.toHaveBeenCalled();
+            expect(runShortcut).not.toHaveBeenCalled();
         } finally {
             clearTimeout(timer);
         }
     });
 
-    it.each([1, 2, 3])('keeps at most %i imports active and releases a failed import\'s slot', async (concurrency) => {
+    it.each([1, 2, 3])('starts one run over every repository of the list, %i at a time', async (concurrency) => {
         const repos = Array.from({ length: 5 }, (_, i) => ({ url: `https://github.com/org/repo-${i}` }));
         const listPath = await writeYaml('repos.yaml', { version: 1, repos });
-        const releases: Array<() => void> = [];
-        let active = 0;
-        let peak = 0;
-        vi.mocked(importFromRepo).mockImplementation(async ({ url }) => {
-            active++;
-            peak = Math.max(peak, active);
-            try {
-                await new Promise<void>((resolve, reject) => {
-                    releases.push(() => url.endsWith('repo-0') ? reject(new Error('Fixture failure')) : resolve());
-                });
-            } finally {
-                active--;
-            }
-            return true;
-        });
 
-        const batch = importFromRepoList({ listPath, concurrency, dryRun: true });
-        await vi.waitFor(() => expect(importFromRepo).toHaveBeenCalledTimes(concurrency));
-        for (let settled = 0; settled < repos.length; settled++) {
-            await vi.waitFor(() => expect(releases.length).toBeGreaterThan(0));
-            releases.shift()!();
-        }
-        expect(await batch).toEqual({ succeeded: 4, failed: [{ url: repos[0].url, error: 'Fixture failure' }], skipped: [] });
-        expect(peak).toBe(concurrency);
-        expect(active).toBe(0);
-        vi.mocked(importFromRepo).mockResolvedValue(true);
+        await importFromRepoList({ listPath, concurrency, output: tmpDir });
+
+        expect(runShortcut).toHaveBeenCalledTimes(1);
+        expect(startedInputs()).toMatchObject({ mode: 'list', concurrency, items: repos.map(({ url }) => repoItem(url)) });
     });
 
     it('exits 1 and names the retry command for each repo whose deep enrich did not finish', async () => {
-        const filePath = await writeYaml('repos.yaml', {
-            version: 1,
-            repos: [{ url: 'https://github.com/org/repo-1' }, { url: 'https://github.com/org/repo-2' }],
+        const wikiRoot = path.join(tmpDir, 'wiki', 'teamwiki');
+        const finishItem = async (url: string, slug: string, deep: string) => ImportFromRepo.finishItem({
+            item: JSON.stringify(repoItem(url)), settings: settings(), wikiRoot, mode: 'list', slug, head: '', deep, deepFailure: '',
         });
-        vi.mocked(importFromRepo).mockImplementation(async ({ url }) => !url.endsWith('repo-2'));
-        const lines: string[] = [];
-        const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
-        try {
-            await importFromRepoList({ listPath: filePath, output: 'wiki' });
-        } finally {
-            spy.mockRestore();
-        }
 
-        expect(process.exitCode).toBe(1);
-        const output = lines.join('\n');
+        const output = await linesOf(async () => {
+            expect(await finishItem('https://github.com/org/repo-1', 'github__org__repo-1', 'true')).toEqual({ deep_complete: true });
+            expect(await finishItem('https://github.com/org/repo-2', 'github__org__repo-2', 'false')).toEqual({ deep_complete: false });
+        });
+
         expect(output).toContain(
-            'Deep enrich incomplete: github__org__repo-2. Run `teamai codebase --deep-enrich --project github__org__repo-2 --output wiki` to retry.',
+            `Deep enrich incomplete: github__org__repo-2. Run \`teamai codebase --deep-enrich --project github__org__repo-2 --output ${path.join(tmpDir, 'wiki')}\` to retry.`,
         );
-        expect(output).not.toContain('github__org__repo-1');
+        expect(output).not.toContain('Deep enrich incomplete: github__org__repo-1');
+
+        const results = [
+            { item: repoItem('https://github.com/org/repo-1'), outcome: 'success', outputs: { slug: 'github__org__repo-1', updated: true, deep_complete: true } },
+            { item: repoItem('https://github.com/org/repo-2'), outcome: 'success', outputs: { slug: 'github__org__repo-2', updated: true, deep_complete: false } },
+        ];
+        const end = await ImportFromRepo.finish({ mode: 'list', wikiRoot, settings: settings(), skipped: '0', results: JSON.stringify(results) });
+        expect(end).toMatchObject({ text: 'Batch import complete: 2 succeeded, 0 failed, 0 skipped', exit_code: 1 });
     });
 
-    it('names an import of each unfinished repo, with its auth, domain and file cap, as its retry in a team repo', async () => {
+    it('names the deep-enrich retry with no --output in a team repo', async () => {
         const localPath = path.join(tmpDir, 'team-repo');
-        await fs.ensureDir(path.join(localPath, 'teamwiki'));
-        vi.mocked(autoDetectInit).mockResolvedValueOnce({
-            localConfig: LocalConfigSchema.parse({ repo: { localPath, remote: 'https://example.com/team.git' }, username: 'test', scope: 'project' }),
-            teamConfig: TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.com/team.git' }),
-        });
-        const filePath = await writeYaml('repos.yaml', {
-            version: 1,
-            repos: [{ url: 'https://github.com/org/repo-1' }, { url: 'https://github.com/org/repo-2', auth: 'ssh', domain: 'billing' }],
-        });
-        vi.mocked(importFromRepo).mockResolvedValue(false);
-        const lines: string[] = [];
-        const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
-        try {
-            await importFromRepoList({ listPath: filePath, maxFiles: 500 });
-        } finally {
-            spy.mockRestore();
-            vi.mocked(importFromRepo).mockResolvedValue(true);
-        }
+        const output = await linesOf(async () => ImportFromRepo.finishItem({
+            item: JSON.stringify(repoItem('https://github.com/org/repo-2', { auth: 'ssh', domain: 'billing' })),
+            settings: settings(localPath), wikiRoot: path.join(localPath, 'teamwiki'), mode: 'list', slug: 'github__org__repo-2', head: '', deep: 'false', deepFailure: '',
+        }));
 
-        expect(process.exitCode).toBe(1);
-        const output = lines.join('\n');
-        expect(output).toContain('Deep enrich incomplete: github__org__repo-1. Run `teamai codebase --deep-enrich --project github__org__repo-1` to retry.');
         expect(output).toContain('Deep enrich incomplete: github__org__repo-2. Run `teamai codebase --deep-enrich --project github__org__repo-2` to retry.');
     });
 
-    it('加载 yaml → 调度 → 汇总数字正确（2 个成功）', async () => {
-        const filePath = await writeYaml('repos.yaml', {
-            version: 1,
-            repos: [
-                { url: 'https://github.com/org/repo-1', domain: '推理' },
-                { url: 'https://github.com/org/repo-2', domain: '训练' },
-            ],
-        });
-
-        const result = await importFromRepoList({ listPath: filePath, output: tmpDir });
-
-        expect(importFromRepo).toHaveBeenCalledTimes(2);
-        expect(result.succeeded).toBe(2);
-        expect(result.failed).toHaveLength(0);
-        expect(result.skipped).toHaveLength(0);
-    });
-
-    it('org entry → skipped 数 +1，importFromRepo 不被调用', async () => {
+    it('gives the run each repository with its domain and auth, and the org entries it skipped', async () => {
         const filePath = await writeYaml('repos.yaml', {
             version: 1,
             repos: [
                 { org: 'https://github.com/myorg', default_domain: '平台' },
-                { url: 'https://github.com/org/single-repo' },
+                { url: 'https://github.com/org/repo-1', domain: '推理', auth: 'ssh' },
+                { url: 'https://github.com/org/repo-2', domain: '训练' },
             ],
         });
 
-        const result = await importFromRepoList({ listPath: filePath, output: tmpDir });
+        expect(await importFromRepoList({ listPath: filePath, output: tmpDir })).toEqual({ kind: 'run', end: undefined });
 
-        expect(importFromRepo).toHaveBeenCalledTimes(1);
-        expect(result.skipped).toHaveLength(1);
-        expect(result.skipped[0].url).toBe('https://github.com/myorg');
-        expect(result.succeeded).toBe(1);
+        expect(startedInputs()).toMatchObject({
+            wiki_root: path.join(tmpDir, 'teamwiki'),
+            items: [repoItem('https://github.com/org/repo-1', { domain: '推理', auth: 'ssh' }), repoItem('https://github.com/org/repo-2', { domain: '训练' })],
+            skipped: 1,
+        });
     });
 
-    it('单仓抛错 → failed +1，不中断其他', async () => {
-        vi.mocked(importFromRepo)
-            .mockRejectedValueOnce(new Error('克隆失败'))
-            .mockResolvedValue(true);
+    it('sums up a batch where one repository failed, which does not stop the others, and exits 1', async () => {
+        const wikiRoot = path.join(tmpDir, 'out', 'teamwiki');
+        await fs.ensureDir(wikiRoot);
+        const results = [
+            { item: repoItem('https://github.com/org/fail-repo'), outcome: 'failed', outputs: null },
+            { item: repoItem('https://github.com/org/success-repo'), outcome: 'success', outputs: { slug: 'github__org__success-repo', updated: true, deep_complete: true } },
+        ];
+        let end: Awaited<ReturnType<typeof ImportFromRepo.finish>> | undefined;
 
-        const filePath = await writeYaml('repos.yaml', {
-            version: 1,
-            repos: [
-                { url: 'https://github.com/org/fail-repo' },
-                { url: 'https://github.com/org/success-repo' },
-            ],
+        const output = await linesOf(async () => {
+            end = await ImportFromRepo.finish({ mode: 'list', wikiRoot, settings: settings(), skipped: '1', results: JSON.stringify(results) });
         });
 
-        const result = await importFromRepoList({ listPath: filePath, output: tmpDir });
-
-        expect(result.failed).toHaveLength(1);
-        expect(result.failed[0].url).toBe('https://github.com/org/fail-repo');
-        expect(result.failed[0].error).toContain('克隆失败');
-        expect(result.succeeded).toBe(1);
+        expect(end).toMatchObject({
+            text: 'Batch import complete: 1 succeeded, 1 failed, 1 skipped',
+            exit_code: 1,
+            imported: [
+                { source: 'https://github.com/org/fail-repo', slug: '', updated: false, failed: true },
+                { source: 'https://github.com/org/success-repo', slug: 'github__org__success-repo', updated: true, failed: false },
+            ],
+        });
+        expect(output).toContain('import failed: https://github.com/org/fail-repo');
     });
 
     it('priority=high 条目优先排序：先于 normal', async () => {
-        const callOrder: string[] = [];
-        vi.mocked(importFromRepo).mockImplementation(async (opts) => {
-            callOrder.push(opts.url);
-            return true;
-        });
-
         const filePath = await writeYaml('repos.yaml', {
             version: 1,
             repos: [
@@ -237,25 +216,22 @@ describe('importFromRepoList', () => {
 
         await importFromRepoList({ listPath: filePath, concurrency: 1, output: tmpDir });
 
-        expect(callOrder[0]).toBe('https://github.com/org/high-repo');
-        expect(callOrder[1]).toBe('https://github.com/org/normal-repo');
+        expect(startedInputs()['items']).toEqual([repoItem('https://github.com/org/high-repo'), repoItem('https://github.com/org/normal-repo')]);
     });
 
     it('--output: every repo and the index rebuild use <output>/teamwiki, and nothing is pushed', async () => {
         const output = path.join(tmpDir, 'out');
         await fs.ensureDir(path.join(output, 'teamwiki'));
-        const filePath = await writeYaml('repos.yaml', {
-            version: 1,
-            repos: [{ url: 'https://github.com/org/repo-1' }],
-        });
+        const filePath = await writeYaml('repos.yaml', { version: 1, repos: [{ url: 'https://github.com/org/repo-1' }] });
 
         await importFromRepoList({ listPath: filePath, output });
 
-        expect(importFromRepo).toHaveBeenCalledWith(expect.objectContaining({ output, skipAutoPush: true }));
+        expect(startedInputs()).toMatchObject({ wiki_root: path.join(output, 'teamwiki'), settings: { team_repo: '' } });
+        const results = [{ item: repoItem('https://github.com/org/repo-1'), outcome: 'success', outputs: { slug: 'github__org__repo-1', updated: true, deep_complete: true } }];
+        await linesOf(async () => ImportFromRepo.finish({ mode: 'list', wikiRoot: path.join(output, 'teamwiki'), settings: settings(), skipped: '0', results: JSON.stringify(results) }));
         expect(refreshTeamwikiIndexes).toHaveBeenCalledWith(path.join(output, 'teamwiki'));
         expect(publishTeamwikiViaMR).not.toHaveBeenCalled();
     });
-
 
     it('propagates a detached-clone refusal from batch publishing', async () => {
         const localPath = path.join(tmpDir, 'team-repo');
@@ -266,8 +242,11 @@ describe('importFromRepoList', () => {
         });
         const refusal = new DetachedTeamRepoError('main');
         vi.mocked(publishTeamwikiViaMR).mockRejectedValueOnce(refusal);
-        const listPath = await writeYaml('repos.yaml', { version: 1, repos: [{ url: 'https://github.com/org/repo' }] });
-        await expect(importFromRepoList({ listPath })).rejects.toBe(refusal);
+        const results = [{ item: repoItem('https://github.com/org/repo'), outcome: 'success', outputs: { slug: 'github__org__repo', updated: true, deep_complete: true } }];
+
+        await expect(linesOf(async () => ImportFromRepo.finish({
+            mode: 'list', wikiRoot: path.join(localPath, 'teamwiki'), settings: settings(localPath), skipped: '0', results: JSON.stringify(results),
+        }))).rejects.toBe(refusal);
     });
 
     it('fails before importing anything when there is neither a team repo nor --output', async () => {
@@ -277,6 +256,6 @@ describe('importFromRepoList', () => {
         });
 
         await expect(importFromRepoList({ listPath: filePath })).rejects.toThrow('no config in test');
-        expect(importFromRepo).not.toHaveBeenCalled();
+        expect(runShortcut).not.toHaveBeenCalled();
     });
 });

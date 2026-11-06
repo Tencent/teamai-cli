@@ -267,7 +267,7 @@ describe('teamai list / status resource coverage', () => {
 
     await list('workflows', { source: 'repo' });
     expect(lines).toEqual([
-      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-finished-sessions  (default)', '  teamai-score  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  teamai-share-session  (default)', '',
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-ci-extract-mr  (default)', '  teamai-codebase-deep-enrich  (default)', '  teamai-codebase-enrich  (default)', '  teamai-draft-learning-updates  (default)', '  teamai-finished-sessions  (default)', '  teamai-import-from-iwiki  (default)', '  teamai-import-from-mr  (default)', '  teamai-import-from-repo  (default)', '  teamai-import-learnings  (default)', '  teamai-import-rules  (default)', '  teamai-new-scorer  (default)', '  teamai-promote-learning  (default)', '  teamai-score  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  teamai-share-learnings-from-sessions  (default)', '  teamai-share-session  (default)', '  teamai-try-scorer  (default)', '',
     ]);
 
     await fse.outputFile(path.join(repoPath, 'workflows', 'teamai-share-session.yaml'), workflow('teamai-share-session', 'alias: share-session\n'));
@@ -276,7 +276,7 @@ describe('teamai list / status resource coverage', () => {
 
     await list('workflows', { source: 'repo' });
     expect(lines).toEqual([
-      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-finished-sessions  (default)', '  teamai-score  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  share-session (teamai-share-session)  (team)', '',
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-ci-extract-mr  (default)', '  teamai-codebase-deep-enrich  (default)', '  teamai-codebase-enrich  (default)', '  teamai-draft-learning-updates  (default)', '  teamai-finished-sessions  (default)', '  teamai-import-from-iwiki  (default)', '  teamai-import-from-mr  (default)', '  teamai-import-from-repo  (default)', '  teamai-import-learnings  (default)', '  teamai-import-rules  (default)', '  teamai-new-scorer  (default)', '  teamai-promote-learning  (default)', '  teamai-score  (default)', '  teamai-self-improvement  (default)', '  teamai-session-to-task  (default)', '  teamai-share-learnings  (default)', '  teamai-share-learnings-from-sessions  (default)', '  share-session (teamai-share-session)  (team)', '  teamai-try-scorer  (default)', '',
     ]);
   });
 

@@ -928,6 +928,12 @@ export async function autoPushTeamRepo(repoPath: string, message: string, files:
 }
 
 /**
+ * What `autoPushViaMR` did: nothing pushed (nothing to commit, or the push failed, which it logged), or a branch pushed
+ * with the MR/PR it opened, null when none could be opened.
+ */
+export type MrPush = { pushed: false } | { pushed: true; prUrl: string | null };
+
+/**
  * Push changes via branch + MR/PR instead of direct push to main.
  * Creates a branch, commits, pushes, creates MR, then returns to default branch.
  * Logs other push failures; refuses detached team clones.
@@ -939,7 +945,7 @@ export async function autoPushViaMR(
   teamConfig: { repo: string; provider?: string; reviewers?: string[] },
   localConfig: { repo: { remote: string; localPath: string }; username: string; provider?: string },
   opts: { initPush?: boolean } = {},
-): Promise<string | null> {
+): Promise<MrPush> {
   try {
     const branchName = await unusedBranchName(repoPath, localConfig.username);
     const pushed = await pushRepoBranch(repoPath, message, files, branchName, { initPush: opts.initPush });
@@ -947,7 +953,7 @@ export async function autoPushViaMR(
     if (!pushed) {
       log.debug('[git] autoPushViaMR: nothing to commit');
 
-      return null;
+      return { pushed: false };
     }
 
     const { createPrWithFallback } = await import('../push.js');
@@ -959,14 +965,14 @@ export async function autoPushViaMR(
 
     await checkoutMaster(repoPath);
 
-    return prUrl;
+    return { pushed: true, prUrl };
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
     log.warn(`[git] autoPushViaMR failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
 
     try { await checkoutMaster(repoPath); } catch { /* best effort */ }
 
-    return null;
+    return { pushed: false };
   }
 }
 

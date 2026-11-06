@@ -275,6 +275,30 @@ limitsConformanceScenarios.push(
   },
 );
 
+// Each call may take up to 1.5 s on the CLI runner and still land between the deadlines the scenario checks.
+const QUEUED_STEP = controlsYaml(`  - id: slow
+    command: echo slow
+    timeout: 5s
+  - id: other
+    needs: []
+    command: echo other`);
+
+limitsConformanceScenarios.push({
+  name: 'a lease its driver lists queued counts its timeout from that call, which answers its deadline',
+  workflowName: 'build', yaml: QUEUED_STEP,
+  operations: [
+    { kind: 'next', saveAs: 'slow', expect: { data: { lease: { step: 'slow' } } } },
+    { kind: 'next', saveAs: 'other', running: ['slow'], expect: { data: { lease: { step: 'other' } } } },
+    { kind: 'advance', ms: 2000 },
+    { kind: 'next', saveAs: 'listed', running: ['slow', 'other'], queued: ['slow'], cancelled: [], deadlines: ['slow'], expect: { data: { wait: {} } } },
+    { kind: 'advance', ms: 3500 },
+    { kind: 'next', saveAs: 'kept', running: ['slow', 'other'], cancelled: [], deadlines: [], expect: { data: { wait: {} } } },
+    { kind: 'advance', ms: 2000 },
+    { kind: 'next', saveAs: 'expired', running: ['slow', 'other'], cancelled: ['slow'], expect: { data: {} } },
+  ],
+  expectState: { steps: [{ id: 'slow', status: 'failed', failure: { code: 'timeout' } }, { id: 'other', status: 'leased' }] },
+});
+
 const BUDGETED = (tokens: number, steps: string): string => controlsYaml(steps).replace('steps:\n', `budget: { tokens: ${tokens} }\nsteps:\n`);
 
 limitsConformanceScenarios.push(

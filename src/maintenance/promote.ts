@@ -22,12 +22,8 @@ export interface PromotionCandidate {
   upvotedCount: number;
   userCount: number;
   title: string;
-  suggestedCategory: 'skills' | 'rules' | 'docs';
-}
-
-export interface PromoteOptions {
-  category?: 'skills' | 'rules' | 'docs';
-  dryRun?: boolean;
+  /** What its keywords suggest; the AI chooses when it is promoted. */
+  suggestedCategory: PromotionCategory;
 }
 
 const MIN_CONFIDENCE = 0.90;
@@ -120,7 +116,7 @@ export async function findPromotionCandidates(
 
   for (const { content, promotedTo, ...entry } of eligible) {
     if (promotedTo !== undefined && inPlace.has(promotedTo)) continue;
-    candidates.push({ ...entry, suggestedCategory: await inferCategory(content, entry.title) });
+    candidates.push({ ...entry, suggestedCategory: inferCategoryByKeywords(content, entry.title) });
   }
 
   return candidates.sort((a, b) => b.confidence - a.confidence);
@@ -166,94 +162,30 @@ async function promotionTargetsInPlace(knowledgeCheckout: string | undefined, ta
   }
 }
 
-/**
- * Execute promotion: copy learning to target category, mark original.
- */
-/**
- * Use AI to transform a learning (individual experience) into a generalized
- * knowledge entry suitable for the target category.
- *
- * - skills: rewrite as a step-by-step procedure / SOP with clear triggers
- * - rules: rewrite as a concise constraint with rationale
- * - docs: rewrite as reference documentation with context
- *
- * Falls back to the original content if AI is unavailable.
- */
-async function generatePromotedContent(
-  originalContent: string,
-  category: 'skills' | 'rules' | 'docs',
-  title: string,
-): Promise<string> {
-  const categoryGuide = {
-    skills: `a reusable skill/SOP. Format it with:
-- A clear "when to use" trigger description
-- Step-by-step numbered procedure
-- Expected outcome
-- Common pitfalls to avoid
-Remove any references to specific dates, people, or one-off incidents. Make it timeless and reusable.`,
-    rules: `a team rule/constraint. Format it with:
-- A one-line rule statement (imperative: "Always X" / "Never Y")
-- Rationale: why this matters (1-2 sentences)
-- Examples of correct and incorrect usage
-Remove anecdotal context. State the constraint as an absolute standard.`,
-    docs: `a reference document. Format it with:
-- Context: what system/component this describes
-- Key concepts and their relationships
-- Architecture decisions and their rationale
-- Current state (as of promotion date)
-Remove personal narrative. Write as objective technical documentation.`,
-  };
+/** The categories a learning is promoted to. */
+export const PromotionCategorySchema = z.enum(['skills', 'rules', 'docs']);
 
-  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
+export type PromotionCategory = z.infer<typeof PromotionCategorySchema>;
 
-  try {
-    const prompt = `You are a technical knowledge engineer promoting a team learning into formal knowledge.
+/** The promoted entry's path in the knowledge checkout, in posix form: a skill is `<learning>/SKILL.md`. */
+export function promotionTarget(filename: string, category: PromotionCategory): string {
+  const normalizedFilename = filename.split(path.sep).join('/');
 
-The following "learning" has been repeatedly validated by the team (high confidence, adopted by multiple members). Transform it into ${categoryGuide[category]}
-
-Original learning (title: "${title}"):
----
-${originalContent}
----
-
-Output ONLY the transformed markdown content (including YAML frontmatter with title, tags, date set to today). Do NOT include the original learning's confidence or vote-related fields in the frontmatter.`;
-
-    const { text } = await callTool(prompt, { launchedBy: 'recall-promote', timeout: 60_000 });
-
-    return text.trim();
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.warn(`AI content generation failed, using original content: ${e instanceof Error ? e.message : String(e)}`);
-
-    return originalContent;
-  }
+  return category === 'skills'
+    ? path.posix.join(category, normalizedFilename.replace(/\.md$/i, ''), 'SKILL.md')
+    : path.posix.join(category, normalizedFilename);
 }
 
 /**
- * The promoted entry's path, and the learning file it marked as promoted (null
- * when it marked none), which is what a publish may stage (#823).
+ * Writes the promoted entry of `candidate` in `repoPath`: `content`, the learning rewritten for its category, or the
+ * learning as written when there is none. A dry run only says where it would go. Nothing is overwritten.
  */
-export async function executePromotion(
-  candidate: PromotionCandidate,
+export async function writePromotion(
+  candidate: Pick<PromotionCandidate, 'docId' | 'filename' | 'path'>,
   repoPath: string,
-  options: PromoteOptions & {
-    learningsWriteDir?: string;
-    /** Publish the artifact before recording the learning as promoted. A failure leaves it eligible. */
-    publish?: (targetPath: string) => Promise<void>;
-  } = {},
-): Promise<{ targetPath: string; marked: string | null }> {
-  const category = options.category ?? candidate.suggestedCategory;
-
-  if (!['skills', 'rules', 'docs'].includes(category)) {
-    throw new Error(`Invalid promotion category "${category}". Use skills, rules, or docs.`);
-  }
-
-  const normalizedFilename = candidate.filename.split(path.sep).join('/');
-
-  const relativePath = category === 'skills'
-    ? path.posix.join(category, normalizedFilename.replace(/\.md$/i, ''), 'SKILL.md')
-    : path.posix.join(category, normalizedFilename);
-
+  options: { category: PromotionCategory; content?: string; dryRun?: boolean },
+): Promise<{ targetPath: string; relativePath: string }> {
+  const relativePath = promotionTarget(candidate.filename, options.category);
   const targetPath = path.join(repoPath, relativePath);
   assertSafePath(targetPath, [repoPath]);
 
@@ -264,50 +196,81 @@ export async function executePromotion(
   if (options.dryRun) {
     log.info(`[dry-run] Would promote ${candidate.docId} -> ${relativePath}`);
 
-    return { targetPath, marked: null };
+    return { targetPath, relativePath };
   }
 
-  const originalContent = await readFileSafe(candidate.path);
+  let promotedContent = options.content ?? await readFileSafe(candidate.path);
 
-  if (!originalContent) {
+  if (!promotedContent) {
     throw new Error(`Cannot read source file: ${candidate.path}`);
   }
 
-  // AI transforms the learning into a generalized format for the target category
-  let promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
-
-  if (category === 'skills') {
+  if (options.category === 'skills') {
     const { withSkillFrontmatter } = await import('../resources/skills.js');
-    const skillName = path.posix.basename(normalizedFilename).replace(/\.md$/i, '');
+    const skillName = path.basename(candidate.filename).replace(/\.md$/i, '');
     promotedContent = withSkillFrontmatter(promotedContent, skillName);
   }
 
   await ensureDir(path.dirname(targetPath));
   await writeNewFile(targetPath, promotedContent, { flag: 'wx' });
-  await options.publish?.(targetPath);
 
-  // Mark the learning as promoted. When it lives in a root nothing pushes, the
-  // mark goes to the write root instead: written in place it would be discarded
-  // by the next realign, and the same learning would be promoted again on the
-  // next run, paying for another model call.
+  return { targetPath, relativePath };
+}
+
+/**
+ * Marks `learning` as promoted to `relativePath`, and returns the file it marked. When the
+ * learning lives in a root nothing pushes, the mark goes to the write root instead: written in place it would be
+ * discarded by the next realign, and the same learning would be promoted again on the next run.
+ */
+export async function markPromoted(
+  learning: { docId: string; filename: string; path: string },
+  relativePath: string,
+  learningsWriteDir?: string,
+): Promise<string> {
+  const originalContent = await readFileSafe(learning.path);
+
+  if (!originalContent) {
+    throw new Error(`Cannot read source file: ${learning.path}`);
+  }
+
   const { data, content: body } = matter(originalContent);
   data.promoted_to = relativePath;
   const updated = matter.stringify(body, data);
 
-  const markPath = options.learningsWriteDir
-    && !isInWriteRoot(candidate.path, options.learningsWriteDir)
-    ? path.join(options.learningsWriteDir, candidate.filename)
-    : candidate.path;
+  const markPath = learningsWriteDir
+    && !isInWriteRoot(learning.path, learningsWriteDir)
+    ? path.join(learningsWriteDir, learning.filename)
+    : learning.path;
 
   await ensureDir(path.dirname(markPath));
   await writeFile(markPath, updated);
 
-  log.success(`Promoted: ${candidate.docId} -> ${relativePath}`);
+  log.success(`Promoted: ${learning.docId} -> ${relativePath}`);
 
-  return { targetPath, marked: markPath };
+  return markPath;
 }
 
-function inferCategoryByKeywords(content: string, title: string): 'skills' | 'rules' | 'docs' {
+/**
+ * The category a learning is promoted to, and why: the one the person gave, else the one the AI chose, else, when the
+ * AI could not choose, the one its keywords suggest. Each is '' when there is none.
+ */
+export function chooseCategory(choice: { given: string; chosen: string; reason: string; suggested: PromotionCategory }) {
+  if (choice.given !== '') return { category: categoryOf(choice.given), reason: 'Chosen with --category.' };
+
+  if (choice.chosen !== '') return { category: categoryOf(choice.chosen), reason: choice.reason };
+
+  return { category: choice.suggested, reason: 'Suggested by the learning\'s keywords, since the AI could not choose.' };
+}
+
+function categoryOf(text: string): PromotionCategory {
+  const parsed = PromotionCategorySchema.safeParse(text);
+
+  if (!parsed.success) throw new Error(`Invalid promotion category "${text}". Use skills, rules, or docs.`);
+
+  return parsed.data;
+}
+
+function inferCategoryByKeywords(content: string, title: string): PromotionCategory {
   const lower = (content + ' ' + title).toLowerCase();
 
   const skillSignals = ['command', 'cli', 'workflow', 'step-by-step', 'procedure', 'how to', 'recipe'];
@@ -323,41 +286,6 @@ function inferCategoryByKeywords(content: string, title: string): 'skills' | 'ru
   if (skillScore >= docScore) return 'skills';
 
   return 'docs';
-}
-
-/**
- * Use AI to determine the best promotion category for a learning.
- * Falls back to keyword-based inference if AI is unavailable.
- */
-async function inferCategory(content: string, title: string): Promise<'skills' | 'rules' | 'docs'> {
-  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
-
-  try {
-    const prompt = `Classify the following team knowledge entry into exactly ONE category. Reply with ONLY the category name (no explanation):
-
-- "skills" — reusable workflows, SOPs, step-by-step procedures, CLI recipes, operational playbooks
-- "rules" — mandatory constraints, coding standards, conventions, best practices that MUST be followed
-- "docs" — architecture decisions, system design, background context, reference documentation
-
-Title: ${title}
-
-Content:
-${content.slice(0, 2000)}
-
-Category:`;
-
-    const { text } = await callTool(prompt, { launchedBy: 'recall-promote', timeout: 30_000 });
-    const category = text.trim().toLowerCase().replace(/[^a-z]/g, '');
-
-    if (category === 'skills' || category === 'rules' || category === 'docs') {
-      return category;
-    }
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    // AI unavailable — fall back to keywords
-  }
-
-  return inferCategoryByKeywords(content, title);
 }
 
 async function aggregatePerDocVotes(

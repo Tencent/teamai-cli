@@ -1,0 +1,210 @@
+schemaVersion: v1alpha1
+name: teamai-codebase-deep-enrich
+description: Write the deep knowledge docs of a codebase teamai import extracted into a teamwiki - a design doc for each component, the architecture overview, and the cross-component scenarios - beside its evidence. teamai codebase --deep-enrich starts it.
+invoke: deny
+private: true
+# wiki_root is the teamwiki directory, project the codebase under evidence/code/; max_modules 0 takes every component.
+# publish commits and pushes the docs to the team repo that holds wiki_root, for a caller that does not publish them.
+inputs: { wiki_root: string, project: string, max_modules: number, concurrency: number, publish: boolean }
+defaults:
+  inputs: { publish: false }
+ends: { unconfigured-tool: failed }
+steps:
+  - id: plan
+    command: teamai codebase deep-enrich-plan --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --max-modules "$MAX_MODULES"
+    env: { WIKI_ROOT: "{{ inputs.wiki_root }}", PROJECT: "{{ inputs.project }}", MAX_MODULES: "{{ inputs.max_modules }}" }
+    # The teamwiki may be in this checkout: under .teamai/ in self mode, or an --output directory.
+    writes: ["{{ inputs.wiki_root }}"]
+    output:
+      components: [{ slug: string, responsibilities: string, facts: string, call_chains: string, deps: string }]
+      architecture: { needed: boolean, modules: string, edges: string, interfaces: string }
+  - id: components
+    needs: [plan]
+    for_each: { items: steps.plan.outputs.components, max_parallel: "{{ inputs.concurrency }}" }
+    # A component the tool could not write a doc for is named and left for the next run; the others go on.
+    continue_on_failure: true
+    workflow:
+      outputs: { failure: steps.ask.failure.code }
+      steps:
+        - id: ask
+          answer: |-
+            <context>
+            项目: {{ inputs.project }}
+            模块: {{ item.slug }}
+            职责: {{ item.responsibilities }}
+
+            核心组件（来自代码提取）:
+            {{ item.facts }}
+
+            调用链:
+            {{ item.call_chains }}
+
+            模块依赖:
+            {{ item.deps }}
+            </context>
+
+            为上述代码模块生成一份组件设计文档。必须包含以下章节：
+
+            ## 🤖 AI 快速理解要点
+            （表格：核心职责/架构层级/上游组件/下游组件/代码入口/核心机制/数据流向/技术栈，每项不超过20字）
+
+            ## 架构设计
+            （ASCII 架构图 + 核心子模块说明）
+
+            ## 接口设计
+            （对外接口表：接口名/方法/路径/说明）
+
+            ## 核心流程
+            （主要请求处理流程，步骤式描述）
+
+            直接输出 Markdown，不要任何前言或解释。
+          output: { text: string }
+          timeout: 600s
+          # A worktree of its own lets the components' answers run beside each other.
+          workspace: new
+          continue_on_failure: true
+        - id: write
+          needs: [ask]
+          if: steps.ask.failure.code != 'tool_unconfigured'
+          command: teamai codebase deep-enrich-write --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --component "$SLUG" --text "$TEXT" --failure "$WHY"
+          env:
+            WIKI_ROOT: "{{ inputs.wiki_root }}"
+            PROJECT: "{{ inputs.project }}"
+            SLUG: "{{ item.slug }}"
+            TEXT: "{{ steps.ask.outputs.text }}"
+            WHY: "{{ steps.ask.failure.message }}"
+          writes: ["{{ inputs.wiki_root }}"]
+  - id: components-tool
+    needs: [components]
+    # A tool the member names that cannot run fails the run, rather than skipping every doc.
+    if: any(steps.components.results, .outputs.failure == 'tool_unconfigured')
+    end: unconfigured-tool
+  - id: architecture
+    needs: [plan, components]
+    if: steps.plan.outputs.architecture.needed && (steps.components.outcome == 'success' || steps.components.outcome == 'failed')
+    answer: |-
+      <context>
+      项目: {{ inputs.project }}
+      模块清单:
+      {{ steps.plan.outputs.architecture.modules }}
+
+      模块间依赖:
+      {{ steps.plan.outputs.architecture.edges }}
+
+      接口统计:
+      {{ steps.plan.outputs.architecture.interfaces }}
+      </context>
+
+      为上述项目生成一份技术架构总览文档。必须包含：
+
+      ## 项目概述
+      （一段话描述项目的核心定位和能力）
+
+      ## 架构图
+      （ASCII 分层架构图，标注各模块和调用方向）
+
+      ## 组件关系矩阵
+      （表格：组件A→组件B + 关系类型 + 通信方式）
+
+      ## 核心链路
+      （2-3条最重要的请求处理链路，从入口到存储的完整路径）
+
+      ## 技术栈
+      （表格：维度/技术/说明）
+
+      直接输出 Markdown，不要任何前言或解释。
+    output: { text: string }
+    timeout: 600s
+    # In an item of teamai-import-from-repo, a worktree of its own lets it run beside the other items' answers.
+    workspace: new
+    continue_on_failure: true
+  - id: architecture-tool
+    needs: [architecture]
+    if: steps.architecture.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+  - id: architecture-write
+    needs: [architecture]
+    if: steps.architecture.outcome == 'success' || (steps.architecture.outcome == 'failed' && steps.architecture.failure.code != 'tool_unconfigured')
+    command: teamai codebase deep-enrich-write --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --architecture --text "$TEXT" --failure "$WHY"
+    env:
+      WIKI_ROOT: "{{ inputs.wiki_root }}"
+      PROJECT: "{{ inputs.project }}"
+      TEXT: "{{ steps.architecture.outputs.text }}"
+      WHY: "{{ steps.architecture.failure.message }}"
+    writes: ["{{ inputs.wiki_root }}"]
+  - id: graph
+    needs: [components, architecture-write]
+    if: steps.components.outcome == 'success' || steps.components.outcome == 'failed'
+    command: teamai codebase deep-enrich-graph --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --max-modules "$MAX_MODULES"
+    env: { WIKI_ROOT: "{{ inputs.wiki_root }}", PROJECT: "{{ inputs.project }}", MAX_MODULES: "{{ inputs.max_modules }}" }
+    writes: ["{{ inputs.wiki_root }}"]
+    output: { scenarios: { needed: boolean, architecture: string, call_chains: string, modules: string } }
+  - id: scenarios
+    needs: [graph]
+    if: steps.graph.outputs.scenarios.needed
+    answer: |-
+      你是一个高级架构师。基于以下项目信息，为 Top-5 核心业务场景生成 mermaid sequenceDiagram。
+
+      项目：{{ inputs.project }}
+
+      架构文档摘要（前2000字）：
+      {{ steps.graph.outputs.scenarios.architecture }}
+
+      调用链数据：
+      {{ steps.graph.outputs.scenarios.call_chains }}
+
+      模块列表：
+      {{ steps.graph.outputs.scenarios.modules }}
+
+      要求：
+      1. 识别项目中真实存在的核心业务场景（最多 5 个，如果项目较小则按实际数量输出，不要虚构）
+      2. 每个场景生成一个 mermaid sequenceDiagram
+      3. 每个图后附 2-3 句文字说明关键决策点
+      4. 参与者使用实际模块名/组件名
+      5. 如果可识别的真实场景少于 3 个，只输出实际存在的场景
+
+      输出格式：
+      # 核心业务场景序列图
+      <!-- search-anchor: 流程, 场景, 序列图, sequence, 业务流, 完整流程 -->
+
+      ## 场景 1: <名称>
+      ```mermaid
+      sequenceDiagram
+      ...
+      ```
+      <说明>
+
+      ## 场景 2: ...
+    output: { text: string }
+    timeout: 600s
+    # In an item of teamai-import-from-repo, a worktree of its own lets it run beside the other items' answers.
+    workspace: new
+    continue_on_failure: true
+  - id: scenarios-tool
+    needs: [scenarios]
+    if: steps.scenarios.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+  - id: finish
+    needs: [graph, scenarios]
+    if: steps.graph.outcome == 'success' && steps.scenarios.failure.code != 'tool_unconfigured'
+    command: teamai codebase deep-enrich-finish --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --max-modules "$MAX_MODULES" --scenarios "$TEXT" --scenarios-failure "$WHY"
+    env:
+      WIKI_ROOT: "{{ inputs.wiki_root }}"
+      PROJECT: "{{ inputs.project }}"
+      MAX_MODULES: "{{ inputs.max_modules }}"
+      TEXT: "{{ steps.scenarios.outputs.text }}"
+      WHY: "{{ steps.scenarios.failure.message }}"
+    writes: ["{{ inputs.wiki_root }}"]
+    output: { text: string, exit_code: number, complete: boolean, missing_components: [string], missing_architecture: boolean }
+  - id: publish
+    needs: [finish]
+    if: inputs.publish && steps.finish.outcome == 'success'
+    command: teamai codebase deep-enrich-publish --wiki-root "$WIKI_ROOT" --codebase "$PROJECT"
+    env: { WIKI_ROOT: "{{ inputs.wiki_root }}", PROJECT: "{{ inputs.project }}" }
+    writes: ["{{ inputs.wiki_root }}"]
+outputs:
+  text: steps.finish.outputs.text
+  exit_code: steps.finish.outputs.exit_code
+  complete: steps.finish.outputs.complete
+  missing_components: steps.finish.outputs.missing_components
+  missing_architecture: steps.finish.outputs.missing_architecture

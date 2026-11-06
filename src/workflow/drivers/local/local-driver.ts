@@ -10,7 +10,8 @@ import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand,
 import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, workflowLaunch, type RunMode } from '../../../launch-context.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
-import { log } from '../../../utils/logger.js';
+import { log, PROGRESS_STREAMS_ENV, streamOfLine, withoutStreamMarks } from '../../../utils/logger.js';
+import { redact } from '../../../utils/redact.js';
 import { AgentSession } from '../../../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../../../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../../../skill-use.js';
@@ -32,19 +33,21 @@ import {
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, updateRun, withRunLock, type RunId, type RunLock } from '../../store.js';
 import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, cloneRoleProblem, refuseDirtyAdoptedCommand, roleNotDeliveredFailure, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, StartedRunSchema, unreadablePlace, type StartedRun } from '../../protocol.js';
-import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
+import { memberTools, type MemberTool } from '../../../tool-launch/member-tools.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
 import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, type LaunchTool } from '../../../tool-launch/tools.js';
 import { confinedOffers, type ConfinedOffer } from '../../../tool-launch/confined.js';
 import { AttemptResult } from '../../attempt-result.js';
 import { runConfinedStep } from '../../confined-step.js';
+import { runAnswerStep } from './answer-step.js';
 import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
 import type { DriveOptions, DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
 import { isWorkflowError, stepWorkflow, WORKSPACE_MODES } from '../../types.js';
 import { confinedOf, contractClone, type SessionRef } from '../../workspace.js';
-import { headCommit } from '../../worktree.js';
+import { git, headCommit } from '../../worktree.js';
 
-const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
+/** The signals that stop teamai, which the driver passes on to what it runs before it exits. */
+export const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
 
 /** How long the driver waits for a command or prompt before asking the run again; half that while a question is open. */
 let pollMs = 2000;
@@ -166,6 +169,11 @@ export interface LocalDriverOptions {
   resolveTool?: (executable: string) => string | null;
   /** Called with the runs each report the engine took answers its settled passes started, which the caller drives. */
   started?: (runs: readonly StartedRun[]) => void;
+  /**
+   * Shown each line a command step writes to stderr as it writes it, masked, with the stream the command meant it for:
+   * what a shortcut of the run shows live.
+   */
+  progress?: (line: string, stream: 'stdout' | 'stderr') => void;
 }
 
 /** A lease as this driver runs it: what the engine sent, and what staging it adds. A step staged after `expiresAt` does not start. */
@@ -376,11 +384,36 @@ async function resumeSession(archive: SessionArchive, lease: Lease, tool: Launch
   return undefined;
 }
 
-async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, result: CommandExit, secrets: Record<string, string>): Promise<ReportBody> {
+async function commandReport(config: LocalConfig, lock: RunLock, driver: DriverIdentity, lease: Lease, exited: CommandExit, secrets: Record<string, string>): Promise<ReportBody> {
+  const result = { ...exited, stderr: withoutStreamMarks(exited.stderr) };
   const end = commandEnd(result);
   await AttemptResult.write(attemptResultPath(config, lock.run, lease.attempt), end.outputs !== undefined ? { output: end.outputs } : {}, secrets);
+  // What a command says as it runs goes to its stderr, so its stdout stays the step's outputs.
+  const progress = result.stderr.split(/\r?\n/).filter((line) => line.trim() !== '').map((line) => masked(line, secrets));
+  const body: ReportBody = { attempt: lease.attempt, revision: lease.revision, driver, ...end };
 
-  return { attempt: lease.attempt, revision: lease.revision, driver, ...end };
+  if (progress.length > 0) body.progress = progress;
+
+  return body;
+}
+
+function masked(line: string, secrets: Record<string, string>): string {
+  return redact(line, { envSecrets: secrets, patterns: false });
+}
+
+/** Writes that call `show` with each whole line of the chunks given, and with what is left once `end` is called. */
+function lineSplitter(show: (line: string) => void) {
+  let rest = '';
+  const each = (line: string): void => { if (line.trim() !== '') show(line); };
+
+  return {
+    write: (chunk: string): void => {
+      const lines = `${rest}${chunk}`.split(/\r?\n/);
+      rest = lines.pop() ?? '';
+      lines.forEach(each);
+    },
+    end: (): void => { each(rest); rest = ''; },
+  };
 }
 
 /**
@@ -620,8 +653,9 @@ async function promptReport(
 }
 
 /**
- * Run leased commands, up to `workflows.max_parallel` at once. Each lease and
- * report goes through the same engine operations an external driver calls.
+ * Run leased commands, up to `workflows.max_parallel` at once, or with none set one at a time but for the items of a
+ * `for_each` that declares `max_parallel`. Each lease and report goes through the same engine operations an external
+ * driver calls.
  */
 export async function runLocalDriver(
   config: LocalConfig,
@@ -718,6 +752,24 @@ function mayConfine(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
   });
 
   return [run.definition, ...Object.values(run.workflows ?? {})].some((definition) => confines(definition.steps));
+}
+
+/**
+ * Whether two items of `run` may run at once with no `workflows.max_parallel`: a `for_each` it has now declares
+ * `max_parallel` above 1, or a template of it. A workflow a `from` step admits later is read when the run is driven
+ * again, so such a run keeps the terminal, one step at a time, until then.
+ */
+function mayRunItemsBeside(run: Pick<RunState, 'definition' | 'workflows' | 'admitted'>): boolean {
+  const beside = (steps: readonly WorkflowStep[]): boolean => steps.some((step) => {
+    const max = step.forEach?.maxParallel;
+    const child = stepWorkflow(step);
+
+    return (max !== undefined && (max instanceof Object || max > 1)) || (child?.kind === 'inline' && beside(child.workflow.steps));
+  });
+
+  const definitions = [run.definition, ...Object.values(run.workflows ?? {}), ...Object.values(run.admitted ?? {}).map(({ definition }) => definition)];
+
+  return definitions.some((definition) => beside(definition.steps));
 }
 
 function isSandbox(config: LocalConfig, options: Pick<LocalDriverOptions, 'sandbox'>): boolean {
@@ -847,10 +899,14 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   await sweepClones(config);
   const adapter = options.adapter ?? createLocalToolAdapter();
   const archive = openSessionArchive(config);
-  const maxParallel = config.workflows?.max_parallel ?? 1;
+  // With no workflows.max_parallel the driver runs one step at a time, except the items of a for_each that declares
+  // max_parallel, which `next` leases beside each other (`isOneAtATime`); a run that may have them runs in parallel.
+  const isOneAtATime = config.workflows?.max_parallel === undefined;
+  const maxParallel = config.workflows?.max_parallel ?? (isStarted && mayRunItemsBeside(started) ? Number.POSITIVE_INFINITY : 1);
+  const isParallel = maxParallel > 1;
   // One command at a time keeps the terminal: Ctrl-C reaches it, and it can prompt on /dev/tty. Parallel commands get
   // process groups of their own, which `stop` and the signal handlers below can end as a whole.
-  const detached = maxParallel > 1 && process.platform !== 'win32';
+  const detached = isParallel && process.platform !== 'win32';
   const reported = new Set<string>();
   const inFlight = new Map<string, { lease: Lease; command: StagedCommand }>();
   // Leases not started yet, in lease order. Steps that share a checkout run one at a time. Distinct worktrees overlap.
@@ -860,6 +916,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
   // never runs beside its cancelled attempt.
   const dying = new Map<string, { step: string; lease: Lease; command: StagedCommand }>();
   const base = await headCommit(root);
+  // Outside a git work tree no snapshot can check an answer, so an answer there holds no place and waits for nothing.
+  const checked = (await git(root, ['rev-parse', '--is-inside-work-tree'])).code === 0;
+  const placeOfLease = (lease: Lease): string => (lease.answer && !checked ? lease.attempt : placeOf(lease, root));
   // The prompts that run, by attempt. A prompt that was stopped before its tool started has nothing to report.
   const prompts = new Map<string, { lease: Lease; controller: AbortController; exit: Promise<ReportBody | undefined> }>();
   let question: { hitl: LocalHitl; controller: AbortController; exit: Promise<{ kind: 'question'; line?: string }> } | undefined;
@@ -912,7 +971,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
     wake();
   };
 
-  if (maxParallel > 1) handle(STOP_SIGNALS);
+  if (isParallel) handle(STOP_SIGNALS);
   // The team env, resolved once per turn of the loop: the leases it hands out, their env, and what it masks agree. It
   // masks every value the drive has seen, so a value that changed while an attempt ran stays masked in what it reports.
   let env: WorkflowEnv | undefined;
@@ -924,9 +983,12 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
     const secrets = env?.secrets ?? await knownSecrets(config);
     await AttemptResult.mask(attemptResultPath(config, runId, lease.attempt), secrets);
 
+    // The leases still waiting to start keep their whole timeout through this report too.
+    const sent: ReportBody = { ...body, queued: held.map((waiting) => waiting.attempt) };
+
     const answer = changed === undefined
-      ? await managedReport({ config, runId, report: body, secrets, lock })
-      : await managedReport({ config, runId, report: body, secrets, lock, changed });
+      ? await managedReport({ config, runId, report: sent, secrets, lock })
+      : await managedReport({ config, runId, report: sent, secrets, lock, changed });
 
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
@@ -949,7 +1011,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       const resolved = await resolveWorkflowEnv(config);
       const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
       env = turn;
-      const next = await leaseNext(config, runId, driver, { running, canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, handoff, base, env: turn, alone: true, prepare: true });
+      const next = await leaseNext(config, runId, driver, { running, queued: held.map((lease) => lease.attempt), canTakeLease, can, autoApprove: options.autoApprove, runMode: mode, handoff, base, env: turn, alone: true, prepare: true, isOneAtATime });
 
       if (signalled) continue;
       // A clone whose steps all settled is not needed any more.
@@ -958,6 +1020,14 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       if (isWorkflowError(next)) return next;
 
       const cancelled = z.array(z.string()).safeParse(next.data.cancelled);
+      const deadlines = z.record(z.string(), z.string()).safeParse(next.data.deadlines);
+
+      // A lease waiting to start keeps the deadline its restarted clock gives it.
+      for (const [index, lease] of held.entries()) {
+        const deadline = deadlines.success ? deadlines.data[lease.attempt] : undefined;
+
+        if (deadline !== undefined) held[index] = { ...lease, expiresAt: deadline };
+      }
 
       for (const attempt of cancelled.success ? cancelled.data : []) cancel(attempt);
 
@@ -1001,9 +1071,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       }
 
       const placesBusy = (): Set<string> => new Set([
-        ...[...inFlight.values()].map(({ lease }) => placeOf(lease, root)),
-        ...[...dying.values()].map(({ lease }) => placeOf(lease, root)),
-        ...[...prompts.values()].map(({ lease }) => placeOf(lease, root)),
+        ...[...inFlight.values()].map(({ lease }) => placeOfLease(lease)),
+        ...[...dying.values()].map(({ lease }) => placeOfLease(lease)),
+        ...[...prompts.values()].map(({ lease }) => placeOfLease(lease)),
       ]);
 
       for (let index = 0; !interactiveRuns() && busy() < maxParallel;) {
@@ -1013,8 +1083,8 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         if (lease === undefined || command === undefined) break;
 
         if ([...dying.values()].some((stopping) => stopping.step === lease.step)
-          || placesBusy().has(placeOf(lease, root))
-          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOf(earlier, root) === placeOf(lease, root))) {
+          || placesBusy().has(placeOfLease(lease))
+          || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOfLease(earlier) === placeOfLease(lease))) {
           index += 1;
           continue;
         }
@@ -1023,7 +1093,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         // Setup runs in its own process group, out of the terminal's reach, so the driver handles every stop signal until
         // the command starts. An attached command already has the signals its terminal sends to the whole group; a second
         // would force-quit some tools.
-        const forwarded = maxParallel === 1 ? commandSignalPolicy(await terminalReachesCommand()).forwarded : undefined;
+        const forwarded = !isParallel ? commandSignalPolicy(await terminalReachesCommand()).forwarded : undefined;
 
         if (forwarded) handle(STOP_SIGNALS);
         inFlight.set(lease.attempt, { lease, command: stageThenStart(
@@ -1037,9 +1107,22 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
             if (forwarded) handle(forwarded);
 
             // The lease `env` is set over the step's environment, so its values reach the shell only as variables.
-            return startGroupedCommand({
-              command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, runId, lease.attempt, mode) }, detached, group: attemptDir(config, runId, lease.attempt),
+            const input: Parameters<typeof startGroupedCommand>[0] = {
+              command, cwd: lease.cwd ?? root, env: { ...lease.processEnv ?? process.env, ...lease.env, ...attemptEnv(config, runId, lease.attempt, mode), [PROGRESS_STREAMS_ENV]: '1' }, detached, group: attemptDir(config, runId, lease.attempt),
+            };
+
+            const { progress } = options;
+
+            if (!progress) return startGroupedCommand(input);
+
+            const shown = lineSplitter((line) => {
+              const { stream, text } = streamOfLine(line);
+              progress(masked(text, turn.secrets), stream);
             });
+
+            const grouped = startGroupedCommand({ ...input, onStderr: shown.write });
+
+            return { ...grouped, exit: grouped.exit.finally(shown.end) };
           },
         ) });
       }
@@ -1048,7 +1131,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
       // interactive one starts only once nothing else runs.
       while (!interactiveRuns() && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
-          && !placesBusy().has(placeOf(lease, root))
+          && !placesBusy().has(placeOfLease(lease))
           && ![...dying.values()].some((stopping) => stopping.step === lease.step)
           && (!lease.interactive || busy() === 0));
 
@@ -1067,9 +1150,26 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         const ignored = lease.interactive ? commandSignalPolicy(await terminalReachesCommand()).ignored : [];
         const controller = new AbortController();
 
-        if (maxParallel === 1) handle(STOP_SIGNALS);
+        if (!isParallel) handle(STOP_SIGNALS);
         prompts.set(lease.attempt, { lease, controller, exit: (async () => {
-          const { confined: place } = lease;
+          const { confined: place, prompt } = lease;
+
+          if (lease.answer && prompt !== undefined) {
+            const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal });
+
+            if (!startable(lease, controller.signal)) {
+              await abandonPlace({ config, lock, attempt: lease.attempt });
+
+              return undefined;
+            }
+
+            if (failure) return unstaged(lease, failure);
+
+            const answered = await runAnswerStep({ config, prompt, output: lease.output, cwd: lease.cwd ?? root, expiresAt: lease.expiresAt, signal: controller.signal, ...lookup });
+
+            // Cancelled while it answered: the engine settles the step, and the reply is not wanted.
+            return controller.signal.aborted ? undefined : { attempt: lease.attempt, revision: lease.revision, driver, ...answered };
+          }
 
           if (place) {
             await stopRecordedGroup(attemptDir(config, runId, lease.attempt));
@@ -1173,7 +1273,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         if (exited.line === undefined) return { error: { code: 'interrupted', message: 'The HITL question closed without an answer. Continue with teamai workflow resume.' } };
         const [choice = '', ...words] = exited.line.trim().split(/\s+/);
         const provenance = respondProvenance({ kind: 'terminal', caller: callerProvenance(process.env, { isTTY: true }) });
-        const response: ResponseInput = { step: questionHitl.step, pass: questionHitl.pass, choice, provenance };
+        const response: ResponseInput = { step: questionHitl.step, pass: questionHitl.pass, choice, provenance, queued: { driver, attempts: held.map((lease) => lease.attempt) } };
 
         if (words.length > 0) response.note = words.join(' ');
         const answer = await respondToHitl(config, runId, turn.secrets, response);
@@ -1191,7 +1291,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         const ended = prompts.get(exited.attempt);
         prompts.delete(exited.attempt);
 
-        if (maxParallel === 1) handle([]);
+        if (!isParallel) handle([]);
         const failed = exited.body && ended && await report(exited.body, ended.lease);
 
         if (failed) return failed;
@@ -1202,7 +1302,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
         const stopping = dying.get(exited.attempt);
         dying.delete(exited.attempt);
 
-        if (maxParallel === 1) handle([]);
+        if (!isParallel) handle([]);
 
         if (stopping) await abandonPlace({ config, lock, attempt: stopping.lease.attempt });
         continue;
@@ -1210,7 +1310,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, given: 
 
       inFlight.delete(exited.attempt);
 
-      if (maxParallel === 1) handle([]);
+      if (!isParallel) handle([]);
       const staged = exited.result;
 
       if (staged.kind === 'stopped') {

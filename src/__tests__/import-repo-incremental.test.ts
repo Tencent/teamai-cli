@@ -11,10 +11,6 @@ vi.mock('../clone.js', () => ({
     shallowFetch: vi.fn(),
 }));
 
-vi.mock('../codebase.js', () => ({
-    generateCodebaseMd: vi.fn().mockResolvedValue('# Codebase\n\n生成的 codebase 文档内容\n'),
-}));
-
 vi.mock('../codebase-extract.js', () => ({
     extractCodebase: vi.fn(),
 }));
@@ -31,10 +27,9 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 // ─── Imports (after mocks) ───────────────────────────────
 
-import { importFromRepo } from '../import-repo.js';
 import { shallowClone, shallowFetch } from '../clone.js';
-import { generateCodebaseMd } from '../codebase.js';
 import { extractCodebase } from '../codebase-extract.js';
+import { runImportSteps } from './helpers/import-steps.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -65,7 +60,7 @@ async function makeFakeCache(
 
 // ─── Tests ──────────────────────────────────────────────
 
-describe('importFromRepo — incremental mode', () => {
+describe('import --from-repo — incremental mode', () => {
     let workdir: string;
     const FAKE_OLD_SHA = 'oldsha0001234567890abcdef1234567890abcdef';
     const TEST_URL = 'https://github.com/owner/testrepo';
@@ -85,7 +80,6 @@ describe('importFromRepo — incremental mode', () => {
             return { sha: FETCH_SHA };
         });
 
-        vi.mocked(generateCodebaseMd).mockResolvedValue('# Codebase\n\n生成的 codebase 文档内容\n');
         vi.mocked(extractCodebase).mockImplementation(async (opts) => {
             const evidenceDir = path.join(opts.outputRoot!, 'teamwiki', 'evidence', 'code', opts.project!);
             await fs.ensureDir(evidenceDir);
@@ -94,7 +88,26 @@ describe('importFromRepo — incremental mode', () => {
         });
     });
 
+    /** The steps of an `import --from-repo` run into `<workdir>/.teamai/team-repo/teamwiki`. */
+    const importFromRepo = async ({ incremental }: { incremental: boolean }): Promise<void> => {
+        const ended = await runImportSteps({
+        workflow: 'teamai-import-from-repo',
+        command: 'teamai import --from-repo',
+        json: false,
+        inputs: {
+            wiki_root: path.join(workdir, '.teamai', 'team-repo', 'teamwiki'),
+            mode: 'repo',
+            items: [{ kind: 'repo', source: TEST_URL, domain: '', auth: '', slug: '', repo_url: '', mr_urls: [] }],
+            settings: { depth: 1, ssh: false, incremental, skip_enrich: true, max_files: 0, team_repo: '' },
+            skipped: 0,
+            concurrency: 1,
+        },
+        });
+        expect(ended.outputs?.exit_code).toBe(0);
+    };
+
     afterEach(async () => {
+        process.exitCode = undefined;
         vi.restoreAllMocks();
         vi.clearAllMocks();
         delete process.env.TEAMAI_CACHE_DIR;
@@ -102,11 +115,7 @@ describe('importFromRepo — incremental mode', () => {
     });
 
     it('缓存不存在时走全量 clone，不调 shallowFetch', async () => {
-        await importFromRepo({
-            url: TEST_URL,
-            output: path.join(workdir, '.teamai', 'team-repo'),
-            incremental: true,
-        });
+        await importFromRepo({ incremental: true });
 
         expect(shallowClone).toHaveBeenCalledTimes(1);
         expect(shallowFetch).not.toHaveBeenCalled();
@@ -115,11 +124,7 @@ describe('importFromRepo — incremental mode', () => {
     it('缓存存在 + LAST_SYNC + incremental=true → 走 fetch，不调 shallowClone', async () => {
         await makeFakeCache(workdir, 'github', 'owner', 'testrepo', FAKE_OLD_SHA);
 
-        await importFromRepo({
-            url: TEST_URL,
-            output: path.join(workdir, '.teamai', 'team-repo'),
-            incremental: true,
-        });
+        await importFromRepo({ incremental: true });
 
         expect(shallowFetch).toHaveBeenCalledTimes(1);
         expect(shallowClone).not.toHaveBeenCalled();
@@ -129,11 +134,7 @@ describe('importFromRepo — incremental mode', () => {
         await makeFakeCache(workdir, 'github', 'owner', 'testrepo', FAKE_OLD_SHA);
         vi.mocked(shallowFetch).mockRejectedValueOnce(new Error('network error'));
 
-        await importFromRepo({
-            url: TEST_URL,
-            output: path.join(workdir, '.teamai', 'team-repo'),
-            incremental: true,
-        });
+        await importFromRepo({ incremental: true });
 
         expect(shallowFetch).toHaveBeenCalledTimes(1);
         expect(shallowClone).toHaveBeenCalledTimes(1);
@@ -142,22 +143,14 @@ describe('importFromRepo — incremental mode', () => {
     it('incremental=false 时即使有缓存也走全量 clone', async () => {
         await makeFakeCache(workdir, 'github', 'owner', 'testrepo', FAKE_OLD_SHA);
 
-        await importFromRepo({
-            url: TEST_URL,
-            output: path.join(workdir, '.teamai', 'team-repo'),
-            incremental: false,
-        });
+        await importFromRepo({ incremental: false });
 
         expect(shallowClone).toHaveBeenCalledTimes(1);
         expect(shallowFetch).not.toHaveBeenCalled();
     });
 
     it('全量 clone 后写入 LAST_SYNC', async () => {
-        await importFromRepo({
-            url: TEST_URL,
-            output: path.join(workdir, '.teamai', 'team-repo'),
-            incremental: false,
-        });
+        await importFromRepo({ incremental: false });
 
         const lastSyncPath = path.join(workdir, 'cache', 'github', 'owner', 'testrepo', 'LAST_SYNC');
         const exists = await fs.pathExists(lastSyncPath);

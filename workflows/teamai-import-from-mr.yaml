@@ -1,0 +1,189 @@
+schemaVersion: v1alpha1
+name: teamai-import-from-mr
+description: Turn merged MRs or PRs into team learnings - the AI tool drafts one per MR, the person accepts, edits or skips each draft, and the accepted ones are published as teamai contribute does. Use when the person wants learnings from merged MRs or PRs, such as the ones the session-start hint lists.
+invoke: ask
+private: true
+# teamai import --from-mr starts it too; its publish step also updates the teamwiki of each repository whose evidence
+# the team repo holds. mrs: the MR or PR URLs. all: accept every draft without asking. publish: false writes and pushes
+# nothing, so the drafts are only this run's outputs. dir: the team repo, or with output true, the directory each draft
+# is written into as learning.md (learning-<n>.md for several). discussions: read the review threads. language: the
+# language the learning is written in, teamai.yaml's language.
+inputs:
+  mrs: [string]
+  all: boolean
+  publish: boolean
+  dir: string
+  output: boolean
+  discussions: boolean
+  language: en | zh
+# A caller that publishes nothing has no directory to give.
+defaults:
+  inputs: { dir: "" }
+steps:
+  - id: extract
+    for_each: { items: inputs.mrs }
+    # One MR that fails leaves the others; finish names it and the command exits 1.
+    continue_on_failure: true
+    workflow:
+      outputs:
+        title: steps.draft.outputs.title
+        file: steps.draft.outputs.file
+        tags: steps.draft.outputs.tags
+        overlaps: steps.draft.outputs.overlaps
+        repo_url: steps.draft.outputs.repo_url
+      steps:
+        - id: fetch
+          command: teamai import fetch-mr --url "$URL" --mrs "$MRS" --threads "$THREADS"
+          env: { URL: "{{ item }}", MRS: "{{ inputs.mrs }}", THREADS: "{{ inputs.discussions }}" }
+          output: { url: string, title: string, description: string, commits: string, diff: string, threads: string, thread_count: number, author: string, date: string }
+        - id: ask-en
+          needs: [fetch]
+          if: inputs.language == 'en'
+          answer: |-
+            You are the team's knowledge base curator. Distill one valuable team learning from the MR below.
+            Write in English. Output a complete Markdown document with YAML frontmatter.
+
+            When the MR has review threads, they carry the decisions: a decision reached in a resolved thread outweighs a restatement of the diff. Lead with what the review decided and why.
+
+            Frontmatter fields (exactly this format, no other fields):
+            ---
+            title: "<short title naming the core problem or finding, under 60 characters>"
+            author: {{ steps.fetch.outputs.author }}
+            date: {{ steps.fetch.outputs.date }}
+            tags: [tag1, tag2, tag3]
+            confidence: 0.85
+            source_mr: "{{ steps.fetch.outputs.url }}"
+            ---
+
+            Body structure (every section is required):
+            ## Background
+            What was being done? What problem came up?
+
+            ## Solution
+            How was it solved? What were the key steps?
+
+            ## Lessons
+            - lesson 1
+            - lesson 2
+
+            ## Related Skills
+            - skill-name (or "none")
+
+            Pick 2-5 tags from these groups:
+            stack: python, typescript, go, k8s, docker, sglang, cuda
+            problem: troubleshooting, performance, deployment, config, api
+            pattern: workflow, pattern, tool-usage, best-practice
+            scene: debugging, testing, monitoring, security
+
+            ---
+            MR title: {{ steps.fetch.outputs.title }}
+            MR description:
+            {{ steps.fetch.outputs.description }}
+
+            Commits:
+            {{ steps.fetch.outputs.commits }}
+
+            Key diff (first 3000 characters):
+            {{ steps.fetch.outputs.diff }}
+
+            Review threads ({{ steps.fetch.outputs.thread_count }}):
+            {{ steps.fetch.outputs.threads }}
+          output: { text: string }
+          timeout: 600s
+        - id: ask-zh
+          needs: [fetch]
+          if: inputs.language == 'zh'
+          answer: |-
+            你是团队知识库管理员。从以下 MR 信息提炼一条有价值的团队 learning。
+            【必须】用中文撰写，输出完整 Markdown 文档（含 YAML frontmatter）。
+
+            如果 MR 有 Review threads，那一节记录了评审达成的决定：已 resolved 的 thread 里的决定比复述 diff 更重要，优先写评审决定了什么、为什么。
+
+            frontmatter 字段（严格按此格式，不要加其他字段）：
+            ---
+            title: "<简短标题，描述核心问题或发现，<60字符>"
+            author: {{ steps.fetch.outputs.author }}
+            date: {{ steps.fetch.outputs.date }}
+            tags: [tag1, tag2, tag3]
+            confidence: 0.85
+            source_mr: "{{ steps.fetch.outputs.url }}"
+            ---
+
+            body 结构（以下各节必须包含）：
+            ## 背景
+            在做什么？遇到了什么问题？
+
+            ## 解决方案
+            怎么解决的？关键步骤是什么？
+
+            ## 经验总结
+            - 经验 1
+            - 经验 2
+
+            ## 相关 Skills
+            - skill-name（如无则写"暂无"）
+
+            tags 从以下类别选 2-5 个：
+            技术栈: python, typescript, go, k8s, docker, sglang, cuda
+            问题类型: troubleshooting, performance, deployment, config, api
+            模式: workflow, pattern, tool-usage, best-practice
+            场景: debugging, testing, monitoring, security
+
+            ---
+            MR 标题：{{ steps.fetch.outputs.title }}
+            MR 描述：
+            {{ steps.fetch.outputs.description }}
+
+            提交信息：
+            {{ steps.fetch.outputs.commits }}
+
+            关键 diff（前 3000 字）：
+            {{ steps.fetch.outputs.diff }}
+
+            Review threads（{{ steps.fetch.outputs.thread_count }}）：
+            {{ steps.fetch.outputs.threads }}
+          output: { text: string }
+          timeout: 600s
+        - id: draft
+          needs: [fetch, ask-en, ask-zh]
+          # Only one of the two prompts ran; the other renders as nothing.
+          command: teamai import draft-mr --url "$URL" --title "$TITLE" --reply "$REPLY"
+          env: { URL: "{{ steps.fetch.outputs.url }}", TITLE: "{{ steps.fetch.outputs.title }}", REPLY: "{{ steps.ask-en.outputs.text }}{{ steps.ask-zh.outputs.text }}" }
+          output: { title: string, file: string, tags: [string], overlaps: [string], repo_url: string }
+  - id: review
+    needs: [extract]
+    if: "(steps.extract.outcome == 'success' || steps.extract.outcome == 'failed') && inputs.publish && !inputs.all"
+    for_each: "filter(steps.extract.results, .outcome == 'success')"
+    workflow:
+      outputs: { choice: steps.ask.choice, note: steps.ask.note }
+      steps:
+        - id: ask
+          choose:
+            message: |-
+              {{ item.outputs.title }} from {{ item.item }}
+              Tags: {{ item.outputs.tags }}
+              Overlapping learnings: {{ item.outputs.overlaps }}
+              Draft: {{ item.outputs.file }}
+              accept publishes it; edit publishes it with your note as its title; skip leaves it out.
+            options: [accept, edit, skip]
+  - id: publish
+    needs: [extract, review]
+    if: "(steps.extract.outcome == 'success' || steps.extract.outcome == 'failed') && inputs.publish"
+    command: teamai import publish-mr --extracted "$EXTRACTED" --reviewed "$REVIEWED" --target "$DIR" --drafts "$DRAFTS"
+    env:
+      EXTRACTED: "{{ steps.extract.results }}"
+      REVIEWED: "{{ steps.review.results }}"
+      DIR: "{{ inputs.dir }}"
+      DRAFTS: "{{ inputs.output }}"
+    writes: ["{{ inputs.dir }}"]
+    output: { published: [string] }
+  - id: finish
+    needs: [extract, publish]
+    if: steps.extract.outcome == 'success' || steps.extract.outcome == 'failed'
+    command: teamai import finish-mr --extracted "$EXTRACTED"
+    env: { EXTRACTED: "{{ steps.extract.results }}" }
+    output: { text: string, exit_code: number, learnings: [{ url: string, title: string, file: string, repo_url: string }] }
+outputs:
+  text: steps.finish.outputs.text
+  exit_code: steps.finish.outputs.exit_code
+  learnings: steps.finish.outputs.learnings

@@ -103,7 +103,7 @@ steps:
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'steps[0]', message: 'a step has exactly one action: command, prompt, prompt_file, or workflow' }),
+      expect.objectContaining({ field: 'steps[0]', message: 'a step has exactly one action: command, prompt, prompt_file, answer, or workflow' }),
       expect.objectContaining({ field: 'steps[0].agent', message: 'agent is only allowed on a prompt or prompt_file step' }),
     ]));
   });
@@ -847,6 +847,30 @@ describe('for_each', () => {
     ]);
   });
 
+  /** FAN with a number input `concurrency`, a plan step, and `max_parallel` as written. */
+  const fanWith = (maxParallel: string): string => FAN
+    .replace('  targets: [string]\n', '  targets: [string]\n  concurrency: number\n  label: string\n')
+    .replace('steps:\n', 'steps:\n  - id: plan\n    command: node plan.js\n    output: { width: number }\n')
+    .replace('    for_each: inputs.targets\n', `    needs: [plan]\n    for_each: { items: inputs.targets, max_parallel: ${maxParallel} }\n`);
+
+  it('reads a max_parallel template of a number input as written', () => {
+    const result = parse(fanWith('"{{ inputs.concurrency }}"'));
+
+    expect(result.ok ? result.definition.steps[1]?.forEach : result.diagnostics.map(formatDiagnostic)).toEqual({ items: 'inputs.targets', maxParallel: { template: '{{ inputs.concurrency }}' } });
+  });
+
+  it.each([
+    ['reads a step', '"{{ steps.plan.outputs.width }}"', 'template {{ steps.plan.outputs.width }}: a max_parallel template reads only a number input'],
+    ['reads item', '"{{ item }}"', 'template {{ item }}: a max_parallel template reads only a number input'],
+    ['reads a string input', '"{{ inputs.label }}"', 'template {{ inputs.label }}: a max_parallel template reads only a number input'],
+    ['adds text to the read', '"{{ inputs.concurrency }}0"', 'template {{ inputs.concurrency }}0: a max_parallel template is one {{ … }} and nothing else, so it renders a whole number'],
+    ['is text with no template', '"four"', 'template four: a max_parallel template is one {{ … }} and nothing else, so it renders a whole number'],
+  ])('rejects a max_parallel template that %s, which may not render a whole number from 1', (_what, value, problem) => {
+    expect(rejected(fanWith(value))).toEqual([
+      { message: `${FILE}:14: field "steps[1].for_each.max_parallel": step "build" for_each.max_parallel ${problem}`, code: 'bad_template' },
+    ]);
+  });
+
   it('rejects a read of the outputs of a for_each step, whose outputs are per item', () => {
     const content = `${FAN.replace('    env:\n', '    output: { ok: boolean }\n    env:\n')}  - id: report
     needs: [build]
@@ -1013,7 +1037,7 @@ describe('expressions in templates', () => {
     ['a double-quoted string', '{{ filter(steps.build.results, .outcome == "failed") }}', "strings use single quotes, as in 'failed'"],
     ['= for ==', "{{ any(steps.build.results, .outcome = 'failed') }}", 'any is called as any(list, predicate)'],
     ['a field a step does not have', '{{ length(steps.build.result) }}',
-      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
+      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.failure, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
     ['a string compared with <', "{{ length(steps.build.results) < 'x' }}", "compares 'x' with <, but it is not a number"],
   ])('rejects a call with %s, with the parse error', (_case, text, message) => {
     expect(rejected(TRIAGE.replace(FIX_PROMPT, `'Fix ${text.replaceAll("'", "''")}.'`))).toEqual([
@@ -1326,6 +1350,47 @@ steps:
     expect(scalar.ok).toBe(false);
     if (scalar.ok) return;
     expect(scalar.diagnostics.map(formatDiagnostic)).toEqual(['workflows/build.yaml:4: field "defaults": defaults must be a mapping']);
+  });
+
+  it('keeps a default of each input it declares, of the input\'s type', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Score it.
+inputs: { subject: string, files: [string], store: boolean, demand: auto | named }
+defaults:
+  inputs: { files: [], store: true, demand: auto }
+steps:
+  - id: plan
+    command: echo plan
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.defaults).toEqual({ inputs: { files: [], store: true, demand: 'auto' } });
+  });
+
+  it('refuses an input default that does not fit the input\'s type, and one of an input the file does not declare', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Score it.
+inputs: { files: [string], store: boolean, demand: auto | named }
+defaults:
+  inputs:
+    files: [1]
+    store: "yes"
+    demand: someone
+    colour: blue
+steps:
+  - id: plan
+    command: echo plan
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "defaults.inputs.files": defaults.inputs.files[0] must be a string',
+      'workflows/build.yaml:8: field "defaults.inputs.store": defaults.inputs.store must be a boolean',
+      'workflows/build.yaml:9: field "defaults.inputs.demand": defaults.inputs.demand must be one of auto, named',
+      'workflows/build.yaml:10: field "defaults.inputs.colour": defaults.inputs.colour is not an input this workflow declares in inputs',
+    ]);
   });
 
   it('parses requires on a step and in defaults', () => {

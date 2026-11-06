@@ -234,14 +234,14 @@ Generated: do not edit by hand. Regenerate with
     - `--no-judge` — With --driver skill: leave the scored steps unjudged on this machine, as the describe reply offered
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs, such as default=claude,review=codex. With --driver local the run remembers them on this install, and resume uses them. With --driver skill: only default=<tool>, the tool this coding session works in, which judges its scored steps and which its steps' models resolve for when teamai installs agents for it. Pass it when the describe reply says the session names no tool
     - `--auto-approve` — Answer optional approve HITL requests yes and choose requests with their default, for this run: with --driver local the run remembers it on this install, and resume uses it. A required approval still goes to the person
-    - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.
+    - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required, except one the workflow's defaults.inputs gives a value.
     - `--timeout <duration>` — The longest the run may take, such as 30m or 2h: its steps stop and it fails with timeout once the shorter of this and the workflow's own timeout passes. Its finally steps still run after.
     - `--sandbox` — With --driver local, declare this machine a sandbox for this run: a disposable host such as a CI runner or container, where benchmark trials and steps that need sandbox isolation may run. The run remembers it on this install, and resume uses it; a claim on another machine does not. workflows.sandbox in config declares it for every process.
   - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.
     - `--prepare` — Prepare the leased workspace in its original checkout; report commits and pushes it automatically. A step in a clone workspace, such as a benchmark trial, is leased only with --prepare: teamai makes the clone on this machine, installs its team assets and runs setup, and answers the lease with cwd, where the driver runs the step. So is a step that runs with a team role (role on its lease): teamai delivers the role into its copy. A step that requires strict sandbox isolation goes only to a driver that declares driver.can.isolation sandbox and driver.can.env true.
     - `--attempt <attempt>` — With --prepare: prepare this attempt, which an earlier next leased this driver, instead of taking a new lease. wrong_attempt when the run no longer leases it to the driver. With --driver skill: the attempt of a place action, with --adopt
     - `--adopt <dir>` — With --prepare --attempt: prepare the attempt in <dir>, a place the host made: a clean worktree of this repository on the lease's workspace branch, or detached at its start. A place that does not fit answers adopt_mismatch and leaves the attempt leased. TeamAI never removes an adopted place. With --driver skill --attempt: adopt <dir> as the place action of that attempt asked, as its adopt prints it
-    - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt's turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.
+    - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), queued, those of them it has not started, whose own timeout then counts from this call (the answer gives their deadlines in deadlines), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can, what the driver can do on this request: hitl (a person can answer HITL requests and work interactively), workspace, env (true, or "commands" when the driver scopes team env for command steps and setup only), setup, tokens, max_turns, network, isolation, tools (the tools it launches a prompt step that names its tool on), end_turn (it ends a prompt's turn at the lease limits), role (it runs a step whose lease has role, the team role its copy runs with, on what teamai delivered there, with --prepare). An omitted key is not offered, so a step that needs it waits, and wait.held names what it lacks. Send driver.can on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.
     - `--driver <kind>` — skill: advance a run the current coding session drives, and print its turn: the actions to carry out and the command to run next
     - `--wait` — With --driver skill: wait until the run has something to show, up to 100 s. Run it in the background.
     - `--takeover` — With --driver skill: drive the run from this coding session instead of the one that drives it. Run it only when the person agrees, after an orchestrator_active answer
@@ -249,12 +249,12 @@ Generated: do not edit by hand. Regenerate with
     - `--choice <id>` — With --driver skill: answer the host question with the id of one of its options, as its run prints it
     - `--ack <offer>` — With --driver skill: acknowledge that the child of a dispatch started, as its ack prints it, so later turns stop offering it
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
-    - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver. A prompt step's report also sends tool, the tool the driver launched, and durationMs (milliseconds around the tool launch) and cost ({"amount":0.12,"unit":"USD"}, only as the tool stated it) when known, and limit (timeout, budget or max_turns) when a limit in its lease's limits stopped the tool.
+    - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver. A prompt step's report also sends tool, the tool the driver launched, and durationMs (milliseconds around the tool launch) and cost ({"amount":0.12,"unit":"USD"}, only as the tool stated it) when known, and limit (timeout, budget or max_turns) when a limit in its lease's limits stopped the tool. queued, as on next: the attempts of its other open leases it has not started, whose own timeout then counts from this report.
     - `--driver <kind>` — skill: report an attempt of a run the current coding session drives, as its turn printed the command
     - `--attempt <id>` — With --driver skill: the attempt to report
     - `--model-unavailable` — With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable
   - `teamai workflow respond <run> <step> <choice>` — Answer a waiting approve (yes/no) or choose HITL request. A required HITL request accepts only the person's answer: from their own terminal, or declared by a driver UI, sent from outside an agent session. Prints one JSON envelope.
-    - `--json <payload>` — Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses.
+    - `--json <payload>` — Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses. queued, as on next: the attempts of its open leases it has not started, whose own timeout then counts from this answer.
     - `--driver <kind>` — skill: answer an optional gate of a run the current coding session drives, as its choose action prints it, and print the turn. Records the agent's answer, which a required HITL request refuses
     - `--note <text>` — Keep a note with the answer, readable as steps.<id>.note
     - `--pass <n>` — Answer only this positive pass number; rejects an answered or replaced HITL request
@@ -280,7 +280,7 @@ Generated: do not edit by hand. Regenerate with
 - `teamai self-improvement` — Improve the team's harness from a scorer's repeated failures: change the assets teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request on the team repo that the next run updates. run starts the workflow teamai-self-improvement, teamai's default or the team's file of that name.
   - `teamai self-improvement run <scorer>` — Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team's workflows/teamai-self-improvement.yaml replaces teamai's default, and must take inputs scorer and suite. The default reads digest --json --scorer and improves only when it says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin. Its prompt step needs a sandbox, and runs in a fresh clone of the team repo on teamai/self-improvement/<scorer>, whose pull request it opens or updates. Prints the run's done envelope.
     - `--suite <dir>` — The suite the regression tasks go in, which the team repo's default branch must have
-    - `--driver <kind>` — The driver that runs it: local (default), or skill, which only a team workflow with invoke: allow or ask accepts; teamai's default denies agents
+    - `--driver <kind>` — The driver that runs it: local, or skill, which only a team workflow with invoke: allow or ask accepts; teamai's default denies agents. Without it, workflows.driver decides, else local
     - `--tools <list>` — The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude
     - `--sandbox` — With --driver local, declare this machine a sandbox for this run, where the prompt step, which edits files without asking, may run. The run remembers it on this install, so workflow resume keeps it. workflows.sandbox in config declares it for every process.
 
@@ -288,7 +288,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai benchmark` — Run a benchmark suite, and the commands its run's steps run. run starts the workflow teamai-benchmark, teamai's default or the team's file of that name, whose plan, check and report steps run the other commands; try needs no run.
   - `teamai benchmark run <suite>` — Plan benchmark suite <suite> without a run first, so a suite that cannot run leaves none, then start the workflow teamai-benchmark with --inputs {"suite":"<suite>","aliases":"team","tasks":[],"arms":[],"fail_on_regression":false} ("member" with --member-aliases; the ids --task and --arm name; true with --fail-on-regression) and the suite's timeout as --timeout, and drive it. A team's workflows/teamai-benchmark.yaml replaces teamai's default, and must take input suite; it gets aliases, tasks, arms and fail_on_regression only when it declares them. Prints the run's done envelope and, on stderr, the results. Exits 1 when the run failed or was cancelled, or a finally step, its report or its regression gate, failed or was cancelled; a record still pending publication never changes the exit code.
-    - `--driver <kind>` — The driver that runs it: local (default), or skill
+    - `--driver <kind>` — The driver that runs it: local, or skill. Without it, workflows.driver decides, else local
     - `--sandbox` — With --driver local, declare this machine a sandbox for this run, where the trials, which need strict sandbox isolation, may run. The run remembers it on this install, so workflow resume keeps it. workflows.sandbox in config declares it for every process.
     - `--member-aliases` — Resolve each arm's model alias with your own ~/.teamai/models/aliases.yaml over the team's models/aliases.yaml, which alone resolves them otherwise: starts the workflow with input aliases member instead of team. The results table and the record show member as the source of a model your file decided.
     - `--task <id>` — Run only this task of the suite: one baseline and its trials. Repeatable. Starts the workflow with input tasks, [] without it; a team file that takes no input tasks is refused.
@@ -306,7 +306,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## score
 
-- `teamai score` — Label a workflow pass or a finished agent session with team scorers (scorers/<name>.md). --run <id>, --session <id> or --team-session <name>, with --scorer, starts the default workflow teamai-score for that subject with demand named (no sampling; a failed or expired judgment opens again), on the driver --driver or workflows.driver names, else local, and prints the labels it wrote. A run for a driver this machine does not run waits for it, and the command says how to drive it here. A person starts it from their own terminal: from an agent session the start answers invoke_denied, and an agent judges its session with /teamai-share-session instead. The pass, session, scorers and --label value are checked before any run starts. When only a judge step no tool here can run is left, it exits 1 with judge_pending and the labels already written; a scorer with no label exits 1 with its code. A scorer file (--scorer ./scorers/x.md) is tried here instead, and its label is never stored. Prints one JSON envelope; --drain prints lines.
+- `teamai score` — Label a workflow pass or a finished agent session with team scorers (scorers/<name>.md). --run <id>, --session <id> or --team-session <name>, with --scorer, starts the default workflow teamai-score for that subject with demand named (no sampling; a failed or expired judgment opens again), on the driver --driver or workflows.driver names, else local, and prints the labels it wrote. A run for a driver this machine does not run waits for it, and the command says how to drive it here. A person starts it from their own terminal: from an agent session the start answers invoke_denied, and an agent judges its session with /teamai-share-session instead. The pass, session, scorers and --label value are checked before any run starts. When only a judge step no tool here can run is left, it exits 1 with judge_pending and the labels already written; a scorer with no label exits 1 with its code. A scorer file (--scorer ./scorers/x.md) starts the default workflow teamai-try-scorer instead, which judges the session and its first prompt alone and stores no label; from an agent session it answers invoke_denied, and an agent tries a scorer with /teamai-new-scorer. Prints one JSON envelope; --drain prints lines.
   - `--run <id>` — Label a pass of this run on demand, with --scorer: a scorer a step of the run lists, read at the team revision the run started from. Refused with step_ambiguous, step_not_found or pass_not_found as --step and --pass say, and with evidence_missing, naming each, when a commit or a session the pass recorded is no longer on this machine; no run starts and no label is written.
   - `--step <path>` — With --run: the step path, such as review or check.review; optional when the run lists the scorers on one step only
   - `--pass <n>` — With --run: the pass to judge; default the step's latest succeeded pass
@@ -315,8 +315,8 @@ Generated: do not edit by hand. Regenerate with
   - `--team-session <name>` — Judge a session a member pushed with session push instead of one on this machine, by the name session list prints for this directory's repository: read from teamai-reports, else from the archive the team kept on its default branch before, and redacted before a judge reads it. Run session pull first for the newest. Its label is about the session where it ran, so it pairs with that session's labels from the machine that ran it, and records no agent. Not with --session or --source
   - `--author <name>` — With --team-session: who pushed it, when two members pushed a session with that name
   - `--label <value>` — Label the session by hand with this value of the one --scorer: the teamai-score run skips the stages and the judge, score and passed come from the scorer, and no reasoning is kept. A value the scorer does not list fails before any run starts and lists the ones it does. Honoured only in a run a person started. A hand label and a model label of a session are kept side by side, so rescoring with the model never replaces yours; the dashboard Scorers page shows how often the model judge agrees with hand labels. Not with a scorer file or --batch
-  - `--scorer <name>` — With --run: a scorer a step of the run lists, read at the team revision the run started from. With --session or --team-session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md, judged here with no run. A file's label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session's first prompt alone (control). Files and scorer names go in separate commands. Repeatable.
-  - `--driver <driver>` — With --run, --session or --team-session: the driver of the teamai-score run, local or none, which only starts the run and leaves it to any driver's workflow next. Without it, workflows.driver decides, else local
+  - `--scorer <name>` — With --run: a scorer a step of the run lists, read at the team revision the run started from. With --session or --team-session: a scorer teamai pull cached, or a scorer file to try before pushing it: a path with / or ending in .md, tried by a teamai-try-scorer run. A file's label is never stored, so it takes no --push; the output adds the labels stored for its scorer (stored) and its verdict on the session's first prompt alone (control). Files and scorer names go in separate commands. Repeatable.
+  - `--driver <driver>` — With --run, --session or --team-session: the driver of the teamai-score run, or of the teamai-try-scorer run a scorer file starts, local or none, which only starts the run and leaves it to any driver's workflow next. Without it, workflows.driver decides, else local
   - `--batch` — With --run or --session: the scorers share one judge launch when they take the same model, stages and preferred tool; a scorer with a check never does
   - `--push` — Publish every pending label of this machine to scores/<member>/<YYYY-MM>.jsonl on teamai-reports, alone or after the labels of --run or --session. Labels only: never the session, the prompt or the judge's reasoning. With usage reporting off, or when the push fails, they stay pending for the next --push. Also pushes what a workflow step with deliver: publish left on this machine while origin could not take it.
   - `--drain` — What every unattended job runs before it ends, alone, in every scope this directory reaches: in unattended mode, finish each session captured unattended here; start the default workflow teamai-finished-sessions on the driver workflows.driver names, else local (a run for a driver this machine does not run waits for it), which archives, scrubbed, and judges the finished sessions as sessions.publish and scoring.sessions say, and starts teamai-score again for each pass and session whose judging lapsed (a failed judgment final and never retried); publish pending labels and workflow run records; where sessions.publish is auto for this run mode, archive the step sessions of its ended runs on teamai-reports; report usage to stats/<member>.yaml. Prints a line per kind of work and what it left for other drivers; exits 1 only when a judgment, a publish or that run failed, and what stayed pending goes on the next --drain.
@@ -341,6 +341,9 @@ Generated: do not edit by hand. Regenerate with
   - `teamai score settle` — A step of a teamai-score run, after a verb of a group broke: record a failed attempt of each scorer whose mark the run holds, so automatic judging does not start the subject again. Works when evidence failed. Prints {"settled":<n>}.
     - `--subject <subject>` — The group's subject, as plan printed it
     - `--scorers <names>` — The group's scorers, joined by , as plan printed them
+  - `teamai score report` — A step of a teamai-try-scorer run: the label each scorer file gave the session, read with its reasoning from the labels.json its teamai-score step left, beside the labels this scope keeps of that scorer on the session and the control's verdict on the session's first prompt alone. Stores nothing. Prints {"answer","text"}: answer is the envelope teamai score --scorer <file> prints, {"data":{"label","stored","control"}} for one file, by scorer for several, or {"error"} when the session got no label; text says it in lines.
+    - `--labels <json>` — The labels output of the teamai-score step that judged the session
+    - `--control <json>` — The labels output of the teamai-score step that judged its control
   - `teamai score subjects` — List subjects to start teamai-score on. --run <id> [--step <path>]: the judge-work passes of the run, settled on this machine, whose step says scorers.start: workflow, as {"list":["run:<runId>:<step path>:<pass>",…]}; --step is relative to the workflow of the step that runs this, and takes that step and every step inside it. --lapsed: what teamai-finished-sessions scores again on this machine, as {"list":[{"subject":"<subject>","scorers":["<name>",…]},…]}: the passes and sessions whose mark lapsed (until the fourth lapse), those that waited for CI that has since finished, each with the scorers of those marks, named ones included, and the passes of a run inside its 14 days that no teamai-score run planned, with the unmarked scorers that sample them: one whose teamai-score run was started and never driven, and, once the run ended, one of a scorers.start: workflow step no step of its workflow scored.
     - `--run <id>` — The run whose passes to list
     - `--step <path>` — With --run: only that step and the steps inside it
@@ -438,16 +441,21 @@ Generated: do not edit by hand. Regenerate with
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--all` — Rebuild indexes for every repo in the team repo (not just the current project)
-  - `teamai session list` — List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step's, is never listed, nor a scorer whose mark is open or closed.
+  - `teamai session list` — List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step's, is never listed, nor a scorer whose mark is open or closed. With --finished --all, list every finished session of this machine to share learnings from, whatever the session policies and archive say, last active within --within, leaving out those a learning was contributed from, each with when it was last active and its first prompt, redacted; any run may list them, one an agent started too.
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--author <name>` — Filter by author
-    - `--all` — List sessions across all projects in the team repo (not just the current one)
+    - `--all` — List sessions across all projects in the team repo (not just the current one). With --finished: every finished session to share learnings from, not only those to archive and judge (no --publish or --scorers)
     - `--finished` — List the finished sessions of this machine to archive and judge, not the team's pushed ones
     - `--idle <duration>` — With --finished: how long an attended session has been idle to count as finished, such as 6h (default). An unattended one counts once a drain reached it.
+    - `--within <duration>` — With --finished --all: how recently a session was last active to be listed, such as 3d (default 7d)
     - `--publish <policy>` — With --finished: policy (sessions.publish for the session's run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.
     - `--scorers <json>` — With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.
-    - `--json` — With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}
+    - `--json` — With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}
+  - `teamai session show <sessionId>` — Print a session of this machine, your own or another, such as one session list --finished --all lists: its transcript and its subagents', with the secrets this directory's teamai knows redacted, as a judge of it reads it. Exits 1 with session_not_found when no session of --source by that id has anything to show.
+    - `--source <platform>` — Platform the session belongs to, such as claude-code, codex or hermes
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--json` — Print {"session","source","transcript"}, or {"error":{"code","message"}}
   - `teamai session resume <sessionName>` — Restore a team session to a local platform
     - `--platform <platform>` — Target platform to restore into
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
@@ -507,22 +515,49 @@ Generated: do not edit by hand. Regenerate with
     - `--threshold <n>` — Confidence threshold for pruning (default 0.15)
     - `--archive` — Move to archive/ instead of deleting
     - `--confidence-writeback` — Update frontmatter confidence scores
-    - `--update-quality` — Find stale docs/rules/skills and suggest updates
+    - `--update-quality` — Find stale docs/rules/skills and write a .draft.md update beside each: starts the default workflow teamai-draft-learning-updates on the driver workflows.driver names, else local, prints what it drafted, and exits 1 when an entry could not be drafted. --dry-run only lists the entries
+    - `--json` — With --update-quality: print the run's JSON envelope instead of its text
     - `--dry-run` — Show what would be done without making changes
-  - `teamai recall promote [learningId]` — Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted
-    - `--category <cat>` — Target category: skills | rules | docs; skills use <learningId>/SKILL.md
+    - `teamai recall maintenance stale` — A step of a teamai-draft-learning-updates run: list the docs, rules and skills recalled often but rarely adopted, as --update-quality --dry-run does, on stderr. Prints {"entries":[{"doc_id","path","type","recalled_count","upvoted_count","user_count"}]}.
+    - `teamai recall maintenance draft-context` — A step of a teamai-draft-learning-updates run: the content of one stale entry, and the learnings members adopted instead, as the prompt shows them. Prints {"content","related"}; related is empty when no learning was adopted. Fails when the entry cannot be read.
+      - `--path <file>` — The entry, as stale printed its path
+      - `--doc-id <id>` — The entry's doc_id, as stale printed it
+    - `teamai recall maintenance write-draft` — A step of a teamai-draft-learning-updates run: write a draft update of one stale entry beside it, as <entry>.draft.md. Prints {"draft"}, its path.
+      - `--path <file>` — The entry, as stale printed its path
+      - `--draft <text>` — The draft's content
+    - `teamai recall maintenance draft-report` — A step of a teamai-draft-learning-updates run: from the results of its draft step, what --update-quality prints: each entry it could not draft, and how to apply the drafts. Prints {"text","exit_code"}; exit_code is 1 when an entry could not be drafted.
+      - `--results <json>` — The draft step's results, as a JSON array
+    - `teamai recall maintenance promote-candidate` — A step of a teamai-promote-learning run: the learning to promote, as recall promote lists it, with its title, its content and the category its keywords suggest. Prints {"title","content","suggested"}. Exits 65, which fails its step as input_rejected, when it is not a candidate; fails when this workspace cannot publish one.
+      - `--learning <id>` — The learning id, as recall promote lists it
+    - `teamai recall maintenance promote-category` — A step of a teamai-promote-learning run: the category to promote to, and why: --given, else --chosen, else, when the AI could not choose, --suggested. Prints {"category","reason"}.
+      - `--given <cat>` — The category recall promote --category gave, or ''
+      - `--chosen <cat>` — The category the AI chose, or '' when it did not run or could not choose
+      - `--reason <text>` — Why the AI chose it, or ''
+      - `--suggested <cat>` — The category the learning's keywords suggest
+    - `teamai recall maintenance promote-publish` — A step of a teamai-promote-learning run: write the promoted entry, push it on a teamai/push/ review branch, and open a pull request whose body says the category and why. With an empty --content the learning is published as written. Prints {"target","exit_code"}; exit_code is 1 when no pull request could be opened.
+      - `--learning <id>` — The learning id, as recall promote lists it
+      - `--category <cat>` — The category to promote to, as the category step chose it
+      - `--reason <text>` — Why it is promoted to that category, as the pull request says it
+      - `--content <text>` — The learning rewritten for its category, or '' to publish it as written
+      - `--content-failure <message>` — Why the AI could not rewrite it, said when --content is empty
+    - `teamai recall maintenance promote-mark` — A step of a teamai-promote-learning run: mark the learning as promoted to the entry publish pushed, and publish the mark to the learnings branch. Prints {"exit_code"}; it is 1 when the pull request or the mark could not be published.
+      - `--learning <id>` — The learning id, as recall promote lists it
+      - `--published <json>` — What the publish step printed: {"target","exit_code"}
+  - `teamai recall promote [learningId]` — List the learnings ready to promote, high-confidence and adopted by several members, each with the category its keywords suggest; listing makes no AI call. With a learning id: starts the default workflow teamai-promote-learning on the driver workflows.driver names, else local. The AI picks the category, unless --category gives it, and rewrites the learning for it; the result is pushed on a review branch with a pull request that says the category and why, then the learning is marked promoted. Exits 1 when the learning is not a candidate. --dry-run only says where it would go
+    - `--category <cat>` — Target category: skills | rules | docs; skills use <learningId>/SKILL.md. Without it, the AI picks one
     - `--dry-run` — Show what would be done without making changes
 
 ## import
 
-- `teamai import` — Import knowledge from local directories, remote repos, organizations, MRs, or iWiki
+- `teamai import` — Import knowledge from local directories, remote repos, organizations, MRs, AI tools' rules, or iWiki. --dir, --from-repo, --from-repo-list and --from-org start the default workflow teamai-import-from-repo; --from-tools starts teamai-import-rules and --from-iwiki teamai-import-from-iwiki, which ask you to accept, edit or skip each item unless --all is given
   - `--dir <path>` — Extract code knowledge from a local directory (same as --from-repo but no clone)
-  - `--from-claude` (hidden) — Scan Claude/Cursor rule directories (the Claude root's rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)
+  - `--from-tools` — Import the rule files in the rules directory of every AI coding tool on this machine (~/.claude/rules, ~/.cursor/rules, ~/.codebuddy/rules, ...): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo's rules/, docs/ or learnings/
+  - `--from-claude` (hidden) — Alias of --from-tools
   - `--from-mr <url...>` — Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update
   - `--no-discussions` — Leave the MR's review threads out of the extraction (with --from-mr)
-  - `--from-iwiki <space-id-or-url>` — Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)
-  - `--resume` (hidden) — Resume an interrupted import session
-  - `--all` — Accept all suggestions without interactive confirmation
+  - `--from-iwiki <space-id-or-url>` — Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN): the AI classifies each as a rule, doc or learning, and the accepted ones are pushed to the team repo's rules/, docs/ or learnings/
+  - `--resume` (hidden) — Replaced by teamai workflow resume <run>, which the import prints when it starts
+  - `--all` — Accept all suggestions without interactive confirmation; needed where no person answers, such as inside a workflow step
   - `--output <path>` (hidden) — Write drafts to this directory instead of pushing to team repo; code knowledge goes to <path>/teamwiki
   - `--from-repo <url>` — Clone a remote repo and generate per-repo codebase summary
   - `--ssh` (hidden) — Force SSH clone even if HTTPS token is available
@@ -545,6 +580,80 @@ Generated: do not edit by hand. Regenerate with
   - `--json` — Output cache status or GC result as JSON
   - `--max-bytes <n>` (hidden) — Override capacity cap for --cache-gc
   - `--stale-days <n>` (hidden) — Threshold for stale-eviction in days (default 30)
+  - `teamai import scan-rules` — A step of a teamai-import-rules run: list the rule files in the user rules directory of every AI coding tool teamai supports. Prints {"candidates":[{"path","file"}]}.
+  - `teamai import read-candidate` — A step of a teamai-import-learnings run: read the start of a file to classify, as much as the AI tool is shown. Prints {"content"}.
+    - `--file <path>` — The file that holds the item's text
+  - `teamai import classify-reply` — A step of a teamai-import-learnings run: read what the AI tool said a file is. A reply that is not the JSON asked for reads as personal, so the file is left out. Prints {"type","title","summary","tags","personal"}.
+    - `--path <path>` — The path the file is shown as
+    - `--reply <text>` — What the AI tool answered
+  - `teamai import write-learnings` — A step of a teamai-import-learnings run: write each item that is not personal and was accepted, or edited with the note as its title, with its type in the frontmatter, into rules/, docs/ or learnings/ of the team repo by that type, or all into one directory. Prints {"kept","written"}.
+    - `--classified <json>` — The results of the classify step
+    - `--reviewed <json>` — The results of the review step; empty accepts every item
+    - `--target <dir>` — The team repo, or the directory every item is written into
+    - `--by-type <bool>` — true writes by type into rules/, docs/ and learnings/ of --target
+  - `teamai import publish-rules` — A step of a teamai-import-rules run: commit and push what the import wrote into the team repo, then say the import is complete. Prints {}.
+    - `--kept <n>` — How many items were not personal
+    - `--written <json>` — The files the import wrote
+    - `--target <dir>` — The team repo, or the directory every item was written into
+    - `--by-type <bool>` — true when --target is the team repo, which is pushed
+  - `teamai import fetch-mr` — A step of a teamai-import-from-mr run: read a merged MR or PR, with its review threads, as the extraction prompt shows it. Prints {"url","title","description","commits","diff","threads","thread_count","author","date"}.
+    - `--url <url>` — The MR or PR URL: GitHub, TGit or GitLab
+    - `--mrs <json>` — Every MR URL of the run, to say which of them this is
+    - `--threads <bool>` — false leaves the review threads out
+  - `teamai import draft-mr` — A step of a teamai-import-from-mr run: keep the learning the AI tool wrote for an MR in $TEAMAI_RUN_DIR, and say its title, its tags and the existing learnings it overlaps. Prints {"title","file","tags","overlaps","repo_url"}.
+    - `--url <url>` — The MR or PR URL
+    - `--title <title>` — The MR's title, the learning's title when its frontmatter has none
+    - `--reply <markdown>` — What the AI tool answered
+  - `teamai import publish-mr` — A step of a teamai-import-from-mr run: publish each accepted learning, or the edited one under the note as its title, as teamai contribute does, then update and push the teamwiki of each repository whose evidence the team repo holds; or write each into one directory. Prints {"published"}.
+    - `--extracted <json>` — The results of the extract step
+    - `--reviewed <json>` — The results of the review step; empty accepts every draft
+    - `--target <dir>` — The team repo, or the directory every draft is written into
+    - `--drafts <bool>` — true writes each draft into --target as learning.md and publishes nothing
+  - `teamai import finish-mr` — A step of a teamai-import-from-mr run: sum up a run of several MRs and name each that failed. Prints {"text","exit_code","learnings"}: exit_code 1 when an MR failed.
+    - `--extracted <json>` — The results of the extract step
+  - `teamai import fetch-iwiki` — A step of a teamai-import-from-iwiki run: download the pages of an iWiki space, or one page, into $TEAMAI_RUN_DIR/iwiki/, with TAI_PAT_TOKEN. Prints {"source","documents","candidates":[{"path","file"}],"dual_context"}.
+    - `--source <space-id-or-url>` — A numeric space id, or a page URL holding /p/<id>
+    - `--dual <bool>` — true also prints the pages as the dual sections are asked about
+  - `teamai import publish-iwiki` — A step of a teamai-import-from-iwiki run: link the imported pages to the teamwiki's code knowledge, then commit and push what the import wrote into the team repo. Prints {}.
+    - `--kept <n>` — How many items were not personal
+    - `--written <json>` — The files the import wrote
+    - `--target <dir>` — The team repo, or the directory every item was written into
+    - `--by-type <bool>` — true when --target is the team repo, which is pushed
+    - `--documents <file>` — The JSON file of the documents the fetch-iwiki step printed
+  - `teamai import write-sections` — A step of a teamai-import-from-iwiki run: write the business API, external knowledge and glossary sections the AI tool found into external-knowledge.md, or queue them in .teamai/pending-review.jsonl. Prints {}.
+    - `--source <iwiki-url>` — iwiki://<id>, recorded in each section
+    - `--reply <text>` — What the AI tool answered
+    - `--failure <message>` — Why the AI tool did not answer, when it did not
+    - `--sections-dir <dir>` — The directory that holds external-knowledge.md
+    - `--review-dir <dir>` — The directory whose .teamai/pending-review.jsonl takes the sections with --review
+    - `--review <bool>` — true queues the sections for teamai review instead of writing them
+  - `teamai import stage` — A step of a teamai-import-from-repo run: fetch a repository into its clone cache, or read a local checkout, and extract it into a staging teamwiki under $TEAMAI_RUN_DIR, with no AI call. Prints {"slug","stage","updated","enrich","narrate","context","head","finished"}.
+    - `--item <json>` — The item: {"kind":"repo"|"dir","source","domain","auth","slug","repo_url","mr_urls"}
+    - `--settings <json>` — The run's settings: {"depth","ssh","incremental","skip_enrich","max_files","team_repo"}
+    - `--wiki-root <dir>` — The teamwiki the item is imported into
+  - `teamai import publish` — A step of a teamai-import-from-repo run: publish an item's staged evidence into the teamwiki, with the narrative the AI tool wrote for a repository and the domain its list entry names, then reconcile the teamwiki. Prints {"deep"}: whether deep enrich follows.
+    - `--item <json>` — The item, as the stage step got it
+    - `--settings <json>` — The run's settings, as the stage step got them
+    - `--wiki-root <dir>` — The teamwiki the item is imported into
+    - `--stage <dir>` — The staging directory the stage step printed
+    - `--slug <slug>` — The codebase, its directory under evidence/code/
+    - `--narrative <markdown>` — What the tool answered for a repository's narrative
+    - `--narrative-failure <message>` — Why the tool could not answer for the narrative, when it could not
+  - `teamai import finish-item` — A step of a teamai-import-from-repo run: say how an item's deep enrich ended and record the commit a repository was imported at. Prints {"deep_complete"}.
+    - `--item <json>` — The item, as the stage step got it
+    - `--settings <json>` — The run's settings, as the stage step got them
+    - `--wiki-root <dir>` — The teamwiki the item is imported into
+    - `--mode <mode>` — The command that started the run: dir, repo, list, org, update or ci
+    - `--slug <slug>` — The codebase, its directory under evidence/code/
+    - `--head <sha>` — The commit a repository was fetched at
+    - `--deep <complete>` — What the deep-enrich run said: true, false, or empty when none ran
+    - `--deep-failure <message>` — Why the deep-enrich run failed, when it did: the deep enrich did not finish
+  - `teamai import finish` — A step of a teamai-import-from-repo run: once every item settled, rebuild the teamwiki indexes, publish the batch to the team repo, and sum it up. Prints {"text","exit_code","imported"}; exit_code is 1 when an item failed or its deep enrich did not finish.
+    - `--mode <mode>` — The command that started the run: dir, repo, list, org, update or ci
+    - `--wiki-root <dir>` — The teamwiki the items were imported into
+    - `--settings <json>` — The run's settings
+    - `--results <json>` — The results of the imports step
+    - `--skipped <n>` — How many entries of the list were skipped before the run
 
 ## codebase
 
@@ -553,12 +662,48 @@ Generated: do not edit by hand. Regenerate with
   - `--upgrade-wiki` (hidden) — Migrate docs/team-codebase/ to teamwiki/ graph format
   - `--lint` — Run global consistency lint over the teamwiki knowledge graph, and count the member's asset relations (assets, relations, without a relation, unresolved)
   - `--reconcile` — Reconcile product and code knowledge in teamwiki
-  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence
+  - `--deep-enrich` — Generate deep knowledge docs from extracted evidence. In the team repo it starts the default workflow teamai-codebase-deep-enrich on the driver workflows.driver names, else local, which publishes the docs; an --output teamwiki is written by this process
   - `--fix` (hidden) — Deprecated: teamwiki lint has no autofix; runs lint in report-only mode
   - `--status` — Show knowledge-base git baseline (headSha / repoUrl / branch)
   - `--severity <level>` (hidden) — Minimum severity to report: high|medium|low|info
   - `--json` — Output report as JSON (suitable for CI)
   - `--output <path>` (hidden) — Use <path>/teamwiki, as written by `teamai import --output <path>`, instead of the team repo's
+  - `teamai codebase deep-enrich-plan` — A step of a teamai-codebase-deep-enrich run: refuse a symbolic link on the way to the docs, drop the AI docs a newer extract made stale, and list what is still missing. Prints {"components":[{"slug","responsibilities","facts","call_chains","deps"}],"architecture":{"needed","modules","edges","interfaces"}}. Exits 65 when _manifest.json has no component.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
+  - `teamai codebase deep-enrich-write` — A step of a teamai-codebase-deep-enrich run: write one component's design doc, or the architecture overview, from what the AI tool answered, or say why it has none. Prints {"written"}.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--component <slug>` — The component whose doc this is
+    - `--architecture` — The doc is the architecture overview
+    - `--text <markdown>` — What the tool answered
+    - `--failure <message>` — Why the tool could not answer, when it could not
+  - `teamai codebase deep-enrich-graph` — A step of a teamai-codebase-deep-enrich run: write the deterministic graph docs and the G6 triples, and say whether the G5 scenarios are still to be asked for. Prints {"scenarios":{"needed","architecture","call_chains","modules"}}.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
+  - `teamai codebase deep-enrich-finish` — A step of a teamai-codebase-deep-enrich run: write the G5 scenarios from what the AI tool answered, the graph router, the teamwiki indexes and the quality reports, and say which AI docs are still missing. Prints {"text","exit_code","complete","missing_components","missing_architecture"}; exit_code is 1 when a doc is missing.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--max-modules <n>` — Only the first n components of the manifest; 0 takes every one
+    - `--scenarios <markdown>` — What the tool answered for the scenarios
+    - `--scenarios-failure <message>` — Why the tool could not answer for the scenarios, when it could not
+  - `teamai codebase deep-enrich-publish` — A step of a teamai-codebase-deep-enrich run: commit and push the codebase's evidence and docs, with the teamwiki's router.md and index.md, to the team repo that holds the teamwiki. Prints {"pushed"}.
+    - `--wiki-root <dir>` — The teamwiki directory
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+  - `teamai codebase enrich-plan` — A step of a teamai-codebase-enrich run: list the modules of a codebase with at least five facts in the teamwiki's facts cache, which the last extract wrote. Prints {"modules":[{"name","files","components","interfaces"}],"interfaces"}.
+    - `--wiki-root <dir>` — The teamwiki directory the codebase was extracted into
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+  - `teamai codebase enrich-summary` — A step of a teamai-codebase-enrich run: read what the AI tool answered about each module, for the domain prompt. Prints {"count","project","modules"}; count is 0 when a module could not be asked or no answer parsed, and nothing is to be written.
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--results <json>` — The results of the modules step
+  - `teamai codebase enrich-write` — A step of a teamai-codebase-enrich run: write _manifest.json and _domains.json beside the codebase's evidence from what the AI tool answered. Prints {"modules","domain"}; modules is 0 when nothing was written.
+    - `--wiki-root <dir>` — The teamwiki directory the codebase was extracted into
+    - `--codebase <slug>` — The codebase, its directory under evidence/code/
+    - `--results <json>` — The results of the modules step
+    - `--domain <json>` — What the tool answered for the domain
+    - `--domain-failure <message>` — Why the tool could not answer for the domain, when it could not
 
 ## review
 
@@ -574,12 +719,27 @@ Generated: do not edit by hand. Regenerate with
 ## ci
 
 - `teamai ci` — CI pipeline integration commands
-  - `teamai ci extract-mr` — Extract knowledge from MR/PR and post as comment or write to team repo
+  - `teamai ci extract-mr` — Extract knowledge from MR/PR and post as comment or write to team repo: starts the default workflow teamai-ci-extract-mr on the local driver, with no teamai init needed; a run with none takes --team-repo's teamai.yaml and workflows
     - `--url <url>` — MR/PR web URL
     - `--mode <mode>` — Operation mode: comment | write | both
     - `--team-repo <path>` — Team knowledge repo path (required for write mode)
     - `--comment-marker <marker>` — HTML comment anchor for idempotent updates
-    - `--write-mode <mode>` — Write strategy: direct | pending-review
+    - `--write-mode <mode>` — Write strategy: direct; pending-review has no effect and writes as direct does
     - `--output <dir>` — Write artifacts to directory
     - `--individual-comments` — Post each suggestion as separate comment with reaction/resolve support
     - `--no-discussions` — Leave the MR's review threads out of the extraction
+  - `teamai ci comment` — A step of a teamai-ci-extract-mr run: post the drafted learning on the MR, as the comment --marker finds and updates or as its own comment, then the knowledge graph nodes of the source files the merge changed. Prints {}.
+    - `--url <url>` — The MR or PR URL
+    - `--learnings <json>` — The learnings output of the extract step
+    - `--marker <marker>` — The HTML comment the MR comment is found and updated by
+    - `--individual <bool>` — true posts the learning as its own comment, with reaction support
+    - `--preview <bool>` — true says each comment instead of posting it
+  - `teamai ci write` — A step of a teamai-ci-extract-mr run: update the team repo's teamwiki from the merged checkout when a source file changed, write the drafted learning into its learnings/, and commit and push both, leaving out what a reviewer rejected on an individual comment. Prints {}.
+    - `--url <url>` — The MR or PR URL
+    - `--learnings <json>` — The learnings output of the extract step
+    - `--team-repo <path>` — The team repo's checkout
+    - `--individual <bool>` — true reads the reactions on the individual comments
+    - `--preview <bool>` — true says the learning's file and writes and pushes nothing
+  - `teamai ci artifacts` — A step of a teamai-ci-extract-mr run: write the drafted learning into a directory as learning.md. Prints {}.
+    - `--learnings <json>` — The learnings output of the extract step
+    - `--dir <path>` — The directory

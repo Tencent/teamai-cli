@@ -108,8 +108,8 @@ export function answerSchema(rubrics: Rubrics): JsonValue {
 }
 
 /**
- * The evidence sections, fenced as untrusted data the judge analyzes and never obeys, as `votes-judge.ts` fences
- * recalled docs, after naming the `files` of the evidence directory that hold them. Text that would close the fence is
+ * The evidence sections, fenced as untrusted data the judge analyzes and never obeys, after naming the `files` of the
+ * evidence directory that hold them. Text that would close the fence is
  * neutralized, and the whole is kept to `EVIDENCE_MAX_CHARS`.
  */
 export function fencedEvidence(sections: ReadonlyArray<{ title: string; body: string }>, files: string): string {
