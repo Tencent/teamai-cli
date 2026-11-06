@@ -252,7 +252,7 @@ async function report(options: ReportOptions, ctx: ScoreVerbContext): Promise<Sc
   if (!at.ok) return at;
   const reported = await TryScorer.report({ config: at.leased.config, runDir: path.dirname(at.leased.dir), ...options });
 
-  return reported.ok ? { ok: true, output: { answer: reported.answer, text: reported.text } } : reported;
+  return reported.ok ? { ok: true, output: { answer: reported.answer, text: reported.text, warnings: reported.warnings } } : reported;
 }
 
 export const ScoreVerbs = { plan, evidence, stage, label, write, publish, settle, subjects, report } as const;

@@ -330,6 +330,8 @@ async function startScore(start: ScoreStart, driver: string | undefined): Promis
 const TriedSchema = z.object({ data: z.object({ done: z.object({ outputs: z.object({
   answer: z.union([z.object({ data: JsonObjectSchema }), z.object({ error: z.object({ code: z.string(), message: z.string() }) })]),
   text: z.string(),
+  // A team's own teamai-try-scorer may not output warnings.
+  warnings: z.string().default(''),
 }) }) }) });
 
 /**
@@ -349,9 +351,11 @@ async function startTry(start: TryStart, driver: string | undefined): Promise<vo
       const tried = TriedSchema.safeParse(driven);
 
       if (!tried.success) return undefined;
-      const { answer, text } = tried.data.data.done.outputs;
+      const { answer, text, warnings } = tried.data.data.done.outputs;
 
       for (const line of text.split('\n').filter(Boolean)) log.info(line);
+
+      for (const line of warnings.split('\n').filter(Boolean)) log.warn(line);
 
       return answer;
     },

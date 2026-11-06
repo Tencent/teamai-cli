@@ -192,13 +192,15 @@ function triedEnvelope(tried: readonly Tried[]): JsonObject {
   } });
 }
 
-/** The lines a person reads per scorer file: its verdict, which is never stored, and what the control says of it. */
-function textOf({ answer, control }: Tried): string {
+/** The lines a person reads per scorer file: its verdict, which is never stored, and what the control says of it, a warning when the rubric passes the control. */
+function linesOf({ answer, control }: Tried) {
   const verdict = `${answer.scorer} from ${answer.file}: ${answer.label} (score ${answer.score}, ${answer.passed ? 'passed' : 'did not pass'}). Not stored: a scorer file's label is only tried.`;
 
-  if ('error' in control) return `${verdict}\n${answer.scorer}: the control could not be judged: ${control.error.message}`;
+  if ('error' in control) return { text: [verdict, `${answer.scorer}: the control could not be judged: ${control.error.message}`], warnings: [] };
 
-  return `${verdict}\n${answer.scorer}: ${control.warning ?? `the control, the session's first prompt alone, does not pass (${control.label}, score ${control.score}).`}`;
+  if (control.warning !== undefined) return { text: [verdict], warnings: [`${answer.scorer}: ${control.warning}`] };
+
+  return { text: [verdict, `${answer.scorer}: the control, the session's first prompt alone, does not pass (${control.label}, score ${control.score}).`], warnings: [] };
 }
 
 /**
@@ -206,7 +208,7 @@ function textOf({ answer, control }: Tried): string {
  * the scope keeps of its scorer and the control's verdict on the session's first prompt alone. `labels` and `control`
  * are the `labels` outputs of its two teamai-score steps. Answers the envelope `teamai score` prints, and its text.
  */
-async function report({ config, runDir, labels, control }: { config: LocalConfig; runDir: string; labels?: string; control?: string }): Promise<{ ok: true; answer: JsonObject; text: string } | Refusal> {
+async function report({ config, runDir, labels, control }: { config: LocalConfig; runDir: string; labels?: string; control?: string }): Promise<{ ok: true; answer: JsonObject; text: string; warnings: string } | Refusal> {
   const [session, controlled] = await Promise.all([judgedIn(runDir, labels, 'labels'), judgedIn(runDir, control, 'control')]);
 
   if (!session.ok) return session;
@@ -223,7 +225,7 @@ async function report({ config, runDir, labels, control }: { config: LocalConfig
       if (entry?.kind !== 'labelled') {
         const why = entry ?? { code: 'judge_failed', message: 'The judge gave the session no label.' };
 
-        return { ok: true, answer: { error: { code: why.code, message: why.message } }, text: '' };
+        return { ok: true, answer: { error: { code: why.code, message: why.message } }, text: '', warnings: '' };
       }
 
       const answer: TriedAnswer = {
@@ -237,9 +239,11 @@ async function report({ config, runDir, labels, control }: { config: LocalConfig
     }
   }
 
-  if (tried.length === 0) return { ok: true, answer: { error: { code: 'judge_failed', message: 'The run judged no scorer file on the session.' } }, text: '' };
+  if (tried.length === 0) return { ok: true, answer: { error: { code: 'judge_failed', message: 'The run judged no scorer file on the session.' } }, text: '', warnings: '' };
 
-  return { ok: true, answer: triedEnvelope(tried), text: tried.map(textOf).join('\n') };
+  const lines = tried.map(linesOf);
+
+  return { ok: true, answer: triedEnvelope(tried), text: lines.flatMap(({ text }) => text).join('\n'), warnings: lines.flatMap(({ warnings }) => warnings).join('\n') };
 }
 
 export const TryScorer = { files, prepare, report } as const;

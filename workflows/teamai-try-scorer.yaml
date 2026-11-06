@@ -27,5 +27,5 @@ steps:
     needs: [session, control]
     command: teamai score report --labels "$LABELS" --control "$CONTROL"
     env: { LABELS: "{{ steps.session.outputs.labels }}", CONTROL: "{{ steps.control.outputs.labels }}" }
-    output: { answer: json, text: string }
-outputs: { answer: steps.report.outputs.answer, text: steps.report.outputs.text }
+    output: { answer: json, text: string, warnings: string }
+outputs: { answer: steps.report.outputs.answer, text: steps.report.outputs.text, warnings: steps.report.outputs.warnings }
