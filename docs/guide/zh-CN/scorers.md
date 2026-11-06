@@ -768,7 +768,7 @@ teamai 为它按条目生成的每类问题附带一份评分标准，作为默�
 
 | 默认评分器 | 提出的问题 | 变量 |
 |---|---|---|
-| `scorers/teamai-routing.md` | 会话得到的每个团队技能一个[路由问题](#技能路由) | `skill.name`、`skill.namespace` |
+| `scorers/teamai-routing.md` | 会话得到的每个团队技能一个[路由问题](#技能路由) | `skill.name` |
 | `scorers/teamai-adoption.md` | 会话从未打开的每篇已召回文档一个[采纳问题](#recall-采纳) | `doc.id`、`doc.path`、`doc.file` |
 
 默认评分器是一个评分器文件，文本用 `{{ … }}` 读取变量，按每个条目填入。下面这个评判技能是否值得占用上下文：
@@ -792,7 +792,7 @@ Judge only the team skill `{{ skill.name }}`, against its entry in `skills.avail
 
 ```console
 $ teamai pull
-⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name and skill.namespace; teamai's default runs until the file reads only those
+⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name; teamai's default runs until the file reads only those
 ```
 
 像上面那样，把 frontmatter 里的每个 `{{ … }}` 放在双引号字符串中：pull 会用含引号、冒号和换行的值填入文件，只要有一个值破坏 YAML 就拒绝它。这个文件本身不是评分器：步骤不能列出它，`teamai score --scorer teamai-routing` 也找不到它。评分标准一改，每个问题的评分标准哈希就变了，所以新旧标签分开计数，和[任何评分器](#评分器变更时)一样。

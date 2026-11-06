@@ -20,7 +20,7 @@ import { isTemplateRead, parseTemplate, renderText, type Template } from './work
 
 /** The variables each default offers, by name: all a team file that replaces it may read. */
 const VARIABLES = {
-  'teamai-routing': ['skill.name', 'skill.namespace'],
+  'teamai-routing': ['skill.name'],
   'teamai-adoption': ['doc.id', 'doc.path', 'doc.file'],
 } as const satisfies Record<string, readonly string[]>;
 
@@ -136,7 +136,7 @@ function problems(name: DefaultScorerName, file: string, content: string): Array
   }))];
 
   if (unknown.length > 0) {
-    const offers = `${offered.slice(0, -1).join(', ')} and ${offered.at(-1) ?? ''}`;
+    const offers = offered.length === 1 ? offered.join('') : `${offered.slice(0, -1).join(', ')} and ${offered.at(-1) ?? ''}`;
 
     return unknown.map((source) => refusal('default_scorer_variable', `reads ${source}, which teamai's default scorer ${name} does not offer. It offers ${offers}; teamai's default runs until the file reads only those`));
   }

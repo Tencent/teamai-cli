@@ -273,7 +273,7 @@ labels:
   - { value: noise, score: 0, description: "{{ skill.name }} was loaded and did nothing." }
 passingScore: 1
 ---
-Judge only {{ skill.name }}, from the {{ skill.namespace }} namespace when it names one.
+Judge only {{ skill.name }}, against its entry in skills.available.
 `;
 
   it('asks routing questions with teamai\'s default rubric while the team has no file of its name', async () => {
@@ -305,19 +305,20 @@ Judge only the team skill \`release\`, against its entry in \`skills.available\`
 
     expect(question?.scorer).toBe('teamai:routing:ops:release');
     expect(question?.definition.labels.map(({ value, description }) => [value, description])).toEqual([['helped', 'release did what the session asked of it.'], ['noise', 'release was loaded and did nothing.']]);
-    expect(question?.definition.prompt).toBe('Judge only release, from the ops namespace when it names one.\n');
+    expect(question?.definition.prompt).toBe('Judge only release, against its entry in skills.available.\n');
     expect(await loadCachedScorer(config, 'teamai-routing')).toBeNull();
   });
 
   it('refuses a file that reads a variable the default does not offer, with a coded diagnostic, and the default runs', async () => {
     const config = testConfig();
-    writeScorer(config, 'teamai-routing.md', ROUTING.replace('Judge only {{ skill.name }}', 'Judge only {{ skill.title }} and {{ inputs.doc }}'));
+    writeScorer(config, 'teamai-routing.md', ROUTING.replace('Judge only {{ skill.name }}', 'Judge only {{ skill.title }} and {{ inputs.doc }}, from {{ skill.namespace }}'));
 
     const { invalid } = await syncScorerDefinitions(config);
 
     expect(invalid).toEqual([
-      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ skill.title }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name and skill.namespace; teamai\'s default runs until the file reads only those' },
-      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ inputs.doc }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name and skill.namespace; teamai\'s default runs until the file reads only those' },
+      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ skill.title }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name; teamai\'s default runs until the file reads only those' },
+      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ inputs.doc }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name; teamai\'s default runs until the file reads only those' },
+      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ skill.namespace }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name; teamai\'s default runs until the file reads only those' },
     ]);
     const [question] = await routingScorers(config, [release]);
     expect(question?.definition.labels.map(({ value }) => value)).toEqual(['fit', 'idle', 'extra', 'missed']);

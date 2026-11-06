@@ -768,7 +768,7 @@ teamai ships the rubric of each question it generates per item as a default scor
 
 | Default | Asks | Variables |
 |---|---|---|
-| `scorers/teamai-routing.md` | one [routing question](#skill-routing) per team skill a session was delivered | `skill.name`, `skill.namespace` |
+| `scorers/teamai-routing.md` | one [routing question](#skill-routing) per team skill a session was delivered | `skill.name` |
 | `scorers/teamai-adoption.md` | one [adoption question](#recall-adoption) per recalled doc a session never opened | `doc.id`, `doc.path`, `doc.file` |
 
 A default is a scorer file whose text reads its variables as `{{ … }}`, filled in for each item. This one judges whether a skill was worth its context:
@@ -792,7 +792,7 @@ Pull refuses a file that reads anything but its default's variables, or that is 
 
 ```console
 $ teamai pull
-⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name and skill.namespace; teamai's default runs until the file reads only those
+⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name; teamai's default runs until the file reads only those
 ```
 
 Put each `{{ … }}` of the frontmatter inside a double-quoted string, as above: pull fills the file in with values that hold quotes, colons and newlines, and refuses it when one breaks the YAML. The file is not a scorer of its own: no step lists it, and `teamai score --scorer teamai-routing` finds no scorer. A changed rubric is a new rubric hash for each question, so its labels are counted apart from the old ones, as for [any scorer](#when-the-scorer-changes).

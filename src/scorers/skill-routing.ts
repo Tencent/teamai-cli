@@ -47,13 +47,13 @@ export function routingSkillOf(name: { skill: string; namespace?: string }, avai
 }
 
 /**
- * The routing question of `skill`, `rubric` filled in with its name and namespace: the text of teamai's default
+ * The routing question of `skill`, `rubric` filled in with its name: the text of teamai's default
  * `scorers/teamai-routing.md`, or the team's file of that name. The rubric names the skill and says
  * where to read it; the description the judge judges against stays in `skills.available` in evidence.json.
  */
 export function routingScorer(rubric: string, skill: AvailableSkill): GeneratedQuestion {
   const scorer = routingScorerName(skill);
-  const { content, definition } = DefaultScorers.fillIn('teamai-routing', { file: `scorers/${scorer.replaceAll(':', '-')}.md`, content: rubric }, { 'skill.name': skill.name, 'skill.namespace': skill.namespace ?? '' });
+  const { content, definition } = DefaultScorers.fillIn('teamai-routing', { file: `scorers/${scorer.replaceAll(':', '-')}.md`, content: rubric }, { 'skill.name': skill.name });
 
   return { scorer, pin: { sourceHash: scorerSourceHash(content), content }, definition: { ...definition, name: scorer } };
 }

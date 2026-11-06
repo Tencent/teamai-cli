@@ -283,7 +283,7 @@ Judge only {{ doc.id }}. Its text is in recalled/{{ doc.file }} in the evidence.
 ```
 
 Pull rejects a replacement that reads a variable the default does not offer (`doc.id`, `doc.path`, `doc.file` for
-adoption; `skill.name`, `skill.namespace` for routing), and the default runs.
+adoption; `skill.name` for routing), and the default runs.
 
 ### Confidence
 
