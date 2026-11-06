@@ -354,6 +354,9 @@ function holdsGonePathIn(value: JsonValue | undefined, dir: string): boolean {
   return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !fs.existsSync(text);
 }
 
+/** The fields of a step that carry what it produced: its outputs, and those of each fan-out item or pass. */
+const PRODUCED_FIELDS: ReadonlySet<string> = new Set(['outputs', 'results', 'passes']);
+
 /** The producers of gone run-dir paths a step reads: the steps of its own workflow, and the ids of those around it. */
 interface RunDirProducers {
   here: StepState[];
@@ -361,7 +364,7 @@ interface RunDirProducers {
 }
 
 /**
- * The steps whose outputs `state`'s templates render where they hold a path inside `runDir`, the run's
+ * The steps whose outputs, results or passes `state`'s templates render where they hold a path inside `runDir`, the run's
  * `$TEAMAI_RUN_DIR`, that is gone: its run's end removed it, and a step that ran since a retry reopened the run brought
  * back only its own. A read only in `if` renders nothing, so it brings no step. `here` are those of `state`'s own
  * workflow; `enclosing`, by id, those of the workflows around it.
@@ -382,7 +385,7 @@ function runDirProducers(input: { scope: Scope; states: StepState[]; state: Step
   });
 
   const producers = new Set(reads.flatMap((read) => (
-    read.root === 'steps' && read.field === 'outputs' && read.step !== id && holdsGonePathIn(pathValue(read, context), runDir) ? [read.step] : []
+    read.root === 'steps' && PRODUCED_FIELDS.has(read.field) && read.step !== id && holdsGonePathIn(pathValue(read, context), runDir) ? [read.step] : []
   )));
 
   const here = states.filter((other) => producers.has(localId(scope, other)));
