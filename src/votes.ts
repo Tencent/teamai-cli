@@ -392,6 +392,25 @@ export async function countRecalledSessions({ votePath, sessionId, docIds }: { v
   return acquired;
 }
 
+/**
+ * Forget the recalled-session identities of sessions the recall log no longer names. Only lines naming a session yield
+ * a count for it, so the caller passes every session its log names before that log's retention drops lines. A reducer
+ * that read lines before an earlier retention has finished by then. Returns false when the votes file was busy:
+ * nothing was forgotten.
+ */
+export async function forgetRecalledSessions({ votePath, named }: { votePath: string; named: ReadonlySet<string> }): Promise<boolean> {
+  const { acquired } = await withVotesLock(votePath, async () => {
+    const data = await loadUserVotes(votePath);
+    const sessions = Object.keys(data.recalledSessions ?? {});
+
+    if (sessions.every((session) => named.has(session))) return;
+    data.recalledSessions = Object.fromEntries(Object.entries(data.recalledSessions ?? {}).filter(([session]) => named.has(session)));
+    await saveUserVotes(votePath, data);
+  });
+
+  return acquired;
+}
+
 /** A judge's verdict on whether one session adopted a recalled doc (#1391). */
 export interface AdoptionVerdict {
   doc: string;

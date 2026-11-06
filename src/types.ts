@@ -2861,7 +2861,7 @@ export const UserVotesV2Schema = z.looseObject({
   votes: voteTableSchema(VoteEntryV2Schema).nullish().transform((table) => table ?? {}),
   deltas: VoteDeltasSchema.nullish().transform((table) => table ?? {}),
   upvotedSessions: UpvoteLedgerSchema.optional().catch(undefined),
-  // Recall session identities do not expire: the counters and their deduplication share one atomic write.
+  // Each identity shares one atomic write with its counters. `pull` forgets a recalled session once the recall log stopped naming it (forgetRecalledSessions); adoption credits are kept for good.
   recalledSessions: z.record(z.string(), VoteIdsSchema).optional(),
   adoptionCredits: z.record(z.string(), VoteIdsSchema).optional(),
   pendingSync: PendingVoteSyncSchema.optional().catch(undefined),

@@ -29,7 +29,7 @@ import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import { appendRecallLines, readRecallLog, recallLogPath } from './recall-log.js';
 import type { Actor, ClaimLine, CreditLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
 import { getVotesDir } from './types.js';
-import { readUserVotes, type AdoptionVerdict } from './votes.js';
+import { forgetRecalledSessions, readUserVotes, type AdoptionVerdict } from './votes.js';
 import type { JsonValue, LocalConfig } from './types.js';
 import { isAbsolutePath, pathKey, samePath } from './utils/agent-path.js';
 import { rewriteJsonl } from './utils/jsonl-store.js';
@@ -658,8 +658,8 @@ const RECALL_LOG_MAX_LINES = 5000;
  * What `teamai pull` does with a scope's recall log. First it credits the
  * sessions whose evidence is still pending, a recovery for a read after the
  * session's last Stop, or a Stop that found the votes file busy (git teams
- * only, as votes are). Once those writes succeed, it applies retention under the log's lock (see
- * {@link retainedLines}). Never call it from a hook: the prune may wait
+ * only, as votes are). Once those writes succeed, it forgets the recalled sessions the log no longer names (see
+ * {@link forgetUnnamedSessions}), then applies retention under the log's lock (see {@link retainedLines}). Never call it from a hook: the prune may wait
  * seconds for the lock. Failures are logged, not thrown: the next pull
  * retries.
  */
@@ -674,6 +674,12 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
 
       return;
     }
+  }
+
+  try {
+    await forgetUnnamedSessions(config);
+  } catch (e) {
+    log.debug(`recall adoption: could not forget recalled sessions ${file} no longer names: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Taking the lock creates its directory: a scope that never recalled gets none.
@@ -711,6 +717,38 @@ async function creditPendingSessions(config: LocalConfig): Promise<boolean> {
   }
 
   return true;
+}
+
+/**
+ * Forget the recalled-session identities of the sessions no line of the log names. It runs before retention, so a
+ * session whose last lines this pull drops is forgotten at the next one. Only adoption credits are kept for good: a
+ * pinned adoption question can be written long after its session's lines are gone.
+ */
+async function forgetUnnamedSessions(config: LocalConfig): Promise<void> {
+  const votePath = path.join(getVotesDir(config), `${config.username}.yaml`);
+  const named = new Set((await readRecallLog(config)).flatMap(sessionsOf));
+  const { recalledSessions } = await readUserVotes(votePath);
+
+  if (Object.keys(recalledSessions ?? {}).every((session) => named.has(session))) return;
+  await forgetRecalledSessions({ votePath, named });
+}
+
+/** The sessions a line names, any of which a reducer may count or credit from it. */
+function sessionsOf(line: RecallLogLine): string[] {
+  switch (line.kind) {
+    case 'run': return line.session === null ? [] : [line.session];
+    case 'claim':
+    case 'evidence':
+    case 'credit':
+    case 'counted': return [line.session];
+    case 'link': return [line.child, line.parent];
+    case 'consumed': return [];
+    default: {
+      const unhandled: never = line;
+
+      return unhandled;
+    }
+  }
 }
 
 /** What retention requires of a raw line: a kind and a time. The line itself is kept as written. */

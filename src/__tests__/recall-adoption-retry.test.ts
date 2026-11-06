@@ -6,10 +6,12 @@ import { expect, it, onTestFinished } from 'vitest';
 import { adoptionCandidates, creditAdoptedDocs, creditAdoptionVerdicts, drainRecallLog } from '../recall-adoption.js';
 import { appendRecallLine, readRecallLog, recallLogPath } from '../recall-log.js';
 import { getVotesDir, type LocalConfig } from '../types.js';
-import { readUserVotes } from '../votes.js';
+import { countRecalledSessions, readUserVotes } from '../votes.js';
 import { acquireLock, releaseLock } from '../update.js';
 
-async function recalledSession(): Promise<{ config: LocalConfig; votePath: string }> {
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+async function recalledSession(ts = new Date().toISOString()): Promise<{ config: LocalConfig; votePath: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-recall-retry-'));
   onTestFinished(() => fs.rm(root, { recursive: true, force: true }));
   const config: LocalConfig = {
@@ -17,7 +19,7 @@ async function recalledSession(): Promise<{ config: LocalConfig; votePath: strin
     username: 'member', scope: 'project', additionalRoles: [], dataHome: root,
   };
   await appendRecallLine(config, {
-    kind: 'run', ts: new Date().toISOString(), run: 'run-a', session: 'root-a', unambiguous: true, via: 'env',
+    kind: 'run', ts, run: 'run-a', session: 'root-a', unambiguous: true, via: 'env',
     docs: [{ key: 'doc-a', path: path.join(root, 'doc.md'), eligible: true, scope: 'project', score: 1 }],
   });
 
@@ -71,7 +73,7 @@ it('does not judge an ignored document again after its journal markers are remov
 it('keeps an old pending verdict retryable while the votes file is busy', async () => {
   const { config, votePath } = await recalledSession();
   await appendRecallLine(config, {
-    kind: 'credit', ts: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(), id: 'pending-a',
+    kind: 'credit', ts: new Date(Date.now() - 31 * DAY_MS).toISOString(), id: 'pending-a',
     session: 'root-a', doc: 'doc-a', source: 'judge', adopted: true, votes: 'pending',
   });
   await fs.mkdir(path.dirname(votePath), { recursive: true });
@@ -86,4 +88,31 @@ it('keeps an old pending verdict retryable while the votes file is busy', async 
   await drainRecallLog(config);
 
   expect((await readUserVotes(votePath)).votes['doc-a']).toMatchObject({ judged_count: 1, upvoted_count: 1 });
+});
+
+it('forgets a recalled session at the pull after the recall log stopped naming it', async () => {
+  const { config, votePath } = await recalledSession();
+  await creditAdoptedDocs(config, 'root-a');
+  await fs.writeFile(recallLogPath(config), '');
+
+  await drainRecallLog(config);
+
+  const votes = await readUserVotes(votePath);
+  expect(votes.recalledSessions?.['root-a']).toBeUndefined();
+  expect(votes.votes['doc-a']?.recalled_session_count).toBe(1);
+});
+
+it('keeps a recalled session through the pull whose retention drops its lines', async () => {
+  const ts = new Date(Date.now() - 31 * DAY_MS).toISOString();
+  const { config, votePath } = await recalledSession(ts);
+  await creditAdoptedDocs(config, 'root-a');
+  const counted31DaysAgo = (await readRecallLog(config)).map((line) => (line.kind === 'counted' ? { ...line, ts } : line));
+  await fs.writeFile(recallLogPath(config), counted31DaysAgo.map((line) => JSON.stringify(line) + '\n').join(''));
+
+  await drainRecallLog(config);
+  // A reducer that read the run before that retention, but not its counted marker, counts it late.
+  await countRecalledSessions({ votePath, sessionId: 'root-a', docIds: ['doc-a'] });
+
+  expect(await readRecallLog(config)).toEqual([]);
+  expect((await readUserVotes(votePath)).votes['doc-a']?.recalled_session_count).toBe(1);
 });
