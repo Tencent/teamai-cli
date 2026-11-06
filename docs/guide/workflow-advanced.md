@@ -748,7 +748,7 @@ $ teamai workflow start classify-learning --driver local --inputs '{"learning":"
 ```
 
 - `output` is required. `{ text: string }` takes the reply as text. Any other output names the JSON the reply holds, and the local driver asks the tool for it.
-- The tool is the one teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model` and `session` on the step, and any `workspace` but `new`.
+- The step names no tool: the driver that runs it answers it. The skill driver gives it to a child agent of the session, and a driver of your own answers it with its own model. The local driver launches the tool teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model` and `session` on the step, and any `workspace` but `new`.
 - The launch is marked as teamai's own, so the member's hooks do not capture it.
 - It reserves the checkout until it finishes, so answers and commands using that checkout run one at a time, even
   across `for_each` items. A change to the checkout fails the answer `read_only_dirty`.
