@@ -1813,7 +1813,7 @@ export async function selfImprovementRun(scorer: string, options: { suite: strin
 }
 
 /** The driver a command's `--driver` names, else what `workflows.driver` decides, which `byDefault` carries for the start to say. */
-async function shortcutDriver(config: LocalConfig, asked: string | undefined): Promise<{ driver?: string; byDefault?: DefaultDrive }> {
+export async function shortcutDriver(config: LocalConfig, asked: string | undefined): Promise<{ driver?: string; byDefault?: DefaultDrive }> {
   if (asked !== undefined) return { driver: asked };
   const byDefault = await driveByDefault(config);
 
