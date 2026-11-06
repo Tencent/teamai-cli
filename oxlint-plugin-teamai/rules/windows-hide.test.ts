@@ -32,13 +32,16 @@ const options = { encoding: 'utf8' as const };
 execSync('ls', { ...options, windowsHide: true });
 `);
 
-rule.invalid('rejects windowsHide: true that a later spread or property may override', `
+rule.invalid('rejects windowsHide: true that a later spread, property or computed key may override', `
 import { execSync } from 'node:child_process';
 const options = { windowsHide: false };
 execSync('ls', { windowsHide: true, ...options });
 execSync('ls', { windowsHide: true, windowsHide: false });
+execSync('ls', { windowsHide: true, ['windowsHide']: false });
+const key = 'detached';
+execSync('ls', { [key]: true });
 `, (output) => {
-  expect(output).toContain('2 errors');
+  expect(output).toContain('4 errors');
 });
 
 rule.invalid('rejects options passed as a variable, even one that may set windowsHide', `
