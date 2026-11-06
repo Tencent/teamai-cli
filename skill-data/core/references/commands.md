@@ -254,7 +254,7 @@ Generated: do not edit by hand. Regenerate with
     - `--attempt <id>` — With --driver skill: the attempt to report
     - `--model-unavailable` — With --driver skill and --attempt: the host cannot run the model the dispatch names, so the step fails model_unavailable
   - `teamai workflow respond <run> <step> <choice>` — Answer a waiting approve (yes/no) or choose HITL request. A required HITL request accepts only the person's answer: from their own terminal, or declared by a driver UI, sent from outside an agent session. Prints one JSON envelope.
-    - `--json <payload>` — Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses.
+    - `--json <payload>` — Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver; sent from inside an agent session it records agent true, which a required HITL request refuses. queued, as on next: the attempts of its open leases it has not started, whose own timeout then counts from this answer.
     - `--driver <kind>` — skill: answer an optional gate of a run the current coding session drives, as its choose action prints it, and print the turn. Records the agent's answer, which a required HITL request refuses
     - `--note <text>` — Keep a note with the answer, readable as steps.<id>.note
     - `--pass <n>` — Answer only this positive pass number; rejects an answered or replaced HITL request

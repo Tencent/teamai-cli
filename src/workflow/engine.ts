@@ -2376,6 +2376,8 @@ function unreadFields(record: { driver?: unknown }, known: ReadonlySet<string>):
 /** The driver UI a `respond --json` payload declares the person answered in, and the payload fields it did not read. */
 export interface ParsedResponsePayload {
   driver: DriverIdentity;
+  /** As `next`'s `queued`: the driver's open leases it has not started, whose own timeout counts from this answer. */
+  queued?: string[];
   ignored: string[];
 }
 
@@ -2385,8 +2387,16 @@ export function parseResponsePayload(value: unknown): ParsedResponsePayload | st
   const driver = PayloadDriverSchema.safeParse(value.driver);
 
   if (!driver.success) return 'driver must include kind, machine, and workspace';
+  const parsed: ParsedResponsePayload = { driver: driver.data, ignored: unreadFields(value, new Set(['driver', 'queued'])) };
 
-  return { driver: driver.data, ignored: unreadFields(value, new Set(['driver'])) };
+  if (value.queued !== undefined) {
+    const queued = z.array(z.string()).safeParse(value.queued);
+
+    if (!queued.success) return 'queued must be an array of attempt ids';
+    parsed.queued = queued.data;
+  }
+
+  return parsed;
 }
 
 /** A parsed report and the payload fields the CLI did not read from it. */

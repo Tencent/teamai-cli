@@ -1152,8 +1152,9 @@ export async function workflowRespond(runId: string, step: string, choice: strin
 
   const caller = callerProvenance(process.env, process.stdin);
   const provenance = respondProvenance(driverAnswer ? { kind: 'driver-json', driver: driverAnswer.driver, caller } : { kind: 'terminal', caller });
+  const queued = driverAnswer?.queued === undefined ? undefined : { driver: driverAnswer.driver, attempts: driverAnswer.queued };
   await workflowControl(runId, async (config, secrets) => withIgnored(await respondToHitl(config, runId, secrets, {
-    step, choice, note: options.note, pass, provenance,
+    step, choice, note: options.note, pass, provenance, queued,
   }), driverAnswer?.ignored ?? []));
 }
 
