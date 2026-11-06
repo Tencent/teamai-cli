@@ -153,6 +153,16 @@ describe('import-lock', () => {
     expect(await fileExists(lockPath)).toBe(false);
   });
 
+  it('leaves the lock of a holder that took it over when the one it took it from releases', async () => {
+    const release = await acquireImportLock(teamRepo);
+    const taken = JSON.stringify({ pid: process.ppid, host: os.hostname(), startedAt: new Date().toISOString(), teamRepo }, null, 2);
+    await writeFile(lockPath, taken, 'utf8');
+
+    await release();
+
+    expect(await readFile(lockPath, 'utf8')).toBe(taken);
+  });
+
   it('leaves no directory behind that it created only for the lock', async () => {
     const output = path.join(root, 'out', 'wiki');
 

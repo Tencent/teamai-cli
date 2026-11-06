@@ -10,6 +10,9 @@ const LOCK_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours; a lock older than this is st
 /** Module-level reference counts for reentrant locking within the same process. */
 const refCounts = new Map<string, number>();
 
+/** What this process wrote to each lock file it holds: the last release removes the file only while it still says so. */
+const written = new Map<string, string>();
+
 /** The first directory an acquire created for a lock file, by lock path: the last release removes it again when empty. */
 const createdDirs = new Map<string, string>();
 
@@ -96,6 +99,15 @@ async function holderOf(lockPath: string): Promise<string> {
   }
 }
 
+/** Removes the lock file at `lockPath` only while it still holds `raw`, so a lock another process took meanwhile stays. */
+async function removeIfUnchanged(lockPath: string, raw: string, failure: string): Promise<void> {
+  try {
+    if (await readFile(lockPath, 'utf8') === raw) await unlink(lockPath);
+  } catch (e) {
+    log.debug(`[import-lock] ${failure} ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /** Writes the lock file only when none exists; false when one does. */
 async function createLockFile(lockPath: string, meta: ImportLockMeta): Promise<boolean> {
   try {
@@ -120,7 +132,8 @@ async function createLockFile(lockPath: string, meta: ImportLockMeta): Promise<b
  * LOCK_HOLDER_ENV goes on under its hold, and its release leaves the file.
  *
  * A lock another live process holds refuses the acquire; one left by a process that is gone, or older than the TTL, is
- * taken over. A lock file that cannot be written at all is logged at debug level and the import goes on.
+ * removed and created anew, exclusively, so of two imports that take it over at once one refuses. A lock file that
+ * cannot be written at all is logged at debug level and the import goes on.
  *
  * @param holder - The team repo that holds the teamwiki, else the teamwiki directory.
  * @returns An async release function. Calling it multiple times is safe (idempotent).
@@ -143,17 +156,17 @@ export async function acquireImportLock(holder: string): Promise<() => Promise<v
 
       if (created) createdDirs.set(lockPath, created);
 
-      // isImportInProgress removes a lock whose process is gone or that is stale, which this process then takes.
+      // isImportInProgress removes a lock whose process is gone or that is stale; another import may create it first.
       if (!(await createLockFile(lockPath, meta))) {
         if (await isHeldAbove(lockPath)) return async () => {};
 
-        if (await isImportInProgress(holder)) {
+        if (await isImportInProgress(holder) || !(await createLockFile(lockPath, meta))) {
           throw new ImportLockHeldError(`Another teamai import is writing this teamwiki${await holderOf(lockPath)}. `
             + `Wait for it to finish, then run this command again. If no import is running, remove ${lockPath}.`);
         }
-
-        await writeFile(lockPath, JSON.stringify(meta, null, 2), 'utf8');
       }
+
+      written.set(lockPath, JSON.stringify(meta, null, 2));
 
       process.env[LOCK_HOLDER_ENV] = `${meta.pid}@${meta.host}`;
     } catch (e) {
@@ -175,12 +188,10 @@ export async function acquireImportLock(holder: string): Promise<() => Promise<v
 
     if (next === 0) {
       refCounts.delete(lockPath);
+      const own = written.get(lockPath);
+      written.delete(lockPath);
 
-      try {
-        await unlink(lockPath);
-      } catch (e) {
-        log.debug(`[import-lock] Failed to remove lock file ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      if (own !== undefined) await removeIfUnchanged(lockPath, own, 'Failed to remove lock file');
 
       const created = createdDirs.get(lockPath);
       createdDirs.delete(lockPath);
@@ -230,11 +241,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
 
     if (age > LOCK_TTL_MS) {
       // Stale lock — clean up and report no active import.
-      try {
-        await unlink(lockPath);
-      } catch (e) {
-        log.debug(`[import-lock] Failed to remove stale lock ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      await removeIfUnchanged(lockPath, raw, 'Failed to remove stale lock');
 
       return false;
     }
@@ -246,13 +253,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
       }
 
       // Process is dead (ESRCH), or the lock names none — stale lock.
-      try {
-        await unlink(lockPath);
-      } catch (e) {
-        log.debug(
-          `[import-lock] Failed to remove dead-process lock ${lockPath}: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
+      await removeIfUnchanged(lockPath, raw, 'Failed to remove dead-process lock');
 
       return false;
     }
@@ -269,11 +270,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
         return true;
       }
 
-      try {
-        await unlink(lockPath);
-      } catch (e) {
-        log.debug(`[import-lock] Failed to remove malformed lock ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      await removeIfUnchanged(lockPath, raw, 'Failed to remove malformed lock');
 
       return false;
     } catch {
