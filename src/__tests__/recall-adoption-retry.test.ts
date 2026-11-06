@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
 
-import { adoptionCandidates, creditAdoptedDocs, creditAdoptionVerdicts, drainRecallLog } from '../recall-adoption.js';
+import { adoptionCandidates, creditAdoptedDocs, creditAdoptionVerdicts, drainRecallLog, recallSessions } from '../recall-adoption.js';
 import { appendRecallLine, readRecallLog, recallLogPath } from '../recall-log.js';
 import { getVotesDir, type LocalConfig } from '../types.js';
 import { countRecalledSessions, readUserVotes } from '../votes.js';
@@ -45,6 +45,20 @@ it('retries a pending adoption verdict without another upvote', async () => {
   await creditAdoptionVerdicts(config, 'root-a', verdicts);
 
   expect((await readUserVotes(votePath)).votes['doc-a']).toMatchObject({ judged_count: 1, upvoted_count: 1, judge_upvoted_count: 1 });
+});
+
+it('marks a credited read adopted again without another upvote when its journal markers were lost', async () => {
+  const { config, votePath } = await recalledSession();
+  await appendRecallLine(config, { kind: 'evidence', ts: new Date().toISOString(), id: 'read-a', session: 'root-a', path: path.join(config.repo.localPath, 'doc.md'), status: 'success', simple: true });
+  await creditAdoptedDocs(config, 'root-a');
+  // The votes write survived, but the journal's consumed and credit markers did not.
+  const unmarked = (await readRecallLog(config)).filter((line) => line.kind !== 'consumed' && line.kind !== 'credit');
+  await fs.writeFile(recallLogPath(config), unmarked.map((line) => JSON.stringify(line) + '\n').join(''));
+
+  await creditAdoptedDocs(config, 'root-a');
+
+  expect((await readUserVotes(votePath)).votes['doc-a']?.upvoted_count).toBe(1);
+  expect(await recallSessions(config, 1)).toMatchObject([{ session: 'root-a', adopted: 1 }]);
 });
 
 it('keeps a judged document from earning a read credit after its journal markers are removed', async () => {

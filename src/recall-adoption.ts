@@ -462,35 +462,39 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
   const held = await durableCredits(config, target);
 
   const keys = new Set<string>();
+  // Docs the votes file credited whose journal markers an interrupted append lost: marked again, never counted again.
+  const unmarked = new Set<string>();
   const crediting: string[] = [];
 
   for (const e of evidence) {
     if (consumed.has(e.id)) continue;
     // A doc this session credited once, by a read or an adoption label, never credits again (#1391).
-    const fresh = opened(e).filter((d) => !done.has(creditOf(d)) && !credits.has(creditKey(target, d.key)) && !held.has(d.key));
+    const fresh = opened(e).filter((d) => !done.has(creditOf(d)) && !credits.has(creditKey(target, d.key)));
 
     if (fresh.length === 0) continue;
 
-    for (const d of fresh) keys.add(d.key);
+    for (const d of fresh) (held.has(d.key) ? unmarked : keys).add(d.key);
     crediting.push(e.id);
   }
 
-  if (keys.size === 0) return { credited: [], recalled };
+  if (crediting.length === 0) return { credited: [], recalled };
 
   const ts = new Date().toISOString();
-  const creditLines = [...keys].map((doc): CreditLine => ({ kind: 'credit', ts, id: randomUUID(), session: target, doc, source: 'tool', adopted: true, votes: 'written' }));
+  const lineOf = (doc: string): CreditLine => ({ kind: 'credit', ts, id: randomUUID(), session: target, doc, source: 'tool', adopted: true, votes: 'written' });
+  const creditLines = [...keys].map(lineOf);
   const { creditRecallAdoptions } = await import('./votes.js');
   const credited = await creditRecallAdoptions({ votePath, credits: creditLines });
 
   if (credited === null) return { credited: null, recalled };
 
   for (const id of crediting) consumed.add(id);
+  const marked = [...creditLines, ...[...unmarked].map(lineOf)];
 
   // A key the ledger had already credited is this session's credit too.
-  for (const line of creditLines) credits.set(creditKey(target, line.doc), { ...line, isWritten: true });
+  for (const line of marked) credits.set(creditKey(target, line.doc), { ...line, isWritten: true });
 
   try {
-    await appendRecallLines(config, [...crediting.map((evidenceId): RecallLogLine => ({ kind: 'consumed', ts, evidence: evidenceId })), ...creditLines]);
+    await appendRecallLines(config, [...crediting.map((evidenceId): RecallLogLine => ({ kind: 'consumed', ts, evidence: evidenceId })), ...marked]);
   } catch (e) {
     // The votes file holds the credit identity, so a retry cannot increment it again.
     log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${e instanceof Error ? e.message : String(e)}`);
