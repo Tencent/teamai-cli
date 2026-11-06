@@ -2843,11 +2843,13 @@ function countStoppedTokens(run: RunState, report: ReportInput): boolean {
 }
 
 /**
- * The leased step `report` settles, or how the run refuses it once the deadlines passed at `now` apply: the checks
- * `reportAttempt` makes before it reads the report itself. `save` says whether what they changed in `run`, the
- * deadlines or a stopped attempt's late tokens, is saved.
+ * The leased step `report` settles, or how the run refuses it once the clocks of the attempts it lists `queued` restart
+ * and the deadlines passed at `now` apply: the checks `reportAttempt` makes before it reads the report itself. `save`
+ * says whether what they changed in `run`, the deadlines or a stopped attempt's late tokens, is saved.
  */
 function reportedStep(run: RunState, report: ReportInput, now: string): { step: LeasedStep } | { refused: { save: boolean; envelope: WorkflowEnvelope } } {
+  restartQueued(run, report.driver, new Set((report.queued ?? []).filter((attempt) => attempt !== report.attempt)), now);
+
   // Settled membership wins. An old revision of a settled attempt is still repeated_report.
   if (run.settledAttempts.includes(report.attempt)) {
     return { refused: { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) } };
@@ -3001,7 +3003,6 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
   const admission = await admitReported(config, runId, report, known);
 
   return withRun(config, runId, known, async (run, now) => {
-    restartQueued(run, report.driver, new Set((report.queued ?? []).filter((attempt) => attempt !== report.attempt)), now);
     const checked = reportedStep(run, report, now);
 
     if ('refused' in checked) return checked.refused;

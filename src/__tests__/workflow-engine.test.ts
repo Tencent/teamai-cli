@@ -8,7 +8,7 @@ import type { LocalConfig } from '../types.js';
 import * as update from '../update.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
-import { leaseNext, parseNextPayload, parseReport, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, reportable, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { expectedOutput, outputMismatch, OutputSchemaSchema } from '../workflow/output.js';
@@ -5311,6 +5311,33 @@ describe('deadlines', () => {
       const answered = await respondToHitl(config, runId, await knownSecrets(config), { step: 'gate', choice: 'yes', pass: 1, provenance, queued: { driver: driverA, attempts: [slow.attempt] } });
       expect(answered).not.toHaveProperty('error');
       expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(15), expiresAt: at(25) } }, { id: 'gate' }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes a report that lists a lease queued as reportable when the report itself takes it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    continue_on_failure: true
+    command: echo slow
+  - id: other
+    needs: []
+    command: echo other
+  - id: stop
+    needs: [slow]
+    if: steps.slow.failure.code == 'timeout'
+    end: stopped
+`, 'ends:\n  stopped: failed\n'));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      vi.setSystemTime(new Date(at(15)));
+      const report: ReportInput = { attempt: other.attempt, revision: other.revision, outcome: 'success', driver: driverA, queued: [slow.attempt] };
+      expect(await reportable(config, runId, report)).toBe(true);
+      expect(await reportAttempt(config, runId, report)).toMatchObject({ data: { accepted: true } });
     } finally {
       vi.useRealTimers();
     }
