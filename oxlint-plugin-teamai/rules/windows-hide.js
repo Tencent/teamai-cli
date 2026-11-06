@@ -36,15 +36,15 @@ function keyName(/** @type {ESTree.Node} */ key) {
 
 /**
  * Whether `options` is an object literal that sets `windowsHide: true` itself,
- * with no spread or `windowsHide` after it that could set it back.
+ * with no spread, computed key or `windowsHide` after it that could set it back.
  */
 function hidesWindow(/** @type {ESTree.Node} */ options) {
   if (options.type !== 'ObjectExpression') return false;
 
   const last = options.properties.findLast((property) => property.type === 'SpreadElement'
-    || (!property.computed && keyName(property.key) === 'windowsHide'));
+    || property.computed || keyName(property.key) === 'windowsHide');
 
-  return last?.type === 'Property' && last.value.type === 'Literal' && last.value.value === true;
+  return last?.type === 'Property' && !last.computed && last.value.type === 'Literal' && last.value.value === true;
 }
 
 export default defineRule({
