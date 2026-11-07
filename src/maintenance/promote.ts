@@ -5,6 +5,7 @@ import { writeFile as writeNewFile } from 'node:fs/promises';
 import matter from 'gray-matter';
 import { z } from 'zod';
 import { readFileSafe, writeFile, listFiles, ensureDir, pathExists } from '../utils/fs.js';
+import { FrontmatterDateSchema } from '../utils/frontmatter.js';
 import { assertSafePath } from '../utils/path-safety.js';
 import { createGit, getDefaultBranch, PUSH_BRANCH_PREFIX } from '../utils/git.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
@@ -86,7 +87,7 @@ export async function findPromotionCandidates(
     try {
       const { data } = matter(content);
       title = FrontmatterTextSchema.parse(data.title) ?? docId;
-      date = FrontmatterTextSchema.parse(data.date) ?? '';
+      date = FrontmatterDateSchema.parse(data.date) ?? '';
       promotedTo = FrontmatterTextSchema.parse(data.promoted_to);
     } catch {
       continue;

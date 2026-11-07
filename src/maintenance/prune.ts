@@ -2,15 +2,12 @@
 import path from 'node:path';
 
 import matter from 'gray-matter';
-import { z } from 'zod';
 
 import { readFileSafe, ensureDir, remove, copyFile } from '../utils/fs.js';
+import { FrontmatterDateSchema } from '../utils/frontmatter.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 import { computeAllConfidence } from './confidence.js';
-
-/** A frontmatter field that counts only when it is a string. */
-const FrontmatterTextSchema = z.string().optional().catch(undefined);
 
 export interface PruneCandidate {
   filename: string;
@@ -55,7 +52,7 @@ export async function findPruneCandidates(
 
     try {
       const { data } = matter(content);
-      date = FrontmatterTextSchema.parse(data.date) ?? '';
+      date = FrontmatterDateSchema.parse(data.date) ?? '';
     } catch {
       continue;
     }
