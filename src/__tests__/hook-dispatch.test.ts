@@ -155,6 +155,16 @@ describe('hook-dispatch', () => {
   });
 
   describe('output merging', () => {
+    it('keeps real context when another handler reports a skipped action', async () => {
+      const skipped = createHandler('skipped');
+      skipped.execute.mockResolvedValue({ outcome: 'skipped' });
+      const output = '{"hookSpecificOutput":{"additionalContext":"kept"}}';
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
+        { event: 'stop', matcher: '*', handler: skipped },
+        { event: 'stop', matcher: '*', handler: createHandler('context', output) },
+      ] });
+      expect(await dispatcher.dispatch('stop', '*', {}, 'claude')).toEqual({ output, errors: [] });
+    });
     it('returns output from the handler that produces one', async () => {
       const outputHandler = createHandler('auto-recall', '{"hookSpecificOutput":{"additionalContext":"found stuff"}}');
       const silentHandler = createHandler('dashboard');

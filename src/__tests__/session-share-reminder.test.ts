@@ -64,7 +64,7 @@ async function stopOf(tool: string, config: LocalConfig | null, payload: Record<
   if (!stop) throw new Error('no contribute-check handler');
   const output = await stop.execute({ session_id: SESSION, cwd: project, ...payload }, tool, config);
   if (output === null) return null;
-  const parsed = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) }).safeParse(JSON.parse(output));
+  const parsed = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) }).safeParse(JSON.parse(String(output)));
   return parsed.success ? parsed.data.hookSpecificOutput.additionalContext : null;
 }
 

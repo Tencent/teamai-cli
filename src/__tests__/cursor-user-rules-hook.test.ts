@@ -16,7 +16,7 @@ describe('Cursor gets the user-scope rules from its session-start hook in a work
     const registration = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'cursor-user-rules');
     const output = await registration!.handler.execute({ hook_event_name: 'SessionStart', cwd }, tool, config);
     if (output === null) return null;
-    const parsed = JSON.parse(output) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    const parsed = JSON.parse(String(output)) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
     expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
     return parsed.hookSpecificOutput.additionalContext;
   };

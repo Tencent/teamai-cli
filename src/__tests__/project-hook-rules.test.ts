@@ -54,7 +54,7 @@ async function context(event: string, name: string, tool: string, localConfig: L
   if (!registration) throw new Error(`no ${name} handler on ${event}`);
   const output = await registration.handler.execute({ cwd: projectRoot, ...stdin }, tool, localConfig);
   if (output === null) return null;
-  const parsed = JSON.parse(output) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+  const parsed = JSON.parse(String(output)) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
   return parsed.hookSpecificOutput.additionalContext;
 }
 

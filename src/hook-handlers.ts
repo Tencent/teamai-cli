@@ -492,7 +492,11 @@ const updateHandler: HookHandler = {
   name: 'update',
   async execute(_stdin, _tool, config) {
     const { doUpdate } = await import('./update.js');
-    await doUpdate(config);
+    const outcome = await doUpdate(config, { automatic: true });
+
+    if (outcome === 'failed') throw new Error('Automatic update failed; see debug.log for the cause.');
+
+    if (outcome === 'skipped') return { outcome };
 
     return null;
   },
