@@ -170,6 +170,8 @@ Workers share the prepared `dist/` and OpenCode binary: never rebuild or reinsta
 
 ### When a test fails only on CI
 
+Unit tests retry once on CI. A case that passed only on retry is listed under **Flaky Tests** in the job summary, not in the log. Treat it as a failure from the table below.
+
 Find the failed cases, from the first attempt when a rerun passed:
 
 ```bash
