@@ -18,6 +18,7 @@ import toolFacts from './rules/tool-facts.js';
 import noLowValueComments from './rules/no-low-value-comments.js';
 import suppressionReason from './rules/suppression-reason.js';
 import yamlParse from './rules/yaml-parse.js';
+import packageBoundaries from './rules/package-boundaries.js';
 
 // The anti-slop rules are vendored TypeScript. oxlint imports plugins with plain
 // Node, and `npm run lint` runs on Node 20 in CI, which can't import TypeScript:
@@ -46,6 +47,7 @@ export default definePlugin({
     'no-low-value-comments': noLowValueComments,
     'suppression-reason': suppressionReason,
     'yaml-parse': yamlParse,
+    'package-boundaries': packageBoundaries,
     ...antiSlopRules,
   },
 });
