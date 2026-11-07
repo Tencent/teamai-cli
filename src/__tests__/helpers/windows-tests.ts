@@ -35,6 +35,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/locate-workbuddy.test.ts',
   'src/__tests__/locate.test.ts',
   'src/__tests__/pi-adapter.test.ts',
+  'src/__tests__/pull-user-record-key.test.ts',
   'src/__tests__/qoder-cn.test.ts',
   'src/__tests__/shell-command.test.ts',
   'src/__tests__/skill-use.test.ts',

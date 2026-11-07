@@ -43,12 +43,21 @@ describe('user-scope checkout record identity (#1743)', () => {
 
   it.runIf(process.platform === 'win32')('ignores Windows path casing', async () => {
     const { config, home } = fixture();
+    const deliveredFile = path.join(home, '.claude', 'skills', 'owned', 'SKILL.md');
 
     vi.stubEnv('HOME', home);
     const original = await checkoutRecordKey(config);
-    vi.stubEnv('HOME', `${home[0].toLowerCase()}${home.slice(1)}`);
+    const alternateHome = `${home[0].toLowerCase()}${home.slice(1)}`;
+    const state = StateSchema.parse({
+      lastPullByWorkspace: {
+        [original!]: { rev: 'one', targets: [], delivered: { [path.join(alternateHome, path.relative(home, deliveredFile))]: 'hash' } },
+      },
+    });
 
+    vi.stubEnv('HOME', alternateHome);
     expect(await checkoutRecordKey(config)).toBe(original);
+    vi.stubEnv('HOME', home);
+    expect(await deliveredHashes(config, state)).toEqual({ [deliveredFile]: 'hash' });
   });
 
   it('reads and migrates a sole legacy HOME record without losing its delivery ledger', async () => {

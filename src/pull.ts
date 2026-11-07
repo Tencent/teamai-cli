@@ -1186,6 +1186,54 @@ async function canonicalUserHome(): Promise<string> {
 }
 
 /**
+ * Rewrite a recorded destination below an equivalent spelling of HOME to the
+ * spelling this process uses. The record key alone is not enough: delivery
+ * hashes are keyed by absolute paths, so a symlink or Windows casing change
+ * would otherwise make every previously delivered copy look unrecorded.
+ */
+async function currentUserPath(recorded: string, currentHome: string, canonicalHome: string): Promise<string> {
+  if (!path.isAbsolute(recorded)) return recorded;
+  let ancestor = path.resolve(recorded);
+
+  while (true) {
+    const resolved = await realpath(ancestor).catch(() => ancestor);
+    const comparable = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+
+    if (comparable === canonicalHome) return path.join(currentHome, path.relative(ancestor, recorded));
+    const parent = path.dirname(ancestor);
+
+    if (parent === ancestor) return recorded;
+    ancestor = parent;
+  }
+}
+
+/** Re-key a user record's absolute delivery paths to this process's HOME spelling. */
+async function rebaseUserDelivered(record: CheckoutRecord): Promise<void> {
+  if (!record.delivered) return;
+  const currentHome = path.resolve(getUserHome());
+  const canonicalHome = await canonicalUserHome();
+  const rebased: DeliveredHashes = {};
+
+  const entries = await Promise.all(Object.entries(record.delivered).map(async ([file, hash]) => ({
+    file,
+    hash,
+    current: await currentUserPath(file, currentHome, canonicalHome),
+  })));
+
+  // Exact current-spelling entries win when a previous interrupted pull left
+  // both them and legacy aliases in the record.
+  for (const { file, hash, current } of entries) {
+    if (file === current) rebased[file] = hash;
+  }
+
+  for (const { hash, current } of entries) {
+    if (rebased[current] === undefined) rebased[current] = hash;
+  }
+
+  record.delivered = rebased;
+}
+
+/**
  * The checkout record and the key that currently holds it. User-scope state
  * has exactly one logical checkout (HOME), so a sole record written by an
  * older CLI is that checkout even when HOME was spelled differently. An
@@ -1210,8 +1258,15 @@ async function userScopeRecordEntry(
   const key = await checkoutKey(await canonicalUserHome());
   const exact = state.lastPullByWorkspace?.[key];
 
-  if (exact) return { key, storedKey: key, record: exact };
+  if (exact) {
+    await rebaseUserDelivered(exact);
+
+    return { key, storedKey: key, record: exact };
+  }
+
   const entries = Object.entries(state.lastPullByWorkspace ?? {});
+
+  if (entries.length === 1) await rebaseUserDelivered(entries[0][1]);
 
   return entries.length === 1
     ? { key, storedKey: entries[0][0], record: entries[0][1] }

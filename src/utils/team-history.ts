@@ -170,7 +170,13 @@ export async function matchesHistory(
     for (const versionPath of new Set(versions.map((version) => version.path))) {
       const filtered = await filteredBlobIdOf(repoPath, versionPath, candidate);
 
-      if (filtered && versions.some((version) => version.path === versionPath && version.blob === filtered)) return true;
+      const hit = filtered
+        ? versions.find((version) => version.path === versionPath && version.blob === filtered)
+        : undefined;
+
+      const checkedOut = hit ? await readRenderedBlob(repoPath, hit.blob, hit.path) : null;
+
+      if (checkedOut && await blobIdOf(repoPath, checkedOut) === id) return true;
     }
 
     return false;
