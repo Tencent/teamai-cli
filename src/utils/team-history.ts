@@ -141,6 +141,18 @@ async function filteredBlobIdOf(repoPath: string, pathspec: string, content: str
   });
 }
 
+/** Whether `pathspec` has a custom clean/smudge filter in this checkout. */
+async function hasCheckoutFilter(repoPath: string, pathspec: string): Promise<boolean> {
+  try {
+    const output = await createGit(repoPath).raw(['check-attr', 'filter', '--', pathspec]);
+    const value = output.trim().split(': ').at(-1);
+
+    return value !== undefined && value !== 'unspecified' && value !== 'unset';
+  } catch {
+    return false;
+  }
+}
+
 /** The content teamai would write for one historical version, or null for none. */
 export type HistoryRender = (content: Buffer, version: HistoricalVersion) => string | Uint8Array | null;
 
@@ -177,6 +189,18 @@ export async function matchesHistory(
       const checkedOut = hit ? await readRenderedBlob(repoPath, hit.blob, hit.path) : null;
 
       if (checkedOut && await blobIdOf(repoPath, checkedOut) === id) return true;
+
+      // A custom filter need not round-trip: a smudge-only expansion has no
+      // clean hash that names its source blob. Preserve the old checkout-byte
+      // proof for that uncommon case, without restoring the per-version cost
+      // for ordinary unmatched files.
+      if (await hasCheckoutFilter(repoPath, versionPath)) {
+        for (const version of versions.filter((candidateVersion) => candidateVersion.path === versionPath)) {
+          const rendered = await readRenderedBlob(repoPath, version.blob, version.path);
+
+          if (rendered && await blobIdOf(repoPath, rendered) === id) return true;
+        }
+      }
     }
 
     return false;
