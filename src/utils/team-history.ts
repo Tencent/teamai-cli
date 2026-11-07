@@ -123,8 +123,10 @@ async function filteredBlobIdOf(repoPath: string, pathspec: string, content: str
       cwd: repoPath,
       stdio: ['pipe', 'pipe', 'ignore'],
     });
+
     const output: Buffer[] = [];
     let settled = false;
+
     const done = (value: string | null): void => {
       if (settled) return;
       settled = true;

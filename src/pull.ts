@@ -3081,10 +3081,10 @@ async function pullForScope(
       const others = previousRev === null && live ? awaitingFullSync(live) : live;
       // The delivered paths are rewritten after the last writer of this pull
       // (see syncDeliveredGitExclude): until then, the checkout's previous ones.
-      const previousRecord = (await checkoutRecordEntry(localConfig, state)).record;
-      const gitExcludePaths = previousRecord?.gitExcludePaths;
-      const seeded = rootsSeeded || previousRecord?.rootsSeeded;
-      const claudeMdExcludes = previousRecord?.claudeMdExcludes;
+      const storedRecord = (await checkoutRecordEntry(localConfig, state)).record;
+      const gitExcludePaths = storedRecord?.gitExcludePaths;
+      const seeded = rootsSeeded || storedRecord?.rootsSeeded;
+      const claudeMdExcludes = storedRecord?.claudeMdExcludes;
 
       const record: CheckoutRecord = { rev: deliveredRev, targets: syncedTargets, delivered: ledger.hashes };
 
