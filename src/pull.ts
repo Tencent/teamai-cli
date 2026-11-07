@@ -1173,16 +1173,14 @@ export async function checkoutRecordKey(localConfig: LocalConfig): Promise<strin
 }
 
 /**
- * HOME as one stable checkout identity. Environment variables may spell the
- * same directory with a trailing separator, a symlink, or different casing on
- * Windows. Delivery paths still use the member's spelling; only the record key
- * uses the real, normalized identity.
+ * Remove syntactic aliases such as a trailing separator before keying HOME.
+ * Symlink and Windows-case aliases migrate through the sole legacy user record
+ * instead of realpath/lowercasing here: macOS exposes `/var` through
+ * `/private/var`, and changing that long-standing key would hide records from
+ * readers outside pull.
  */
 async function canonicalUserHome(): Promise<string> {
-  const resolved = path.resolve(getUserHome());
-  const canonical = await realpath(resolved).catch(() => resolved);
-
-  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+  return path.resolve(getUserHome());
 }
 
 /**
@@ -1211,7 +1209,8 @@ async function currentUserPath(recorded: string, currentHome: string, canonicalH
 async function rebaseUserDelivered(record: CheckoutRecord): Promise<void> {
   if (!record.delivered) return;
   const currentHome = path.resolve(getUserHome());
-  const canonicalHome = await canonicalUserHome();
+  const resolvedHome = await realpath(currentHome).catch(() => currentHome);
+  const canonicalHome = process.platform === 'win32' ? resolvedHome.toLowerCase() : resolvedHome;
   const rebased: DeliveredHashes = {};
 
   const entries = await Promise.all(Object.entries(record.delivered).map(async ([file, hash]) => ({

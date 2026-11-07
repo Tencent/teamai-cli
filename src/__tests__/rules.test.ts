@@ -16,6 +16,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../utils/git.js', async (importOriginal) => ({
   // The history proof of an unrecorded copy reads the team repo (#993).
   createGit: (await importOriginal<typeof import('../utils/git.js')>()).createGit,
+  gitBinary: (await importOriginal<typeof import('../utils/git.js')>()).gitBinary,
   pullRepo: vi.fn(),
   listFilesAtRev: vi.fn(async () => []),
   pushRepoBranch: vi.fn().mockResolvedValue(true),

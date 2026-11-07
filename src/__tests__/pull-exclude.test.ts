@@ -13,7 +13,8 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveStateForScope: vi.fn(),
 }));
 
-vi.mock('../utils/git.js', () => ({
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  gitBinary: (await importOriginal<typeof import('../utils/git.js')>()).gitBinary,
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
 }));
@@ -50,6 +51,7 @@ vi.mock('../roles.js', () => ({
 vi.mock('../update.js', () => ({
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
+  withFileLock: vi.fn(async (_path, _wait, body) => ({ held: true, value: await body() })),
 }));
 
 import { detectProjectConfig, loadLocalConfigForScope, loadStateForScope, loadTeamConfig } from '../config.js';

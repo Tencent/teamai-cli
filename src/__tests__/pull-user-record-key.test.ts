@@ -55,7 +55,12 @@ describe('user-scope checkout record identity (#1743)', () => {
     });
 
     vi.stubEnv('HOME', alternateHome);
-    expect(await checkoutRecordKey(config)).toBe(original);
+    expect(await checkoutRecordKey(config)).not.toBe(original);
+    expect(await deliveredHashes(config, state)).toEqual({ [path.join(alternateHome, path.relative(home, deliveredFile))]: 'hash' });
+    const record = await userScopeRecord(state);
+    const alternateKey = await checkoutRecordKey(config);
+
+    expect(state.lastPullByWorkspace).toEqual({ [alternateKey!]: record });
     vi.stubEnv('HOME', home);
     expect(await deliveredHashes(config, state)).toEqual({ [deliveredFile]: 'hash' });
   });
