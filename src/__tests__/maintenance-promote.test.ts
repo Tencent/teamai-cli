@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,6 +16,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -42,6 +43,29 @@ function makeHighVotes(votesDir: string, docId: string): void {
 }
 
 describe('findPromotionCandidates', () => {
+  it.each([
+    ['unquoted recent date', '2026-11-06', false],
+    ['quoted recent date', '"2026-11-06"', false],
+    ['unquoted timestamp under 14 days', '2026-10-24T12:00:00.001Z', false],
+    ['quoted timestamp under 14 days', '"2026-10-24T12:00:00.001Z"', false],
+    ['unquoted timestamp exactly 14 days old', '2026-10-24T12:00:00.000Z', true],
+    ['quoted timestamp exactly 14 days old', '"2026-10-24T12:00:00.000Z"', true],
+    ['unquoted older date', '2026-10-01', true],
+  ])('enforces the minimum age with %s', async (_name, date, eligible) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-07T12:00:00.000Z'));
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+    fs.writeFileSync(path.join(learningsDir, 'dated.md'), `---\ntitle: dated\ndate: ${date}\n---\nLearning content.\n`);
+    makeHighVotes(votesDir, 'dated');
+
+    const candidates = await findPromotionCandidates([learningsDir], votesDir);
+
+    expect(candidates.map((candidate) => candidate.docId)).toEqual(eligible ? ['dated'] : []);
+  });
+
   it('returns empty when no learnings meet thresholds', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     const votesDir = path.join(tmpDir, 'votes');

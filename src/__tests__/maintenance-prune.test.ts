@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,6 +16,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -33,6 +34,30 @@ function makeVotes(dir: string, username: string, votes: Record<string, { recall
 }
 
 describe('findPruneCandidates', () => {
+  it.each([
+    ['unquoted recent date', '2026-08-09', false],
+    ['quoted recent date', '"2026-08-09"', false],
+    ['unquoted stale date', '2026-05-10', true],
+    ['quoted stale date', '"2026-05-10"', true],
+  ])('respects the age of a learning with %s', async (_name, date, stale) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-07T12:00:00.000Z'));
+    const learningsDir = path.join(tmpDir, 'learnings');
+    const votesDir = path.join(tmpDir, 'votes');
+    fs.mkdirSync(learningsDir, { recursive: true });
+    fs.mkdirSync(votesDir, { recursive: true });
+    fs.writeFileSync(path.join(learningsDir, 'dated.md'), `---\ntitle: dated\ndate: ${date}\n---\nLearning content.\n`);
+    // Above the ordinary prune threshold, but below the stale-document threshold.
+    makeVotes(votesDir, 'alice', {
+      dated: { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-09-18T12:00:00.000Z' },
+    });
+
+    const candidates = await findPruneCandidates([learningsDir], votesDir);
+
+    expect(candidates).toHaveLength(stale ? 1 : 0);
+    if (stale) expect(candidates[0].reason).toMatch(/^inactive 182d, confidence 0\.26$/);
+  });
+
   it('returns empty for docs with no vote data', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     const votesDir = path.join(tmpDir, 'votes');

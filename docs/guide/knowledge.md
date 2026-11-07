@@ -197,6 +197,8 @@ teamai recall maintenance --update-quality
 
 Digest and maintenance commands (`teamai digest`, `teamai recall maintenance`, and `teamai recall promote`) include the active learnings namespaces for the current scope alongside the shared root.
 
+Maintenance and promotion read a learning's frontmatter `date` whether it is quoted (`date: "2026-03-28"`) or unquoted (`date: 2026-03-28`). A timestamp keeps its time when applying age thresholds.
+
 Confidence is an activity score from 0 to 1, not a probability that the knowledge is correct or a task succeeded. Its upvote-to-recall ratio is capped at 1, so repeated positive feedback cannot exceed that factor's 30% weight. Recency uses the later of the last recall and the last upvote, so a fresh upvote also refreshes recency.
 
 ### Promoting Learnings
