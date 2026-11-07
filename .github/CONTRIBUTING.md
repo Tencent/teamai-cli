@@ -156,7 +156,7 @@ node scripts/check-docs.mjs --write
 node scripts/check-docs.mjs
 ```
 
-For example, an invented `teamai skill gett core` in a served skill fails check mode as an unknown subcommand. Fix the skill text rather than regenerating away that failure. The command's check/write tests live in `scripts/check-docs.test.ts`.
+For example, an invented `teamai skill gett core` in a served skill fails check mode as an unknown subcommand. Fix the skill text rather than regenerating away that failure. The command's check/write tests live in `scripts/check-docs.test.ts`. To iterate on one doc check, add `--only=<check>` (an unknown name lists the valid ones); the generated files are compared on every run.
 
 Iterate on the affected E2E files; run the full suite when changing the E2E runner, shared fixtures, or test isolation:
 
