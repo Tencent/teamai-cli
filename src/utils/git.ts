@@ -393,7 +393,7 @@ export function endProcessTree(pid: number): void {
     return;
   }
 
-  const listed = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' });
+  const listed = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', windowsHide: true });
   const children = new Map<number, number[]>();
 
   for (const line of (listed.stdout ?? '').split('\n')) {

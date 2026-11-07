@@ -182,10 +182,6 @@ describe.runIf(process.platform === 'win32')('background work on Windows outlive
     if (!process.env.GITHUB_ACTIONS) ctx.skip('writes ~/.teamai in the real Windows profile, so it runs on GitHub Actions only');
     const home = os.userInfo().homedir;
     const data = path.join(home, '.teamai');
-    // Earlier steps of the same CI job leave a ~/.teamai behind; set it aside.
-    const kept = `${data}.before-lifetime-b`;
-    if (fs.existsSync(data)) fs.renameSync(data, kept);
-
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lifetime-b-')));
     const app = path.join(root, 'app');
     const gate = path.join(root, 'gate');
@@ -194,6 +190,10 @@ describe.runIf(process.platform === 'win32')('background work on Windows outlive
     const project = path.join(home, '.claude', 'projects', encodeCwdClaude(app));
     fs.mkdirSync(app, { recursive: true });
     write(gateFile, gateScript(entered, gate));
+    // Earlier steps of the same CI job leave a ~/.teamai behind; set it aside
+    // last, so a failed setup never leaves it moved.
+    const kept = `${data}.before-lifetime-b`;
+    if (fs.existsSync(data)) fs.renameSync(data, kept);
 
     try {
       // The team's teamai-finished-sessions replaces the default with one step
