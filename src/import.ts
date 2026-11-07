@@ -76,6 +76,18 @@ function parseMaxFiles(value: string | undefined): number | undefined {
   return parsed;
 }
 
+/** Parse a positive-integer option such as --max-repos; an unset option yields the default. */
+function parsePositiveInt(name: string, value: string | undefined, fallback: number): number {
+  if (value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return parsed;
+}
+
 /**
  * Main entry point for the import command, orchestrating dir, MR, org, and other import flows.
  *
@@ -97,7 +109,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             task.output = `Org: ${opts.fromOrg}`;
             await importFromOrg({
               org: opts.fromOrg!,
-              maxRepos: opts.maxRepos ? parseInt(opts.maxRepos, 10) : 200,
+              maxRepos: parsePositiveInt('--max-repos', opts.maxRepos, 200),
               excludeArchived: opts.excludeArchived ?? true,
               includePattern: opts.includePattern,
               excludePattern: opts.excludePattern,
@@ -124,7 +136,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       const { previewRepoImport, repoSourceOf } = await import('./import-repo.js');
       // An unsupported or unsafe URL is refused before anything is written, the lock included.
       const source = repoSourceOf(fromRepo);
-      const settings = { depth: opts.depth ? parseInt(opts.depth, 10) : 1, forceSsh: opts.ssh ?? false, incremental: opts.incremental ?? false, skipEnrich: opts.skipEnrich ?? false, maxFiles };
+      const settings = { depth: parsePositiveInt('--depth', opts.depth, 1), forceSsh: opts.ssh ?? false, incremental: opts.incremental ?? false, skipEnrich: opts.skipEnrich ?? false, maxFiles };
 
       if (opts.dryRun) {
         log.info(`Importing remote repo: ${source.owner}/${source.repo} (provider: ${source.providerName})`);
