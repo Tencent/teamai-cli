@@ -16,11 +16,16 @@ Thanks for opening a PR! Please fill out this template to help reviewers underst
 
 ## Test Plan
 
-<!-- How did you verify this works? Include commands you ran, new tests added, etc. -->
+<!-- The focused tests or manual checks you ran and what you observed. State anything
+you could not check. "Tests pass" alone is not enough; CI runs the full suite.
+
+For UI changes, include clear before/after screenshots. Include a short recording
+when motion, timing, transitions, or interaction details are needed to demonstrate
+the change. Upload evidence to GitHub and embed or link it here. Never commit PR-only assets. -->
 
 - [ ] `npx tsc --noEmit` passes
 - [ ] `npm run lint` passes
-- [ ] `npx vitest run` passes
+- [ ] The test files that cover what I changed pass (`npx vitest run <test files>`); the full `npx vitest run` passes if the change touches `src/__tests__/helpers/`, a `vitest*.config.ts`, `package.json` or `package-lock.json`. CI runs the full suite on every push to a PR.
 - [ ] Added/updated tests for the change
 
 ## Related Issues
