@@ -158,6 +158,46 @@ describe('team history proof', () => {
     }
   });
 
+  it('uses a lossy clean filter only to shortlist, never to erase a member edit from proof', async () => {
+    const filter = path.join(repo, 'lossy-filter.mjs');
+
+    fs.writeFileSync(filter, [
+      "let input = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { input += chunk; });",
+      "process.stdin.on('end', () => process.stdout.write(input.split(/(?<=\\n)/).filter((line) => !line.startsWith('# local:')).join('')));",
+      '',
+    ].join('\n'));
+    git('config', 'filter.lossy.clean', `node "${filter}"`);
+    commit({
+      '.gitattributes': '*.lossy filter=lossy\n',
+      'rules/proof.lossy': 'Team instructions\n',
+    }, 'lossy filter');
+
+    expect(await matchesHistory(repo, 'rules/proof.lossy', 'Team instructions\n')).toBe(true);
+    expect(await matchesHistory(repo, 'rules/proof.lossy', 'Team instructions\n# local: keep this\n')).toBe(false);
+  });
+
+  it('retains checkout-byte proof for a smudge-only filter that cannot round-trip', async () => {
+    const filter = path.join(repo, 'smudge-filter.mjs');
+
+    fs.writeFileSync(filter, [
+      "let input = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { input += chunk; });",
+      "process.stdin.on('end', () => process.stdout.write(input.replaceAll('TOKEN', 'expanded value')));",
+      '',
+    ].join('\n'));
+    git('config', 'filter.smudge.smudge', `node "${filter}"`);
+    commit({
+      '.gitattributes': '*.smudge filter=smudge\n',
+      'rules/proof.smudge': 'TOKEN\n',
+    }, 'smudge-only filter');
+
+    expect(await matchesHistory(repo, 'rules/proof.smudge', 'expanded value\n')).toBe(true);
+    expect(await matchesHistory(repo, 'rules/proof.smudge', 'member edit\n')).toBe(false);
+  });
+
   it('returns each version\'s content, and null outside a repository', async () => {
     const contents = await historicalContents(repo, 'skills/s/SKILL.md');
     expect(contents?.map((c) => c.content.toString('utf8')).sort()).toEqual(['S v1\n', 'S v2\n']);

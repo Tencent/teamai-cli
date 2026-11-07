@@ -27,7 +27,6 @@ import {
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
-import { loadStateForScope } from './config.js';
 import { installOf, isInstalledFor, locate, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
@@ -455,9 +454,8 @@ export async function buildSkillDirChecks(ctx: DoctorContext): Promise<Check[]> 
   const located = await writableSkillLocations(ctx);
 
   if (located.length === 0) return [];
-  const { checkoutRecordKey } = await import('./pull.js');
-  const key = await checkoutRecordKey(ctx.localConfig);
-  const recorded = key === undefined ? undefined : placesRecordOf((await loadStateForScope(ctx.localConfig)).lastPullByWorkspace?.[key])?.skills;
+  const { deliveringCheckoutRecord } = await import('./pull.js');
+  const recorded = placesRecordOf(await deliveringCheckoutRecord(ctx.localConfig))?.skills;
 
   const unmoved = async (tool: string, where: Location<'skills'>): Promise<boolean> => {
     const wrote = recorded?.[tool];
@@ -669,9 +667,8 @@ export async function buildRecordedPlaceChecks(ctx: DoctorContext, resource: 'ru
 
   if (located.length === 0) return [];
   const words = RECORDED_WORDS[resource];
-  const { checkoutRecordKey } = await import('./pull.js');
-  const key = await checkoutRecordKey(ctx.localConfig);
-  const recorded = key === undefined ? undefined : placesRecordOf((await loadStateForScope(ctx.localConfig)).lastPullByWorkspace?.[key])?.[resource];
+  const { deliveringCheckoutRecord } = await import('./pull.js');
+  const recorded = placesRecordOf(await deliveringCheckoutRecord(ctx.localConfig))?.[resource];
   const checks: Check[] = [];
 
   for (const { tool, own, writes, unread } of located) {
@@ -1591,9 +1588,8 @@ export async function buildAgentPlaceChecks(ctx: DoctorContext): Promise<Check[]
   const located = await writableAgentLocations(ctx);
 
   if (located.length === 0) return [];
-  const { checkoutRecordKey } = await import('./pull.js');
-  const key = await checkoutRecordKey(ctx.localConfig);
-  const recorded = key === undefined ? undefined : placesRecordOf((await loadStateForScope(ctx.localConfig)).lastPullByWorkspace?.[key])?.agents;
+  const { deliveringCheckoutRecord } = await import('./pull.js');
+  const recorded = placesRecordOf(await deliveringCheckoutRecord(ctx.localConfig))?.agents;
   const checks: Check[] = [];
 
   for (const { tool, own, where } of located) {
