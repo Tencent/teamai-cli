@@ -172,7 +172,7 @@ jobs:
 
 ### 一次运行做什么
 
-`self-improvement run` 以输入 `scorer` 和 `suite` 在本地驱动上启动工作流 `teamai-self-improvement`，就像 `benchmark run` 启动 `teamai-benchmark`。teamai 把它作为[默认工作流](workflow.md#默认工作流)提供：
+`self-improvement run` 以输入 `scorer` 和 `suite`，在 `--driver` 指定的驱动上（未指定则用 [`workflows.driver`](reference.md#成员设置) 指定的驱动，都未指定则用本地驱动）启动工作流 `teamai-self-improvement`，就像 `benchmark run` 启动 `teamai-benchmark`。teamai 把它作为[默认工作流](workflow.md#默认工作流)提供：
 
 | 步骤 | 作用 |
 | --- | --- |

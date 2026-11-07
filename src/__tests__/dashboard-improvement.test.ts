@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import YAML from 'yaml';
 import { buildImprovement } from '../dashboard/improvement.js';
 import { improvementClient } from '../dashboard/improvement-client.js';
+import { dashboardMessages } from '../dashboard/locales.js';
+import { syncScorerDefinitions } from '../scorers/cache.js';
+import type { LocalConfig } from '../types.js';
 
 const noMaintenance = { promote: [], prune: [], stale: [] };
 let root: string;
@@ -19,7 +22,13 @@ function writeSkill(namespace: string, name: string): void {
   fs.writeFileSync(path.join(root, 'repo', 'skills', namespace, name, 'SKILL.md'), `# ${name}\n`);
 }
 
-const paths = () => ({ statsDir: path.join(root, 'stats'), knowledgeRoot: path.join(root, 'repo') });
+const paths = () => ({ statsDir: path.join(root, 'stats'), knowledgeRoot: path.join(root, 'repo'), votesDir: path.join(root, 'votes') });
+
+function writeVotes(name: string, votes: Record<string, Record<string, unknown>>): void {
+  fs.mkdirSync(path.join(root, 'votes'), { recursive: true });
+  const at = '2026-10-20T10:00:00.000Z';
+  fs.writeFileSync(path.join(root, 'votes', `${name}.yaml`), YAML.stringify({ version: 2, deltas: {}, votes: Object.fromEntries(Object.entries(votes).map(([doc, v]) => [doc, { last_recalled_at: at, ...v }])) }));
+}
 
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-improvement-')); });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
@@ -139,8 +148,31 @@ describe('the Improvement Center payload', () => {
     });
   });
 
+  it('gives each recalled doc its adoption breakdown, most recalled first, summed over members (#1391)', async () => {
+    writeVotes('ana', { 'pod-startup': { recalled_count: 6, upvoted_count: 3, judge_upvoted_count: 1, judged_count: 2, recalled_session_count: 5 }, retry: { recalled_count: 2, upvoted_count: 0 } });
+    writeVotes('bo', { 'pod-startup': { recalled_count: 5, upvoted_count: 2, judge_upvoted_count: 1, judged_count: 2, recalled_session_count: 5 } });
+
+    const { adoption } = await buildImprovement(paths(), noMaintenance, 0);
+
+    expect(adoption.docs).toEqual([
+      { docId: 'pod-startup', recalledSessions: 10, toolCredits: 3, judgeCredits: 2, judged: 4, ratio: 0.65 },
+      { docId: 'retry', recalledSessions: 2, toolCredits: 0, judgeCredits: 0, judged: 0, ratio: 0 },
+    ]);
+  });
+
+  it('names the default scorers the team replaced, and none without a scope', async () => {
+    const knowledge = path.join(root, 'repo');
+    fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
+    fs.writeFileSync(path.join(knowledge, 'scorers', 'teamai-adoption.md'), '---\nlabels:\n  - { value: used, score: 1, description: "Used {{ doc.id }}." }\n  - { value: unused, score: 0, description: "Did not use {{ doc.id }}." }\npassingScore: 1\nsessions: true\n---\nJudge `{{ doc.id }}`.\n');
+    const scope: LocalConfig = { repo: { localPath: knowledge, remote: 'local' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
+    await syncScorerDefinitions(scope);
+
+    expect((await buildImprovement({ ...paths(), scope }, noMaintenance, 0)).adoption.overriddenScorers).toEqual([{ name: 'teamai-adoption', file: 'scorers/teamai-adoption.md' }]);
+    expect((await buildImprovement(paths(), noMaintenance, 0)).adoption.overriddenScorers).toEqual([]);
+  });
+
   it('reports nothing when the stats directory does not exist', async () => {
-    const data = await buildImprovement({ statsDir: path.join(root, 'missing'), knowledgeRoot: path.join(root, 'missing') }, noMaintenance, 0);
+    const data = await buildImprovement({ statsDir: path.join(root, 'missing'), knowledgeRoot: path.join(root, 'missing'), votesDir: path.join(root, 'missing') }, noMaintenance, 0);
 
     expect(data.members).toBe(0);
     expect(data.skills).toEqual({ teamTotal: 0, used: [], unused: [], outside: [] });
@@ -149,11 +181,11 @@ describe('the Improvement Center payload', () => {
 
 describe('the Improvement Center page', () => {
   const e = (v: unknown) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  const renderPage = (kb: unknown, range = '30'): string => new Function(
+  const renderPage = (kb: unknown, range = '30', tab?: string): string => new Function(
     't', 'e', 'label', 'number', 'when', 'read', 'save', 'kb', 'kbError', 'source', 'errorPanel', 'link', 'trendPanel', 'language', 'render', 'document',
     `${improvementClient}\nreturn improvement();`,
   )(
-    (x: string) => x, e, (x: string) => e(x), String, String, (key: string, d: string) => (key.endsWith('-range') ? range : d), () => undefined, kb, null, () => '', () => '', () => '', () => '', 'en', () => undefined,
+    (x: string) => x, e, (x: string) => e(x), String, String, (key: string, d: string) => (key.endsWith('-range') ? range : key.endsWith('-tab') ? tab ?? d : d), () => undefined, kb, null, () => '', () => '', () => '', () => '', 'en', () => undefined,
     { addEventListener: () => undefined, querySelectorAll: () => [] },
   ) as string;
   const day = (date: string, over: Record<string, number> = {}) => ({ date, ended: 0, succeeded: 0, corrected: 0, prompts: 0, durationMs: 0, costMicros: 0, priced: 0, cacheRead: 0, cacheEligible: 0, members: 0, ...over });
@@ -163,7 +195,10 @@ describe('the Improvement Center page', () => {
     friction: { members: 0, sessions: 0, interrupt: 0, toolReject: 0, correction: 0 },
     skills: { teamTotal: 0, used: [], unused: [], outside: [], ...skills },
     maintenance: { promote: [], prune: [], stale: [], silent: 0 },
+    adoption: { docs: [], overriddenScorers: [] },
   } });
+  const adopting = (adoption: unknown, maintenance: unknown = { promote: [], prune: [], stale: [], silent: 0 }) => ({ improvement: { ...payload(days(1, () => ({}))).improvement, adoption, maintenance } });
+  const pod = { docId: 'pod-startup', recalledSessions: 10, toolCredits: 3, judgeCredits: 2, judged: 4, ratio: 0.65 };
 
   it('escapes a skill name everywhere it renders, including the expansion attribute', () => {
     const evil = '"><img src=x onerror=alert(1)>';
@@ -200,6 +235,68 @@ describe('the Improvement Center page', () => {
 
     expect(small).toContain('>$0.20</text>');
     expect(fractional).toContain('>$2.50</text>');
+  });
+
+  it('offers each promote candidate as a command that lets the AI choose its category', () => {
+    const promote = [{ docId: 'retry', title: 'Retry with backoff', category: 'skills', confidence: 0.95, upvoted: 6, users: 3 }];
+    const html = renderPage({ improvement: { ...payload(days(1, () => ({}))).improvement, maintenance: { promote, prune: [], stale: [], silent: 0 } } }, '30', 'promote');
+
+    expect(html).toContain('data-copy="teamai recall promote retry"');
+    expect(html).toContain('<td data-label="Category">skills</td>');
+    expect(html).not.toContain('--category');
+  });
+
+  it('shows each doc\'s reads, judge verdicts, recalled sessions and adoption ratio, and the default scorers the team replaced (#1391)', () => {
+    const html = renderPage(adopting({ docs: [pod, { ...pod, docId: '<b>evil</b>' }], overriddenScorers: [{ name: 'teamai-adoption', file: 'scorers/teamai-adoption.md' }] }));
+    const row = html.slice(html.indexOf('<tr data-adoption="pod-startup">'), html.indexOf('</tr>', html.indexOf('<tr data-adoption="pod-startup">')));
+
+    expect(row).toContain('<td data-label="Recalled sessions">10</td>');
+    expect(row).toContain('<td data-label="Read">3</td>');
+    expect(row).toContain('<td data-label="Judged adopted">2 / 4</td>');
+    expect(row).toContain('<td data-label="Adoption">65%</td>');
+    expect(html).toContain('teamai-adoption</code> <small>scorers/teamai-adoption.md</small>');
+    expect(html).not.toContain('<b>evil</b>');
+  });
+
+  it('says the team runs teamai\'s default scorers, and that no session recalled a doc yet', () => {
+    const html = renderPage(adopting({ docs: [], overriddenScorers: [] }));
+
+    expect(html).toContain('Your team runs teamai&#39;s default scorers.');
+    expect(html).toContain('No session recalled a team doc yet.');
+  });
+
+  it('gives each maintenance candidate its adoption evidence', () => {
+    const promote = [{ docId: 'pod-startup', title: 'Pod startup', category: 'docs', confidence: 0.92, upvoted: 5, users: 2 }];
+    const html = renderPage(adopting({ docs: [pod], overriddenScorers: [] }, { promote, prune: [], stale: [], silent: 0 }), '30', 'promote');
+
+    expect(html).toContain('<td data-label="Adoption">65% · 3 read · 2 / 4 judged</td>');
+  });
+
+  it('labels every maintenance cell, so a narrow screen can show each candidate as a card with its Copy button', () => {
+    const promote = [{ docId: 'retry', title: 'Retry with backoff', category: 'skills', confidence: 0.95, upvoted: 6, users: 3 }];
+    const prune = [{ name: 'old.md', confidence: 0.1, lastActivity: '2026-01-01', reason: 'inactive' }];
+    const stale = [{ docId: 'tired', type: 'doc', recalled: 9, upvoted: 0, users: 2 }];
+    const tables = ['promote', 'prune', 'stale'].map((tab) => {
+      const html = renderPage(adopting({ docs: [], overriddenScorers: [] }, { promote, prune, stale, silent: 0 }), '30', tab);
+      return html.slice(html.indexOf('<div class="imp-scroll">'), html.indexOf('</table>', html.indexOf('<div class="imp-scroll">')));
+    });
+
+    for (const table of tables) {
+      expect(table).toContain('<table class="maint-table">');
+      expect(table).not.toMatch(/<td>/);
+    }
+    expect(tables[0]).toContain('<td data-label="Category">skills</td>');
+    expect(tables[0]).toContain('<td data-label="Command"><button class="link copy" data-copy="teamai recall promote retry">');
+  });
+
+  it('has a zh-CN translation for every message the adoption panel shows', () => {
+    const asked = new Set<string>();
+    const html = new Function(
+      't', 'e', 'label', 'number', 'when', 'read', 'save', 'kb', 'kbError', 'source', 'errorPanel', 'link', 'trendPanel', 'language', 'render', 'document',
+      `${improvementClient}\nreturn improvement();`,
+    )((x: string) => { asked.add(x); return x; }, e, (x: string) => { asked.add(x); return e(x); }, String, String, (_key: string, d: string) => d, () => undefined, adopting({ docs: [pod], overriddenScorers: [{ name: 'teamai-adoption', file: 'scorers/teamai-adoption.md' }] }), null, () => '', () => '', () => '', () => '', 'en', () => undefined, { addEventListener: () => undefined, querySelectorAll: () => [] }) as string;
+    expect(html).toContain('id="imp-adoption"');
+    expect([...asked].filter((message) => !(message in dashboardMessages))).toEqual([]);
   });
 
   it('labels the skill count as all-time', () => {

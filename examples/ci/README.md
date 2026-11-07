@@ -32,6 +32,40 @@ This directory holds several CI examples: MR knowledge extraction (`*-mr-extract
 4. For Zhiyan / Coding CI (TGit), the MR trigger rules **must be written in the `mr:` block of the YAML**; ticking them only in the UI has no effect.
 5. In write mode the working directory must be the merged source checkout, and the team knowledge repo must be cloned **outside** the checkout (the templates use a sibling directory and `/tmp/teamai-team-repo` respectively). If it is cloned inside the checkout, the CLI skips the `teamwiki/` update and writes only the learning.
 6. GitLab CI (`gitlab-ci-mr-extract.yml`): the credential is `GITLAB_TOKEN` (a GitLab PAT with the `api` scope). GitLab has no native "MR merged" trigger, so the post-merge write stage runs on the default branch's push pipeline and looks the MR up from the merge/squash commit. To reject a suggestion you do not want, add a 👎 award emoji on the MR.
+7. The source checkout needs the merge commit and its parent, so git can tell which files the merge changed: `fetch-depth: 2` or more with `actions/checkout` (its default is 1). GitLab's default `GIT_DEPTH` of 20 is enough.
+8. GitHub calls (the comment, the reactions, the git user) go to `GITHUB_API_URL` when it is set, as GitHub Actions sets it, else to `https://api.github.com`.
+9. No `teamai init` is needed: the command runs the default workflow `teamai-ci-extract-mr` in a temporary scope that it removes at the end. A `--team-repo` with a `teamai.yaml` is that scope's team repo: its `language` and its `workflows/` apply, so a team file `workflows/teamai-ci-extract-mr.yaml` replaces the default.
+
+A minimal post-merge job (GitHub Actions):
+
+```yaml
+write:
+  if: github.event.pull_request.merged == true
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+      with: { ref: "${{ github.event.pull_request.merge_commit_sha }}", fetch-depth: 2, path: source }
+    - uses: actions/checkout@v4
+      with: { repository: myteam/knowledge, token: "${{ secrets.TEAMAI_SYNC_TOKEN }}", path: team-repo }
+    - run: npm install -g teamai-cli @anthropic-ai/claude-code
+    - working-directory: source
+      run: teamai ci extract-mr --url "${{ github.event.pull_request.html_url }}" --mode write --team-repo ../team-repo
+      env:
+        GITHUB_TOKEN: ${{ secrets.TEAMAI_SYNC_TOKEN }}
+        ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+```
+
+It prints:
+
+```text
+✔ MR data fetched
+ℹ ✅ Learning draft generated: Retry uploads on 5xx
+ℹ    Tags: retry, s3
+✔ Learning written: learnings/2026-11-05-Retry-uploads-on-5xx.md
+✔ Pushed to the team repo
+```
+
+A merge that changed source files also prints the `teamwiki/` update before `Learning written`.
 
 ## teamwiki consistency check example (`codebase-lint.yml`)
 

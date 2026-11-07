@@ -493,9 +493,11 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。文件按 `teamai pull` 的方式校验，无效文件在任何评审运行前以 pull 的提示失败。评审方式与缓存的评分器相同，也支持 `--batch` 和在会话内运行。
+推送新建或修改过的评分器之前，可以在团队仓库的本地检出中先拿一个会话试一下。`--scorer` 接受路径：含 `/` 或以 `.md` 结尾的值，相对当前目录。文件按 `teamai pull` 的方式校验，无效文件在任何运行开始前以 pull 的提示失败。该命令在 `--driver` 或 `workflows.driver` 指定的 driver 上启动[默认工作流](workflow.md#默认工作流) `teamai-try-scorer`，都未指定时用 local。它用该文件和 `store: false` 运行两次 [`teamai-score`](#teamai-score-工作流)：一次评判会话，一次只评判会话的第一条提示，然后由 `teamai score report` 读取两次结论。评审方式与缓存的评分器相同，也支持 `--batch`：本机没有工具能按文件的 `model` 或 `isolation` 接手的评审，会让运行以 `confined_pending` 停下等待。
 
 文件的标签从不保存，因此该命令不接受 `--push`，`--run` 也只接受评分器名称，与文件一起给出的评分器名称会被拒绝：请用单独的命令评判它。输出给出标签及其理由，并带 `"stored": false`。旁边的 `stored` 列出本机为该会话和同名评分器保存的最新标签，每个评分标准一条，便于看出修改是否改变了结论。`control` 是用同一文件只对会话的第一条提示再评审一次的结果。它通过时会附带警告：该评分标准会让 agent 什么都没做的会话通过，可能并未评判 agent 的工作。它只警告、从不失败，因为评分标准可能本就是评判提示本身。
+
+`teamai-try-scorer` 是 `invoke: deny`，所以在 agent 会话中该命令返回 `invoke_denied`。请让 agent 使用 `/teamai-new-scorer`：它和你一起编写评分器，以同样的方式在你指定的会话上试用，展示结论，并在把 `scorers/<name>.md` 作为合并请求提交给团队之前征得你的同意。
 
 工作流或整个团队分支用 `teamai pull --team-ref <branch>` 试用（[分发](distribution.md)）。
 
@@ -625,7 +627,7 @@ precision(ops:release) ≈ 31 / (31 + 6) = 84%   不需要时加载了 6 次
 recall(ops:release)    ≈ 31 / (31 + 9) = 78%   需要时没有加载 9 次
 ```
 
-每个技能都用同一份评分标准，只填入技能名和它的命名空间。改写技能描述不会改变评分器的度量，所以改写前后的计数可以直接比较：
+每个技能都用同一份评分标准，只填入技能名。改写技能描述不会改变评分器的度量，所以改写前后的计数可以直接比较：
 
 ```text
 fit     1  <skill> is in skills.used, and the session needed what its description says.
@@ -635,6 +637,8 @@ missed  0  The session needed what the description of <skill> says, <skill> is n
 Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
 ```
 
+这份评分标准是 teamai 的[默认评分器](#默认评分器) `scorers/teamai-routing.md`。团队提交同名文件，就会为每个技能换掉它。
+
 生效的评分器命名空间的 `scoring.yaml` 会覆盖根文件的 `skill_routing`，设为 `false` 时为它的成员关闭路由问题：
 
 ```yaml
@@ -642,7 +646,9 @@ Judge only the team skill <skill>, against its entry in skills.available in evid
 skill_routing: false
 ```
 
-想用自己的评分标准，就保持 `skill_routing` 关闭，为每个技能写一个评分器。下面这个评分器为没有得到 `release` 的会话加了一个 `unavailable` 取值：
+成员在 `config.yaml` 中设置的 `scoring.skill_routing` 优先于团队的。工作区或 self 作用域之下，`~/.teamai/config.yaml` 只能关闭它，因此一台机器永远不会自行开始付费评审。
+
+想用单独的方式评判某个技能，就保持 `skill_routing` 关闭，为每个技能写一个评分器。下面这个评分器为没有得到 `release` 的会话加了一个 `unavailable` 取值：
 
 `scorers/ops/routing-release.md`：
 
@@ -662,6 +668,37 @@ Judge only the team skill `release`, against its entry in `skills.available` in 
 ```
 
 设置 [`batch: true`](#批量评审) 后，一次评审调用回答一个会话中要求同一模型和工具的所有评分器。每个评分器各自抽样会话，所以十个按技能、抽样率 25% 的评分器仍会覆盖约 94% 的会话，而只得到约四分之一的回答。抽样率为 100% 时，同样的调用会回答每个评分器。想少花一些，就调低 `daily_limit`，而不是 `samplingRate`。
+
+#### Recall 采纳
+
+采纳问题判断会话是否用了 `teamai recall` 给它、但它从未打开的每篇文档，例如 recall 子 agent 总结过的文档。会话打开过的文档不经评审直接计分。可以为团队开启，也可以只为自己开启：
+
+```yaml
+# 团队仓库中的 scorers/scoring.yaml
+recall_adoption: true
+```
+
+```yaml
+# ~/.teamai/projects/<project>/config.yaml，单个成员
+scoring:
+  recall_adoption: true
+  sessions: { attended: auto }
+```
+
+成员的 `recall_adoption` 优先于团队的。工作区或 self 作用域之下，`~/.teamai/config.yaml` 只能关闭它，因此一台机器永远不会自行开始付费评审。`TEAMAI_UPVOTE_JUDGE=1` 相当于上面的成员设置（只补成员配置没写的键），`teamai doctor` 会提示它已弃用。
+
+结束的根会话为每篇这样的文档得到一个问题 `teamai:adoption:<hash>`，以文档的投票键命名：
+
+```text
+session 7c1e…  recalled: pod-startup-timeouts, helm-values, retry-policy
+opened by a tool call  → helm-values                      credited, no judge
+teamai:adoption:3f9a1c… (pod-startup-timeouts)  → adopted   upvote, judged_count +1
+teamai:adoption:b27e04… (retry-policy)          → ignored   judged_count +1
+```
+
+评审者在证据的 `recalled/<hash>.md` 中读到会话当时拿到的文档：团队知识根目录下 `.md` 文件的前 1,200 个字符。在那里读不到的文档不提问。这些问题共用一次评审启动，并计入 `daily_limit`。每个根会话中一篇文档只计分一次，读取或判定，以先到者为准；按需再次评审只存标签，不再计分。投票文件被占用时，判定先留在 recall 日志中，下一次 `teamai score` 或 `teamai pull` 写入。recall 日志中的每行最多保留 30 天。日志删掉某会话的全部记录后，再写入的判定不计分，因此暂停这么久的评分运行不会记入采纳；`teamai pull` 也会忘掉该会话已计分的文档。这些计数如何影响置信度见[知识库](knowledge.md#recall-采纳与-upvote)。
+
+评分标准是[默认评分器](#默认评分器) `scorers/teamai-adoption.md`。
 
 ### teamai-finished-sessions
 
@@ -725,13 +762,49 @@ skill:   … last turn of an unattended session → teamai score --drain  # 会�
 
 运行和评分标记都保存在 runner 的数据目录中，因此在 drain 之前被终止的 runner 会丢失那次评审。长期运行的虚拟机在每次任务结束时运行 `teamai score --drain`。
 
+## 默认评分器
+
+teamai 为它按条目生成的每类问题附带一份评分标准，作为默认评分器放在安装包里。团队在 `scorers/` 中放一个同名文件，就会在每个成员下次 `teamai pull` 时替换它：
+
+| 默认评分器 | 提出的问题 | 变量 |
+|---|---|---|
+| `scorers/teamai-routing.md` | 会话得到的每个团队技能一个[路由问题](#技能路由) | `skill.name` |
+| `scorers/teamai-adoption.md` | 会话从未打开的每篇已召回文档一个[采纳问题](#recall-采纳) | `doc.id`、`doc.path`、`doc.file` |
+
+默认评分器是一个评分器文件，文本用 `{{ … }}` 读取变量，按每个条目填入。下面这个评判技能是否值得占用上下文：
+
+`scorers/teamai-routing.md`：
+
+```markdown
+---
+labels:
+  - { value: earned, score: 1, description: "{{ skill.name }} was loaded, and the final reply used what it says." }
+  - { value: skipped, score: 1, description: "{{ skill.name }} was not loaded, and the session did not need it." }
+  - { value: wasted, score: 0, description: "{{ skill.name }} was loaded, and nothing in the final reply used it." }
+  - { value: missed, score: 0, description: "The session needed {{ skill.name }} and did not load it." }
+passingScore: 1
+sessions: true
+---
+Judge only the team skill `{{ skill.name }}`, against its entry in `skills.available` in evidence.json.
+```
+
+文件读取了默认评分器没有提供的变量，或填入变量后不是有效的评分器时，pull 会拒绝它，默认评分器继续生效：
+
+```console
+$ teamai pull
+⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name; teamai's default runs until the file reads only those
+```
+
+像上面那样，把 frontmatter 里的每个 `{{ … }}` 放在双引号字符串中：pull 会用含引号、冒号和换行的值填入文件，只要有一个值破坏 YAML 就拒绝它。这个文件本身不是评分器：步骤不能列出它，`teamai score --scorer teamai-routing` 也找不到它。评分标准一改，每个问题的评分标准哈希就变了，所以新旧标签分开计数，和[任何评分器](#评分器变更时)一样。
+
 ## teamai-score 工作流
 
 `teamai score` 和 `teamai-share-session` 通过启动[默认工作流](workflow.md#默认工作流) `teamai-score` 为一个对象打标签，即已安装包中的 `workflows/teamai-score.yaml`：
 
 ```text
 teamai-score   private, invoke: deny, timeout 336h
-inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named }
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named, files: [string], store: boolean, control: boolean }
+defaults: { inputs: { files: [], store: true, control: false } }
 
 plan           teamai score plan → 各组：共用一次评审调用、走相同阶段的评分器
 score          每组一次：
@@ -740,11 +813,11 @@ score          每组一次：
   judge        限定在证据目录里的提示步骤，除非某个阶段已经判定或设置了 label
   label        teamai score label → 每个评分器的标签
   write        teamai score write → scores/labels.jsonl 和待发布队列
-  publish      teamai score publish → 把本成员待发布的标签发布到 teamai-reports
+  publish      teamai score publish → 把本成员待发布的标签发布到 teamai-reports；store 为 false 时跳过
   settle       teamai score settle，在该组的某个步骤出错之后
 ```
 
-`subject` 为 `run:<run>:<step>:<pass>`、`session:<source>:<id>` 或 `team-session:<author>:<archive>`。运行是 `private` 的：它和评审者的推理都留在本机。`invoke: deny` 让任何 agent 会话都不能启动它，所以 agent 从不为自己的工作打标签。在 `teamai-score` 尝试之外运行的 score 动词返回 `score_attempt_required`。
+`subject` 为 `run:<run>:<step>:<pass>`、`session:<source>:<id>` 或 `team-session:<author>:<archive>`。`files`、`store` 和 `control` 有[默认值](workflow-advanced.md#给输入设默认值)，所以运行 `teamai-score` 的步骤可以不传它们；[`teamai-try-scorer`](#试用评分器文件) 设置它们来用评分器文件评判会话，`store: false` 不写入也不发布任何标签，`control: true` 只评判会话的第一条提示。运行是 `private` 的：它和评审者的推理都留在本机。`invoke: deny` 让任何 agent 会话都不能启动它，所以 agent 从不为自己的工作打标签。在 `teamai-score` 尝试之外运行的 score 动词返回 `score_attempt_required`。
 
 ### 为团队替换它
 
@@ -767,13 +840,13 @@ pull 拒绝改变标签含义的文件，改为运行 teamai 的默认版本：
 
 | 代码 | 该文件 |
 |---|---|
-| `score_override_contract` | 改变了 `inputs` 或任何 `outputs`，去掉了 `private: true`，或把 `invoke` 设为 `deny` 以外的值 |
+| `score_override_contract` | 改变了 `inputs`、它们的 `defaults` 或任何 `outputs`，去掉了 `private: true`，或把 `invoke` 设为 `deny` 以外的值 |
 | `score_override_command` | 运行的命令不是带有 teamai 版本所给参数的 score 动词，给动词的 `env` 不同，或添加了 `finally` 步骤或 `setup` 命令 |
 | `score_override_workflow_step` | 含有内联 `score` 以外的 `workflow:` 步骤 |
 | `score_override_prompt` | 含有不限定在目录里的提示步骤，或列出 `scorers` 的提示步骤 |
 | `score_override_confined_dir` | 把评审者限定在的目录不是它所依赖步骤的输出 |
 | `score_override_judge_prompt` | 评审提示没有读取 `steps.evidence.outputs.rubric` 和 `steps.evidence.outputs.schema` |
-| `score_override_publish` | 运行 `teamai score publish` 却没有 `deliver: publish` 到 `teamai-reports`，或发布到其他分支 |
+| `score_override_publish` | 运行 `teamai score publish` 却没有 `deliver: publish` 到 `teamai-reports`，发布到其他分支，或发布步骤没有 `if: inputs.store`，使只试用评分器的运行也会发布 |
 | `score_override_step_missing` | 去掉或改名了 `plan`、`evidence`、`judge`、`label`、`write`、`publish` 或 `settle`，或在本机有评分器带 check 时去掉了 `check` |
 | `default_override_alias` | 是另一个带 `alias: teamai-score` 的工作流 |
 

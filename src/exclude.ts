@@ -39,12 +39,12 @@ export async function excludeList(_options: GlobalOptions): Promise<void> {
   const excludedSkills = config.excludedSkills ?? [];
 
   if (excludedSkills.length === 0) {
-    log.info('No excluded skills. (pull syncs all role skills)');
+    log.info('Nothing is excluded. (pull syncs all role skills)');
 
     return;
   }
 
-  log.info(`Excluded skills (${excludedSkills.length}):`);
+  log.info(`Excluded (${excludedSkills.length}):`);
 
   for (const skill of excludedSkills) log.dim(`  ${skill}`);
 }
@@ -83,7 +83,7 @@ export async function excludeRemove(skills: string[], options: GlobalOptions): P
   const removed = skills.filter((skill) => existing.delete(skill));
 
   if (removed.length === 0) {
-    log.info('None of those skills were excluded.');
+    log.info('None of those were excluded.');
 
     return;
   }

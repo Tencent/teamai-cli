@@ -61,7 +61,7 @@ sharing:
 
 workflows:
   retention: 14d              # doctor --fix 保留已结算运行所留内容的时长：14d 这样的时长，或 never
-  driver: local                # teamai score、score --drain 和会话启动所启动的运行使用的驱动：local、none 或驱动名
+  driver: local                # teamai score、benchmark run 等启动工作流的命令、score --drain 和会话启动所启动的运行使用的驱动：local、none 或驱动名
 
 ```
 
@@ -113,7 +113,7 @@ ai:
 | 整个团队开启 recall | `sharing: { recall: { enabled: true } }` | 团队的 `teamai.yaml` |
 | 在任何 workspace 都不评判你手动运行的会话 | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
 | 本机把工作流运行留下的内容保留一周（[运行留下的分支](./workflow.md#运行留下的分支)） | `workflows: { retention: 7d }` | `~/.teamai/config.yaml` |
-| 把 `teamai score`、`teamai score --drain` 和会话启动所启动的运行交给本机不运行的驱动 `acme-sandbox`：每个运行都等待它。`workflow start` 和 `resume` 不读取该设置 | `workflows: { driver: acme-sandbox }` | 团队的 `teamai.yaml` |
+| 把 `teamai score`、`teamai benchmark run` 等启动工作流的命令、`teamai score --drain` 和会话启动所启动的运行交给本机不运行的驱动 `acme-sandbox`：每个运行都等待它。`workflow start` 和 `resume` 不读取该设置 | `workflows: { driver: acme-sandbox }` | 团队的 `teamai.yaml` |
 
 `teamai doctor` 会给出它所在 workspace 的配置文件路径。Dashboard 的[成员设置](./dashboard.md#成员设置member-settings)面板会为你选中的 workspace 显示同样的信息。
 
@@ -182,7 +182,7 @@ $ cd ~/work/api && teamai doctor
 
 #### AI 工具（`ai.tool`）
 
-teamai 自身的 AI 调用（enrich、codebase、import、promote、投票评审）使用 teamai 能启动的第一个已安装工具：先是 Claude Code 及其内部版本，然后是 Codex 及其内部版本，再是[工具支持](./tool-support.md)中标记为支持 AI 调用的其他工具。要换用其他工具，指定一个工具 id，例如 `codex`。以下设置中第一个有值的生效：
+teamai 自身的 AI 调用（enrich、codebase、import、promote）使用 teamai 能启动的第一个已安装工具：先是 Claude Code 及其内部版本，然后是 Codex 及其内部版本，再是[工具支持](./tool-support.md)中标记为支持 AI 调用的其他工具。要换用其他工具，指定一个工具 id，例如 `codex`。以下设置中第一个有值的生效：
 
 1. `TEAMAI_AI_TOOL`，作用于单个 shell。
 2. 命令所在的 workspace 或 self 安装的配置 `~/.teamai/projects/<slug>/config.yaml` 中的 `ai.tool`。

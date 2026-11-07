@@ -1,4 +1,4 @@
-import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
+import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, unusedBranchName } from './utils/git.js';
 import { log, spinner } from './utils/logger.js';
 import { createPrWithFallback, providerOpensPullRequests } from './push.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
@@ -73,7 +73,7 @@ export async function pushManifestChange(input: {
     prDescription: string;
 }): Promise<void> {
     const { repoPath, teamConfig, localConfig, commitMsg, prDescription } = input;
-    const branchName = generateBranchName(localConfig.username);
+    const branchName = await unusedBranchName(repoPath, localConfig.username);
 
     try {
         const hasChanges = await pushRepoBranch(

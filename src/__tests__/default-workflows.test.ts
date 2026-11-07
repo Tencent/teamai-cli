@@ -6,6 +6,7 @@ import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { listCachedWorkflows, loadCachedWorkflow, loadWorkflowTree } from '../workflow/cache.js';
+import { renderWorkflowSkill } from '../workflow/discovery/render.js';
 import { startRun } from '../workflow/engine.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { buildStartRecord } from '../workflow/records.js';
@@ -60,14 +61,14 @@ describe('default workflows', () => {
     const shipped = await loadCachedWorkflow(config, 'teamai-share-session');
     expect(shipped).toMatchObject({ source: 'default', relativePath: 'workflows/teamai-share-session.yaml', definition: { name: 'teamai-share-session', invoke: 'ask' } });
     expect(shipped?.teamRevision).toBeUndefined();
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'default']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-ci-extract-mr', 'default'], ['teamai-codebase-deep-enrich', 'default'], ['teamai-codebase-enrich', 'default'], ['teamai-draft-learning-updates', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-import-from-iwiki', 'default'], ['teamai-import-from-mr', 'default'], ['teamai-import-from-repo', 'default'], ['teamai-import-learnings', 'default'], ['teamai-import-rules', 'default'], ['teamai-new-scorer', 'default'], ['teamai-promote-learning', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-learnings-from-sessions', 'default'], ['teamai-share-session', 'default'], ['teamai-try-scorer', 'default']]);
     expect(await loadCachedWorkflow(config, 'session-close')).toBeNull();
 
     writeWorkflow(config, 'teamai-share-session', workflow('teamai-share-session'));
     await syncScorersThenWorkflows(config);
 
     expect(await loadCachedWorkflow(config, 'teamai-share-session')).toMatchObject({ source: 'team', definition: { steps: [{ command: 'node compile.js' }] } });
-    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-session', 'team']]);
+    expect(await sources(config)).toEqual([['build', 'team'], ['teamai-benchmark', 'default'], ['teamai-ci-extract-mr', 'default'], ['teamai-codebase-deep-enrich', 'default'], ['teamai-codebase-enrich', 'default'], ['teamai-draft-learning-updates', 'default'], ['teamai-finished-sessions', 'default'], ['teamai-import-from-iwiki', 'default'], ['teamai-import-from-mr', 'default'], ['teamai-import-from-repo', 'default'], ['teamai-import-learnings', 'default'], ['teamai-import-rules', 'default'], ['teamai-new-scorer', 'default'], ['teamai-promote-learning', 'default'], ['teamai-score', 'default'], ['teamai-self-improvement', 'default'], ['teamai-session-to-task', 'default'], ['teamai-share-learnings', 'default'], ['teamai-share-learnings-from-sessions', 'default'], ['teamai-share-session', 'team'], ['teamai-try-scorer', 'default']]);
   });
 
   it('resolve teamai-session-to-task to the teamai default, interactive and asked before it starts, until the team adds a file of that name', async () => {
@@ -104,6 +105,31 @@ describe('default workflows', () => {
     });
     const tree = await loadWorkflowTree(config, learnings);
     expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-session', 'teamai-score']);
+  });
+
+  it('ask about each finished session to share learnings from, then run teamai-share-learnings on each picked one', async () => {
+    const config = testConfig();
+    await syncScorersThenWorkflows(config);
+
+    const fromSessions = await loadCachedWorkflow(config, 'teamai-share-learnings-from-sessions');
+    if (!fromSessions) throw new Error('teamai-share-learnings-from-sessions is not runnable');
+    expect(fromSessions.definition).toMatchObject({ invoke: 'ask', steps: [{ id: 'sessions', command: 'teamai session list --finished --all --within "$WITHIN" --json', env: { WITHIN: '{{ inputs.within }}' } }, { id: 'pick' }, { id: 'share' }] });
+    const tree = await loadWorkflowTree(config, fromSessions);
+    expect('failed' in tree ? tree.failed : Object.keys(tree.workflows)).toEqual(['teamai-share-learnings', 'teamai-share-session', 'teamai-score']);
+  });
+
+  it('keep the whole description of each one an agent may start in the skill teamai pull generates for it', async () => {
+    const config = testConfig();
+    await syncScorersThenWorkflows(config);
+    const advertised = (await listCachedWorkflows(config)).flatMap(({ definition: { name, alias, description, invoke } }) => (invoke === 'ask' || invoke === 'allow' ? [{ name, alias, description, invoke }] : []));
+
+    expect(advertised.map(({ name }) => name)).toContain('teamai-import-from-mr');
+    for (const { name, alias, description, invoke } of advertised) {
+      const skill = renderWorkflowSkill({ name, alias, description, invoke, source: 'default', skill: name }, 'claude');
+      const kept = JSON.parse(skill.split('\n').find((line) => line.startsWith('description: '))?.slice('description: '.length) ?? '""');
+
+      expect(kept, `${name}: shorten its description so the generated skill keeps all of it`).toContain(description.replace(/\s+/g, ' ').trim().replace(/\.$/, ''));
+    }
   });
 
   it('are never written to the workflow cache', async () => {

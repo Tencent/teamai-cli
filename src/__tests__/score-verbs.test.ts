@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,6 +36,11 @@ import { checkConfinedDir } from '../workflow/confined-place.js';
 import { readRun, RunIdSchema, runScratchDir, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import { PrUrlSchema } from '../workflow/pr-url.js';
+import { recallLogPath } from '../recall-log.js';
+import { readUserVotes } from '../votes.js';
+import { creditAdoptedDocs, drainRecallLog } from '../recall-adoption.js';
+import { acquireLock, releaseLock } from '../update.js';
+import { getVotesDir } from '../types.js';
 
 const external: DriverIdentity = { kind: 'external', machine: 'm1', workspace: '/w' };
 const NOW = '2026-11-03T10:00:00.000Z';
@@ -452,6 +458,21 @@ describe('score plan asks a session\'s routing questions', () => {
     expect(await LabelStore.local(config)).toEqual([expect.objectContaining({ scorer: 'teamai:routing:ops:release', label: 'fit', subject: { platform: 'claude-code', sessionId: 'one' } })]);
   });
 
+  it('labels a routing question with the team\'s scorers/teamai-routing.md, which replaces teamai\'s rubric', async () => {
+    const config = await team({}, { 'teamai-routing': `---
+labels:
+  - { value: helped, score: 1, description: "{{ skill.name }} did what the session asked of it." }
+  - { value: noise, score: 0, description: "{{ skill.name }} was loaded and did nothing." }
+passingScore: 1
+---
+Judge only {{ skill.name }}.
+` });
+    deliveredSession(config);
+    const { answers } = await walk(config, 'session:claude-code:one', { inputs: { scorers: ['teamai:routing:review-notes'], demand: 'named' }, judge: { answer: { label: 'helped', reasoning: 'It wrote the notes.' } } });
+
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'teamai:routing:review-notes', label: 'helped', code: '' }] } });
+  });
+
   it('refuses a routing name that names no skill the session delivered, and says which it did', async () => {
     const config = await team({}, {});
     deliveredSession(config);
@@ -459,6 +480,165 @@ describe('score plan asks a session\'s routing questions', () => {
     expect(await plan(config, ['teamai:routing:deploy'])).toEqual({ ok: false, code: 'scorer_not_found',
       message: 'Scorer teamai:routing:deploy is not a routing question of session:claude-code:one. It names no team skill in this session\'s skills.available: teamai:routing:ops:release, teamai:routing:review-notes.' });
   });
+});
+
+/** A team's scorers/teamai-adoption.md, as the design's example writes it. */
+const ADOPTION_OVERRIDE = `---
+labels:
+  - { value: used, score: 1, description: "The final reply used {{ doc.id }} to decide or to write code." }
+  - { value: unused, score: 0, description: "Nothing in the final reply depends on {{ doc.id }}." }
+passingScore: 1
+sessions: true
+---
+Judge only {{ doc.id }}. Its text is in recalled/{{ doc.file }} in the evidence.
+`;
+
+describe('score plan asks a session\'s adoption questions (#1391)', () => {
+  const RECALLED = ['pod-startup', 'helm-values', 'retry-policy'];
+  const adoption = (doc: string): string => `teamai:adoption:${createHash('sha256').update(doc).digest('hex').slice(0, 12)}`;
+  const docPath = (config: LocalConfig, doc: string): string => path.join(config.repo.localPath, 'docs', `${doc}.md`);
+
+  /** Session `one`, whose recall returned the three team docs an hour before NOW, of which it opened `opened`. */
+  function recalledSession(config: LocalConfig, opened: readonly string[] = ['helm-values']): void {
+    plantSession(path.join(root, 'app'), 'one', 'Why do the pods restart on startup?');
+    fs.mkdirSync(path.join(config.repo.localPath, 'docs'), { recursive: true });
+    for (const doc of RECALLED) fs.writeFileSync(docPath(config, doc), `---\ntitle: ${doc}\n---\nWhat the team knows about ${doc}.\n`);
+    const docs = RECALLED.map((doc) => ({ key: doc, scope: 'project', path: docPath(config, doc), score: 1, eligible: true }));
+    const lines = [
+      { kind: 'run', ts: '2026-11-03T09:00:00.000Z', run: 'run-1', session: 'one', via: 'env', unambiguous: true, docs },
+      ...opened.map((doc, at) => ({ kind: 'evidence', ts: '2026-11-03T09:01:00.000Z', id: `ev-${at}`, session: 'one', path: docPath(config, doc), status: 'success', simple: true })),
+    ];
+    fs.mkdirSync(path.dirname(recallLogPath(config)), { recursive: true });
+    fs.appendFileSync(recallLogPath(config), lines.map((line) => `${JSON.stringify(line)}\n`).join(''));
+  }
+
+  const plan = async (config: LocalConfig, scorers: string[]) => ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: JSON.stringify(scorers), batch: 'false', demand: scorers.length > 0 ? 'named' : 'auto' },
+    (await (await scoreRun(config, { subject: 'session:claude-code:one', scorers, demand: scorers.length > 0 ? 'named' : 'auto' })).next('plan')).ctx);
+
+  it('asks one question per recalled doc the session never opened, in one group, while recall_adoption is on', async () => {
+    const config = await team({}, {});
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'scoring.yaml'), 'recall_adoption: true\n');
+    recalledSession(config);
+
+    expect(await plan(config, [])).toMatchObject({ ok: true, output: { groups: [{ scorers: `${adoption('pod-startup')},${adoption('retry-policy')}` }] } });
+  });
+
+  it('asks none while recall_adoption is off', async () => {
+    const config = await team({}, {});
+    recalledSession(config);
+
+    expect(await plan(config, [])).toMatchObject({ ok: true, output: { groups: [] } });
+  });
+
+  /** A team with recall_adoption on, whose session `one` recalled the three docs and opened helm-values. */
+  async function adopting(): Promise<LocalConfig> {
+    const config = await team({}, {});
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'scoring.yaml'), 'recall_adoption: true\n');
+    recalledSession(config);
+    return config;
+  }
+
+  const verdicts = { [adoption('pod-startup')]: { label: 'adopted', reasoning: 'The reply raised the probe delay as the doc says.' }, [adoption('retry-policy')]: { label: 'ignored', reasoning: 'Nothing retried.' } };
+  const votesOf = async (config: LocalConfig) => (await readUserVotes(path.join(getVotesDir(config), 'tester.yaml'))).votes;
+
+  it('upvotes a doc an adopted label names, as a judge upvote within the total, and counts an ignored one judged', async () => {
+    const config = await adopting();
+    await walk(config, 'session:claude-code:one', { judge: { answer: verdicts } });
+
+    const votes = await votesOf(config);
+    expect(votes['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
+    expect(votes['retry-policy']).toMatchObject({ upvoted_count: 0, judged_count: 1 });
+    expect(votes['helm-values']?.judged_count).toBeUndefined();
+    expect((await LabelStore.local(config)).map((stored) => [stored.scorer, stored.label])).toEqual([[adoption('pod-startup'), 'adopted'], [adoption('retry-policy'), 'ignored']]);
+  });
+
+  it('gives the judge each recalled doc as plan read it, beside the transcript', async () => {
+    const config = await adopting();
+    const asPlanned = fs.readFileSync(docPath(config, 'pod-startup'), 'utf8');
+    const file = `recalled/${createHash('sha256').update('pod-startup').digest('hex').slice(0, 12)}.md`;
+    const seen: { recalled?: string; prompt?: string } = {};
+
+    // The run's scratch directory is removed when it ends, so the judge's files are read while it runs.
+    await walk(config, 'session:claude-code:one', { judge: { answer: verdicts }, after: {
+      plan: async () => fs.writeFileSync(docPath(config, 'pod-startup'), 'Rewritten since.\n'),
+      'score[0].evidence': async (answers) => {
+        const evidence = answers.get('score[0].evidence');
+        const dir = evidence?.ok ? String(evidence.output.dir) : '';
+        seen.recalled = fs.readFileSync(path.join(dir, file), 'utf8');
+        seen.prompt = fs.readFileSync(path.join(dir, 'prompt.md'), 'utf8');
+      },
+    } });
+
+    expect(seen.recalled).toBe(asPlanned);
+    expect(seen.prompt).toContain(file);
+  });
+
+  it('credits a passing label of the team\'s scorers/teamai-adoption.md, which replaces teamai\'s rubric', async () => {
+    const config = await team({}, { 'teamai-adoption': ADOPTION_OVERRIDE });
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'scoring.yaml'), 'recall_adoption: true\n');
+    recalledSession(config);
+    await walk(config, 'session:claude-code:one', { judge: { answer: { [adoption('pod-startup')]: { label: 'used', reasoning: 'It did.' }, [adoption('retry-policy')]: { label: 'unused', reasoning: 'No.' } } } });
+
+    expect((await votesOf(config))['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
+    expect((await LabelStore.local(config)).map(({ label }) => label)).toEqual(['used', 'unused']);
+  });
+
+  it('asks nothing of a recalled doc it cannot read under the knowledge roots', async () => {
+    const config = await adopting();
+    const outside = path.join(root, 'elsewhere.md');
+    fs.writeFileSync(outside, 'Not team knowledge.\n');
+    const run = { kind: 'run', ts: '2026-11-03T09:05:00.000Z', run: 'run-2', session: 'one', via: 'env', unambiguous: true, docs: [{ key: 'elsewhere', scope: 'project', path: outside, score: 1, eligible: true }] };
+    fs.appendFileSync(recallLogPath(config), `${JSON.stringify(run)}\n`);
+
+    expect(await plan(config, [])).toMatchObject({ ok: true, output: { groups: [{ scorers: `${adoption('pod-startup')},${adoption('retry-policy')}` }] } });
+  });
+
+  it('credits a session\'s doc once, however often the session is judged again', async () => {
+    const config = await adopting();
+    await walk(config, 'session:claude-code:one', { judge: { answer: verdicts } });
+    const again = { inputs: { scorers: [adoption('pod-startup'), adoption('retry-policy')], demand: 'named' }, judge: { answer: { [adoption('pod-startup')]: { label: 'adopted', reasoning: 'Again.' }, [adoption('retry-policy')]: { label: 'adopted', reasoning: 'Now it did.' } } } };
+    await walk(config, 'session:claude-code:one', again);
+
+    const votes = await votesOf(config);
+    expect(votes['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
+    expect(votes['retry-policy']).toMatchObject({ upvoted_count: 0, judged_count: 1 });
+  });
+
+  it('asks nothing again of a doc the session was credited for, even under a new rubric', async () => {
+    const config = await adopting();
+    await walk(config, 'session:claude-code:one', { judge: { answer: verdicts } });
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'teamai-adoption.md'), ADOPTION_OVERRIDE);
+    await syncScorersThenWorkflows(config);
+
+    expect(await plan(config, [])).toMatchObject({ ok: true, output: { groups: [] } });
+  });
+
+  it('blocks a later read\'s credit of a doc a label credited in the session', async () => {
+    const config = await adopting();
+    await walk(config, 'session:claude-code:one', { judge: { answer: verdicts } });
+    fs.appendFileSync(recallLogPath(config), `${JSON.stringify({ kind: 'evidence', ts: '2026-11-03T09:30:00.000Z', id: 'ev-late', session: 'one', path: docPath(config, 'retry-policy'), status: 'success', simple: true })}\n`);
+    await creditAdoptedDocs(config, 'one');
+
+    expect((await votesOf(config))['retry-policy']).toMatchObject({ upvoted_count: 0, judged_count: 1 });
+  });
+
+  it('keeps the credit of a label written while the votes file is busy, and writes it once at pull', async () => {
+    const config = await adopting();
+    const lock = `${path.join(getVotesDir(config), 'tester.yaml')}.lock`;
+    fs.mkdirSync(getVotesDir(config), { recursive: true });
+    expect(await acquireLock(lock)).toBe(true);
+    try {
+      const { answers } = await walk(config, 'session:claude-code:one', { judge: { answer: verdicts } });
+      expect(answers.get('score[0].write')).toMatchObject({ ok: true });
+    } finally {
+      await releaseLock(lock);
+    }
+    expect((await votesOf(config))['pod-startup']?.judge_upvoted_count).toBeUndefined();
+
+    await drainRecallLog(config);
+    await drainRecallLog(config);
+    expect((await votesOf(config))['pod-startup']).toMatchObject({ upvoted_count: 1, judge_upvoted_count: 1, judged_count: 1 });
+  }, 30_000);
 });
 
 /** Plans `subject` in a new teamai-score run, reports the plan, and leases the first group's evidence step. */
@@ -911,7 +1091,7 @@ interface Walk {
   /** The ci step's `--wait`; 2h, as shipped, by default. */
   wait?: string;
   /** What happens on this machine once a step reported, by step path. */
-  after?: Record<string, () => Promise<void>>;
+  after?: Record<string, (answers: ReadonlyMap<string, ScoreVerbAnswer>) => Promise<void>>;
 }
 
 /**
@@ -948,7 +1128,7 @@ async function walk(config: LocalConfig, subject: string, { judge, confinedRecor
     answers.set(lease.step, answer);
     // A confined run that failed reports what it spent as tokens, with no confined run, as the local driver does.
     await run.report(taken, answer, id === 'judge' ? (answer.ok ? (confinedRecorded ? { confined: JUDGED } : undefined) : { tokens: { input: 10, output: 2 } }) : undefined);
-    await after[lease.step]?.();
+    await after[lease.step]?.(answers);
   }
 }
 
@@ -1815,5 +1995,54 @@ describe('what teamai score answers for a run its local driver drove', () => {
     expect(await ScoreAnswer.of(config, runId, { error: { code: 'step_failed', message: 'The run failed.' } }, ['quality'])).toBeUndefined();
     expect(await ScoreAnswer.of(config, runId, { data: { run: runId } }, ['quality'])).toBeUndefined();
     expect(await ScoreAnswer.of(config, 'r0000000000000000', { data: { run: 'r0000000000000000', done: { outcome: 'succeeded' } } }, ['quality'])).toBeUndefined();
+  });
+});
+
+describe('scorer files tried in a teamai-score run', () => {
+  const SESSION_KEY = { kind: 'session' as const, subject: { platform: 'claude-code', sessionId: 'one' } };
+
+  /** A team with no scorer, session `one` in its checkout, and the scorer file `<root>/draft/quality.md`. */
+  async function drafted(): Promise<{ config: LocalConfig; file: string }> {
+    const config = await team({}, {});
+    plantSession(config.projectRoot ?? '', 'one', 'Add retries to the client.');
+    const file = path.join(root, 'draft', 'quality.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, scorer({ rate: 0 }));
+    return { config, file };
+  }
+
+  it('labels a session with a file, writes no label and opens no mark when store is false', async () => {
+    const { config, file } = await drafted();
+    const { answers } = await walk(config, 'session:claude-code:one', { judge: { answer: { label: 'good', reasoning: 'It ran the tests.' } }, inputs: { files: [file], store: false, demand: 'named' } });
+
+    expect(answers.get('plan')).toMatchObject({ ok: true, output: { groups: [{ scorers: 'quality' }] } });
+    expect(answers.get('score[0].label')).toEqual({ ok: true, output: { labels: [{ scorer: 'quality', label: 'good', code: '' }] } });
+    expect(answers.get('score[0].write')).toEqual({ ok: true, output: { written: 0, labels: [] } });
+    expect(await LabelStore.local(config)).toEqual([]);
+    const sourceHash = createHash('sha256').update(fs.readFileSync(file, 'utf8')).digest('hex');
+    expect(await Marks.states(config, [{ scorer: 'quality', subject: SESSION_KEY, sourceHash }], markFacts(config, NOW))).toEqual([{ kind: 'unmarked' }]);
+  });
+
+  it('gives the judge the session\'s first prompt alone when control is true', async () => {
+    const { config, file } = await drafted();
+    const seen: { transcript?: string } = {};
+    await walk(config, 'session:claude-code:one', { judge: { answer: { label: 'bad', reasoning: 'Nothing was done.' } }, inputs: { files: [file], store: false, control: true, demand: 'named' }, after: {
+      'score[0].evidence': async (answers) => {
+        const evidence = answers.get('score[0].evidence');
+        seen.transcript = fs.readFileSync(path.join(evidence?.ok ? String(evidence.output.dir) : '', 'transcripts', 'session.md'), 'utf8');
+      },
+    } });
+
+    expect(seen.transcript).toContain('Add retries to the client.');
+    expect(seen.transcript).not.toContain('Reviewed.');
+  });
+
+  it('refuses scorer files in a run that stores its labels, and a file teamai pull would not take', async () => {
+    const { config, file } = await drafted();
+    const planOf = async (inputs: Record<string, unknown>) => ScoreVerbs.plan({ subject: 'session:claude-code:one', scorers: '[]', batch: 'false', demand: 'named' }, (await (await scoreRun(config, { subject: 'session:claude-code:one', demand: 'named', ...inputs })).next('plan')).ctx);
+
+    expect(await planOf({ files: [file], store: true })).toEqual({ ok: false, code: 'invalid_arguments', message: `A scorer file's label is never stored, and this teamai-score run stores its labels: ${file}. Start it with store false.` });
+    fs.writeFileSync(file, scorer().replace('passingScore: 1', 'passingScore: 2'));
+    expect(await planOf({ files: [file], store: false })).toMatchObject({ ok: false, code: 'scorer_invalid' });
   });
 });

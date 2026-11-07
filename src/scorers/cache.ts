@@ -13,6 +13,7 @@ import { isNamespaceDir, resolveResourceNamespaces, type NamespaceDeclarations }
 import { remotelyReachableRevision, revisionHoldsSources, withoutStaleTeamRevision, type ReachableRevision } from '../utils/team-revision.js';
 import { formatScorerDiagnostic, parseScorer, type ScorerDefinition, type ScorerDiagnostic } from './definition.js';
 import type { PinnedScorer } from './pin.js';
+import { DefaultScorers, type DefaultScorerName } from '../default-scorers.js';
 
 export type SyncScorerOptions = { scopeLabel?: string } & (
   | { dryRun?: boolean; everyNamespace?: undefined }
@@ -64,6 +65,32 @@ function cacheDir(config: LocalConfig): string {
 
 function cachePath(config: LocalConfig, name: string): string {
   return path.join(cacheDir(config), `${name}.json`);
+}
+
+/** Where pull keeps a team file that replaces teamai's default scorer `name`, apart from the scorers steps may list. */
+function overridePath(config: LocalConfig, name: DefaultScorerName): string {
+  return path.join(path.dirname(cacheDir(config)), 'defaults', `${name}.json`);
+}
+
+/**
+ * The rubric default scorer `name` fills in here, with the file it reads as: the team's file of that name when the
+ * last pull let it replace the default, else the one teamai ships.
+ */
+export async function defaultScorerRubric(config: LocalConfig, name: DefaultScorerName): Promise<{ file: string; content: string; overridden: boolean }> {
+  const raw = await readFileSafe(overridePath(config, name));
+  let entry: CacheEntry | undefined;
+
+  try {
+    const parsed = raw === null ? undefined : CacheEntrySchema.safeParse(JSON.parse(raw));
+    entry = parsed?.success ? parsed.data : undefined;
+  } catch {
+    entry = undefined;
+  }
+
+  // Checked again, so a file an older teamai let through runs only while this one would too.
+  if (entry && DefaultScorers.problems(name, entry.relativePath, entry.content).length === 0) return { file: entry.relativePath, content: entry.content, overridden: true };
+
+  return { file: `scorers/${name}.md`, content: DefaultScorers.shipped(name), overridden: false };
 }
 
 async function readCache(config: LocalConfig, name: string): Promise<CacheEntry | null> {
@@ -255,12 +282,26 @@ export async function syncScorerDefinitions(config: LocalConfig, options: SyncSc
   // Asked on the first valid file: a team without scorers starts no git here.
   let reachable: Promise<ReachableRevision | undefined> | undefined;
   let wrote = 0;
+  const overrides = new Set<DefaultScorerName>();
 
   for (const { relativePath, full } of files) {
     const content = await readFileSafe(full);
 
     if (content === null) {
       result.invalid.push({ file: relativePath, message: 'could not be read' });
+      continue;
+    }
+
+    const stem = path.posix.basename(relativePath, '.md');
+
+    if (DefaultScorers.isName(stem)) {
+      const refused = DefaultScorers.problems(stem, relativePath, content);
+      result.invalid.push(...refused);
+
+      if (refused.length > 0) continue;
+      overrides.add(stem);
+
+      if (!options.dryRun) await writeJsonAtomic(overridePath(config, stem), { relativePath, sourceHash: scorerSourceHash(content), content, validatedAt: new Date().toISOString() } satisfies CacheEntry);
       continue;
     }
 
@@ -299,7 +340,12 @@ export async function syncScorerDefinitions(config: LocalConfig, options: SyncSc
     wrote += 1;
   }
 
-  if (!options.dryRun) await dropUnsettled(config, new Set(result.cached));
+  if (!options.dryRun) {
+    await dropUnsettled(config, new Set(result.cached));
+
+    for (const name of DefaultScorers.NAMES) if (!overrides.has(name)) await remove(overridePath(config, name));
+  }
+
   result.invalid.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0));
   result.verified.sort();
 

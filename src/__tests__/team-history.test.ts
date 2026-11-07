@@ -144,6 +144,20 @@ describe('team history proof', () => {
     expect(await matchesHistory(repo, 'rules/a.md', 'A side\n', render)).toBe(false);
   });
 
+  it('proves CRLF copies using checkout filters without accepting edits or binary changes', async () => {
+    git('config', 'core.autocrlf', 'true');
+    try {
+      expect(await matchesHistory(repo, 'rules/a.md', 'A v1\r\n')).toBe(true);
+      expect(await matchesHistory(repo, 'skills/s/ref.md', 'R v1\r\n')).toBe(true);
+      expect(await matchesHistory(repo, 'rules/a.md', 'A edited\r\n')).toBe(false);
+      commit({ '.gitattributes': '*.bin -text\n', 'skills/s/data.bin': 'a\0b\n' }, 'binary');
+      expect(await matchesHistory(repo, 'skills/s/data.bin', Buffer.from('a\0b\r\n'))).toBe(false);
+      expect(await matchesHistory(repo, 'skills/s/data.bin', Buffer.from('a\0b\n'))).toBe(true);
+    } finally {
+      git('config', 'core.autocrlf', 'false');
+    }
+  });
+
   it('returns each version\'s content, and null outside a repository', async () => {
     const contents = await historicalContents(repo, 'skills/s/SKILL.md');
     expect(contents?.map((c) => c.content.toString('utf8')).sort()).toEqual(['S v1\n', 'S v2\n']);

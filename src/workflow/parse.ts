@@ -2,7 +2,7 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  confinedTemplateErrors, findTemplate, modelTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
+  confinedTemplateErrors, findTemplate, maxParallelTemplateErrors, modelTemplateErrors, writesTemplateErrors, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, TeamPlace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
@@ -16,7 +16,8 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
-import { isDataBranch } from '../types.js';
+import { isDataBranch, JsonValueSchema, type JsonValue } from '../types.js';
+import { outputMismatch } from './output.js';
 import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
@@ -25,6 +26,7 @@ import type { StepModel } from './step-model.js';
 import { ClonePlaceSchema } from './clone.js';
 import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
 import { sameEnvName } from '../resources/env-key.js';
+import { Writes } from './writes.js';
 
 /**
  * The first release that reads `invoke` and `alias`. An older CLI refuses either as an unknown key and drops the
@@ -40,7 +42,7 @@ export const STEP_ROLE_SINCE = '0.29.0';
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'workspace', 'steps', 'finally', 'invoke', 'alias', 'private']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver', 'continue_on_failure']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'writes', 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver', 'continue_on_failure']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
@@ -54,6 +56,12 @@ const ACTIONLESS_KEYS = new Set(['id', 'needs', 'if', 'end', 'approve', 'choose'
  * its only readable root, so no key that names a tool, an agent, a session, a role, a person or what it may change.
  */
 const CONFINED_STEP_KEYS = new Set(['id', 'needs', 'if', 'prompt', 'prompt_file', 'with', 'model', 'output', 'end', 'loop', 'break', 'timeout', 'requires', 'workspace', 'continue_on_failure']);
+
+/**
+ * What an answer step may carry: one prompt the member's AI tool answers, read-only and with no session, in the checkout
+ * or with `workspace: new` in a worktree of its own, so no key that names a tool, an agent, a model, a role or a person.
+ */
+const ANSWER_STEP_KEYS = new Set(['id', 'needs', 'if', 'answer', 'output', 'end', 'loop', 'break', 'for_each', 'timeout', 'continue_on_failure', 'workspace']);
 
 /** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
 const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
@@ -310,7 +318,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   }
 
   const defaultsPair = root.items.find((pair) => scalarString(pair.key) === 'defaults');
-  const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx) : undefined;
+  const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx, inputs) : undefined;
   const timeoutPair = root.items.find((pair) => scalarString(pair.key) === 'timeout');
   const timeout = timeoutPair ? parseTimeout(timeoutPair.value ?? timeoutPair.key, 'timeout', ctx) : undefined;
   const budgetPair = root.items.find((pair) => scalarString(pair.key) === 'budget');
@@ -527,6 +535,8 @@ function parseBody(
       const prompt = scalarString(promptPair?.value);
       const promptFilePair = item.items.find((pair) => scalarString(pair.key) === 'prompt_file');
       const promptFile = scalarString(promptFilePair?.value);
+      const answerPair = item.items.find((pair) => scalarString(pair.key) === 'answer');
+      const answer = scalarString(answerPair?.value);
       const workflowPair = item.items.find((pair) => scalarString(pair.key) === 'workflow');
       const workflow = scalarString(workflowPair?.value)?.trim();
       const forEachPair = item.items.find((pair) => scalarString(pair.key) === 'for_each');
@@ -619,6 +629,26 @@ function parseBody(
         diagnostics.push(locate(file, lineCounter, promptPair.value ?? promptPair.key ?? item, `${field}.prompt`, 'prompt must be a non-empty string'));
       }
 
+      if (answerPair) {
+        if (answer === undefined || answer.trim() === '') {
+          diagnostics.push(locate(file, lineCounter, answerPair.value ?? answerPair.key ?? item, `${field}.answer`, 'answer must be a non-empty string'));
+        }
+
+        for (const pair of item.items) {
+          const key = scalarString(pair.key);
+
+          if (key !== undefined && STEP_KEYS.has(key) && !ANSWER_STEP_KEYS.has(key) && !ACTION_KEYS.includes(key)) {
+            diagnostics.push(locate(file, lineCounter, pair.key, `${field}.${key}`, `${stepLabel} answer takes no ${key}: the member's AI tool answers its prompt with text, in the checkout read-only`));
+          }
+        }
+
+        const outputValue = item.items.find((pair) => scalarString(pair.key) === 'output')?.value;
+
+        if (!isMap(outputValue)) {
+          diagnostics.push(locate(file, lineCounter, outputValue ?? answerPair.key ?? item, `${field}.output`, `${stepLabel} answer needs output: { text: string } to take the reply as text, or the fields of the JSON object the reply holds`));
+        }
+      }
+
       if (promptFilePair) {
         if (!isPromptFilePath(promptFile)) {
           diagnostics.push(locate(file, lineCounter, promptFilePair.value ?? promptFilePair.key ?? item, `${field}.prompt_file`, 'prompt_file must be a relative path under prompts/'));
@@ -700,6 +730,14 @@ function parseBody(
 
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, stepLabel, ctx) : undefined;
+      const writesPair = item.items.find((pair) => scalarString(pair.key) === 'writes');
+      const writes = writesPair && commandPair ? parseWrites(writesPair.value ?? writesPair.key, `${field}.writes`, stepLabel, ctx) : undefined;
+
+      // A step with no action already reports every key it may not carry.
+      if (writesPair && !commandPair && actions.length > 0) {
+        diagnostics.push(locate(file, lineCounter, writesPair.key, `${field}.writes`, `${stepLabel} writes is only allowed on a command step`));
+      }
+
       const withPair = item.items.find((pair) => scalarString(pair.key) === 'with');
       let withValues: WorkflowStep['with'];
 
@@ -763,6 +801,13 @@ function parseBody(
 
       const confined = workspace instanceof Object && 'confined' in workspace;
 
+      if (answerPair && workspace !== undefined && workspace !== 'new' && !confined) {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair?.value ?? item, `${field}.workspace`, `${stepLabel} answer takes workspace only as new: a worktree of its own, which it reads and leaves as it found it`),
+          code: 'bad_workspace',
+        });
+      }
+
       if (workspacePair && confined) {
         const refuse = (node: Node | null | undefined, where: string, message: string): void => {
           diagnostics.push({ ...locate(file, lineCounter, node ?? item, where, `${stepLabel} workspace confined ${message}`), code: 'bad_workspace' });
@@ -786,11 +831,14 @@ function parseBody(
       const promptModel = commandPair || workflowPair ? undefined : model;
       const promptWorkspace = confined && (promptPair || promptFilePair) ? workspace : undefined;
 
-      const templates = templatedTexts({ prompt, env, with: withValues, hitl, model: promptModel, workspace: promptWorkspace }).map(({ what, text }) => {
+      const forEach = forEachPair ? parseForEach(forEachPair.value ?? forEachPair.key, `${field}.for_each`, stepLabel, ctx) : undefined;
+
+      const templates = templatedTexts({ prompt, answer, env, with: withValues, hitl, model: promptModel, workspace: promptWorkspace, writes, forEach }).map(({ what, text }) => {
         const name = what.slice(what.indexOf('.') + 1);
 
-        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : what === 'model' ? modelPair?.value
-          : what === 'workspace.confined' ? valueNode(workspacePair?.value, 'confined') : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
+        const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : what === 'answer' ? answerPair?.value : what === 'model' ? modelPair?.value
+          : what === 'workspace.confined' ? valueNode(workspacePair?.value, 'confined') : what.startsWith('writes[') ? writesNode(writesPair?.value, what)
+            : what === 'for_each.max_parallel' ? valueNode(forEachPair?.value, 'max_parallel') : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
 
         return { what, field: `${field}.${what}`, node, text };
       });
@@ -810,6 +858,18 @@ function parseBody(
         if (parsed.ok && template.what === 'model') {
           for (const problem of modelTemplateErrors(template.text, parsed.template)) {
             diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} model template ${problem.source}: ${problem.message}`), code: 'bad_template' });
+          }
+        }
+
+        if (parsed.ok && template.what.startsWith('writes[')) {
+          for (const problem of writesTemplateErrors(parsed.template)) {
+            diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} writes template ${problem.source}: ${problem.message}`), code: 'bad_template' });
+          }
+        }
+
+        if (parsed.ok && template.what === 'for_each.max_parallel') {
+          for (const problem of maxParallelTemplateErrors(template.text, parsed.template, inputs)) {
+            diagnostics.push({ ...locate(file, lineCounter, template.node, template.field, `${stepLabel} for_each.max_parallel template ${problem.source}: ${problem.message}`), code: 'bad_template' });
           }
         }
 
@@ -861,8 +921,6 @@ function parseBody(
         if (!parsed) reject('must be an expression');
         else if (!parsed.ok) reject(`does not parse at column ${parsed.column}: ${parsed.message}`);
       }
-
-      const forEach = forEachPair ? parseForEach(forEachPair.value ?? forEachPair.key, `${field}.for_each`, stepLabel, ctx) : undefined;
 
       if (inGraph) {
         const nodes: Record<StepExpression['what'], Node | null | undefined> = {
@@ -1002,9 +1060,13 @@ function parseBody(
 
         if (env) step.env = env;
 
+        if (writes) step.writes = writes;
+
         if (prompt) step.prompt = prompt;
 
         if (promptFile) step.promptFile = promptFile;
+
+        if (answer) step.answer = answer;
 
         if (inline) step.workflow = inline.workflow;
 
@@ -1312,9 +1374,10 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
   if (!reference.with) return [];
   const inputs = child.inputs ?? {};
   const passed = new Set(reference.with.keys.map((key) => key.name));
+  const defaulted = child.defaults?.inputs ?? {};
 
   return [
-    ...Object.entries(inputs).filter(([name]) => !passed.has(name)).map(([name, type]) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
+    ...Object.entries(inputs).filter(([name]) => !passed.has(name) && !Object.hasOwn(defaulted, name)).map(([name, type]) => locate(file, lineCounter, reference.with?.node, `${field}.with`,
       `${label} with does not pass input "${name}", which workflow "${workflow}" declares as ${declaredType(type)}`)),
     ...reference.with.keys.filter((key) => !Object.hasOwn(inputs, key.name)).map((key) => locate(file, lineCounter, key.node, `${field}.with.${key.name}`,
       `${label} with.${key.name} is not an input workflow "${workflow}" declares`)),
@@ -1437,8 +1500,10 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
 
   const maxNode = map ? valueNode(map, 'max_parallel') : undefined;
   const max = scalarOf(maxNode, z.number());
+  // A template is checked with the step's other templates.
+  const template = max === undefined ? scalarOf(maxNode, z.string()) : undefined;
 
-  if (maxNode && (max === undefined || !Number.isInteger(max) || max < 1)) {
+  if (maxNode && template === undefined && (max === undefined || !Number.isInteger(max) || max < 1)) {
     reject(maxNode, `${field}.max_parallel`, `${label} for_each.max_parallel must be a whole number from 1`);
   }
 
@@ -1446,6 +1511,7 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
   const forEach: ForEach = { items };
 
   if (maxNode && max !== undefined) forEach.maxParallel = max;
+  else if (maxNode && template !== undefined) forEach.maxParallel = { template };
 
   return forEach;
 }
@@ -1517,7 +1583,35 @@ function parseDefaultRole(node: Node | undefined, ctx: ParseContext): string | u
   return undefined;
 }
 
-function parseDefaults(node: Node | null | undefined, ctx: ParseContext): WorkflowDefaults | undefined {
+/** `defaults.inputs`: a value of each input it names, which must be one `inputs` declares and fit its type. */
+function parseDefaultInputs(node: Node | undefined, ctx: ParseContext, declared: Record<string, OutputSchema> | undefined): Record<string, JsonValue> | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+
+  if (!isMap(node)) {
+    diagnostics.push(locate(file, lineCounter, node, 'defaults.inputs', 'defaults.inputs must map input names to their values'));
+
+    return undefined;
+  }
+
+  const values: Record<string, JsonValue> = {};
+
+  for (const pair of node.items) {
+    const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+    const name = scalarString(keyNode) ?? '';
+    const field = `defaults.inputs.${name}`;
+    const valueAt = isYamlNode(pair.value) ? pair.value : undefined;
+    const type = declared?.[name];
+    const value = JsonValueSchema.safeParse(valueAt?.toJSON());
+    const problem = !type ? `${field} is not an input this workflow declares in inputs` : value.success ? outputMismatch(type, value.data, field) : `${field} must be a value`;
+
+    if (problem !== null) diagnostics.push(locate(file, lineCounter, valueAt ?? keyNode ?? node, field, problem));
+    else if (value.success) values[name] = value.data;
+  }
+
+  return values;
+}
+
+function parseDefaults(node: Node | null | undefined, ctx: ParseContext, declared: Record<string, OutputSchema> | undefined): WorkflowDefaults | undefined {
   const { file, lineCounter, diagnostics } = ctx;
 
   if (!isMap(node)) {
@@ -1530,19 +1624,21 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   let scorers: { batch: boolean } | undefined;
   let requires: Requirements | undefined;
   let role: string | undefined;
+  let inputs: Record<string, JsonValue> | undefined;
 
   for (const pair of node.items) {
     const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
     const key = scalarString(keyNode);
 
     if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
+    else if (key === 'inputs') inputs = parseDefaultInputs(valueNode(node, 'inputs'), ctx, declared);
     else if (key === 'role') role = parseDefaultRole(valueNode(node, 'role'), ctx);
     else if (key === 'scorers') scorers = parseDefaultScorers(valueNode(node, 'scorers'), ctx);
     else if (key === 'requires') requires = parseRequires(valueNode(node, 'requires'), 'defaults.requires', ctx);
     else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
   }
 
-  if (model === undefined && scorers === undefined && requires === undefined && role === undefined) return undefined;
+  if (model === undefined && scorers === undefined && requires === undefined && role === undefined && inputs === undefined) return undefined;
   const defaults: WorkflowDefaults = {};
 
   if (model !== undefined) defaults.model = model;
@@ -1552,6 +1648,8 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   if (requires) defaults.requires = requires;
 
   if (role !== undefined) defaults.role = role;
+
+  if (inputs) defaults.inputs = inputs;
 
   return defaults;
 }
@@ -1905,6 +2003,36 @@ function parseBudget(node: Node | null | undefined, field: string, ctx: ParseCon
 }
 
 /** `env` maps variable names to text. A YAML number or boolean is read as its text. */
+/** The paths a command step's `writes` lists, each relative to the checkout and inside it, or undefined when it lists none. */
+function parseWrites(node: Node | null | undefined, field: string, label: string, ctx: ParseContext): string[] | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+
+  if (!isSeq(node) || node.items.length === 0) {
+    diagnostics.push(locate(file, lineCounter, node, field, `${label} writes must be a list of paths, such as [docs/]`));
+
+    return undefined;
+  }
+
+  const paths = node.items.map((entry, index) => {
+    const written = scalarString(isYamlNode(entry) ? entry : undefined);
+
+    if (written === undefined || (!findTemplate(written, false) && !Writes.isCheckoutPath(written))) {
+      diagnostics.push(locate(file, lineCounter, isYamlNode(entry) ? entry : node, `${field}[${index}]`, `${label} writes must list paths relative to the checkout, such as docs/, none absolute and none leaving it; name a directory elsewhere with an input, such as "{{ inputs.dir }}"`));
+    }
+
+    return written ?? '';
+  });
+
+  return paths;
+}
+
+/** The node of `writes[<n>]` in the list `node`, as `what` names it. */
+function writesNode(node: Node | null | undefined, what: string): Node | undefined {
+  const entry = isSeq(node) ? node.items[Number(what.slice('writes['.length, -1))] : undefined;
+
+  return isYamlNode(entry) ? entry : undefined;
+}
+
 function parseEnv(node: Node | null | undefined, field: string, label: string, ctx: ParseContext): Record<string, string> | undefined {
   const { file, lineCounter, diagnostics } = ctx;
 

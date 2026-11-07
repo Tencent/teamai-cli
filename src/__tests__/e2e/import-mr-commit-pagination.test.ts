@@ -43,17 +43,36 @@ process.stdin.on('end', () => {
 import childProcess from 'node:child_process';
 import http from 'node:http';
 import https from 'node:https';
+import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-const execSync = childProcess.execSync;
-childProcess.execSync = (command, ...args) => {
-  if (command.startsWith('gh pr ')) throw new Error('gh unavailable in fixture');
-  return execSync(command, ...args);
-};
 const execFileSync = childProcess.execFileSync;
 childProcess.execFileSync = (command, args, ...rest) => {
-  if ((command === 'where' || command === 'which') && args[0] === 'claude'
-    || (command === 'bash' || command === 'zsh') && args[1] === 'command -v claude') return process.execPath;
+  const tool = command === 'where' ? args[0].replace(/^\\$PATH:/, '')
+    : command === 'which' ? args[0] : args.at(-1);
+  if (tool === 'gh') {
+    if (process.env.USE_GH !== '1') throw new Error('gh unavailable in fixture');
+    return process.execPath;
+  }
+  if (tool === 'claude') return process.execPath;
   return execFileSync(command, args, ...rest);
+};
+const spawnSync = childProcess.spawnSync;
+childProcess.spawnSync = (command, args, options) => {
+  if (command !== process.execPath || !['pr', 'api'].includes(args[0])) return spawnSync(command, args, options);
+  const commits = ${JSON.stringify(COMMITS)};
+  let stdout;
+  if (args[0] === 'pr' && args[1] === 'view') stdout = JSON.stringify({
+    title: 'Preserved history', body: '', author: { login: 'dev' }, mergedAt: null,
+    commits: commits.slice(0, 100).map((c) => ({ oid: c.sha, messageHeadline: c.commit.message.split('\\n')[0] })),
+  });
+  else if (args[0] === 'pr' && args[1] === 'diff') stdout = 'diff --git a/a b/a\\n+fixed\\n';
+  else if (args[0] === 'api') {
+    const page = Number(new URL(args[1], 'https://api.github.com').searchParams.get('page'));
+    fs.appendFileSync(process.env.GH_PAGES_FILE, page + '\\n');
+    if (process.env.FAIL_SECOND_PAGE === '1' && page === 2) return { status: 1, stdout: '', stderr: 'HTTP 429' };
+    stdout = JSON.stringify(commits.slice((page - 1) * 100, page * 100));
+  } else throw new Error('Unexpected gh call: ' + args);
+  return { status: 0, stdout, stderr: '' };
 };
 const spawn = childProcess.spawn;
 childProcess.spawn = (command, args, options) => {
@@ -70,7 +89,7 @@ syncBuiltinESMExports();
 
   afterEach(() => { if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true }); });
 
-  it.each([false, true])('reads later commits before extraction (second page fails: %s)', async (failSecondPage) => {
+  it.each([[false, false], [false, true], [true, false], [true, true]])('reads later commits before extraction (gh: %s, second page fails: %s)', async (useGh, failSecondPage) => {
     const pages: number[] = [];
     const server = http.createServer((req, res) => {
       const url = new URL(req.url!, 'http://fixture');
@@ -98,16 +117,20 @@ syncBuiltinESMExports();
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Expected a TCP address');
       const promptFile = path.join(sandbox, 'prompt.txt');
+      const ghPagesFile = path.join(sandbox, 'gh-pages.txt');
       const outputDir = path.join(sandbox, 'output');
       const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
         const child = spawn(process.execPath, [
-          '--import', pathToFileURL(preload).href, CLI, 'import', '--from-mr', 'https://github.com/team/repo/pull/42',
+          CLI, 'import', '--from-mr', 'https://github.com/team/repo/pull/42',
           '--all', '--no-discussions', '--output', outputDir,
         ], {
           cwd: sandbox,
           env: {
             ...process.env, HOME: sandbox, USERPROFILE: sandbox, FORCE_COLOR: '0',
             GITHUB_TOKEN: '', GH_TOKEN: '', FIXTURE_PORT: String(address.port), PROMPT_FILE: promptFile,
+            USE_GH: useGh ? '1' : '0', GH_PAGES_FILE: ghPagesFile, FAIL_SECOND_PAGE: failSecondPage ? '1' : '0',
+            // Each step of the run is a process of its own, which loads the fixture too.
+            NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
           },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -119,7 +142,8 @@ syncBuiltinESMExports();
         child.on('close', (code) => { clearTimeout(timer); resolve({ code, output }); });
       });
       expect(result.code, result.output).toBe(failSecondPage ? 1 : 0);
-      expect(pages).toEqual([1, 2]);
+      expect(pages).toEqual(useGh && !failSecondPage ? [] : [1, 2]);
+      if (useGh) expect(fs.readFileSync(ghPagesFile, 'utf8')).toBe('1\n2\n');
       if (failSecondPage) {
         expect(result.output).toContain('GitHub API error 429');
         expect(fs.existsSync(promptFile)).toBe(false);

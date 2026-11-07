@@ -2,7 +2,7 @@
 /**
  * iwiki review apply 闭环 e2e 测试
  *
- * 验证从 importFromIWikiDual(requireReview:true) 写入 pending-review.jsonl，
+ * 验证从 writeSections(review:true) 写入 pending-review.jsonl，
  * 到 reviewCmd(apply:true) 将章节 patch 进 external-knowledge.md 的完整链路。
  * 关键点：patchManagedSection 必须能识别 --from-iwiki 锚点（Blocker 1 修复验证）。
  */
@@ -13,27 +13,6 @@ import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
 
-// ─── Mocks ──────────────────────────────────────────────
-
-vi.mock('../tool-launch/call.js', () => ({
-    callTool: vi.fn(),
-}));
-
-vi.mock('../utils/iwiki-client.js', () => ({
-    IWikiClient: vi.fn().mockImplementation(function () {
-        return {
-            fetchAllPages: vi.fn().mockResolvedValue([
-                { docid: '456', title: 'Test Wiki Page' },
-            ]),
-            getDocument: vi.fn().mockResolvedValue({
-                docid: '456',
-                title: 'Test Wiki Page',
-                content: '这是测试内容，包含业务接口和外部知识',
-            }),
-        };
-    }),
-}));
-
 vi.mock('../utils/prompt.js', () => ({
     askQuestion: vi.fn().mockResolvedValue('y'),
     askConfirmation: vi.fn().mockResolvedValue(true),
@@ -41,10 +20,9 @@ vi.mock('../utils/prompt.js', () => ({
 
 // ─── Imports (after mocks) ───────────────────────────────
 
-import { importFromIWikiDual } from '../iwiki-dual.js';
+import { writeSections } from '../iwiki-dual.js';
 import { reviewCmd } from '../review-cmd.js';
 import { loadPendingReview } from '../review-store.js';
-import { callTool } from '../tool-launch/call.js';
 
 // ─── 常量 ────────────────────────────────────────────────
 
@@ -77,6 +55,18 @@ function buildSkeletonMd(): string {
 
 // ─── 辅助 ────────────────────────────────────────────────
 
+/** write-sections as teamai-import-from-iwiki runs it with --require-review, after the AI tool replied AI_OUTPUT. */
+function queueSections(cwd: string) {
+    return writeSections({
+        source: 'iwiki://456',
+        reply: AI_OUTPUT,
+        failure: '',
+        sectionsDir: path.join(cwd, 'docs', 'team-codebase'),
+        reviewDir: cwd,
+        review: 'true',
+    });
+}
+
 async function makeWorkdir(): Promise<string> {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-iwiki-apply-e2e-'));
     await fs.ensureDir(path.join(tmpDir, '.teamai'));
@@ -94,7 +84,6 @@ describe('iwiki review apply 闭环 e2e', () => {
         originalCwd = process.cwd();
         process.chdir(cwd);
         vi.clearAllMocks();
-        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: AI_OUTPUT, tool: 'claude' });
     });
 
     afterEach(async () => {
@@ -102,15 +91,8 @@ describe('iwiki review apply 闭环 e2e', () => {
         await fs.remove(cwd);
     });
 
-    it('importFromIWikiDual(requireReview:true) 写入 pending-review.jsonl', async () => {
-        const result = await importFromIWikiDual({
-            input: '456',
-            token: 'fake-token',
-            sections: ['external-knowledge'],
-            requireReview: true,
-        });
-
-        expect(result.pendingReview).toBe(true);
+    it('writeSections(review:true) 写入 pending-review.jsonl', async () => {
+        await queueSections(cwd);
 
         const items = await loadPendingReview(cwd);
         expect(items.length).toBeGreaterThan(0);
@@ -129,13 +111,8 @@ describe('iwiki review apply 闭环 e2e', () => {
         const ekPath = path.join(ekDir, 'external-knowledge.md');
         await fs.writeFile(ekPath, buildSkeletonMd(), 'utf8');
 
-        // 2. 写入 pending-review 条目（模拟 importFromIWikiDual requireReview 的产物）
-        await importFromIWikiDual({
-            input: '456',
-            token: 'fake-token',
-            sections: ['external-knowledge'],
-            requireReview: true,
-        });
+        // 2. 写入 pending-review 条目（write-sections 在 --require-review 下的产物）
+        await queueSections(cwd);
 
         const items = await loadPendingReview(cwd);
         const item = items.find((i) => i.target.section === 'external-knowledge');

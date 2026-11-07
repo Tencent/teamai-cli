@@ -10,7 +10,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { installOf, locate, ownOf, writable } from '../locate.js';
-import { DEFAULT_TOOL_PATHS } from '../types.js';
+import { DEFAULT_TOOL_PATHS, scopedToolPaths } from '../types.js';
 import type { Host } from '../tool-home.js';
 
 const HOME = '/home/member';
@@ -240,5 +240,70 @@ describe('the live root is install proof for every surface teamai writes (#1273)
     expect(writable(mcp)?.path).toBe(`${HOME}/.workbuddy/.mcp.json`);
     const agents = await locate('workbuddy', 'agents', install, host);
     expect(writable(agents)?.path).toBe(`${HOME}/.workbuddy/agents`);
+  });
+});
+
+describe('the live-root swap takes only the leaves it delivers (#1273)', () => {
+  // WorkBuddy AI launched after WorkBuddy, so its root is the live one.
+  const aiLive = (): Host => hostWith(
+    [`${HOME}/.workbuddy`, `${HOME}/.workbuddy-ai`],
+    {
+      [`${HOME}/.workbuddy/last-launch.json`]: launch('2026-11-02T12:25:00.628Z'),
+      [`${HOME}/.workbuddy-ai/last-launch.json`]: launch('2026-11-06T00:24:14.713Z'),
+    },
+  );
+
+  it('leaves settings.json where hooks are resolved from it', async () => {
+    const install = installOf({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user', repo: {} });
+    const hooks = await locate('workbuddy', 'hooks', install, aiLive());
+    // Hooks still land in `.workbuddy/`, so the file that holds them must not
+    // follow the live root: reporting the AI settings file would name a
+    // delivery pull never makes.
+    expect(ownOf(hooks)?.path).toBe(`${HOME}/.workbuddy/settings.json`);
+
+    const skills = await locate('workbuddy', 'skills', install, aiLive());
+    expect(ownOf(skills)?.path).toBe(`${HOME}/.workbuddy-ai/skills`);
+  });
+
+  it('keeps the destination a team userScope override names', async () => {
+    const teamPaths = {
+      workbuddy: { ...DEFAULT_TOOL_PATHS.workbuddy, userScope: { rules: '.workbuddy/shared-rules', agents: '.workbuddy/agents' } },
+    };
+    const install = installOf({ toolPaths: teamPaths }, { scope: 'user', repo: {} });
+
+    const rules = await locate('workbuddy', 'rules', install, aiLive());
+    expect(writable(rules)?.path).toBe(`${HOME}/.workbuddy/shared-rules`);
+
+    const agents = await locate('workbuddy', 'agents', install, aiLive());
+    expect(writable(agents)?.path).toBe(`${HOME}/.workbuddy-ai/agents`);
+  });
+});
+
+describe('the swap reads the home it was handed (#1273)', () => {
+  // The inspected machine runs WorkBuddy AI; this one runs WorkBuddy. A swap
+  // that reads the process home answers for the wrong machine.
+  const at = (launches: Readonly<Record<string, string>>, aiPresent: boolean) => ({
+    home: '/home/other',
+    path: path.posix,
+    readTextNow: (file: string) => launches[file] ?? null,
+    existsNow: (file: string) => aiPresent && file === '/home/other/.workbuddy-ai',
+  });
+
+  it('moves the user paths when the inspected home launched the other app', () => {
+    const out = scopedToolPaths({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user' }, at({
+      '/home/other/.workbuddy/last-launch.json': launch('2026-11-02T12:25:00.628Z'),
+      '/home/other/.workbuddy-ai/last-launch.json': launch('2026-11-06T00:24:14.713Z'),
+    }, true));
+    expect(out.workbuddy.userScope?.rules).toBe('.workbuddy-ai/rules');
+    expect(out.workbuddy.mcp).toBe('.workbuddy-ai/mcp.json');
+  });
+
+  it('keeps them when the inspected home launched the default app', () => {
+    const out = scopedToolPaths({ toolPaths: DEFAULT_TOOL_PATHS }, { scope: 'user' }, at({
+      '/home/other/.workbuddy/last-launch.json': launch('2026-11-06T00:24:14.713Z'),
+      '/home/other/.workbuddy-ai/last-launch.json': launch('2026-11-02T12:25:00.628Z'),
+    }, true));
+    expect(out.workbuddy.userScope?.rules).toBe('.workbuddy/rules');
+    expect(out.workbuddy.skills).toBe('.workbuddy/skills');
   });
 });

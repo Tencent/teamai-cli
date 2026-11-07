@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createGit, DetachedTeamRepoError, getDefaultBranch, pullRepo, remotesMatch } from './utils/git.js';
+import { createGit, createGitWithBlockTimeout, DetachedTeamRepoError, getDefaultBranch, pullRepo, remotesMatch } from './utils/git.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 
 export type ResolvedTeamRef = { ref: string; kind: 'branch' | 'tag' | 'commit'; commit: string };
@@ -105,7 +105,7 @@ export async function transitionTeamRepo(
 
   try {
     const git = createGit(localPath, signal);
-    await git.fetch(['--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*']);
+    await createGitWithBlockTimeout(localPath, signal).fetch(['--progress', '--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*']);
 
     if (options.dryRun) return { label: ref ? `team ref "${ref}"` : 'current team revision', transition: 'none' };
     const defaultBranch = await getDefaultBranch(localPath);

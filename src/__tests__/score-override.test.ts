@@ -60,13 +60,15 @@ describe('a team teamai-score.yaml', () => {
 
   it.each([
     ['takes another input', shippedWith('  batch: boolean\n', '  batch: boolean\n  ticket: string\n'), 'score_override_contract'],
+    ['stores the labels of a run that only tries them', shippedWith('inputs: { files: [], store: true, control: false }', 'inputs: { files: [], store: false, control: false }'), 'score_override_contract'],
+    ['makes a caller pass an input the default gives a default', shippedWith('defaults:\n  inputs: { files: [], store: true, control: false }\n', ''), 'score_override_contract'],
     ['gives another output', shippedWith('outputs: { labels: steps.score.results }', 'outputs: { labels: steps.score.results, plan: steps.plan.outputs.groups }'), 'score_override_contract'],
     ['is not private', shippedWith('private: true\n', ''), 'score_override_contract'],
     ['lets an agent start it', shippedWith('invoke: deny', 'invoke: allow'), 'score_override_contract'],
     ['runs a verb with other arguments', shippedWith('--wait 2h', '--wait 0s'), 'score_override_command'],
     ['gives a verb other env', shippedWith('env: { DIR: "{{ steps.evidence.outputs.dir }}" }\n          output: { decided: boolean }\n        - id: ci', 'env: { DIR: "{{ steps.evidence.outputs.dir }}", EXTRA: "1" }\n          output: { decided: boolean }\n        - id: ci'), 'score_override_command'],
     ['drops settle', SHIPPED.slice(0, SHIPPED.indexOf('        - id: settle')) + 'outputs: { labels: steps.score.results }\n', 'score_override_step_missing'],
-    ['drops publish', shippedWith('        - id: publish\n          needs: [write]\n          workspace: { team: { branch: teamai-reports } }\n          command: teamai score publish\n          deliver: publish\n', ''), 'score_override_step_missing'],
+    ['drops publish', shippedWith('        - id: publish\n          needs: [write]\n          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n          command: teamai score publish\n          deliver: publish\n', ''), 'score_override_step_missing'],
     ['publishes to another data branch', shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }'), 'score_override_publish'],
     ['publishes the labels without deliver: publish', shippedWith('          command: teamai score publish\n          deliver: publish\n', '          command: teamai score publish\n'), 'score_override_publish'],
     ['lets the judge read the checkout', shippedWith('          workspace: { confined: "{{ steps.evidence.outputs.dir }}" }\n', ''), 'score_override_prompt'],
@@ -116,6 +118,14 @@ describe('a team teamai-score.yaml', () => {
     expect((await pulled({ 'teamai-score': shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }') })).refused).toEqual([
       'workflows/teamai-score.yaml:1: field "steps.score.publish": step "score.publish" runs teamai score publish without deliver: publish in workspace: { team: { branch: teamai-reports } }, where every member\'s labels are. Give it both, as teamai\'s default teamai-score does',
     ]);
+  });
+
+  it('is refused when its publish step drops the condition that keeps a run that only tries scorers from publishing', async () => {
+    const unguarded = shippedWith('          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n', '          workspace: { team: { branch: teamai-reports } }\n');
+
+    expect(await pulled({ 'teamai-score': unguarded })).toMatchObject({ source: 'default', refused: [
+      'workflows/teamai-score.yaml:1: field "steps.score.publish.if": step "score.publish" publishes without if: inputs.store, so a run that only tries scorers would publish the scope\'s pending labels. Give it if: inputs.store, as teamai\'s default teamai-score does',
+    ] });
   });
 
   it('may drop its check step until a scorer of the team has a check', async () => {

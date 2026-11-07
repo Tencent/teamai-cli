@@ -17,10 +17,15 @@ describe('teamai doctor CLI (e2e)', () => {
   let missingHookHome: string;
 
   function runDoctor(home: string, ...args: string[]) {
+    return runDoctorWith({}, home, ...args);
+  }
+
+  function runDoctorWith(env: NodeJS.ProcessEnv, home: string, ...args: string[]) {
     return spawnSync(process.execPath, [CLI, 'doctor', ...args], {
       cwd: home,
       env: {
         ...process.env,
+        ...env,
         HOME: home,
         USERPROFILE: home,
         FORCE_COLOR: '0',
@@ -103,6 +108,14 @@ describe('teamai doctor CLI (e2e)', () => {
     expect(output).toContain('teamai hooks in claude settings');
     expect(output).toContain('Env variables injected in shell profile');
     expect(output).toContain('All checks passed!');
+  });
+
+  it('says TEAMAI_UPVOTE_JUDGE=1 is deprecated and what it reads as, and still passes', () => {
+    const result = runDoctorWith({ TEAMAI_UPVOTE_JUDGE: '1' }, initializedHome);
+    const output = `${result.stdout}${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain('TEAMAI_UPVOTE_JUDGE=1 is deprecated: no Stop hook judges adoption any more. It reads as scoring.recall_adoption: true');
   });
 
   it.skipIf(!HAS_SYSTEM_ZSH)('finds gh through a real zsh login profile with a narrow caller PATH', () => {

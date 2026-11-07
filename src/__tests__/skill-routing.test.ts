@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { AvailableSkill } from '../scorers/skill-evidence.js';
-import { ROUTING_PREFIX, isRoutingScorer, parseRoutingScorer, routingScorer, routingScorerName, routingScorers, routingSkillOf } from '../scorers/skill-routing.js';
+import { ROUTING_PREFIX, isRoutingScorer, parseRoutingScorer, routingScorer as routingQuestion, routingScorerName, routingScorers, routingSkillOf } from '../scorers/skill-routing.js';
 import { scorerSourceHash } from '../scorers/cache.js';
+import { DefaultScorers } from '../default-scorers.js';
+import type { LocalConfig } from '../types.js';
+
+const RUBRIC = DefaultScorers.shipped('teamai-routing');
+const routingScorer = (skill: AvailableSkill) => routingQuestion(RUBRIC, skill);
+/** A scope with no team file over the default rubric. */
+const config: LocalConfig = { repo: { localPath: '/nonexistent/knowledge', remote: 'local' }, username: 'tester', scope: 'project', additionalRoles: [], dataHome: '/nonexistent/data' };
 
 const skill = (name: string, extra: Partial<AvailableSkill> = {}): AvailableSkill => ({ name, ...extra });
 const release: AvailableSkill = { name: 'release', namespace: 'ops', description: 'Cut an npm release: bump, changelog, tag, publish.' };
@@ -44,7 +51,8 @@ describe('a routing question rubric (#1469)', () => {
     const { scorer, pin, definition } = routingScorer(release);
     expect(scorer).toBe('teamai:routing:ops:release');
     expect(pin.content).toContain('Judge only the team skill `release`, against its entry in `skills.available` in evidence.json.');
-    expect(pin.content).toContain('It comes from the `ops` skills namespace.');
+    // The skill's entry in skills.available carries its namespace, and a session holds one skill of a name.
+    expect(pin.content).not.toContain('ops');
     expect(definition.name).toBe(scorer);
     expect(definition.passingScore).toBe(1);
     expect(definition.labels.map(({ value, score }) => [value, score])).toEqual([['fit', 1], ['idle', 1], ['extra', 0], ['missed', 0]]);
@@ -61,8 +69,8 @@ describe('a routing question rubric (#1469)', () => {
     expect(routingScorer(reviewNotes).pin.sourceHash).not.toBe(before.pin.sourceHash);
   });
 
-  it('asks one question per skill whose namespace the record can tell, and none for namespaceUnknown', () => {
+  it('asks one question per skill whose namespace the record can tell, and none for namespaceUnknown', async () => {
     const unknown: AvailableSkill = { name: 'legacy', namespaceUnknown: true, description: 'which namespace?' };
-    expect(routingScorers([release, reviewNotes, unknown]).map(({ scorer }) => scorer)).toEqual(['teamai:routing:ops:release', 'teamai:routing:review-notes']);
+    expect((await routingScorers(config, [release, reviewNotes, unknown])).map(({ scorer }) => scorer)).toEqual(['teamai:routing:ops:release', 'teamai:routing:review-notes']);
   });
 });

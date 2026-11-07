@@ -127,7 +127,7 @@ function readsPr(path: Extract<ExpressionPath, { root: 'steps' }>): boolean {
 
 /** Why `path` reads what the `output` its step declares does not have, or undefined. */
 export function undeclaredField(path: ExpressionPath, output: OutputSchema | undefined, forEach: boolean, choices?: string[]): string | undefined {
-  if (path.root !== 'steps' || (path.field !== 'outputs' && path.field !== 'passes' && path.field !== 'results' && path.field !== 'pr')) return undefined;
+  if (path.root !== 'steps' || (path.field !== 'outputs' && path.field !== 'passes' && path.field !== 'results' && path.field !== 'pr' && path.field !== 'failure')) return undefined;
   const schema = stepFieldSchema(path.field, output, forEach, choices);
 
   if (!schema || schemaAt(schema, path.fields)) return undefined;
@@ -136,6 +136,8 @@ export function undeclaredField(path: ExpressionPath, output: OutputSchema | und
   if (path.field === 'outputs') return `reads ${read}, which is not in the output step "${path.step}" declares`;
 
   if (path.field === 'pr') return `reads ${read}, which is not in a pull request: url`;
+
+  if (path.field === 'failure') return `reads ${read}, which is not in a failure: code, message`;
 
   return path.field === 'passes'
     ? `reads ${read}, which is not in a pass of step "${path.step}": pass, outcome, end, and ${forEach ? 'results with outputs as its output declares' : 'outputs as its output declares'}`

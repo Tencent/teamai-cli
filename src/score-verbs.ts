@@ -1,6 +1,6 @@
 /**
  * The verbs of `teamai score` that the steps of a `teamai-score` run call: plan, evidence, stage, label, write, publish,
- * settle and subjects. Each prints one JSON object, the step's outputs, on stdout; a refusal prints `{"error":…}` and exits 1.
+ * settle and subjects, and report, which a `teamai-try-scorer` run calls. Each prints one JSON object, the step's outputs, on stdout; a refusal prints `{"error":…}` and exits 1.
  */
 import path from 'node:path';
 import { z } from 'zod';
@@ -15,6 +15,8 @@ import { planGroups } from './scorers/score-plan.js';
 import { ScoreSubjects } from './scorers/score-subjects.js';
 import { ScoreStage } from './scorers/score-stage.js';
 import { Subject } from './scorers/subject.js';
+import { TRY_SCORER_WORKFLOW } from './scorers/judging-workflows.js';
+import { TryScorer } from './scorers/try-scorer.js';
 import type { JsonObject, LocalConfig } from './types.js';
 import { isSameRealPath } from './utils/fs.js';
 import { createGit } from './utils/git.js';
@@ -237,7 +239,23 @@ async function subjects(options: SubjectsOptions, ctx: ScoreVerbContext): Promis
   return listed.ok ? { ok: true, output: { list: listed.list } } : listed;
 }
 
-export const ScoreVerbs = { plan, evidence, stage, label, write, publish, settle, subjects } as const;
+export interface ReportOptions {
+  /** The `labels` output of the teamai-score step that judged the session. */
+  labels?: string;
+  /** The `labels` output of the teamai-score step that judged its control. */
+  control?: string;
+}
+
+async function report(options: ReportOptions, ctx: ScoreVerbContext): Promise<ScoreVerbAnswer> {
+  const at = await ScoreAttempt.leased('report', TRY_SCORER_WORKFLOW, ctx.env, ctx.current);
+
+  if (!at.ok) return at;
+  const reported = await TryScorer.report({ config: at.leased.config, runDir: path.dirname(at.leased.dir), ...options });
+
+  return reported.ok ? { ok: true, output: { answer: reported.answer, text: reported.text, warnings: reported.warnings } } : reported;
+}
+
+export const ScoreVerbs = { plan, evidence, stage, label, write, publish, settle, subjects, report } as const;
 
 /** The scope of this directory: none where teamai is not set up, and a refusal with why when its config does not load. */
 async function currentConfig(): Promise<{ ok: true; config: LocalConfig | undefined } | Refused> {

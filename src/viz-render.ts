@@ -366,7 +366,7 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
   const guide =
     '<div class="maint-guide"><strong>How to promote</strong>' +
     ' — Review a candidate below, then run (each entry shows its own ready-to-copy command):' +
-    '<code>teamai recall promote &lt;learning-id&gt; --category skill|rule|doc</code></div>';
+    '<code>teamai recall promote &lt;learning-id&gt;</code></div>';
 
   if (promote.length === 0) {
     return `<div class="maint-block"><h3 data-i18n>Promotable Learnings</h3>${intro}${guide}<p data-i18n>None right now.</p></div>`;
@@ -374,8 +374,7 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
 
   const rows = promote
     .map((c) => {
-      const cmd =
-        `teamai recall promote ${escapeHtml(c.docId)} --category ${escapeHtml(c.suggestedCategory)}`;
+      const cmd = `teamai recall promote ${escapeHtml(c.docId)}`;
 
       return [
         `<div class="maint-item">`,

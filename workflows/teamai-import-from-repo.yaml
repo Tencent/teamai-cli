@@ -1,0 +1,188 @@
+schemaVersion: v1alpha1
+name: teamai-import-from-repo
+description: Import repositories or local checkouts into a teamwiki - extract each one, ask the AI tool for its narrative, module analysis and deep docs, publish it, then refresh the teamwiki indexes and publish them once. teamai import --dir, --from-repo, --from-repo-list and --from-org start it.
+invoke: deny
+private: true
+# wiki_root is the teamwiki every item lands in; mode is the command that started the run, which says how the batch is
+# published and summed up (update and ci: the command publishes it). An item is a remote repository (source a URL, auth
+# token | ssh | public, '' for the default) or a local checkout (source a directory); slug and repo_url, '' when not
+# given, and mr_urls name its evidence and record where it came from. settings.team_repo is the team repo that holds
+# wiki_root, '' when none does; settings.max_files 0 keeps the default.
+inputs:
+  wiki_root: string
+  mode: dir | repo | list | org | update | ci
+  items: [{ kind: repo | dir, source: string, domain: string, auth: string, slug: string, repo_url: string, mr_urls: [string] }]
+  settings: { depth: number, ssh: boolean, incremental: boolean, skip_enrich: boolean, max_files: number, team_repo: string }
+  skipped: number
+  concurrency: number
+steps:
+  - id: imports
+    for_each: { items: inputs.items, max_parallel: "{{ inputs.concurrency }}" }
+    # One item that fails leaves the others; the summary names it and the command exits 1.
+    continue_on_failure: true
+    workflow:
+      ends: { unconfigured-tool: failed }
+      outputs:
+        slug: steps.stage.outputs.slug
+        updated: steps.stage.outputs.updated
+        deep_complete: steps.done.outputs.deep_complete
+      steps:
+        - id: stage
+          command: teamai import stage --item "$ITEM" --settings "$SETTINGS" --wiki-root "$WIKI_ROOT"
+          env: { ITEM: "{{ item }}", SETTINGS: "{{ inputs.settings }}", WIKI_ROOT: "{{ inputs.wiki_root }}" }
+          output: { slug: string, stage: string, updated: boolean, enrich: boolean, narrate: boolean, context: string, head: string, finished: boolean }
+        - id: narrative
+          needs: [stage]
+          if: steps.stage.outputs.narrate
+          answer: |-
+            你是技术文档专家。根据以下 git 仓库信息，生成一份结构完整的 codebase.md 技术全景文档。
+            【必须】用中文撰写，输出纯 Markdown（不要加额外说明）。
+
+            == 格式骨架（严格按此结构生成，每个章节都必须包含）==
+
+            # Codebase 概览
+
+            ## 项目概述
+            （2-4 句描述项目是什么、做什么，然后列出核心能力 bullet list，每条带 emoji）
+            核心能力：
+            - 🔄 **功能名**：简短说明
+            - 📥 **功能名**：简短说明
+
+            ## 技术栈
+            （用表格，含版本信息）
+            | 维度 | 技术 |
+            |------|------|
+            | 语言 | **语言** 版本+ |
+            | 运行时 | **运行时** 版本 |
+            （继续列出构建、测试、关键依赖库等）
+
+            ## 目录结构与模块职责
+            （用带分组框的树形结构，相关文件归为一组，格式如下）
+            ```
+            项目根/
+            ├── src/
+            │   ├── index.ts                    # CLI 入口，注册所有命令
+            │   │
+            │   ├── ┌─ 功能分组名 ────────────────────────────────┐
+            │   ├── │ fileA.ts                  # 功能说明                │
+            │   ├── │ fileB.ts                  # 功能说明                │
+            │   ├── └─────────────────────────────────────────────────────┘
+            │   │
+            │   ├── ┌─ 另一个功能分组 ─────────────────────────────┐
+            │   ├── │ dir/
+            │   ├── │   ├── fileC.ts            # 功能说明                │
+            │   ├── └─────────────────────────────────────────────────────┘
+            ```
+
+            ## 数据与配置
+            （列出关键配置文件和运行时数据目录的路径树，说明每个目录/文件的用途）
+
+            ## 核心数据流
+            （列出 2-4 条核心业务流程，每条用带缩进和 → 的流程图格式）
+            ### 1. 流程名称
+            ```
+            触发点（用户执行 xxx 命令）
+                │
+                ├─ 1. 步骤描述
+                │   └─ 子步骤
+                ├─ 2. 步骤描述 → 结果
+                └─ ✅ 完成
+            ```
+
+            ## 关键接口与抽象
+            （列出项目中最重要的 interface/abstract class，用代码块展示签名，并说明实现）
+
+            ## 配置系统
+            （说明配置优先级、scope 检测逻辑、关键配置结构示例）
+
+            ## 性能与可靠性
+            （表格列出关键性能设计：并发控制、超时、缓存、降级等）
+
+            ## 架构决策与权衡
+            （列出 3-5 条主要设计选择的"为什么"，格式如"为什么选择 X 而不是 Y：原因说明"）
+
+            ## 已知限制与演进方向
+            （列出 3-5 条当前实现的局限与下一步可能的优化）
+
+            ## 测试覆盖
+            （表格列出测试层级、用例数、覆盖率）
+
+            ## 备注
+            - ✅ 有文档佐证的信息
+            - ⚠️ 基于代码结构推断的信息
+
+            == 以上是格式骨架，根据实际仓库内容填充。若某章节确实无法从上下文推断，可简略但不得省略章节标题。==
+
+            ---
+            以下是仓库上下文：
+            <context>
+            {{ steps.stage.outputs.context }}
+            </context>
+          output: { text: string }
+          timeout: 600s
+          # A worktree of its own lets the items' narratives run beside each other.
+          workspace: new
+          # The evidence is published without the narrative when the tool could not write one; publish says why.
+          continue_on_failure: true
+        - id: narrative-tool
+          needs: [narrative]
+          # A tool the member names that cannot run fails the item before anything is published.
+          if: steps.narrative.failure.code == 'tool_unconfigured'
+          end: unconfigured-tool
+        - id: enrich
+          needs: [stage, narrative]
+          if: steps.stage.outputs.enrich && steps.narrative.failure.code != 'tool_unconfigured'
+          workflow: teamai-codebase-enrich
+          with: { wiki_root: "{{ steps.stage.outputs.stage }}/teamwiki", project: "{{ steps.stage.outputs.slug }}" }
+        - id: publish
+          needs: [stage, narrative, enrich]
+          if: steps.stage.outputs.updated && steps.narrative.failure.code != 'tool_unconfigured' && steps.enrich.outcome != 'failed'
+          command: teamai import publish --item "$ITEM" --settings "$SETTINGS" --wiki-root "$WIKI_ROOT" --stage "$STAGE" --slug "$SLUG" --narrative "$TEXT" --narrative-failure "$WHY"
+          env:
+            ITEM: "{{ item }}"
+            SETTINGS: "{{ inputs.settings }}"
+            WIKI_ROOT: "{{ inputs.wiki_root }}"
+            STAGE: "{{ steps.stage.outputs.stage }}"
+            SLUG: "{{ steps.stage.outputs.slug }}"
+            TEXT: "{{ steps.narrative.outputs.text }}"
+            WHY: "{{ steps.narrative.failure.message }}"
+          writes: ["{{ inputs.wiki_root }}"]
+          output: { deep: boolean }
+        - id: deep
+          needs: [stage, publish]
+          if: steps.publish.outputs.deep
+          workflow: teamai-codebase-deep-enrich
+          with: { wiki_root: "{{ inputs.wiki_root }}", project: "{{ steps.stage.outputs.slug }}", max_modules: 0, concurrency: 5 }
+          # The evidence is published either way: a deep enrich that failed is one that did not finish, which done says.
+          continue_on_failure: true
+        - id: done
+          needs: [stage, publish, deep]
+          # An unchanged repository was recorded and said done by stage.
+          if: "!steps.stage.outputs.finished && steps.publish.outcome != 'failed'"
+          command: teamai import finish-item --item "$ITEM" --settings "$SETTINGS" --wiki-root "$WIKI_ROOT" --mode "$MODE" --slug "$SLUG" --head "$HEAD" --deep "$DEEP" --deep-failure "$DEEP_WHY"
+          env:
+            ITEM: "{{ item }}"
+            SETTINGS: "{{ inputs.settings }}"
+            WIKI_ROOT: "{{ inputs.wiki_root }}"
+            MODE: "{{ inputs.mode }}"
+            SLUG: "{{ steps.stage.outputs.slug }}"
+            HEAD: "{{ steps.stage.outputs.head }}"
+            DEEP: "{{ steps.deep.outputs.complete }}"
+            DEEP_WHY: "{{ steps.deep.failure.message }}"
+          output: { deep_complete: boolean }
+  - id: finish
+    needs: [imports]
+    if: steps.imports.outcome == 'success' || steps.imports.outcome == 'failed'
+    command: teamai import finish --mode "$MODE" --wiki-root "$WIKI_ROOT" --settings "$SETTINGS" --skipped "$SKIPPED" --results "$RESULTS"
+    env:
+      MODE: "{{ inputs.mode }}"
+      WIKI_ROOT: "{{ inputs.wiki_root }}"
+      SETTINGS: "{{ inputs.settings }}"
+      SKIPPED: "{{ inputs.skipped }}"
+      RESULTS: "{{ steps.imports.results }}"
+    writes: ["{{ inputs.wiki_root }}"]
+    output: { text: string, exit_code: number, imported: [{ source: string, slug: string, updated: boolean, failed: boolean }] }
+outputs:
+  text: steps.finish.outputs.text
+  exit_code: steps.finish.outputs.exit_code
+  imported: steps.finish.outputs.imported

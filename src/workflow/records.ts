@@ -44,7 +44,7 @@ import { parseYaml } from '../utils/yaml.js';
  */
 const RECORDED_FAILURES = [
   'cancelled', 'hitl_required',
-  'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
+  'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle', 'input_rejected', 'command_failed',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'unreported_changes', 'tool_unconfigured', 'tool_unsupported',
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
   ...LIMIT_FAILURES,

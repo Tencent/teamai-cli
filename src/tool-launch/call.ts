@@ -1,19 +1,18 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { loadMemberSettings, ownMemberSettings, resolveConfigForDir } from '../config.js';
+import { resolveConfigForDir } from '../config.js';
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV, type LaunchedBy } from '../launch-context.js';
-import { getDataHome, getUserConfigPath, installScopeName, type LocalConfig } from '../types.js';
+import type { LocalConfig } from '../types.js';
 import { resolveCliPath } from '../utils/cli-path.js';
-import { expandHome } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { CallError, memberTools, type MemberTool } from './member-tools.js';
 import { runTool } from './run.js';
 import type { TokenUsage } from './stdout.js';
 import { executableOf, LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
-const DEFAULT_CONCURRENCY = 3;
 
 /** An AI call's answer, and the tool that gave it. */
 export type CallResult = { text: string; tool: LaunchOrderTool; tokens?: TokenUsage };
@@ -24,49 +23,20 @@ export interface CallOptions {
   timeout?: number;
   /** The scope the call acts for, when the caller holds it. Without it, the scope of the working directory. */
   scope?: LocalConfig;
+  /** Where the tool runs: the working directory unless given. */
+  cwd?: string;
+  /** Stops the tool, as its timeout does. */
+  signal?: AbortSignal;
 }
 
 export interface ToolCaller {
   callTool(prompt: string, options: CallOptions): Promise<CallResult>;
-  /**
-   * Runs every call, at most `concurrency` at a time, and returns the parsed answers in input order. When any call or
-   * parse fails, it fails after the others finish, with an AggregateError of each failure.
-   */
-  callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, options: CallOptions & { concurrency?: number }): Promise<T[]>;
 }
 
 export interface ToolCallerDeps {
   resolveTool?: (command: string) => string | null;
   /** The scope a call runs in: the one a command resolves from its working directory, or none. */
   resolveScope?: () => Promise<LocalConfig | undefined>;
-}
-
-/** Where the member names the tool for teamai's AI work, the most specific first. */
-export type MemberToolSource = 'TEAMAI_AI_TOOL' | 'ai.tool (project)' | 'ai.tool (machine)';
-
-/** A tool the member names: where, and the setting a message tells them to change. */
-export interface MemberTool {
-  source: MemberToolSource;
-  tool: string;
-  setting: string;
-}
-
-/**
- * The tools the member names for `scope`, the most specific first: TEAMAI_AI_TOOL, then `ai.tool` in the scope's own
- * config, then in ~/.teamai/config.yaml. AI calls take the first; a workflow step puts its own settings between them.
- * Each names the level that sets it, so a message sends the member to the file that does.
- */
-export async function memberTools(scope: LocalConfig | undefined): Promise<MemberTool[]> {
-  const env = process.env.TEAMAI_AI_TOOL;
-  // In user scope the scope's own config is this machine's, read as an install.
-  const own = scope && scope.scope !== 'user' ? ownMemberSettings(scope).ai?.tool : undefined;
-  const machine = scope?.scope === 'user' ? scope.ai?.tool : (await loadMemberSettings()).ai?.tool;
-
-  return [
-    ...(env ? [{ source: 'TEAMAI_AI_TOOL' as const, tool: env, setting: 'TEAMAI_AI_TOOL' }] : []),
-    ...(scope && own ? [{ source: 'ai.tool (project)' as const, tool: own, setting: `ai.tool in the ${installScopeName(scope.scope)} config ${path.join(getDataHome(scope), 'config.yaml')}` }] : []),
-    ...(machine ? [{ source: 'ai.tool (machine)' as const, tool: machine, setting: `ai.tool in the ${scope?.scope === 'user' ? 'user' : 'machine'} config ${expandHome(getUserConfigPath())}` }] : []),
-  ];
 }
 
 /**
@@ -82,27 +52,6 @@ async function scopeHere(): Promise<LocalConfig | undefined> {
   }
 
   return scope ?? undefined;
-}
-
-/**
- * Why a call did not answer: no tool to run it, an override that names a tool teamai cannot run or sits in a scope
- * config here that cannot be read, or the tool failed.
- */
-export type CallErrorKind = 'no_tool' | 'override_invalid' | 'call_failed';
-
-export class CallError extends Error {
-  constructor(readonly kind: CallErrorKind, message: string) {
-    super(message);
-    this.name = 'CallError';
-  }
-}
-
-/**
- * Whether a call failed on the member's choice of tool: one teamai cannot run, or a scope config that cannot be read
- * to find it. A caller's fallback must not hide either.
- */
-export function isOverrideInvalid(error: unknown): error is CallError & { kind: 'override_invalid' } {
-  return error instanceof CallError && error.kind === 'override_invalid';
 }
 
 type Picked = { tool: LaunchOrderTool; executable: string };
@@ -172,7 +121,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
     return picking;
   };
 
-  const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS, scope }) => {
+  const callTool: ToolCaller['callTool'] = async (prompt, { launchedBy, timeout = DEFAULT_TIMEOUT_MS, scope, cwd = process.cwd(), signal }) => {
       const { tool, executable } = await pick(scope);
       const { call } = launchAdapterOf(tool);
       log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
@@ -184,7 +133,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
 
         if (call.prompt === 'file') await fs.writeFile(promptFile, prompt);
         const args = call.args({ prompt, promptFile, lastMessageFile });
-        const run = await runTool({ executable, args, cwd: process.cwd(), env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false });
+        const run = await runTool({ executable, args, cwd, env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false, signal });
 
         if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);
@@ -205,30 +154,6 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
       }
   };
 
-  async function callToolParallel<T>(tasks: ReadonlyArray<{ prompt: string; parse: (text: string) => T }>, { concurrency = DEFAULT_CONCURRENCY, ...options }: CallOptions & { concurrency?: number }): Promise<T[]> {
-    // A batch has one tool, so a tool that cannot be picked fails the batch once rather than once per task.
-    await pick(options.scope);
-    const settled: ({ ok: true; value: T } | { ok: false; reason: unknown })[] = [];
-    let next = 0;
 
-    const worker = async (): Promise<void> => {
-      for (let index = next++; index < tasks.length; index = next++) {
-        const task = tasks[index];
-
-        try { settled[index] = { ok: true, value: task.parse((await callTool(task.prompt, options)).text) }; }
-        catch (reason) { settled[index] = { ok: false, reason }; }
-      }
-    };
-
-    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
-    const errors = settled.flatMap((outcome) => outcome.ok ? [] : [outcome.reason]);
-
-    if (errors.length > 0) throw new AggregateError(errors, `${errors.length} AI task(s) failed`);
-
-    return settled.flatMap((outcome) => outcome.ok ? [outcome.value] : []);
-  }
-
-  return { callTool, callToolParallel };
+  return { callTool };
 }
-
-export const { callTool, callToolParallel } = createToolCaller();

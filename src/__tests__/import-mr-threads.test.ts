@@ -1,24 +1,15 @@
 /**
  * `teamai import --from-mr` reads the MR's review threads (#1187): the prompt
  * gets them in a section of their own, with the MR author and reviewers
- * marked, replied threads first, a long thread shortened rather than the
- * section cut off, and the model told that a resolved thread's decision
- * outweighs the diff. With `language: en` the learning is written in English.
+ * marked, replied threads first, and a long thread shortened rather than the
+ * section cut off. teamai's own comments are left out.
  */
 import { describe, expect, it } from 'vitest';
 
-import { extractMRLearningPrompt, formatMrThreads } from '../import-mr.js';
+import { formatMrThreads } from '../import-mr.js';
+import { formatComment } from '../ci/mr-comment.js';
 import { pruneThreads } from '../providers/mr-threads.js';
-import type { MRData, MRThread } from '../types.js';
-
-const mr: MRData = {
-  title: 'Retry uploads',
-  description: 'Retries S3 uploads.',
-  author: 'alice',
-  commits: [{ hash: 'abc12345', message: 'retry upload' }],
-  diff: 'diff --git a/up.ts b/up.ts\n+retry(3)\n',
-  url: 'https://gitlab.example.com/g/r/-/merge_requests/7',
-};
+import type { MRThread } from '../types.js';
 
 const replied: MRThread = {
   file: 'src/up.ts',
@@ -41,15 +32,12 @@ describe('pruneThreads', () => {
     expect(threads).toEqual([remark]);
   });
 
-  it('drops comments posted with a custom --comment-marker as well', () => {
+  it('drops the comment ci extract-mr posted under a custom --comment-marker, which it signs as every comment', () => {
     const threads = pruneThreads([
-      { notes: [{ author: 'ci', body: '<!-- learning-bot -->\n## TeamAI 知识提炼' }] },
-      { notes: [{ author: 'ci', body: '<!-- teamai:ci-extract -->' }] },
+      { notes: [{ author: 'ci', body: formatComment({ title: 'Retry uploads', content: 'Retry on 5xx.' }, undefined, '<!-- learning-bot -->') }] },
       remark,
-    ], '<!-- learning-bot -->');
+    ]);
     expect(threads).toEqual([remark]);
-    // Without the marker the custom comment is an ordinary note.
-    expect(pruneThreads([{ notes: [{ author: 'ci', body: '<!-- learning-bot -->' }] }])).toHaveLength(1);
   });
 });
 
@@ -88,40 +76,5 @@ describe('formatMrThreads', () => {
     expect(text).not.toContain('### Thread 8');
     expect(text).toMatch(/\d+ more threads? omitted/);
     expect(text.length).toBeLessThanOrEqual(600);
-  });
-});
-
-describe('extractMRLearningPrompt', () => {
-  it('has no thread section when the MR has no threads', () => {
-    const prompt = extractMRLearningPrompt({ ...mr, discussions: [] });
-    expect(prompt).not.toContain('Review threads');
-    expect(prompt).toContain('用中文撰写');
-  });
-
-  it('adds the threads with the instruction that a resolved decision outweighs the diff', () => {
-    const prompt = extractMRLearningPrompt({ ...mr, discussions: [remark, replied] });
-    expect(prompt).toContain('Review threads');
-    expect(prompt).toContain('[author alice]');
-    expect(prompt).toMatch(/resolved 的 thread 里的决定比复述 diff 更重要/);
-    // The threads do not push the diff out.
-    expect(prompt).toContain('+retry(3)');
-    expect(extractMRLearningPrompt({ ...mr, discussions: [replied] }, 'en'))
-      .toMatch(/decision reached in a resolved thread outweighs a restatement of the diff/);
-  });
-
-  it('writes the learning in English when the team language is en, with English headings', () => {
-    const prompt = extractMRLearningPrompt({ ...mr, discussions: [replied] }, 'en');
-    expect(prompt).toContain('Write in English');
-    expect(prompt).toContain('## Background');
-    expect(prompt).not.toContain('用中文撰写');
-    expect(prompt).toContain(`source_mr: "${mr.url}"`);
-  });
-
-  it('keeps the Chinese prompt for zh and when the language is not set', () => {
-    for (const language of ['zh', undefined] as const) {
-      const prompt = extractMRLearningPrompt(mr, language);
-      expect(prompt).toContain('用中文撰写');
-      expect(prompt).toContain('## 背景');
-    }
   });
 });

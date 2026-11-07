@@ -265,6 +265,21 @@ steps:
     command: node -e "process.exit(0)"
 `;
 
+// Two commands that share the checkout, each with a timeout, so test waits behind lint as a queued attempt.
+const TURNS = `schemaVersion: v1alpha1
+name: check
+description: Lint and test
+invoke: allow
+steps:
+  - id: lint
+    command: node -e "setTimeout(() => {}, 2500)"
+    timeout: 60s
+  - id: test
+    needs: []
+    command: node -e "process.exit(0)"
+    timeout: 60s
+`;
+
 // Two commands that run until they are stopped and share the checkout, so one waits behind the other.
 const SERVE = `schemaVersion: v1alpha1
 name: check
@@ -276,6 +291,13 @@ steps:
   - id: watch
     needs: []
     command: sleep 300
+`;
+
+// SERVE with an optional approval beside it, which the agent answers while one command waits behind the other.
+const SERVE_GATED = `${SERVE}  - id: go
+    needs: []
+    approve: Go on?
+    command: node -e "process.exit(0)"
 `;
 
 const TIMED = `schemaVersion: v1alpha1
@@ -596,8 +618,8 @@ function sleepFaked(stops: string[]) {
 }
 
 /** Starts SERVE: the turn, and its attempt that runs and the one that waits behind it. */
-async function serving(made: Awaited<ReturnType<typeof harness>>) {
-  const turn = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
+async function serving(made: Awaited<ReturnType<typeof harness>>, hitl?: 'recommend') {
+  const turn = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false, hitl }, inputs: undefined }));
   const running = turn.running.find((entry) => entry.phase === 'running');
   const queued = turn.running.find((entry) => entry.phase === 'queued');
   if (!running || !queued) throw new Error(JSON.stringify(turn));
@@ -1769,6 +1791,41 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'an answer the agent gives while an attempt waits behind another lists that attempt queued, so its timeout counts from the answer',
+    rows: ['H2'],
+    run: async () => {
+      const responds: unknown[] = [];
+      const recording = (client: WorkflowClient): WorkflowClient => ({ ...client, respond: (run, step, choice, options) => { responds.push(options.via); return client.respond(run, step, choice, options); } });
+      const made = await harness({ check: SERVE_GATED }, { runners: sleepFaked([]), client: recording });
+      const { turn, queued } = await serving(made, 'recommend');
+      expect(turn.actions).toContainEqual(expect.objectContaining({ kind: 'choose', about: 'gate', step: 'go' }));
+      await turnOf(await made.call({ kind: 'respond', run: turn.run, step: 'go', choice: 'yes', pass: 1 }));
+      expect(responds).toEqual([expect.objectContaining({ kind: 'skill', queued: [queued.attempt] })]);
+      return made.rows;
+    },
+  },
+  {
+    name: 'a stored report sent again after an attempt left its queue in the same tick lists that attempt queued, as the tick\'s next does',
+    rows: ['D9', 'P11'],
+    run: async () => {
+      const reports: unknown[] = [];
+      const recording = (client: WorkflowClient): WorkflowClient => ({ ...client, report: (run, body, options) => { reports.push(body); return client.report(run, body, options); } });
+      const made = await harness({ check: SERVE }, { runners: sleepFaked([]), client: recording });
+      const { turn: { run }, running, queued } = await serving(made);
+      const file = skillStatePath(made.config, run);
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const open = (attempt: string) => saved.attempts.find((entry: { attempt: string }) => entry.attempt === attempt);
+      // The attempt that waited now waits behind one that closed, and comes before an attempt whose report a refusal left stored.
+      const waiting = { ...open(queued.attempt), behind: 'a00000000' };
+      const stored = { ...open(running.attempt), phase: 'reporting', body: { attempt: running.attempt, revision: open(running.attempt).revision, outcome: 'success', driver: saved.driver, exitCode: 0 } };
+      fs.writeFileSync(file, JSON.stringify({ ...saved, attempts: [waiting, stored] }));
+      reports.length = 0;
+      await made.call({ kind: 'next', run, wait: false });
+      expect(reports[0]).toMatchObject({ attempt: running.attempt, queued: [queued.attempt] });
+      return made.rows;
+    },
+  },
+  {
     name: 'a command past its timeout is stopped by its runner at its deadline',
     rows: ['D3', 'C9', 'P9'],
     run: async () => {
@@ -1971,10 +2028,10 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
-    name: 'two steps in the checkout take turns: the second waits behind the first, and runs once it settled',
-    rows: ['C4', 'D9'],
+    name: 'two steps in the checkout take turns: the second waits behind the first, its deadline moving on with every tick, and runs once it settled',
+    rows: ['C4', 'D9', 'D33'],
     run: async () => {
-      const made = await harness({ check: ROOTS });
+      const made = await harness({ check: TURNS });
       const { run } = await turnOf(await made.call({ kind: 'start', name: 'check', answers: { parallel: 2, confirmed: false }, inputs: undefined }));
       const done = await polledToDone(made, run);
       expect(done.actions).toMatchObject([{ kind: 'done', outcome: 'succeeded' }]);

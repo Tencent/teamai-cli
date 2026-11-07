@@ -2,7 +2,7 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { reconcilePlacementRecords } from './utils/pending-push.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
 import { assertNotReadOnly } from './read-only.js';
-import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
+import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, unusedBranchName } from './utils/git.js';
 import { createPrWithFallback, filterExistingTopLevelPaths, providerOpensPullRequests } from './push.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
@@ -325,7 +325,8 @@ async function removeCore(
 
   // Git commit and push via a single branch + MR
   try {
-    const branchName = generateBranchName(localConfig.username);
+    // A second removal within the same second would otherwise reuse this one's branch name, which the first left behind.
+    const branchName = await unusedBranchName(localConfig.repo.localPath, localConfig.username);
 
     const nameList = found.length <= 3
       ? found.map((n) => `"${n}"`).join(', ')

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { GlobalOptions } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
+import type { ShortcutEnd } from './workflow-commands.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
 
@@ -26,6 +27,49 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     status?: boolean;
     reconcile?: boolean;
     deepEnrich?: boolean;
+}
+
+/** How many components a deep enrichment has in progress at once, the max_parallel of its fan-out. */
+const DEEP_ENRICH_CONCURRENCY = 5;
+
+/**
+ * Deep-enriches `project` of `target`, as `codebase --deep-enrich` and the hidden `deep-enrich` do, through a
+ * teamai-codebase-deep-enrich run, under the import lock of the team repo when one holds the teamwiki, as every command
+ * that writes it takes. Another teamwiki needs no teamai init: the run then builds a config of its own.
+ */
+export async function startDeepEnrich({ target, project, maxModules = 0, publish = false, json, command }: {
+    target: TeamwikiTarget;
+    project: string;
+    maxModules?: number;
+    /** Have the run commit and push the docs to the team repo that holds the teamwiki. */
+    publish?: boolean;
+    json: boolean;
+    command: string;
+}): Promise<ShortcutEnd | undefined> {
+    const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
+    const { runShortcut } = await import('./workflow-commands.js');
+    const releaseLock = await lockTeamwiki(target);
+    const given = { wiki_root: target.wikiRoot, project, max_modules: maxModules, concurrency: DEEP_ENRICH_CONCURRENCY };
+    // Only a publishing run passes publish, so a team's own teamai-codebase-deep-enrich need not declare it.
+    const inputs = publish ? { ...given, publish } : given;
+
+    try {
+        return await runShortcut({
+            workflow: 'teamai-codebase-deep-enrich',
+            inputs,
+            command,
+            json,
+        });
+    } finally {
+        await releaseLock();
+    }
+}
+
+/** The teamwiki the hidden `deep-enrich` writes, `--wiki-root` or else the team repo's, with the team repo when it holds it. */
+export async function hiddenDeepEnrichTarget(wikiRoot: string | undefined): Promise<TeamwikiTarget> {
+    const { resolveTeamwiki, teamwikiAt } = await import('./utils/teamwiki-root.js');
+
+    return wikiRoot === undefined ? resolveTeamwiki() : teamwikiAt(wikiRoot);
 }
 
 // ─── Command handler ─────────────────────────────────────────────────────────
@@ -180,62 +224,9 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             return;
         }
 
-        // In the team repo, write under the import lock and publish deep-enrich
-        // output the way `teamai import` does, so the next `teamai push` does not
+        // In the team repo, the run publishes the docs the way `teamai import` does, so the next `teamai push` does not
         // find the clone dirty.
-        const team = target.team;
-        const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
-        const releaseLock = team ? await lockTeamwiki(target) : async () => {};
-
-        try {
-            const { deepEnrich } = await import('./deep-enrich.js');
-            const result = await deepEnrich({ project, evidenceDir, wikiRoot: teamwikiDir });
-
-            if (opts.json) {
-                console.log(JSON.stringify({
-                    project,
-                    evidenceDir,
-                    complete: result.complete,
-                    missingComponents: result.missingComponents,
-                    missingArchitecture: result.missingArchitecture,
-                }, null, 2));
-            } else if (result.complete) {
-                console.log(`Deep enrichment complete: project=${project}`);
-            } else {
-                const parts: string[] = [];
-
-                if (result.missingComponents.length > 0) {
-                    parts.push(`missing component docs: ${result.missingComponents.join(', ')}`);
-                }
-
-                if (result.missingArchitecture) parts.push('missing architecture.md');
-                console.log(`Deep enrichment incomplete: project=${project}, ${parts.join(', ')}`);
-            }
-
-            if (!result.complete) process.exitCode = 1;
-
-            if (team) {
-                const repoPath = team.localConfig.repo.localPath;
-
-                const publishPaths = [
-                    path.relative(repoPath, evidenceDir),
-                    path.relative(repoPath, path.join(teamwikiDir, 'router.md')),
-                    path.relative(repoPath, path.join(teamwikiDir, 'index.md')),
-                ].filter((rel) => rel && !rel.startsWith('..'));
-
-                const { autoPushTeamRepo } = await import('./utils/git.js');
-
-                const pushed = await autoPushTeamRepo(
-                    repoPath,
-                    `[teamai] Deep enrich: ${project}`,
-                    publishPaths,
-                );
-
-                if (pushed && !opts.json) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
-            }
-        } finally {
-            await releaseLock();
-        }
+        await startDeepEnrich({ target, project, publish: target.team !== undefined, json: opts.json === true, command: `teamai codebase --deep-enrich --project ${project}` });
 
         return;
     }

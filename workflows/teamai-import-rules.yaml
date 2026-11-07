@@ -1,0 +1,32 @@
+schemaVersion: v1alpha1
+name: teamai-import-rules
+description: Import the rules in the rules directory of every AI coding tool teamai supports on this machine into the team repo - teamai-import-learnings classifies them and asks about each one - then commit and push what it wrote. teamai import --from-tools starts it.
+invoke: deny
+private: true
+# dir: the team repo, whose rules/, docs/ and learnings/ take the items by type; with by_type false, the directory every
+# item is written into, and nothing is pushed. all: accept every item without asking.
+inputs: { dir: string, by_type: boolean, all: boolean }
+steps:
+  - id: scan
+    command: teamai import scan-rules
+    output: { candidates: [{ path: string, file: string }] }
+  - id: learnings
+    needs: [scan]
+    if: length(steps.scan.outputs.candidates) > 0
+    workflow: teamai-import-learnings
+    with:
+      candidates: "{{ steps.scan.outputs.candidates }}"
+      dir: "{{ inputs.dir }}"
+      by_type: "{{ inputs.by_type }}"
+      all: "{{ inputs.all }}"
+  - id: publish
+    needs: [learnings]
+    if: steps.learnings.outcome == 'success'
+    command: teamai import publish-rules --kept "$KEPT" --written "$WRITTEN" --target "$DIR" --by-type "$BY_TYPE"
+    env:
+      KEPT: "{{ steps.learnings.outputs.kept }}"
+      WRITTEN: "{{ steps.learnings.outputs.written }}"
+      DIR: "{{ inputs.dir }}"
+      BY_TYPE: "{{ inputs.by_type }}"
+    writes: ["{{ inputs.dir }}"]
+outputs: { written: steps.learnings.outputs.written }

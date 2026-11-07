@@ -30,23 +30,29 @@ describe('recall promote publishes the artifact before the marker', () => {
   let remote: string;
   let dashboard: ChildProcess | undefined;
 
-  function cliEnv() {
+  function cliEnv(extra: Record<string, string> = {}) {
     const env: Record<string, string | undefined> = {
       ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', GIT_CONFIG_NOSYSTEM: '1',
-      // An AI CLI that always fails: promotion falls back to the learning's own content.
+      // An AI CLI that fails unless FAKE_CLAUDE=answer: promotion falls back to the learning's own content.
       PATH: `${path.join(sandbox, 'bin')}${path.delimiter}${process.env.PATH ?? ''}`,
+      CLAUDE_CALLS: path.join(sandbox, 'claude-calls'),
+      ...extra,
     };
     delete env.CLAUDE_CONFIG_DIR;
     delete env.CODEX_HOME;
+    if (extra.TEAMAI_AI_TOOL === undefined) delete env.TEAMAI_AI_TOOL;
     return env;
   }
 
-  function cli(args: string[]) {
+  function cli(args: string[], extra: Record<string, string> = {}) {
     const result = spawnSync(process.execPath, [CLI, ...args], {
-      cwd: project, env: cliEnv(), encoding: 'utf8', input: '', timeout: 30_000,
+      cwd: project, env: cliEnv(extra), encoding: 'utf8', input: '', timeout: 60_000,
     });
     return { code: result.status, output: `${result.stdout}${result.stderr}` };
   }
+
+  /** Each launch of the fake claude, its arguments then its prompt, in order. */
+  const claudeCalls = (): string[] => (fs.existsSync(path.join(sandbox, 'claude-calls')) ? fs.readFileSync(path.join(sandbox, 'claude-calls'), 'utf8').split('\0').filter(Boolean) : []);
 
   /** What the dashboard serves as its knowledge-base context. */
   async function dashboardContext(): Promise<unknown> {
@@ -104,7 +110,20 @@ describe('recall promote publishes the artifact before the marker', () => {
     remote = path.join(sandbox, 'team.git');
     fs.mkdirSync(home);
     fs.mkdirSync(path.join(sandbox, 'bin'));
-    fs.writeFileSync(path.join(sandbox, 'bin', 'claude'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    // Records each launch, its arguments then its prompt; with FAKE_CLAUDE=answer it picks rules for the category and rewrites the learning.
+    fs.writeFileSync(path.join(sandbox, 'bin', 'claude'), `#!${process.execPath}
+const fs = require('node:fs');
+let prompt = '';
+process.stdin.on('data', (d) => { prompt += d; });
+process.stdin.on('end', () => {
+  fs.appendFileSync(process.env.CLAUDE_CALLS, process.argv.slice(2).join(' ') + '\\n' + prompt + '\\0');
+  if (process.env.FAKE_CLAUDE !== 'answer') process.exit(1);
+  const result = prompt.includes('Classify')
+    ? JSON.stringify({ category: 'rules', reason: 'It states how the team always works.' })
+    : '---\\ntitle: ready\\n---\\nAlways do it step by step.\\n';
+  process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result, usage: { input_tokens: 10, output_tokens: 5 } }));
+});
+`, { mode: 0o755 });
     const env = { ...process.env, ...GIT_ENV };
     const seed = path.join(sandbox, 'seed');
     const run = (args: string[]) => execFileSync('git', args, { cwd: seed, env });
@@ -227,9 +246,62 @@ describe('recall promote publishes the artifact before the marker', () => {
     expect(cli(['recall', 'promote', 'ready', '--category', 'docs']).code).toBe(0);
     git(['branch', '-D', remotePushBranches()]);
     expect(cli(['recall', 'promote']).output).toContain('- ready');
+    const launches = claudeCalls().length;
 
-    expect(await dashboardContext()).toMatchObject({ maintenanceCounts: { promote: 1 } });
+    expect(await dashboardContext()).toMatchObject({
+      maintenanceCounts: { promote: 1 },
+      improvement: { maintenance: { promote: [{ docId: 'ready', category: 'skills' }] } },
+    });
+    expect(claudeCalls()).toHaveLength(launches);
   }, 60_000);
+
+  it('lists the candidates with the category their keywords suggest, launching no AI tool', () => {
+    const listing = cli(['recall', 'promote'], { FAKE_CLAUDE: 'answer' });
+
+    expect(listing.code, listing.output).toBe(0);
+    expect(listing.output).toMatch(/- ready \(confidence: \d\.\d\d, suggested: skills\)/);
+    expect(claudeCalls()).toEqual([]);
+  });
+
+  it('lets the AI pick the category and rewrite the learning, and says why on the review branch', () => {
+    const result = cli(['recall', 'promote', 'ready'], { FAKE_CLAUDE: 'answer' });
+
+    expect(result.code, result.output).toBe(0);
+    const branch = remotePushBranches();
+    expect(branch).toMatch(/^teamai\/push\//);
+    expect(result.output).toContain(`Promotion artifact pushed to branch ${branch}`);
+    expect(result.output).toContain(`Create a pull/merge request for ${branch} to review the promoted knowledge.`);
+    expect(result.output).toContain('Promoted: ready -> rules/ready.md');
+    expect(result.output).toContain('Published promotion marker to the learnings branch');
+    expect(git(['show', `${branch}:rules/ready.md`])).toContain('Always do it step by step.');
+    expect(git(['log', '-1', '--format=%B', branch])).toBe('[teamai] Promote ready to rules\n\nCategory: rules\n\nIt states how the team always works.\n\n');
+    expect(git(['show', 'teamai-learnings:learnings/ready.md'])).toContain('promoted_to: rules/ready.md');
+    expect(claudeCalls().map((call) => call.includes('Classify'))).toEqual([true, false]);
+  });
+
+  it('fails, publishing nothing, when the member names an AI tool teamai cannot run', () => {
+    const result = cli(['recall', 'promote', 'ready'], { FAKE_CLAUDE: 'answer', TEAMAI_AI_TOOL: 'gemini' });
+
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain('failed with tool_unconfigured');
+    expect(remotePushBranches()).toBe('');
+    expect(git(['show', 'teamai-learnings:learnings/ready.md'])).not.toContain('promoted_to');
+  });
+
+  it('exits 1 for a learning that is not a candidate, with and without --dry-run', () => {
+    for (const args of [['recall', 'promote', 'nope'], ['recall', 'promote', 'nope', '--dry-run']]) {
+      const result = cli(args);
+
+      expect(result.code, result.output).toBe(1);
+      expect(result.output.split('Learning "nope" not found or not eligible for promotion.').length - 1, result.output).toBe(1);
+      // Running the step again with the same id fails the same way.
+      expect(result.output).not.toContain('Retry it with');
+      // The run ended, so there is nothing to continue.
+      expect(result.output).not.toContain('workflow resume');
+    }
+
+    expect(remotePushBranches()).toBe('');
+  });
 
   it('lists from the last fetch while another sync holds the lock', () => {
     expect(cli(['recall', 'promote', 'ready', '--category', 'docs']).code).toBe(0);

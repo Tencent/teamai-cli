@@ -173,7 +173,7 @@ jobs:
 
 ### What a run does
 
-`self-improvement run` starts the workflow `teamai-self-improvement` with inputs `scorer` and `suite`, on the local driver, as `benchmark run` starts `teamai-benchmark`. teamai ships it as a [default workflow](workflow.md#default-workflows):
+`self-improvement run` starts the workflow `teamai-self-improvement` with inputs `scorer` and `suite`, on the driver `--driver` names, else the one [`workflows.driver`](reference.md#member-settings) names, else the local driver, as `benchmark run` starts `teamai-benchmark`. teamai ships it as a [default workflow](workflow.md#default-workflows):
 
 | Step | Does |
 | --- | --- |

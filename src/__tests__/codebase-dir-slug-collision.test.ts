@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { importLocalCheckout, localCheckoutSlug } from '../import-codebase.js';
+import { localCheckoutSlug } from '../import-codebase.js';
+import { importCodebase } from './helpers/import-codebase.js';
 import { log } from '../utils/logger.js';
 
 /**
@@ -51,7 +52,7 @@ function plainDir(parent: string, name: string, marker: string): string {
 /** `teamai import --dir <sourceDir> --skip-enrich` of a directory named `svc`. */
 async function importDir(sourceDir: string, wikiRoot: string): Promise<boolean> {
   const slug = await localCheckoutSlug({ sourceDir, slug: 'svc', wikiRoot });
-  return (await importLocalCheckout({ sourceDir, slug, wikiRoot, skipEnrich: true })).updated;
+  return importCodebase({ sourceDir, slug, wikiRoot, skipEnrich: true });
 }
 
 function evidenceSlugs(wikiRoot: string): string[] {

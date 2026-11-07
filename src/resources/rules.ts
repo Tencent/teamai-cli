@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { ResourceHandler, type PlacementRecords } from './base.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
-import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile, pruneEmptyDirs, fileHash } from '../utils/fs.js';
+import { isDraft, listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile, pruneEmptyDirs, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { getUserHome } from '../utils/home.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
@@ -262,7 +262,7 @@ export class RulesHandler extends ResourceHandler {
     return files
       // teamai-context is the file pull writes the team instructions to; a team
       // rule of that name would land on it (#945). pullAllRules names it.
-      .filter((f) => f.endsWith('.md') && f !== `${TEAMAI_CONTEXT_RULE_NAME}.md`)
+      .filter((f) => f.endsWith('.md') && !isDraft(f) && f !== `${TEAMAI_CONTEXT_RULE_NAME}.md`)
       .map((f) => ({
         name: f.replace(/\.md$/, ''),
         type: 'rules' as const,

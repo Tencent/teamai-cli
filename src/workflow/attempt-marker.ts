@@ -1,13 +1,18 @@
-import { ATTEMPT_ENV, RUN_DIR_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
+import { ATTEMPT_ENV, EPHEMERAL_CONFIG_ENV, RUN_DIR_ENV, RUN_MODE_ENV, type RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { isRunId, runScratchDir } from './store.js';
 import type { WorkflowFailure } from './types.js';
 import { git, worktreeCheckout } from './worktree.js';
 
-/** What every process of an attempt of `run` gets: the attempt marker, the run's mode, and the run's directory. */
-export function attemptEnv(config: LocalConfig, run: string, attempt: string, mode: RunMode): Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV | typeof RUN_DIR_ENV, string> {
-  return { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode, [RUN_DIR_ENV]: runScratchDir(config, run) };
+/**
+ * What every process of an attempt of `run` gets: the attempt marker, the run's mode, and the run's directory, and the
+ * config a run with no teamai init built, so the process loads it rather than one from its directory.
+ */
+export function attemptEnv(config: LocalConfig, run: string, attempt: string, mode: RunMode): Partial<Record<typeof EPHEMERAL_CONFIG_ENV, string>> & Record<typeof ATTEMPT_ENV | typeof RUN_MODE_ENV | typeof RUN_DIR_ENV, string> {
+  const marked = { [ATTEMPT_ENV]: `${run}/${attempt}`, [RUN_MODE_ENV]: mode, [RUN_DIR_ENV]: runScratchDir(config, run) };
+
+  return config.ephemeralConfig === undefined ? marked : { ...marked, [EPHEMERAL_CONFIG_ENV]: config.ephemeralConfig };
 }
 
 /** Whether `env` marks its process as the runner of `attempt` of `run`. */

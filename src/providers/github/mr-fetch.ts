@@ -176,7 +176,6 @@ async function fetchGitHubThreads(
   owner: string,
   repo: string,
   number: string,
-  commentMarker?: string,
 ): Promise<MRThread[]> {
   const base = `/repos/${owner}/${repo}`;
   const comments = await readPages(get, `${base}/pulls/${number}/comments`, GitHubReviewCommentSchema);
@@ -208,7 +207,7 @@ async function fetchGitHubThreads(
     threads.push({ notes: [{ author: c.user?.login, body: c.body ?? '' }] });
   }
 
-  return pruneThreads(threads, commentMarker);
+  return pruneThreads(threads);
 }
 
 /**
@@ -327,15 +326,18 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
 
     const rawDiff = diffResult.stdout;
 
+    // gh pr view requests commits(first: 100), so a full result may omit later commits.
+    const commits = prView.commits?.length === 100
+      ? (await readPages(ghApiGet, `/repos/${owner}/${repo}/pulls/${number}/commits`, GitHubApiCommitSchema))
+        .map((c) => ({ hash: c.sha, message: c.commit.message.split('\n')[0] }))
+      : (prView.commits ?? []).map((c) => ({ hash: c.oid, message: c.messageHeadline }));
+
     mr = {
       title: prView.title,
       description: prView.body ?? '',
       author: prView.author?.login,
       mergedAt: prView.mergedAt ?? undefined,
-      commits: (prView.commits ?? []).map((c) => ({
-        hash: c.oid,
-        message: c.messageHeadline,
-      })),
+      commits,
       diff: rawDiff.slice(0, 50000),
       url,
     };
@@ -351,7 +353,7 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
   // ── 评审 threads（失败非致命） ───────────────────────────
   if (opts.discussions !== false) {
     try {
-      mr.discussions = await fetchGitHubThreads(get, owner, repo, number, opts.commentMarker);
+      mr.discussions = await fetchGitHubThreads(get, owner, repo, number);
     } catch (err) {
       log.warn(`Review threads not read (${err instanceof Error ? err.message : String(err)}); the learning is extracted without them`);
     }

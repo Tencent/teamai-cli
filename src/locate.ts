@@ -21,7 +21,7 @@ import {
   CURSOR_CONFIG_TOOL_ID, CURSOR_DATA_TOOL_ID,
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
   workbuddyLaunchedFrom,
-  WORKBUDDY_AI_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
+  WORKBUDDY_AI_ROOT, WORKBUDDY_LIVE_ROOT_LEAVES, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
 } from './types.js';
 import { absoluteOn, defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
@@ -541,7 +541,14 @@ function underToolHome(tool: string, relative: string, host: Host): string {
 
 function rootsOf(tool: string, install: Install, host: Host): Roots {
   const p = host.path;
-  const at: HomePaths = { home: host.home, path: p };
+
+  const at: HomePaths = {
+    home: host.home,
+    path: p,
+    readTextNow: (file) => host.readTextNow(file),
+    existsNow: (file) => host.existsNow(file),
+  };
+
   const known = isToolId(tool) ? tool : undefined;
   const base = install.scope === 'user' ? host.home : install.projectRoot;
 
@@ -563,12 +570,17 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
   // there is a project path, not the member's data root.
   const liveRoot = known === WORKBUDDY_TOOL_ID && install.scope === 'user' ? liveWorkbuddyRoot(base, host) : null;
 
-  // A path that still spells the default root moves to the live one; a team
-  // override spells something else and keeps it.
-  const liveRelative = (relative: string): string | null =>
-    liveRoot !== null && relative.startsWith(`${WORKBUDDY_TOOL_ROOT}/`)
-      ? join(liveRoot, relative.slice(WORKBUDDY_TOOL_ROOT.length + 1))
-      : null;
+  // A path that still spells one of the leaves the swap moves follows it to the
+  // live root. Everything else keeps what it says: `settings.json` because hooks
+  // are resolved from it and hooks stay put, and a team override because the
+  // override names the destination delivery must honour (#1273).
+  const liveRelative = (relative: string): string | null => {
+    if (liveRoot === null || !relative.startsWith(`${WORKBUDDY_TOOL_ROOT}/`)) return null;
+
+    const leaf = relative.slice(WORKBUDDY_TOOL_ROOT.length + 1);
+
+    return WORKBUDDY_LIVE_ROOT_LEAVES.has(leaf) ? join(liveRoot, leaf) : null;
+  };
 
   return {
     base,

@@ -92,6 +92,8 @@ const PlaceFields = {
   adopted: z.literal(true).optional(),
   interactive: z.literal(true).optional(),
   readOnly: z.literal(true).optional(),
+  /** The paths, relative to the checkout, under which a command reader's change is kept. */
+  writes: z.array(z.string()).optional(),
 };
 
 const PlaceBase = { ...PlaceFields, place: PlaceRoleSchema };

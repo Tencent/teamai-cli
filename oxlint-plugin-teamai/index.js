@@ -7,6 +7,7 @@ import attemptResultWrites from './rules/attempt-result-writes.js';
 import learningsRoot from './rules/learnings-root.js';
 import configuredToolPaths from './rules/configured-tool-paths.js';
 import launchEnv from './rules/launch-env.js';
+import launchThroughWorkflows from './rules/launch-through-workflows.js';
 import noProviderMerge from './rules/no-provider-merge.js';
 import workflowBoundaries from './rules/workflow-boundaries.js';
 import windowsTests from './rules/windows-tests.js';
@@ -31,6 +32,7 @@ export default definePlugin({
     'config-load-options': configLoadOptions,
     'configured-tool-paths': configuredToolPaths,
     'launch-env': launchEnv,
+    'launch-through-workflows': launchThroughWorkflows,
     'no-provider-merge': noProviderMerge,
     'workflow-boundaries': workflowBoundaries,
     'windows-tests': windowsTests,

@@ -141,7 +141,8 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
 }
 
 /**
- * `running` and `cancelled` name leases that earlier operations saved; `cancelled` must match exactly.
+ * `running`, `queued`, `cancelled` and `deadlines` name leases that earlier operations saved; `cancelled` must match
+ * exactly, and so must the attempts the reply's `deadlines` gives one.
  * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted, which stands for
  * the driver under test: the profile a runner runs the scenario under replaces it. `can` replaces the keys of the
  * profile's `can` it names, and `hitl` sets it for a profile that does not decide it.
@@ -156,9 +157,9 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
  */
 export type ConformanceOperation =
   | {
-    kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean; autoApprove?: boolean;
+    kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; queued?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean; autoApprove?: boolean;
     base?: { ref?: string; commit: string }; prepare?: true; attempt?: string; adopt?: string; promptHas?: string[];
-    cancelled?: string[]; absent?: string[]; expect: ScenarioJson; state?: ScenarioJson;
+    cancelled?: string[]; deadlines?: string[]; absent?: string[]; expect: ScenarioJson; state?: ScenarioJson;
   }
   | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
@@ -192,11 +193,15 @@ export type ConformanceOperation =
 interface NextBody {
   driver: DriverIdentity & { can: DriverCan };
   running?: Array<string | undefined>;
+  queued?: Array<string | undefined>;
   canTakeLease?: boolean;
   claim?: boolean;
   autoApprove?: boolean;
   base?: { ref?: string; commit: string };
 }
+
+/** The `deadlines` a `next` answers with: none when it gives no attempt one. */
+const DeadlinesSchema = z.record(z.string(), z.string()).default({});
 
 /** The `hitl` a `next` answers with, whose `respond` names the command that answers it. */
 const AnsweredHitlSchema = z.object({ step: z.string(), pass: z.number(), respond: z.string() });
@@ -382,6 +387,8 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
 
         if (operation.running) body.running = operation.running.map(attemptOf);
 
+        if (operation.queued) body.queued = operation.queued.map(attemptOf);
+
         if (operation.canTakeLease !== undefined) body.canTakeLease = operation.canTakeLease;
 
         if (operation.claim !== undefined) body.claim = operation.claim;
@@ -407,6 +414,8 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         }
 
         if (operation.cancelled) expect('data' in envelope && envelope.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
+
+        if (operation.deadlines) expect(Object.keys(DeadlinesSchema.parse('data' in envelope ? envelope.data.deadlines : undefined))).toEqual(operation.deadlines.map(attemptOf));
 
         for (const field of operation.absent ?? []) expect('data' in envelope ? envelope.data.lease : undefined).not.toHaveProperty(field);
 

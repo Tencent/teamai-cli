@@ -167,6 +167,32 @@ describe('the branches of a run that succeeded', () => {
     });
   });
 
+  it('deletes the branches answers read in worktrees of their own', async () => {
+    const { config, cwd, root, origin, runId } = await fixture(`schemaVersion: v1alpha1
+name: ship
+description: Ask about each part in a worktree of its own.
+inputs: { parts: [string] }
+steps:
+  - id: ask
+    for_each: { items: inputs.parts, max_parallel: 2 }
+    answer: "Describe {{ item }}."
+    output: { text: string }
+    workspace: new
+`, { parts: ['api', 'web'] });
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
+process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'described' }))}));\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    vi.stubEnv('TEAMAI_AI_TOOL', 'claude');
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+
+    expect(branches(cwd, runId)).toEqual([]);
+    expect(branches(origin, runId)).toEqual([]);
+    expect((await state(config, runId)).leftovers).toMatchObject({ by: 'success', kept: [], failed: [] });
+  });
+
   it('keeps the final copy of a run that delivered nothing', async () => {
     const { config, cwd, origin, runId } = await fixture(NO_DELIVERY);
 

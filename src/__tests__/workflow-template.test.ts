@@ -112,7 +112,7 @@ describe('workflow templates', () => {
   });
 
   it.each([
-    ['{{ steps.plan }}', '"steps.plan" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
+    ['{{ steps.plan }}', '"steps.plan" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.failure, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
     ['{{ inputs.a b }}', 'unexpected "b"'],
     ['{{ inputs.labels[-1] }}', '"[-1]" is not an index; write a whole number from 0, such as [0]'],
     ['{{ with.refs[x] }}', '"[x]" is not an index; write a whole number from 0, such as [0]'],
@@ -181,7 +181,7 @@ describe('workflow templates', () => {
     ['a double-quoted string', '{{ filter(steps.build.results, .outcome == "failed") }}', "strings use single quotes, as in 'failed'"],
     ['= for ==', "{{ any(steps.build.results, .outcome = 'failed') }}", 'any is called as any(list, predicate)'],
     ['a field a step does not have', '{{ length(steps.build.result) }}',
-      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
+      '"steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.failure, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr'],
     ['a string compared with <', "{{ length(inputs.xs) < 'x' }}", "compares 'x' with <, but it is not a number"],
     ['a call on a with value', '{{ length(with.xs) }}', '"with" is not readable; an expression reads only inputs, steps, item and run.id'],
     ['a call after a third brace', '{{{ length(steps.build.results) }}', 'expected a value, found "{"'],
@@ -255,7 +255,7 @@ describe('workflow templates', () => {
     item: { name: 'I' },
   } satisfies ExpressionContext;
   const AS_WRITTEN = Symbol('as written');
-  const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr';
+  const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.failure, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes, steps.<id>.results, steps.<id>.branches or steps.<id>.pr';
 
   it.each<[string, string, boolean, typeof AS_WRITTEN | { renders: string } | { error: string }]>([
     ['a Jinja filter', '{{ items | length }}', false, AS_WRITTEN],

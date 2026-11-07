@@ -211,6 +211,17 @@ timeout: 45m
 
 `recall` 从不算作一个被更改的 `defaults` 键，matrix 也不能交叉它。不写它时，该 arm 和每个 workflow 克隆一样在没有 recall 下运行。
 
+记录会把这个 arm 的 `recall` 保留下来，因此之后的对比能分清一个 run 测了 recall、另一个没测；只要有 arm 开了它，结果就会多出一列 Recall：
+
+```text
+| Arm | Tool | Model (source) | Recall | Planned | Passed | … |
+| --- | --- | --- | --- | --- | --- | --- |
+| with-relations | claude | claude-opus-5-5 (team) | on | 6 | 4 | … |
+| without-relations | claude | claude-opus-5-5 (team) | on | 6 | 1 | … |
+```
+
+不写它的 arm 读作 `off`。
+
 ### 用 matrix 交叉工具和团队资产
 
 `matrix` 为其值的每种组合生成一个 arm，因此任意两个只差一个值的 arm 只比较这一个值。下面这个例子同时回答：团队资产对每个工具帮助多大，以及带上资产后哪个工具更好：
@@ -585,7 +596,7 @@ $ teamai benchmark run fix-auth --sandbox
 ℹ Run r38302f8e6a18c377 started. If it stops before it ends, continue it with: teamai workflow resume r38302f8e6a18c377
 ```
 
-`benchmark run` 先规划套件，所以无法运行的套件不会留下运行。然后它用套件的 `timeout` 启动工作流 `teamai-benchmark`，并用本地驱动驱动它。
+`benchmark run` 先规划套件，所以无法运行的套件不会留下运行。然后它用套件的 `timeout` 启动工作流 `teamai-benchmark`，在 `--driver` 指定的驱动上运行；未指定则用 [`workflows.driver`](reference.md#成员设置) 指定的驱动，都未指定则由本地驱动在本机驱动它。
 
 每个 trial 的 prompt 都以 [`permissions: unattended`](workflow-advanced.md#无人值守的-prompt) 运行，因为 teamai 自带的工作流在严格的 sandbox 中运行 trial：无论这台机器上该工具的设置如何，工具都无需询问就编辑文件和运行命令。
 

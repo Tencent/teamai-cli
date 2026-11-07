@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { CheckRunSchema } from './check.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
+import type { DefaultScorerCode } from '../default-scorers.js';
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -93,6 +94,8 @@ export interface ScorerDiagnostic {
   /** The team-repo-relative path, such as `scorers/review-quality.md`. */
   file: string;
   message: string;
+  /** Why pull refuses a team file that replaces one of teamai's default scorers. */
+  code?: DefaultScorerCode;
 }
 
 export type ParsedScorer = { ok: true; definition: ScorerDefinition } | { ok: false; diagnostics: ScorerDiagnostic[] };

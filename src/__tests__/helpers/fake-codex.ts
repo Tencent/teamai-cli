@@ -80,7 +80,7 @@ process.stdin.on('data', (chunk) => {
     const reply = (body) => process.stdout.write(JSON.stringify({ id: m.id, ...body }) + '\n');
     if (opts.failMethod === m.method && (!opts.failCodex || opts.failCodex === BUILD.codex)) { reply({ error: { code: -32000, message: 'fake failure' } }); continue; }
     if (m.method === 'initialize') reply({ result: { userAgent: 'fake' } });
-    else if (m.method === 'hooks/list') reply({ result: { data: m.params.cwds.map((cwd) => ({ cwd, hooks: list(cwd, s), warnings: [] })) } });
+    else if (m.method === 'hooks/list') reply({ result: { data: m.params.cwds.map((cwd) => ({ cwd, hooks: opts.listErrors ? [] : list(cwd, s), errors: opts.listErrors ? [{ path: cwd, message: opts.listErrors }] : [], warnings: [] })) } });
     else if (m.method === 'config/read') reply({ result: { config: { projects: s.projects } } });
     else if (m.method === 'config/batchWrite') {
       for (const e of m.params.edits) {
@@ -130,7 +130,7 @@ export function readFakeCodexState(codexHome: string): FakeCodexState {
 
 export function writeFakeCodexOptions(
   codexHome: string,
-  options: { failMethod?: string; failCodex?: string; exit?: boolean; omitCommands?: string[]; projectLayers?: Record<string, string>; windowsCommands?: boolean },
+  options: { listErrors?: string; failMethod?: string; failCodex?: string; exit?: boolean; omitCommands?: string[]; projectLayers?: Record<string, string>; windowsCommands?: boolean },
 ): void {
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(path.join(codexHome, 'fake.json'), JSON.stringify(options));

@@ -19,9 +19,9 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { compileDirectRecallRulesBlock, compileRecallRulesBlock } from '../pull.js';
+import { compileDirectRecallRulesBlock, compileRecallRulesBlock, resolveInstructionBlocks } from '../pull.js';
 import { injectClaudeMdSection } from '../utils/claudemd.js';
-import { TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END } from '../types.js';
+import { TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 describe('compileRecallRulesBlock', () => {
   it('produces a marker-delimited block containing both required rules', () => {
@@ -35,6 +35,26 @@ describe('compileRecallRulesBlock', () => {
 
   it('is idempotent (same input produces same output)', () => {
     expect(compileRecallRulesBlock()).toBe(compileRecallRulesBlock());
+  });
+
+  it('is English only for language en, and keeps the bilingual self-exemption for zh or no language', () => {
+    const english = compileRecallRulesBlock('en');
+    expect(english).toContain('Self-exemption');
+    expect(english).not.toMatch(/[一-鿿]/);
+    expect(compileRecallRulesBlock('zh')).toBe(compileRecallRulesBlock());
+    expect(compileRecallRulesBlock()).toContain('自豁免');
+  });
+
+  it('follows teamai.yaml language in the blocks pull, the session hook and doctor deliver', async () => {
+    const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recall-language-'));
+    try {
+      const localConfig = { repo: { localPath: repo }, recallEnabled: true } as LocalConfig;
+      const { blocks } = await resolveInstructionBlocks({ language: 'en' } as TeamaiConfig, localConfig, null);
+      expect(blocks.recall).toContain('Self-exemption');
+      expect(blocks.recall).not.toMatch(/[一-鿿]/);
+    } finally {
+      await fse.remove(repo);
+    }
   });
 });
 

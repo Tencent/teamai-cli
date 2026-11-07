@@ -2,8 +2,6 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import chalk from 'chalk';
 
-import { generateCodebaseMd } from './codebase.js';
-import { importCodebase, publishTeamwikiViaMR, reconcileAndDeepEnrich, refreshTeamwikiIndexes } from './import-codebase.js';
 import { detectProvider, getProvider } from './providers/registry.js';
 import { remoteHeadSha, shallowClone, shallowFetch } from './clone.js';
 import {
@@ -16,38 +14,9 @@ import {
 import { touchCacheEntry } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
-import { assertTeamwikiWritable, lockTeamwiki, resolveTeamwiki } from './utils/teamwiki-root.js';
-import { isOverrideInvalid } from './tool-launch/call.js';
+import { resolveTeamwiki } from './utils/teamwiki-root.js';
 import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
-
-// ─── Types ──────────────────────────────────────────────
-
-export interface ImportFromRepoOptions {
-    /** Repo URL (https or ssh) */
-    url: string;
-    /** Shallow clone depth, default 1 */
-    depth?: number;
-    /** Force SSH clone */
-    forceSsh?: boolean;
-    /** Force anonymous HTTPS (even when token is available), for whitelist auth='public' */
-    forceAnonymous?: boolean;
-    /** Skip AI recommendation when --domain is explicitly set */
-    explicitDomain?: string;
-    /** Dry-run mode: read the remote head with ls-remote and stop before the clone, the lock and the LLM scan */
-    dryRun?: boolean;
-    /** Write into <output>/teamwiki instead of the team repo's teamwiki/ (no push) */
-    output?: string;
-    /** Incremental mode: on cache hit do fetch+reset only; on miss fall back to full clone */
-    incremental?: boolean;
-    /** In batch mode, skip per-repo autoPushTeamRepo (caller handles it collectively) */
-    skipAutoPush?: boolean;
-    /** Skip AI enrichment (only clone + extract + graph, no LLM calls) */
-    skipEnrich?: boolean;
-    /** Cap on source files collected for this repo (default 200) */
-    maxFiles?: number;
-    /** Source MR/PR URL to record as ingested in source-manifest.json (P5). */
-    sourceMrUrl?: string | readonly string[];
-}
+import { JsonObjectSchema } from './types.js';
 
 // ─── Cross-Repo Edge Detection ─────────────────────────
 
@@ -246,110 +215,120 @@ export function repoSlugForUrl(url: string): string {
     return getRepoSlug(providerName, owner, repo);
 }
 
-/**
- * Main entry point for `teamai import --from-repo <url>`.
- *
- * Flow:
- *  1. Parse url → provider + RepoInfo (owner/repo)
- *  2. Shallow clone (or incremental fetch+reset) to ~/.teamai/cache/repos/<provider>/<owner>/<repo>
- *  3. generateCodebaseMd({ repoPath: cacheDir }) → AI narrative
- *  4. importCodebase → teamwiki/evidence/code/<slug>/ (deterministic overview + graph),
- *     in <output>/teamwiki or the team repo's teamwiki/
- *  5. Append AI narrative to teamwiki/evidence/code/<slug>/overview.md
- *  6. Write LAST_SYNC
- *
- * A dry run stops after step 1: it reads the target remote commit with `git ls-remote`
- * and reports whether the cache is current.
- *
- * @returns false when deep enrich ran and did not finish; the caller decides
- *   whether that fails the command
- * @throws Error on clone failure, scan failure, or IO failure
- */
-export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boolean> {
-    const {
-        url, depth = 1, forceSsh = false, forceAnonymous = false,
-        explicitDomain, dryRun = false, output,
-        incremental = false, skipAutoPush = false, skipEnrich = false, maxFiles, sourceMrUrl,
-    } = opts;
+/** A remote repository an import reads: where it is hosted, its clone cache, and its evidence slug. */
+export interface RepoSource {
+    url: string;
+    providerName: string;
+    owner: string;
+    repo: string;
+    cacheDir: string;
+    slug: string;
+}
 
-    // 1. Parse provider and repo info
+/**
+ * The repository `url` names.
+ *
+ * @throws Error when the URL names no supported provider, or a cache path that would leave the cache root
+ */
+export function repoSourceOf(url: string): RepoSource {
     const providerName = detectProvider(url);
 
-    if (!providerName) {
-        throw new Error(`Unsupported repo URL: ${url}`);
-    }
+    if (!providerName) throw new Error(`Unsupported repo URL: ${url}`);
+    const { owner, repo } = getProvider(providerName).parseRepoInput(url);
 
-    const repoInfo = getProvider(providerName).parseRepoInput(url);
-    const owner = repoInfo.owner;
-    const repoName = repoInfo.repo;
+    return { url, providerName, owner, repo, cacheDir: getRepoCacheDir(providerName, owner, repo), slug: getRepoSlug(providerName, owner, repo) };
+}
 
-    log.info(`Importing remote repo: ${owner}/${repoName} (provider: ${providerName})`);
+/** How an import reaches a repository. */
+export interface RepoFetchOptions {
+    /** Shallow clone depth, default 1 */
+    depth?: number;
+    /** Force SSH clone */
+    forceSsh?: boolean;
+    /** Force anonymous HTTPS (even when token is available), for whitelist auth='public' */
+    forceAnonymous?: boolean;
+    /** On a cache hit fetch and reset only; on a miss fall back to a full clone */
+    incremental?: boolean;
+}
 
-    // 2. Shallow clone or incremental fetch+reset
-    const cacheDir = getRepoCacheDir(providerName, owner, repoName);
-    const slug = getRepoSlug(providerName, owner, repoName);
-
-    const lastSync = await readLastSync(cacheDir);
-    const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
-    const useIncremental = incremental && cacheExists && lastSync !== null;
-
-    // Where the evidence goes: <output>/teamwiki, else the team repo's teamwiki/.
-    // Resolved before the clone so a missing team repo fails fast; a preview
-    // without one still reports what it can.
-    const target = await resolveTeamwiki({ output, dryRun }).catch((cause: unknown) => {
-        if (!dryRun) throw cause;
-
-        return undefined;
-    });
-
-    if (!dryRun) await assertTeamwikiWritable(target);
-    const evidenceDest = target ? path.join(target.wikiRoot, 'evidence', 'code', slug) : undefined;
-
-    // LAST_SYNC belongs to the shared clone cache: an unchanged cache is skipped
-    // only when this teamwiki already holds that commit, not when another
-    // --output or team repo was imported at it.
-    const publishedHead = async (): Promise<string | undefined> => evidenceDest
+/** The head commit of `evidenceDest`'s published source-manifest.json, when it names one. */
+async function publishedHead(evidenceDest: string | undefined): Promise<string | undefined> {
+    return evidenceDest
         ? SourceManifestSchema.safeParse(await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null)).data?.headSha
         : undefined;
+}
 
-    // A preview asks for the target remote commit and stops: the clone replaces the
-    // cache (or fetches and resets it), and the lock and LLM scan follow (#900).
-    if (dryRun) {
-        let head: string;
-        let previewIncremental = useIncremental;
+/**
+ * The `--dry-run` of a repository import: reads the target remote commit with `git ls-remote` and says whether the
+ * cache is current, before the clone, the lock and any AI call (#900).
+ */
+export async function previewRepoImport(source: RepoSource, opts: RepoFetchOptions & { output?: string }): Promise<void> {
+    const { url, providerName, owner, repo, cacheDir, slug } = source;
+    const forceSsh = opts.forceSsh ?? false;
+    const forceAnonymous = opts.forceAnonymous ?? false;
+    const lastSync = await readLastSync(cacheDir);
+    const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
+    const useIncremental = (opts.incremental ?? false) && cacheExists && lastSync !== null;
+    // A preview without a team repo still reports what it can.
+    const target = await resolveTeamwiki({ output: opts.output, dryRun: true }).catch(() => undefined);
+    const evidenceDest = target ? path.join(target.wikiRoot, 'evidence', 'code', slug) : undefined;
+    let head: string;
+    let previewIncremental = useIncremental;
 
-        try {
-            head = await remoteHeadSha(url, providerName, {
-                forceSsh, forceAnonymous, cachedRepoPath: useIncremental ? cacheDir : undefined,
-            });
-        } catch (error) {
-            if (!useIncremental) throw error;
-            log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${error instanceof Error ? error.message : String(error)}`);
-            head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
-            previewIncremental = false;
-        }
-
-        const skips = previewIncremental && (await publishedHead()) === head;
-
-        const cache = !cacheExists
-            ? `not cached yet, a real run would clone it into ${cacheDir}`
-            : lastSync?.sha === head
-                ? `cache is current at ${head.slice(0, 8)}${skips ? ', so an incremental run would skip it' : ''}`
-                : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
-
-        log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into ${evidenceDest ?? path.join('teamwiki', 'evidence', 'code', slug)}; ${cache}`);
-
-        return true;
+    try {
+        head = await remoteHeadSha(url, providerName, {
+            forceSsh, forceAnonymous, cachedRepoPath: useIncremental ? cacheDir : undefined,
+        });
+    } catch (error) {
+        if (!useIncremental) throw error;
+        log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${error instanceof Error ? error.message : String(error)}`);
+        head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
+        previewIncremental = false;
     }
 
-    if (!target || !evidenceDest) throw new Error('unreachable: the teamwiki resolves outside a dry run');
-    const { wikiRoot: teamwikiRoot, team } = target;
+    const skips = previewIncremental && (await publishedHead(evidenceDest)) === head;
+
+    const cache = !cacheExists
+        ? `not cached yet, a real run would clone it into ${cacheDir}`
+        : lastSync?.sha === head
+            ? `cache is current at ${head.slice(0, 8)}${skips ? ', so an incremental run would skip it' : ''}`
+            : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
+
+    log.info(`[dry-run] Would import ${owner}/${repo} at ${head.slice(0, 8)} into ${evidenceDest ?? path.join('teamwiki', 'evidence', 'code', slug)}; ${cache}`);
+}
+
+/** The commit a fetch reached, or that the teamwiki already holds it unchanged, so the import is done. */
+export type RepoFetched = { kind: 'fetched'; sha: string; branch: string } | { kind: 'unchanged'; sha: string };
+
+/**
+ * Shallow-clone `source` into its cache, or with `incremental` fetch and reset a cached clone. An incremental fetch that
+ * finds the commit the cache and the teamwiki at `evidenceDest` already hold records the sync and answers `unchanged`.
+ *
+ * @throws Error when the clone fails
+ */
+export async function fetchRepo(source: RepoSource, opts: RepoFetchOptions & { evidenceDest: string }): Promise<RepoFetched> {
+    const { url, providerName, owner, repo, cacheDir } = source;
+    const depth = opts.depth ?? 1;
+    const forceSsh = opts.forceSsh ?? false;
+    const forceAnonymous = opts.forceAnonymous ?? false;
+    const lastSync = await readLastSync(cacheDir);
+    const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
+    const useIncremental = (opts.incremental ?? false) && cacheExists && lastSync !== null;
 
     await ensureCacheRoot();
 
     let cloneSha: string;
     let cloneBranch: string;
     let oldSha: string | null = null;
+
+    const clone = async (): Promise<{ sha: string; branch: string }> => {
+        try {
+            return await shallowClone(url, cacheDir, providerName, { depth, forceSsh, forceAnonymous });
+        } catch (err) {
+            // shallowClone cleans up the directory internally
+            throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+        }
+    };
 
     if (useIncremental) {
         oldSha = lastSync.sha;
@@ -365,152 +344,87 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
                 `[incremental] fetch failed, falling back to full clone: ` +
                 `${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
             );
-
-            try {
-                const cloneResult = await shallowClone(url, cacheDir, providerName, {
-                    depth, forceSsh, forceAnonymous,
-                });
-
-                cloneSha = cloneResult.sha;
-                cloneBranch = cloneResult.branch;
-                oldSha = null; // treat as full clone on fallback, skip drift detection
-            } catch (err) {
-                throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-            }
+            ({ sha: cloneSha, branch: cloneBranch } = await clone());
+            oldSha = null; // treat as full clone on fallback, skip drift detection
         }
     } else {
         log.info(`Shallow clone to cache: ${cacheDir}`);
-
-        try {
-            const cloneResult = await shallowClone(url, cacheDir, providerName, {
-                depth, forceSsh, forceAnonymous,
-            });
-
-            cloneSha = cloneResult.sha;
-            cloneBranch = cloneResult.branch;
-        } catch (err) {
-            // shallowClone cleans up the directory internally
-            throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-        }
+        ({ sha: cloneSha, branch: cloneBranch } = await clone());
     }
 
     log.info(`Clone/Fetch complete: SHA=${cloneSha.slice(0, 8)}, branch=${cloneBranch}`);
 
-    // 2.5 Skip the AI scan if the cache did not move and the target teamwiki
-    // already holds this commit (incremental fast path).
-    if (useIncremental && oldSha && cloneSha === oldSha && (await publishedHead()) === cloneSha) {
+    // Skip the AI scan if the cache did not move and the target teamwiki already holds this commit.
+    if (useIncremental && oldSha && cloneSha === oldSha && (await publishedHead(opts.evidenceDest)) === cloneSha) {
         log.info(`[incremental] SHA unchanged (${cloneSha.slice(0, 8)}), skipping AI scan`);
-        await writeLastSync(cacheDir, cloneSha);
+        await recordRepoSync(source, cloneSha);
+        log.info(chalk.green(`✓ repo ${owner}/${repo} unchanged, skipped`));
 
-        try {
-            await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
-        } catch {}
-
-        log.info(chalk.green(`✓ repo ${owner}/${repoName} unchanged, skipped`));
-
-        return true;
+        return { kind: 'unchanged', sha: cloneSha };
     }
 
-    // 3. Scan and generate codebase.md (AI scan failure does not block graph extraction)
-    log.info(`Scanning repository...`);
-    let codebaseMd: string | undefined;
+    return { kind: 'fetched', sha: cloneSha, branch: cloneBranch };
+}
 
-    if (skipEnrich) {
-        log.debug('AI enrichment skipped (--skip-enrich)');
-    } else {
-        try {
-            codebaseMd = await generateCodebaseMd({ repoPath: cacheDir });
-        } catch (err) {
-            if (isOverrideInvalid(err)) throw err;
-            log.warn(`AI codebase scan failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
-        }
-    }
-
-    const releaseImportLock = await lockTeamwiki(target);
+/** Record that the clone cache of `source` was imported at `sha`. */
+export async function recordRepoSync(source: RepoSource, sha: string): Promise<void> {
+    await writeLastSync(source.cacheDir, sha);
 
     try {
-    // 4. Extract into teamwiki/evidence/code/<slug>/ + append AI narrative to overview.md
-    let updated: boolean;
-
-    try {
-        updated = await importCodebase({
-            sourceDir: cacheDir, slug, wikiRoot: teamwikiRoot, incremental, skipEnrich, maxFiles,
-            repoUrl: url,
-            branch: cloneBranch === 'HEAD' ? undefined : cloneBranch,
-            sourceMrUrl,
-        });
-
-        // Write AI narrative to overview.md (idempotent: replace if exists, append if not)
-        if (updated && codebaseMd) {
-            const overviewPath = path.join(evidenceDest, 'overview.md');
-            const existing = await fs.readFile(overviewPath, 'utf8').catch(() => '');
-            const aiNarrative = stripFrontmatter(codebaseMd);
-            const marker = '## AI Architecture Narrative';
-            const oldMarker = '## AI 架构叙事';
-            let markerIdx = existing.indexOf(marker);
-
-            if (markerIdx < 0) markerIdx = existing.indexOf(oldMarker);
-            const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
-            let combined: string;
-
-            if (!base || !hasFrontmatter(base)) {
-                combined = `---\ntitle: ${slug} overview\ndomain: code-knowledge\n---\n\n${marker}\n\n${aiNarrative}`;
-            } else {
-                combined = base + '\n\n---\n\n' + marker + '\n\n' + aiNarrative;
-            }
-
-            await fs.writeFile(overviewPath, combined, 'utf8');
-        }
-
-        // Explicit --domain overrides AI inference
-        if (updated && explicitDomain) {
-            const domainsJsonPath = path.join(evidenceDest, '_domains.json');
-
-            if (await fs.pathExists(domainsJsonPath)) {
-                try {
-                    const existing = JSON.parse(await fs.readFile(domainsJsonPath, 'utf8'));
-                    existing.domain = explicitDomain;
-                    await fs.writeFile(domainsJsonPath, JSON.stringify(existing, null, 2), 'utf8');
-                } catch { /* skip */ }
-            } else {
-                await fs.writeFile(domainsJsonPath, JSON.stringify({ domain: explicitDomain }, null, 2), 'utf8');
-            }
-        }
-
-        log.info(chalk.green(updated
-            ? `✓ teamwiki/ knowledge graph updated: ${slug}`
-            : `✓ ${slug}: no source changes since the last import, teamwiki unchanged`));
-    } catch (err) {
-        throw new Error(`Knowledge extraction failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
-    }
-
-    let deepEnrichComplete = true;
-
-    if (updated) {
-        // 5. Reconcile + deep enrich (synchronous, before push — so all content goes into one MR)
-        deepEnrichComplete = await reconcileAndDeepEnrich({ slug, wikiRoot: teamwikiRoot, sourceDir: cacheDir, skipEnrich });
-
-        // 6. Aggregate global graph + create MR (single-repo mode; batch mode handled by import-repo-list)
-        if (!skipAutoPush) {
-            await refreshTeamwikiIndexes(teamwikiRoot);
-
-            if (team) await publishTeamwikiViaMR(team, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
-        }
-    }
-
-    log.info(chalk.green(`✓ Repo ${owner}/${repoName} import complete`));
-
-    // 7. Write LAST_SYNC
-    await writeLastSync(cacheDir, cloneSha);
-
-    try {
-        await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
+        await touchCacheEntry({ provider: source.providerName, owner: source.owner, repo: source.repo, lastSyncedSha: sha });
     } catch (touchErr) {
         log.debug(`[cache-index] touchCacheEntry failed: ${String(touchErr)}`);
     }
+}
 
-    return deepEnrichComplete;
-    } finally {
-        await releaseImportLock();
+/**
+ * Write the AI narrative the tool answered for a repository into its published `overview.md`, after the deterministic
+ * overview (idempotent: it replaces the narrative a previous import wrote).
+ */
+export async function writeRepoNarrative(evidenceDest: string, slug: string, answer: string): Promise<void> {
+    const overviewPath = path.join(evidenceDest, 'overview.md');
+    const existing = await fs.readFile(overviewPath, 'utf8').catch(() => '');
+    const aiNarrative = narrativeBody(answer);
+    const marker = '## AI Architecture Narrative';
+    const oldMarker = '## AI 架构叙事';
+    let markerIdx = existing.indexOf(marker);
+
+    if (markerIdx < 0) markerIdx = existing.indexOf(oldMarker);
+    const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
+
+    const combined = !base || !hasFrontmatter(base)
+        ? `---\ntitle: ${slug} overview\ndomain: code-knowledge\n---\n\n${marker}\n\n${aiNarrative}`
+        : base + '\n\n---\n\n' + marker + '\n\n' + aiNarrative;
+
+    await fs.writeFile(overviewPath, combined, 'utf8');
+}
+
+/** The narrative of a tool's answer: without frontmatter, from its first heading, without the words a tool may put before it. */
+function narrativeBody(answer: string): string {
+    let body = stripFrontmatter(answer);
+    const h1Idx = body.indexOf('# ');
+    const h2Idx = body.indexOf('## ');
+    const titleIdx = h1Idx >= 0 ? h1Idx : h2Idx;
+
+    if (titleIdx > 0) {
+        body = body.slice(titleIdx);
+    } else if (titleIdx < 0) {
+        body = body.replace(/^.*(?:文件写入|请授权|权限确认|以下是生成的|完整内容|文档已准备|由于无法).*\n*/gm, '').trim();
+    }
+
+    return body;
+}
+
+/** Assign the repository to the business domain `--domain` or its list entry names, over any the AI tool inferred. */
+export async function writeExplicitDomain(evidenceDest: string, domain: string): Promise<void> {
+    const domainsJsonPath = path.join(evidenceDest, '_domains.json');
+
+    if (await fs.pathExists(domainsJsonPath)) {
+        try {
+            const existing = JsonObjectSchema.parse(JSON.parse(await fs.readFile(domainsJsonPath, 'utf8')));
+            await fs.writeFile(domainsJsonPath, JSON.stringify({ ...existing, domain }, null, 2), 'utf8');
+        } catch { /* an unreadable file keeps the domain it has */ }
+    } else {
+        await fs.writeFile(domainsJsonPath, JSON.stringify({ domain }, null, 2), 'utf8');
     }
 }

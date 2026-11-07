@@ -70,13 +70,15 @@ syncBuiltinESMExports();
         if (!address || typeof address === 'string') throw new Error('Expected a TCP address');
         const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
           const child = spawn(process.execPath, [
-            '--import', pathToFileURL(preload).href, CLI, 'import', '--from-mr', ...URLS,
+            CLI, 'import', '--from-mr', ...URLS,
             '--all', '--output', path.join(sandbox, 'output'),
           ], {
             cwd: sandbox,
             env: {
               ...process.env, HOME: sandbox, USERPROFILE: sandbox, FORCE_COLOR: '0',
               GITHUB_TOKEN: '', GH_TOKEN: '', FIXTURE_PORT: String(address.port),
+              // Each step of the run is a process of its own, which loads the fixture too.
+              NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
             },
             stdio: ['ignore', 'pipe', 'pipe'],
           });
@@ -89,7 +91,7 @@ syncBuiltinESMExports();
         });
         expect(result.code, result.output).toBe(1);
         expect(result.output).toContain('Import from MR complete: 0 succeeded, 2 failed');
-        for (const url of URLS) expect(result.output).toContain(`import from MR failed: ${url}`);
+        for (const url of URLS) expect(result.output).toContain(`  failed: ${url}`);
         expect(result.output).not.toContain("Unhandled 'error' event");
         expect(result.output).not.toContain('AI analysis in progress');
         expect(interrupted).toHaveLength(2);

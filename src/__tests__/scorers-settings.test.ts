@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getUserConfigPath, LocalConfigSchema, type LocalConfig } from '../types.js';
 import { scopeScoring } from '../scorers/settings.js';
 
@@ -36,10 +36,10 @@ describe('scopeScoring isolation', () => {
     const files = { 'scorers/scoring.yaml': 'isolation: best-effort\n', 'scorers/ops/scoring.yaml': 'isolation: verified\n' };
 
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'dev' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false,
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/scoring.yaml isolation', value: 'best-effort' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
     expect(await scopeScoring(teamRepo(files, { primaryRole: 'ops' }))).toEqual({
-      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false,
+      ok: true, batch: undefined, problems: [], isolation: [{ source: 'scorers/ops/scoring.yaml isolation', value: 'verified' }, SCOPE_ISOLATION], sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
   });
 
@@ -63,7 +63,7 @@ describe('scopeScoring isolation', () => {
 
   it('drops a key it does not know, with a problem that names the file', async () => {
     expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'isolation: verified\nsampling: 50\n' }))).toMatchObject({
-      ok: true, problems: ['scorers/scoring.yaml: "sampling" is not a scoring setting (batch, isolation, sessions, skill_routing, daily_limit), so it is ignored'],
+      ok: true, problems: ['scorers/scoring.yaml: "sampling" is not a scoring setting (batch, isolation, sessions, skill_routing, recall_adoption, daily_limit), so it is ignored'],
     });
   });
 });
@@ -184,7 +184,7 @@ describe('scopeScoring team session defaults', () => {
         'scorers/scoring.yaml sessions is "yes please", not true, false or a mapping of attended and unattended to off, ask or auto, so it is ignored',
         'scorers/scoring.yaml: daily_limit is "many", not a whole number of 0 or more, so it is ignored',
       ],
-      sessions: SESSIONS_DEFAULT, skillRouting: false,
+      sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
   });
 });
@@ -280,6 +280,22 @@ describe('scopeScoring machine settings', () => {
     });
   });
 
+  it('turns recall_adoption off, never on (#1391)', async () => {
+    onMachine('scoring:\n  recall_adoption: false\n');
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'recall_adoption: true\n' }, { scoring: { recall_adoption: true } }))).toMatchObject({ ok: true, recallAdoption: false });
+
+    onMachine('scoring:\n  recall_adoption: true\n');
+    expect(await scopeScoring(teamRepo({}))).toMatchObject({ ok: true, recallAdoption: false });
+  });
+
+  it('turns skill_routing off, never on', async () => {
+    onMachine('scoring:\n  skill_routing: false\n');
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'skill_routing: true\n' }, { scoring: { skill_routing: true } }))).toMatchObject({ ok: true, skillRouting: false });
+
+    onMachine('scoring:\n  skill_routing: true\n');
+    expect(await scopeScoring(teamRepo({}))).toMatchObject({ ok: true, skillRouting: false });
+  });
+
   it('reports a value it cannot use with the machine file, and ignores it', async () => {
     onMachine('scoring:\n  sessions: { attended: always }\n  daily_limit: lots\n');
 
@@ -288,7 +304,7 @@ describe('scopeScoring machine settings', () => {
         '~/.teamai/config.yaml scoring.daily_limit is lots, not a whole number of 0 or more, so it is ignored',
         '~/.teamai/config.yaml scoring.sessions.attended is "always", not off, ask or auto, so it is ignored',
       ],
-      sessions: SESSIONS_DEFAULT, skillRouting: false,
+      sessions: SESSIONS_DEFAULT, skillRouting: false, recallAdoption: false,
     });
   });
 });
@@ -306,11 +322,56 @@ describe('scopeScoring skill_routing', () => {
     expect(await scopeScoring(teamRepo({ 'scorers/ops/scoring.yaml': 'skill_routing: true\n' }, { primaryRole: 'ops' }))).toMatchObject({ ok: true, skillRouting: true });
   });
 
+  it("a member's value wins over the team's", async () => {
+    expect(await scopeScoring(teamRepo({}, { scoring: { skill_routing: true } }))).toMatchObject({ ok: true, skillRouting: true });
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'skill_routing: true\n' }, { scoring: { skill_routing: false } }))).toMatchObject({ ok: true, skillRouting: false });
+  });
+
   it('a value that is not true or false is dropped with a problem', async () => {
     expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'skill_routing: maybe\n' }))).toMatchObject({
       ok: true,
       skillRouting: false,
       problems: ['scorers/scoring.yaml: skill_routing is "maybe", not true or false, so it is ignored'],
+    });
+  });
+});
+
+describe('scopeScoring recall_adoption (#1391)', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('is on when the team file or the member config turns it on, and the member config wins', async () => {
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'recall_adoption: true\n' }))).toMatchObject({ ok: true, recallAdoption: true });
+    expect(await scopeScoring(teamRepo({}, { scoring: { recall_adoption: true } }))).toMatchObject({ ok: true, recallAdoption: true });
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'recall_adoption: true\n' }, { scoring: { recall_adoption: false } }))).toMatchObject({ ok: true, recallAdoption: false });
+  });
+
+  it('reports a member value that is not true or false, and ignores it', async () => {
+    const member = LocalConfigSchema.shape.scoring.parse({ recall_adoption: 'yes' });
+
+    expect(await scopeScoring(teamRepo({ 'scorers/scoring.yaml': 'recall_adoption: true\n' }, { scoring: member }))).toMatchObject({
+      ok: true,
+      recallAdoption: true,
+      problems: ['config.yaml scoring.recall_adoption is "yes", not true or false, so it is ignored'],
+    });
+  });
+
+  it('reads TEAMAI_UPVOTE_JUDGE=1 as a member that turns it on and judges attended sessions automatically', async () => {
+    vi.stubEnv('TEAMAI_UPVOTE_JUDGE', '1');
+
+    expect(await scopeScoring(teamRepo({}))).toMatchObject({
+      ok: true,
+      recallAdoption: true,
+      sessions: { policies: { attended: { policy: 'auto', source: { kind: 'setting', key: 'TEAMAI_UPVOTE_JUDGE=1 as scoring.sessions.attended' } }, unattended: { policy: 'auto', source: { kind: 'default' } } } },
+    });
+  });
+
+  it('leaves what the member config sets to it when TEAMAI_UPVOTE_JUDGE=1', async () => {
+    vi.stubEnv('TEAMAI_UPVOTE_JUDGE', '1');
+
+    expect(await scopeScoring(teamRepo({}, { scoring: { recall_adoption: false, sessions: { attended: 'ask' } } }))).toMatchObject({
+      ok: true,
+      recallAdoption: false,
+      sessions: { policies: { attended: { policy: 'ask', source: { kind: 'setting', key: 'config.yaml scoring.sessions.attended' } } } },
     });
   });
 });

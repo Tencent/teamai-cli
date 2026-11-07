@@ -1,0 +1,96 @@
+schemaVersion: v1alpha1
+name: teamai-codebase-enrich
+description: Ask the AI tool what each module of a freshly extracted codebase does and which business domain the codebase belongs to, and write _manifest.json and _domains.json beside its evidence.
+invoke: deny
+private: true
+# wiki_root is the teamwiki the codebase was just extracted into, whose .indices/ caches hold its facts; project is its directory under evidence/code/.
+inputs: { wiki_root: string, project: string }
+ends: { unconfigured-tool: failed }
+steps:
+  - id: plan
+    command: teamai codebase enrich-plan --wiki-root "$WIKI_ROOT" --codebase "$PROJECT"
+    env: { WIKI_ROOT: "{{ inputs.wiki_root }}", PROJECT: "{{ inputs.project }}" }
+    output:
+      modules: [{ name: string, files: string, components: string, interfaces: string }]
+      interfaces: string
+  - id: modules
+    needs: [plan]
+    for_each: { items: steps.plan.outputs.modules, max_parallel: 3 }
+    # A module the tool could not answer about keeps the manifest the extract wrote; the summary says so.
+    continue_on_failure: true
+    workflow:
+      outputs: { text: steps.ask.outputs.text, failure: steps.ask.failure.code }
+      steps:
+        - id: ask
+          answer: |-
+            <context>
+            模块名: {{ item.name }}
+            文件列表: {{ item.files }}
+            组件 (top 10): {{ item.components }}
+            接口: {{ item.interfaces }}
+            </context>
+
+            分析上述代码模块，输出严格 JSON，不要任何解释文字:
+            {"domain": "业务域名称(如计费/调度/存储/网关/测试)", "responsibilities": ["职责1", "职责2", "职责3"], "layer": "entry|orchestration|service|data", "summary": "一句话描述该模块的核心功能"}
+          output: { text: string }
+          timeout: 600s
+          # A worktree of its own lets the modules' answers run beside each other.
+          workspace: new
+          continue_on_failure: true
+  - id: modules-tool
+    needs: [modules]
+    # A tool the member names that cannot run fails the run, rather than keeping the manifest the extract wrote.
+    if: any(steps.modules.results, .outputs.failure == 'tool_unconfigured')
+    end: unconfigured-tool
+  - id: summary
+    needs: [modules]
+    if: (steps.modules.outcome == 'success' || steps.modules.outcome == 'failed') && !any(steps.modules.results, .outputs.failure == 'tool_unconfigured')
+    command: teamai codebase enrich-summary --codebase "$PROJECT" --results "$RESULTS"
+    env: { PROJECT: "{{ inputs.project }}", RESULTS: "{{ steps.modules.results }}" }
+    output: { count: number, project: string, modules: string }
+  - id: domain
+    needs: [plan, summary]
+    if: steps.summary.outputs.count > 0
+    answer: |-
+      <context>
+      项目名: {{ steps.summary.outputs.project }}
+      模块分析:
+      {{ steps.summary.outputs.modules }}
+
+      接口清单: {{ steps.plan.outputs.interfaces }}
+      </context>
+
+      这是一个代码仓库的分析结果。请判断该仓库整体属于哪个业务域，并给出：
+      1. domain: 该仓库的核心业务域名称（如 API网关/计费引擎/流程编排/推理服务/配置管理/部署工具/测试框架/数据管理/网关代理 等）
+      2. description: 一句话描述该仓库的核心职责（不超过30字）
+      3. keywords: 5-10个路由关键词（用于AI检索时路由到该仓库）
+
+      输出严格 JSON，不要任何解释文字:
+      {"domain": "域名", "description": "一句话描述", "keywords": ["关键词1", "关键词2"]}
+    output: { text: string }
+    timeout: 600s
+    # In an item of teamai-import-from-repo, a worktree of its own lets it run beside the other items' answers.
+    workspace: new
+    # The manifest is written without a domain when the tool could not name one.
+    continue_on_failure: true
+  - id: domain-tool
+    needs: [domain]
+    if: steps.domain.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+  - id: write
+    needs: [modules, summary, domain]
+    # With no module answered it writes nothing and says modules 0, so the run always has its outputs.
+    if: steps.summary.outcome == 'success' && steps.domain.failure.code != 'tool_unconfigured'
+    command: teamai codebase enrich-write --wiki-root "$WIKI_ROOT" --codebase "$PROJECT" --results "$RESULTS" --domain "$TEXT" --domain-failure "$WHY"
+    env:
+      WIKI_ROOT: "{{ inputs.wiki_root }}"
+      PROJECT: "{{ inputs.project }}"
+      RESULTS: "{{ steps.modules.results }}"
+      TEXT: "{{ steps.domain.outputs.text }}"
+      WHY: "{{ steps.domain.failure.message }}"
+    # The teamwiki may be in this checkout: under .teamai/ in self mode, or an --output directory.
+    writes: ["{{ inputs.wiki_root }}"]
+    output: { modules: number, domain: string }
+outputs:
+  modules: steps.write.outputs.modules
+  domain: steps.write.outputs.domain

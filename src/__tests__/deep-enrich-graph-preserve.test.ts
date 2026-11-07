@@ -1,23 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-// Mock the AI client so deepEnrich's LLM calls fail instantly instead of
-// waiting on real 600s timeouts. deepEnrich treats these as non-blocking skips.
-vi.mock('../tool-launch/call.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
-  callTool: vi.fn(async () => {
-    throw new Error('mock: AI unavailable');
-  }),
-  // Reject to trigger deepEnrich's sequential fallback, where each callTool
-  // then rejects → component skipped. Mirrors the real 600s-timeout skip path.
-  callToolParallel: vi.fn(async () => {
-    throw new Error('mock: AI batch unavailable');
-  }),
-}));
-
-import { deepEnrich } from '../deep-enrich.js';
+import { DeepEnrich } from '../deep-enrich.js';
 
 const AST_GRAPH = {
   schemaVersion: 'team-wiki.graph-index.v1',
@@ -54,7 +40,7 @@ function astCount(g: { edges: Array<{ source?: string }> }): number {
   return g.edges.filter((e) => e.source === 'code-ast').length;
 }
 
-describe('deepEnrich preserves per-repo graph-index.json (AST edges)', () => {
+describe('deep enrich preserves per-repo graph-index.json (AST edges)', () => {
   let root: string;
 
   beforeEach(async () => {
@@ -64,7 +50,7 @@ describe('deepEnrich preserves per-repo graph-index.json (AST edges)', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('does not mutate evidence/.indices/graph-index.json across a full deepEnrich run', async () => {
+  it('does not mutate evidence/.indices/graph-index.json across every step of a deep-enrich run', async () => {
     const wikiRoot = path.join(root, 'teamwiki');
     const evidenceDir = path.join(wikiRoot, 'evidence', 'code', 'faketest');
     const idxDir = path.join(evidenceDir, '.indices');
@@ -77,7 +63,16 @@ describe('deepEnrich preserves per-repo graph-index.json (AST edges)', () => {
     expect(before.edges).toHaveLength(2);
     expect(astCount(before)).toBe(1);
 
-    await deepEnrich({ project: 'faketest', evidenceDir, wikiRoot });
+    // The steps of teamai-codebase-deep-enrich, with the tool answering nothing.
+    const target = { project: 'faketest', wikiRoot };
+    const unavailable = { text: '', failure: 'AI unavailable' };
+    const planned = await DeepEnrich.plan(target);
+
+    for (const component of planned?.components ?? []) await DeepEnrich.write(target, { kind: 'component', slug: component.slug }, unavailable);
+
+    if (planned?.architecture.needed) await DeepEnrich.write(target, { kind: 'architecture' }, unavailable);
+    await DeepEnrich.graph(target);
+    await DeepEnrich.finish(target, unavailable);
 
     const after = JSON.parse(await readFile(graphPath, 'utf8'));
     // The per-repo graph must be untouched by enrichment.

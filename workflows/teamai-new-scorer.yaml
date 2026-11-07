@@ -1,0 +1,52 @@
+schemaVersion: v1alpha1
+name: teamai-new-scorer
+description: Write a new scorer with the person, try it on a finished session and on that session's first prompt alone, storing no label, then propose it to the team as a pull request. Use when the person asks to write, draft or try a scorer or rubric.
+invoke: ask
+# The session the draft is tried on: its id and the tool that holds it, as teamai score --session and --source name them.
+inputs: { session: string, source: string }
+steps:
+  - id: draft
+    interactive: true
+    prompt: |
+      Write one scorer with the person: a rubric a judge applies to a finished agent session, such as {{ inputs.source }} session {{ inputs.session }}.
+      Ask what good work looks like, and what the judge should read in the session to decide it.
+      Write it outside the repository as <name>.md, where <name> is letters, digits, "-" or "_", starting with a letter or digit.
+      Its frontmatter has labels, 2 to 20 of { value, score, description }, and passingScore, with at least one label at or above it and one below;
+      optional: samplingRate, model, isolation, sessions: true, tool. The text after the frontmatter is the judge's prompt.
+      Judge the work, not the request: a rubric that a session where the agent did nothing would pass may not judge the work.
+      If the person decides not to write one, return {"verdict":"skip","file":"","name":""}.
+      Otherwise return verdict draft, the file's absolute path, and <name>.
+    output: { verdict: draft | skip, file: string, name: string }
+  - id: check
+    needs: [draft]
+    if: steps.draft.outputs.verdict == 'draft'
+    command: |
+      case "$NAME" in
+        ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_-]*)
+          echo "Scorer name \"$NAME\" is not a scorer file name: use letters, digits, - and _, starting with a letter or digit. Start teamai-new-scorer again and name the scorer that way." >&2
+          exit 1 ;;
+      esac
+      if [ "$(basename "$FILE")" != "$NAME.md" ]; then
+        echo "The draft $FILE is not named $NAME.md, and teamai names a scorer after its file. Start teamai-new-scorer again and write it as $NAME.md." >&2
+        exit 1
+      fi
+    env: { FILE: "{{ steps.draft.outputs.file }}", NAME: "{{ steps.draft.outputs.name }}" }
+  # The draft judged as teamai pull would cache it, on the session and its control; no label is stored.
+  - id: try
+    needs: [check]
+    if: steps.draft.outputs.verdict == 'draft'
+    workflow: teamai-try-scorer
+    with: { subject: "session:{{ inputs.source }}:{{ inputs.session }}", files: ["{{ steps.draft.outputs.file }}"] }
+    timeout: 30m
+  - id: propose
+    needs: [draft, try]
+    if: steps.draft.outputs.verdict == 'draft'
+    approve: |-
+      {{ steps.try.outputs.text }}
+
+      Propose scorers/{{ steps.draft.outputs.name }}.md to the team as a pull request?
+    # A scorer name is unique in the team repo. Two members who draft the same scorer share its branch and pull request.
+    workspace: { team: { branch: "teamai/new-scorer/{{ steps.draft.outputs.name }}" } }
+    deliver: pr
+    command: mkdir -p scorers && cp "$FILE" "scorers/$NAME.md"
+    env: { FILE: "{{ steps.draft.outputs.file }}", NAME: "{{ steps.draft.outputs.name }}" }

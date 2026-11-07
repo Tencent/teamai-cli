@@ -1,5 +1,12 @@
 import matter from 'gray-matter';
+import { z } from 'zod';
 import { log } from './logger.js';
+
+/** Unquoted YAML dates are Date objects; keep their time when applying age thresholds. */
+export const FrontmatterDateSchema = z.union([
+    z.string(),
+    z.date().transform((date) => date.toISOString()),
+]).optional().catch(undefined);
 
 /**
  * A value in parsed frontmatter: one of the values js-yaml's safe schema, which

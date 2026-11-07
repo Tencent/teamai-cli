@@ -4,12 +4,16 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { parse as parseToml } from 'smol-toml';
-import { runLocalJudge } from '../scorers/judge.js';
-import { installedConfinedTools } from '../tool-launch/confined.js';
+import { installedConfinedTools, runConfined, type ConfinedInput } from '../tool-launch/confined.js';
 import { stopRecordedGroup } from '../tool-launch/process-stop.js';
 
 let root = '';
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
+
+/** Runs `tool` confined to `evidence` on the prompt.md there, as a judge step's lease runs it, at best-effort unless `level` asks for more. */
+async function judge({ evidence, level = 'best-effort', ...input }: Omit<ConfinedInput, 'dir' | 'prompt' | 'level' | 'timeoutMs'> & { evidence: string; level?: ConfinedInput['level'] }, lookup: Parameters<typeof runConfined>[1]): ReturnType<typeof runConfined> {
+  return runConfined({ ...input, dir: evidence, prompt: await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8'), level, timeoutMs: 10 * 60_000 }, lookup);
+}
 
 it.each(['2.1.308 (Claude Code)', '', '9.9.9 (Claude Code)'])('confines Claude %s, preserves switch settings, and sends the prompt through stdin and a file', async (version) => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
@@ -38,8 +42,8 @@ fs.writeFileSync('invocation.json', JSON.stringify({args,env:process.env,stdin,s
 console.log(JSON.stringify({type:'system',subtype:'init',model:'reported-model'}));
 console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'},usage:{input_tokens:3,output_tokens:2},total_cost_usd:0.01}));
 });\n`, { mode: 0o755 });
-  const result = await runLocalJudge({ tool: 'claude', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
-  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'claude', model: { reported: 'reported-model' }, access: 'read', isolation: version === '2.1.308 (Claude Code)' ? 'verified' : 'best-effort', usage: { inputTokens: 3, outputTokens: 2, cost: { amount: 0.01, unit: 'USD' } } } });
+  const result = await judge({ tool: 'claude', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
+  expect(result).toMatchObject({ ok: true, reply: { label: 'good' }, run: { tool: 'claude', model: { reported: 'reported-model' }, access: 'read', isolation: version === '2.1.308 (Claude Code)' ? 'verified' : 'best-effort', usage: { inputTokens: 3, outputTokens: 2, cost: { amount: 0.01, unit: 'USD' } } } });
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), settings: z.object({ env: z.record(z.string(), z.string()) }) }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args).toEqual(expect.arrayContaining(['--restricted', '--tools=Read,Grep,Glob', '--strict-mcp-config', '--no-session-persistence', '--permission-prompts', 'none', '--append-system-prompt-file']));
   expect(invocation.args.join(' ')).not.toContain('UNTRUSTED-PROMPT-SECRET');
@@ -73,8 +77,8 @@ fs.writeFileSync(args[args.indexOf('-o')+1], JSON.stringify({label:'good',reason
 console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'commentary is not the answer'}}));
 console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:7,output_tokens:4}}));
 });\n`, { mode: 0o755 });
-  const result = await runLocalJudge({ tool: 'codex', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
-  expect(result).toMatchObject({ ok: true, answer: { label: 'good', reasoning: 'final answer' }, judge: { tool: 'codex', model: { requested: 'gateway-model' }, access: 'read', isolation: version === 'codex-cli 0.163.0' ? 'verified' : 'best-effort', usage: { inputTokens: 7, outputTokens: 4 } } });
+  const result = await judge({ tool: 'codex', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
+  expect(result).toMatchObject({ ok: true, reply: { label: 'good', reasoning: 'final answer' }, run: { tool: 'codex', model: { requested: 'gateway-model' }, access: 'read', isolation: version === 'codex-cli 0.163.0' ? 'verified' : 'best-effort', usage: { inputTokens: 7, outputTokens: 4 } } });
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), cwd: z.string(), homeFiles: z.array(z.string()), config: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   const real = await fs.realpath(evidence);
   expect(invocation.cwd).toBe(real);
@@ -122,9 +126,9 @@ const args=process.argv.slice(2); fs.writeFileSync(${JSON.stringify(record)},JSO
 fs.writeFileSync(args[args.indexOf('-o')+1], JSON.stringify({label:'good',reasoning:'r'}));
 });\n`, { mode: 0o755 });
 
-  const result = await runLocalJudge({ tool: 'codex', ...(model ? { model } : {}), evidence, schema: {} }, { resolveTool: () => executable });
+  const result = await judge({ tool: 'codex', ...(model ? { model } : {}), evidence, schema: {} }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: true, judge: { model: { requested } } });
+  expect(result).toMatchObject({ ok: true, run: { model: { requested } } });
   const args = z.array(z.string()).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(args.join(' ')).toContain(expected.join(' '));
   expect(args.lastIndexOf('--model')).toBe(model ? args.length - 3 : -1);
@@ -151,9 +155,9 @@ fs.writeFileSync(${JSON.stringify(record)},JSON.stringify(args));
 process.stdin.resume(); process.stdin.on('end',()=>console.log(JSON.stringify({type:'text',sessionID:'ses_judge',part:{text:JSON.stringify({label:'good',reasoning:'r'})}})));
 \n`, { mode: 0o755 });
 
-  const result = await runLocalJudge({ tool: 'opencode', model: { name: 'anthropic/claude-haiku-4-5', effort: 'low' }, evidence, schema: {} }, { resolveTool: () => executable });
+  const result = await judge({ tool: 'opencode', model: { name: 'anthropic/claude-haiku-4-5', effort: 'low' }, evidence, schema: {} }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: true, judge: { model: { requested: 'anthropic/claude-haiku-4-5' }, effort: { requested: 'low' } } });
+  expect(result).toMatchObject({ ok: true, run: { model: { requested: 'anthropic/claude-haiku-4-5' }, effort: { requested: 'low' } } });
   expect(z.array(z.string()).parse(JSON.parse(await fs.readFile(record, 'utf8')))).toEqual(['run', '--standalone', '--format', 'json', ...expected]);
 });
 
@@ -179,7 +183,7 @@ fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({args,env:process.env
 console.log(JSON.stringify({type:'text',sessionID:'ses_judge',part:{text:JSON.stringify({label:'good',reasoning:'done'})}}));
 console.log(JSON.stringify({type:'step_finish',part:{modelID:'reported-open-model',tokens:{input:4,output:3}}}));
 });\n`, { mode: 0o755 });
-  expect(await runLocalJudge({ tool: 'opencode', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: true, judge: { tool: 'opencode', model: { reported: 'reported-open-model' }, access: 'read', isolation: 'verified' } });
+  expect(await judge({ tool: 'opencode', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: true, run: { tool: 'opencode', model: { reported: 'reported-open-model' }, access: 'read', isolation: 'verified' } });
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), config: z.object({ permission: z.record(z.string(), z.string()), plugin: z.array(z.unknown()), mcp: z.record(z.string(), z.unknown()) }), cwd: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args).toEqual(['run', '--standalone', '--format', 'json']);
   expect(invocation.config).toMatchObject({ permission: { '*': 'deny', external_directory: 'deny', bash: 'deny', edit: 'deny', webfetch: 'deny' }, plugin: [], mcp: {} });
@@ -211,7 +215,7 @@ fs.writeFileSync(${JSON.stringify(record)},fs.readFileSync(path.join(process.env
 process.stdin.resume(); process.stdin.on('end',()=>console.log(JSON.stringify({type:'text',sessionID:'ses_judge',part:{text:JSON.stringify({label:'good',reasoning:'r'})}})));
 \n`, { mode: 0o755 });
 
-  expect(await runLocalJudge({ tool: 'opencode', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: true });
+  expect(await judge({ tool: 'opencode', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: true });
   expect(z.object({ model: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8'))).model).toBe('anthropic/claude-haiku-4-5');
 });
 
@@ -237,8 +241,8 @@ it('judges with OpenCode only at best-effort when the evidence it reads sits ins
   vi.stubEnv('OPENCODE_CONFIG', path.join(root, 'none.json'));
   vi.stubEnv('TMPDIR', checkout);
 
-  expect(await runLocalJudge({ tool: 'opencode', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: true, judge: { isolation: 'best-effort' } });
-  expect(await runLocalJudge({ tool: 'opencode', evidence, schema: {}, isolation: 'verified' }, { resolveTool: () => executable })).toMatchObject({ ok: false, code: 'judge_tool_unavailable' });
+  expect(await judge({ tool: 'opencode', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: true, run: { isolation: 'best-effort' } });
+  expect(await judge({ tool: 'opencode', evidence, schema: {}, level: 'verified' }, { resolveTool: () => executable })).toMatchObject({ ok: false, code: 'confined_tool_unavailable' });
 });
 
 async function recordingFake(dir: string, record: string, body: string): Promise<string> {
@@ -265,9 +269,9 @@ it('runs CodeBuddy with its Claude-like flags, the prompt on stdin, at best-effo
   const executable = await recordingFake(root, record,
     "console.log(JSON.stringify({type:'result',subtype:'success',result:'',structured_output:{label:'good',reasoning:'done'},usage:{input_tokens:5,output_tokens:2},total_cost_usd:0.02}));");
 
-  const result = await runLocalJudge({ tool: 'codebuddy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
+  const result = await judge({ tool: 'codebuddy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'codebuddy', access: 'full', isolation: 'best-effort', usage: { inputTokens: 5, outputTokens: 2, cost: { amount: 0.02, unit: 'USD' } } } });
+  expect(result).toMatchObject({ ok: true, reply: { label: 'good' }, run: { tool: 'codebuddy', access: 'full', isolation: 'best-effort', usage: { inputTokens: 5, outputTokens: 2, cost: { amount: 0.02, unit: 'USD' } } } });
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), cwd: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args.slice(0, 1)).toEqual(['-p']);
   for (const [flag, value] of [['--tools', 'Read,Grep,Glob'], ['--setting-sources', ''], ['--permission-mode', 'dontAsk'], ['--output-format', 'json'], ['--json-schema', '{"type":"object"}']]) {
@@ -294,9 +298,9 @@ it('runs pi with only its read tools, no context files, extensions, skills or sa
   const reply = { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '{"label":"good","reasoning":"done"}' }], usage: { input: 9, output: 4 }, stopReason: 'stop' } };
   const executable = await recordingFake(root, record, `console.log(${JSON.stringify(JSON.stringify(reply))});`);
 
-  const result = await runLocalJudge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
+  const result = await judge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'pi', access: 'full', isolation: 'best-effort', usage: { inputTokens: 9, outputTokens: 4 } } });
+  expect(result).toMatchObject({ ok: true, reply: { label: 'good' }, run: { tool: 'pi', access: 'full', isolation: 'best-effort', usage: { inputTokens: 9, outputTokens: 4 } } });
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), cwd: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args.slice(0, 3)).toEqual(['-p', '--mode', 'json']);
   expect(invocation.args[invocation.args.indexOf('--tools') + 1]).toBe('read,grep,find,ls');
@@ -307,14 +311,6 @@ it('runs pi with only its read tools, no context files, extensions, skills or sa
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
 });
 
-it('fails a judge whose evidence has no prompt, and says to run teamai score again', async () => {
-  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
-
-  const result = await runLocalJudge({ tool: 'claude', evidence: path.join(root, 'missing'), schema: {} }, { resolveTool: () => null });
-
-  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: expect.stringMatching(/^The judge could not run: .*prompt\.md.*\. Fix that, then run teamai score again\.$/) });
-});
-
 it('fails a pi judge with the error pi reports, though pi exits 0', async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');
@@ -323,9 +319,9 @@ it('fails a pi judge with the error pi reports, though pi exits 0', async () => 
   const reply = { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'OpenAI API error (400): model_not_found' } };
   const executable = await recordingFake(root, path.join(root, 'invocation.json'), `console.log(${JSON.stringify(JSON.stringify(reply))});`);
 
-  const result = await runLocalJudge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
+  const result = await judge({ tool: 'pi', evidence, schema: { type: 'object' } }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then run teamai score again.' });
+  expect(result).toMatchObject({ ok: false, code: 'confined_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then retry or use another tool or driver.' });
 });
 
 it('runs agy in plan mode with its sandbox on, the prompt as a stream-json user event, with read access', async () => {
@@ -340,9 +336,9 @@ it('runs agy in plan mode with its sandbox on, the prompt as a stream-json user 
   const reply = { event: 'result', result: { conversation_id: '0faf2e61-8d06-4659-8f48-e23eaa234012', status: 'SUCCESS', response: '```json\n{"label":"good","reasoning":"done"}\n```\n', usage: { input_tokens: 30180, output_tokens: 139, cache_read_tokens: 0 } } };
   const executable = await recordingFake(root, record, `console.log(${JSON.stringify(JSON.stringify(reply))});`);
 
-  const result = await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' }, model: { name: 'gemini-3.8-flash-low' } }, { resolveTool: () => executable });
+  const result = await judge({ tool: 'agy', evidence, schema: { type: 'object' }, model: { name: 'gemini-3.8-flash-low' } }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'agy', access: 'read', isolation: 'best-effort', usage: { inputTokens: 30180, outputTokens: 139 } } });
+  expect(result).toMatchObject({ ok: true, reply: { label: 'good' }, run: { tool: 'agy', access: 'read', isolation: 'best-effort', usage: { inputTokens: 30180, outputTokens: 139 } } });
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string(), cwd: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args).toEqual(['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', '--model', 'gemini-3.8-flash-low']);
   expect(JSON.parse(invocation.stdin)).toMatchObject({ event: 'user', message: { role: 'user', content: expect.stringContaining('AGY-INLINE-PROMPT') } });
@@ -360,10 +356,10 @@ it('reports the error agy gives in its result when it exits non-zero', async () 
   const reply = { event: 'result', result: { conversation_id: '', status: 'ERROR', response: '', error: 'invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high' } };
   const executable = await recordingFake(root, path.join(root, 'invocation.json'), `console.log(${JSON.stringify(JSON.stringify(reply))}); process.exitCode = 1;`);
 
-  expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
+  expect(await judge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
     ok: false,
-    code: 'judge_failed',
-    message: 'agy reported an error: invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high. Fix that, then run teamai score again.',
+    code: 'confined_failed',
+    message: 'agy reported an error: invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high. Fix that, then retry or use another tool or driver.',
   });
 });
 
@@ -376,10 +372,10 @@ it('reports the reason agy prints when it refuses to start', async () => {
   const refusal = 'modelProvider is set to "gemini" in settings.json, but the GEMINI_API_KEY environment variable is not set. Set GEMINI_API_KEY to your Gemini API key, or remove "modelProvider" from settings.json to use the default backend.';
   const executable = await recordingFake(root, path.join(root, 'invocation.json'), `console.error(${JSON.stringify(refusal)}); process.exitCode = 1;`);
 
-  expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
+  expect(await judge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
     ok: false,
-    code: 'judge_failed',
-    message: `agy reported an error: ${refusal} Fix that, then run teamai score again.`,
+    code: 'confined_failed',
+    message: `agy reported an error: ${refusal} Fix that, then retry or use another tool or driver.`,
   });
 });
 
@@ -396,7 +392,7 @@ it("judges with agy on the gateway a model switch gave it, over the member's own
   const reply = { event: 'result', result: { conversation_id: '0faf2e61-8d06-4659-8f48-e23eaa234012', status: 'SUCCESS', response: '{"label":"good","reasoning":"done"}' } };
   const executable = await recordingFake(root, record, `console.log(${JSON.stringify(JSON.stringify(reply))});`);
 
-  expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({ ok: true });
+  expect(await judge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({ ok: true });
 
   const invocation = z.object({ env: z.record(z.string(), z.string()) }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.env).toMatchObject({ GEMINI_API_KEY: 'gateway-key', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
@@ -412,9 +408,9 @@ it('runs Cursor in ask mode with its sandbox on, the prompt on stdin, at best-ef
   const executable = await recordingFake(root, record, "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'{\"label\":\"good\",\"reasoning\":\"done\"}'}));");
   const resolved: string[] = [];
 
-  const result = await runLocalJudge({ tool: 'cursor', evidence, schema: {} }, { resolveTool: (command) => { resolved.push(command); return executable; } });
+  const result = await judge({ tool: 'cursor', evidence, schema: {} }, { resolveTool: (command) => { resolved.push(command); return executable; } });
 
-  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'cursor', access: 'full', isolation: 'best-effort' } });
+  expect(result).toMatchObject({ ok: true, reply: { label: 'good' }, run: { tool: 'cursor', access: 'full', isolation: 'best-effort' } });
   expect(resolved).toEqual(['cursor-agent']);
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string(), z.string()), stdin: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(invocation.args.slice(0, 1)).toEqual(['-p']);
@@ -433,7 +429,7 @@ it('fails a CodeBuddy judge that is not signed in, though CodeBuddy exits 0', as
   const executable = await recordingFake(root, path.join(root, 'invocation.json'),
     "process.stderr.write('Authentication required. Please use /login command to sign in to your account\\n');");
 
-  expect(await runLocalJudge({ tool: 'codebuddy', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: false, code: 'judge_tool_unavailable', message: expect.stringContaining('sign') });
+  expect(await judge({ tool: 'codebuddy', evidence, schema: {} }, { resolveTool: () => executable })).toMatchObject({ ok: false, code: 'confined_tool_unavailable', message: expect.stringContaining('sign') });
 });
 
 it.each([
@@ -460,9 +456,9 @@ if(args.includes('exec')){ fs.writeFileSync(${JSON.stringify(record)}, fs.readFi
 else { fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(JSON.parse(fs.readFileSync(args[args.indexOf('--settings')+1],'utf8')).env)); console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'r'}})); }
 });\n`, { mode: 0o755 });
 
-  const result = await runLocalJudge({ tool, evidence, schema: {} }, { resolveTool: () => executable });
+  const result = await judge({ tool, evidence, schema: {} }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: true, judge: { tool } });
+  expect(result).toMatchObject({ ok: true, run: { tool } });
   expect(await fs.readFile(record, 'utf8')).toBe(tool === 'codex-internal' ? content : '{"ANTHROPIC_BASE_URL":"https://variant.test"}');
 });
 
@@ -481,9 +477,9 @@ it('judges with WorkBuddy through the CodeBuddy profile, at best-effort and with
   const executable = await recordingFake(root, record, "console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));");
 
   expect(installedConfinedTools([], { resolveTool: (tool) => tool === 'workbuddy' ? executable : null })).toEqual(['workbuddy']);
-  const result = await runLocalJudge({ tool: 'workbuddy', evidence, schema: {} }, { resolveTool: () => executable });
+  const result = await judge({ tool: 'workbuddy', evidence, schema: {} }, { resolveTool: () => executable });
 
-  expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'workbuddy', access: 'full', isolation: 'best-effort' } });
+  expect(result).toMatchObject({ ok: true, reply: { label: 'good' }, run: { tool: 'workbuddy', access: 'full', isolation: 'best-effort' } });
   const { args } = z.object({ args: z.array(z.string()) }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
   expect(args[args.indexOf('--permission-mode') + 1]).toBe('dontAsk');
 });
@@ -511,7 +507,7 @@ fs.writeFileSync('invocation.json', JSON.stringify({ home: process.env.CLAUDE_CO
 console.log(JSON.stringify({type:'result',structured_output:{label:'good',reasoning:'done'}}));
 });\n`, { mode: 0o755 });
 
-  expect(await runLocalJudge({ tool: 'claude', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({ ok: true });
+  expect(await judge({ tool: 'claude', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({ ok: true });
   expect(JSON.parse(await fs.readFile(path.join(evidence, 'invocation.json'), 'utf8'))).toEqual({ home: moved, settings: { env: { ANTHROPIC_BASE_URL: 'https://moved.test' } } });
 });
 
@@ -531,13 +527,13 @@ require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(sleeper.pid));
 setInterval(() => {}, 1000);
 \n`, { mode: 0o755 });
 
-  const judged = runLocalJudge({ tool: 'claude', evidence, schema: { type: 'object' }, group }, { resolveTool: () => executable });
+  const judged = judge({ tool: 'claude', evidence, schema: { type: 'object' }, group }, { resolveTool: () => executable });
   for (let wait = 0; wait < 100 && !await fs.access(pidFile).then(() => true, () => false); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 50); });
   const pid = Number(await fs.readFile(pidFile, 'utf8'));
   const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
   expect(alive()).toBe(true);
 
   await stopRecordedGroup(group);
-  expect(await judged).toMatchObject({ ok: false, code: 'judge_failed' });
+  expect(await judged).toMatchObject({ ok: false, code: 'confined_failed' });
   expect(alive()).toBe(false);
 });

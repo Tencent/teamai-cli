@@ -1,0 +1,81 @@
+schemaVersion: v1alpha1
+name: teamai-import-learnings
+description: Classify files as team rules, docs or learnings with the AI tool, three at once, leave out the personal ones, ask a person to accept, edit or skip each of the others, and write the accepted ones into rules/, docs/ or learnings/ of the team repo by their type, or all into one directory. It neither commits nor pushes - teamai-import-rules and teamai-import-from-iwiki run it and publish what it wrote.
+invoke: deny
+private: true
+# candidates: each file to classify, by the path it is shown as and the file that holds its text. dir: the team repo,
+# whose rules/, docs/ and learnings/ take the items by type; with by_type false, the directory every item is written
+# into. all: accept every item without asking.
+inputs:
+  candidates: [{ path: string, file: string }]
+  dir: string
+  by_type: boolean
+  all: boolean
+steps:
+  - id: classify
+    for_each: { items: inputs.candidates, max_parallel: 3 }
+    workflow:
+      outputs:
+        type: steps.parse.outputs.type
+        title: steps.parse.outputs.title
+        summary: steps.parse.outputs.summary
+        tags: steps.parse.outputs.tags
+        personal: steps.parse.outputs.personal
+      steps:
+        - id: read
+          command: teamai import read-candidate --file "$FILE"
+          env: { FILE: "{{ item.file }}" }
+          output: { content: string }
+        - id: ask
+          needs: [read]
+          answer: |-
+            你是团队知识库管理员。分析以下文件内容，返回严格 JSON（不要加 markdown 代码块）：
+            {"type":"rule|doc|learning","title":"<简短标题，<60字符>","summary":"<一句话摘要>","tags":["tag1","tag2"],"confidence":0.8,"isPersonal":false}
+
+            判断规则：
+            - type="rule"：编码规范、团队约定、最佳实践文档
+            - type="doc"：技术文档、设计文档、API 说明
+            - type="learning"：经验总结、踩坑记录、解决方案
+            - isPersonal=true：个人偏好/环境配置（如本地路径、个人 token、个人习惯），不应进入团队库
+
+            文件路径：{{ item.path }}
+            文件内容（前3000字）：
+            {{ steps.read.outputs.content }}
+          output: { text: string }
+          timeout: 600s
+          # A worktree of its own lets the files' answers run beside each other.
+          workspace: new
+        - id: parse
+          needs: [ask]
+          # A reply that is not the JSON asked for reads as personal, so the file is left out rather than guessed at.
+          command: teamai import classify-reply --path "$SHOWN" --reply "$REPLY"
+          env: { SHOWN: "{{ item.path }}", REPLY: "{{ steps.ask.outputs.text }}" }
+          output: { type: rule | doc | learning, title: string, summary: string, tags: [string], personal: boolean }
+  - id: review
+    needs: [classify]
+    if: "!inputs.all"
+    for_each: "filter(steps.classify.results, .outputs.personal == false)"
+    workflow:
+      outputs: { choice: steps.ask.choice, note: steps.ask.note }
+      steps:
+        - id: ask
+          choose:
+            message: |-
+              {{ item.outputs.title }} ({{ item.outputs.type }}) from {{ item.item.path }}
+              Summary: {{ item.outputs.summary }}
+              Tags: {{ item.outputs.tags }}
+              accept writes it; edit writes it with your note as its title; skip leaves it out.
+            options: [accept, edit, skip]
+  - id: write
+    needs: [classify, review]
+    command: teamai import write-learnings --classified "$CLASSIFIED" --reviewed "$REVIEWED" --target "$DIR" --by-type "$BY_TYPE"
+    env:
+      CLASSIFIED: "{{ steps.classify.results }}"
+      REVIEWED: "{{ steps.review.results }}"
+      DIR: "{{ inputs.dir }}"
+      BY_TYPE: "{{ inputs.by_type }}"
+    writes: ["{{ inputs.dir }}"]
+    output: { kept: number, written: [string] }
+outputs:
+  kept: steps.write.outputs.kept
+  written: steps.write.outputs.written

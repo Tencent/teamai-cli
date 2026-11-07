@@ -16,6 +16,7 @@ import { JudgeAnswerSchema, verdictsOf } from './batch.js';
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
 import { removeSubjectEvidence } from './evidence.js';
 import { readRecord, type GroupRecord } from './evidence-dir.js';
+import { GeneratedQuestions } from './generated-questions.js';
 import { scoresDir } from './home.js';
 import { JUDGE_FAILURES, labelVersion, ScoreLabelSchema, type Decider, type JudgeFailureCode, type ScoreLabel } from './label.js';
 import { LabelStore } from './label-store.js';
@@ -83,6 +84,9 @@ const EntrySchema = z.discriminatedUnion('kind', [
 ]);
 
 type Entry = z.infer<typeof EntrySchema>;
+
+/** A scorer's entry in a group's labels.json: its label with the reasoning, or the code of why it has none. */
+export type LabelEntry = Entry;
 
 const LabelsFileSchema = z.object({ entries: z.array(EntrySchema) });
 
@@ -288,6 +292,9 @@ async function closeHeld(attempt: ScoreAttempt, outcomes: ReadonlyArray<{ key: M
 }
 
 export const ScoreLabels = {
+  /** The entries `label` left in the group directory `dir`, one per scorer; undefined when it wrote none. */
+  read: readEntries,
+
   /**
    * The labels of the group in `dir`, written with their reasoning to `<dir>/labels.json`, and one entry per scorer
    * without it. A scorer with a check on a delivered pass is refused until its check stage recorded what it found.
@@ -331,7 +338,7 @@ export const ScoreLabels = {
 
   /**
    * Writes the labels `label` left in `dir` to local storage, after checking each again; one that fails writes none. A
-   * label of a private or isolated run stays out of the outbox. Each scorer's mark the root run holds closes. Answers
+   * label of a private or isolated run stays out of the outbox, and an instance that only tries its labels writes none. Each scorer's mark the root run holds closes. Answers
    * the version of each label written, so a reader takes the labels this run wrote and no other run's.
    */
   async write(attempt: ScoreAttempt, dir: string, group: GroupRecord, { now }: { now: string }): Promise<{ ok: true; written: string[] } | Refusal> {
@@ -344,6 +351,21 @@ export const ScoreLabels = {
     const problems = entries.length === members.length ? entries.flatMap((entry, index) => entryProblem(group, members, entry, index) ?? []) : ['the entries are not one per scorer of the group'];
 
     if (problems.length > 0) return refused('label_invalid', `${dir}/${LABELS} cannot be written: ${problems.join('; ')}. Nothing was written.`);
+
+    // A tried label stays in labels.json, which the run's directory holds until the run is removed.
+    if (!attempt.storesLabels) return { ok: true, written: [] };
+
+    // Before the labels: what a generated question's label does is claimed once per session, so a retry adds nothing.
+    if (group.judged.kind === 'session') {
+      const generated = entries.flatMap((entry, index) => {
+        const pin = group.scorers[index]?.pin;
+
+        return entry.kind === 'labelled' && pin && GeneratedQuestions.isGenerated(entry.scorer) ? [{ scorer: entry.scorer, pin, passed: entry.label.passed }] : [];
+      });
+
+      await GeneratedQuestions.written(attempt.config, group.judged.subject, generated);
+    }
+
     const run = await subjectRun(attempt, group);
     const keepLocal = group.judged.kind === 'run' && run !== undefined && (privateSteps(run)(group.judged.subject.step) || isIsolated(run));
 

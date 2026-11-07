@@ -66,6 +66,12 @@ export const BenchmarkRecordSchema = z.object({
     workflow: z.object({ name: z.string(), sourceHash: z.string() }).optional(),
     /** The team role the arm's trial clones ran with; absent: the member's roles. */
     role: z.string().optional(),
+    /**
+     * Whether the arm's trial clones got the team's recall deployment; absent: off. A record is read back through this
+     * schema, so a field the writer puts on the arm and this omits is dropped without a word: the arm's recall would
+     * read as never on, in every reader.
+     */
+    recall: z.boolean().optional(),
   })),
   /** The team skills each arm adds, removes or changes against the baseline team revision; absent when no arm changes one. */
   skillChanges: z.array(SkillChangesSchema).optional(),
