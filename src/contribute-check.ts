@@ -426,7 +426,7 @@ export function hasGitCommitInSession(cwd: string, sessionStartIso: string): boo
     const result = execFileSync(
       'git',
       ['log', '--oneline', `--after=${sessionStartIso}`, '--format=%H', '-1'],
-      { cwd, encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] },
+      { windowsHide: true, cwd, encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] },
     );
 
     return result.trim().length > 0;

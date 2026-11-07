@@ -41,6 +41,7 @@ function runSql(dbPath: string, sql: string, timeoutMs = 30_000): RegisterWorkBu
 
   try {
     const r = spawnSync(sqlite3, [dbPath], {
+      windowsHide: true,
       input: sql,
       maxBuffer: 32 * 1024 * 1024,
       timeout: timeoutMs,
@@ -81,7 +82,7 @@ function readUserId(dbPath: string): string | null {
       const r = spawnSync(
         sqlite3,
         ['-readonly', dbPath, "select user_id from sessions where user_id is not null and user_id <> '' limit 1;"],
-        { encoding: 'utf-8', timeout: 10_000 },
+        { windowsHide: true, encoding: 'utf-8', timeout: 10_000 },
       );
 
       const v = (r.stdout ?? '').trim();

@@ -406,7 +406,7 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepar
   const { spawn } = await import('node:child_process');
   const prepare = how.prepareCheckout ? { TEAMAI_PREPARE_CHECKOUT: how.prepareCheckout } : {};
   spawn(process.execPath, [resolveCliEntry() ?? '', 'pull', '--silent'], {
-    cwd, detached: process.platform !== 'win32', stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event, ...prepare },
+    cwd, detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, TEAMAI_GIT_HOOK: event, ...prepare },
   }).on('error', (e) => log.debug(`git hook: detached pull failed to start: ${e.message}`)).unref();
 }
 
@@ -414,7 +414,7 @@ async function spawnDetachedPull(cwd: string, event: GitHookEvent, how: { prepar
 async function spawnDetachedResume(run: string, { driver, cwd, env }: { driver: DriverName; cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
   const { resolveCliEntry } = await import('./builtin-hooks.js');
   const { spawn } = await import('node:child_process');
-  spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', run, '--driver', driver], { cwd, detached: process.platform !== 'win32', stdio: 'ignore', windowsHide: true, env })
+  spawn(process.execPath, [resolveCliEntry() ?? '', 'workflow', 'resume', run, '--driver', driver], { cwd, detached: true, stdio: 'ignore', windowsHide: true, env })
     .on('error', (e) => log.debug(`hook-dispatch: detached workflow resume ${run} failed to start: ${e.message}`)).unref();
 }
 

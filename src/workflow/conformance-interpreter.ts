@@ -582,7 +582,7 @@ const PREPARE_FAILURES = new Set(['setup_failed', 'workspace_base', 'merge_confl
 
 function runCommand(lease: z.infer<typeof PreparedLeaseSchema>): Promise<{ exitCode: number; stdout: string }> {
   return new Promise((resolve) => {
-    const child = spawn('command' in lease ? lease.command : lease.prompt, { shell: true, cwd: lease.cwd, env: { ...process.env, ...lease.env }, stdio: ['ignore', 'pipe', 'ignore'] });
+    const child = spawn('command' in lease ? lease.command : lease.prompt, { windowsHide: true, shell: true, cwd: lease.cwd, env: { ...process.env, ...lease.env }, stdio: ['ignore', 'pipe', 'ignore'] });
     let stdout = '';
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     child.on('error', () => resolve({ exitCode: 127, stdout }));

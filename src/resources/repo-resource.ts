@@ -147,8 +147,8 @@ export async function scanRepoResourceForPush(
     const execFileAsync = promisify(execFile);
 
     const [changedRes, untrackedRes] = await Promise.all([
-      execFileAsync('git', ['ls-files', '-z', '--modified', '--others', '--exclude-standard', '--', dir], { cwd: repoPath }),
-      execFileAsync('git', ['ls-files', '-z', '--others', '--exclude-standard', '--', dir], { cwd: repoPath }),
+      execFileAsync('git', ['ls-files', '-z', '--modified', '--others', '--exclude-standard', '--', dir], { windowsHide: true, cwd: repoPath }),
+      execFileAsync('git', ['ls-files', '-z', '--others', '--exclude-standard', '--', dir], { windowsHide: true, cwd: repoPath }),
     ]);
 
     changedFiles = new Set(changedRes.stdout.split('\0').filter(Boolean));

@@ -1465,7 +1465,7 @@ export async function execPluginCommand(cmd: string, timeoutMs: number): Promise
   await new Promise<void>((resolve, reject) => {
     const child = process.platform === 'win32'
       ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
-      : spawn('bash', ['-lc', cmd], { stdio: ['ignore', 'ignore', 'pipe'] });
+      : spawn('bash', ['-lc', cmd], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
 
     let stderr = '';
     let settled = false;
@@ -1555,7 +1555,7 @@ async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> 
     }
 
     const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'],
-      { detached: process.platform !== 'win32', windowsHide: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId, TEAMAI_PLUGIN_TOOL: tool } });
+      { detached: true, windowsHide: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId, TEAMAI_PLUGIN_TOOL: tool } });
 
     child.unref();
   } catch (e) { log.debug(`[local-agent] plugin reconcile spawn skipped: ${messageOf(e)}`); }
@@ -2053,7 +2053,7 @@ async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   if (await isUserHomeDir(absolute)) return undefined;
 
   try {
-    const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel']);
+    const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel'], { windowsHide: true });
     const root = stdout.trim();
 
     if (root && !await isUserHomeDir(root)) return await canonicalizeWorkspacePath(root);
@@ -2797,7 +2797,7 @@ async function resolveMarkdownFromDownload(downloadedPath: string, slug: string)
 async function extractZip(zipPath: string): Promise<string> {
   const extractDir = path.join(path.dirname(zipPath), 'extracted');
   await ensureDir(extractDir);
-  await execFileAsync('unzip', ['-q', zipPath, '-d', extractDir]);
+  await execFileAsync('unzip', ['-q', zipPath, '-d', extractDir], { windowsHide: true });
 
   return extractDir;
 }
@@ -4653,7 +4653,7 @@ async function runCmdCommand(
       process.execPath,
       [entry, ...argv.slice(1)],
       // The sync holds the lifecycle lock until this returns; an uninstall must not wait for it.
-      { timeout: 120_000, env: { ...process.env, [LOCK_HOLDER_ENV]: String(process.pid) }, maxBuffer: 4 * 1024 * 1024 },
+      { windowsHide: true, timeout: 120_000, env: { ...process.env, [LOCK_HOLDER_ENV]: String(process.pid) }, maxBuffer: 4 * 1024 * 1024 },
     );
 
     const summary = stdout.trim().split('\n').slice(0, 3).join(' | ');

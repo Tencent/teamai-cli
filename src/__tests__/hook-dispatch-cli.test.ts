@@ -280,7 +280,7 @@ describe('hookDispatchCli', () => {
     }
   });
 
-  it.each(['linux', 'win32'] as const)('starts the background pass hidden on %s when the payload cwd no longer exists', async (platform) => {
+  it.each(['linux', 'win32'] as const)('starts the background pass detached on %s when the payload cwd no longer exists', async (platform) => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
     // spawn() fails on a missing cwd, and that error is swallowed: no background
     // handler (session-start pull, webhook, update check) would run at all.
@@ -300,7 +300,7 @@ describe('hookDispatchCli', () => {
       await hookDispatchCli('stop', 'claude', '*', { stdinFile });
       expect(mockSpawn).toHaveBeenCalledTimes(platform === 'win32' ? 2 : 1);
       const plainOptions = mockSpawn.mock.calls.at(-1)![2];
-      expect(plainOptions).toMatchObject({ detached: platform !== 'win32', windowsHide: true });
+      expect(plainOptions).toMatchObject({ detached: true, windowsHide: true });
       // The same fallback the Windows WMI launch uses: a directory that exists
       // and belongs to no project, so a handler still reading the process cwd
       // (the session-start pull) cannot land in the launcher's project.
