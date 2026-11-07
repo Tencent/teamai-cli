@@ -14,6 +14,7 @@ import { ATTEMPT_ENV } from './launch-context.js';
 import { useInstallHome } from './utils/home.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { dryRunRefusal } from './dry-run-guard.js';
+import { parseIntOption } from './cli-int.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
 import { shouldRegisterSessionFlowCommands } from './session-flow/register-gate.js';
 
@@ -1423,7 +1424,7 @@ program
   .option('-p, --port <port>', 'Port number', String(3721))
   .action(async (cmdOpts) => {
     const { startDashboard } = await import('./dashboard.js');
-    await startDashboard(Number(cmdOpts.port));
+    await startDashboard(parseIntOption('--port', String(cmdOpts.port), 1, 65535));
   });
 
 program
@@ -1543,7 +1544,7 @@ program
   .action(async (cmdOpts) => {
     const { bindCurrentProject } = await import('./local-agent.js');
     await bindCurrentProject({
-      projectId: cmdOpts.projectId ? Number.parseInt(cmdOpts.projectId, 10) : undefined,
+      projectId: cmdOpts.projectId ? parseIntOption('--project-id', String(cmdOpts.projectId), 1) : undefined,
       skip: !!cmdOpts.skip,
     });
   });
