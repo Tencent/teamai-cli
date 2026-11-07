@@ -89,7 +89,7 @@ Before you change `src/workflow/`, read [docs/dev/workflow-engine.md](../docs/de
 
 1. Update from `upstream/main`, then create a feature branch. Prefer a git worktree for code changes when practical.
 2. Write tests for your change (we target 80%+ coverage).
-3. Run `npx vitest run`, `npx tsc --noEmit` and `npm run lint` — all must pass.
+3. Run the test files that cover what you changed (`npx vitest run <test files>`), `npx tsc --noEmit` and `npm run lint` — all must pass. CI runs the full unit suite on every push to a PR. Run the full suite yourself (`npx vitest run`) when the change touches shared test setup (`src/__tests__/helpers/`), a `vitest*.config.ts`, `package.json` or `package-lock.json`.
 4. Use conventional commits where possible: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
 5. Push the branch to your fork and open a PR against `Tencent/teamai-cli:main`. Describe the problem, the fix, and anything reviewers should pay attention to.
 
