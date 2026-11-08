@@ -1766,3 +1766,50 @@ describe('materializeRef — branch materialization from git', () => {
     }
   });
 });
+
+describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
+  let repoDir: string;
+
+  beforeEach(async () => {
+    repoDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-markers-'));
+  });
+
+  afterEach(async () => {
+    await fse.remove(repoDir);
+  });
+
+  it('warns once per skipped folder and reviews none of its files', async () => {
+    // Bad names inside the folders: a review that read them would report them.
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'RULE.md'), '# API style\n');
+    await fse.outputFile(path.join(repoDir, 'rules', 'api-style', 'Bad Name.md'), '# Bad\n');
+    await fse.outputFile(path.join(repoDir, 'workflows', 'release', 'WORKFLOW.yaml'), 'not: [valid\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toEqual([
+      {
+        level: 'warn',
+        check: 'structure',
+        path: 'rules/api-style/',
+        message: 'rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+      },
+      {
+        level: 'warn',
+        check: 'structure',
+        path: 'workflows/release/',
+        message: 'workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+      },
+    ]);
+  });
+
+  it('checks no scoring settings in a scorer folder', async () => {
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'SCORER.md'), '# Style\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'scoring.yaml'), 'batch: maybe\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings.map((finding) => finding.message)).toEqual([
+      'scorers/style/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    ]);
+  });
+});

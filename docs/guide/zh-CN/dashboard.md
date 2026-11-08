@@ -272,6 +272,18 @@ oncall   sre   未交付
 
 宽度小于 1100 px 时，每个技能显示为一张卡片。
 
+当前版本的 teamai 还无法读取的目录（见[保留的目录标记文件名](sharing.md#保留的目录标记文件名)）显示在页面最上方，带有类型、标记文件，以及获取它们的命令。总览页在卡片上方显示数量，并链接到这里：
+
+```text
+⚠ 已跳过的目录  2                         当前版本的 teamai 还无法读取这些目录类型
+目录                  类型          标记文件
+rules/api-style/     规则目录       RULE.md
+workflows/release/   工作流目录     WORKFLOW.yaml
+更新 teamai 后重新 pull 即可获得它们：  teamai update && teamai pull   复制
+```
+
+没有被跳过的目录时，两处都不显示。
+
 ## 人工干预指标（Human Intervention）
 
 每个会话计三种次数：中途打断（`interrupt`）、拒绝工具调用（`toolReject`）、结束后马上用「不对 / 重来 / wrong」这类词纠正（`correction`）。

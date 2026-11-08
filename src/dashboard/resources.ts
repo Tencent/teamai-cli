@@ -15,6 +15,7 @@ import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { deliveredMembers } from '../workspace-children.js';
 import { readFileSafe } from '../utils/fs.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { FOLDER_MARKERS, findSkippedFolders, type FolderMarker, type SkippedFolder } from '../folder-markers.js';
 
 /** The frontmatter `description` a rule or skill may carry; any other value reads as absent. */
 export const FrontmatterDescriptionSchema = z.object({ description: z.string().optional().catch(undefined) }).catch({});
@@ -119,4 +120,17 @@ export async function collectRulesInventory(
   }
 
   return rules.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** A folder of the team repo this teamai cannot read yet, as the Resources page and Overview list it (#1791). */
+export type DashboardSkippedFolder = SkippedFolder & Pick<FolderMarker, 'kind' | 'marker'>;
+
+/** Every folder pull leaves out of the team repo at `repoPath`, by path. */
+export async function collectSkippedFolders(repoPath: string): Promise<DashboardSkippedFolder[]> {
+  return (await findSkippedFolders(repoPath)).map(({ path, type }) => ({
+    path,
+    type,
+    kind: FOLDER_MARKERS[type].kind,
+    marker: FOLDER_MARKERS[type].marker,
+  }));
 }

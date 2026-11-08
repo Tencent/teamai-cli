@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { getBusinessRoot, getDataHome, getKnowledgeDir, isSelfMode, managedMcpWorkspaceId, type LocalConfig } from '../types.js';
 import { readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -180,6 +181,9 @@ async function scorerCandidates(dir: string): Promise<{ candidates: NamespaceCan
   const walk = async (at: string, namespace: string | null): Promise<void> => {
     for (const entry of await scorerEntries(at)) {
       if (entry.name === 'README.md' || (entry.isFile() && entry.name === SCORING_FILE)) continue;
+
+      // A scorer folder this release cannot read is left out whole (#1791).
+      if (entry.isDirectory() && await holdsMarker(path.join(at, entry.name), unreadMarker('scorers'))) continue;
       const source = `scorers/${namespace === null ? '' : `${namespace}/`}${entry.name}`;
 
       if (entry.isFile() && entry.name.endsWith('.md')) {

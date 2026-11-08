@@ -3,6 +3,7 @@ import { ResourceHandler, type PlacementRecords } from './base.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { isDraft, listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile, pruneEmptyDirs, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { isInSkippedFolder, skippedFoldersIn } from '../folder-markers.js';
 import { getUserHome } from '../utils/home.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveBaseDir, resolveToolRootDir, isAgentExcluded, SELF_KNOWLEDGE_SCAN_KEY, installScopeName } from '../types.js';
@@ -257,7 +258,8 @@ export class RulesHandler extends ResourceHandler {
 
     if (!await pathExists(rulesDir)) return [];
 
-    const files = await listFilesRecursive(rulesDir);
+    const skipped = await skippedFoldersIn(localConfig.repo.localPath, 'rules');
+    const files = (await listFilesRecursive(rulesDir)).filter((f) => !isInSkippedFolder(`rules/${f}`, skipped));
 
     return files
       // teamai-context is the file pull writes the team instructions to; a team

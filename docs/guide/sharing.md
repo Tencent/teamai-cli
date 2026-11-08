@@ -563,3 +563,60 @@ projects:
 In self mode, pushing an edited skill from a checkout behind the default branch stops with exit 2 if it would overwrite an upstream file. The check covers the whole skill directory, including references and deletions, even when your edit is in another file. Merge the default branch, reconcile the skill, and retry; a copy that already contains the upstream changes can be pushed.
 
 If the team recreates a retired agent at its old namespace, edit that namespace source directly; the old flattened copy remains a backup. Deleting the retired root copy does not make its remaining tool copies new agents. Editing or converting a placed agent also checks the last delivered blob after the checkout has caught up with the default branch.
+
+## Reserved folder names
+
+These file names are reserved for resources kept as a folder, the way a skill is `skills/<name>/SKILL.md`:
+
+| Directory | Marker |
+|---|---|
+| `workflows/` | `WORKFLOW.yaml` |
+| `hooks/` | `HOOK.yaml` |
+| `rules/` | `RULE.md` |
+| `mcp/` | `MCP.yaml` |
+| `benchmarks/` | `SUITE.yaml` |
+| `scorers/` | `SCORER.md` |
+| `agents/` | `AGENT.md` |
+
+A directory under that type's directory, at any depth, that holds its marker is a folder. This release reads none of these folder types yet. It skips each folder whole, and pulls the rest of the team repo as usual:
+
+```text
+rules/
+├── style.md                    delivered: rule "style"
+├── api-style/
+│   ├── RULE.md                 skipped: rules/api-style/ is a rule folder
+│   ├── RULE.zh.md              skipped
+│   └── checklist.md            skipped
+└── backend/
+    ├── db.md                   delivered: rule "backend/db"
+    └── migrations/
+        └── RULE.md             skipped: rules/backend/migrations/ is a rule folder
+workflows/
+├── ship.yaml                   delivered: workflow "ship"
+└── release/
+    └── WORKFLOW.yaml           skipped: no workflow "WORKFLOW", no namespace "release"
+```
+
+Pull says so once per folder. A pull a hook starts writes the same lines to `~/.teamai/debug.log`:
+
+```console
+$ teamai pull
+⚠ rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ rules/backend/migrations/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+✔ [user] Synced 2 rule(s)
+✔ [user] Synced 1 workflow
+```
+
+`teamai status`, `teamai doctor`, `teamai review --branch` and the dashboard list the same folders. Push leaves them alone, and the team declares nothing.
+
+The name must match exactly. `rules/lint/rule.md` is still the rule `lint/rule`, on macOS and Windows too.
+
+A repo that already has one of these names, such as `rules/onboarding/RULE.md`, got it as the rule `onboarding/RULE`. From this release that directory is skipped, and pull removes the copies it delivered from it. To keep it a rule, rename the file:
+
+```bash
+git mv rules/onboarding/RULE.md rules/onboarding/overview.md
+git commit -m "rules: rename onboarding/RULE.md, a reserved folder marker"
+```
+
+Before a team commits a folder, every member should run a release that knows these names. A member on an older one reads each file in `rules/api-style/` as its own always-on rule.

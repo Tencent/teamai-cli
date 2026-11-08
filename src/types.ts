@@ -1348,6 +1348,8 @@ export const StateSchema = z.object({
     children: z.string().optional(),
     /** The selection the last pull that delivered into this checkout read. Absent in a record an older CLI wrote. */
     selection: DeliverySelectionSchema.optional(),
+    /** The folders the last full pull of this checkout left out (#1791), by path. Absent in a record an older CLI wrote. */
+    skippedFolders: z.array(z.string()).optional(),
     /**
      * The `claudeMdExcludes` entries teamai wrote into this checkout's
      * `.claude/settings.local.json` for the workspaces above it (#913).

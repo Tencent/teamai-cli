@@ -272,6 +272,18 @@ oncall   sre   Not delivered
 
 Below 1100 px wide the list shows one card per skill.
 
+A folder this teamai cannot read yet ([reserved folder names](sharing.md#reserved-folder-names)) heads the page, with its type, its marker and the command that brings it in. The Overview counts them above the cards and links here:
+
+```text
+⚠ Skipped folders  2                    This teamai cannot read these folder types yet
+FOLDER               TYPE             MARKER
+rules/api-style/     Rule folder      RULE.md
+workflows/release/   Workflow folder  WORKFLOW.yaml
+Update teamai, then pull again to receive them:  teamai update && teamai pull   Copy
+```
+
+Neither shows when no folder is skipped.
+
 ## Human Intervention Metrics
 
 Each session counts three things: an interrupt mid-run (`interrupt`), a denied tool call (`toolReject`), and a correction right after the agent stops, such as "wrong" or "redo" (`correction`).

@@ -25,6 +25,7 @@ import path from 'node:path';
 
 import chalk from 'chalk';
 import fse from 'fs-extra';
+import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage, skippedFoldersIn } from './folder-markers.js';
 import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 
@@ -215,6 +216,16 @@ async function relationsFindings(resources: ReviewResource[], readText: (p: stri
   return findings;
 }
 
+/** A folder this release cannot read: every scan below leaves it out, as pull does (#1791). */
+async function skippedFolderFindings(repoDir: string): Promise<Finding[]> {
+  return (await findSkippedFolders(repoDir)).map((folder) => ({
+    level: 'warn',
+    check: 'structure',
+    path: folder.path,
+    message: skippedFolderMessage(folder),
+  }));
+}
+
 /** Enumerate the resources on the branch through the same scanners pull uses. */
 async function scanResources(repoDir: string, index: ManifestIndex): Promise<ReviewResource[]> {
   // SAFETY: the skills, rules, agents and mcp pull scanners read only repo.localPath from LocalConfig.
@@ -234,8 +245,11 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     if (isHandlerType(type)) continue;
     const rootRel = repoRootFor(type);
     const root = path.join(repoDir, ...rootRel.split('/'));
+    const skipped = await skippedFoldersIn(repoDir, type);
 
     for (const file of await listRepoFilesRecursive(root)) {
+      if (isInSkippedFolder(`${rootRel}/${file}`, skipped)) continue;
+
       if (type === 'workflows' && !file.endsWith('.yaml')) continue;
 
       if (type === 'scorers' && path.posix.basename(file) === SCORING_FILE) continue;
@@ -1223,7 +1237,10 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
  */
 async function newerWorkflowKeyFindings(repoDir: string): Promise<Finding[]> {
   const findings: Finding[] = [];
-  const files = (await listRepoFilesRecursive(path.join(repoDir, 'workflows'))).filter((file) => file.endsWith('.yaml')).sort();
+  const skipped = await skippedFoldersIn(repoDir, 'workflows');
+
+  const files = (await listRepoFilesRecursive(path.join(repoDir, 'workflows')))
+    .filter((file) => file.endsWith('.yaml') && !isInSkippedFolder(`workflows/${file}`, skipped)).sort();
 
   for (const file of files) {
     const relativePath = `workflows/${file}`;
@@ -1280,8 +1297,11 @@ function stepsWithRole(steps: readonly WorkflowStep[], prefix: string): string[]
 
 /** Every `scorers/scoring.yaml` and `scorers/<dir>/scoring.yaml` of the branch, active for anyone or not: what it cannot parse, a key or value it ignores, and an isolation teamai does not know. */
 async function scoringSettingsFindings(repoDir: string, readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
+  // A scorer folder this release cannot read holds no settings it reads (#1791).
+  const skipped = await skippedFoldersIn(repoDir, 'scorers');
+
   const dirs = (await fse.readdir(path.join(repoDir, 'scorers'), { withFileTypes: true }).catch(() => []))
-    .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    .filter((entry) => entry.isDirectory() && !isInSkippedFolder(`scorers/${entry.name}/`, skipped)).map((entry) => entry.name).sort();
 
   const findings: Finding[] = [];
 
@@ -1599,6 +1619,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
   for (const context of await modelContexts(repoDir, roles, projects)) received.set(context, await receivedDefinitions(context.config));
 
   const findings: Finding[] = [
+    ...await skippedFolderFindings(repoDir),
     ...await structureFindings(resources, index),
     ...await namingFindings(resources, readText),
     ...await duplicateFindings(resources, index),

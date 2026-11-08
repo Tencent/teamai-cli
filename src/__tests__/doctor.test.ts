@@ -16,7 +16,9 @@ vi.mock('../config.js', async (importOriginal) => ({
     loadStateForScope: vi.fn().mockResolvedValue({}),
 }));
 
-vi.mock('../utils/fs.js', () => ({
+vi.mock('../utils/fs.js', async (importOriginal) => ({
+    // Pure: reads the code off an error the real fs throws.
+    errnoCode: (await importOriginal<typeof import('../utils/fs.js')>()).errnoCode,
     pathExists: vi.fn(),
     readFileSafe: vi.fn(),
     // Manifest loaders read through these; no manifest exists on this machine.

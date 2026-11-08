@@ -555,3 +555,60 @@ projects:
 self 模式下，如果当前分支落后于默认分支，推送修改过的 skill 会在可能覆盖主干文件时以 exit 2 停止。检查覆盖整个 skill 目录，包括参考文件和删除操作，即使本地改的是另一个文件也会检查。先合并默认分支、解决 skill 差异，再重试；已包含主干修改的副本可以正常推送。
 
 团队在原命名空间重新加入退役 agent 后，应直接编辑该命名空间源文件，旧的平铺副本作为备份保留。删除退役的根目录副本不会把剩余工具副本变成新 agent。即使 checkout 已跟上默认分支，编辑或转换已放置的 agent 仍会检查上次投递的 blob。
+
+## 保留的目录标记文件名
+
+以下文件名保留给以目录形式存放的资源，就像技能是 `skills/<name>/SKILL.md`：
+
+| 目录 | 标记文件 |
+|---|---|
+| `workflows/` | `WORKFLOW.yaml` |
+| `hooks/` | `HOOK.yaml` |
+| `rules/` | `RULE.md` |
+| `mcp/` | `MCP.yaml` |
+| `benchmarks/` | `SUITE.yaml` |
+| `scorers/` | `SCORER.md` |
+| `agents/` | `AGENT.md` |
+
+在该类型目录下（任意深度）包含对应标记文件的目录，就是一个目录型资源。当前版本还不读取这些目录类型：它会整体跳过这样的目录，团队仓库的其他内容照常 pull：
+
+```text
+rules/
+├── style.md                    交付：规则 "style"
+├── api-style/
+│   ├── RULE.md                 跳过：rules/api-style/ 是规则目录
+│   ├── RULE.zh.md              跳过
+│   └── checklist.md            跳过
+└── backend/
+    ├── db.md                   交付：规则 "backend/db"
+    └── migrations/
+        └── RULE.md             跳过：rules/backend/migrations/ 是规则目录
+workflows/
+├── ship.yaml                   交付：工作流 "ship"
+└── release/
+    └── WORKFLOW.yaml           跳过：不会出现工作流 "WORKFLOW"，也不会出现命名空间 "release"
+```
+
+pull 对每个目录提示一次；由 hook 触发的 pull 会把同样的内容写进 `~/.teamai/debug.log`：
+
+```console
+$ teamai pull
+⚠ rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ rules/backend/migrations/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+⚠ workflows/release/ is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+✔ [user] Synced 2 rule(s)
+✔ [user] Synced 1 workflow
+```
+
+`teamai status`、`teamai doctor`、`teamai review --branch` 和 dashboard 都会列出这些目录。push 不会改动它们，团队也不需要声明任何东西。
+
+文件名必须完全一致：`rules/lint/rule.md` 仍然是规则 `lint/rule`，在 macOS 和 Windows 上也一样。
+
+仓库里已经有这些文件名的，例如 `rules/onboarding/RULE.md`，之前会被当作规则 `onboarding/RULE` 交付。从这个版本起该目录会被跳过，pull 会删除之前从中交付的副本。要继续把它当作规则，改个文件名：
+
+```bash
+git mv rules/onboarding/RULE.md rules/onboarding/overview.md
+git commit -m "rules: rename onboarding/RULE.md, a reserved folder marker"
+```
+
+团队提交目录型资源之前，每位成员都应升级到认识这些文件名的版本。旧版本会把 `rules/api-style/` 里的每个文件各自当作一条始终生效的规则。

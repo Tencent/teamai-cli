@@ -6,6 +6,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { isModelAlias, loadTeamModelAliases } from '../models/aliases.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { loadProjectsManifest } from '../projects.js';
@@ -181,10 +182,17 @@ async function suiteSources(config: LocalConfig, everyNamespace: boolean): Promi
 
     if (!stat?.isDirectory()) return [];
 
-    return (await fs.readdir(full, { withFileTypes: true }))
+    const names = (await fs.readdir(full, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
       .map((entry) => entry.name)
       .sort((left, right) => left.localeCompare(right));
+
+    // A suite folder this release cannot read is left out whole (#1791): on a
+    // file system that ignores case its SUITE.yaml would read as suite.yaml.
+    const marker = unreadMarker('benchmarks');
+    const held = await Promise.all(names.map((name) => holdsMarker(path.join(full, name), marker)));
+
+    return names.filter((_, index) => !held[index]);
   };
 
   const invalid: WorkflowDiagnostic[] = [];

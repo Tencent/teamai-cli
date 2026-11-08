@@ -218,6 +218,28 @@ held, or a git error, relay the fix the line gives.
 
 For new HTTP local-agent MCP installs, a failed initial ownership-manifest write leaves the MCP config and Git exclusions unchanged. Retry the install after fixing the manifest write error. A bare Copilot entry beside `mcpServers` is removed only with a matching ownership record proving a completed bare write. Older records without that evidence preserve the bare entry. A bare ownership record cannot claim a same-named member entry under `mcpServers`: updates skip the collision, and removal leaves that keyed entry alone. An unmarked Copilot record needs a matching keyed hash that does not also match the bare entry. Completed writes record `bare: true` or `bare: false`; missing placement remains unproven, including after a failed placement-record write. Existing JSON MCP updates keep the old ownership until the config write completes; a later manifest failure restores the config. `uninstall_mcp` keeps ownership if reading or writing the config fails, and restores the entry if removing its manifest record fails. MCP reconcile also restores all configs written before an ownership-save failure. If restoration fails too, repair the named configs and ownership records before retrying; the error reports both failures, and configs still carrying credentials stay excluded from Git.
 
+## "<dir>/ is a rule folder, which this teamai cannot read yet; it was skipped"
+
+`pull`, `status`, `doctor` and `review --branch` print one such line per
+directory that holds a reserved folder marker (`WORKFLOW.yaml`, `HOOK.yaml`,
+`RULE.md`, `MCP.yaml`, `SUITE.yaml`, `SCORER.md`, `AGENT.md`) whose type this
+release cannot read. Nothing in the directory is delivered, run or pushed; the
+rest of the team repo is. A hook-started pull writes it to
+`~/.teamai/debug.log`.
+
+```console
+$ teamai pull
+⚠ rules/api-style/ is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.
+```
+
+- The team means it as a folder: tell the user to run `teamai update`, then
+  `teamai pull`. Until a release reads that type, the folder stays skipped.
+- The file is an old rule or workflow that happens to carry the name, such as
+  `rules/onboarding/RULE.md` that used to arrive as `onboarding/RULE`: the
+  team renames it (`git mv rules/onboarding/RULE.md rules/onboarding/overview.md`).
+  Do not rename it for them.
+- Only the exact name counts: `rule.md` or `workflow.yaml` is read as before.
+
 ## "Workspace child <path> is left out" / "<item> differs between ..."
 
 `pull` in a workspace prints these; `teamai doctor` repeats the first.
