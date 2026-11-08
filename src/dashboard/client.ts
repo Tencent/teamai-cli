@@ -3,6 +3,7 @@ import { scorersClient } from './scorers-client.js';
 import { selfImprovementClient } from './self-improvement-client.js';
 import { improvementClient } from './improvement-client.js';
 import { handoffView } from './handoff-view.js';
+import { skippedFoldersView } from './skipped-folders-view.js';
 import { agentHarnessView } from './agent-harness-view.js';
 import { chartFitView } from './chart-fit-view.js';
 import { judgingView } from './judging-view.js';
@@ -82,7 +83,7 @@ function overview() {
  const working=sessions.filter(s=>s.status==='running').length;
  const waiting=sessions.filter(s=>s.status==='waiting_for_input').length;
  const maintenance=kb?Object.values(kb.maintenanceCounts).reduce((a,b)=>a+b,0):null;
- return '<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
+ return skippedFoldersNotice(rules&&rules.skippedFolders)+'<div class="cards"><article class="card"><div class="cardtop">'+label('Sessions')+icon('execution')+'</div><div class="source">'+label('Local live sessions')+'</div><div class="big summary-value">'+(haveSessions?number(sessions.length):'—')+'<small>'+label('sessions on this machine')+'</small></div><div class="statusline">'+number(working)+' '+label('Working')+' · '+number(waiting)+' '+label('Your turn')+'</div><div class="cardfoot">'+link('execution','View sessions')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Knowledge Base')+'</div>'+source()+'<div class="big summary-value">'+(kb?number(kb.overallCoveragePct)+'%':'—')+'<small>'+label('Knowledge coverage')+'</small></div><div class="statusline">'+(kb?number(kb.totalEntries)+' '+label('Entries')+' · '+number(kb.silentCount)+' '+label('Never recalled'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('context','View KB Health')+'</div></article>'+
  '<article class="card"><div class="cardtop">'+label('Improvement Center')+'</div><div class="source">'+label('KB Health maintenance candidates')+'</div><div class="big summary-value">'+(maintenance===null?'—':number(maintenance))+'<small>'+label('candidates for review')+'</small></div><div class="statusline">'+(kb?number(kb.maintenanceCounts.promote)+' '+label('Promotion')+' · '+number(kb.maintenanceCounts.prune)+' '+label('Archive')+' · '+number(kb.maintenanceCounts.stale)+' '+label('Stale'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('improvement','View maintenance')+'</div></article></div>'+
  (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+sharingSection()+memberSettingsSection()+trendPanel()+outcomePanel()+sessionTable(sessions);
@@ -174,7 +175,7 @@ function resources() {
  // The two panels load and fail independently: a rules outage must not hide
  // the skills list or block its exclusions, and vice versa.
  if((rules&&rules.configured===false)||(skills&&skills.configured===false))return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
- return skillsPanel()+rulesPanel();
+ return skippedFoldersPanel(rules&&rules.skippedFolders)+skillsPanel()+rulesPanel();
 }
 // The Distribution page: what pull delivers to the chosen workspace, and the
 // role and project picks that filter it (#1028). Reads never write; a save
@@ -259,6 +260,7 @@ function runTable(rows, local) {
 function handoffsOf() { return workflows&&workflows.reported&&workflows.reported.state==='ok'?workflows.reported.handoffs||[]:[]; }
 function handoffBadge(id) { const h=handoffsOf().find(x=>x.run===id); return !h?'':h.offer?' · <span class="good">'+label('Offered')+'</span>':h.isMine?'':' · <span class="amber">'+label('Held by')+' <span data-verbatim>'+e(h.owner.user)+'</span></span>'; }
 ${handoffView}
+${skippedFoldersView}
 ${agentHarnessView}
 ${judgingView}
 ${runStepsView}
@@ -466,7 +468,7 @@ async function loadOutcomes() { if(outcomesLoading)return;const generation=works
 async function loadKb() { if(kbLoading)return;const generation=workspaceGeneration;kbLoading=true;try{const data=await json(api('/api/context'));if(generation===workspaceGeneration){kb=data;kbError=false;}}catch{if(generation===workspaceGeneration)kbError=true;}finally{if(generation===workspaceGeneration){kbLoading=false;render();}} }
 async function loadSharing() { if(sharingLoading)return;const generation=workspaceGeneration;sharingLoading=true;try{const data=await json(api('/api/session-sharing'));if(generation===workspaceGeneration){const changed=sharingError||JSON.stringify(data)!==JSON.stringify(sharing);sharing=data;sharingError=false;if(changed&&page==='overview')render();}}catch{if(generation===workspaceGeneration){sharingError=true;if(page==='overview')render();}}finally{if(generation===workspaceGeneration)sharingLoading=false;} }
 async function loadMemberSettingsPanel() { if(memberSettingsLoading)return;const generation=workspaceGeneration;memberSettingsLoading=true;try{const data=await json(api('/api/member-settings'));if(generation===workspaceGeneration){const changed=memberSettingsError||JSON.stringify(data)!==JSON.stringify(memberSettings);memberSettings=data;memberSettingsError=false;if(changed&&page==='overview')render();}}catch{if(generation===workspaceGeneration){memberSettingsError=true;if(page==='overview')render();}}finally{if(generation===workspaceGeneration)memberSettingsLoading=false;} }
-async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources')render();}} }
+async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources'||page==='overview')render();}} }
 async function postJson(route, body) { const response=await fetch(api(route),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)}); const data=await response.json().catch(()=>null); if(!response.ok)throw Error(data&&data.error?data.error:'HTTP '+response.status); return data; }
 async function loadDistribution() { if(distLoading)return;const generation=workspaceGeneration;distLoading=true;try{const data=await json(api('/api/distribution'));if(generation===workspaceGeneration){dist=data;distError=false;distDraft=null;preview=null;previewError='';saveError='';savedNote='';}}catch{if(generation===workspaceGeneration)distError=true;}finally{if(generation===workspaceGeneration){distLoading=false;if(page==='distribution')render();}} }
 async function loadWorkflows() { if(workflowsLoading)return;const generation=workspaceGeneration;workflowsLoading=true;try{const data=await json(api('/api/workflows'));if(generation===workspaceGeneration){workflows=data;workflowsError=false;}}catch{if(generation===workspaceGeneration)workflowsError=true;}finally{if(generation===workspaceGeneration){workflowsLoading=false;if(page==='workflows'){const html=workflowRuns();if(html!==workflowsHtml){workflowsHtml=html;render();}}}} }

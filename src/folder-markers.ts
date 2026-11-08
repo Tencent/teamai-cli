@@ -25,6 +25,8 @@ function isMarkedType(type: string): type is MarkedType {
 }
 
 interface FolderMarker {
+  /** What the dashboard calls such a folder. */
+  readonly kind: string;
   /** The file whose presence makes its directory a folder resource. */
   readonly marker: string;
   /** Whether this release reads folders of this type. */
@@ -36,36 +38,43 @@ interface FolderMarker {
 /** Each type keeps its resources in the team repo directory of the same name. */
 export const FOLDER_MARKERS: Readonly<Record<MarkedType, FolderMarker>> = {
   workflows: {
+    kind: 'Workflow folder',
     marker: 'WORKFLOW.yaml',
     supported: false,
     skipped: 'is a workflow folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   hooks: {
+    kind: 'Hook folder',
     marker: 'HOOK.yaml',
     supported: false,
     skipped: 'is a hook folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   rules: {
+    kind: 'Rule folder',
     marker: 'RULE.md',
     supported: false,
     skipped: 'is a rule folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   mcp: {
+    kind: 'MCP server folder',
     marker: 'MCP.yaml',
     supported: false,
     skipped: 'is an MCP server folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   benchmarks: {
+    kind: 'Benchmark suite folder',
     marker: 'SUITE.yaml',
     supported: false,
     skipped: 'is a benchmark suite folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   scorers: {
+    kind: 'Scorer folder',
     marker: 'SCORER.md',
     supported: false,
     skipped: 'is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
   },
   agents: {
+    kind: 'Agent folder',
     marker: 'AGENT.md',
     supported: false,
     skipped: 'is an agent folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
