@@ -452,10 +452,10 @@ describe('local-agent: per-workspace enrollment', () => {
     await bindCurrentProject({ cwd: projectDir });
 
     const output = vi.mocked(log.info).mock.calls.map((call) => call.join(' ')).join('\n');
-    expect(output).toContain('可用项目:');
+    expect(output).toContain('Available projects:');
     expect(output).toContain('alpha');
     expect(output).toContain('[id=100]');
-    expect(output).toContain('未绑定项目');
+    expect(output).toContain('No project bound.');
   });
 
   it('reports a skipped workspace with project_id 0 and prompts no more', async () => {
@@ -572,11 +572,11 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
 
     const parsed = JSON.parse(output.trim().split('\n').find((l) => l.includes('hookSpecificOutput'))!);
     const ctx = parsed.hookSpecificOutput.additionalContext;
-    expect(ctx).toContain('[ClawPro项目 绑定提示]');
-    expect(ctx).toContain('当前工作区未绑定ClawPro项目');
-    expect(ctx).toContain('绑定到「alpha」项目');
-    expect(ctx).toContain('绑定到「beta」项目');
-    expect(ctx).toContain('不绑定，以后也不再提示');
+    expect(ctx).toContain('[ClawPro project binding]');
+    expect(ctx).toContain('This workspace is not bound to a ClawPro project.');
+    expect(ctx).toContain('Bind to the "alpha" project');
+    expect(ctx).toContain('Bind to the "beta" project');
+    expect(ctx).toContain('Do not bind, and do not ask again');
     expect(ctx).toContain('teamai bind-project --project-id 100');
     expect(ctx).toContain('teamai bind-project --project-id 200');
     expect(ctx).toContain('teamai bind-project --skip');
@@ -620,7 +620,7 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
         process.stdout.write = origWrite;
       }
 
-      expect(stdoutChunks.join('')).not.toContain('ClawPro项目 绑定提示');
+      expect(stdoutChunks.join('')).not.toContain('ClawPro project binding');
       // The gate short-circuits before fetchUserProjects, so /projects/mine is never hit.
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/projects/mine'))).toBe(false);
     },
@@ -770,7 +770,7 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
 
     const output = stdoutChunks.join('');
     expect(output).not.toContain('hookSpecificOutput');
-    expect(output).not.toContain('ClawPro项目 绑定提示');
+    expect(output).not.toContain('ClawPro project binding');
   });
 
   it('emits hint only once per sessionId', async () => {
@@ -808,13 +808,13 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       // First call — should emit hint
       await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', event: makeEvent() });
       const firstOutput = allOutput.join('');
-      expect(firstOutput).toContain('ClawPro项目 绑定提示');
+      expect(firstOutput).toContain('ClawPro project binding');
 
       // Second call with same sessionId — should NOT emit hint
       allOutput.length = 0;
       await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', event: makeEvent() });
       const secondOutput = allOutput.join('');
-      expect(secondOutput).not.toContain('ClawPro项目 绑定提示');
+      expect(secondOutput).not.toContain('ClawPro project binding');
     } finally {
       process.stdout.write = origWrite;
     }
@@ -857,17 +857,17 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     try {
       const { reportAndSyncLocalAgent } = await import('../local-agent.js');
       await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', event: makeEvent() });
-      expect(stdoutChunks.join('')).toContain('ClawPro项目 绑定提示');
+      expect(stdoutChunks.join('')).toContain('ClawPro project binding');
 
       stdoutChunks.length = 0;
       await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', event: makeEvent() });
-      expect(stdoutChunks.join('')).not.toContain('ClawPro项目 绑定提示');
+      expect(stdoutChunks.join('')).not.toContain('ClawPro project binding');
 
       // TTL expired → the next chat is prompted again.
       stdoutChunks.length = 0;
       await fse.writeFile(marker, String(Date.now() - 11 * 60 * 1000));
       await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', event: makeEvent() });
-      expect(stdoutChunks.join('')).toContain('ClawPro项目 绑定提示');
+      expect(stdoutChunks.join('')).toContain('ClawPro project binding');
     } finally {
       process.stdout.write = origWrite;
       await fse.remove(marker);
@@ -931,7 +931,7 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     // Assertion 3: additionalContext carries the unbound-workspace hint keywords.
     const parsed = JSON.parse(output.trim().split('\n').find((l) => l.includes('hookSpecificOutput'))!);
     const ctx = parsed.hookSpecificOutput.additionalContext as string;
-    expect(ctx).toContain('当前工作区尚未绑定项目');
+    expect(ctx).toContain('This workspace is not bound to a project');
     expect(ctx).toContain('teamai bind-project');
   });
 });
@@ -2068,7 +2068,7 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     const output = stdoutChunks.join('');
     // Binding hint must still be injected via stdout even inside the sandbox.
     expect(output).toContain('hookSpecificOutput');
-    expect(output).toContain('绑定到「alpha」项目');
+    expect(JSON.parse(output.trim()).hookSpecificOutput.additionalContext).toContain('Bind to the "alpha" project');
     // But the HTTP report must be skipped; sync still runs, function returns true.
     expect(reportCalled).toBe(false);
     expect(result).toBe(true);
