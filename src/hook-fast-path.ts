@@ -15,8 +15,11 @@
  */
 
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { writeToFile } from './utils/debug-log.js';
+import { getUserHome } from './utils/home.js';
 
 /** launch-context.ts `LAUNCHED_BY_ENV`. */
 // oxlint-disable-next-line teamai/launch-env -- a copy: launch-context.ts loads zod, which this module runs before; hook-fast-path.test.ts keeps it equal
@@ -33,6 +36,9 @@ export const ATTEMPT_ENV = 'TEAMAI_WORKFLOW_ATTEMPT';
  * inherited from the session (#1176).
  */
 export const FOREGROUND_PAYLOAD_KEYS = ['teamai_run', 'teamai_launch'] as const;
+
+/** The variables local-agent.ts `loadLocalAgentConfig` takes an HTTP endpoint from when nothing is stored. */
+export const HTTP_ENDPOINT_ENVS = ['TEAMAI_HTTP_ENDPOINT', 'TEAMAI_ENDPOINT', 'TEAMAI_API_BASE_URL'] as const;
 
 /**
  * Tools whose hook the fast path never takes: Copilot and Antigravity CLI
@@ -114,6 +120,34 @@ function jsonObjectFields(raw: string): Map<string, unknown> | null {
 function isNonEmptyString(value: unknown): value is string {
   // oxlint-disable-next-line teamai/no-runtime-typeof -- the payload boundary itself, which this module parses by hand (jsonObjectFields)
   return typeof value === 'string' && value !== '';
+}
+
+/**
+ * Whether this machine syncs with an HTTP source, so the local agent's handler
+ * runs even where no teamai scope applies. A superset of local-agent.ts
+ * `loadLocalAgentConfig` returning a config, read without loading it:
+ * `local-agent/config.json` unless it says `"disabled": true` (a removed
+ * source, which nothing reconnects), a member config with an HTTP repo
+ * (a v0.17 enrolment), or an endpoint variable. hook-fast-path.test.ts checks
+ * it against the loader.
+ */
+export function isHttpEnrolled(env: NodeJS.ProcessEnv): boolean {
+  const teamaiHome = path.join(getUserHome(), '.teamai');
+  const stored = readTextFile(path.join(teamaiHome, 'local-agent', 'config.json'));
+
+  if (stored !== null) return jsonObjectFields(stored)?.get('disabled') !== true;
+  const memberConfig = readTextFile(path.join(teamaiHome, 'config.yaml')) ?? '';
+
+  return /\bkind:\s*['"]?http\b/.test(memberConfig) || HTTP_ENDPOINT_ENVS.some((name) => !!env[name]);
+}
+
+/** A file's text, or null when it cannot be read. */
+function readTextFile(file: string): string | null {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
 }
 
 /**

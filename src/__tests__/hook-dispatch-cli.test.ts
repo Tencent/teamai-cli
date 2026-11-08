@@ -106,6 +106,42 @@ describe('hookDispatchCli', () => {
     }
   });
 
+  // Outside any scope, the only handler a tool call or prompt has left is the HTTP local agent's (#1788).
+  describe('a background pass outside any teamai scope', () => {
+    let root: string;
+    let previousCwd: string;
+    let stdinFile: string;
+
+    beforeEach(() => {
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hook-no-scope-')));
+      previousCwd = process.cwd();
+      stdinFile = path.join(root, 'payload.json');
+      fs.mkdirSync(path.join(root, 'home'));
+      fs.mkdirSync(path.join(root, 'elsewhere'));
+      vi.stubEnv('HOME', path.join(root, 'home'));
+      for (const name of ['TEAMAI_HTTP_ENDPOINT', 'TEAMAI_ENDPOINT', 'TEAMAI_API_BASE_URL']) vi.stubEnv(name, '');
+      mockDispatcher.dispatch.mockClear();
+    });
+
+    afterEach(() => {
+      process.chdir(previousCwd);
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const dispatchInBackground = async (event: string) => {
+      fs.writeFileSync(stdinFile, JSON.stringify({ session_id: 's', cwd: path.join(root, 'elsewhere'), tool_name: 'Read' }));
+      await hookDispatchCli(event, 'claude', '*', { stdinFile, bgOnly: true });
+    };
+
+    it.each(['post-tool-use', 'prompt-submit'])('runs no handler for %s on a machine that does not sync over HTTP', async (event) => {
+      await dispatchInBackground(event);
+
+      expect(mockDispatcher.dispatch).not.toHaveBeenCalled();
+      expect(log.debug).toHaveBeenCalledWith(`[hook-dispatch] ${event}/claude no scope`);
+    });
+  });
+
   it('records an unexpected dispatch failure in debug.log while a silent hook prints nothing', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-dispatch-failure-'));
     const logFile = path.join(root, 'debug.log');
@@ -390,7 +426,8 @@ describe('hookDispatchCli', () => {
     const stdinFile = path.join(os.tmpdir(), `fast-hook-${process.pid}-${Date.now()}.json`);
     fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 's', cwd: process.cwd(), tool_name: 'Read' }));
     const launch = { TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'checkout-1' };
-    for (const [key, value] of Object.entries({ CI: 'true', ...launch })) vi.stubEnv(key, value);
+    // An HTTP enrolment keeps the pass running where its cwd has no teamai scope; the dispatcher here contacts nothing.
+    for (const [key, value] of Object.entries({ CI: 'true', TEAMAI_HTTP_ENDPOINT: 'http://127.0.0.1:9', ...launch })) vi.stubEnv(key, value);
     mockDispatcher.dispatch.mockClear();
 
     try {

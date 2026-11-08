@@ -1248,6 +1248,14 @@ describe('hook-handlers registry', () => {
     expect(filterHandlersForConfig(registry, { repo: {} } as never).length).toBe(full);
   });
 
+  // The background pass of a tool call or a prompt outside any scope exits before running handlers unless the machine
+  // syncs over HTTP (#1788), which is only behaviour-preserving while the local agent is all that is left to run there.
+  it.each(['post-tool-use', 'prompt-submit'])('leaves %s no background handler but the HTTP local agent\'s where teamai is not set up', (event) => {
+    const background = filterHandlersForConfig(buildHandlerRegistry(), null).filter((reg) => reg.event === event && reg.background === true);
+
+    expect(background.map((reg) => reg.handler.name).filter((name) => name !== 'local-agent-sync')).toEqual([]);
+  });
+
   it('filterHandlersForConfig drops the share nudge where teamai is not set up (#748)', () => {
     const names = filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name);
     expect(names).not.toContain('contribute-check');

@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { argvVerdict, ATTEMPT_ENV, childPayload, FOREGROUND_PAYLOAD_KEYS, LAUNCHED_BY_ENV, runHookFastPath } from '../hook-fast-path.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { argvVerdict, ATTEMPT_ENV, childPayload, FOREGROUND_PAYLOAD_KEYS, HTTP_ENDPOINT_ENVS, isHttpEnrolled, LAUNCHED_BY_ENV, runHookFastPath } from '../hook-fast-path.js';
+import { loadLocalAgentConfig } from '../local-agent.js';
 import * as launchContext from '../launch-context.js';
 
 const READ = ['hook-dispatch', 'post-tool-use', '--tool', 'claude'];
@@ -87,6 +91,69 @@ describe('childPayload', () => {
   it('drops the keys only the foreground dispatcher may set', () => {
     const raw = JSON.stringify({ session_id: 's-1', teamai_run: { runMode: 'unattended' }, teamai_launch: { TEAMAI_LAUNCHED_BY: 'workflow' } });
     expect(JSON.parse(childPayload(raw) ?? 'null')).toEqual({ session_id: 's-1' });
+  });
+});
+
+describe('isHttpEnrolled', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-enrolled-')));
+    fs.mkdirSync(path.join(home, '.teamai', 'local-agent'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    for (const name of HTTP_ENDPOINT_ENVS) vi.stubEnv(name, undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  const write = (relative: string, content: string) => {
+    const file = path.join(home, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    return file;
+  };
+  const enrolledByConfigJson = () => write('.teamai/local-agent/config.json', JSON.stringify({ endpoint: 'https://teamai.example', createdAt: '2026-01-01T00:00:00.000Z', workspaceBindings: {} }));
+  const httpMemberConfig = (file: string) => write(file, `repo:\n  localPath: ${path.join(home, 'team-repo')}\n  remote: https://teamai.example\n  kind: http\n  url: https://teamai.example\nusername: alice\n`);
+  const env = () => process.env;
+
+  // Each fixture is a way a machine enrolls; the check must see every one the local agent itself would sync with.
+  const enrolments: Array<[string, () => void]> = [
+    ['local-agent/config.json', enrolledByConfigJson],
+    ['a v0.17 member config with an HTTP repo', () => httpMemberConfig('.teamai/config.yaml')],
+    ...HTTP_ENDPOINT_ENVS.map((name): [string, () => void] => [name, () => vi.stubEnv(name, 'https://teamai.example')]),
+  ];
+
+  it.each(enrolments)('counts an enrolment through %s, as the local agent does', async (_case, enroll) => {
+    enroll();
+
+    expect(isHttpEnrolled(env())).toBe(true);
+    expect(await loadLocalAgentConfig({ dryRun: true })).not.toBeNull();
+  });
+
+  it('counts no enrolment on a machine with none, as the local agent does', async () => {
+    write('.teamai/config.yaml', `repo:\n  localPath: ${path.join(home, 'team-repo')}\n  remote: https://gitlab.example/acme/team.git\nusername: alice\n`);
+
+    expect(isHttpEnrolled(env())).toBe(false);
+    expect(await loadLocalAgentConfig({ dryRun: true })).toBeNull();
+  });
+
+  // `teamai` removed the source: nothing reconnects it, not even an endpoint variable.
+  it('counts no enrolment once the source was removed, as the local agent does', async () => {
+    write('.teamai/local-agent/config.json', JSON.stringify({ disabled: true }));
+    vi.stubEnv('TEAMAI_HTTP_ENDPOINT', 'https://teamai.example');
+
+    expect(isHttpEnrolled(env())).toBe(false);
+    expect(await loadLocalAgentConfig({ dryRun: true })).toBeNull();
+  });
+
+  it('counts a config.json it cannot read as an enrolment, which costs a full dispatch at most', () => {
+    write('.teamai/local-agent/config.json', '{"endpoint":');
+
+    expect(isHttpEnrolled(env())).toBe(true);
   });
 });
 

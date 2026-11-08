@@ -31,7 +31,7 @@ import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
 import { claimCopilotHookEvent } from './copilot-hook-claim.js';
 import { launchedBy, LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch, SESSION_RUN_PAYLOAD_KEY, sessionRun } from './launch-context.js';
-import { readStdin, takeHandedOffHookStdin } from './hook-fast-path.js';
+import { isHttpEnrolled, readStdin, takeHandedOffHookStdin } from './hook-fast-path.js';
 import { isSelfMode } from './types.js';
 
 export { claudeHookRunsInAnotherHost };
@@ -527,6 +527,14 @@ export async function hookDispatchCli(
       if (await copilotBuiltinDisabled(localConfig, event, matcher)) return;
 
       if (!claimCopilotHookEvent(event, matcher, raw)) return;
+    }
+
+    // Outside any scope, a tool call's or a prompt's background pass has no
+    // handler left but the HTTP local agent's (#1788).
+    if (bgOnly && !localConfig && (event === 'post-tool-use' || event === 'prompt-submit') && !isHttpEnrolled(process.env)) {
+      log.debug(`[hook-dispatch] ${event}/${tool} no scope`);
+
+      return;
     }
 
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);

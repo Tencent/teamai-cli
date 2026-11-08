@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { projectSlug } from '../../utils/partition.js';
 
 const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 
@@ -30,7 +31,7 @@ describe.skipIf(process.platform === 'win32')('hook fast path (#1788, real CLI)'
       'repo:', `  localPath: ${teamRepo}`, '  remote: https://example.com/team.git', 'username: e2e-user', 'scope: user',
     ].join('\n'));
     env = { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', CI: '', TEAMAI_MODE: '' };
-    for (const name of ['TEAMAI_LAUNCHED_BY', 'TEAMAI_WORKFLOW_ATTEMPT', 'CURSOR_VERSION', 'COPILOT_PROJECT_DIR']) delete env[name];
+    for (const name of ['TEAMAI_LAUNCHED_BY', 'TEAMAI_WORKFLOW_ATTEMPT', 'CURSOR_VERSION', 'COPILOT_PROJECT_DIR', 'TEAMAI_HTTP_ENDPOINT', 'TEAMAI_ENDPOINT', 'TEAMAI_API_BASE_URL']) delete env[name];
   });
 
   afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }));
@@ -67,6 +68,90 @@ describe.skipIf(process.platform === 'win32')('hook fast path (#1788, real CLI)'
     expect(log).toContain('[hook-dispatch] post-tool-use/claude fast path');
     const events = fs.readFileSync(path.join(home, '.teamai', 'dashboard', 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({ type: 'tool_use', sessionId: 's-1', toolName: 'Read', runMode: 'attended' }));
+  });
+
+  describe('outside any teamai scope', () => {
+    beforeEach(() => fs.rmSync(path.join(home, '.teamai', 'config.yaml')));
+
+    it('runs no background handler on a machine that does not sync over HTTP', async () => {
+      const result = hook(['post-tool-use', '--tool', 'claude'], readPayload());
+
+      expect(result.status, result.stderr).toBe(0);
+      const log = await waitForLog(/\[hook-dispatch\] post-tool-use\/claude no scope/);
+      expect(log).toContain('[hook-dispatch] post-tool-use/claude fast path');
+      expect(log).not.toMatch(/post-tool-use\/claude background:/);
+    });
+
+    // The HTTP local agent is the one handler that runs without a scope. Port 9 is closed, so nothing leaves the machine.
+    it.each([
+      ['local-agent/config.json', () => fs.writeFileSync(path.join(home, '.teamai', 'local-agent', 'config.json'), JSON.stringify({ endpoint: 'http://127.0.0.1:9', createdAt: '2026-01-01T00:00:00.000Z', workspaceBindings: {} }))],
+      ['TEAMAI_HTTP_ENDPOINT', () => { env.TEAMAI_HTTP_ENDPOINT = 'http://127.0.0.1:9'; }],
+    ])('keeps the local agent\'s handler on a machine enrolled through %s', async (_case, enroll) => {
+      fs.mkdirSync(path.join(home, '.teamai', 'local-agent'), { recursive: true });
+      enroll();
+      const result = hook(['post-tool-use', '--tool', 'claude'], readPayload());
+
+      expect(result.status, result.stderr).toBe(0);
+      const log = await waitForLog(/post-tool-use\/claude background: \d+ms total/);
+      expect(log).toMatch(/background: .*local-agent-sync=\d+ms\(ok\)/);
+      expect(log).not.toContain('no scope');
+    });
+  });
+
+  // A scope found by any other rule than the user config keeps its handlers: the gate only reads "no scope" (#1788).
+  describe('in a project scope, with no user scope', () => {
+    const projectConfig = (dir: string, root = project) => {
+      const teamRepo = path.join(dir, 'team-repo');
+      fs.mkdirSync(teamRepo, { recursive: true });
+      fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: fast-path-project\nrepo: https://example.com/project-team.git\nprovider: git\n');
+      fs.writeFileSync(path.join(dir, 'config.yaml'), [
+        'repo:', `  localPath: ${teamRepo}`, '  remote: https://example.com/project-team.git', 'username: e2e-user', 'scope: project', `projectRoot: ${root}`,
+      ].join('\n'));
+    };
+
+    beforeEach(() => fs.rmSync(path.join(home, '.teamai', 'config.yaml')));
+
+    it.each([
+      ['set up in its partition, with no .teamai folder in the checkout', () => {
+        execFileSync('git', ['init', '-q'], { cwd: project });
+        const partition = path.join(home, '.teamai', 'projects', projectSlug(project));
+        fs.mkdirSync(partition, { recursive: true });
+        fs.writeFileSync(path.join(partition, 'anchor'), `${project}\n`);
+        projectConfig(partition);
+      }],
+      ['installed the legacy way, in <project>/.teamai', () => {
+        fs.mkdirSync(path.join(project, '.teamai'));
+        projectConfig(path.join(project, '.teamai'));
+      }],
+    ])('runs the background handlers of a project %s', async (_case, setUp) => {
+      setUp();
+      const result = hook(['post-tool-use', '--tool', 'claude'], readPayload());
+
+      expect(result.status, result.stderr).toBe(0);
+      const log = await waitForLog(/post-tool-use\/claude background: \d+ms total/);
+      expect(log).toMatch(/background: .*dashboard-report=\d+ms\(ok\)/);
+      expect(log).not.toContain('no scope');
+    });
+
+    // A multi-repo workspace (#913): the plain parent folder holds a legacy .teamai, each repo in it its own partition.
+    it('runs the background handlers of a child repo of a multi-repo workspace', async () => {
+      const child = path.join(project, 'svc-a');
+      fs.mkdirSync(path.join(project, '.teamai'), { recursive: true });
+      projectConfig(path.join(project, '.teamai'));
+      fs.mkdirSync(child);
+      execFileSync('git', ['init', '-q'], { cwd: child });
+      const partition = path.join(home, '.teamai', 'projects', projectSlug(child));
+      fs.mkdirSync(partition, { recursive: true });
+      fs.writeFileSync(path.join(partition, 'anchor'), `${child}\n`);
+      projectConfig(partition, child);
+
+      const result = hook(['post-tool-use', '--tool', 'claude'], { ...readPayload(), cwd: child });
+
+      expect(result.status, result.stderr).toBe(0);
+      const log = await waitForLog(/post-tool-use\/claude background: \d+ms total/);
+      expect(log).toMatch(/background: .*dashboard-report=\d+ms\(ok\)/);
+      expect(log).not.toContain('no scope');
+    });
   });
 
   it('runs the full dispatch for a payload without a session id', async () => {
