@@ -1101,7 +1101,8 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-import-learnings` | 把文件分为 rule、doc 或 learning（一次三个），跳过个人内容，逐条请人 accept、edit 或 skip，再把接受的条目按类型写出。它既不提交也不推送。输入：`candidates`、`dir`、`by_type`、`all`。私有 | 从不：`invoke: deny` |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
 | `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
-| `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
+| `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，从[团队工作区](#团队工作区)作为拉取请求提议给团队。输入：`session`、`source`、`suite`、`start`、`solution`，以及队友推送的会话所用的 `team_session` 和 `author`（默认为空） | 始终 |
+| `teamai-sessions-to-tasks` | [从过去的会话构建套件](benchmarks.md#从过去的会话构建套件)：列出套件可以从中取任务的已结束会话，由 AI 按大小挑出有代表性的会话，再对每个选中的会话逐个运行 `teamai-session-to-task`。输入：`suite`、`count`、`sizes`（默认 `S=40,3 M=200,10 L=800,30`） | 始终：`invoke: ask`，本人同意后 agent 才启动它 |
 
 启动默认工作流的命令（如 `teamai recall promote <id>`）输出的内容和以前一样。只有在运行结束前停下（如按 Ctrl-C）时，它才会说出这次运行：
 

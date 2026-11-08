@@ -41,7 +41,9 @@ import { pushSession } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPublish } from './session-publish.js';
 import { SessionWork } from './session-work.js';
-import { FinishedSessions, type FinishedSession, type ShareableSession } from './finished-sessions.js';
+import { FinishedSessions, type FinishedSession, type ShareableSession, type ShareOptions } from './finished-sessions.js';
+import { TaskCandidates, type LeftOut, type TaskFields } from './task-candidates.js';
+import { definedFields } from '../utils/defined-fields.js';
 import { autoDetectInit } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
@@ -152,20 +154,23 @@ async function listPushSource(platform: string, cwd: string, all: boolean) {
  * `teamai session list --finished`: prints the finished sessions to archive and judge, or with `--all` every finished
  * session to share learnings from, or why it lists none.
  */
-async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: string; cwd?: string; idle?: string; within?: string; publish?: string; scorers?: string; json?: boolean }): Promise<void> {
-  const { all, within, ...options } = opts;
+async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: string; cwd?: string; idle?: string; within?: string; publish?: string; scorers?: string; suite?: string; sizes?: string; json?: boolean }): Promise<void> {
+  const { all, within, suite, sizes, ...options } = opts;
 
   if (opts.author !== undefined || opts.repoRoot !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--finished lists the sessions of this machine, so it takes no --author or --repo-root.' }, opts.json);
 
   if (!all && within !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--within sets how far back --finished --all looks, so it takes --all. Add --all to list the sessions to share learnings from.' }, opts.json);
+
+  if (!all && (suite !== undefined || sizes !== undefined)) return refuseCommand({ code: 'invalid_arguments', message: '--suite and --sizes list the sessions a suite could take a task from, so they take --all. Add --all.' }, opts.json);
   const ctx = { env: process.env, current: await currentConfig(opts.cwd), now: new Date().toISOString() };
 
   if (all) {
-    const answer = await FinishedSessions.shareable(within === undefined ? options : { ...options, within }, ctx);
+    const answer = await FinishedSessions.shareable(definedFields<ShareOptions>({ ...options, within, suite, sizes }), ctx);
 
     if (!answer.ok) return refuseCommand(answer, opts.json);
 
-    if (opts.json) process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
+    if ('leftOut' in answer) printCandidates(answer, opts.json);
+    else if (opts.json) process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
     else printShareable(answer.list);
 
     return;
@@ -191,6 +196,25 @@ function printShareable(list: readonly ShareableSession[]): void {
   if (list.length === 0) console.log('No finished sessions to share learnings from here.');
 
   for (const one of list) console.log(`  ${one.session}  ${one.source}  ${one.ended}  ${one.prompt || '-'}`);
+}
+
+/**
+ * Prints each session a suite could take a task from on a line of its own: its id, source, commits, change and size,
+ * then how many were left out and why; with `json`, `{"list","leftOut"}`.
+ */
+function printCandidates({ list, leftOut }: { list: ReadonlyArray<TaskFields & { session: string; source: string }>; leftOut: readonly LeftOut[] }, json: boolean | undefined): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ list, leftOut })}\n`);
+
+    return;
+  }
+
+  if (list.length === 0) console.log('No sessions this suite could take a task from.');
+
+  for (const one of list) console.log(`  ${safeText(one.session)}  ${safeText(one.source)}  ${one.start.slice(0, 7)}..${one.solution.slice(0, 7)}  ${one.files} file${one.files === 1 ? '' : 's'}, ${one.lines} line${one.lines === 1 ? '' : 's'}${one.size ? `  ${one.size}` : ''}`);
+  const line = TaskCandidates.leftOutLine(leftOut);
+
+  if (line) console.log(line);
 }
 
 /** Prints each finished session on a line of its own: its id, source, whether to publish it and its scorers. */
@@ -680,7 +704,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
   // ── session list ───────────────────────────────────────────
   sessionCmd
     .command('list')
-    .description('List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step\'s, is never listed, nor a scorer whose mark is open or closed. With --finished --all, list every finished session of this machine to share learnings from, whatever the session policies and archive say, last active within --within, leaving out those a learning was contributed from, each with when it was last active and its first prompt, redacted; any run may list them, one an agent started too.')
+    .description('List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step\'s, is never listed, nor a scorer whose mark is open or closed. With --finished --all, list every finished session of this machine to share learnings from, whatever the session policies and archive say, last active within --within, leaving out those a learning was contributed from, each with when it was last active and its first prompt, redacted; any run may list them, one an agent started too. With --suite, list instead the sessions a benchmark suite could take a task from, which teamai-sessions-to-tasks picks from.')
     .option('--repo-root <path>', 'Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--author <name>', 'Filter by author')
@@ -690,7 +714,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--within <duration>', 'With --finished --all: how recently a session was last active to be listed, such as 3d (default 7d)')
     .option('--publish <policy>', 'With --finished: policy (sessions.publish for the session\'s run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.')
     .option('--scorers <json>', 'With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.')
-    .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}')
+    .option('--suite <dir>', 'With --all: list instead the sessions the benchmark suite in <dir>, such as benchmarks/fix-auth, could take a task from, each with its start and solution commits and the files and lines between them: only sessions with a recorded end, a start and an end with no tracked file modified, two different commits the suite\'s repo holds (fetched by SHA into the benchmark commit cache), and no task of the suite from the same session or solution commit; a learning contributed from one does not leave it out. Prints how many it left out and why')
+    .option('--sizes <spec>', 'With --suite: the largest S, M and L changes as lines,files, such as "S=40,3 M=200,10 L=800,30"; adds size, the smallest whose limits both fit the change, else XL')
+    .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}; with --suite, {"list":[{...,"start","solution","files","lines","size"}],"leftOut":[{"reason","sessions"}]}')
     .action(async (opts) => {
       if (opts.finished) {
         await listFinished(opts);

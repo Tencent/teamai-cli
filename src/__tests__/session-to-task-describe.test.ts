@@ -111,6 +111,8 @@ describe('describe of teamai-session-to-task', () => {
       { name: 'suite', type: STRING, value: 'benchmarks/frontend', why: 'The one benchmark suite whose repo is this checkout\'s origin.' },
       { name: 'start', type: STRING, value: start, why: 'The commit this session started at.' },
       { name: 'solution', type: STRING, value: head, why: 'The commit at HEAD: the change this session made.' },
+      { name: 'team_session', type: STRING, value: '', why: 'This session ran on this machine, so it names no pushed session.' },
+      { name: 'author', type: STRING, value: '', why: 'This session ran on this machine, so it names no pushed session.' },
     ]);
     expect(head).toMatch(/^[0-9a-f]{40}$/);
   });
@@ -224,6 +226,8 @@ describe('describe of teamai-session-to-task', () => {
       { name: 'suite', type: STRING, why: 'No value: no agent session found. Give the suite\'s directory, such as benchmarks/frontend.' },
       { name: 'start', type: STRING, why: 'No value: no agent session found. Give the commit the task starts from.' },
       { name: 'solution', type: STRING, why: 'No value: no agent session found. Give the commit that completes the task.' },
+      { name: 'team_session', type: STRING, why: 'No value: no agent session found. Leave it empty for a session of this machine, or give the name teamai session list prints for a pushed one.' },
+      { name: 'author', type: STRING, why: 'No value: no agent session found. Leave it empty for a session of this machine, or give who pushed the session.' },
     ]);
   });
 });

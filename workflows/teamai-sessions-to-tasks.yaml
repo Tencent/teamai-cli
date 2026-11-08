@@ -1,0 +1,47 @@
+schemaVersion: v1alpha1
+name: teamai-sessions-to-tasks
+description: Build a benchmark suite from past sessions - list this machine's finished sessions the suite could take a task from, pick representative ones of each size, and turn each into a task with teamai-session-to-task. Use when the person asks to build or grow a benchmark suite from past sessions.
+invoke: ask
+inputs:
+  # The suite's directory, such as benchmarks/fix-auth.
+  suite: string
+  # How many tasks to draft at most.
+  count: number
+  # The largest S, M and L solution diffs, as lines,files; anything larger is XL.
+  sizes: string
+defaults:
+  inputs: { sizes: "S=40,3 M=200,10 L=800,30" }
+steps:
+  - id: local
+    # This machine's finished sessions with a recorded end, a clean start and end, both commits in the suite's repo,
+    # and no task of the suite coming from them; left_out counts the others by reason.
+    command: teamai session list --finished --all --suite "$SUITE" --sizes "$SIZES" --json
+    env: { SUITE: "{{ inputs.suite }}", SIZES: "{{ inputs.sizes }}" }
+    output:
+      list: [{ session: string, source: string, ended: string, prompt: string, start: string, solution: string, files: number, lines: number, size: string }]
+      leftOut: [{ reason: string, sessions: number }]
+  - id: pick
+    needs: [local]
+    if: length(steps.local.outputs.list) > 0
+    answer: |-
+      Pick the past sessions to turn into tasks of the benchmark suite in {{ inputs.suite }}: at most {{ inputs.count }},
+      spread over the sizes S, M, L and XL as evenly as the candidates allow, and within a size the ones whose work
+      differs most from each other. Prefer a bug fix or a feature over exploration. Pick only from these candidates.
+
+      Sessions of this machine: {{ steps.local.outputs.list }}
+
+      Reply with {"picks": [...]}, one entry per picked session, copying its session, source, start and solution as they are.
+    output: { picks: [{ session: string, source: string, start: string, solution: string }] }
+  - id: draft
+    needs: [pick]
+    if: length(steps.pick.outputs.picks) > 0
+    # One at a time: the person accepts, edits or skips each draft, and each accepted task is a pull request of its own.
+    for_each: { items: steps.pick.outputs.picks, max_parallel: 1 }
+    workflow: teamai-session-to-task
+    with:
+      session: "{{ item.session }}"
+      source: "{{ item.source }}"
+      suite: "{{ inputs.suite }}"
+      start: "{{ item.start }}"
+      solution: "{{ item.solution }}"
+    continue_on_failure: true

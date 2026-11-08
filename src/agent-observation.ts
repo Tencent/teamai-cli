@@ -51,6 +51,11 @@ export const ObservedEffortSchema = z.object({ requested: Label.optional(), repo
 
 export type ObservedEffort = z.infer<typeof ObservedEffortSchema>;
 
+/** A checkout's commit, and whether tracked files were modified there. */
+export const CommitStateSchema = z.object({ commit: z.string().regex(COMMIT), dirty: z.boolean() });
+
+export type CommitState = z.infer<typeof CommitStateSchema>;
+
 /** What one pass of a step ran as. Every field is best effort: absent when not observed, never inferred. */
 export const AgentObservationSchema = z.object({
   v: z.literal(1),
@@ -59,7 +64,7 @@ export const AgentObservationSchema = z.object({
   model: ObservedModelSchema.optional(),
   effort: ObservedEffortSchema.optional(),
   team: z.object({ revision: z.string().regex(COMMIT), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
-  project: z.object({ commit: z.string().regex(COMMIT), dirty: z.boolean() }).optional(),
+  project: CommitStateSchema.optional(),
   teamai: z.string(),
   driver: z.string(),
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),

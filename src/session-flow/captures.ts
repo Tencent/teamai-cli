@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { AgentObservationSchema, observeCheckout, sameHarness, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
+import { AgentObservationSchema, CommitStateSchema, observeCheckout, sameHarness, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
 import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
@@ -56,11 +56,6 @@ const StartPayloadSchema = z.object({
   model: OptionalString,
   transcript_path: OptionalString,
 });
-
-/** A checkout's commit and whether tracked files were modified, as a capture's `agent.project` holds it. */
-const CommitStateSchema = AgentObservationSchema.shape.project.unwrap();
-
-export type CommitState = z.infer<typeof CommitStateSchema>;
 
 /** How a session ended, as its last Stop found the checkout. */
 const SessionEndSchema = z.object({

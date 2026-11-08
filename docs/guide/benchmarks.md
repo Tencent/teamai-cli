@@ -452,7 +452,7 @@ check:
 source: { platform: claude-code, sessionId: 7c1e2b9a }
 ```
 
-The session drafts it because it already knows what you asked and how it was done; no transcript is read back. `check.add` keeps the solution's test out of the trial's clone (see [Tests the solution brought](#tests-the-solution-brought)), and the prompt names the function that test calls, so the task can be solved without seeing it.
+The session drafts it because it already knows what you asked and how it was done; no transcript is read back. A draft from another session, as when you [build a suite from past sessions](#build-a-suite-from-past-sessions), reads that session's transcript first with `teamai session show`. `check.add` keeps the solution's test out of the trial's clone (see [Tests the solution brought](#tests-the-solution-brought)), and the prompt names the function that test calls, so the task can be solved without seeing it.
 
 Other sessions draft other tasks:
 
@@ -503,6 +503,62 @@ refresh-race   drafted again, by you or a teammate: the same branch, and pull re
 refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no pull request
 ../escape      not a task file name: the check step fails before any approval or clone
 ```
+
+### Build a suite from past sessions
+
+A week of sessions holds many finished fixes and features. Ask your agent to turn them into tasks ("build benchmarks/fix-auth from this week's sessions"), and it starts `teamai-sessions-to-tasks`:
+
+```console
+$ teamai workflow start teamai-sessions-to-tasks --inputs '{"suite":"benchmarks/fix-auth","count":12}'
+```
+
+```text
+step         does
+local        teamai session list --finished --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
+             → each finished session with start, solution, files, lines and size; only those whose commits are reachable
+               in the suite's repo and that no task of the suite already comes from (by session or solution commit)
+pick         an answer step: the AI picks representative candidates per size, up to count
+draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with session, source, suite, start, solution;
+             you accept, edit or skip each draft, and each accepted task is a pull request
+```
+
+`start` is the commit the session started at, and `solution` the one its last Stop found checked out: teamai records both beside the session's captures. The list says how many sessions it left out, and why:
+
+```json
+{"list":[{"session":"7c1e2b9a","source":"claude-code","ended":"2026-11-05T17:40:00Z","prompt":"Refresh tokens past…",
+          "start":"3f2c9a7…","solution":"9a1d4e7…","files":2,"lines":31,"size":"S"}],
+ "leftOut":[{"reason":"no recorded end","sessions":4},{"reason":"ended with tracked files modified","sessions":1}]}
+```
+
+| Left out as | Why |
+| --- | --- |
+| `no recorded end` | The session ended before teamai recorded how sessions end, so its solution is unknown |
+| `no recorded start` | Its start recorded no commit, as outside git |
+| `started with tracked files modified`, `ended with tracked files modified` | No commit holds that state |
+| `ended on the commit it started at` | Nothing was committed |
+| `a task of the suite already comes from it` | A task names this session as its `source`, or its solution as `solutionCommit` |
+| `commits not in the suite repo` | The suite's `repo` lacks a commit even after a fetch by SHA: push the branch, and ask again |
+
+A learning contributed from a session does not leave it out here, and only sessions last active within seven days are listed, as `--within` sets for `session list --finished --all`.
+
+A size is the smallest of S, M and L whose limits both fit the change, else XL. The limits are the workflow's, a team changes them in its copy of the file; the command only applies them:
+
+```yaml
+# workflows/teamai-sessions-to-tasks.yaml (excerpt): what a team may change
+inputs: { suite: string, count: number, sizes: string }
+defaults:
+  # The largest S, M and L solution diffs, as lines,files; anything larger is XL.
+  inputs: { sizes: "S=40,3 M=200,10 L=800,30" }
+```
+
+```text
+lines  files  size
+31     2      S
+12     4      M    4 files is more than S allows
+801    1      XL   more lines than L allows
+```
+
+Each draft is the [same conversation](#turn-a-session-into-a-task) as for the session you are in; the agent reads the past session with `teamai session show <id> --source <platform>` first.
 
 ### Check tasks in the team repo's CI
 

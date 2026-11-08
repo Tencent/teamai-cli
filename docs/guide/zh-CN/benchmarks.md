@@ -452,7 +452,7 @@ check:
 source: { platform: claude-code, sessionId: 7c1e2b9a }
 ```
 
-由会话起草，因为它已经知道你问了什么、怎么做的；不用回读任何转录。`check.add` 让解决方案自带的测试不进入 trial 的 clone（见[解决方案带来的测试](#解决方案带来的测试)），prompt 写出该测试调用的函数，这样不看测试也能完成任务。
+由会话起草，因为它已经知道你问了什么、怎么做的；不用回读任何转录。从其他会话起草时（例如[从过去的会话构建套件](#从过去的会话构建套件)），agent 先用 `teamai session show` 读取那个会话的转录。`check.add` 让解决方案自带的测试不进入 trial 的 clone（见[解决方案带来的测试](#解决方案带来的测试)），prompt 写出该测试调用的函数，这样不看测试也能完成任务。
 
 不同的会话起草不同的任务：
 
@@ -503,6 +503,62 @@ refresh-race   drafted again, by you or a teammate: the same branch, and pull re
 refresh-race   after pull request 77 merged, the same bytes: nothing pushed, no pull request
 ../escape      not a task file name: the check step fails before any approval or clone
 ```
+
+### 从过去的会话构建套件
+
+一周的会话里有许多已完成的修复和功能。让 agent 把它们变成任务（“用这周的会话构建 benchmarks/fix-auth”），它会启动 `teamai-sessions-to-tasks`：
+
+```console
+$ teamai workflow start teamai-sessions-to-tasks --inputs '{"suite":"benchmarks/fix-auth","count":12}'
+```
+
+```text
+step         does
+local        teamai session list --finished --all --suite benchmarks/fix-auth --sizes "$SIZES" --json
+             → each finished session with start, solution, files, lines and size; only those whose commits are reachable
+               in the suite's repo and that no task of the suite already comes from (by session or solution commit)
+pick         an answer step: the AI picks representative candidates per size, up to count
+draft        for_each pick, max_parallel 1: workflow teamai-session-to-task with session, source, suite, start, solution;
+             you accept, edit or skip each draft, and each accepted task is a pull request
+```
+
+`start` 是会话开始时的提交，`solution` 是它最后一次 Stop 时检出的提交：teamai 把两者记录在会话的 capture 旁边。列表会说明有多少会话被排除，以及原因：
+
+```json
+{"list":[{"session":"7c1e2b9a","source":"claude-code","ended":"2026-11-05T17:40:00Z","prompt":"Refresh tokens past…",
+          "start":"3f2c9a7…","solution":"9a1d4e7…","files":2,"lines":31,"size":"S"}],
+ "leftOut":[{"reason":"no recorded end","sessions":4},{"reason":"ended with tracked files modified","sessions":1}]}
+```
+
+| 排除原因 | 为什么 |
+| --- | --- |
+| `no recorded end` | 会话在 teamai 开始记录会话如何结束之前就结束了，不知道它的解决方案 |
+| `no recorded start` | 它启动时没有记录提交，例如不在 git 中 |
+| `started with tracked files modified`、`ended with tracked files modified` | 没有提交保存那个状态 |
+| `ended on the commit it started at` | 什么都没有提交 |
+| `a task of the suite already comes from it` | 有任务把这个会话写作 `source`，或把它的解决方案写作 `solutionCommit` |
+| `commits not in the suite repo` | 按 SHA fetch 之后，套件的 `repo` 仍缺少某个提交：推送分支后再试 |
+
+从会话贡献过经验不会让它在这里被排除；只列出七天内活动过的会话，与 `session list --finished --all` 的 `--within` 相同。
+
+大小取 S、M、L 中第一个行数和文件数限制都容得下这次改动的，否则为 XL。限制写在工作流里，团队在自己的文件副本中修改；命令只负责套用：
+
+```yaml
+# workflows/teamai-sessions-to-tasks.yaml (excerpt): what a team may change
+inputs: { suite: string, count: number, sizes: string }
+defaults:
+  # The largest S, M and L solution diffs, as lines,files; anything larger is XL.
+  inputs: { sizes: "S=40,3 M=200,10 L=800,30" }
+```
+
+```text
+lines  files  size
+31     2      S
+12     4      M    4 files is more than S allows
+801    1      XL   more lines than L allows
+```
+
+每份草稿和[为当前会话起草](#把会话变成任务)是同样的对话；agent 先用 `teamai session show <id> --source <platform>` 读取那个过去的会话。
 
 ### 在团队仓库的 CI 中检查任务
 

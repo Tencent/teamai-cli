@@ -6,6 +6,7 @@
  *   start   earliest capture the session-start hook wrote of the session → its project commit, when clean
  *   solution  HEAD of the caller's checkout, when clean and not start
  *   suite   the one cached suite whose repo matches origin → its directory
+ *   team_session, author   empty: the calling session is this machine's, not one a teammate pushed
  *
  * A task of that suite that already names this session as its source, or this commit as its solutionCommit, is named in that input's why, so a person
  * does not propose the same task twice.
@@ -20,7 +21,7 @@ import { getConfiguredRemoteUrl, getHeadState, getRemoteUrl, remotesMatch, type 
 import type { OutputSchema } from './workflow/types.js';
 
 /** The inputs teamai proposes values for, by name: a team override that declares one as a string gets it filled. */
-const CONTRACT = ['session', 'source', 'suite', 'start', 'solution'] as const;
+const CONTRACT = ['session', 'source', 'suite', 'start', 'solution', 'team_session', 'author'] as const;
 
 type ContractInput = typeof CONTRACT[number];
 
@@ -126,8 +127,13 @@ async function offer(config: LocalConfig, { session, tool, cwd }: { session: str
     suite,
     start,
     solution: namingTasks(solution, proposed, (task) => solution.value !== undefined && task.solutionCommit === solution.value),
+    team_session: OWN_SESSION,
+    author: OWN_SESSION,
   };
 }
+
+/** What describe proposes for the pushed session's name and author: none, since the calling session is this machine's. */
+const OWN_SESSION: Proposal = { value: '', why: 'This session ran on this machine, so it names no pushed session.' };
 
 /** What describe proposes, by input, when no agent session calls: no value, and why. */
 const NO_SESSION: Record<ContractInput, Proposal> = {
@@ -136,6 +142,8 @@ const NO_SESSION: Record<ContractInput, Proposal> = {
   suite: { why: 'No value: no agent session found. Give the suite\'s directory, such as benchmarks/frontend.' },
   start: { why: 'No value: no agent session found. Give the commit the task starts from.' },
   solution: { why: 'No value: no agent session found. Give the commit that completes the task.' },
+  team_session: { why: 'No value: no agent session found. Leave it empty for a session of this machine, or give the name teamai session list prints for a pushed one.' },
+  author: { why: 'No value: no agent session found. Leave it empty for a session of this machine, or give who pushed the session.' },
 };
 
 /**
