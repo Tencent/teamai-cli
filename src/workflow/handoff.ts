@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DefaultWorkflows } from '../default-workflows.js';
+import { RESOURCE_LAYOUTS, Resources } from '../resources/resolver.js';
 import { knownSecrets } from '../env-resolution.js';
 import { getCurrentVersion } from '../package-info.js';
 import { AgentSession } from '../session-flow/agent-session.js';
@@ -1203,7 +1204,8 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
 
   // No team commit holds a default: only the default this teamai ships can be the one that ran, whatever the name resolves to here.
   if (snapshot.origin?.source === 'default') {
-    const shipped = DefaultWorkflows.named(snapshot.name);
+    const found = await Resources.resolve(RESOURCE_LAYOUTS.workflows, snapshot.name, { teamai: DefaultWorkflows.layer });
+    const shipped = found.kind === 'resolved' && found.item.layer === 'teamai' ? found.item.shipped : undefined;
     const tree = shipped ? await loadWorkflowTree(config, shipped) : undefined;
 
     if (shipped && tree && !('failed' in tree) && same({ definition: shipped.definition, workflows: tree.workflows, sourceHash: tree.sourceHash })) {

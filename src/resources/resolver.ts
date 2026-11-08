@@ -171,20 +171,46 @@ async function readLayer<TEntry>(layout: ResourceLayout<TEntry>, root: string, d
   return { items, plain };
 }
 
-/** teamai's defaults of `layout`, in name order. */
+/** A default file or folder of teamai's package, read. */
+interface ShippedRead {
+  readonly name: string;
+  readonly source: ResourceSource<never>;
+  readonly file: ShippedFile;
+}
+
+/** Each layout's defaults by package root, read once: teamai's package does not change while teamai runs. */
+const shippedReads = new WeakMap<object, Map<string, Promise<readonly ShippedRead[]>>>();
+
+/** The defaults of `layout` in the package at `root`, in path order. */
+function readShipped<TEntry>(layout: ResourceLayout<TEntry>, root: string): Promise<readonly ShippedRead[]> {
+  const byRoot = shippedReads.get(layout) ?? new Map<string, Promise<readonly ShippedRead[]>>();
+  const known = byRoot.get(root);
+
+  if (known) return known;
+
+  const reading = (async (): Promise<readonly ShippedRead[]> => {
+    const { items } = await readLayer(layout, root, path.join(root, layout.dir));
+    const found: ShippedRead[] = [];
+
+    for (const { name, source, definition } of [...items].sort((a, b) => (a.source.path < b.source.path ? -1 : 1))) {
+      // teamai ships every default as a file or a folder of its own.
+      if (source.kind === 'entry') continue;
+      const relativePath = path.relative(root, definition).split(path.sep).join('/');
+      found.push({ name, source, file: { relativePath, content: await fs.readFile(definition, 'utf8') } });
+    }
+
+    return found;
+  })();
+
+  byRoot.set(root, reading);
+  shippedReads.set(layout, byRoot);
+
+  return reading;
+}
+
+/** teamai's defaults of `layout`, in path order. */
 async function shippedItems<TEntry, TShipped>(layout: ResourceLayout<TEntry>, teamai: TeamaiLayer<TShipped>): Promise<Array<LayeredItem<TEntry, TShipped>>> {
-  const { items } = await readLayer(layout, teamai.root, path.join(teamai.root, layout.dir));
-  const shipped: Array<LayeredItem<TEntry, TShipped>> = [];
-
-  for (const { name, source, definition } of [...items].sort((a, b) => (a.source.path < b.source.path ? -1 : 1))) {
-    // teamai ships every default as a file or a folder of its own.
-    if (source.kind === 'entry') continue;
-    const relativePath = path.relative(teamai.root, definition).split(path.sep).join('/');
-    const content = await fs.readFile(definition, 'utf8');
-    shipped.push({ layer: 'teamai', name, source, shipped: teamai.read({ relativePath, content }) });
-  }
-
-  return shipped;
+  return (await readShipped(layout, teamai.root)).map(({ name, source, file }) => ({ layer: 'teamai', name, source, shipped: teamai.read(file) }));
 }
 
 /** The items of `layout` in the team's files: the root's, then each namespace's, in the order the scan meets them. */

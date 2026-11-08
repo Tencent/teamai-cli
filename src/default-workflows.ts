@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { getCurrentVersion } from './package-info.js';
+import { RESOURCE_LAYOUTS, Resources, type ShippedFile, type TeamaiLayer } from './resources/resolver.js';
 import { SCORE_WORKFLOW } from './scorers/judging-workflows.js';
 import { ScoreOverride, type ScoreOverrideCode } from './scorers/score-override.js';
 import type { LocalConfig } from './types.js';
@@ -13,17 +14,19 @@ import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiag
 // ─── Default workflows (#1388) ───────────────────────────
 //
 //  The CLI ships workflows a team gets without writing them,
-//  as workflows/<name>.yaml in the npm package. A team file of
-//  the same name replaces one. The workflow cache resolves
-//  them (loadCachedWorkflow, listCachedWorkflows) only while
-//  no team version of that name runs; they are never written
-//  to the cache or the team repo. A run records which one it
-//  ran (originOf), and a handoff refuses a default run whose
-//  shipped file differs on the other machine.
+//  as workflows/<name>.yaml in the npm package: the teamai
+//  layer the resolver (src/resources/resolver.ts) reads below
+//  the team's files. A team file of the same name replaces
+//  one. The workflow cache resolves them (loadCachedWorkflow,
+//  listCachedWorkflows) only while no team version of that
+//  name runs; they are never written to the cache or the team
+//  repo. A run records which one it ran (originOf), and a
+//  handoff refuses a default run whose shipped file differs on
+//  the other machine.
 //
 
-/** `workflows/` in the package root. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
-function defaultsDir(): string {
+/** The package root, holding `workflows/`. This file sits one level below it, in src/ and in the bundle in dist/ alike. */
+function packageRoot(): string {
   const modulePath = fileURLToPath(import.meta.url);
   let moduleDir: string;
 
@@ -33,54 +36,43 @@ function defaultsDir(): string {
     moduleDir = path.dirname(modulePath);
   }
 
-  return path.join(moduleDir, '..', 'workflows');
+  return path.join(moduleDir, '..');
 }
-
-let loaded: ReadonlyMap<string, CachedWorkflow> | undefined;
 
 /** Every default's name starts with this, so its generated skill, named after it, is one prune and uninstall look at. */
 const PREFIX = 'teamai-';
 
+const parsedDefaults = new Map<string, CachedWorkflow>();
+
 /**
- * Every default by name, read and parsed once. A shipped file that does not parse, or whose name lacks `PREFIX`, is a
- * teamai bug, so it throws.
+ * A default as the package ships it, parsed once, so each lookup returns the same definition. A shipped file that does
+ * not parse, or whose name lacks `PREFIX`, is a teamai bug, so it throws.
  */
-function defaults(): ReadonlyMap<string, CachedWorkflow> {
-  if (loaded) return loaded;
-  const dir = defaultsDir();
-  const found = new Map<string, CachedWorkflow>();
+function readDefault({ relativePath, content }: ShippedFile): CachedWorkflow {
+  const known = parsedDefaults.get(relativePath);
 
-  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.yaml')).sort()) {
-    const relativePath = `workflows/${file}`;
-    const content = fs.readFileSync(path.join(dir, file), 'utf8');
-    const parsed = parseWorkflow(relativePath, content);
+  if (known) return known;
+  const parsed = parseWorkflow(relativePath, content);
 
-    if (!parsed.ok) throw new Error(`teamai's default ${relativePath} does not parse: ${parsed.diagnostics.map(formatDiagnostic).join('; ')}`);
+  if (!parsed.ok) throw new Error(`teamai's default ${relativePath} does not parse: ${parsed.diagnostics.map(formatDiagnostic).join('; ')}`);
 
-    if (!parsed.definition.name.startsWith(PREFIX)) throw new Error(`teamai's default ${relativePath} is named ${parsed.definition.name}, which does not start with ${PREFIX}`);
-    found.set(parsed.definition.name, {
-      relativePath,
-      sourceHash: createHash('sha256').update(content).digest('hex'),
-      content,
-      definition: parsed.definition,
-      validatedAt: new Date(0).toISOString(),
-    });
-  }
+  if (!parsed.definition.name.startsWith(PREFIX)) throw new Error(`teamai's default ${relativePath} is named ${parsed.definition.name}, which does not start with ${PREFIX}`);
 
-  loaded = found;
+  const shipped: CachedWorkflow = {
+    relativePath,
+    sourceHash: createHash('sha256').update(content).digest('hex'),
+    content,
+    definition: parsed.definition,
+    validatedAt: new Date(0).toISOString(),
+  };
 
-  return found;
+  parsedDefaults.set(relativePath, shipped);
+
+  return shipped;
 }
 
-/** The default named `name`, or undefined when teamai ships none. */
-function named(name: string): CachedWorkflow | undefined {
-  return defaults().get(name);
-}
-
-/** Every default, in name order. */
-function all(): CachedWorkflow[] {
-  return [...defaults().values()];
-}
+/** teamai's default workflows, the bottom layer of a tree `Resources` resolves workflows in: `{ teamai: layer }` alone. */
+const layer: TeamaiLayer<CachedWorkflow> = { root: packageRoot(), read: readDefault };
 
 /**
  * Where the definition a run executes came from: the team's files, or the default the teamai that started it ships, by
@@ -126,7 +118,8 @@ async function overrideProblems(file: string, definition: WorkflowDefinition, co
   }] : [];
 
   const contract = CONTRACTS.get(definition.name);
-  const shipped = named(definition.name);
+  const found = contract ? await Resources.resolve(RESOURCE_LAYOUTS.workflows, definition.name, { teamai: layer }) : undefined;
+  const shipped = found?.kind === 'resolved' && found.item.layer === 'teamai' ? found.item.shipped : undefined;
 
   return [
     ...aliased,
@@ -145,4 +138,4 @@ function callerWarnings(file: string, definition: WorkflowDefinition): string[] 
   return [...CONTRACTS.values()].flatMap((contract) => contract.callerWarnings(file, definition));
 }
 
-export const DefaultWorkflows = { PREFIX, named, all, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;
+export const DefaultWorkflows = { PREFIX, layer, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;
