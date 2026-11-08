@@ -7,6 +7,7 @@ import { toolArgumentsFrom, type ContentBlock, type Message, type Session } from
 import { readJsonl, resolveRealCwd } from '../fs.js';
 import { JsonValueSchema } from '../../types.js';
 import { parseYaml } from '../../utils/yaml.js';
+import { log } from '../../utils/logger.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -135,6 +136,17 @@ function parseCopilotFile(filePath: string): ParsedCopilot | undefined {
   return { filePath, sessionId, cwd, model, version, createdAt: first, updatedAt: last ?? first, messages };
 }
 
+/** A log that fails to read is skipped with a debug line, so one damaged session does not hide the others. */
+function readCopilotFile(filePath: string): ParsedCopilot | undefined {
+  try {
+    return parseCopilotFile(filePath);
+  } catch (cause) {
+    log.debug(`copilot: skipped ${filePath}: ${cause instanceof Error ? cause.message : String(cause)}`);
+
+    return undefined;
+  }
+}
+
 export class CopilotAdapter extends AgentAdapter {
   constructor(private readonly storageRoot: string) { super(); }
 
@@ -155,7 +167,7 @@ export class CopilotAdapter extends AgentAdapter {
     const wanted = projectPath ? resolveRealCwd(projectPath) : undefined;
 
     return this.files().flatMap((file) => {
-      const parsed = parseCopilotFile(file);
+      const parsed = readCopilotFile(file);
 
       if (!parsed || (sessionId && parsed.sessionId !== sessionId)) return [];
 

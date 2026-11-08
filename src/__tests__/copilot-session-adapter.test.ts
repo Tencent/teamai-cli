@@ -44,7 +44,7 @@ function fixture(version: '0.0.411' | '1.0.107' = '1.0.107', workspaceOnly = fal
   fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
   fs.writeFileSync(path.join(dir, 'workspace.yaml'), `id: ${id}\ncwd: ${JSON.stringify(cwd)}\n`, 'utf8');
 
-  return { adapter: new CopilotAdapter(root), cwd, file, id };
+  return { adapter: new CopilotAdapter(root), cwd, file, id, root };
 }
 
 describe('CopilotAdapter', () => {
@@ -71,6 +71,18 @@ describe('CopilotAdapter', () => {
 
     expect(await adapter.existingSessionId(id, linked)).toBe(id);
     expect(await adapter.listConversations(linked)).toHaveLength(1);
+  });
+
+  it('lists the other sessions when one events log has a malformed line', async () => {
+    const { adapter, cwd, file, id, root } = fixture();
+    const brokenId = '223e4567-e89b-12d3-a456-426614174000';
+    const [sessionStart, , , userMessage] = fs.readFileSync(file, 'utf8').split('\n');
+    fs.mkdirSync(path.join(root, brokenId));
+    fs.writeFileSync(path.join(root, brokenId, 'events.jsonl'), `${[sessionStart, '{"type":"user.message"', userMessage].join('\n')}\n`, 'utf8');
+
+    const listed = await adapter.listConversations(cwd);
+
+    expect(listed.map((session) => session.sessionId)).toEqual([id]);
   });
 
   it('rejects unsafe ids and is read-only', async () => {
