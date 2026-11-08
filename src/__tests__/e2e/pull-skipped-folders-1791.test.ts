@@ -167,4 +167,21 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     expect(files, pushed.output).toEqual(['rules/naming.md']);
     expect(pushed.output).toContain(RULE_LINE);
   }, 60_000);
+
+  it('refuses to place a new rule in a namespace that is a skipped folder', async () => {
+    write(seed, 'manifest/roles.yaml', 'version: 1\nroles:\n  - id: api\n    resources: { knowledge: [api-style], skills: [] }\n');
+    git(['add', '-A'], seed);
+    git(['commit', '-q', '-m', 'roles'], seed);
+    git(['push', '-q', remote, 'main'], seed);
+    write(homeDir, '.claude/rules/tone.md', '# Tone\n');
+
+    const pushed = await runCLI(['push', '--all', '--role', 'api-style'], homeDir, sandbox);
+    const refs = execFileSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/'], { cwd: remote, encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+    const placed = refs.filter((ref) => execFileSync('git', ['ls-tree', '-r', '--name-only', ref], { cwd: remote, encoding: 'utf8' }).includes('rules/api-style/tone.md'));
+
+    expect(pushed.code, pushed.output).not.toBe(0);
+    expect(pushed.output).toContain(`[rules] tone cannot be placed in rules/api-style/tone.md: ${RULE_LINE}`);
+    expect(placed).toEqual([]);
+  }, 60_000);
 });

@@ -24,7 +24,7 @@ import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, isSelfMode, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
-import { findSkippedFolders, isInSkippedFolder, reportSkippedFolders } from './folder-markers.js';
+import { findSkippedFolders, isInSkippedFolder, reportSkippedFolders, skippedFolderMessage } from './folder-markers.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
@@ -2022,6 +2022,24 @@ async function pushCore(
     ...isSelfMode(localConfig) && localConfig.projectRoot ? await findSkippedFolders(path.join(localConfig.projectRoot, '.teamai')) : [],
   ];
 
+  // Placement can move a new resource into a namespace that is such a folder:
+  // refuse the push there rather than write into it.
+  const placedInSkippedFolder = (items: readonly ResourceItem[]): boolean => {
+    let refused = false;
+
+    for (const item of items) {
+      const folder = skippedFolders.find((candidate) => isInSkippedFolder(item.relativePath, [candidate]));
+
+      if (!folder) continue;
+      log.error(`[${item.type}] ${item.name} cannot be placed in ${item.relativePath}: ${skippedFolderMessage(folder)}`);
+      refused = true;
+    }
+
+    if (refused) process.exitCode = 2;
+
+    return refused;
+  };
+
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
   const listed = fullScan.filter((item: PushItem) => {
@@ -2560,7 +2578,7 @@ async function pushCore(
       items: allItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
     });
 
-    if (!placed) return;
+    if (!placed || placedInSkippedFolder(allItems)) return;
     log.info('Dry run — no changes made');
 
     return;
@@ -2610,7 +2628,7 @@ async function pushCore(
   // ── Step 4: Place NEW root-level resources in a namespace (after selection) ─
   if (!await placeNewResources({
     items: selectedItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
-  })) return;
+  }) || placedInSkippedFolder(selectedItems)) return;
 
   // ── Step 5: Push each group — one branch/PR per group ──────────────
   // Config edits ride along with the first group normally. With --branch, an
