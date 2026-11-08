@@ -13,7 +13,7 @@ describe('parseIntOption', () => {
         expect(() => parseIntOption('--port', value, 0, 65535)).toThrow('--port must be an integer between 0 and 65535');
     });
 
-    it('rejects a non-positive --project-id', () => {
-        expect(() => parseIntOption('--project-id', 'abc', 1)).toThrow('--project-id must be an integer >= 1');
+    it.each(['abc', ''])('rejects a non-integer --project-id %j', (value) => {
+        expect(() => parseIntOption('--project-id', value, 1)).toThrow('--project-id must be an integer >= 1');
     });
 });

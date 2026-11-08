@@ -1544,7 +1544,7 @@ program
   .action(async (cmdOpts) => {
     const { bindCurrentProject } = await import('./local-agent.js');
     await bindCurrentProject({
-      projectId: cmdOpts.projectId ? parseIntOption('--project-id', String(cmdOpts.projectId), 1) : undefined,
+      projectId: cmdOpts.projectId !== undefined ? parseIntOption('--project-id', String(cmdOpts.projectId), 1) : undefined,
       skip: !!cmdOpts.skip,
     });
   });
