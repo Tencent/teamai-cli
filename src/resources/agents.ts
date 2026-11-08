@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import matter from 'gray-matter';
 import { z } from 'zod';
+import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
@@ -1783,7 +1784,10 @@ export async function listTeamAgentDirs(teamAgentsDir: string): Promise<TeamAgen
   const dirs: TeamAgentDir[] = [{ dir: teamAgentsDir }];
 
   for (const namespace of await listDirs(teamAgentsDir)) {
-    if (isSafeNamespaceSegment(namespace)) dirs.push({ dir: path.join(teamAgentsDir, namespace), namespace });
+    const dir = path.join(teamAgentsDir, namespace);
+
+    // An agent folder this release cannot read is left out whole (#1791).
+    if (isSafeNamespaceSegment(namespace) && !await holdsMarker(dir, unreadMarker('agents'))) dirs.push({ dir, namespace });
   }
 
   return dirs;

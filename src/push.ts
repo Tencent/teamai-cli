@@ -23,7 +23,9 @@ import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-na
 import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
-import { getDataHome, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
+import { getDataHome, isSelfMode, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
+import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage } from './folder-markers.js';
+import { warnOnce } from './utils/warn-once.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
@@ -2014,9 +2016,24 @@ async function pushCore(
   const skippedForWantOfDestination = (item: ResourceItem): boolean => item.type === 'agents'
     && 'needsDestination' in item && item.needsDestination === true;
 
+  // Nothing in a folder this release cannot read goes out as a resource
+  // (#1791), whichever scan found it: the team's folder stays as it is.
+  const skippedFolders = [
+    ...await findSkippedFolders(localConfig.repo.localPath),
+    ...isSelfMode(localConfig) && localConfig.projectRoot ? await findSkippedFolders(path.join(localConfig.projectRoot, '.teamai')) : [],
+  ];
+
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
   const listed = fullScan.filter((item: PushItem) => {
+    const skippedFolder = skippedFolders.find((folder) => isInSkippedFolder(item.relativePath, [folder]));
+
+    if (skippedFolder) {
+      warnOnce(skippedFolderMessage(skippedFolder));
+
+      return false;
+    }
+
     if (item.skipReason) {
       log.warn(`[${item.type}] Skipped ${item.name}: ${item.skipReason}`);
 

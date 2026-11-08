@@ -1,3 +1,4 @@
+import { findSkippedFolders, reportSkippedFolders } from './folder-markers.js';
 import { hookToolPathsForConfig, parseUserStats } from './types.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -1919,6 +1920,13 @@ async function pullForScope(
 
     return;
   }
+
+  // Every scan below leaves out a folder of a type this release cannot read
+  // (#1791). Said here, before the revision fast path, so every pull says it.
+  const skippedFolders = await findSkippedFolders(localConfig.repo.localPath);
+  reportSkippedFolders(skippedFolders);
+
+  if (skippedFolders.length > 0) reported.add('skipped-folders');
 
   // Resolve role-scoped instruction sources before the revision fast path so
   // CLI upgrades can refresh managed instruction blocks without a repo change.

@@ -6,6 +6,7 @@ import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, typ
 import { isPlaceableType, namespaceOfPlacedPath } from '../push-namespaces.js';
 import { ensureDir, fileContentEqual, pathExists } from '../utils/fs.js';
 import { hashObject } from '../utils/git.js';
+import { isInSkippedFolder, skippedFoldersIn } from '../folder-markers.js';
 
 export async function listRepoFilesRecursive(dir: string, baseDir = dir): Promise<string[]> {
   try {
@@ -100,9 +101,12 @@ export async function scanRepoResourceForPush(
     // it as brand new and collides with the placed copy it cannot see.
     const placements = (await loadStateForScope(localConfig)).placements ?? {};
     const files = await listRepoFilesRecursive(activeRoot);
+    const skipped = await skippedFoldersIn(path.join(localConfig.projectRoot, '.teamai'), dir);
 
     for (const rel of files) {
       if (fileFilter && !fileFilter(rel)) continue;
+
+      if (isInSkippedFolder(`${dir}/${rel}`, skipped)) continue;
       const activeFile = path.join(activeRoot, ...rel.split('/'));
       const baseFile = path.join(baselineRoot, ...rel.split('/'));
       const relativePath = `${dir}/${rel}`;
@@ -158,11 +162,14 @@ export async function scanRepoResourceForPush(
   }
 
   const allFiles = await listRepoFilesRecursive(targetDir);
+  const skipped = await skippedFoldersIn(repoPath, dir);
   const items: ResourceItem[] = [];
 
   for (const rel of allFiles) {
     if (fileFilter && !fileFilter(rel)) continue;
     const relativePath = `${dir}/${rel}`;
+
+    if (isInSkippedFolder(relativePath, skipped)) continue;
 
     if (changedFiles && !changedFiles.has(relativePath)) continue;
     const sourcePath = path.join(targetDir, ...rel.split('/'));
@@ -264,9 +271,12 @@ export class RepoResourceHandler extends ResourceHandler {
 
       if (!await pathExists(dirPath)) continue;
       const files = await listRepoFilesRecursive(dirPath);
+      const skipped = await skippedFoldersIn(localConfig.repo.localPath, dir);
 
       for (const file of files) {
         if (this.fileFilter && !this.fileFilter(file)) continue;
+
+        if (isInSkippedFolder(`${dir}/${file}`, skipped)) continue;
 
         if (claimed.has(file)) continue;
         claimed.add(file);

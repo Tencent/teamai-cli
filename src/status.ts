@@ -7,6 +7,7 @@ import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
+import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage } from './folder-markers.js';
 import { getAllHandlers, getHandler } from './resources/index.js';
 import { listDirs, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
 import { SkillsHandler } from './resources/skills.js';
@@ -116,7 +117,11 @@ export async function status(options: GlobalOptions): Promise<void> {
   // Match `list skills --source repo`: count skills, not namespace directories.
   counts.skills = (await new SkillsHandler().scanTeamForPull(teamConfig, localConfig)).length;
 
-  const rulesFiles = (await listFilesRecursive(path.join(repoPath, 'rules'))).filter(f => f.endsWith('.md'));
+  const skippedFolders = await findSkippedFolders(repoPath);
+
+  const rulesFiles = (await listFilesRecursive(path.join(repoPath, 'rules')))
+    .filter(f => f.endsWith('.md') && !isInSkippedFolder(`rules/${f}`, skippedFolders));
+
   counts.rules = rulesFiles.length;
 
   counts.docs = await new DocsHandler().countDocFiles(path.join(repoPath, 'docs'));
@@ -165,6 +170,14 @@ export async function status(options: GlobalOptions): Promise<void> {
 
   const scorers = await cachedScorerNames(localConfig);
   console.log(`  scorers: ${scorers.length}${scorers.length > 0 ? ` (${scorers.join(', ')})` : ''}`);
+
+  // Left out of every count above and of what pull delivers (#1791).
+  if (skippedFolders.length > 0) {
+    console.log('');
+    log.info('Skipped folders:');
+
+    for (const folder of skippedFolders) console.log(`  ${skippedFolderMessage(folder)}`);
+  }
 
   // Local pushable items
   console.log('');

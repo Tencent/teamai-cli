@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { holdsMarker, unreadMarker } from '../folder-markers.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
@@ -273,6 +274,10 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       if (!isSafeNamespaceSegment(entry.name)) continue;
       const ns = entry.name;
       const nsDir = path.join(dir, ns);
+
+      // A workflow folder this release cannot read is left out whole (#1791):
+      // its marker would otherwise be a workflow named WORKFLOW in a namespace.
+      if (await holdsMarker(nsDir, unreadMarker('workflows'))) continue;
 
       for (const name of await workflowFileNames(nsDir)) {
         rawCandidates.push({

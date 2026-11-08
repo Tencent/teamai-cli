@@ -24,6 +24,7 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
+import { holdsMarker, unreadMarker } from './folder-markers.js';
 import { describeOverride, repeatedNames, resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
 import { activeRoleIds, findRole, loadRolesManifestIfPresent } from './roles.js';
@@ -109,16 +110,27 @@ export interface EntryFile {
  * each `<type>/<ns>/` file in name order. Absent files are left out.
  */
 export async function listEntryFiles(repoPath: string, where: EntryType | EntryLayout): Promise<EntryFile[]> {
-  const namespaces = (await listDirs(path.join(repoPath, asLayout(where).dir))).sort();
+  const typeDir = path.join(repoPath, asLayout(where).dir);
+  const namespaces = (await listDirs(typeDir)).sort();
   const files: EntryFile[] = [];
 
   for (const namespace of [null, ...namespaces]) {
+    if (namespace !== null && await holdsFolderMarker(typeDir, namespace)) continue;
     const absolutePath = entryFileAbsolutePath(repoPath, where, namespace);
 
     if (await pathExists(absolutePath)) files.push({ namespace, relativePath: entryFilePath(where, namespace), absolutePath });
   }
 
   return files;
+}
+
+/**
+ * Whether `<typeDir>/<dir>` is a folder of its type this release cannot read
+ * (#1791). Such a directory is not a namespace: on a file system that ignores
+ * case, its `MCP.yaml` would read as `mcp.yaml`.
+ */
+async function holdsFolderMarker(typeDir: string, dir: string): Promise<boolean> {
+  return holdsMarker(path.join(typeDir, dir), unreadMarker(path.basename(typeDir)));
 }
 
 /** One parsed file, or why it cannot be used; the reason names the file. */
@@ -341,6 +353,8 @@ export async function resolveEntries<E>(
 
   for (const namespace of places) {
     const dir = namespace === null ? null : namespaceDir(dirs, namespace);
+
+    if (dir !== null && await holdsFolderMarker(path.join(repoPath, layout.dir), dir)) continue;
     const source = entryFilePath(layout, dir);
     const read = await reader.read(entryFileAbsolutePath(repoPath, layout, dir), source);
 
