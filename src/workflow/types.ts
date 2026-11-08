@@ -30,7 +30,7 @@ export type OutputSchema =
   /** Any JSON value, which no expression reads into; a workflow's `outputs` may pass it whole. Step outputs only. */
   | { type: 'json' }
   /**
-   * A workflow bundle, `{ definition, workflows?, scorers?, teamRevision? }`, admitted when its step reports, which a
+   * A workflow bundle, `{ definition, workflows? }`, admitted when its step reports, which a
    * `from` step runs. Only one field of a step's object output may have it.
    */
   | { type: 'workflow' };
