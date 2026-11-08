@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
+import { acquireLock, releaseLock } from '../update.js';
 
 import {
     loadPendingReview,
@@ -35,6 +36,12 @@ function makeItem(overrides: Partial<PendingReviewItem> = {}): PendingReviewItem
     };
 }
 
+function signal(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    return { promise, resolve };
+}
+
 // ─── Tests ──────────────────────────────────────────────
 
 describe('review-store', () => {
@@ -45,6 +52,7 @@ describe('review-store', () => {
     });
 
     afterEach(async () => {
+        vi.restoreAllMocks();
         await fs.remove(cwd);
     });
 
@@ -189,6 +197,48 @@ describe('review-store', () => {
         expect(removed).toBe(false);
     });
 
+    it.each(['append', 'remove'] as const)('keeps a concurrent %s when a removal has read the queue but not replaced it', async (operation) => {
+        const first = makeItem({ id: 'first' });
+        const second = makeItem({ id: 'second' });
+        await savePendingReview(cwd, [first, second]);
+        const filePath = getPendingReviewPath(cwd);
+        const paused = signal();
+        const resume = signal();
+        const contended = signal();
+        const rename = fs.rename.bind(fs);
+        const readFile = fs.readFile.bind(fs);
+        let held = false;
+
+        vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+            if (String(to) === filePath && !held) {
+                held = true;
+                paused.resolve();
+                await resume.promise;
+            }
+            return rename(from, to);
+        });
+        vi.spyOn(fs, 'readFile').mockImplementation(((...args: Parameters<typeof fs.readFile>) => {
+            if (held && String(args[0]) === `${filePath}.lock`) contended.resolve();
+            return readFile(...args);
+        }) as typeof fs.readFile);
+
+        const removing = removePendingReview(cwd, first.id);
+        await paused.promise;
+        const concurrent = operation === 'append'
+            ? appendPendingReview(cwd, makeItem({ id: 'third' }))
+            : removePendingReview(cwd, second.id);
+        try {
+            // On main the second write finishes while the old snapshot is paused.
+            // With locking it instead reaches the held lock, without touching the queue.
+            await Promise.race([concurrent, contended.promise]);
+        } finally {
+            resume.resolve();
+        }
+        await Promise.all([removing, concurrent]);
+
+        expect((await loadPendingReview(cwd)).map((item) => item.id)).toEqual(operation === 'append' ? ['second', 'third'] : []);
+    });
+
     // ── inferRisk ────────────────────────────────────────
 
     it('inferRisk：高风险章节 → high', () => {
@@ -224,27 +274,39 @@ describe('review-store', () => {
 
     // ── savePendingReview 原子性 ─────────────────────────
 
-    it('savePendingReview 原子性：rename 失败时不留 .tmp 残留', async () => {
-        const items = [makeItem()];
+    it('keeps the queue, removes the temp and releases the lock when replacement fails', async () => {
+        const item = makeItem();
+        await savePendingReview(cwd, [item]);
         const filePath = getPendingReviewPath(cwd);
-        const tmpPath = `${filePath}.tmp`;
-
-        await fs.ensureDir(path.dirname(filePath));
-
-        // mock fs.rename 抛错
+        const original = await fs.readFile(filePath, 'utf8');
         const renameSpy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('rename failed'));
 
-        await expect(savePendingReview(cwd, items)).rejects.toThrow('rename failed');
-
+        await expect(removePendingReview(cwd, item.id)).rejects.toThrow('rename failed');
         renameSpy.mockRestore();
 
-        // .tmp 文件应该存在（因为 rename 失败前已写入）
-        // 但主文件不应存在（rename 失败）
-        expect(await fs.pathExists(filePath)).toBe(false);
-        expect(await fs.pathExists(tmpPath)).toBe(true);
+        expect(await fs.readFile(filePath, 'utf8')).toBe(original);
+        expect(await fs.readdir(path.dirname(filePath))).toEqual(['pending-review.jsonl']);
+        await appendPendingReview(cwd, makeItem({ id: 'after-failure' }));
+        expect(await removePendingReview(cwd, item.id)).toBe(true);
+        expect((await loadPendingReview(cwd)).map((entry) => entry.id)).toEqual(['after-failure']);
+    });
 
-        // 清理
-        await fs.remove(tmpPath);
+    it('refuses every writer without changing the queue while its lock stays held', async () => {
+        const item = makeItem();
+        await savePendingReview(cwd, [item]);
+        const filePath = getPendingReviewPath(cwd);
+        const original = await fs.readFile(filePath, 'utf8');
+        expect(await acquireLock(`${filePath}.lock`)).toBe(true);
+        try {
+            await Promise.all([
+                expect(appendPendingReview(cwd, makeItem({ id: 'blocked' }))).rejects.toThrow('Another teamai command is changing'),
+                expect(removePendingReview(cwd, item.id)).rejects.toThrow('Another teamai command is changing'),
+                expect(savePendingReview(cwd, [])).rejects.toThrow('Another teamai command is changing'),
+            ]);
+            expect(await fs.readFile(filePath, 'utf8')).toBe(original);
+        } finally {
+            await releaseLock(`${filePath}.lock`);
+        }
     });
 
     describe('loadPendingReview — 文件大小限制', () => {

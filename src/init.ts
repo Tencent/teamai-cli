@@ -1216,6 +1216,7 @@ export function buildSelfModeGitignore(): string {
     'votes/',
     'stats/',
     'pending-review.jsonl',
+    'pending-review.jsonl.*',
     '',
     '# Knowledge (skills/, rules/, docs/, learnings/) is intentionally committed to main.',
     '',
@@ -1298,6 +1299,7 @@ export function migrateSelfModeGitignoreContent(content: string) {
   // The usage lock, rewrite temps and pending events arrived with the usage cap (#788).
   ensure('usage.jsonl.*', 'usage.jsonl');
   ensure('usage.pending-*.jsonl', 'usage.jsonl.*');
+  ensure('pending-review.jsonl.*', 'pending-review.jsonl');
   // config.yaml has been saved atomically, through a temp copy, since #831.
   ensure('config.yaml.*.tmp', 'config.yaml');
   // The hook index moved to the data home (#993); older releases wrote it here.
