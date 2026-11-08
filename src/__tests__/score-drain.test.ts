@@ -15,7 +15,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 }));
 
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
-import type { RunMode } from '../launch-context.js';
+import { ATTEMPT_ENV, type RunMode } from '../launch-context.js';
 import { saveLocalConfig } from '../config.js';
 import { dataHomeKey } from '../dashboard-collector.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
@@ -34,7 +34,7 @@ import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/eng
 import { projectRun } from '../workflow/snapshot.js';
 import { readRun, readRuns } from '../workflow/store.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
-import { workflowResume, workflowStart } from '../workflow-commands.js';
+import { runShortcut, workflowResume, workflowStart } from '../workflow-commands.js';
 
 const SCORER = `---
 labels:
@@ -967,6 +967,21 @@ steps:
     expect(started.lines).not.toContain('ℹ Draining before exit (teamai score --drain)');
   });
 
+  it('does not run at the end of a command\'s run inside a workflow step, even of a workflow that is not private', async () => {
+    const { config } = await team({ 'workflows/mark.yaml': MARK });
+    await syncScorersThenWorkflows(config);
+    vi.stubEnv('CI', 'true');
+    const shortcut = async (): Promise<void> => { await runShortcut({ workflow: 'mark', inputs: {}, command: 'teamai mark', json: true }); };
+
+    const outside = await driveLocally(shortcut);
+    vi.stubEnv(ATTEMPT_ENV, 'r0123456789abcdef/a0123456789');
+    const inside = await driveLocally(shortcut);
+
+    expect(outside.lines).toContain('ℹ Draining before exit (teamai score --drain)');
+    expect(inside.envelope).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(inside.lines).not.toContain('ℹ Draining before exit (teamai score --drain)');
+  });
+
   it('does not run at the end of an attended local run', async () => {
     const { config } = await team({ 'workflows/mark.yaml': MARK });
     await syncScorersThenWorkflows(config);
@@ -1041,11 +1056,31 @@ describe('teamai score of a subject the person names', () => {
     expect(await scored(options)).toEqual({ envelope: { error: { code, message } }, code: 1 });
   });
 
-  it('refuses --driver for a scorer file, which is judged here without a teamai-score run', async () => {
-    await team();
+  it('starts teamai-try-scorer for a scorer file, on the driver --driver names', async () => {
+    const { config } = await team();
+    claudeSession(SESSION, 'Added the retries.');
+    fakeClaude();
+    fs.writeFileSync(path.join(root, 'app', 'draft.md'), SCORER);
 
-    expect(await scored({ scorer: ['./draft.md'], driver: 'none' })).toEqual({ envelope: { error: {
-      code: 'invalid_arguments', message: '--driver picks who drives a teamai-score run, and a scorer file is judged here without one. Leave out --driver.',
+    const started = await scored({ session: SESSION, source: 'claude-code', scorer: ['./draft.md'], driver: 'none' });
+    const runId = z.object({ data: z.object({ run: z.string() }) }).parse(started.envelope).data.run;
+    expect(await readRun(config, runId)).toMatchObject({
+      status: 'running', definition: { name: 'teamai-try-scorer' },
+      inputs: { subject: `session:claude-code:${SESSION}`, files: [path.join(root, 'app', 'draft.md')], batch: false },
+    });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
+
+  it('names, in an agent session, the teamai score of a scorer file the person runs, and /teamai-new-scorer for the agent', async () => {
+    await team();
+    claudeSession(SESSION, 'Added the retries.');
+    fakeClaude();
+    fs.writeFileSync(path.join(root, 'app', 'draft.md'), SCORER);
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'agent-session');
+
+    expect(await scored({ session: SESSION, source: 'claude-code', scorer: ['./draft.md'] })).toEqual({ envelope: { error: {
+      code: 'invoke_denied',
+      message: expect.stringMatching(new RegExp(`\\. The person runs teamai score --session ${SESSION} --source claude-code --scorer \\./draft\\.md in their own terminal, and the agent drafts and tries a scorer with /teamai-new-scorer\\.$`, 'u')),
     } }, code: 1 });
   });
 
@@ -1057,11 +1092,11 @@ describe('teamai score of a subject the person names', () => {
     } }, code: 1 });
   });
 
-  it.each(['quality', 'teamai:routing:review'])('refuses scorer %s beside a scorer file, so the file is only tried and no label is stored here', async (named) => {
+  it.each(['quality', 'teamai:routing:review'])('refuses scorer %s beside a scorer file, so the file is only tried and no label is stored', async (named) => {
     const { config } = await team();
 
     expect(await scored({ scorer: ['./draft.md', named], batch: true })).toEqual({ envelope: { error: {
-      code: 'invalid_arguments', message: `A scorer file is tried here, and --scorer ${named} is judged by a teamai-score run. Score them in separate commands.`,
+      code: 'invalid_arguments', message: `A scorer file is tried by a teamai-try-scorer run, which stores nothing, and --scorer ${named} is judged by a teamai-score run. Score them in separate commands.`,
     } }, code: 1 });
     expect(await LabelStore.local(config)).toEqual([]);
   });

@@ -21,7 +21,7 @@ import { scoringUnavailable } from './home.js';
 import { pinnedDefinition, type PinnedScorer } from './pin.js';
 import { missingEvidence } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
-import { isRoutingScorer } from './skill-routing.js';
+import { GeneratedQuestions } from './generated-questions.js';
 import type { Subject } from './subject.js';
 
 type Refusal = { ok: false; code: string; message: string };
@@ -161,7 +161,7 @@ function definitionsOf(scorers: readonly string[], pins: Readonly<Record<string,
 
 /**
  * The session `demand` names, on this machine or pushed by a member, in the scope its labels are kept in, with each
- * named scorer cached there. A hand label must be one of its scorer's values. Says which session it is and its first
+ * named scorer cached there; a scorer file is read by the run that tries it. A hand label must be one of its scorer's values. Says which session it is and its first
  * prompt, redacted, as the person reads before a label is written.
  */
 async function ofSession(from: LocalConfig, demand: SessionDemand): Promise<({ ok: true } & NamedSubject) | Refusal> {
@@ -175,7 +175,7 @@ async function ofSession(from: LocalConfig, demand: SessionDemand): Promise<({ o
   const unready = await scoringRefusal(config);
 
   if (unready) return unready;
-  const teamScorers = demand.scorers.filter((name) => !isRoutingScorer(name));
+  const teamScorers = demand.scorers.filter((name) => !GeneratedQuestions.isGenerated(name) && !isScorerFile(name));
   const pinned = definitionsOf(teamScorers, await pinScorers(config, teamScorers));
 
   if (!pinned.ok) return notCached(config, pinned.unpinned);

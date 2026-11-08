@@ -8,13 +8,13 @@ import type { LocalConfig } from '../types.js';
 import * as update from '../update.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
-import { leaseNext, parseNextPayload, parseReport, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, reportable, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { expectedOutput, outputMismatch, OutputSchemaSchema } from '../workflow/output.js';
 import { CAN_KEYS, type DriverCan } from '../workflow/requirements.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { cancelRun, retryStep } from '../workflow/run-controls.js';
+import { cancelRun, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
@@ -4299,6 +4299,32 @@ describe('for_each', () => {
     expect(cli).toMatchObject({ data: { lease: { step: 'build[2]', env: { TARGET: 'cli' } }, cancelled: [] } });
   });
 
+  it('for a driver that runs one step at a time, leases only the items of a for_each with max_parallel beside each other', async () => {
+    const capped = FAN_PLAN
+      .replace('for_each: steps.plan.outputs.targets', 'for_each: { items: steps.plan.outputs.targets, max_parallel: 2 }')
+      .replace('  - id: ship\n', '  - id: lint\n    needs: [plan]\n    command: node lint.js\n  - id: ship\n');
+    const { config, runId } = await startTree({ fan: capped }, 'fan');
+    const plan = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+    await reportAttempt(config, runId, { ...plan, outcome: 'success', outputs: { targets: ['web', 'api', 'cli'] }, driver: driverA });
+
+    const web = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+    const api = leaseIn(await leaseNext(config, runId, driverA, { running: [web.attempt], isOneAtATime: true }));
+    const full = await leaseNext(config, runId, driverA, { running: [web.attempt, api.attempt], isOneAtATime: true });
+
+    expect([web.step, api.step]).toEqual(['build[0]', 'build[1]']);
+    expect(full).toEqual({ data: { wait: { reason: 'build[0] is leased' }, cancelled: [] } });
+  });
+
+  it('for a driver that runs one step at a time, leases the items of a for_each with no max_parallel one at a time', async () => {
+    const { config, runId } = await startTree({ fan: FAN_PLAN }, 'fan');
+    const plan = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+    await reportAttempt(config, runId, { ...plan, outcome: 'success', outputs: { targets: ['web', 'api'] }, driver: driverA });
+
+    const web = leaseIn(await leaseNext(config, runId, driverA, { isOneAtATime: true }));
+
+    expect(await leaseNext(config, runId, driverA, { running: [web.attempt], isOneAtATime: true })).toEqual({ data: { wait: { reason: 'build[0] is leased' }, cancelled: [] } });
+  });
+
   it('hands a restarted driver its item leases back with the same ids, attempts and env, one per call', async () => {
     const { config, runId } = await startTree({ fan: FAN_PLAN }, 'fan');
     const plan = leaseIn(await leaseNext(config, runId, driverA));
@@ -5214,6 +5240,104 @@ describe('deadlines', () => {
         { id: 'slow', status: 'failed', failure: { code: 'timeout' }, unenforced },
         { id: 'other', status: 'cancelled', unenforced },
       ] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout of a lease from when its driver last listed it queued', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    command: echo slow
+  - id: other
+    needs: []
+    command: echo other
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      const running = [slow.attempt, other.attempt];
+      vi.setSystemTime(new Date(at(8)));
+      expect(await leaseNext(config, runId, driverA, { running, queued: [slow.attempt] })).toMatchObject({ data: { cancelled: [], deadlines: { [slow.attempt]: at(18) } } });
+      vi.setSystemTime(new Date(at(15)));
+      expect(await leaseNext(config, runId, driverA, { running })).toMatchObject({ data: { cancelled: [] } });
+      expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(8), expiresAt: at(18) } }, { id: 'other' }] });
+      vi.setSystemTime(new Date(at(19)));
+      expect(await leaseNext(config, runId, driverA, { running })).toMatchObject({ data: { cancelled: [slow.attempt] } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout of a lease from a report of its driver that lists it queued', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    command: echo slow
+  - id: other
+    needs: []
+    command: echo other
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      vi.setSystemTime(new Date(at(15)));
+      await reportAttempt(config, runId, { attempt: other.attempt, revision: other.revision, outcome: 'success', driver: driverA, queued: [slow.attempt] });
+      expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(15), expiresAt: at(25) } }, { id: 'other', status: 'succeeded' }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts the timeout of a lease from an answer that lists it queued for its driver', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    command: echo slow
+  - id: gate
+    needs: []
+    approve: Go on?
+    command: echo gate
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA, { can: { hitl: true } }));
+      expect(await leaseNext(config, runId, driverA, { running: [slow.attempt], queued: [slow.attempt], can: { hitl: true } })).toMatchObject({ data: { hitl: { step: 'gate' } } });
+      vi.setSystemTime(new Date(at(15)));
+      const provenance = respondProvenance({ kind: 'terminal', caller: { tty: true, evidence: { kind: 'none' } } });
+      const answered = await respondToHitl(config, runId, await knownSecrets(config), { step: 'gate', choice: 'yes', pass: 1, provenance, queued: { driver: driverA, attempts: [slow.attempt] } });
+      expect(answered).not.toHaveProperty('error');
+      expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'slow', status: 'leased', lease: { leasedAt: at(15), expiresAt: at(25) } }, { id: 'gate' }] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes a report that lists a lease queued as reportable when the report itself takes it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    continue_on_failure: true
+    command: echo slow
+  - id: other
+    needs: []
+    command: echo other
+  - id: stop
+    needs: [slow]
+    if: steps.slow.failure.code == 'timeout'
+    end: stopped
+`, 'ends:\n  stopped: failed\n'));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      vi.setSystemTime(new Date(at(15)));
+      const report: ReportInput = { attempt: other.attempt, revision: other.revision, outcome: 'success', driver: driverA, queued: [slow.attempt] };
+      expect(await reportable(config, runId, report)).toBe(true);
+      expect(await reportAttempt(config, runId, report)).toMatchObject({ data: { accepted: true } });
     } finally {
       vi.useRealTimers();
     }

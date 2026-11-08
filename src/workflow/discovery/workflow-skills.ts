@@ -21,8 +21,8 @@ import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 /**
  * Every runnable `invoke: allow` or `ask` workflow, a cached team file or teamai's default, each with its alias only when
  * the alias starts it. The cache is what `start` resolves from, so no skill names a workflow that cannot start.
- * `teamai-share-learnings`, teamai's or a team copy of it under that name or alias, is left out while `share` is withheld, since its learning
- * step runs `share`.
+ * `teamai-share-learnings`, teamai's or a team copy of it under that name or alias, and any workflow that runs it, is left
+ * out while `share` is withheld, since its learning step runs `share`.
  */
 async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AdvertisedWorkflow[]> {
   const advertised: AdvertisedWorkflow[] = [];
@@ -37,8 +37,10 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
 
     if (!sharing && (name === SessionShare.SHARE_LEARNINGS || alias === SessionShare.SHARE_LEARNINGS)) continue;
 
+    const tree = await loadWorkflowTree(localConfig, cached);
+
     // No skill for a workflow `start` refuses: a workflow it runs is missing, runs in a cycle, or does not take its inputs.
-    if ('failed' in await loadWorkflowTree(localConfig, cached)) continue;
+    if ('failed' in tree || (!sharing && Object.hasOwn(tree.workflows, SessionShare.SHARE_LEARNINGS))) continue;
     const workflow: AdvertisedWorkflow = { name, description, invoke, source, skill: skillName(name, alias) };
 
     if (alias !== undefined) workflow.alias = alias;

@@ -177,7 +177,7 @@ describe('import --from-mr publishes its learning (#823)', () => {
     it('pushes the learning to the team\'s teamai-learnings branch', () => {
       expect(imported.code, imported.output).toBe(0);
       expect(s.published(), imported.output).toHaveLength(1);
-      expect(imported.output).toContain('Push changes via MR [SKIPPED: No teamwiki changes to push]');
+      expect(imported.output).toContain('Push changes via MR skipped: no teamwiki changes to push');
     });
 
     it('leaves nothing unpublished behind on this machine', () => {

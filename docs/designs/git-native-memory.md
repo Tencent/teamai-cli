@@ -50,7 +50,7 @@ write → index → search → vote → rank → better search
          Ranked results → recalled_count++
                               │
               (adoption evidence: agent opens the doc, or
-               opt-in LLM-judge) → upvoted_count++
+               an adoption question judged) → upvoted_count++
 ```
 
 ## Hindsight Mapping
@@ -61,7 +61,7 @@ write → index → search → vote → rank → better search
 | **Recall** (retrieve) | `teamai recall <query>` → local search index (BM25 + Intl.Segmenter) | 🔨 This plan |
 | **Reflect** (learn) | `teamai reflect` → LLM analyzes learnings → meta-insights | ⏳ Deferred |
 | Memory Bank isolation | Per-user directories in git repo | ✅ Existing |
-| Ranking/relevance | Recall bumps `recalled_count`; adoption evidence (agent opened the doc, or the opt-in LLM-judge) bumps `upvoted_count` → votes/<user>.yaml → aggregate at pull (#723) | 🔨 This plan |
+| Ranking/relevance | Recall bumps `recalled_count`; adoption evidence (agent opened the doc, or an adoption question a judge answered, #1391) bumps `upvoted_count` → votes/<user>.yaml → aggregate at pull (#723) | 🔨 This plan |
 
 ## Key Design Decisions
 
@@ -70,7 +70,7 @@ write → index → search → vote → rank → better search
 | 1 | Storage backend | Git repo (no PostgreSQL/vector DB) | Zero external dependencies, matches teamai philosophy |
 | 2 | Search method | Keyword matching + Intl.Segmenter | Handles CJK text, no embedding cost, sufficient for V1 |
 | 3 | Index location | Local-only search-index.json | Rebuilt at pull time, no sync conflicts |
-| 4 | Vote mechanism | Per-user YAML; recall bumps `recalled_count`, adoption evidence (tool-use / opt-in LLM-judge) bumps `upvoted_count` (#723) | Idempotent, zero Git conflict, knowledge self-curates |
+| 4 | Vote mechanism | Per-user YAML; recall bumps `recalled_count`, adoption evidence (tool-use / adoption question, #1391) bumps `upvoted_count` (#723) | Idempotent, zero Git conflict, knowledge self-curates |
 | 5 | Frontmatter | Required in SKILL.md template | Structured metadata improves search precision |
 | 6 | AI integration | Rule injection → AI calls recall via Bash | Works across all AI tools, no tool-specific integration |
 
@@ -98,7 +98,7 @@ write → index → search → vote → rank → better search
 | # | Proposal | Effort | Decision | Reasoning |
 |---|----------|--------|----------|-----------|
 | 1 | Auto-Recall on SessionStart | M | SUPERSEDED | Replaced by the `teamai-recall` subagent plus builtin-rules active retrieval |
-| 2 | Voting: recalled_count + adoption upvote | S | **ACCEPTED** | Recall increments `recalled_count`; adoption evidence (tool use, optional LLM judge) increments `upvoted_count` (#723). Conflict-free, and the key feedback step of the flywheel |
+| 2 | Voting: recalled_count + adoption upvote | S | **ACCEPTED** | Recall increments `recalled_count`; adoption evidence (tool use, adoption question) increments `upvoted_count` (#723). Conflict-free, and the key feedback step of the flywheel |
 | 3 | Frontmatter standardization | S | **ACCEPTED** | Better search quality, backward compatible |
 | 4 | Reflect layer | L | DEFERRED | The knowledge base is still cold-starting; not enough data |
 

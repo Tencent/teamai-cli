@@ -1652,7 +1652,9 @@ export async function materializeRef(repoPath: string, ref: string, destDir: str
 
   for (const root of READ_ROOTS) {
     for (const entry of await listTreeAtRev(repoPath, ref, root)) {
-      const content = await getFileContentAtRev(repoPath, ref, entry.path);
+      // `./`: ls-tree lists paths relative to the directory git runs in, which
+      // in single-repo mode is `.teamai/` inside the business repo, not its root.
+      const content = await getFileContentAtRev(repoPath, ref, `./${entry.path}`);
 
       if (content === null) continue;
       const dest = path.join(destDir, ...entry.path.split('/'));

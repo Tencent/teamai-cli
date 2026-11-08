@@ -3,7 +3,8 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
+import { DRAFT_SUFFIX, listDirs, listFiles, pathExists, readFileSafe, writeFile } from '../utils/fs.js';
+import { parseJson } from '../utils/json.js';
 import { listLearningFiles } from '../utils/learnings-roots.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
 import { tokenize } from '../utils/tokenizer.js';
@@ -223,7 +224,7 @@ export interface RelatedAdoptedLearningsOptions {
 }
 
 export async function findRelatedAdoptedLearnings(
-  staleEntry: StaleEntry,
+  staleEntry: Pick<StaleEntry, 'docId' | 'path'>,
   votesDir: string,
   learningsDirs: readonly string[],
   options?: RelatedAdoptedLearningsOptions,
@@ -336,7 +337,7 @@ const TopicSchema = z.looseObject({
  * body of every entry in a repository shares that repository's vocabulary, which
  * would make everything look related to everything.
  */
-async function entryTopicTokens(staleEntry: StaleEntry): Promise<Set<string>> {
+async function entryTopicTokens(staleEntry: Pick<StaleEntry, 'docId' | 'path'>): Promise<Set<string>> {
   const tokens = nameTokensOf(staleEntry.docId);
   const content = await readFileSafe(staleEntry.path);
 
@@ -365,51 +366,82 @@ function overlapCount(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
   return shared;
 }
 
-/**
- * Generate an AI-powered update draft for a stale entry, incorporating
- * insights from learnings that users actually adopted.
- */
-export async function generateUpdateDraft(
-  staleEntry: StaleEntry,
-  relatedLearnings: string[],
-): Promise<string | null> {
-  const currentContent = await readFileSafe(staleEntry.path);
-
-  if (!currentContent) return null;
-
-  const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
-
-  const learningContext = relatedLearnings.length > 0
-    ? `\n\nThe following learnings were actually adopted by team members (these represent what the team found more useful):\n\n${relatedLearnings.map((l, i) => `--- Learning ${i + 1} ---\n${l}`).join('\n\n')}`
-    : '';
-
-  const prompt = `You are a technical writer updating a team knowledge base entry.
-
-The following ${staleEntry.type} entry has been recalled ${staleEntry.recalledCount} times by ${staleEntry.userCount} team members but was adopted only ${staleEntry.upvotedCount} time(s). This indicates the content is relevant to common queries but not actionable enough to be directly useful.
-
-Current content:
----
-${currentContent}
----
-${learningContext}
-
-Please rewrite this entry to be more actionable and directly useful. Keep the same topic but:
-1. Add concrete examples or commands where applicable
-2. Remove outdated or vague information
-3. Incorporate relevant insights from the adopted learnings above
-4. Keep the same YAML frontmatter format (update the date field to today)
-5. Be concise — aim for the same or shorter length
-
-Output ONLY the updated markdown file content (including frontmatter).`;
-
-  try {
-    const draft = (await callTool(prompt, { launchedBy: 'quality-update' })).text;
-
-    return draft.trim();
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.error(`AI update generation failed: ${e instanceof Error ? e.message : String(e)}`);
-
-    return null;
-  }
+/** A stale entry, as a step of a teamai-draft-learning-updates run passes it to the next. */
+export interface DraftEntry {
+  doc_id: string;
+  path: string;
+  type: string;
+  recalled_count: number;
+  upvoted_count: number;
+  user_count: number;
 }
+
+/**
+ * The `stale` step: lists the entries recalled often but rarely adopted, as `--dry-run` does, and says that their
+ * drafts come next when there are any.
+ */
+async function stale(votesDir: string, repoPath: string): Promise<{ entries: DraftEntry[] }> {
+  const entries = await findStaleEntries(votesDir, { docs: `${repoPath}/docs`, rules: `${repoPath}/rules`, skills: `${repoPath}/skills` });
+  reportStaleEntries(entries);
+
+  if (entries.length > 0) log.info('\nGenerating AI-powered update drafts...');
+
+  return {
+    entries: entries.map((entry) => ({
+      doc_id: entry.docId, path: entry.path, type: entry.type, recalled_count: entry.recalledCount, upvoted_count: entry.upvotedCount, user_count: entry.userCount,
+    })),
+  };
+}
+
+/**
+ * The `context` step: the entry's content, and the learnings members adopted instead, as the part of the prompt that
+ * shows them, or '' when there are none.
+ */
+async function context(entry: { path: string; docId: string }, votesDir: string, learningsDirs: readonly string[], namespaces: readonly string[] | undefined): Promise<{ content: string; related: string }> {
+  const content = await readFileSafe(entry.path);
+
+  if (!content) throw new Error(`${entry.path} is empty or cannot be read, so there is nothing to draft an update of.`);
+  const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsDirs, { namespaces });
+
+  return {
+    content,
+    related: related.length > 0
+      ? `\n\nThe following learnings were actually adopted by team members (these represent what the team found more useful):\n\n${related.map((l, i) => `--- Learning ${i + 1} ---\n${l}`).join('\n\n')}`
+      : '',
+  };
+}
+
+/** The `write` step: writes `draft` beside the entry at `entryPath`, as `<entry>.draft.md`. */
+async function writeDraft(entryPath: string, draft: string): Promise<{ draft: string }> {
+  const draftPath = `${entryPath}${DRAFT_SUFFIX}`;
+  await writeFile(draftPath, draft);
+  log.success(`  Draft written: ${draftPath}`);
+
+  return { draft: draftPath };
+}
+
+const DraftResultsSchema = z.array(z.object({ item: z.object({ path: z.string() }), outcome: z.string() }));
+
+/** How each entry of the `draft` step went, as its results say. */
+type DraftResult = z.infer<typeof DraftResultsSchema>[number];
+
+/** The results of the `draft` step, as the `report` step is given them in JSON. */
+function parseResults(json: string): DraftResult[] {
+  return DraftResultsSchema.parse(parseJson(json));
+}
+
+/**
+ * The `report` step: what the shortcut prints, each entry it could not draft and what to do with the drafts, and exit
+ * code 1 when an entry could not be drafted.
+ */
+function report(items: readonly DraftResult[]) {
+  const failed = items.filter(({ outcome }) => outcome !== 'success');
+  const lines = failed.map(({ item }) => `Could not draft ${item.path}.`);
+
+  if (failed.length < items.length) lines.push('Review drafts, then rename .draft.md -> .md to apply updates.');
+
+  return { text: lines.join('\n'), exit_code: failed.length > 0 ? 1 : 0 };
+}
+
+/** The steps of teamai's default teamai-draft-learning-updates workflow, each a `recall maintenance` verb. */
+export const DraftLearningUpdates = { stale, context, writeDraft, parseResults, report } as const;

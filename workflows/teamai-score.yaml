@@ -15,6 +15,14 @@ inputs:
   batch: boolean
   # named: someone asked for this subject, so no sampling, a failed or expired mark reopens, and daily_limit counts it but never refuses it
   demand: auto | named
+  # Scorer files to label with in place of scorers, as teamai pull reads them; [] for none. Only with store false.
+  files: [string]
+  # false: the labels are only tried: no mark opens, and no label, vote or outbox entry is written.
+  store: boolean
+  # true: judge a session's first prompt alone, the control a tried rubric is compared with.
+  control: boolean
+defaults:
+  inputs: { files: [], store: true, control: false }
 steps:
   - id: plan
     command: teamai score plan --subject "$SUBJECT" --scorers "$SCORERS" --batch="$BATCH" --demand "$DEMAND"
@@ -28,7 +36,8 @@ steps:
     continue_on_failure: true
     workflow:
       # written: the version of each label write stored; null when it did not succeed, so the labels were not stored.
-      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels }
+      # evidence: the directory that holds the group's labels.json, with the reasoning, while the run's directory lasts.
+      outputs: { labels: steps.label.outputs.labels, written: steps.write.outputs.labels, evidence: steps.evidence.outputs.dir }
       steps:
         - id: evidence
           command: teamai score evidence --subject "$SUBJECT" --scorers "$GROUP"
@@ -84,8 +93,10 @@ steps:
           env: { DIR: "{{ steps.evidence.outputs.dir }}" }
           output: { written: number, labels: [string] }   # labels: the version of each label written, which teamai score answers with
         # Publishes this member's pending labels to teamai-reports. Offline, or with an http team repo, they stay pending.
+        # A run that only tries labels publishes nothing.
         - id: publish
           needs: [write]
+          if: inputs.store
           workspace: { team: { branch: teamai-reports } }
           command: teamai score publish
           deliver: publish

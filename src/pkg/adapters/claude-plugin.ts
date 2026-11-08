@@ -271,12 +271,10 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
 
       if (installed && !replace) continue;
 
-      const args = [
+      const result = await this.execute('claude', [
         'plugin', 'marketplace', 'add', marketplaceSource(marketplace),
         '--scope', context.scope,
-      ];
-
-      const result = await this.execute('claude', args, {
+      ], {
         cwd: context.cwd,
         timeoutMs: 120_000,
         stream: true,
@@ -291,13 +289,11 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
     }
 
     for (const plugin of declaration.plugins) {
-      const args = [
+      const result = await this.execute('claude', [
         'plugin', 'install', plugin.name,
         '--scope', plugin.scope ?? context.scope,
         '--yes',
-      ];
-
-      const result = await this.execute('claude', args, {
+      ], {
         cwd: context.cwd,
         timeoutMs: 120_000,
         stream: true,

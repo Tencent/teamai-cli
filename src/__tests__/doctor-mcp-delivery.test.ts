@@ -116,6 +116,16 @@ describe('doctor — MCP servers delivered on disk', () => {
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain("not the team's definition: docs");
     expect(check.fix).toContain('--force');
+    // A member who runs their own server of that name on purpose keeps it and
+    // goes green by excluding the team's (#1746); the hint has to say so.
+    expect(check.fix).toContain('teamai skill exclude add docs');
+  });
+
+  it('goes silent once the member excludes the team server they hold their own name for (#1746)', async () => {
+    await writeClaudeConfig({ docs: { type: 'stdio', command: 'my-own-docs-server' } });
+    localConfig.excludedSkills = ['docs'];
+
+    expect((await checks()).map((c) => c.name)).not.toContain('MCP servers delivered to claude');
   });
 
   it('fails when the installed entry is a stale copy of the team definition', async () => {

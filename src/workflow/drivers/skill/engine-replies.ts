@@ -59,6 +59,8 @@ export function readLease(raw: unknown): ReadLease | undefined {
 const NextDataSchema = z.object({
   /** The attempts this driver listed as running that the engine no longer leases to it. */
   cancelled: z.array(AttemptIdSchema).optional(),
+  /** The deadline of each attempt this driver listed as queued, counted from this call. */
+  deadlines: z.record(z.string(), z.string()).optional(),
   lease: z.unknown().optional(),
   hitl: z.object({
     step: z.string(), pass: z.number().int(), kind: z.enum(['approve', 'choose']), message: z.string(), options: z.array(z.string()), default: z.string().optional(), required: z.boolean(),
@@ -73,18 +75,25 @@ const NextDataSchema = z.object({
 interface NextAnswer {
   reply: EngineReply;
   cancelled: AttemptId[];
+  deadlines: Array<{ attempt: AttemptId; deadline: string }>;
 }
 
 /** The engine's answer to `next`, and the attempts it no longer leases to this driver. */
 export function engineReply(run: RunId, answer: WorkflowEnvelope): NextAnswer {
-  if ('error' in answer) return { reply: { kind: 'error', error: { code: answer.error.code, message: answer.error.message } }, cancelled: [] };
+  if ('error' in answer) return { reply: { kind: 'error', error: { code: answer.error.code, message: answer.error.message } }, cancelled: [], deadlines: [] };
   const data = NextDataSchema.safeParse(answer.data);
 
   if (!data.success) {
-    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} answered next with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } }, cancelled: [] };
+    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} answered next with a reply this teamai cannot read: ${data.error.issues[0]?.message ?? 'invalid'}. Update teamai.` } }, cancelled: [], deadlines: [] };
   }
 
   const { done, lease, hitl, wait, cancelled = [] } = data.data;
+
+  const deadlines = Object.entries(data.data.deadlines ?? {}).flatMap(([key, deadline]) => {
+    const attempt = AttemptIdSchema.safeParse(key);
+
+    return attempt.success ? [{ attempt: attempt.data, deadline }] : [];
+  });
 
   if (done) {
     const reply: EngineReply = { kind: 'done', outcome: done.outcome, prs: done.prs ?? [], out: done.notPublished === undefined || done.notPublished.code === 'not_owner' };
@@ -93,7 +102,7 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): NextAnswer {
 
     if (done.outputs !== undefined) reply.outputs = done.outputs;
 
-    return { reply, cancelled };
+    return { reply, cancelled, deadlines };
   }
 
   if (hitl) {
@@ -103,20 +112,20 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): NextAnswer {
 
     if (chosen !== undefined) gate.default = chosen;
 
-    return { reply: { kind: 'hitl', gate }, cancelled };
+    return { reply: { kind: 'hitl', gate }, cancelled, deadlines };
   }
 
   if (lease === undefined) {
-    return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available', delivering: wait?.delivering ?? [], held: wait?.held ?? [] }, cancelled };
+    return { reply: { kind: 'wait', reason: wait?.reason ?? 'the next step is not available', delivering: wait?.delivering ?? [], held: wait?.held ?? [] }, cancelled, deadlines };
   }
 
   const read = readLease(lease);
 
   if (!read) {
-    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step this teamai cannot read. Update teamai.` } }, cancelled };
+    return { reply: { kind: 'error', error: { code: 'run_unreadable', message: `Run ${run} leased a step this teamai cannot read. Update teamai.` } }, cancelled, deadlines };
   }
 
-  return { reply: { kind: 'lease', lease: read, raw: lease }, cancelled };
+  return { reply: { kind: 'lease', lease: read, raw: lease }, cancelled, deadlines };
 }
 
 const AnsweredDataSchema = z.object({ answered: z.object({ step: z.string(), pass: z.number().int(), choice: z.string(), channel: z.string(), agent: z.boolean() }) });

@@ -188,6 +188,18 @@ steps:
     command: node -e "console.log('TEAMAI_MODE=' + process.env.TEAMAI_MODE)"
 `;
 
+// `ask` answers from its prompt: no workspace of its own, no tool or session to name.
+const SUMMARY = `schemaVersion: v1alpha1
+name: summary
+description: Summarize the change in one line
+invoke: allow
+steps:
+  - id: ask
+    answer: Summarize the change in one line.
+    output: { text: string }
+outputs: { summary: steps.ask.outputs.text }
+`;
+
 type Harness = Awaited<ReturnType<typeof skillHarness>>;
 
 /** Polls `run` until it is done: every event the polls showed. */
@@ -610,6 +622,57 @@ describe('skill driver', () => {
     expect(briefs.read).not.toContain('commits and pushes');
     expect(briefs.change).toContain('{"kind":"output","output":...,"changed":["src/app.ts","src/legacy.ts"]}');
     expect(briefs.change).not.toContain('Do not change files here');
+  });
+
+  it('dispatches an answer step to a child that answers its prompt and changes no file, and its report settles the step with the answer', async () => {
+    const harness = await skillHarness({ summary: SUMMARY });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'summary', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [ask] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+    if (!ask) throw new Error(JSON.stringify(chosen));
+    const brief = fs.readFileSync(ask.brief, 'utf8');
+    expect(ask.step).toBe('ask');
+    expect(brief).toContain('Summarize the change in one line.');
+    expect(brief).toContain('Do not change files here');
+
+    await harness.call({ kind: 'ack', run, attempt: ask.attempt });
+    const file = /Write `([^`]+result\.json)`/.exec(brief)?.[1];
+    if (!file) throw new Error(`${ask.brief} names no result file`);
+    expect(brief).toContain('`{"kind":"output","output":...}`, where `output` is a value that matches this JSON Schema: `{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`');
+    fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: { text: 'Retries a 502 once.' } }));
+    expect(await harness.call({ kind: 'report', run, attempt: ask.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
+
+    expect(await eventsToDone(harness, run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'ask', outcome: 'success' }));
+    expect(await readRun(harness.config, run)).toMatchObject({ status: 'succeeded', steps: [{ id: 'ask', outputs: { text: 'Retries a 502 once.' } }] });
+  });
+
+  it('dispatches an answer step with workspace: new to a child in a worktree of its own, and its report settles the step', async () => {
+    const harness = await skillHarness({ summary: SUMMARY.replace('    output: { text: string }\n', '    output: { text: string }\n    workspace: new\n') });
+    roots.push(harness.root);
+    const started = await harness.call({ kind: 'start', name: 'summary', answers: { confirmed: false }, inputs: undefined });
+    if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
+    const run = RunIdSchema.parse(started.data.turn.run);
+    const chosen = await harness.call({ kind: 'choose', run, choice: 'h1' });
+    if (!('data' in chosen) || !('turn' in chosen.data)) throw new Error(JSON.stringify(chosen));
+    const [ask] = chosen.data.turn.actions.flatMap((action) => (action.kind === 'dispatch' ? [action] : []));
+    if (!ask) throw new Error(JSON.stringify(chosen));
+    const state = await readRun(harness.config, run);
+    if (typeof state === 'string' || state.checkout === undefined) throw new Error(`run ${run} has no checkout`);
+    expect(fs.realpathSync(ask.dir)).not.toBe(fs.realpathSync(state.checkout));
+    expect(fs.readFileSync(ask.brief, 'utf8')).toContain('Do not change files here');
+
+    await harness.call({ kind: 'ack', run, attempt: ask.attempt });
+    const file = /Write `([^`]+result\.json)`/.exec(fs.readFileSync(ask.brief, 'utf8'))?.[1];
+    if (!file) throw new Error(`${ask.brief} names no result file`);
+    fs.writeFileSync(file, JSON.stringify({ kind: 'output', output: { text: 'Retries a 502 once.' } }));
+    expect(await harness.call({ kind: 'report', run, attempt: ask.attempt, role: 'agent', modelUnavailable: false })).toMatchObject({ data: { runner: { status: 'reported' } } });
+
+    expect(await eventsToDone(harness, run)).toContainEqual(expect.objectContaining({ kind: 'settled', step: 'ask', outcome: 'success' }));
+    expect(await readRun(harness.config, run)).toMatchObject({ status: 'succeeded', steps: [{ id: 'ask', outputs: { text: 'Retries a 502 once.' } }] });
   });
 
   it('on h4, where the agent works each step itself, tells it to go on with the run after its report', async () => {

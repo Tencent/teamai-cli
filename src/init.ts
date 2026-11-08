@@ -1216,6 +1216,7 @@ export function buildSelfModeGitignore(): string {
     'votes/',
     'stats/',
     'pending-review.jsonl',
+    'pending-review.jsonl.*',
     '',
     '# Knowledge (skills/, rules/, docs/, learnings/) is intentionally committed to main.',
     '',
@@ -1298,6 +1299,7 @@ export function migrateSelfModeGitignoreContent(content: string) {
   // The usage lock, rewrite temps and pending events arrived with the usage cap (#788).
   ensure('usage.jsonl.*', 'usage.jsonl');
   ensure('usage.pending-*.jsonl', 'usage.jsonl.*');
+  ensure('pending-review.jsonl.*', 'pending-review.jsonl');
   // config.yaml has been saved atomically, through a temp copy, since #831.
   ensure('config.yaml.*.tmp', 'config.yaml');
   // The hook index moved to the data home (#993); older releases wrote it here.
@@ -2726,7 +2728,7 @@ export async function init(options: GlobalOptions & {
               if (forcedProvider) mrLocalConfig.provider = forcedProvider;
 
               if (mrTeamConfig) {
-                const prUrl = await withTimeout(
+                const mrPush = await withTimeout(
                   autoPushViaMR(
                     localPath,
                     `[teamai] Configure reviewers: ${reviewers.join(', ')}`,
@@ -2739,8 +2741,8 @@ export async function init(options: GlobalOptions & {
                   'Reviewer config push',
                 );
 
-                if (prUrl) {
-                  log.success(`Reviewer config pushed via MR: ${prUrl}`);
+                if (mrPush.pushed && mrPush.prUrl) {
+                  log.success(`Reviewer config pushed via MR: ${mrPush.prUrl}`);
                 } else {
                   log.warn('Reviewer config MR could not be created (you can push manually later)');
                 }

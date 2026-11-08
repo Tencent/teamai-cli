@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import fse from 'fs-extra';
 import { ResourceHandler } from './base.js';
 import { installScopeName, isSelfMode, resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
-import { expandHome, listDirs, pruneEmptyDirs } from '../utils/fs.js';
+import { expandHome, isDraft, listDirs, pruneEmptyDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { caseFoldKey } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
@@ -142,6 +142,11 @@ async function editDocsSearchWhitelist(
   }
 
   return { change, teamaiOnly };
+}
+
+/** Whether pull delivers a team docs entry of this name: a hidden entry or a draft is never one. */
+function isDeliveredDocName(name: string): boolean {
+  return !name.startsWith('.') && !isDraft(name);
 }
 
 /** Only absence means an empty bundle; permission and I/O errors must stop pruning. */
@@ -306,7 +311,7 @@ export async function removeTeamDocs(dir: string, repoPath: string): Promise<str
  * is kept and named (`isPrunableDoc`).
  */
 async function pruneDocs(source: string | undefined, destination: string, repoPath: string, scope: string, rel = ''): Promise<void> {
-  const sourceEntries = new Map((source ? await readEntries(source) : []).map(e => [e.name, e]));
+  const sourceEntries = new Map((source ? await readEntries(source) : []).filter(e => isDeliveredDocName(e.name)).map(e => [e.name, e]));
 
   for (const entry of await readEntries(destination)) {
     if (entry.name.startsWith('.')) continue;
@@ -443,7 +448,7 @@ async function findDocConflicts(
   const localEntries = new Map((await readEntries(destination)).map(entry => [entry.name, entry]));
 
   for (const entry of await readEntries(source)) {
-    if (entry.name.startsWith('.') || withheld.has(entry.name)) continue;
+    if (!isDeliveredDocName(entry.name) || withheld.has(entry.name)) continue;
     const entryRel = rel ? `${rel}/${entry.name}` : entry.name;
 
     // The member's entry stays where it is (#993): nothing replaces it.
@@ -478,7 +483,7 @@ async function copyDocs(
   const conflicts = await findDocConflicts(source, destination, withheld, kept);
   const staging = conflicts.length ? await fse.mkdtemp(path.join(destination, '.teamai-docs-')) : undefined;
   const moved: Array<{ target: string; backup: string }> = [];
-  const visible = (src: string) => !path.basename(src).startsWith('.');
+  const visible = (src: string) => isDeliveredDocName(path.basename(src));
 
   const delivered = (src: string) => {
     const rel = path.relative(source, src).split(path.sep);
@@ -545,7 +550,7 @@ export async function resolveDesiredDocs(repoPath: string, inactiveNamespaces: r
   const files: string[] = [];
   const withheld = new Map<string, string[]>([...withheldDirs].map((dir) => [dir, []]));
 
-  for (const file of await listDocFiles(sourceDir)) {
+  for (const file of (await listDocFiles(sourceDir)).filter((doc) => !isDraft(doc))) {
     const slash = file.indexOf('/');
     const dirFiles = slash === -1 ? undefined : withheld.get(file.slice(0, slash));
 

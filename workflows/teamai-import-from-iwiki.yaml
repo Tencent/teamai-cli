@@ -1,0 +1,87 @@
+schemaVersion: v1alpha1
+name: teamai-import-from-iwiki
+description: Import the pages of an iWiki space, or one page, into the team repo - teamai-import-learnings classifies them and asks about each one - then link them to the teamwiki's code knowledge, commit and push. With dual, also ask the AI tool for the business API, external knowledge and glossary sections of docs/team-codebase/external-knowledge.md. teamai import --from-iwiki starts it.
+invoke: deny
+private: true
+# source: a numeric space id, or a page URL holding /p/<id>; TAI_PAT_TOKEN must be set. dir: the team repo, whose rules/,
+# docs/ and learnings/ take the items by type; with by_type false, the directory every item is written into, and nothing
+# is pushed. all: accept every item without asking. dual: also write the sections into sections_dir, or with
+# require_review queue them in review_dir/.teamai/pending-review.jsonl.
+inputs:
+  source: string
+  dir: string
+  by_type: boolean
+  all: boolean
+  dual: boolean
+  sections_dir: string
+  review_dir: string
+  require_review: boolean
+ends: { unconfigured-tool: failed }
+steps:
+  - id: fetch
+    command: teamai import fetch-iwiki --source "$SOURCE" --dual "$DUAL"
+    env: { SOURCE: "{{ inputs.source }}", DUAL: "{{ inputs.dual }}" }
+    output: { source: string, documents: string, candidates: [{ path: string, file: string }], dual_context: string }
+  - id: learnings
+    needs: [fetch]
+    if: length(steps.fetch.outputs.candidates) > 0
+    workflow: teamai-import-learnings
+    with:
+      candidates: "{{ steps.fetch.outputs.candidates }}"
+      dir: "{{ inputs.dir }}"
+      by_type: "{{ inputs.by_type }}"
+      all: "{{ inputs.all }}"
+  - id: publish
+    needs: [fetch, learnings]
+    if: steps.learnings.outcome == 'success'
+    command: teamai import publish-iwiki --kept "$KEPT" --written "$WRITTEN" --target "$DIR" --by-type "$BY_TYPE" --documents "$DOCUMENTS"
+    env:
+      KEPT: "{{ steps.learnings.outputs.kept }}"
+      WRITTEN: "{{ steps.learnings.outputs.written }}"
+      DIR: "{{ inputs.dir }}"
+      BY_TYPE: "{{ inputs.by_type }}"
+      DOCUMENTS: "{{ steps.fetch.outputs.documents }}"
+    writes: ["{{ inputs.dir }}"]
+  - id: dual
+    needs: [fetch, publish]
+    if: inputs.dual && steps.publish.outcome == 'success'
+    answer: |-
+      你是团队知识整理专家，请从以下 iWiki 文档中抽取三类知识，以 JSON 格式输出。
+
+      ## 文档内容
+
+      {{ steps.fetch.outputs.dual_context }}
+
+      ## 输出要求
+
+      请严格输出以下 JSON 格式，三个字段都是可直接嵌入 Markdown 的内容：
+
+      {
+        "business-api": "<关于内部业务 API/接口规范的 Markdown 摘要，无相关内容则为空字符串>",
+        "external-knowledge": "<关于外部系统/第三方知识源的 Markdown 摘要，无相关内容则为空字符串>",
+        "glossary": "<项目术语表 Markdown（| 术语 | 说明 | 格式），无相关内容则为空字符串>"
+      }
+
+      不要输出 JSON 以外的任何内容。
+    output: { text: string }
+    timeout: 600s
+    # The import is done by now: a tool that could not answer leaves the sections as they were, which sections says.
+    continue_on_failure: true
+  - id: dual-tool
+    needs: [dual]
+    # A tool the member names that cannot run fails the run, rather than leaving the sections as they were.
+    if: steps.dual.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+  - id: sections
+    needs: [fetch, dual]
+    if: steps.dual.outcome == 'success' || (steps.dual.outcome == 'failed' && steps.dual.failure.code != 'tool_unconfigured')
+    command: teamai import write-sections --source "$SOURCE" --reply "$REPLY" --failure "$WHY" --sections-dir "$SECTIONS" --review-dir "$REVIEW" --review "$REQUIRE_REVIEW"
+    env:
+      SOURCE: "{{ steps.fetch.outputs.source }}"
+      REPLY: "{{ steps.dual.outputs.text }}"
+      WHY: "{{ steps.dual.failure.message }}"
+      SECTIONS: "{{ inputs.sections_dir }}"
+      REVIEW: "{{ inputs.review_dir }}"
+      REQUIRE_REVIEW: "{{ inputs.require_review }}"
+    writes: ["{{ inputs.sections_dir }}", "{{ inputs.review_dir }}/.teamai"]
+outputs: { written: steps.learnings.outputs.written }

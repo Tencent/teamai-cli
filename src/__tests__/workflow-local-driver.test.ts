@@ -848,3 +848,26 @@ steps:
     ]);
   });
 });
+
+describe('progress lines on the local driver', () => {
+  it('shows each line a command writes to stderr as it writes it, and answers them, masked, with the run\'s end', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Say what it does.
+steps:
+  - id: say
+    command: printf 'Found 2 entries.\\nUsing ' >&2; sleep 0.1; echo "$DEPLOY_TOKEN" >&2
+    requires: { env: [DEPLOY_TOKEN] }
+`);
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: DEPLOY_TOKEN\n');
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value');
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const shown: string[] = [];
+
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false, progress: (line) => { shown.push(line); } });
+
+    expect(shown).toEqual(['Found 2 entries.', 'Using <REDACTED:DEPLOY_TOKEN>']);
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded', progress: [{ step: 'say', lines: shown }] } } });
+  });
+});

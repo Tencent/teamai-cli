@@ -20,13 +20,17 @@ export type ConfinedLease = z.infer<typeof ConfinedLeaseSchema>;
 /** What names a lease, which a driver reports a lease it cannot otherwise read with. */
 export const LeaseIdSchema = z.object({ attempt: AttemptIdSchema, revision: z.number().int() });
 
-/** A leased step: a command or a prompt, never both. */
+/** A leased step: a command or a prompt, never both. An answer step's lease is a prompt. */
 export const LeaseWireSchema = LeaseIdSchema.extend({
   /** The step path, such as `check.classify` inside a sub-workflow. */
   step: z.string(),
   command: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   prompt: z.string().optional(),
+  /** The prompt is an answer step's: the member's AI tool answers it on its one-shot call launch, in the checkout read-only. */
+  answer: z.literal(true).optional(),
+  /** A command step's paths, relative to the checkout, under which a change it makes is kept rather than failing it `read_only_dirty`. */
+  writes: z.array(z.string()).optional(),
   agent: z.string().optional(),
   /** The tool the prompt step names, which this driver listed in `can.tools`. */
   tool: z.string().optional(),

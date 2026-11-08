@@ -42,9 +42,11 @@ steps:
 
 `"canTakeLease":false` 不发放新租约，但对声明了 `driver.can.hitl` 的驱动仍返回 HITL 请求。返回的是 `done`、一个 `running` 没有列出的未结租约、`hitl` 或 `wait`。没有任何租约和 HITL 请求时，`wait` 的 reason 是 `canTakeLease is false`。驱动没有空位运行新步骤时，可以用它来得知是否已到达结局。这个 `wait` 并不表示没有剩余的步骤可运行，所以驱动有空位后要再次调用 `next`。第 2 步仍可能交还一个驱动没有空位运行的未结租约，所以要为驱动尚未启动的租约维护一个队列。
 
+把这些租约也列在 `queued` 里，例如正在等待被占用的 checkout 的租约。这样每个租约的步骤自身超时从这次调用开始计算，等待不会耗掉它；返回的 `deadlines` 给出每个租约的新截止时间，例如 `"deadlines":{"a0ce8107f":"2026-05-01T10:12:00.000Z"}`。只有列出该 attempt 的调用才会重新开始计时，所以等待期间要持续调用 `next`，并在每次 `report` 和每次 `respond --json` 时带上同样的 `queued`，因为它们也可能让最近没有重新计时的租约超时。
+
 `next` 的每个 `data` 返回都带 `cancelled`。它列出 `running` 中已经不再是本驱动未结租约的 attempt。请停止这些进程。`error` 返回不带 `cancelled`。
 
-`running` 或 `canTakeLease` 格式不对时，返回 `invalid_json`，消息为 `running must be an array of attempt ids` 或 `canTakeLease must be a boolean`。一个驱动持有租约时，其他驱动会收到 `wait`，`reason` 指出那个租约。
+`running`、`queued` 或 `canTakeLease` 格式不对时，返回 `invalid_json`，消息为 `running must be an array of attempt ids`、`queued must be an array of attempt ids` 或 `canTakeLease must be a boolean`。一个驱动持有租约时，其他驱动会收到 `wait`，`reason` 指出那个租约。
 
 `report` 按每次上报自己租约的 revision 检查，而不是按运行最新的 revision。上例中 `next` 在 revision 1 租出了两个租约。`test` 以 `"revision":1` 上报后，运行变为 revision 2。`lint` 以 `"revision":1` 上报仍会被接受，运行变为 revision 3。未结租约以其他 revision 上报时返回 `stale_revision`：
 
@@ -71,6 +73,34 @@ workflows:
 - 收到 Ctrl-C，或 SIGTERM、SIGQUIT、SIGHUP 时，teamai 停止所有命令，等它们退出，然后以该信号退出。
 
 为 1 时，驱动一次运行一个步骤，命令在你的终端里运行，Ctrl-C 会直接到达它。只发给 teamai 的 SIGTERM 或 SIGHUP 会停止命令，等它退出，然后以该信号退出。
+
+未设置 `max_parallel` 时，驱动仍然一次运行一个步骤，只有声明了 `max_parallel` 的 `for_each` 的各项例外：它们并排运行，最多为该数目。这些项运行期间不会启动其他步骤；没有 `max_parallel` 的 `for_each` 一次只运行一项。含有这种 `for_each` 的运行按 `max_parallel` 大于 1 的方式运行：命令没有终端，Ctrl-C 会停止所有命令。answer 项和没有 `workspace` 的命令项共用检出目录，一次只运行一个，即使 fan-out 允许更多并行项目。给 answer 加上 `workspace: new`，各项就能并排运行。
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-modules
+description: Summarize each module, two at a time, then print the summaries.
+inputs:
+  modules: [string]
+steps:
+  - id: summary
+    for_each: { items: inputs.modules, max_parallel: 2 }
+    answer: "Summarize the module {{ item }} in one line."
+    output: { text: string }
+    workspace: new
+  - id: report
+    needs: [summary]
+    command: 'echo "$SUMMARIES" >&2'
+    env: { SUMMARIES: "{{ steps.summary.results }}" }
+```
+
+```text
+$ teamai workflow start summarize-modules --driver local --inputs '{"modules":["api","cli","web"]}'
+ℹ Run rb7a66009e227f202 started. If it stops before it ends, continue it with: teamai workflow resume rb7a66009e227f202
+{"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
+```
+
+每个回答读取自己的 worktree，所以工具同时回答 `api` 和 `cli`，然后回答 `web`；三项都完成后 `report` 才启动。其他驱动本来就会并排运行就绪的步骤，所以这一点只适用于本地驱动。
 
 结局取消一个正在运行的命令时，驱动向它及其启动的进程发送 SIGTERM，5 秒后如果其中任何进程仍在运行，再发送 SIGKILL。正在停止的命令仍占用并行槽位，直到它的所有进程退出。
 
@@ -162,6 +192,34 @@ steps:
 
 驱动拿到的每一项都是普通租约，其 `step` 为 `build[0]`、`build[1]` 等。在 `running` 中列出未结租约的驱动，会在其他项运行时拿到下一项。`max_parallel` 限制同时处于已租出或运行中的项数。达到上限时，`next` 不再租出其他项，直到其中一项完成。
 
+`max_parallel` 也可以是读取一个数字输入的模板，由启动运行的人决定上限。读取其他内容的模板，例如步骤的输出或 `item`，或在 `{{ … }}` 外加了文字的模板，pull 会拒绝。
+
+```yaml
+schemaVersion: v1alpha1
+name: describe-modules
+description: Describe each module, as many at once as the member asks for.
+inputs:
+  modules: [string]
+  concurrency: number
+steps:
+  - id: describe
+    for_each: { items: inputs.modules, max_parallel: "{{ inputs.concurrency }}" }
+    command: 'echo "described $MODULE" >&2'
+    env: { MODULE: "{{ item }}" }
+```
+
+```text
+$ teamai workflow start describe-modules --driver local --inputs '{"modules":["api","cli"],"concurrency":2}'
+ℹ Run r3112e07f9a6d93ad started. If it stops before it ends, continue it with: teamai workflow resume r3112e07f9a6d93ad
+{"data":{"done":{"run":"r3112e07f9a6d93ad","outcome":"succeeded","progress":[{"step":"describe[0]","lines":["described api"]},{"step":"describe[1]","lines":["described cli"]}],"record":"published"},"cancelled":[]}}
+```
+
+传入 `"concurrency":0`，或任何不是从 1 开始的整数的值时，启动会在运行创建前被拒绝：
+
+```text
+{"error":{"code":"invalid_inputs","message":"Step \"describe\" for_each.max_parallel {{ inputs.concurrency }} renders 0, which is not a whole number from 1. Pass a whole number from 1 for the input it reads."}}
+```
+
 某一项失败不会停止其他项。所有项都完成后，该步骤才完成，任一项失败时该步骤失败。`output` 检查每一项的输出。
 
 `steps.<id>.results` 按项的顺序列出每一项的结果。每个条目有 `item`、`outcome`，该项有输出时还有 `outputs`：
@@ -243,6 +301,50 @@ teamai workflow start review-packages --inputs '{"packages":[{"dir":"packages/co
 ```
 
 `review[0]` 使用模型别名 `strong` 运行，`review[1]` 的模型渲染为空，因此使用工具的默认模型。某个评审失败时，`summarize` 仍会基于另一个评审运行，运行成功，`reviews` 中包含每一项。
+
+### 只在部分失败时回退
+
+`steps.<id>.failure` 读取步骤失败的原因：它的 `code` 和 `message`。步骤没有失败时为 `null`。回退步骤读取它，只处理它要处理的失败，其他失败照样失败：
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-or-keep
+description: Summarize the notes, and keep them as written when the tool fails for any reason but a tool the member names that cannot run.
+inputs: { notes: string }
+ends: { unconfigured-tool: failed }
+steps:
+  - id: summary
+    answer: "Summarize these notes in five lines: {{ inputs.notes }}"
+    output: { text: string }
+    timeout: 60s
+    continue_on_failure: true
+  - id: keep
+    needs: [summary]
+    if: steps.summary.outcome == 'failed' && steps.summary.failure.code != 'tool_unconfigured'
+    command: 'echo "Kept the notes as written: $WHY" >&2'
+    env: { WHY: "{{ steps.summary.failure.message }}" }
+  - id: stop
+    needs: [summary]
+    if: steps.summary.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+```
+
+工具超时或出错退出时，`keep` 运行，运行成功。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具无法运行时，`stop` 让运行以 `failed` 结束，成员会看到需要修改的设置。只用 `continue_on_failure` 的话，运行会在什么都没做的情况下成功。`failure` 只读取步骤当前的 pass。租约渲染的模板（如 `model` 或受限目录）和 `writes` 模板不能读取它，就像它们不能读取 `outcome` 一样。
+
+退出码为 65（`EX_DATAERR`）的命令步骤以 `input_rejected` 失败：它拒绝了收到的输入。teamai 不提示重试它，因为同样的输入会以同样的方式失败。其他非零退出码以 `command_failed` 失败，其 message 写明退出码，后面接命令 stderr 的开头：
+
+```yaml fragment
+  - id: test
+    command: npm test
+    continue_on_failure: true
+  - id: report
+    needs: [test]
+    if: steps.test.failure.code == 'command_failed'
+    command: 'echo "Tests failed: $WHY" >&2'
+    env: { WHY: "{{ steps.test.failure.message }}" }
+```
+
+`npm test` 以 1 退出并输出 `2 tests failed` 时，`report` 输出 `Tests failed: command exited with status 1: 2 tests failed`。
 
 ## 先到达的结局生效
 
@@ -547,6 +649,54 @@ teamai workflow start nightly-e2e --driver local --timeout 30m
 
 使用 `--driver local` 或 `--driver skill` 时，`--timeout` 把运行限制在它和文件的 `timeout` 中较短的那个。超过后运行以 `timeout` 失败，它的 `finally` 步骤仍会运行。
 
+## 给输入设默认值
+
+```yaml
+schemaVersion: v1alpha1
+name: check-package
+description: Lint a package, and test it unless told not to.
+inputs: { package: string, test: boolean, reporters: [string] }
+defaults:
+  inputs: { test: true, reporters: [] }
+steps:
+  - id: lint
+    command: 'echo "lint $PACKAGE" >&2'
+    env: { PACKAGE: "{{ inputs.package }}" }
+  - id: test
+    needs: [lint]
+    if: inputs.test
+    command: 'echo "test $PACKAGE, reporters $REPORTERS" >&2'
+    env: { PACKAGE: "{{ inputs.package }}", REPORTERS: "{{ inputs.reporters }}" }
+```
+
+```text
+$ teamai workflow start check-package --driver local --inputs '{"package":"api"}'
+{"data":{"done":{"run":"rfe89fff7a148ec61","outcome":"succeeded","progress":[{"step":"lint","lines":["lint api"]},{"step":"test","lines":["test api, reporters []"]}]},"cancelled":[]}}
+```
+
+只传 `{"test":false}` 的启动漏了没有默认值的 `package`，因此不会创建运行：
+
+```text
+{"error":{"code":"invalid_inputs","message":"inputs.package is missing"}}
+```
+
+`defaults.inputs` 给出某个输入的值：启动或步骤的 `with` 没有传这个输入时，就用这个值。每个值必须符合该输入声明的类型，且必须是文件声明过的输入，否则 pull 会拒绝该文件。没有默认值的输入仍然必填。运行会记下它用到的值，所以 `steps.<id>.inputs` 和仪表盘会显示默认值。
+
+这样，一个被其他团队运行的工作流可以新增输入而不破坏它们：运行它的步骤保持原来的 `with` 即可。
+
+```yaml
+schemaVersion: v1alpha1
+name: release-web
+description: Check the web package, then publish it.
+steps:
+  - id: check
+    workflow: check-package
+    with: { package: web }          # test: true, reporters: []
+  - id: publish
+    needs: [check]
+    command: npm publish -w web
+```
+
 ## 运行步骤打印的工作流
 
 ```yaml
@@ -574,6 +724,76 @@ steps:
 | `json` | 任意 JSON 值。表达式无法读取其内部；顶层 `outputs` 可以整个传递它。 |
 
 `workflow: { from: <step> }` 运行它 `needs` 的某个步骤的 bundle。该步骤报告时，teamai 像 `workflow start` 检查文件一样检查这个 bundle，固定它，并在运行期间保留它。无法接受的 bundle，例如包含秘密值、`from` 步骤、`prompt_file` 步骤或 `finally` 步骤的 bundle，会让产生它的步骤以 `invalid_output` 失败并给出原因。产生 bundle 的步骤只运行一次，不在任何循环或 `for_each` 中。带 `from` 步骤的运行是[隔离的](#隔离运行)。
+
+## 让成员的 AI 工具给出回答
+
+`answer` 是一个由成员的 AI 工具一次调用就回答的提示词，在检出目录中只读运行，没有会话和 agent。只需要模型给出一段文字或一个判断的步骤用它：
+
+```yaml
+schemaVersion: v1alpha1
+name: classify-learning
+description: Ask which kind of team knowledge a learning is.
+inputs: { learning: string }
+steps:
+  - id: category
+    answer: "Is this learning a skill, a rule or a doc? Give the category and one sentence why. {{ inputs.learning }}"
+    output: { category: skill | rule | doc, reason: string }
+    timeout: 60s
+outputs: { category: steps.category.outputs.category }
+```
+
+```text
+$ teamai workflow start classify-learning --driver local --inputs '{"learning":"Retry 429 responses with backoff."}'
+{"data":{"done":{"run":"r3f9a1c2b","outcome":"succeeded","outputs":{"category":"rule"}},"cancelled":[]}}
+```
+
+- 必须写 `output`。`{ text: string }` 把回答当作文字。其他 output 说明回答中的 JSON，本地驱动会向工具要这个 JSON。
+- 这个步骤不指定工具，由运行它的 driver 回答。skill driver 把它交给会话的子 agent，你自己的 driver 用它自己的模型回答。local driver 启动的工具和 teamai 自己的 AI 调用相同：先看 `TEAMAI_AI_TOOL`，再看项目的 `ai.tool`，再看本机的，最后是 teamai 能启动的第一个已安装工具。pull 拒绝这个步骤上的 `tool`、`agent`、`model` 和 `session`，以及 `new` 以外的 `workspace`。
+- 这次启动标记为 teamai 自己的，成员的 hooks 不会捕获它。
+- 它占用检出目录直到回答结束，因此使用该目录的回答和命令依次运行，包括 `for_each` 的不同项目。修改检出目录会让回答以 `read_only_dirty` 失败。
+- 加上 `workspace: new` 后，它在自己的 worktree 中回答，该 worktree 位于运行开始时的提交，因此 `for_each` 的各项最多按其 `max_parallel` 并排运行。这个 worktree 不含你未提交的改动，也不含 pull 交付给工具的文件。修改它同样会让回答以 `read_only_dirty` 失败。回答成功后 teamai 删除这个 worktree，运行成功后删除它的分支。
+- 在不是 git 仓库的目录中，没有办法检查回答，所以在本地驱动上，那里的回答互不等待，无论有没有 `workspace: new`。
+- 提示词没有默认超时，请给这个步骤设置一个。
+- 没有安装工具时它以 `tool_unavailable` 失败，成员指定的工具无法运行时以 `tool_unconfigured` 失败，调用失败时以 `tool_failed` 失败，回答里没有 JSON 时以 `invalid_output` 失败。
+
+其他驱动把 answer 步骤当作带 `answer: true`、没有独立工作区的提示词租约；带 `workspace: new` 时，租约带有一个只读的 `workspace` 合约，指向它自己的分支。驱动准备租约，在 `cwd` 中回答提示词并报告 outputs；准备过程像其他只读步骤一样占用检出目录或那个 worktree，并记录快照。
+
+## 让命令在检出中写入
+
+没有 `workspace` 的命令以只读方式运行：它在检出中留下的改动会让它以 `read_only_dirty` 失败。`writes` 列出相对于检出的路径，这些路径下的改动会被保留：
+
+```yaml
+schemaVersion: v1alpha1
+name: refresh-api-docs
+description: Regenerate the API reference of one area beside the code.
+inputs: { area: string }
+steps:
+  - id: generate
+    command: npm run docs:api -- --out "docs/api/$AREA"
+    env: { AREA: "{{ inputs.area }}" }
+    writes: ["docs/api/{{ inputs.area }}/"]
+```
+
+命令在 `docs/api/<area>/` 下写的文件留在检出中，步骤成功。它在检出当前分支上新增的提交也会保留，只要这个提交改动的每个路径都在 `writes` 之下，比如命令发布它写的内容时。其他地方的改动仍会让它以 `read_only_dirty` 失败，HEAD 的其他移动也一样：切换分支、分离 HEAD、重置。
+
+命令写入调用方指定的目录（可能在检出之外）时，列出那个输入：
+
+```yaml
+schemaVersion: v1alpha1
+name: render-site
+description: Render the site into the directory the caller names.
+inputs: { out: string }
+steps:
+  - id: render
+    command: npm run site:build -- --out "$OUT"
+    env: { OUT: "{{ inputs.out }}" }
+    writes: ["{{ inputs.out }}"]
+```
+
+`teamai workflow start render-site --inputs '{"out":"/home/alice/site"}'` 渲染出一个绝对路径。它在检出之内时，其下的改动和相对路径一样被保留。它在检出之外时，命令可以随意写入：写在那里的内容不会弄脏检出。
+
+- 只有命令步骤可以写 `writes`。
+- pull 拒绝文件里直接写的绝对路径、离开检出的路径，以及读取 `inputs` 之外内容的模板。模板渲染出离开检出的相对路径或空值时，步骤在运行前以 `invalid_template` 失败。
 
 ## 克隆工作区
 
@@ -745,6 +965,7 @@ steps:
 | --- | --- |
 | 输入 | `inputs.issue`、`inputs.issue.labels` |
 | 步骤的 outcome、结局或输出 | `steps.check.outcome`、`steps.check.end`、`steps.review.outputs.files` |
+| 步骤失败的原因，或 `null` | `steps.summary.failure.code`、`steps.summary.failure.message`。见[只在部分失败时回退](#只在部分失败时回退)。 |
 | 步骤的每个 pass | `steps.review.passes`、`steps.review.passes[0].outputs.verdict`。见[读取每一个 pass](#读取每一个-pass)。 |
 | `for_each` 步骤的 results | `steps.build.results`、`steps.build.results[0].outcome`、`steps.build.branches` |
 | 设置了 `deliver: pr` 的步骤交付的 pull request，或 `null` | `steps.fix.pr`、`steps.fix.pr.url`、`steps.build.results[0].pr.url`。见[交付 PR](workflow.md#交付-pr)。 |
@@ -1074,6 +1295,36 @@ teamai workflow resume <run>
 每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，对这次运行生效：运行会在本安装实例上记住它，`resume --no-auto-approve` 可以关闭它。没有 HITL 的驱动不能通过 JSON next 设置此覆盖。支持 HITL 的驱动忽略 `workflows.auto_approve`：用户为这次运行选择自动批准时，它在 `next` 中发送 `autoApprove: true`，终端中的本地驱动在传入 `--auto-approve` 时也这样做。此时可选 approve 和有 default 的 choose 按 `auto_approve: true` 一列回答；必需 approve 和无 default 的 choose 仍以 `hitl` 返回。本地驱动仅在有人值守的运行（见[有人值守与无人值守的运行](workflow.md#有人值守与无人值守的运行)）中、且 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
 
 `interactive: true` 要求 `prompt` 或 `prompt_file`。步骤会等待支持 HITL 的驱动。没有终端时，`--driver local` 会[把运行交给人](workflow.md#运行需要人参与时)，由人在终端中用 `resume <run> --claim` 继续。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
+
+### 逐条询问
+
+choose 步骤不能带 `for_each`，但 `for_each` 运行的 inline workflow 里可以有 choose，这样每个条目都由人回答一次。每个结果以 `item` 带上条目，以 `outputs.choice` 和 `outputs.note` 带上回答：
+
+```yaml
+schemaVersion: v1alpha1
+name: triage-findings
+description: Ask about each finding of a scan, then file the ones a person kept.
+inputs:
+  findings: [{ id: string, title: string, severity: string }]
+steps:
+  - id: review
+    for_each: "filter(inputs.findings, .severity != 'info')"
+    workflow:
+      outputs: { choice: steps.ask.choice, note: steps.ask.note }
+      steps:
+        - id: ask
+          choose:
+            message: |-
+              {{ item.title }} ({{ item.severity }}, {{ item.id }})
+              file opens an issue; rename opens it with your note as its title; skip leaves it out.
+            options: [file, rename, skip]
+  - id: file
+    needs: [review]
+    command: node scripts/file-findings.js "$REVIEWED"
+    env: { REVIEWED: "{{ steps.review.results }}" }
+```
+
+本地驱动器逐条询问。没有人回答时，运行会像上表中没有默认值的 choose 那样等待或失败。`teamai import --from-tools` 在 `teamai-import-learnings` 中就是这样逐条确认找到的文件。
 
 ## 重试、取消和继续运行
 

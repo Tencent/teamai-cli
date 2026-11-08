@@ -31,17 +31,16 @@ vi.mock('../maintenance/index.js', async (importOriginal) => ({
   findStaleEntries: vi.fn(async () => [{ path: '/team-repo/docs/a.md' }]),
   reportStaleEntries: vi.fn(),
   findRelatedAdoptedLearnings: vi.fn(async () => []),
-  generateUpdateDraft: vi.fn(async () => null),
   findPromotionCandidates: vi.fn(async () => [{ ...candidate, suggestedCategory: 'docs' }]),
-  executePromotion: vi.fn(async (_c: unknown, _r: string, o: { dryRun?: boolean }) =>
-    ({ targetPath: '/team-repo/docs/l.md', marked: o.dryRun ? null : '/learnings/l.md' })),
+  writePromotion: vi.fn(async () => ({ targetPath: '/team-repo/docs/l.md', relativePath: 'docs/l.md' })),
 }));
 vi.mock('../utils/learnings-publish.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/learnings-publish.js')>()),
   publishLearningsMaintenance: vi.fn(async () => ({ status: 'published' })),
 }));
-vi.mock('../maintenance/promotion-publish.js', () => ({
-  promoteAndPublish: vi.fn(async () => undefined),
+vi.mock('../workflow-commands.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workflow-commands.js')>()),
+  runShortcut: vi.fn(async () => undefined),
 }));
 vi.mock('../utils/logger.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/logger.js')>()),
@@ -67,8 +66,8 @@ async function mocks() {
   return {
     ...(await import('../maintenance/index.js')),
     ...(await import('../utils/learnings-publish.js')),
-    ...(await import('../maintenance/promotion-publish.js')),
     ...(await import('../config.js')),
+    ...(await import('../workflow-commands.js')),
   };
 }
 
@@ -86,11 +85,10 @@ describe('recall maintenance and recall promote under --dry-run (#900)', () => {
     const m = await mocks();
     expect(m.autoDetectInit).toHaveBeenCalledWith(undefined, { dryRun: true });
     for (const call of vi.mocked(m.executePrune).mock.calls) expect(call[2]).toMatchObject({ dryRun: true });
-    for (const call of vi.mocked(m.executePromotion).mock.calls) expect(call[2]).toMatchObject({ dryRun: true });
+    for (const call of vi.mocked(m.writePromotion).mock.calls) expect(call[2]).toMatchObject({ dryRun: true });
     for (const call of vi.mocked(m.writeBackConfidence).mock.calls) expect(call[3]).toMatchObject({ dryRun: true });
-    expect(m.generateUpdateDraft).not.toHaveBeenCalled();
+    expect(m.runShortcut).not.toHaveBeenCalled();
     expect(m.publishLearningsMaintenance).not.toHaveBeenCalled();
-    expect(m.promoteAndPublish).not.toHaveBeenCalled();
   });
 
   // The positive control: the same commands without the flag do reach the
@@ -98,10 +96,27 @@ describe('recall maintenance and recall promote under --dry-run (#900)', () => {
   it.each([
     ['recall maintenance --prune', ['recall', 'maintenance', '--prune']],
     ['recall maintenance --confidence-writeback', ['recall', 'maintenance', '--confidence-writeback']],
-    ['recall promote <id>', ['recall', 'promote', 'l']],
   ])('%s still publishes without the flag', async (_label, args) => {
     await run(args);
     const m = await mocks();
-    expect(args[1] === 'promote' ? m.promoteAndPublish : m.publishLearningsMaintenance).toHaveBeenCalledTimes(1);
+    expect(m.publishLearningsMaintenance).toHaveBeenCalledTimes(1);
+  });
+
+  it('recall promote <id> starts its run without the flag', async () => {
+    await run(['recall', 'promote', 'l', '--category', 'docs']);
+    const m = await mocks();
+    expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-promote-learning', inputs: { learning: 'l', category: 'docs' }, command: 'teamai recall promote l', json: false });
+  });
+
+  it.each(['candidate', 'category', 'publish', 'mark'])('recall promote %s starts the run of the learning of that name', async (learning) => {
+    await run(['recall', 'promote', learning]);
+    const m = await mocks();
+    expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-promote-learning', inputs: { learning, category: '' }, command: `teamai recall promote ${learning}`, json: false });
+  });
+
+  it('recall maintenance --update-quality starts its run without the flag, writing under the knowledge checkout', async () => {
+    await run(['recall', 'maintenance', '--update-quality']);
+    const m = await mocks();
+    expect(m.runShortcut).toHaveBeenCalledWith({ workflow: 'teamai-draft-learning-updates', inputs: { knowledge_root: '/team-repo' }, command: 'teamai recall maintenance --update-quality', json: false });
   });
 });

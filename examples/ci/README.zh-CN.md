@@ -32,6 +32,40 @@
 4. 智研 / Coding CI（工蜂）的 MR 触发规则**必须写在 YAML 的 `mr:` 块**，仅在 UI 勾选无效。
 5. write 模式的工作目录必须是合入后的源码 checkout，团队知识仓库必须克隆在 checkout **之外**（模板分别用并排目录和 `/tmp/teamai-team-repo`）；克隆在 checkout 内时，CLI 会跳过 `teamwiki/` 更新，只写 learning。
 6. GitLab CI（`gitlab-ci-mr-extract.yml`）：凭据用 `GITLAB_TOKEN`（GitLab PAT，`api` 权限）；GitLab 没有 "MR merged" 原生触发器，合入后的 write 阶段跑在默认分支 push pipeline 上，按 merge/squash commit 反查 MR。MR 上不想要的建议点 👎 award emoji 拒绝。
+7. 源码 checkout 需要包含合入提交和它的父提交，git 才能知道这次合入改了哪些文件：`actions/checkout` 设 `fetch-depth: 2` 或更多（默认是 1）。GitLab 默认的 `GIT_DEPTH` 是 20，够用。
+8. 调 GitHub 的请求（评论、reaction、git 用户）在设置了 `GITHUB_API_URL` 时发往它（GitHub Actions 会自动设置），否则发往 `https://api.github.com`。
+9. 不需要 `teamai init`：命令在一个临时作用域里运行默认 workflow `teamai-ci-extract-mr`，结束时删除该作用域。带 `teamai.yaml` 的 `--team-repo` 就是这个作用域的团队仓库：它的 `language` 和 `workflows/` 生效，团队文件 `workflows/teamai-ci-extract-mr.yaml` 会替换默认 workflow。
+
+一个最小的合入后 job（GitHub Actions）：
+
+```yaml
+write:
+  if: github.event.pull_request.merged == true
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+      with: { ref: "${{ github.event.pull_request.merge_commit_sha }}", fetch-depth: 2, path: source }
+    - uses: actions/checkout@v4
+      with: { repository: myteam/knowledge, token: "${{ secrets.TEAMAI_SYNC_TOKEN }}", path: team-repo }
+    - run: npm install -g teamai-cli @anthropic-ai/claude-code
+    - working-directory: source
+      run: teamai ci extract-mr --url "${{ github.event.pull_request.html_url }}" --mode write --team-repo ../team-repo
+      env:
+        GITHUB_TOKEN: ${{ secrets.TEAMAI_SYNC_TOKEN }}
+        ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+```
+
+输出：
+
+```text
+✔ MR data fetched
+ℹ ✅ Learning draft generated: Retry uploads on 5xx
+ℹ    Tags: retry, s3
+✔ Learning written: learnings/2026-11-05-Retry-uploads-on-5xx.md
+✔ Pushed to the team repo
+```
+
+合入改了源码文件时，`Learning written` 之前还会打印 `teamwiki/` 的更新。
 
 ## teamwiki 一致性检查示例（`codebase-lint.yml`）
 

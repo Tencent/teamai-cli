@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import matter from 'gray-matter';
 import { z } from 'zod';
-import { errnoCode, expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isIgnored } from './fs.js';
+import { errnoCode, expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isDraft, isIgnored } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
 import { teamRuleBody, teamRuleData } from '../resources/team-rule.js';
@@ -28,6 +28,7 @@ import { parseRelatedBlock, relationsFromLinks } from '../asset-relations.js';
 import type { StoredRelation } from '../asset-relations.js';
 import { localLinkTargets } from './markdown-links.js';
 import type { FrontmatterValue } from './frontmatter.js';
+import type { ConfidenceFactors } from '../maintenance/confidence.js';
 import { parseYaml } from './yaml.js';
 
 /**
@@ -409,7 +410,8 @@ interface VoteAggregation {
 
 async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promise<VoteAggregation> {
   const scores = new Map<string, number>();
-  const agg = new Map<string, { recalled: number; upvoted: number; lastRecalled: string; lastUpvoted: string }>();
+  const { addVoteEntry, computeConfidence } = await import('../maintenance/confidence.js');
+  const agg = new Map<string, ConfidenceFactors>();
 
   const contents = voteScope
     ? await (await import('../votes.js')).readIndexVoteFiles(voteScope)
@@ -429,20 +431,7 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
           const recalled = entry.recalled_count ?? 0;
           const upvoted = entry.upvoted_count ?? 0;
           scores.set(docId, (scores.get(docId) ?? 0) + recalled * 0.3 + upvoted * 1.0);
-
-          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '', lastUpvoted: '' };
-          existing.recalled += recalled;
-          existing.upvoted += upvoted;
-
-          if (entry.last_recalled_at > existing.lastRecalled) {
-            existing.lastRecalled = entry.last_recalled_at;
-          }
-
-          if (entry.last_upvoted_at && entry.last_upvoted_at > existing.lastUpvoted) {
-            existing.lastUpvoted = entry.last_upvoted_at;
-          }
-
-          agg.set(docId, existing);
+          agg.set(docId, addVoteEntry(agg.get(docId), entry));
         }
       } else {
         const v1 = UserVotesSchema.safeParse(parsed);
@@ -452,11 +441,7 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
         for (const [docId, entry] of Object.entries(v1.data.votes)) {
           scores.set(docId, (scores.get(docId) ?? 0) + 1);
 
-          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '', lastUpvoted: '' };
-          existing.recalled += 1;
-
-          if (entry.at > existing.lastRecalled) existing.lastRecalled = entry.at;
-          agg.set(docId, existing);
+          agg.set(docId, addVoteEntry(agg.get(docId), { recalled_count: 1, upvoted_count: 0, last_recalled_at: entry.at }));
         }
       }
     } catch {
@@ -464,17 +449,9 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
     }
   }
 
-  const { computeConfidence } = await import('../maintenance/confidence.js');
   const confidenceMap = new Map<string, number>();
 
-  for (const [docId, data] of agg) {
-    confidenceMap.set(docId, computeConfidence({
-      recalledCount: data.recalled,
-      upvotedCount: data.upvoted,
-      lastRecalledAt: data.lastRecalled,
-      lastUpvotedAt: data.lastUpvoted || undefined,
-    }));
-  }
+  for (const [docId, factors] of agg) confidenceMap.set(docId, computeConfidence(factors));
 
   return { scores, confidenceMap };
 }
@@ -763,7 +740,7 @@ async function listDir(dir: string, reads: BuildReads): Promise<Dirent[] | null>
   if (reads.given.some((given) => isUnder(dir, given))) return null;
 
   try {
-    return (await readdir(expandHome(dir), { withFileTypes: true })).filter((entry) => !isIgnored(entry.name));
+    return (await readdir(expandHome(dir), { withFileTypes: true })).filter((entry) => !isIgnored(entry.name) && !isDraft(entry.name));
   } catch (e) {
     if (errnoCode(e) === 'ENOENT') return [];
     reads.unreadable.push({ path: dir, reason: failureReason(e) });

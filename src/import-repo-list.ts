@@ -1,12 +1,8 @@
-// -*- coding: utf-8 -*-
-import fs from 'fs-extra';
 import { loadRepoList } from './repo-list/store.js';
 import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
-import { importFromRepo, repoSlugForUrl } from './import-repo.js';
-import { failIncompleteDeepEnrich, publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
 import { log } from './utils/logger.js';
-import { DetachedTeamRepoError } from './utils/git.js';
-import { lockTeamwiki, resolveTeamwiki, type TeamwikiTarget } from './utils/teamwiki-root.js';
+import type { ImportItem, ImportSettings } from './import-from-repo.js';
+import type { ShortcutEnd } from './workflow-commands.js';
 
 /** importFromRepoList 入参。 */
 export interface ImportFromRepoListOptions {
@@ -26,14 +22,16 @@ export interface ImportFromRepoListOptions {
     skipEnrich?: boolean;
     /** 每个仓库采集源码文件的上限（默认 200） */
     maxFiles?: number;
+    /** The command a person ran, as a refusal names it. */
+    command?: string;
+    /** --from-org starts the list it wrote. */
+    mode?: 'list' | 'org';
 }
 
-/** importFromRepoList 汇总结果。 */
-export interface ImportFromRepoListResult {
-    succeeded: number;
-    failed: Array<{ url: string; error: string }>;
-    skipped: Array<{ url: string; reason: string }>;
-}
+/** What `importFromRepoList` did: previewed the list, or ran it. */
+export type RepoListImport =
+    | { kind: 'preview'; summary: string; failed: number }
+    | { kind: 'run'; end: ShortcutEnd | undefined };
 
 /**
  * 按优先级排序条目（high 优先，low 最后，normal 居中）。
@@ -53,151 +51,62 @@ function sortByPriority(entries: RepoListEntry[]): RepoListEntry[] {
 }
 
 /**
- * 主入口：teamai import --from-repo-list <yaml>
+ * `teamai import --from-repo-list <yaml>`: imports every repository of the list, `concurrency` at once, through one
+ * teamai-import-from-repo run, which refreshes the teamwiki indexes and publishes them once for the batch. An org entry
+ * is skipped. One repository failing does not stop the others; the run's summary counts it, and the command exits 1.
+ * A dry run previews each repository and starts no run.
  *
- * 流程：
- *  1. 加载白名单
- *  2. 展开 org entry（P5.2 暂不实现，遇到 org entry 直接 warn 跳过；留给 P5.4）
- *  3. 用 P5.1 的 importFromRepo 单仓内核处理每个 entry，并发上限 = concurrency
- *  4. 单仓失败不阻塞，最终汇总 succeeded/failed/skipped
- *
- * @param opts ImportFromRepoListOptions
- * @returns    汇总结果
+ * @returns how the run ended (undefined when it did not start), or for a dry run the summary of the previews
  */
-export async function importFromRepoList(
-    opts: ImportFromRepoListOptions,
-): Promise<ImportFromRepoListResult> {
-    const {
-        listPath,
-        concurrency = 3,
-        forceSsh = false,
-        dryRun = false,
-        output,
-        incremental = false,
-        skipEnrich = false,
-        maxFiles,
-    } = opts;
+export async function importFromRepoList(opts: ImportFromRepoListOptions): Promise<RepoListImport> {
+    const { listPath, concurrency = 3, forceSsh = false, dryRun = false, output } = opts;
 
     if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
         throw new Error('--concurrency must be a positive safe integer');
     }
 
-    // 1. 加载白名单
     const repoListFile = await loadRepoList(listPath);
-
-    // Every entry lands in the same teamwiki: <output>/teamwiki, else the team repo's.
-    let target: TeamwikiTarget | undefined;
-    let releaseBatchLock: (() => Promise<void>) | null = null;
-
-    if (!dryRun) {
-        target = await resolveTeamwiki({ output });
-        releaseBatchLock = await lockTeamwiki(target);
-    }
-
-    const succeeded: number[] = [];
-    const failed: Array<{ url: string; error: string }> = [];
-    const skipped: Array<{ url: string; reason: string }> = [];
-
-    try {
-    // 2. 分拣 org entry（暂不支持）与单仓 entry
-    const singleEntries: ReturnType<typeof sortByPriority> = [];
+    const singleEntries: RepoListEntry[] = [];
+    let skipped = 0;
 
     for (const item of repoListFile.repos) {
         if (isOrgEntry(item)) {
             log.warn(`org entry not yet supported, skipped: ${item.org}`);
-            skipped.push({ url: item.org, reason: 'org entry not yet supported' });
+            skipped++;
         } else {
             singleEntries.push(item);
         }
     }
 
-    // 按优先级排序
     const orderedEntries = sortByPriority(singleEntries);
 
-    // 3. 并发调度（简单 semaphore 循环）
-    const semaphore = { running: 0 };
-    const queue = [...orderedEntries];
+    if (dryRun) {
+        const { previewRepoImport, repoSourceOf } = await import('./import-repo.js');
+        let failed = 0;
 
-    async function processEntry(entry: RepoListEntry): Promise<void> {
-        const isPublic = entry.auth === 'public';
-        const entryForceSsh = entry.auth === 'ssh' || forceSsh;
-
-        try {
-            const deepEnrichComplete = await importFromRepo({
-                url: entry.url,
-                forceSsh: entryForceSsh,
-                forceAnonymous: isPublic,
-                explicitDomain: entry.domain,
-                dryRun,
-                output,
-                incremental,
-                skipAutoPush: true,
-                skipEnrich,
-                maxFiles,
-            });
-
-            if (!deepEnrichComplete) {
-                failIncompleteDeepEnrich({
-                    slug: repoSlugForUrl(entry.url),
-                    output,
+        for (const entry of orderedEntries) {
+            try {
+                await previewRepoImport(repoSourceOf(entry.url), {
+                    forceSsh: entry.auth === 'ssh' || forceSsh, forceAnonymous: entry.auth === 'public', incremental: opts.incremental, output,
                 });
+            } catch (err) {
+                log.warn(`import failed: ${entry.url} — ${err instanceof Error ? err.message : String(err)}`);
+                failed++;
             }
-
-            succeeded.push(1);
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            log.warn(`import failed: ${entry.url} — ${message}`);
-            failed.push({ url: entry.url, error: message });
-        }
-    }
-
-    // 并发控制循环
-    const inFlight = new Set<Promise<void>>();
-
-    for (const entry of queue) {
-        while (semaphore.running >= concurrency) {
-            // 等待任意一个完成
-            await Promise.race(inFlight);
         }
 
-        semaphore.running++;
-
-        const task = processEntry(entry).finally(() => {
-            semaphore.running--;
-            inFlight.delete(task);
-        });
-
-        inFlight.add(task);
+        return { kind: 'preview', summary: `Batch import complete: ${orderedEntries.length - failed} succeeded, ${failed} failed, ${skipped} skipped`, failed };
     }
 
-    // 等待全部完成
-    await Promise.all(inFlight);
+    const items: ImportItem[] = orderedEntries.map((entry) => ({ kind: 'repo', url: entry.url, domain: entry.domain, auth: entry.auth }));
+    const settings: ImportSettings = { depth: 1, forceSsh, incremental: opts.incremental ?? false, skipEnrich: opts.skipEnrich ?? false, maxFiles: opts.maxFiles };
+    const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+    const { ImportFromRepo } = await import('./import-from-repo.js');
 
-    // 4. 统一聚合全局 graph-index.json，并全量重建 router.md / index.md（避免并发竞态）
-    if (target && succeeded.length > 0 && await fs.pathExists(target.wikiRoot)) {
-        await refreshTeamwikiIndexes(target.wikiRoot);
-        log.info('teamwiki router.md / index.md rebuilt');
-    }
+    const end = await ImportFromRepo.start({
+        mode: opts.mode ?? 'list', items, settings, target: await resolveTeamwiki({ output }), skipped, concurrency,
+        command: opts.command ?? 'teamai import --from-repo-list',
+    });
 
-    // 5. 统一推送（graph 通过 MR 提交）；--output 不碰团队仓库
-    if (target?.team && succeeded.length > 0) {
-        try {
-            await publishTeamwikiViaMR(target.team, '[teamai] Batch import: graph');
-        } catch (e) {
-            DetachedTeamRepoError.rethrow(e);
-            log.warn(`[git] batch push failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
-        }
-    }
-
-    } finally {
-        if (releaseBatchLock) {
-            await releaseBatchLock();
-        }
-    }
-
-    return {
-        succeeded: succeeded.length,
-        failed,
-        skipped,
-    };
+    return { kind: 'run', end };
 }

@@ -7,6 +7,7 @@ import type { WorkflowFailure } from '../types.js';
 import { git, keptSentence, putBackCopy, type KeptChanges } from '../worktree.js';
 import { restoreOverlay } from './overlay.js';
 import { changedPaths, snapshotWorktree, type WorktreeSnapshot } from './worktree-snapshot.js';
+import { Writes } from '../writes.js';
 
 const SnapshotSchema = z.object({
   ok: z.boolean(),
@@ -38,7 +39,10 @@ function unreadableSnapshot(dir: string, file: string): string {
 /**
  * Why a reader step that ran in `dir` fails: it changed what `stageReader` saved in `file`. A command is checked only
  * when it succeeded, so a failing command keeps its own failure; a prompt is checked whatever its tool reported. An
- * interactive prompt that does not set `workspace: read-only` may write, so it is never checked.
+ * interactive prompt that does not set `workspace: read-only` may write, so it is never checked. A change under one of
+ * `writes`, the paths a command writes, is kept, and one outside `dir` cannot dirty it. So is a commit the step added on
+ * the branch it found, when every path it changes is under `writes`, as when a command publishes what it wrote; any
+ * other move of HEAD never is.
  */
 export async function finishReader(input: {
   dir: string;
@@ -47,6 +51,7 @@ export async function finishReader(input: {
   outcome: 'success' | 'failed';
   interactive?: true;
   readOnly?: true;
+  writes?: string[];
 }): Promise<WorkflowFailure | undefined> {
   if (input.interactive && !input.readOnly) return undefined;
 
@@ -54,11 +59,28 @@ export async function finishReader(input: {
   const saved = await readSnapshot(input.file);
 
   if (!saved) return { code: 'read_only_dirty', message: unreadableSnapshot(input.dir, input.file) };
-  const paths = changedPaths(saved, await snapshotWorktree(input.dir));
+  const writes = Writes.inCheckout(input.writes ?? [], input.dir);
+  const after = await snapshotWorktree(input.dir);
+  const isKeptCommit = await isCommitUnder(writes, input.dir, saved, after);
+  const paths = changedPaths(saved, after).filter((changed) => (changed === 'HEAD' ? !isKeptCommit : !Writes.keeps(writes, changed)));
 
   if (paths.length === 0) return undefined;
 
   return { code: 'read_only_dirty', message: `Read-only ${input.executor} step changed repository paths: ${paths.join(', ')}` };
+}
+
+/**
+ * Whether HEAD moved only by commits added on the branch `before` found, each path they change under `writes`. A switch,
+ * a detach and a reset are no such move, so a path cannot keep them.
+ */
+async function isCommitUnder(writes: string[], dir: string, before: WorktreeSnapshot, after: WorktreeSnapshot): Promise<boolean> {
+  if (!before.head || !after.head || before.head === after.head || before.branch === '' || before.branch !== after.branch) return false;
+
+  if ((await git(dir, ['merge-base', '--is-ancestor', before.head, after.head])).code !== 0) return false;
+  const diff = await git(dir, ['diff', '--name-only', '--no-renames', '-z', before.head, after.head]);
+  const committed = diff.stdout.split('\0').filter((changed) => changed !== '');
+
+  return diff.code === 0 && committed.length > 0 && committed.every((changed) => Writes.keeps(writes, changed));
 }
 
 /** How a reader left its copy. `kept` holds what the step changed; an unrestored copy lacks it when keeping failed. */

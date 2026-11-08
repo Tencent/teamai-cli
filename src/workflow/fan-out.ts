@@ -9,7 +9,8 @@ import { isRecord, jsonType } from './expression.js';
 import { firstCycle, firstPass } from './loop.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, stopped, type ItemResult, type StepState } from './step-state.js';
-import type { RunState, WorkflowFailure, WorkflowStep } from './types.js';
+import { parseTemplate, renderValue } from './template.js';
+import { stepWorkflow, type RunState, type WorkflowFailure, type WorkflowStep } from './types.js';
 
 /** Whether an instance is one item of a `for_each` step, such as `build[2]`. */
 export function isItem(state: StepState): boolean {
@@ -132,6 +133,40 @@ export function afterStanding(after: StepState[]): 'ready' | 'waiting' | 'skip' 
 /** How many items have an agent or workflow at work, which `max_parallel` bounds. An item that delivers has none. */
 export function startedItems(items: StepState[]): number {
   return items.filter((item) => item.status === 'leased' || item.status === 'running').length;
+}
+
+/**
+ * The most items of `step` started at once: its `max_parallel`, a template rendered from `inputs`, or undefined when it
+ * declares none; why not, when a template renders anything but a whole number from 1.
+ */
+export function itemLimit(step: Pick<WorkflowStep, 'id' | 'forEach'>, inputs: RunState['inputs']): { ok: true; limit: number | undefined } | { ok: false; message: string } {
+  const max = step.forEach?.maxParallel;
+
+  if (!(max instanceof Object)) return { ok: true, limit: max };
+  const parsed = parseTemplate(max.template, false);
+  const rendered = parsed.ok ? renderValue(parsed.template, { inputs, steps: {} }) : undefined;
+  const limit = z.number().int().positive().safeParse(rendered);
+
+  return limit.success ? { ok: true, limit: limit.data }
+    : { ok: false, message: `Step "${step.id}" for_each.max_parallel ${max.template} renders ${JSON.stringify(rendered ?? null)}, which is not a whole number from 1. Pass a whole number from 1 for the input it reads.` };
+}
+
+/**
+ * Why `inputs` cannot start `steps`, a workflow's own and those of the inline workflows in it: a `max_parallel` template
+ * that renders anything but a whole number from 1. A workflow a step runs by name is checked when it starts.
+ */
+export function itemLimitMismatch(steps: readonly WorkflowStep[], inputs: RunState['inputs']): string | undefined {
+  for (const step of steps) {
+    const limited = itemLimit(step, inputs);
+
+    if (!limited.ok) return limited.message;
+    const child = stepWorkflow(step);
+    const inner = child?.kind === 'inline' ? itemLimitMismatch(child.workflow.steps, inputs) : undefined;
+
+    if (inner !== undefined) return inner;
+  }
+
+  return undefined;
 }
 
 /** How a `for_each` step settled, with how each of its items went. */

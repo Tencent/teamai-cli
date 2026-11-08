@@ -1,0 +1,63 @@
+schemaVersion: v1alpha1
+name: teamai-ci-extract-mr
+description: Turn a merged MR or PR into a team learning in a CI job - the AI tool drafts it, then it is posted as a comment on the MR, written into the team repo's learnings/ with the teamwiki of the merged checkout updated, or both. teamai ci extract-mr starts it, with no teamai init needed.
+invoke: deny
+private: true
+# url: the MR or PR. mode: comment posts the learning on the MR, write writes it into team_repo's learnings/ and pushes
+# it, both does both. team_repo: the team repo's checkout, '' with mode comment. comment_marker: the HTML comment the
+# MR comment is found and updated by. individual_comments: post the learning as its own comment, whose reactions decide
+# what write keeps. output: a directory the learning is also written into as learning.md, '' for none. discussions:
+# read the review threads. language: teamai.yaml's language. dry_run: say what would be posted and written, and post,
+# write and push nothing.
+inputs:
+  url: string
+  mode: comment | write | both
+  team_repo: string
+  comment_marker: string
+  individual_comments: boolean
+  output: string
+  discussions: boolean
+  language: en | zh
+  dry_run: boolean
+steps:
+  - id: extract
+    workflow: teamai-import-from-mr
+    with:
+      mrs: ["{{ inputs.url }}"]
+      all: true
+      publish: false
+      output: false
+      discussions: "{{ inputs.discussions }}"
+      language: "{{ inputs.language }}"
+  - id: comment
+    needs: [extract]
+    if: steps.extract.outputs.exit_code == 0 && inputs.mode != 'write'
+    command: teamai ci comment --url "$URL" --learnings "$LEARNINGS" --marker "$MARKER" --individual "$INDIVIDUAL" --preview "$PREVIEW"
+    env:
+      URL: "{{ inputs.url }}"
+      LEARNINGS: "{{ steps.extract.outputs.learnings }}"
+      MARKER: "{{ inputs.comment_marker }}"
+      INDIVIDUAL: "{{ inputs.individual_comments }}"
+      PREVIEW: "{{ inputs.dry_run }}"
+  - id: write
+    needs: [extract, comment]
+    if: steps.extract.outputs.exit_code == 0 && inputs.mode != 'comment'
+    # Updates the team repo's teamwiki from the merged checkout through a teamai-import-from-repo run, under its import
+    # lock; a failed update is said and leaves the learning to be written.
+    command: teamai ci write --url "$URL" --learnings "$LEARNINGS" --team-repo "$TEAM_REPO" --individual "$INDIVIDUAL" --preview "$PREVIEW"
+    env:
+      URL: "{{ inputs.url }}"
+      LEARNINGS: "{{ steps.extract.outputs.learnings }}"
+      TEAM_REPO: "{{ inputs.team_repo }}"
+      INDIVIDUAL: "{{ inputs.individual_comments }}"
+      PREVIEW: "{{ inputs.dry_run }}"
+    writes: ["{{ inputs.team_repo }}"]
+  - id: artifacts
+    needs: [extract, comment, write]
+    if: steps.extract.outputs.exit_code == 0 && inputs.output != ''
+    command: teamai ci artifacts --learnings "$LEARNINGS" --dir "$DIR"
+    env: { LEARNINGS: "{{ steps.extract.outputs.learnings }}", DIR: "{{ inputs.output }}" }
+    writes: ["{{ inputs.output }}"]
+outputs:
+  text: steps.extract.outputs.text
+  exit_code: steps.extract.outputs.exit_code

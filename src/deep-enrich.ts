@@ -6,25 +6,8 @@ import { z } from 'zod';
 
 import { pathExists } from './utils/fs.js';
 import { lenientList } from './utils/json.js';
-import { CallError, callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
-
-export interface DeepEnrichOptions {
-  project: string;
-  evidenceDir: string;  // teamwiki/evidence/code/<project>/
-  wikiRoot: string;     // teamwiki/
-  cacheDir?: string;    // 源码 clone 目录（可选，用于读取实际源码）
-  maxModules?: number;  // 限制 AI 处理的最大组件数（费用控制）
-}
-
-/** Public-command status: full completion vs remaining AI docs. */
-export interface DeepEnrichResult {
-  project: string;
-  complete: boolean;
-  missingComponents: string[];
-  missingArchitecture: boolean;
-}
 
 const PROGRESS_PHASES = ['pending', 'components', 'architecture', 'graph', 'ai-graph', 'index-enhance', 'done'] as const;
 
@@ -222,88 +205,6 @@ async function loadProgress(evidenceDir: string, project: string, allComponents:
 async function saveProgress(evidenceDir: string, state: ProgressState): Promise<void> {
   const updated: ProgressState = { ...state, updatedAt: new Date().toISOString() };
   await writeGeneratedFile(path.dirname(progressPath(evidenceDir)), PROGRESS_FILENAME, JSON.stringify(updated, null, 2));
-}
-
-// ─── Prompt 构建 ────────────────────────────────────────────
-
-function buildComponentPrompt(
-  project: string,
-  component: ManifestComponent,
-  moduleFacts: string,
-  relevantCallChains: string,
-  deps: string,
-): string {
-  const moduleName = component.slug;
-  const responsibilities = component.responsibilities ?? [];
-
-  return `<context>
-项目: ${project}
-模块: ${moduleName}
-职责: ${responsibilities.join('; ')}
-
-核心组件（来自代码提取）:
-${moduleFacts}
-
-调用链:
-${relevantCallChains}
-
-模块依赖:
-${deps}
-</context>
-
-为上述代码模块生成一份组件设计文档。必须包含以下章节：
-
-## 🤖 AI 快速理解要点
-（表格：核心职责/架构层级/上游组件/下游组件/代码入口/核心机制/数据流向/技术栈，每项不超过20字）
-
-## 架构设计
-（ASCII 架构图 + 核心子模块说明）
-
-## 接口设计
-（对外接口表：接口名/方法/路径/说明）
-
-## 核心流程
-（主要请求处理流程，步骤式描述）
-
-直接输出 Markdown，不要任何前言或解释。`;
-}
-
-function buildArchitecturePrompt(
-  project: string,
-  moduleList: string,
-  edges: string,
-  interfaceSummary: string,
-): string {
-  return `<context>
-项目: ${project}
-模块清单:
-${moduleList}
-
-模块间依赖:
-${edges}
-
-接口统计:
-${interfaceSummary}
-</context>
-
-为上述项目生成一份技术架构总览文档。必须包含：
-
-## 项目概述
-（一段话描述项目的核心定位和能力）
-
-## 架构图
-（ASCII 分层架构图，标注各模块和调用方向）
-
-## 组件关系矩阵
-（表格：组件A→组件B + 关系类型 + 通信方式）
-
-## 核心链路
-（2-3条最重要的请求处理链路，从入口到存储的完整路径）
-
-## 技术栈
-（表格：维度/技术/说明）
-
-直接输出 Markdown，不要任何前言或解释。`;
 }
 
 // ─── 确定性图谱生成（无需 AI）─────────────────────────────
@@ -644,10 +545,23 @@ function buildGComparisonDoc(project: string, flags: { g5Generated: boolean; g6G
   ].join('\n');
 }
 
-// ─── Phase 1: 组件设计文档 ─────────────────────────────────
+// ─── Phase 1 and 2: component and architecture docs ─────────
 
-function extractModuleFacts(moduleDocs: Map<string, string>, slug: string): string {
-  return moduleDocs.get(slug) ?? '';
+/** What the component-doc prompt says of one component. */
+export interface ComponentBrief {
+  slug: string;
+  responsibilities: string;
+  facts: string;
+  call_chains: string;
+  deps: string;
+}
+
+/** What the architecture prompt says of the project, and whether its doc is still missing. */
+export interface ArchitectureBrief {
+  needed: boolean;
+  modules: string;
+  edges: string;
+  interfaces: string;
 }
 
 function extractRelevantCallChains(callChains: string, slug: string): string {
@@ -670,147 +584,78 @@ function extractDeps(manifest: Manifest, slug: string): string {
   return parts.join('\n') || '无';
 }
 
-async function runPhaseComponents(
-  opts: DeepEnrichOptions,
-  ctx: EnrichContext,
-  progress: ProgressState,
-  docsDir: string,
-): Promise<void> {
-  const { project, evidenceDir } = opts;
-  const components = ctx.manifest.components ?? [];
-  const pending = components.filter(c => !progress.componentsDone.includes(c.slug));
-
-  if (pending.length === 0) {
-    log.info(`deep-enrich[${project}]: All component docs complete, skipping Phase 1`);
-
-    return;
-  }
-
-  log.info(`deep-enrich[${project}]: Phase 1 — Generating ${pending.length} component design docs`);
-
-  // 每批 2 个并发
-  const BATCH = 5;
-
-  for (let i = 0; i < pending.length; i += BATCH) {
-    const batch = pending.slice(i, i + BATCH);
-
-    const tasks = batch.map((comp) => {
-      const moduleFacts = extractModuleFacts(ctx.moduleDocs, comp.slug);
-      const relevantCallChains = extractRelevantCallChains(ctx.callChains, comp.slug);
-      const deps = extractDeps(ctx.manifest, comp.slug);
-      const prompt = buildComponentPrompt(project, comp, moduleFacts, relevantCallChains, deps);
-
-      return {
-        prompt,
-        parse: (output: string) => output,
-      };
-    });
-
-    let results: Array<string | null>;
-
-    try {
-      results = await callToolParallel(tasks, { launchedBy: 'deep-enrich', concurrency: BATCH });
-    } catch (e) {
-      if (isOverrideInvalid(e)) throw e;
-
-      // No AI tool is on PATH. Every retry would probe PATH again for each
-      // launcher, so skip the remaining components instead.
-      if (e instanceof CallError && e.kind === 'no_tool') {
-        log.warn(`deep-enrich[${project}]: Skipping ${pending.length - i} component docs: ${e.message}`);
-
-        return;
-      }
-
-      // AggregateError — 部分可能成功，graceful fallback
-      log.warn(`deep-enrich[${project}]: batch[${i}] partially failed, falling back to sequential`);
-      results = await Promise.all(
-        batch.map(async (_, idx) => {
-          try {
-            return (await callTool(tasks[idx].prompt, { launchedBy: 'deep-enrich' })).text;
-          } catch (componentError) {
-            log.warn(`deep-enrich[${project}]: Skipping component ${batch[idx].slug}: ${componentError instanceof Error ? componentError.message : String(componentError)}`);
-
-            return null;
-          }
-        }),
-      );
-    }
-
-    for (let j = 0; j < batch.length; j++) {
-      const comp = batch[j];
-      const content = results[j];
-
-      if (!content) continue;
-
-      try {
-        assertSafeResourceName(comp.slug);
-      } catch (e) {
-        log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${comp.slug}": ${e instanceof Error ? e.message : String(e)}`);
-        continue;
-      }
-
-      const outPath = path.join(docsDir, `${comp.slug}.md`);
-      await writeGeneratedFile(docsDir, `${comp.slug}.md`, content);
-      progress.componentsDone.push(comp.slug);
-      await saveProgress(evidenceDir, progress);
-      log.debug(`deep-enrich[${project}]: Component doc written: ${outPath}`);
-    }
-  }
+function componentBrief(ctx: EnrichContext, component: ManifestComponent): ComponentBrief {
+  return {
+    slug: component.slug,
+    responsibilities: (component.responsibilities ?? []).join('; '),
+    facts: ctx.moduleDocs.get(component.slug) ?? '',
+    call_chains: extractRelevantCallChains(ctx.callChains, component.slug),
+    deps: extractDeps(ctx.manifest, component.slug),
+  };
 }
 
-// ─── Phase 2: 架构总览文档 ─────────────────────────────────
+function architectureBrief(ctx: EnrichContext, needed: boolean): ArchitectureBrief {
+  return {
+    needed,
+    modules: (ctx.manifest.components ?? []).map(c => `- ${c.slug}: ${(c.responsibilities ?? []).join('; ')}`).join('\n'),
+    edges: (ctx.manifest.edges ?? []).map(e => `${e.from} → ${e.to} (${e.relation ?? 'DEPENDS_ON'})`).join('\n'),
+    interfaces: ctx.indexMd.slice(0, 800),
+  };
+}
 
-async function runPhaseArchitecture(
-  opts: DeepEnrichOptions,
-  ctx: EnrichContext,
-  docsDir: string,
-): Promise<void> {
-  const { project } = opts;
-  const components = ctx.manifest.components ?? [];
+/** What the tool answered for one doc: its text, or why it could not answer. */
+export interface DocReply {
+  text: string;
+  failure: string;
+}
 
-  const moduleList = components
-    .map(c => `- ${c.slug}: ${(c.responsibilities ?? []).join('; ')}`)
-    .join('\n');
+/** Writes a component's doc, or says why it has none. */
+async function writeComponentDoc(docsDir: string, project: string, slug: string, reply: DocReply): Promise<boolean> {
+  if (reply.failure) {
+    log.warn(`deep-enrich[${project}]: Skipping component ${slug}: ${reply.failure}`);
 
-  const edges = (ctx.manifest.edges ?? [])
-    .map(e => `${e.from} → ${e.to} (${e.relation ?? 'DEPENDS_ON'})`)
-    .join('\n');
+    return false;
+  }
 
-  const interfaceSummary = ctx.indexMd.slice(0, 800);
-
-  const prompt = buildArchitecturePrompt(project, moduleList, edges, interfaceSummary);
-  log.info(`deep-enrich[${project}]: Phase 2 — Generating architecture overview`);
-
-  let content: string;
+  if (!reply.text) return false;
 
   try {
-    content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
+    assertSafeResourceName(slug);
   } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${e instanceof Error ? e.message : String(e)}`);
+    log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${slug}": ${e instanceof Error ? e.message : String(e)}`);
 
-    return;
+    return false;
   }
 
-  if (!content.trim()) {
+  await writeGeneratedFile(docsDir, `${slug}.md`, reply.text);
+  log.debug(`deep-enrich[${project}]: Component doc written: ${path.join(docsDir, `${slug}.md`)}`);
+
+  return true;
+}
+
+/** Writes the architecture overview, or says why there is none. */
+async function writeArchitectureDoc(docsDir: string, project: string, reply: DocReply): Promise<boolean> {
+  if (reply.failure) {
+    log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${reply.failure}`);
+
+    return false;
+  }
+
+  if (!reply.text.trim()) {
     log.warn(`deep-enrich[${project}]: Architecture overview: AI returned empty, skipping write`);
 
-    return;
+    return false;
   }
 
-  const outPath = path.join(docsDir, 'architecture.md');
-  await writeGeneratedFile(docsDir, 'architecture.md', content);
-  log.debug(`deep-enrich[${project}]: Architecture overview written: ${outPath}`);
+  await writeGeneratedFile(docsDir, 'architecture.md', reply.text);
+  log.debug(`deep-enrich[${project}]: Architecture overview written: ${architectureDocPath(docsDir)}`);
+
+  return true;
 }
 
 // ─── Phase 3: 确定性图谱文档 ───────────────────────────────
 
-async function runPhaseGraph(
-  opts: DeepEnrichOptions,
-  ctx: EnrichContext,
-  docsDir: string,
-): Promise<void> {
-  const { project, evidenceDir } = opts;
+async function runPhaseGraph(project: string, evidenceDir: string, ctx: EnrichContext, docsDir: string): Promise<void> {
   log.info(`deep-enrich[${project}]: Phase 3 — Generating deterministic graph docs`);
 
   const interfacesMd = await readFileSafe(path.join(evidenceDir, 'interfaces.md'));
@@ -836,42 +681,6 @@ async function runPhaseGraph(
 }
 
 // ─── Phase 4: AI 图谱（G5 场景序列图 + G6 知识图谱三元组）──────────
-
-function buildG5Prompt(project: string, architecture: string, callChains: string, modules: string): string {
-  return `你是一个高级架构师。基于以下项目信息，为 Top-5 核心业务场景生成 mermaid sequenceDiagram。
-
-项目：${project}
-
-架构文档摘要（前2000字）：
-${architecture.slice(0, 2000)}
-
-调用链数据：
-${callChains.slice(0, 1500)}
-
-模块列表：
-${modules.slice(0, 1000)}
-
-要求：
-1. 识别项目中真实存在的核心业务场景（最多 5 个，如果项目较小则按实际数量输出，不要虚构）
-2. 每个场景生成一个 mermaid sequenceDiagram
-3. 每个图后附 2-3 句文字说明关键决策点
-4. 参与者使用实际模块名/组件名
-5. 如果可识别的真实场景少于 3 个，只输出实际存在的场景
-
-输出格式：
-# 核心业务场景序列图
-<!-- search-anchor: 流程, 场景, 序列图, sequence, 业务流, 完整流程 -->
-
-## 场景 1: <名称>
-\`\`\`mermaid
-sequenceDiagram
-...
-\`\`\`
-<说明>
-
-## 场景 2: ...
-`;
-}
 
 interface GraphConfidence {
   label: 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
@@ -1088,93 +897,93 @@ async function writeQualityReports(
   ].join('\n'));
 }
 
-async function runPhaseAiGraph(
-  opts: DeepEnrichOptions,
-  ctx: EnrichContext,
-  docsDir: string,
-): Promise<{ g5Generated: boolean; g6Generated: boolean }> {
-  const { project } = opts;
+/** What the scenarios prompt says of the project, and whether G5 is still to be written. */
+export interface ScenariosBrief {
+  needed: boolean;
+  architecture: string;
+  call_chains: string;
+  modules: string;
+}
+
+const NO_SCENARIOS: ScenariosBrief = { needed: false, architecture: '', call_chains: '', modules: '' };
+
+/** Writes G6 and decides whether G5 is to be asked for: not when it exists, nor without two modules and an architecture doc. */
+async function runPhaseAiGraph(project: string, ctx: EnrichContext, docsDir: string): Promise<ScenariosBrief> {
   log.info(`deep-enrich[${project}]: Phase 4 — Generating AI graph docs (G5/G6)`);
 
   // G6: deterministic knowledge-graph triples (no AI required).
-  const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
-  const g6 = buildG6Content(project, ctx.manifest);
-  await writeGeneratedFile(docsDir, 'graph-g6-triples.md', g6);
+  await writeGeneratedFile(docsDir, 'graph-g6-triples.md', buildG6Content(project, ctx.manifest));
   // The former G6 filename was a different document and must not remain
   // discoverable after the router switches to the triples document.
   await removeIfExists(path.join(docsDir, 'graph-g6-multihop.md'));
   log.debug(`deep-enrich[${project}]: G6 knowledge-graph triples written`);
 
-  const g5Path = path.join(docsDir, 'graph-g5-scenarios.md');
-
-  if (await pathExists(g5Path)) {
-    return { g5Generated: true, g6Generated: g6HasEdges };
-  }
-
-  // G5: AI 生成场景序列图（需要足够的模块数据）
-  let g5Generated = false;
+  if (await pathExists(path.join(docsDir, 'graph-g5-scenarios.md'))) return NO_SCENARIOS;
 
   if (ctx.moduleDocs.size < 2) {
     log.warn(`deep-enrich[${project}]: Insufficient modules (${ctx.moduleDocs.size} < 2), skipping G5`);
 
-    return { g5Generated, g6Generated: g6HasEdges };
+    return NO_SCENARIOS;
   }
 
-  const architectureMd = await readFileSafe(path.join(docsDir, 'architecture.md'));
+  const architectureMd = await readFileSafe(architectureDocPath(docsDir));
 
   if (!architectureMd.trim()) {
     log.warn(`deep-enrich[${project}]: No architecture doc, skipping G5 scenarios`);
 
-    return { g5Generated, g6Generated: g6HasEdges };
+    return NO_SCENARIOS;
   }
 
   const moduleList = [...ctx.moduleDocs.entries()]
     .map(([name, content]) => `${name}: ${content.slice(0, 200)}`)
     .join('\n');
 
-  const prompt = buildG5Prompt(project, architectureMd, ctx.callChains, moduleList);
+  return {
+    needed: true,
+    architecture: architectureMd.slice(0, 2000),
+    call_chains: ctx.callChains.slice(0, 1500),
+    modules: moduleList.slice(0, 1000),
+  };
+}
 
-  try {
-    const g5Content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
+/** Writes G5, or says why there is none. */
+async function writeScenariosDoc(docsDir: string, project: string, reply: DocReply): Promise<void> {
+  if (reply.failure) {
+    log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${reply.failure}`);
 
-    if (g5Content.trim()) {
-      await writeGeneratedFile(docsDir, 'graph-g5-scenarios.md', g5Content);
-      log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);
-      g5Generated = true;
-    }
-  } catch (e) {
-    if (isOverrideInvalid(e)) throw e;
-    log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${e instanceof Error ? e.message : String(e)}`);
+    return;
   }
 
-  return { g5Generated, g6Generated: g6HasEdges };
+  if (!reply.text.trim()) return;
+  await writeGeneratedFile(docsDir, 'graph-g5-scenarios.md', reply.text);
+  log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);
 }
 
 // ─── Phase 5: 索引增强（router.md + per-project index.md 重写）──
 
 async function runPhaseIndexEnhance(
-  opts: DeepEnrichOptions,
+  target: DeepEnrichTarget,
   ctx: EnrichContext,
   docsDir: string,
-  graphFlags?: { g5Generated: boolean; g6Generated: boolean },
+  graphFlags: { g5Generated: boolean; g6Generated: boolean },
 ): Promise<void> {
-  const { project, evidenceDir } = opts;
+  const { project, wikiRoot } = target;
+  const evidenceDir = evidenceDirOf(target);
   log.info(`deep-enrich[${project}]: Phase 5 — Index enhancement`);
 
   const { graphReadmeTemplate } = await import('./wiki-engine/adapters/templates.js');
 
   // 写入 graph/README.md 路由分发表（按实际生成情况动态渲染）
   const graphReadme = graphReadmeTemplate(project, {
-    hasG5: graphFlags?.g5Generated ?? false,
-    hasG6: graphFlags?.g6Generated ?? true,
+    hasG5: graphFlags.g5Generated,
+    hasG6: graphFlags.g6Generated,
   });
 
   await writeGeneratedFile(docsDir, 'README.md', graphReadme);
-  await writeGeneratedFile(docsDir, 'graph-coverage.md', buildGComparisonDoc(project, graphFlags ?? { g5Generated: false, g6Generated: true }));
+  await writeGeneratedFile(docsDir, 'graph-coverage.md', buildGComparisonDoc(project, graphFlags));
   log.debug(`deep-enrich[${project}]: graph/README.md routing table written`);
 
   // 增量更新顶层 router.md 和 index.md（追加/更新当前项目条目，不覆盖其他项目）
-  const { wikiRoot } = opts;
   const domainsJson = await readFileSafe(path.join(evidenceDir, '_domains.json'));
   let keywords: string[] = [];
   let description = '';
@@ -1283,83 +1092,82 @@ async function invalidateStaleAiDocs(docsDir: string, slugs: string[]): Promise<
   await removeIfExists(path.join(docsDir, 'graph-g6-multihop.md'));
 }
 
-// ─── 主函数 ─────────────────────────────────────────────────
+// ─── Steps ──────────────────────────────────────────────────
 
-/**
- * Hidden `teamai deep-enrich` CLI entry. Sets a failing exit code when
- * enrichment cannot complete (empty `_manifest.json` or missing AI docs).
- */
-export async function runHiddenDeepEnrich(opts: {
+/** Where deep enrichment reads the evidence of `project` and writes its docs. */
+export interface DeepEnrichTarget {
   project: string;
-  wikiRoot?: string;
+  wikiRoot: string;
+  /** Only the manifest's first components, for cost; 0 or undefined takes every one. */
   maxModules?: number;
-}): Promise<DeepEnrichResult> {
-  const { lockTeamwiki, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
-  const target = opts.wikiRoot ? { wikiRoot: opts.wikiRoot } : await resolveTeamwiki();
-  const { wikiRoot } = target;
-  const releaseImportLock = await lockTeamwiki(target);
+}
+
+function evidenceDirOf(target: DeepEnrichTarget): string {
+  return path.join(target.wikiRoot, 'evidence', 'code', target.project);
+}
+
+/** The target a verb's flags name, or why they name none: a codebase outside evidence/code/, or a bad --max-modules. */
+function targetOf(flags: { wikiRoot: string; codebase: string; maxModules: string }): { ok: true; target: DeepEnrichTarget } | { ok: false; message: string } {
+  const maxModules = z.coerce.number().int().min(0).safeParse(flags.maxModules);
+
+  if (!maxModules.success) return { ok: false, message: `--max-modules ${flags.maxModules} is not a whole number from 0. Pass 0 to take every component.` };
+  const wikiRoot = path.resolve(flags.wikiRoot);
+  const codeRoot = path.join(wikiRoot, 'evidence', 'code');
 
   try {
-    const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project);
-
-    const result = await deepEnrich({
-      project: opts.project,
-      evidenceDir,
-      wikiRoot,
-      maxModules: opts.maxModules,
-    });
-
-    if (!result.complete) process.exitCode = 1;
-
-    return result;
-  } finally {
-    await releaseImportLock();
+    assertWithinRoot(codeRoot, path.join(codeRoot, flags.codebase));
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
+
+  return { ok: true, target: { project: flags.codebase, wikiRoot, maxModules: maxModules.data } };
+}
+
+/** The evidence context, with the manifest's components cut to `maxModules`. */
+async function limitedContext(evidenceDir: string, maxModules: number | undefined): Promise<EnrichContext> {
+  const ctx = await loadContext(evidenceDir);
+  const components = ctx.manifest.components ?? [];
+
+  if (maxModules && components.length > maxModules) ctx.manifest = { ...ctx.manifest, components: components.slice(0, maxModules) };
+
+  return ctx;
+}
+
+/** What the plan step found to do: the components still without a doc, and the architecture overview. */
+export interface DeepEnrichPlan {
+  components: ComponentBrief[];
+  architecture: ArchitectureBrief;
 }
 
 /**
- * 对已导入仓库执行深度 AI 知识生成。
- *
- * 读取 evidenceDir 中已有的确定性提取结果，分阶段生成：
- * - Phase 1: 每个组件的设计文档（AI，concurrency=2）
- * - Phase 2: 整体架构总览文档（AI，单次调用）
- * - Phase 3: 确定性图谱文档（G1/G2/G3，无需 AI）
- * - Phase 4: AI 图谱文档（G5 场景序列图 + G6 多跳路径）
- * - Phase 5: 索引增强（graph/README.md 路由分发表）
- *
- * Resume is based on files on disk: missing component/architecture docs are
- * retried even when progress.json says `done` (deterministic graph files keep
- * `docs/` nonempty). Completed AI docs are kept for the same extract, but a
- * newer `_manifest.json` generatedAt invalidates component/architecture/G5 docs.
- *
- * @param opts DeepEnrichOptions
+ * The `plan` step: refuses a symbolic link on the way to the docs, drops the AI docs a newer extract made stale, and
+ * lists what is missing. Undefined when the manifest has no component, which it says.
  */
-export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichResult> {
-  const { project, evidenceDir } = opts;
+async function plan(target: DeepEnrichTarget): Promise<DeepEnrichPlan | undefined> {
+  const { project, wikiRoot, maxModules } = target;
+  const evidenceDir = evidenceDirOf(target);
   const docsDir = path.join(evidenceDir, 'docs');
 
   log.info(`deep-enrich[${project}]: Starting deep knowledge generation, evidenceDir=${evidenceDir}`);
-
-  // 1. 加载上下文
   const ctx = await loadContext(evidenceDir);
-  let components = ctx.manifest.components ?? [];
+  const all = ctx.manifest.components ?? [];
 
-  if (components.length === 0) {
+  if (all.length === 0) {
     log.warn(`deep-enrich[${project}]: No components in _manifest.json, aborting`);
 
-    return { project, complete: false, missingComponents: [], missingArchitecture: true };
+    return undefined;
   }
 
-  await assertSafeEvidencePath(opts.wikiRoot, evidenceDir);
+  await assertSafeEvidencePath(wikiRoot, evidenceDir);
   await assertSafeOutputDir(docsDir);
   await assertSafeOutputDir(path.dirname(progressPath(evidenceDir)));
 
-  if (opts.maxModules && components.length > opts.maxModules) {
-    log.info(`deep-enrich[${project}]: Limited to first ${opts.maxModules} components (${components.length} total)`);
-    components = components.slice(0, opts.maxModules);
-    ctx.manifest = { ...ctx.manifest, components };
+  if (maxModules && all.length > maxModules) {
+    log.info(`deep-enrich[${project}]: Limited to first ${maxModules} components (${all.length} total)`);
+    ctx.manifest = { ...ctx.manifest, components: all.slice(0, maxModules) };
   }
 
+  const components = ctx.manifest.components ?? [];
   const allSlugs = components.map(c => c.slug);
   const progress = await loadProgress(evidenceDir, project, allSlugs);
 
@@ -1383,32 +1191,89 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
   // deterministic graph markdown, so `phase: done` + nonempty docs/ must not
   // skip missing component/architecture files.
   const existing = await existingComponentSlugs(docsDir, allSlugs);
+  const pending = components.filter((c) => !existing.includes(c.slug));
+  const needsArchitecture = !(await pathExists(architectureDocPath(docsDir)));
   progress.componentsDone = existing;
-  progress.componentsPending = allSlugs.filter((slug) => !existing.includes(slug));
+  progress.componentsPending = pending.map((c) => c.slug);
 
-  if (progress.componentsPending.length > 0) {
+  if (pending.length > 0) {
     progress.phase = 'components';
-    await saveProgress(evidenceDir, progress);
-    await runPhaseComponents(opts, ctx, progress, docsDir);
+    log.info(`deep-enrich[${project}]: Phase 1 — Generating ${pending.length} component design docs`);
+  } else if (needsArchitecture) {
+    progress.phase = 'architecture';
   }
 
-  if (!(await pathExists(architectureDocPath(docsDir)))) {
-    progress.phase = 'architecture';
-    await saveProgress(evidenceDir, progress);
-    await runPhaseArchitecture(opts, ctx, docsDir);
+  await saveProgress(evidenceDir, progress);
+
+  return { components: pending.map((c) => componentBrief(ctx, c)), architecture: architectureBrief(ctx, needsArchitecture) };
+}
+
+/** Which doc the `write` step writes. */
+export type DeepEnrichDoc = { kind: 'component'; slug: string } | { kind: 'architecture' };
+
+/** The `write` step: writes one component's doc or the architecture overview from what the tool answered, or says why not. */
+async function write(target: DeepEnrichTarget, doc: DeepEnrichDoc, reply: DocReply): Promise<{ written: boolean }> {
+  const docsDir = path.join(evidenceDirOf(target), 'docs');
+
+  switch (doc.kind) {
+    case 'component':
+      return { written: await writeComponentDoc(docsDir, target.project, doc.slug, reply) };
+    case 'architecture':
+      log.info(`deep-enrich[${target.project}]: Phase 2 — Generating architecture overview`);
+
+      return { written: await writeArchitectureDoc(docsDir, target.project, reply) };
+    default: {
+      const unhandled: never = doc;
+
+      return unhandled;
+    }
   }
+}
+
+/** The `graph` step: writes the deterministic graph docs and G6, and says whether G5 is to be asked for. */
+async function graph(target: DeepEnrichTarget): Promise<{ scenarios: ScenariosBrief }> {
+  const evidenceDir = evidenceDirOf(target);
+  const docsDir = path.join(evidenceDir, 'docs');
+  const ctx = await limitedContext(evidenceDir, target.maxModules);
+  const progress = await loadProgress(evidenceDir, target.project, (ctx.manifest.components ?? []).map(c => c.slug));
 
   progress.phase = 'graph';
   await saveProgress(evidenceDir, progress);
-  await runPhaseGraph(opts, ctx, docsDir);
-
+  await runPhaseGraph(target.project, evidenceDir, ctx, docsDir);
   progress.phase = 'ai-graph';
   await saveProgress(evidenceDir, progress);
-  const graphFlags = await runPhaseAiGraph(opts, ctx, docsDir);
+
+  return { scenarios: await runPhaseAiGraph(target.project, ctx, docsDir) };
+}
+
+/** How a deep enrichment ended: what the shortcut prints and exits with, and which AI docs are still missing. */
+export interface DeepEnrichEnd {
+  text: string;
+  exit_code: number;
+  complete: boolean;
+  missing_components: string[];
+  missing_architecture: boolean;
+}
+
+/** The `finish` step: writes G5 from what the tool answered, the indexes and quality reports, and says what is missing. */
+async function finish(target: DeepEnrichTarget, scenarios: DocReply): Promise<DeepEnrichEnd> {
+  const { project } = target;
+  const evidenceDir = evidenceDirOf(target);
+  const docsDir = path.join(evidenceDir, 'docs');
+  const ctx = await limitedContext(evidenceDir, target.maxModules);
+  const allSlugs = (ctx.manifest.components ?? []).map(c => c.slug);
+  const progress = await loadProgress(evidenceDir, project, allSlugs);
+
+  await writeScenariosDoc(docsDir, project, scenarios);
+
+  const graphFlags = {
+    g5Generated: await pathExists(path.join(docsDir, 'graph-g5-scenarios.md')),
+    g6Generated: (ctx.manifest.edges ?? []).length > 0,
+  };
 
   progress.phase = 'index-enhance';
   await saveProgress(evidenceDir, progress);
-  await runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags);
+  await runPhaseIndexEnhance(target, ctx, docsDir, graphFlags);
   await writeQualityReports(evidenceDir, docsDir, project, graphFlags);
 
   const missing = await collectMissingAiDocs(docsDir, allSlugs);
@@ -1427,5 +1292,45 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
     );
   }
 
-  return { project, complete, ...missing };
+  const parts = [
+    ...(missing.missingComponents.length > 0 ? [`missing component docs: ${missing.missingComponents.join(', ')}`] : []),
+    ...(missing.missingArchitecture ? ['missing architecture.md'] : []),
+  ];
+
+  return {
+    text: complete ? `Deep enrichment complete: project=${project}` : `Deep enrichment incomplete: project=${project}, ${parts.join(', ')}`,
+    exit_code: complete ? 0 : 1,
+    complete,
+    missing_components: missing.missingComponents,
+    missing_architecture: missing.missingArchitecture,
+  };
 }
+
+/**
+ * The `publish` step: commits and pushes the codebase's evidence and docs, with the teamwiki's router.md and index.md, to
+ * the team repo that holds the teamwiki, so the next `teamai push` does not find the clone dirty. A teamwiki no team
+ * repo holds has nothing to push.
+ */
+async function publish(target: DeepEnrichTarget): Promise<{ pushed: boolean }> {
+  const { teamwikiAt } = await import('./utils/teamwiki-root.js');
+  const { team } = await teamwikiAt(target.wikiRoot);
+
+  if (!team) return { pushed: false };
+  const repoPath = team.localConfig.repo.localPath;
+
+  const paths = [evidenceDirOf(target), path.join(target.wikiRoot, 'router.md'), path.join(target.wikiRoot, 'index.md')].flatMap((published) => {
+    const relative = path.relative(repoPath, published);
+
+    return relative === '' || relative.startsWith('..') ? [] : [relative];
+  });
+
+  const { autoPushTeamRepo } = await import('./utils/git.js');
+  const pushed = await autoPushTeamRepo(repoPath, `[teamai] Deep enrich: ${target.project}`, paths);
+
+  if (pushed) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
+
+  return { pushed };
+}
+
+/** The steps of teamai's default teamai-codebase-deep-enrich workflow, each a `codebase` verb. */
+export const DeepEnrich = { targetOf, plan, write, graph, finish, publish } as const;

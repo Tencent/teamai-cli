@@ -184,7 +184,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: given?.propertie
     const control = fs.readFileSync(path.join(root, 'judged-transcript.md'), 'utf8');
     expect(control).toContain(`Add retries. ${PHRASE}`);
     expect(control).not.toContain('Added the retries.');
-    expect(tried.stderr).toContain('review-quality: This rubric passes a session where the agent did nothing, so it may not judge the work.');
+    expect(tried.stderr).toContain('⚠ review-quality: This rubric passes a session where the agent did nothing, so it may not judge the work.');
     expect(z.object({ label: z.object({ rubric: z.object({ sourceHash: z.string() }) }).passthrough() }).parse(envelope(tried.stdout).data).label.rubric.sourceHash)
       .not.toBe(cachedRubric.sourceHash);
     expect(store()).toEqual(before);

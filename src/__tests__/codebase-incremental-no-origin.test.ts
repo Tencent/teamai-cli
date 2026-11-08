@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { extractCodebase } from '../codebase-extract.js';
-import { importCodebase } from '../import-codebase.js';
+import { importCodebase } from './helpers/import-codebase.js';
 
 /**
  * A `--dir` checkout with no `origin` remote has no `repoIdentity`, so the

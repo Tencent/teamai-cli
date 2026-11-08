@@ -20,8 +20,8 @@ import { LabelStore } from '../scorers/label-store.js';
 import { Marks, type MarkFacts, type MarkKey } from '../scorers/marks.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { isSampled } from '../scorers/sampling.js';
-import { availableTeamSkills, skillsEvidence, type AvailableSkill, type SkillsEvidence } from '../scorers/skill-evidence.js';
-import { isRoutingScorer, routingQuestionOf, routingScorers } from '../scorers/skill-routing.js';
+import { GeneratedQuestions, type QuestionSession, type QuestionSwitches } from '../scorers/generated-questions.js';
+import { skillsEvidence, type SkillsEvidence } from '../scorers/skill-evidence.js';
 import type { Subject } from '../scorers/subject.js';
 import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, isJsonObject, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
@@ -201,17 +201,29 @@ export function judgeSession({ platform, found, captures, mask, agent: archived 
   };
 }
 
-/** Writes the evidence of one judge call of `rubrics` on `judged` into `dir`, `.ready` last. */
-export async function writeSessionEvidence(dir: string, judged: JudgedSession, rubrics: Rubrics): Promise<void> {
+/**
+ * Writes the evidence of one judge call of `rubrics` on `judged` into `dir`, `.ready` last, with `files`, which its
+ * questions pinned to be read beside the transcript, by their path in `dir`, masked as the transcript is.
+ */
+export async function writeSessionEvidence(dir: string, judged: JudgedSession, rubrics: Rubrics, files: Readonly<Record<string, string>> = {}): Promise<void> {
   const { body, manifest, mask } = judged;
+  const pinned = Object.entries(files).map(([file, text]) => ({ title: file, body: mask(text) }));
+
   await writeEvidence(dir, async (tmp) => {
     await fs.mkdir(path.join(tmp, 'transcripts'));
     await fs.writeFile(path.join(tmp, 'transcripts', 'session.md'), body);
     await fs.writeFile(path.join(tmp, 'evidence.json'), JSON.stringify(manifest, null, 2));
+
+    for (const { title, body: text } of pinned) {
+      await fs.mkdir(path.dirname(path.join(tmp, title)), { recursive: true });
+      await fs.writeFile(path.join(tmp, title), text);
+    }
+
     await fs.writeFile(path.join(tmp, 'prompt.md'), mask(rubricPrompt(rubrics)) + fencedEvidence([
       { title: 'evidence.json', body: JSON.stringify(manifest) },
       { title: 'transcripts/session.md', body },
-    ], 'transcripts/session.md and evidence.json'));
+      ...pinned,
+    ], [['transcripts/session.md', ...pinned.map(({ title }) => title)].join(', '), 'evidence.json'].join(' and ')));
   });
 }
 
@@ -260,33 +272,33 @@ async function sessionScorers(config: LocalConfig): Promise<SessionScorer[]> {
   return scorers.map(({ dir, ...scorer }) => (dir === undefined || shared.includes(dir) ? scorer : { ...scorer, namespace: dir }));
 }
 
-/** The team skills the captures of `subject` delivered, which its routing questions ask of; a pushed session has no captures here. */
-async function deliveredSkills(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>): Promise<AvailableSkill[] | undefined> {
-  return subject.kind === 'session' ? availableTeamSkills(await SessionCaptures.read(config, subject.subject.platform, subject.subject.sessionId)) : undefined;
+/** `subject` as generated questions ask of it, with its captures; a pushed session has no captures here, so none. */
+async function questionSession(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>): Promise<QuestionSession | undefined> {
+  return subject.kind === 'session' ? { subject: subject.subject, captures: await SessionCaptures.read(config, subject.subject.platform, subject.subject.sessionId) } : undefined;
 }
 
-/** One routing question per team skill `subject`'s captures delivered, each a scorer of the session. */
-async function routingQuestions(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>): Promise<SessionScorer[]> {
-  return routingScorers(await deliveredSkills(config, subject) ?? []);
+/** The generated questions of `subject` that `switches` ask, each a scorer of the session. */
+async function generatedQuestions(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>, switches: QuestionSwitches): Promise<SessionScorer[]> {
+  return GeneratedQuestions.questions(config, await questionSession(config, subject), switches);
 }
 
 /**
- * The pins of `names` for `subject`: a scorer as teamai pull cached it, a routing question as the team skills its
- * captures delivered ask it. A name with neither is left out; `unpinned` says why for a routing name.
+ * The pins of `names` for `subject`: a scorer as teamai pull cached it, a generated question as `subject` asks it. A
+ * name with neither is left out; `unpinned` says why for a generated question's name.
  */
 async function pinsOf(config: LocalConfig, subject: Exclude<Subject, { kind: 'run' }>, names: readonly string[]): Promise<{ pins: Record<string, PinnedScorer>; unpinned: Map<string, string> }> {
-  const routing = names.filter(isRoutingScorer);
+  const generated = names.filter(GeneratedQuestions.isGenerated);
   const pinned = await pinScorers(config, names);
   const unpinned = new Map<string, string>();
 
-  if (routing.length === 0) return { pins: pinned, unpinned };
-  const available = await deliveredSkills(config, subject);
+  if (generated.length === 0) return { pins: pinned, unpinned };
+  const session = await questionSession(config, subject);
 
-  for (const name of routing) {
-    const routed = routingQuestionOf(name, available);
+  for (const name of generated) {
+    const found = await GeneratedQuestions.questionOf(config, name, session);
 
-    if (routed.ok) pinned[name] = routed.question.pin;
-    else unpinned.set(name, routed.why);
+    if (found.ok) pinned[name] = found.question.pin;
+    else unpinned.set(name, found.why);
   }
 
   return { pins: pinned, unpinned };
@@ -426,9 +438,9 @@ async function samplingScorers(config: LocalConfig, scorers?: readonly SessionSc
 
 /**
  * Reads the session for a judge, redacted with this scope's team secrets: from the file its hooks last named, else
- * where its tool keeps it. Not ok when it is gone or holds nothing to judge.
+ * where its tool keeps it; with `control`, its first prompt alone. Not ok when it is gone or holds nothing to judge.
  */
-async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok: true; judged: JudgedSession } | { ok: false }> {
+async function read(config: LocalConfig, subject: SessionSubject, { control = false }: { control?: boolean } = {}): Promise<{ ok: true; judged: JudgedSession } | { ok: false }> {
   const captures = await SessionCaptures.read(config, subject.platform, subject.sessionId);
   const filePath = captures.flatMap((capture) => capture.sessionFile ?? []).at(-1);
   const found = await AgentSession.find(filePath ? { ...subject, filePath } : { ...subject }, { subagents: true });
@@ -436,7 +448,8 @@ async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok:
   if (found.status !== 'done' || found.session.messages.length === 0) return { ok: false };
   const envSecrets = await knownSecrets(config);
 
-  return { ok: true, judged: judgeSession({ platform: subject.platform, found, captures, mask: (text) => redact(text, { envSecrets }) }) };
+  // The control keeps the captures, so the skills the session had stay in its evidence while those it used go.
+  return { ok: true, judged: judgeSession({ platform: subject.platform, found: control ? firstPromptOnly(found) : found, captures, mask: (text) => redact(text, { envSecrets }) }) };
 }
 
 /**
@@ -464,4 +477,4 @@ async function sampledScorers(config: LocalConfig, subject: SessionSubject, fact
   });
 }
 
-export const SessionWork = { finished, read, scopeCwd, sampledScorers, samplingScorers, sessionScorers, routingQuestions, pinsOf, isGone } as const;
+export const SessionWork = { finished, read, scopeCwd, sampledScorers, samplingScorers, sessionScorers, generatedQuestions, pinsOf, isGone } as const;

@@ -19,6 +19,17 @@ export function isIgnored(name: string): boolean {
   return IGNORED_NAMES.has(name) || name.endsWith('.pyc');
 }
 
+/**
+ * The suffix of a draft `recall maintenance --update-quality` writes beside a team doc, rule or skill file for a person
+ * to review. It is no team knowledge until renamed, so pull delivers none and recall reads none.
+ */
+export const DRAFT_SUFFIX = '.draft.md';
+
+/** Whether a team file is a draft (`DRAFT_SUFFIX`). Read on the team's side only, so pull still sweeps a copy it delivered before. */
+export function isDraft(file: string): boolean {
+  return file.endsWith(DRAFT_SUFFIX);
+}
+
 export { expandHome } from './home.js';
 
 const ErrnoErrorSchema = z.object({ code: z.string() });
@@ -294,7 +305,7 @@ export async function copyDir(
   await fse.copy(srcExpanded, destExpanded, {
     overwrite: true,
     filter: async (srcPath: string) => {
-      if (isIgnored(path.basename(srcPath))) return false;
+      if (isIgnored(path.basename(srcPath)) || isDraft(srcPath)) return false;
       // An entry `skip` names, and everything under it, is left as the destination has it.
       const rel = path.relative(srcExpanded, srcPath).split(path.sep).join('/');
 

@@ -1318,7 +1318,7 @@ describe('reviewBranchDir — scorers', () => {
     const scoring = (file: string, message: string) => ({ level: 'fail', check: 'scorers', path: `scorers/${file}`, message });
     expect(review.findings).toEqual([
       scoring('dev/scoring.yaml', 'scorers/dev/scoring.yaml: batch is "maybe", not true or false, so it is ignored'),
-      scoring('dev/scoring.yaml', 'scorers/dev/scoring.yaml: "isolaton" is not a scoring setting (batch, isolation, sessions, skill_routing, daily_limit), so it is ignored'),
+      scoring('dev/scoring.yaml', 'scorers/dev/scoring.yaml: "isolaton" is not a scoring setting (batch, isolation, sessions, skill_routing, recall_adoption, daily_limit), so it is ignored'),
       scoring('qa/scoring.yaml', expect.stringMatching(/^scorers\/qa\/scoring\.yaml is not valid YAML: /)),
       scoring('shared/scoring.yaml', 'scorers/shared/scoring.yaml isolation is "strict", which is not verified or best-effort, so it counts as verified'),
     ]);
@@ -1693,6 +1693,35 @@ describe('materializeRef — branch materialization from git', () => {
       expect(review.findings).toEqual([
         { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.unattended is "always", not off, ask or auto, so it is ignored' },
         { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.nightly is not a run mode (attended, unattended), so it is ignored' },
+      ]);
+    } finally {
+      await fse.remove(gitRepo);
+      await fse.remove(destDir);
+    }
+  });
+  it('reads a single-repo team from .teamai/ on the branch, so the review reports its problems', async () => {
+    const gitRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-git-repo-'));
+    const destDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-dest-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', gitRepo, ...args]);
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      const teamYaml = path.join(gitRepo, '.teamai', 'teamai.yaml');
+      await fse.outputFile(path.join(gitRepo, 'src', 'app.ts'), 'export {};\n');
+      await fse.outputFile(teamYaml, 'team: acme\nmode: self\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'app and team');
+      git('checkout', '-q', '-b', 'team-change');
+      await fse.appendFile(teamYaml, 'sessions:\n  publish:\n    unattended: always\n');
+      git('commit', '-q', '-am', 'team change');
+      git('checkout', '-q', '-');
+
+      await materializeRef(path.join(gitRepo, '.teamai'), 'team-change', destDir);
+      const review = await reviewBranchDir('team-change', destDir);
+
+      expect(review.findings).toEqual([
+        { level: 'fail', check: 'sessions', path: 'teamai.yaml', message: 'teamai.yaml sessions.publish.unattended is "always", not off, ask or auto, so it is ignored' },
       ]);
     } finally {
       await fse.remove(gitRepo);

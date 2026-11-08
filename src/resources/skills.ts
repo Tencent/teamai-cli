@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { ResourceHandler, type ScanForPushOptions } from './base.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, resolveBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
-import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
+import { isDraft, listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { getFileContentWhenAdded, isPastVersionOf, resolveAnchors } from '../utils/git.js';
@@ -851,7 +851,7 @@ async function removeLeftoverVersionFiles(
   const delivered = ledger?.previous;
 
   if (otherVersions.size === 0 && delivered === undefined) return;
-  const sourceFiles = new Set(await listFilesRecursive(source));
+  const sourceFiles = new Set((await listFilesRecursive(source)).filter((file) => !isDraft(file)));
   let removed = false;
 
   for (const file of await listFilesRecursive(dest)) {

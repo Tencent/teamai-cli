@@ -50,7 +50,8 @@ export type StartedRun = z.infer<typeof StartedRunSchema>;
  */
 export type RespondVia =
   | { kind: 'process'; caller: CallerProvenance; json?: unknown }
-  | Extract<Via, { kind: 'skill' }>;
+  /** `queued`: as `next`'s, the skill driver's open leases that wait for their place. */
+  | Extract<Via, { kind: 'skill' }> & { queued: readonly string[] };
 
 /**
  * What an engine `done` answers from: a run file's status; its revision, which each settled report and each retry bumps;
@@ -334,7 +335,7 @@ export async function resumeRefusal(
  * Starts `name` as one of the CLI's own automatic starts, in run mode `mode`: with no agent evidence, so no agent gave its
  * inputs, and recorded as started by `cli`, which hand labels and policy overrides never trust as a person.
  */
-export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: { inputs: unknown; checkout?: string; driver?: DriverIdentity; awaits?: RunState['awaits']; mode: RunMode }): Promise<WorkflowEnvelope> {
+export function startAsCli(client: Pick<WorkflowClient, 'start'>, name: string, { mode, ...options }: Omit<Parameters<WorkflowClient['start']>[1], 'caller' | 'startedBy' | 'instead'> & { mode: RunMode }): Promise<WorkflowEnvelope> {
   return client.start(name, { ...options, caller: { evidence: { kind: 'none' }, confirmed: false, mode }, startedBy: 'cli' });
 }
 
@@ -527,6 +528,7 @@ async function leasedPlace(config: LocalConfig, lock: RunLock, raw: unknown): Pr
  */
 async function placeLeased(config: LocalConfig, lock: RunLock, leased: Leased, adopt?: string): Promise<PlacePrepared | PlaceBusy> {
   const { lease, root, others } = leased;
+
   const held = await placeHeldBy({ config, run: lock.run, root, lease, others, adopt });
 
   if (held) return { kind: 'busy', ...held };
@@ -672,7 +674,10 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
       return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock, changed: options?.changed }), parsed.ignored);
     },
     respond: async (runId, step, choice, { via, ...answer }) => {
-      if (via.kind === 'skill') return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via) });
+      if (via.kind === 'skill') {
+        return respondToHitl(config, runId, env.secrets, { step, choice, ...answer, provenance: respondProvenance(via), queued: { driver: via.driver, attempts: via.queued } });
+      }
+
       const { evidence } = via.caller;
 
       if (evidence.kind === 'attempt') return { error: nestedWorkflowError({ kind: 'marker', attempt: evidence.attempt }) };
@@ -982,24 +987,42 @@ async function settleManaged(input: { config: LocalConfig; lock: RunLock; attemp
 }
 
 /**
- * What a command step reports once it exited: `success` on status 0, else `failed` with its status and the start of
- * its stderr; and its whole stdout as its outputs, when that is JSON.
+ * The status a command exits with when its input is wrong, `EX_DATAERR` of sysexits.h: running it again with the same
+ * input fails the same way, so its step fails `input_rejected`.
  */
+export const INPUT_REJECTED_EXIT = 65;
+
+/** How a command step that exited with `exitCode` failed, before any of its stderr. */
+export function commandExitMessage(exitCode: number): string {
+  return `command exited with status ${exitCode}`;
+}
+
 /** How a command step ended, as its report carries it. */
 export interface CommandEnd {
   outcome: 'success' | 'failed';
   exitCode: number;
   message?: string;
+  failure?: WorkflowFailure;
   outputs?: JsonValue;
 }
 
+/**
+ * What a command step reports once it exited: `success` on status 0, else `failed` with its status and the start of
+ * its stderr, as `input_rejected` on {@link INPUT_REJECTED_EXIT} and `command_failed` on any other status; and its whole
+ * stdout as its outputs, when that is JSON.
+ */
 export function commandEnd(result: { exitCode: number; stdout: string; stderr: string }): CommandEnd {
   const { exitCode } = result;
   const outputs = commandOutputs(result.stdout);
   const snippet = result.stderr.trim().slice(0, 400);
   const end: CommandEnd = { outcome: exitCode === 0 ? 'success' : 'failed', exitCode };
 
-  if (exitCode !== 0) end.message = snippet === '' ? `command exited with status ${exitCode}` : `command exited with status ${exitCode}: ${snippet}`;
+  if (exitCode !== 0) {
+    const message = snippet === '' ? commandExitMessage(exitCode) : `${commandExitMessage(exitCode)}: ${snippet}`;
+    end.message = message;
+
+    end.failure = { code: exitCode === INPUT_REJECTED_EXIT ? 'input_rejected' : 'command_failed', message };
+  }
 
   if (outputs !== undefined) end.outputs = outputs;
 

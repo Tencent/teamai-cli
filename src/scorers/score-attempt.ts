@@ -35,16 +35,49 @@ export interface ScoreAttempt {
   dir: string;
   /** The instance's `label` input, a hand label; '' for none. */
   hand: string;
+  /** The instance's `files` input: scorer files it labels with in place of named scorers. */
+  files: string[];
+  /** The instance's `store` input: false when its labels are only tried. A run started before the input existed stores. */
+  storesLabels: boolean;
+  /** The instance's `control` input: it judges a session's first prompt alone. */
+  isControl: boolean;
 }
 
-export type ScoreAttemptRead = { ok: true; attempt: ScoreAttempt } | { ok: false; code: 'score_attempt_required'; message: string };
+/** Why a verb that runs only inside a leased attempt was refused. */
+type AttemptRefused = { ok: false; code: 'score_attempt_required'; message: string };
 
-function refused(verb: string, why: string): ScoreAttemptRead {
+export type ScoreAttemptRead = { ok: true; attempt: ScoreAttempt } | AttemptRefused;
+
+function refused(verb: string, why: string, workflow = SCORE_WORKFLOW): AttemptRefused {
   return {
     ok: false,
     code: 'score_attempt_required',
-    message: `teamai score ${verb} runs only as a step of a ${SCORE_WORKFLOW} run, in the attempt the engine leased it: ${why}. Nothing was written.`,
+    message: `teamai score ${verb} runs only as a step of a ${workflow} run, in the attempt the engine leased it: ${why}. Nothing was written.`,
   };
+}
+
+/** A leased attempt of any workflow: the scope and the root run, the leased step, and the attempt's own directory. */
+type Leased = Omit<ScoreAttempt, 'instance' | 'hand' | 'files' | 'storesLabels' | 'isControl'>;
+
+/** The attempt `env` names, when `$TEAMAI_RUN_DIR` is its run's directory and it holds a lease of that run; else why not. */
+async function leasedAttempt(env: NodeJS.ProcessEnv, current: LocalConfig | undefined): Promise<{ ok: true; leased: Leased } | { ok: false; why: string }> {
+  const [runPart, attemptPart, ...rest] = (env[ATTEMPT_ENV] ?? '').split('/');
+  const runId = RunIdSchema.safeParse(runPart);
+  const attemptId = AttemptIdSchema.safeParse(attemptPart);
+  const runDir = env[RUN_DIR_ENV];
+
+  if (!runId.success || !attemptId.success || rest.length > 0 || !runDir) return { ok: false, why: `${ATTEMPT_ENV} and ${RUN_DIR_ENV} name no workflow attempt` };
+  const found = await findRunConfig(runId.data, current);
+
+  if ('error' in found) return { ok: false, why: `run ${runId.data} is not on this machine (${found.error.code}: ${found.error.message})` };
+  const { config, run } = found;
+
+  if (!await isSameRealPath(runScratchDir(config, run.id), runDir)) return { ok: false, why: `${RUN_DIR_ENV} is not the directory of run ${run.id}` };
+  const leased = run.steps.find((state) => state.status === 'leased' && state.attempt === attemptId.data);
+
+  if (!leased) return { ok: false, why: `attempt ${attemptId.data} holds no lease of run ${run.id}` };
+
+  return { ok: true, leased: { config, run, attempt: attemptId.data, step: leased.id, dir: path.join(runDir, attemptId.data) } };
 }
 
 /** The innermost `teamai-score` workflow file the step at `stepPath` is in, with the path its steps start with. */
@@ -79,31 +112,33 @@ export const ScoreAttempt = {
    * inside a `teamai-score` instance. `current` is the scope of the verb's directory, searched first.
    */
   async read(verb: string, env: NodeJS.ProcessEnv, current: LocalConfig | undefined): Promise<ScoreAttemptRead> {
-    const [runPart, attemptPart, ...rest] = (env[ATTEMPT_ENV] ?? '').split('/');
-    const runId = RunIdSchema.safeParse(runPart);
-    const attemptId = AttemptIdSchema.safeParse(attemptPart);
-    const runDir = env[RUN_DIR_ENV];
+    const found = await leasedAttempt(env, current);
 
-    if (!runId.success || !attemptId.success || rest.length > 0 || !runDir) return refused(verb, `${ATTEMPT_ENV} and ${RUN_DIR_ENV} name no workflow attempt`);
-    const found = await findRunConfig(runId.data, current);
+    if (!found.ok) return refused(verb, found.why);
+    const { leased } = found;
+    const instance = instanceOf(leased.run, leased.step);
 
-    if ('error' in found) return refused(verb, `run ${runId.data} is not on this machine (${found.error.code}: ${found.error.message})`);
-    const { config, run } = found;
+    if (!instance) return refused(verb, `step ${leased.step} of run ${leased.run.id} is not inside a ${SCORE_WORKFLOW} instance`);
 
-    if (!await isSameRealPath(runScratchDir(config, run.id), runDir)) return refused(verb, `${RUN_DIR_ENV} is not the directory of run ${run.id}`);
-    const leased = run.steps.find((state) => state.status === 'leased' && state.attempt === attemptId.data);
-
-    if (!leased) return refused(verb, `attempt ${attemptId.data} holds no lease of run ${run.id}`);
-    const instance = instanceOf(run, leased.id);
-
-    if (!instance) return refused(verb, `step ${leased.id} of run ${run.id} is not inside a ${SCORE_WORKFLOW} instance`);
-
-    const inputs = inputsAt(run, instance.prefix);
+    const inputs = inputsAt(leased.run, instance.prefix);
 
     return {
       ok: true,
-      attempt: { config, run, attempt: attemptId.data, step: leased.id, instance: { ...instance, inputs }, dir: path.join(runDir, attemptId.data), hand: z.string().catch('').parse(inputs.label) },
+      attempt: {
+        ...leased, instance: { ...instance, inputs },
+        hand: z.string().catch('').parse(inputs.label),
+        files: z.array(z.string()).catch([]).parse(inputs.files),
+        storesLabels: z.boolean().catch(true).parse(inputs.store),
+        isControl: z.boolean().catch(false).parse(inputs.control),
+      },
     };
+  },
+
+  /** The leased attempt of a step of `workflow` that `env` names, for a verb that reads what teamai-score instances of its run wrote. */
+  async leased(verb: string, workflow: string, env: NodeJS.ProcessEnv, current: LocalConfig | undefined): Promise<{ ok: true; leased: Leased } | AttemptRefused> {
+    const found = await leasedAttempt(env, current);
+
+    return found.ok ? found : refused(verb, found.why, workflow);
   },
 
   /** Whether the instance keeps a step `id`, at any depth of its inline workflows, so a team file that drops it drops that stage. */

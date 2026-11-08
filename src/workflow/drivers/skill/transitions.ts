@@ -62,7 +62,7 @@ export const TRANSITIONS = [
   { id: 'S4', state: 'host, drive, done', input: 'next `--takeover` from session s', guard: '', effects: 'owner := s, working in the tool its host names; `lastCallAt` := now; `seen[s]` := `seen[o]` when that is later; every offered or dispatched attempt becomes offered with `reissued`, except a confined one whose dispatch names another tool than s works in, which write-ahead `released`', next: 'unchanged', action: 'event `takeover`; the turn of a tick' },
   { id: 'S5', state: 'any', input: 'a runner call (`report --attempt a` with the marker `<run>/a`)', guard: '', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'C rows' },
   { id: 'S6', state: 'host, drive, done', input: 'an agent `report --attempt a`, from any session', guard: 'a is settled, or open offered, dispatched, reporting, or stopping by the agent', effects: 'no session check, no `lastCallAt`', next: 'unchanged', action: 'the input\'s row' },
-  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at the level `judging` keeps while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
+  { id: 'D1', state: 'drive', input: 'tick', guard: '', effects: 'engine `next {driver: identity + canFor(host), the can of the host\'s profile, and h1\'s for a run without prompt steps, with can.confined: the session tool\'s own at the level `judging` keeps while `judging`, else one of the run\'s tool at `best-effort` while `sessionJudge`, else none, running: every open attempt, queued: every queued attempt and each D9 unqueued this tick, canTakeLease: fewer open than options.parallel, and than one under a serial host; false in a runner\'s check, autoApprove: true under HITL mode `auto-approve`, runMode: options.mode}`, and in run mode `unattended` `handoff: offers`, so the engine holds a step only a person can take', next: 'drive', action: '' },
   { id: 'D2', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a queued or placing', effects: 'drop a', next: 'drive', action: 'event `stopped`' },
   { id: 'D3', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a preparing or running', effects: 'phase stopping by its runner, why `timeout` once its `expiresAt` passed, else `cancelled`', next: 'drive', action: '' },
   { id: 'D4', state: 'drive', input: 'reply `cancelled` holds a', guard: 'a offered or dispatched', effects: 'phase stopping by the agent, why as D3', next: 'drive', action: '`stop {why, report}` in each foreground turn until reported' },
@@ -71,6 +71,7 @@ export const TRANSITIONS = [
   { id: 'D7', state: 'drive', input: 'reply lease', guard: 'executor prompt, and neither D8 nor D28 applies', effects: 'phase preparing; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D8', state: 'drive', input: 'reply lease', guard: 'executor prompt, workspace `new` or `continue`, and a host that makes places (h3)', effects: 'phase preparing with request `host`; spawn runner job `prompt`', next: 'drive', action: 'event `started`' },
   { id: 'D28', state: 'drive', input: 'reply lease', guard: 'executor prompt, confined to a directory, while `judging`', effects: 'phase preparing, `runs: here`; spawn runner', next: 'drive', action: 'event `started`' },
+  { id: 'D33', state: 'drive', input: 'reply `deadlines` holds a', guard: 'a queued or preparing', effects: '`expiresAt` := that deadline', next: 'drive', action: '' },
   { id: 'D9', state: 'drive', input: 'tick', guard: 'a queued attempt whose `behind` is no longer open', effects: 'phase preparing; spawn its job again', next: 'drive', action: '' },
   { id: 'D10', state: 'drive', input: 'reply hitl', guard: 'a required approval', effects: 'journal the gate: `seq` := seq + 1, unless it is the gate journalled already', next: 'drive', action: '`person why:approval` with the person\'s literals; waiting `<step> waits for the person\'s answer`' },
   { id: 'D11', state: 'drive', input: 'reply hitl', guard: 'an optional gate; HITL mode `person`, or `auto-approve`, under which only a choice without a default comes back', effects: 'as D10', next: 'drive', action: '`choose about:gate decide:person`' },
@@ -576,6 +577,8 @@ export function hasSlot(state: SkillState): boolean {
 
 interface TickRequest {
   running: AttemptId[];
+  /** The attempts in `running` that wait behind another for their place, so their timeout does not count yet. */
+  queued: AttemptId[];
   canTakeLease: boolean;
   autoApprove: boolean;
   /** In run mode `unattended`: nobody answers here, so the engine holds the steps only a person can take, for the run to be offered to one. */
@@ -592,13 +595,22 @@ function agrees(version: RunVersion, end: { outcome: string; prs: string[]; out:
 }
 
 /**
+ * The attempts a call to the engine lists in `queued`, whose own timeout it restarts: each queued one, and each D9
+ * unqueued this tick, which has just started, so its clock restarts once more.
+ */
+export function queuedAttempts(state: SkillState, unqueued: readonly AttemptId[] = []): AttemptId[] {
+  return state.attempts.filter((open) => open.phase === 'queued' || unqueued.includes(open.attempt)).map((open) => open.attempt);
+}
+
+/**
  * The engine `next` of a tick (D1), or R12 while the host question waits. Once the run is done, a `next` that takes no
  * lease (X5) asks whether the engine reopened it or another driver ended it again, but only once `version`, what the
  * run file says now, moved from what the end kept (X7). A runner's check (`role: 'runner'`) takes no lease.
  */
-export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; version?: RunVersion }): { row: 'R12' | 'X7' } | { row: 'D1'; request: TickRequest } | (Moved<'X5'> & { request: TickRequest }) {
+export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; version?: RunVersion; unqueued?: readonly AttemptId[] }): { row: 'R12' | 'X7' } | { row: 'D1'; request: TickRequest } | (Moved<'X5'> & { request: TickRequest }) {
   const { role, version } = input;
   const running = state.attempts.map((open) => open.attempt);
+  const queued = queuedAttempts(state, input.unqueued);
   const autoApprove = state.options.hitl === 'auto-approve';
   const { done } = state;
 
@@ -607,12 +619,12 @@ export function tickRow(state: SkillState, input: { role: 'call' | 'runner'; ver
 
     if (version && kept && !version.creating && version.status === kept.status && version.revision === kept.revision && version.receipts === kept.receipts) return { row: 'X7' };
 
-    return { row: 'X5', request: { running, canTakeLease: false, autoApprove }, state: version ? { ...state, done: { ...done, version } } : state };
+    return { row: 'X5', request: { running, queued, canTakeLease: false, autoApprove }, state: version ? { ...state, done: { ...done, version } } : state };
   }
 
   if (state.host.kind === 'pending') return { row: 'R12' };
 
-  const request: TickRequest = { running, canTakeLease: role === 'call' && hasSlot(state), autoApprove };
+  const request: TickRequest = { running, queued, canTakeLease: role === 'call' && hasSlot(state), autoApprove };
 
   if (state.options.mode === 'unattended') request.handoff = { kind: 'offers' };
 
@@ -929,6 +941,13 @@ export function cancelledRow(state: SkillState, input: { attempt: AttemptId; at:
       return unhandled;
     }
   }
+}
+
+/** D33: the engine restarted the clock of `attempt`, which waits for its place or just stopped waiting. */
+export function deadlineRow(state: SkillState, input: { attempt: AttemptId; deadline: string }): Moved<'D33'> | undefined {
+  const open = state.done ? undefined : openAttempt(state, input.attempt);
+
+  return open?.phase === 'queued' || open?.phase === 'preparing' ? { row: 'D33', state: withAttempt(state, { ...open, expiresAt: input.deadline }) } : undefined;
 }
 
 /** D18: a foreground call that spawned runners waits for them before it answers, unless the run is done. */

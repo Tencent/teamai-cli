@@ -585,6 +585,17 @@ describe('readCodexHookTrustForScope (doctor)', () => {
     expect(await readCodexHookTrustForScope(teamConfig, userConfig())).toEqual({ kind: 'listed', notTrusted: [] });
   });
 
+  it('reports the Codex config error instead of "not loaded" when hooks/list returns errors', async () => {
+    await writeYaml(LINT_HOOK);
+    await writeAndTrust(userConfig());
+    writeFakeCodexOptions(codexHome(), { listErrors: 'invalid transport in mcp_servers.x' });
+
+    const report = await readCodexHookTrustForScope(teamConfig, userConfig());
+
+    expect(report?.kind).toBe('failed');
+    expect(report?.kind === 'failed' ? report.reason : '').toContain('invalid transport in mcp_servers.x');
+  });
+
   it('is null when teamai wrote no Codex hook', async () => {
     expect(await readCodexHookTrustForScope(teamConfig, userConfig())).toBeNull();
   });

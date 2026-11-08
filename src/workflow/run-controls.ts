@@ -6,7 +6,7 @@ import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
 import {
-  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, retryCommand, runData, withRun, workflowLabel,
+  error, finishRun, locateStep, ok, parseReads, reconcileRun, respondCommand, restartQueued, retryCommand, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isRecord, isTruthy, pathValue } from './expression.js';
@@ -178,6 +178,8 @@ export interface ResponseInput {
   pass?: number;
   /** A required gate refuses an answer an agent may have sent. */
   provenance: Provenance;
+  /** As `next`'s `queued`: the open leases of the driver that sent the answer that it holds but has not started, whose own timeout counts from this answer. */
+  queued?: { driver: DriverIdentity; attempts: readonly string[] };
 }
 
 function agentInPath(run: RunState, state: StepState, options: readonly string[], cause: AgentCause): WorkflowEnvelope {
@@ -204,6 +206,8 @@ function agentInPath(run: RunState, state: StepState, options: readonly string[]
 export async function respondToHitl(config: LocalConfig, runId: string, secrets: Record<string, string>, input: ResponseInput): Promise<WorkflowEnvelope> {
   return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
+
+    if (input.queued) restartQueued(run, input.queued.driver, new Set(input.queued.attempts), now);
     const result = reconcileRun(run, now);
 
     if ('unreadable' in result) return error('run_unreadable', result.unreadable);
@@ -350,6 +354,9 @@ function holdsGonePathIn(value: JsonValue | undefined, dir: string): boolean {
   return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !fs.existsSync(text);
 }
 
+/** The fields of a step that carry what it produced: its outputs, and those of each fan-out item or pass. */
+const PRODUCED_FIELDS: ReadonlySet<string> = new Set(['outputs', 'results', 'passes']);
+
 /** The producers of gone run-dir paths a step reads: the steps of its own workflow, and the ids of those around it. */
 interface RunDirProducers {
   here: StepState[];
@@ -357,7 +364,7 @@ interface RunDirProducers {
 }
 
 /**
- * The steps whose outputs `state`'s templates render where they hold a path inside `runDir`, the run's
+ * The steps whose outputs, results or passes `state`'s templates render where they hold a path inside `runDir`, the run's
  * `$TEAMAI_RUN_DIR`, that is gone: its run's end removed it, and a step that ran since a retry reopened the run brought
  * back only its own. A read only in `if` renders nothing, so it brings no step. `here` are those of `state`'s own
  * workflow; `enclosing`, by id, those of the workflows around it.
@@ -378,7 +385,7 @@ function runDirProducers(input: { scope: Scope; states: StepState[]; state: Step
   });
 
   const producers = new Set(reads.flatMap((read) => (
-    read.root === 'steps' && read.field === 'outputs' && read.step !== id && holdsGonePathIn(pathValue(read, context), runDir) ? [read.step] : []
+    read.root === 'steps' && PRODUCED_FIELDS.has(read.field) && read.step !== id && holdsGonePathIn(pathValue(read, context), runDir) ? [read.step] : []
   )));
 
   const here = states.filter((other) => producers.has(localId(scope, other)));

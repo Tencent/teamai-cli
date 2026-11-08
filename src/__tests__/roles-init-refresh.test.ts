@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   autoDetectInit: vi.fn(), pullRepo: vi.fn(), pushRepoBranch: vi.fn(),
-  checkoutMaster: vi.fn(), generateBranchName: vi.fn(() => 'init-roles'),
+  checkoutMaster: vi.fn(), generateBranchName: vi.fn(() => 'init-roles'), unusedBranchName: vi.fn(async () => 'init-roles'),
   askQuestion: vi.fn(), askConfirmation: vi.fn(), pathExists: vi.fn(),
   saveRolesManifest: vi.fn(), createPrWithFallback: vi.fn(),
 }));

@@ -1,0 +1,31 @@
+schemaVersion: v1alpha1
+name: teamai-try-scorer
+description: Try scorer files on a finished session before they are pushed, and on its control, storing no label.
+invoke: deny
+private: true
+inputs:
+  # session:<source>:<sessionId> or team-session:<author>:<archive name>
+  subject: string
+  # Scorer files, as teamai pull reads them.
+  files: [string]
+  batch: boolean
+defaults:
+  inputs: { batch: false }
+steps:
+  - id: session
+    workflow: teamai-score
+    with: { subject: "{{ inputs.subject }}", scorers: [], label: "", batch: "{{ inputs.batch }}", demand: named, files: "{{ inputs.files }}", store: false }
+    timeout: 10m
+  # The same files on the session's first prompt alone: a rubric that passes it may not judge the work.
+  - id: control
+    needs: [session]
+    workflow: teamai-score
+    with: { subject: "{{ inputs.subject }}", scorers: [], label: "", batch: "{{ inputs.batch }}", demand: named, files: "{{ inputs.files }}", store: false, control: true }
+    timeout: 10m
+    continue_on_failure: true
+  - id: report
+    needs: [session, control]
+    command: teamai score report --labels "$LABELS" --control "$CONTROL"
+    env: { LABELS: "{{ steps.session.outputs.labels }}", CONTROL: "{{ steps.control.outputs.labels }}" }
+    output: { answer: json, text: string, warnings: string }
+outputs: { answer: steps.report.outputs.answer, text: steps.report.outputs.text, warnings: steps.report.outputs.warnings }

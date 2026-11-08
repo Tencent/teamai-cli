@@ -134,7 +134,7 @@ export async function indexableLearningsRoots(
  * The directories recalled knowledge is read from: the repo clone (docs, rules,
  * skills), the user-scope mirror, recall's learnings roots, and the
  * contribution queue, which recall indexes first and which, for git teams,
- * lives outside the clone. The upvote judge reads excerpts only under them, and
+ * lives outside the clone. An adoption question reads excerpts only under them, and
  * a tool call's read is adoption evidence only under them (#723, #884).
  *
  * The clone and the mirror are always included; the rest are added

@@ -18,6 +18,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../utils/git.js', async (importOriginal) => ({
   // The history proof of an unrecorded copy reads the team repo (#993).
   createGit: (await importOriginal<typeof import('../utils/git.js')>()).createGit,
+  gitBinary: (await importOriginal<typeof import('../utils/git.js')>()).gitBinary,
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
 }));
 
@@ -45,6 +46,7 @@ vi.mock('../utils/logger.js', () => ({
 vi.mock('../update.js', () => ({
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
+  withFileLock: vi.fn(async (_path, _wait, body) => ({ held: true, value: await body() })),
 }));
 
 import { pull } from '../pull.js';

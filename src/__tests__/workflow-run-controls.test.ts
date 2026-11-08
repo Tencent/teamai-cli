@@ -437,6 +437,24 @@ describe('retry after the run dir was removed', () => {
     expect(data(await f.next()).lease).toMatchObject({ step: 'evidence' });
   });
 
+  it('runs again the fan-out whose results a retried step reads in a template when they hold a path inside the run dir', async () => {
+    const f = await fixture(`  - id: make
+    for_each: inputs.items
+    command: echo make
+    output: { file: string }
+  - id: use
+    needs: [make]
+    command: echo use
+    env: { MADE: "{{ steps.make.results }}" }`, 'inputs: { items: [{ name: string }] }\n');
+    const made = data(await f.next()).lease;
+    data(await reportAttempt(f.config, f.id, { attempt: made.attempt, revision: made.revision, driver, outcome: 'success', outputs: { file: path.join(runScratchDir(f.config, f.id), 'one.md') } }));
+    await f.report(data(await f.next()).lease, 'failed');
+    expect(data(await f.next()).done.outcome).toBe('failed');
+
+    expect(data(await retryStep(f.config, f.id, await knownSecrets(f.config), 'use'))).toMatchObject({ retried: { step: 'use', runsAgain: ['make'] }, reopened: true });
+    expect(data(await f.next()).lease).toMatchObject({ step: 'make[0]' });
+  });
+
   it('runs again what a second retried step reads in the run dir when the first retry reopened the run and a step ran since', async () => {
     const pair = (n: number) => `  - id: evidence${n}\n    needs: []\n    command: echo evidence\n    output: { dir: string }\n  - id: label${n}\n    needs: [evidence${n}]\n    command: echo label\n    env: { DIR: "{{ steps.evidence${n}.outputs.dir }}" }\n`;
     const f = await fixture(`${pair(1)}${pair(2)}`.trimEnd());

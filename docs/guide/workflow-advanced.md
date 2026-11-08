@@ -42,9 +42,11 @@ A driver that sends no `running` gets its open lease back on every call, so it r
 
 `"canTakeLease":false` issues no new lease but still returns a waiting HITL request to a driver that declares `driver.can.hitl`. The answer is `done`, an open lease that `running` leaves out, `hitl`, or `wait`. When nothing is leased or waiting at a HITL request, the `wait` reason is `canTakeLease is false`. Use it to learn about an end while the driver has no room for another step. That `wait` does not mean that nothing is left to run, so call `next` again once the driver has room. Step 2 can still hand back an open lease that the driver has no room for, so keep a queue of the leases the driver has not started.
 
+List those in `queued` too, such as one waiting for a busy checkout. The step's own timeout of each then counts from this call, so waiting does not use it up, and the answer's `deadlines` gives each its new deadline, for example `"deadlines":{"a0ce8107f":"2026-05-01T10:12:00.000Z"}`. The clock restarts only on a call that lists the attempt, so keep calling `next` while it waits, and send the same `queued` with each `report` and each `respond --json`, since either can time out a lease whose clock has not restarted lately.
+
 Every `data` answer of `next` has `cancelled`. It lists the attempts in `running` that are no longer open leases of this driver. Stop those processes. An `error` answer has no `cancelled`.
 
-A wrong `running` or `canTakeLease` returns `invalid_json` with `running must be an array of attempt ids` or `canTakeLease must be a boolean`. While one driver holds a lease, another driver gets `wait`, and `reason` names that lease.
+A wrong `running`, `queued` or `canTakeLease` returns `invalid_json` with `running must be an array of attempt ids`, `queued must be an array of attempt ids` or `canTakeLease must be a boolean`. While one driver holds a lease, another driver gets `wait`, and `reason` names that lease.
 
 `report` checks each report against the revision of its own lease, not the run's latest revision. Above, `next` handed out both leases at revision 1. A report for `test` with `"revision":1` moves the run to revision 2. A report for `lint` with `"revision":1` is still accepted and moves it to 3. A report with another revision for an open lease returns `stale_revision`:
 
@@ -71,6 +73,34 @@ With `max_parallel` above 1:
 - On Ctrl-C, or on a SIGTERM, SIGQUIT, or SIGHUP, teamai stops every command, waits for them to exit, and exits with that signal.
 
 With 1, the driver runs one step at a time, and a command runs in your terminal, where Ctrl-C reaches it. A SIGTERM or SIGHUP sent to teamai alone stops the command, waits for it, and exits with that signal.
+
+With `max_parallel` unset, the driver still runs one step at a time, except the items of a `for_each` that declares `max_parallel`: they run side by side, up to that number. No other step starts while they run, and a `for_each` with no `max_parallel` runs its items one at a time. A run that has such a `for_each` runs as with `max_parallel` above 1: commands get no terminal, and Ctrl-C stops them all. Answers and command items with no `workspace` share the checkout and run one at a time, even when the fan-out allows more parallel items. Give an answer `workspace: new` to run the items side by side.
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-modules
+description: Summarize each module, two at a time, then print the summaries.
+inputs:
+  modules: [string]
+steps:
+  - id: summary
+    for_each: { items: inputs.modules, max_parallel: 2 }
+    answer: "Summarize the module {{ item }} in one line."
+    output: { text: string }
+    workspace: new
+  - id: report
+    needs: [summary]
+    command: 'echo "$SUMMARIES" >&2'
+    env: { SUMMARIES: "{{ steps.summary.results }}" }
+```
+
+```text
+$ teamai workflow start summarize-modules --driver local --inputs '{"modules":["api","cli","web"]}'
+ℹ Run rb7a66009e227f202 started. If it stops before it ends, continue it with: teamai workflow resume rb7a66009e227f202
+{"data":{"done":{"run":"rb7a66009e227f202","outcome":"succeeded","progress":[{"step":"report","lines":["[{\"item\":\"api\",\"outcome\":\"success\",\"outputs\":{\"text\":\"HTTP routes and handlers.\"}},{\"item\":\"cli\",\"outcome\":\"success\",\"outputs\":{\"text\":\"Command parsing and output.\"}},{\"item\":\"web\",\"outcome\":\"success\",\"outputs\":{\"text\":\"The dashboard pages.\"}}]"]}],"record":"published"},"cancelled":[]}}
+```
+
+Each answer reads a worktree of its own, so the tool answers `api` and `cli` at the same time, then `web`; `report` starts once all three are done. Other drivers already run ready steps side by side, so this applies to the local driver only.
 
 When an end cancels a running command, the driver sends SIGTERM to it and the processes it started, then SIGKILL 5 seconds later if any still run. A stopping command keeps its slot until its processes exit.
 
@@ -162,6 +192,34 @@ Each instance reads its item as `item` in `prompt`, `env`, and `with`, and in ev
 
 A driver gets each item as an ordinary lease whose `step` is `build[0]`, `build[1]`, and so on. A driver that lists its open leases in `running` gets the next item while the others run. `max_parallel` limits how many items are leased or running at once. At the limit, `next` hands out no other item until one of them settles.
 
+`max_parallel` can also be a template that reads one number input, so whoever starts the run picks the limit. Pull rejects a template that reads anything else, such as a step's outputs or `item`, or that adds text around the `{{ … }}`.
+
+```yaml
+schemaVersion: v1alpha1
+name: describe-modules
+description: Describe each module, as many at once as the member asks for.
+inputs:
+  modules: [string]
+  concurrency: number
+steps:
+  - id: describe
+    for_each: { items: inputs.modules, max_parallel: "{{ inputs.concurrency }}" }
+    command: 'echo "described $MODULE" >&2'
+    env: { MODULE: "{{ item }}" }
+```
+
+```text
+$ teamai workflow start describe-modules --driver local --inputs '{"modules":["api","cli"],"concurrency":2}'
+ℹ Run r3112e07f9a6d93ad started. If it stops before it ends, continue it with: teamai workflow resume r3112e07f9a6d93ad
+{"data":{"done":{"run":"r3112e07f9a6d93ad","outcome":"succeeded","progress":[{"step":"describe[0]","lines":["described api"]},{"step":"describe[1]","lines":["described cli"]}],"record":"published"},"cancelled":[]}}
+```
+
+With `"concurrency":0`, or any value that is not a whole number from 1, the start is refused before the run exists:
+
+```text
+{"error":{"code":"invalid_inputs","message":"Step \"describe\" for_each.max_parallel {{ inputs.concurrency }} renders 0, which is not a whole number from 1. Pass a whole number from 1 for the input it reads."}}
+```
+
 A failed item does not stop the other items. The step settles when every item has settled, and it fails if any item failed. `output` checks the outputs of each item.
 
 `steps.<id>.results` lists how each item went, in item order. Each entry has `item`, `outcome`, and `outputs` when the item has outputs:
@@ -243,6 +301,50 @@ teamai workflow start review-packages --inputs '{"packages":[{"dir":"packages/co
 ```
 
 `review[0]` runs on the model alias `strong`, and `review[1]` on the tool's default, since its model renders empty. When one review fails, `summarize` still runs on the other, and the run succeeds with every entry in `reviews`.
+
+### Fall back on some failures only
+
+`steps.<id>.failure` reads why a step failed: its `code` and its `message`. It is `null` for a step that did not fail. A fallback step reads it to cover the failures it is meant for and leave the others failing:
+
+```yaml
+schemaVersion: v1alpha1
+name: summarize-or-keep
+description: Summarize the notes, and keep them as written when the tool fails for any reason but a tool the member names that cannot run.
+inputs: { notes: string }
+ends: { unconfigured-tool: failed }
+steps:
+  - id: summary
+    answer: "Summarize these notes in five lines: {{ inputs.notes }}"
+    output: { text: string }
+    timeout: 60s
+    continue_on_failure: true
+  - id: keep
+    needs: [summary]
+    if: steps.summary.outcome == 'failed' && steps.summary.failure.code != 'tool_unconfigured'
+    command: 'echo "Kept the notes as written: $WHY" >&2'
+    env: { WHY: "{{ steps.summary.failure.message }}" }
+  - id: stop
+    needs: [summary]
+    if: steps.summary.failure.code == 'tool_unconfigured'
+    end: unconfigured-tool
+```
+
+When the tool times out or exits with an error, `keep` runs and the run succeeds. When `TEAMAI_AI_TOOL` or `ai.tool` names a tool that cannot run, `stop` ends the run `failed`, so the member sees the setting to fix. `continue_on_failure` alone would let the run succeed with nothing done. `failure` reads only the step's current pass. A template that a lease renders, such as `model` or a confined directory, and a `writes` template cannot read it, as they cannot read `outcome`.
+
+A command step that exits 65 (`EX_DATAERR`) fails `input_rejected`: it rejected the input it was given. teamai offers no retry for it, since the same input fails the same way. Any other non-zero status fails `command_failed`, whose message names the status and starts with the command's stderr:
+
+```yaml fragment
+  - id: test
+    command: npm test
+    continue_on_failure: true
+  - id: report
+    needs: [test]
+    if: steps.test.failure.code == 'command_failed'
+    command: 'echo "Tests failed: $WHY" >&2'
+    env: { WHY: "{{ steps.test.failure.message }}" }
+```
+
+When `npm test` exits 1 and prints `2 tests failed`, `report` prints `Tests failed: command exited with status 1: 2 tests failed`.
 
 ## The end reached first wins
 
@@ -547,6 +649,54 @@ teamai workflow start nightly-e2e --driver local --timeout 30m
 
 `--timeout` bounds the run to the shorter of it and the file's `timeout`, with `--driver local` or `--driver skill`. Past it, the run fails `timeout`, and its `finally` steps still run.
 
+## Give an input a default
+
+```yaml
+schemaVersion: v1alpha1
+name: check-package
+description: Lint a package, and test it unless told not to.
+inputs: { package: string, test: boolean, reporters: [string] }
+defaults:
+  inputs: { test: true, reporters: [] }
+steps:
+  - id: lint
+    command: 'echo "lint $PACKAGE" >&2'
+    env: { PACKAGE: "{{ inputs.package }}" }
+  - id: test
+    needs: [lint]
+    if: inputs.test
+    command: 'echo "test $PACKAGE, reporters $REPORTERS" >&2'
+    env: { PACKAGE: "{{ inputs.package }}", REPORTERS: "{{ inputs.reporters }}" }
+```
+
+```text
+$ teamai workflow start check-package --driver local --inputs '{"package":"api"}'
+{"data":{"done":{"run":"rfe89fff7a148ec61","outcome":"succeeded","progress":[{"step":"lint","lines":["lint api"]},{"step":"test","lines":["test api, reporters []"]}]},"cancelled":[]}}
+```
+
+A start with only `{"test":false}` leaves out `package`, which has no default, so no run starts:
+
+```text
+{"error":{"code":"invalid_inputs","message":"inputs.package is missing"}}
+```
+
+`defaults.inputs` gives an input the value a start, or a step's `with`, uses when it leaves that input out. Each value must fit the type the input declares, and name an input the file declares; pull rejects the file otherwise. An input with no default is still required. The run records the value it used, so `steps.<id>.inputs` and the dashboard show the default.
+
+A workflow other teams run can take a new input this way without breaking them: a step that runs it keeps its `with` as it is.
+
+```yaml
+schemaVersion: v1alpha1
+name: release-web
+description: Check the web package, then publish it.
+steps:
+  - id: check
+    workflow: check-package
+    with: { package: web }          # test: true, reporters: []
+  - id: publish
+    needs: [check]
+    command: npm publish -w web
+```
+
 ## Run a workflow a step printed
 
 ```yaml
@@ -574,6 +724,82 @@ steps:
 | `json` | Any JSON value. Expressions cannot read into it; top-level `outputs` can pass it whole. |
 
 `workflow: { from: <step> }` runs the bundle of a step it `needs`. When that step reports, teamai checks the bundle as `workflow start` checks a file, pins it, and keeps it for the run. A bundle it cannot take, one that holds a secret value, a `from` step, a `prompt_file` step or `finally` steps, fails the producing step `invalid_output` with the reason. The producing step runs once, outside any loop or `for_each`. A run with a `from` step is [isolated](#isolated-runs).
+
+## Ask the member's AI tool for an answer
+
+`answer` is a prompt the member's AI tool answers in one call, in the checkout read-only, with no session and no agent. A step that only needs text or a decision from a model uses it:
+
+```yaml
+schemaVersion: v1alpha1
+name: classify-learning
+description: Ask which kind of team knowledge a learning is.
+inputs: { learning: string }
+steps:
+  - id: category
+    answer: "Is this learning a skill, a rule or a doc? Give the category and one sentence why. {{ inputs.learning }}"
+    output: { category: skill | rule | doc, reason: string }
+    timeout: 60s
+outputs: { category: steps.category.outputs.category }
+```
+
+```text
+$ teamai workflow start classify-learning --driver local --inputs '{"learning":"Retry 429 responses with backoff."}'
+{"data":{"done":{"run":"r3f9a1c2b","outcome":"succeeded","outputs":{"category":"rule"}},"cancelled":[]}}
+```
+
+- `output` is required. `{ text: string }` takes the reply as text. Any other output names the JSON the reply holds, and the local driver asks the tool for it.
+- The step names no tool: the driver that runs it answers it. The skill driver gives it to a child agent of the session, and a driver of your own answers it with its own model. The local driver launches the tool teamai's own AI calls use: `TEAMAI_AI_TOOL`, then the project's `ai.tool`, then the machine's, then the first installed tool teamai launches. Pull rejects `tool`, `agent`, `model` and `session` on the step, and any `workspace` but `new`.
+- The launch is marked as teamai's own, so the member's hooks do not capture it.
+- It reserves the checkout until it finishes, so answers and commands using that checkout run one at a time, even
+  across `for_each` items. A change to the checkout fails the answer `read_only_dirty`.
+- With `workspace: new` it answers in a worktree of its own at the commit the run started from, so the items of a
+  `for_each` run side by side, up to its `max_parallel`. That worktree lacks your uncommitted changes and the files a pull delivers to your tools. A change to it
+  fails the answer `read_only_dirty`. teamai removes the worktree once the answer succeeds, and its branch once the run does.
+- In a directory that is no git repository, nothing can check an answer, so on the local driver answers there do
+  not wait for each other, with or without `workspace: new`.
+- A prompt has no default timeout. Give the step one.
+- It fails `tool_unavailable` when no tool is installed, `tool_unconfigured` when the tool the member names cannot run, `tool_failed` when the call fails, and `invalid_output` when the reply holds no JSON.
+
+Another driver gets an answer step as a prompt lease with `answer: true` and no separate workspace, or with
+`workspace: new` a read-only `workspace` contract on a branch of its own. It prepares the lease, answers in `cwd`, and
+reports the outputs; preparation reserves and snapshots the checkout, or that worktree, as for other read-only steps.
+
+## Let a command write in the checkout
+
+A command with no `workspace` runs read-only: a change it leaves in the checkout fails it `read_only_dirty`. `writes` lists the paths, relative to the checkout, where a change is kept instead:
+
+```yaml
+schemaVersion: v1alpha1
+name: refresh-api-docs
+description: Regenerate the API reference of one area beside the code.
+inputs: { area: string }
+steps:
+  - id: generate
+    command: npm run docs:api -- --out "docs/api/$AREA"
+    env: { AREA: "{{ inputs.area }}" }
+    writes: ["docs/api/{{ inputs.area }}/"]
+```
+
+A file the command writes under `docs/api/<area>/` stays in the checkout, and the step succeeds. So does a commit it adds on the branch the checkout is on, when every path the commit changes is under `writes`, as when it publishes what it wrote. A change anywhere else still fails it `read_only_dirty`, and so does any other move of HEAD: a switch, a detach, a reset.
+
+A command that writes into a directory the caller names, which may be outside the checkout, lists the input:
+
+```yaml
+schemaVersion: v1alpha1
+name: render-site
+description: Render the site into the directory the caller names.
+inputs: { out: string }
+steps:
+  - id: render
+    command: npm run site:build -- --out "$OUT"
+    env: { OUT: "{{ inputs.out }}" }
+    writes: ["{{ inputs.out }}"]
+```
+
+`teamai workflow start render-site --inputs '{"out":"/home/alice/site"}'` renders an absolute path. Inside the checkout, a change under it is kept as under a relative path. Outside the checkout, the command writes there freely: nothing it writes there can dirty the checkout.
+
+- Only a command step takes `writes`.
+- Pull rejects an absolute path written in the file, a path that leaves the checkout, and a template that reads anything but `inputs`. A template that renders a relative path leaving the checkout, or nothing, fails the step `invalid_template` before it runs.
 
 ## Clone workspaces
 
@@ -745,6 +971,7 @@ steps:
 | --- | --- |
 | An input | `inputs.issue`, `inputs.issue.labels` |
 | A step's outcome, end, or output | `steps.check.outcome`, `steps.check.end`, `steps.review.outputs.files` |
+| Why a step failed, or `null` | `steps.summary.failure.code`, `steps.summary.failure.message`. See [Fall back on some failures only](#fall-back-on-some-failures-only). |
 | Every pass of a step | `steps.review.passes`, `steps.review.passes[0].outputs.verdict`. See [Read every pass](#read-every-pass). |
 | The results of a `for_each` step | `steps.build.results`, `steps.build.results[0].outcome`, `steps.build.branches` |
 | The pull request a step with `deliver: pr` delivered, or `null` | `steps.fix.pr`, `steps.fix.pr.url`, `steps.build.results[0].pr.url`. See [Deliver a PR](workflow.md#deliver-a-pr). |
@@ -1074,6 +1301,36 @@ The local driver with nobody at its terminal does not fail a required approval o
 Every decision without HITL and `hitl_required` failure logs a warning to stderr. Set `workflows.auto_approve` beside `workflows.max_parallel` in local config, or pass `--auto-approve` to `start --driver local` or `resume` for that run: the run remembers it on this install, and `resume --no-auto-approve` turns it off. JSON `next` from a driver without HITL cannot set this override. A driver with HITL ignores `workflows.auto_approve`: it sends `autoApprove: true` on `next` when the person chose auto-approve for the run, and the local driver in a terminal does so with `--auto-approve`. Optional approvals and choices with a default are then answered as in the `auto_approve: true` column; required approvals and choices without a default still come back as `hitl`. The local driver declares HITL only in an attended run (see [Attended and unattended runs](workflow.md#attended-and-unattended-runs)) whose stdin and stderr are TTYs. It asks on stderr, accepts a choice followed by an optional note, and keeps polling while the question is open. An answer from elsewhere or a cancellation closes that question. Questions wait while an interactive tool owns the terminal.
 
 `interactive: true` needs `prompt` or `prompt_file`. The step waits for a driver with HITL. Without a terminal, `--driver local` [hands the run to a person](workflow.md#when-a-run-reaches-a-person), who continues it with `resume <run> --claim` from a terminal. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, and the step succeeds. An interactive step that sets `workspace: read-only` is checked like a command: a checkout change fails `read_only_dirty` and the edits stay. Inside a workspace an enclosing step opened, they are kept on `refs/teamai/kept/<attempt>` and removed from the workspace. An interactive step in its own workspace can still change that workspace. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
+
+### Ask about each item
+
+A choose step cannot carry `for_each`, but the inline workflow a `for_each` runs can hold one, so a person answers once per item. Each result carries the item as `item` and the answer as `outputs.choice` and `outputs.note`:
+
+```yaml
+schemaVersion: v1alpha1
+name: triage-findings
+description: Ask about each finding of a scan, then file the ones a person kept.
+inputs:
+  findings: [{ id: string, title: string, severity: string }]
+steps:
+  - id: review
+    for_each: "filter(inputs.findings, .severity != 'info')"
+    workflow:
+      outputs: { choice: steps.ask.choice, note: steps.ask.note }
+      steps:
+        - id: ask
+          choose:
+            message: |-
+              {{ item.title }} ({{ item.severity }}, {{ item.id }})
+              file opens an issue; rename opens it with your note as its title; skip leaves it out.
+            options: [file, rename, skip]
+  - id: file
+    needs: [review]
+    command: node scripts/file-findings.js "$REVIEWED"
+    env: { REVIEWED: "{{ steps.review.results }}" }
+```
+
+The local driver asks the items one after another. Without a person to answer, the run waits or fails as the table above says for a choice without a default. `teamai import --from-tools` reviews the files it found this way, in `teamai-import-learnings`.
 
 ## Retry, cancel, and resume
 

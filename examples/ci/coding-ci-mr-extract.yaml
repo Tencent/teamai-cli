@@ -10,8 +10,8 @@
 #   2. Pipeline Secrets:
 #        - TGIT_TOKEN: a TGit Personal Access Token with push access to the team knowledge repo
 #        - ANTHROPIC_AUTH_TOKEN: the AI auth token
-#      Note: teamai ci extract-mr reuses the AI extraction logic (callClaude); both the comment and
-#      write modes spawn a local AI CLI, so the AI CLI and its credentials are **required**, not optional.
+#      Note: teamai ci extract-mr has a local AI CLI draft the learning in both the comment and
+#      write modes, so the AI CLI and its credentials are **required**, not optional.
 #   3. Replace the placeholders in the env below with your actual values:
 #        - TEAMAI_KNOWLEDGE_REPO   team knowledge repo path (e.g. myteam/knowledge)
 #        - ANTHROPIC_BASE_URL      AI gateway address (e.g. https://api.anthropic.com)

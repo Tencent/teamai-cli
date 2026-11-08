@@ -89,7 +89,7 @@ Before you change `src/workflow/`, read [docs/dev/workflow-engine.md](../docs/de
 
 1. Update from `upstream/main`, then create a feature branch. Prefer a git worktree for code changes when practical.
 2. Write tests for your change (we target 80%+ coverage).
-3. Run `npx vitest run`, `npx tsc --noEmit` and `npm run lint` — all must pass.
+3. Run the test files that cover what you changed (`npx vitest run <test files>`), `npx tsc --noEmit` and `npm run lint` — all must pass. CI runs the full unit suite on every push to a PR. Run the full suite yourself (`npx vitest run`) when the change touches shared test setup (`src/__tests__/helpers/`), a `vitest*.config.ts`, `package.json` or `package-lock.json`.
 4. Use conventional commits where possible: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
 5. Push the branch to your fork and open a PR against `Tencent/teamai-cli:main`. Describe the problem, the fix, and anything reviewers should pay attention to.
 
@@ -101,6 +101,9 @@ Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosit
 - Prefer async/await over callbacks.
 - Keep commands in `src/*.ts` thin — heavy lifting lives in `src/resources/` or `src/utils/`.
 - Workflow first: a feature that orchestrates AI work ships as a default workflow in `workflows/`, which a team can replace. Put what a team may change in that YAML, keep only invariants in code, and make its command a shortcut that starts the workflow. Add no new CLI command when an existing one can take an option (see AGENTS.md).
+- Shortcut on the default driver: a feature command starts its default workflow on the driver `workflows.driver` names, local when unset, and adds no `--driver` flag.
+- No AI call outside a workflow: only drivers launch AI tools, so a feature asks one through an `answer` or `prompt` step. `teamai/launch-through-workflows` enforces it in `npm run lint`.
+- Judgment goes through scorers: anything that judges AI work is a scorer judged by `teamai-score`. A rubric teamai ships is a default scorer in `scorers/`, which a team can replace; code keeps only its contract (see AGENTS.md).
 - Compose workflows: reuse an existing workflow as a `workflow:` step rather than copying its steps, and write a new one so another workflow can run it as a step, with inputs and outputs that say what it takes and gives.
 - Avoid narrating comments ("// increment counter"). Comments should explain _why_, not _what_; `teamai/no-low-value-comments` rejects one that only repeats the name below it.
 
@@ -153,7 +156,7 @@ node scripts/check-docs.mjs --write
 node scripts/check-docs.mjs
 ```
 
-For example, an invented `teamai skill gett core` in a served skill fails check mode as an unknown subcommand. Fix the skill text rather than regenerating away that failure. The command's check/write tests live in `scripts/check-docs.test.ts`.
+For example, an invented `teamai skill gett core` in a served skill fails check mode as an unknown subcommand. Fix the skill text rather than regenerating away that failure. The command's check/write tests live in `scripts/check-docs.test.ts`. To iterate on one doc check, add `--only=<check>` (an unknown name lists the valid ones); the generated files are compared on every run.
 
 Iterate on the affected E2E files; run the full suite when changing the E2E runner, shared fixtures, or test isolation:
 
@@ -166,6 +169,8 @@ The runner first rejects `TMPDIR` (or `TMP` / `TEMP` on Windows) inside any Git 
 Workers share the prepared `dist/` and OpenCode binary: never rebuild or reinstall them inside a test. Cases needing remote credentials skip without them ([CI E2E setup](../docs/dev/ci-e2e-setup.md)). PRs changing runtime behavior (not docs-, tests- or lint-rule-only) include one real-CLI verification, such as a focused E2E run, with its command and result.
 
 ### When a test fails only on CI
+
+Unit tests retry once on CI. A case that passed only on retry is listed under **Flaky Tests** in the job summary, not in the log. Treat it as a failure from the table below.
 
 Find the failed cases, from the first attempt when a rerun passed:
 

@@ -19,10 +19,10 @@ import {
   type Literal,
 } from './literals.js';
 import { attendedReason, ceilingOf, localPromptTool, localReason, needsTool } from './preflight.js';
-import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type ReportBody, type SkillState, type TurnEvent } from './skill-state.js';
+import { drivesRun, newSkillState, readSkillState, removeSkillState, scoringSkillState, writeSkillState, type AttemptState, type SkillState, type TurnEvent } from './skill-state.js';
 import {
-  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, readiedRow, reopenedRow, replyRow,
-  reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
+  ackRow, adoptRow, callRow, cancelledRow, chooseRow, doneRow, gateCheckRow, giveUpRow, graceRow, hasSlot, heldProbeRow, invokeRow, lockBusyRow, offeredRow, pollRow, queuedAttempts, readiedRow, reopenedRow, replyRow,
+  deadlineRow, reportCallRow, reportedRow, reportRow, resendRow, respondedRow, runnerFreeRow, scoredRow, scoringTickRow, startedRow, tickRow, turnRow, unattendedRow, unqueueRow, unseenEvents, type Answer,
   type Effect, type MovedWithEffects, type ResumeAnswers, type RowId, type StartRun, type TickTurn, type TurnAnswer,
 } from './transitions.js';
 import { errorOf, scoringWaits, turnOf, type SkillAnswer, type SkillError, type Turn, type Waiting } from './turn.js';
@@ -58,8 +58,8 @@ interface Applied {
   refused?: WorkflowFailure;
 }
 
-/** Applies the effects of a row that moved the run to `start`, in order, under `lock`. */
-export async function applyEffects(context: SkillContext, lock: RunLock, start: SkillState, effects: readonly Effect[]): Promise<Applied> {
+/** Applies the effects of a row that moved the run to `start`, in order, under `lock`. `unqueued`: the attempts D9 unqueued this tick. */
+export async function applyEffects(context: SkillContext, lock: RunLock, start: SkillState, effects: readonly Effect[], unqueued: readonly AttemptId[] = []): Promise<Applied> {
   let applied: Applied = { state: start, spawned: false };
 
   for (const effect of effects) {
@@ -72,7 +72,7 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
         await context.runners.stopLeft(applied.state.run, effect.attempt);
         break;
       case 'send': {
-        const sent = await sendReport(context, lock, applied.state, effect.attempt, effect.body, effect.changed);
+        const sent = await sendReport(context, lock, applied.state, effect, unqueued);
         applied.state = sent.state;
 
         if (sent.refused) applied.refused = sent.refused;
@@ -106,9 +106,11 @@ async function spawnRunner(context: SkillContext, state: SkillState, attempt: At
  * Saves `state`, which holds the report `body` of `attempt`, then sends that body under `lock` and applies the engine's
  * answer. A crash after the engine took the report leaves the body stored, and the next tick sends it again (P11).
  */
-async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, attempt: AttemptId, body: ReportBody, changed?: readonly string[]): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
+async function sendReport(context: SkillContext, lock: RunLock, state: SkillState, { attempt, body, changed }: Extract<Effect, { kind: 'send' }>, unqueued: readonly AttemptId[]): Promise<{ state: SkillState; refused?: WorkflowFailure }> {
   await writeSkillState(context.config, lock, state, context.env.secrets);
-  const answer = await context.client.report(state.run, body, changed === undefined ? { lock } : { lock, changed });
+  // The attempts still waiting for their place keep their whole timeout through this report too.
+  const sent = { ...body, queued: queuedAttempts(state, unqueued) };
+  const answer = await context.client.report(state.run, sent, changed === undefined ? { lock } : { lock, changed });
   const taken = traced(context, reportedRow(state, { attempt, reply: reportReply(answer), at: context.now().toISOString() }));
 
   if (!taken) return { state };
@@ -232,8 +234,10 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
   let state = start;
   let spawned = false;
 
+  const unqueued: AttemptId[] = [];
+
   const apply = async (effects: readonly Effect[]): Promise<Applied> => {
-    const applied = await applyEffects(context, lock, state, effects);
+    const applied = await applyEffects(context, lock, state, effects, unqueued);
     state = applied.state;
     spawned = spawned || applied.spawned;
 
@@ -244,6 +248,8 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     const moved = traced(context, await attemptCheckRow(context, state, open));
 
     if (!moved) continue;
+
+    if (moved.row === 'D9') unqueued.push(open.attempt);
     state = moved.state;
     await apply(moved.effects);
   }
@@ -254,7 +260,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
   for (;;) {
     const version = state.done ? await context.client.runVersion(state.run) : undefined;
-    const ticked = traced(context, tickRow(state, { role, version }));
+    const ticked = traced(context, tickRow(state, { role, version, unqueued }));
 
     if (!('request' in ticked)) return { state, spawned };
 
@@ -264,7 +270,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
     // The engine reads an absent autoApprove and an undefined one alike, and the CLI's JSON drops it.
     const body = {
-      driver: { ...state.driver, can: { ...canFor(state.host.kind === 'chosen' ? state.host.id : undefined), confined: confinedCan(state) } }, running: request.running, canTakeLease: request.canTakeLease,
+      driver: { ...state.driver, can: { ...canFor(state.host.kind === 'chosen' ? state.host.id : undefined), confined: confinedCan(state) } }, running: request.running, queued: request.queued, canTakeLease: request.canTakeLease,
       runMode: state.options.mode, autoApprove: request.autoApprove ? true : undefined,
     };
 
@@ -272,12 +278,14 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     const options = handoff === undefined ? undefined : { handoff };
     const answer = await context.client.next(state.run, body, options);
     const at = context.now().toISOString();
-    const { reply, cancelled } = engineReply(state.run, answer);
+    const { reply, cancelled, deadlines } = engineReply(state.run, answer);
     state = traced(context, startedRow(state, startedOf(answer)))?.state ?? state;
     const sameEnd = reply.kind === 'done' && reply.out && state.done !== undefined && canonicalJson(endOf(reply)) === canonicalJson(endOf(state.done));
     state = traced(context, reopenedRow(state, { reply, sameEnd }))?.state ?? state;
 
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
+
+    for (const restarted of deadlines) state = traced(context, deadlineRow(state, restarted))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
     const givingUp = traced(context, giveUpRow(state, reply));
 
@@ -523,7 +531,7 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
     case 'adopt':
       return adoptRow(state, { attempt: call.attempt, dir: call.dir, at: context.now().toISOString() });
     case 'respond': {
-      const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver } });
+      const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver, queued: queuedAttempts(state) } });
 
       return respondedRow(state, respondReply(answer));
     }

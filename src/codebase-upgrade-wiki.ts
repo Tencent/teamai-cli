@@ -6,7 +6,6 @@ import matter from 'gray-matter';
 
 import { autoDetectInit } from './config.js';
 import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
-import { importFromRepo } from './import-repo.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { pathExists } from './utils/fs.js';
@@ -54,6 +53,7 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
   }
 
   const result: MigrationResult = { migrated: [], skipped: [], errors: [] };
+  const pending: Array<{ slug: string; url: string }> = [];
 
   for (const file of mdFiles) {
     const slug = file.replace('.md', '');
@@ -74,13 +74,42 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
         continue;
       }
 
-      // The same import as `teamai import --from-repo`: the evidence lands in
-      // the team repo's teamwiki/, published once for the whole migration below.
-      await importFromRepo({ url: String(source), incremental: true, skipAutoPush: true });
-      result.migrated.push(slug);
+      pending.push({ slug, url: String(source) });
+    } catch (err) {
+      result.errors.push(`${slug}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (pending.length > 0) {
+    // The same import as `teamai import --from-repo`, one repository at a time: the evidence lands in the team repo's
+    // teamwiki/, published once for the whole migration below.
+    const { ImportFromRepo } = await import('./import-from-repo.js');
+    const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+    const exitCode = process.exitCode;
+
+    try {
+      const ended = await ImportFromRepo.start({
+        mode: 'update',
+        items: pending.map(({ url }) => ({ kind: 'repo', url })),
+        settings: { depth: 1, forceSsh: false, incremental: true, skipEnrich: false },
+        target: await resolveTeamwiki(),
+        command: 'teamai codebase --upgrade-wiki',
+      });
+
+      const imported = ImportFromRepo.importedOf(ended);
+
+      for (const [index, { slug }] of pending.entries()) {
+        const entry = imported.at(index);
+
+        if (entry && !entry.failed) result.migrated.push(slug);
+        else result.errors.push(`${slug}: the import failed; the step that failed is named above`);
+      }
     } catch (err) {
       DetachedTeamRepoError.rethrow(err);
-      result.errors.push(`${slug}: ${err instanceof Error ? err.message : String(err)}`);
+
+      for (const { slug } of pending) result.errors.push(`${slug}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      process.exitCode = exitCode;
     }
   }
 

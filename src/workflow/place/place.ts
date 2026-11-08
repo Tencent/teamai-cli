@@ -107,15 +107,19 @@ export async function adoptedPlaceOf(input: { config: LocalConfig; run: RunId; b
  * The lease fields a place reads. Its `expiresAt` bounds setup. A clone gets the step's `tool` installed, for its
  * `role` when it has one, and keeps `envScope.withhold` from its git and its install.
  */
-export type PlaceLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'interactive' | 'readOnly' | 'workspace' | 'setup' | 'expiresAt' | 'tool' | 'role' | 'envScope'> & { executor: 'command' | 'prompt' };
+export type PlaceLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'answer' | 'interactive' | 'readOnly' | 'writes' | 'workspace' | 'setup' | 'expiresAt' | 'tool' | 'role' | 'envScope'> & { executor: 'command' | 'prompt' };
 
 /** The place fields of `lease`, a lease `next` answered with. */
 export function placeLeaseOf(lease: LeaseWire): PlaceLease {
-  const { attempt, step, command, prompt, interactive, readOnly, workspace, setup, expiresAt, tool, role, envScope } = lease;
+  const { attempt, step, command, prompt, answer, interactive, readOnly, writes, workspace, setup, expiresAt, tool, role, envScope } = lease;
 
   const place: PlaceLease = { attempt, step, executor: command !== undefined ? 'command' : 'prompt' };
 
   if (prompt !== undefined) place.prompt = prompt;
+
+  if (answer) place.answer = true;
+
+  if (writes) place.writes = writes;
 
   if (tool !== undefined) place.tool = tool;
 
@@ -174,7 +178,7 @@ function preparedOf(record: Placed, prompt: string | undefined): PlacePrepared {
 }
 
 function baseOf(record: Placed): PlaceRecordBase {
-  const { version, run, attempt, step, executor, root, dir, adopted, interactive, readOnly, place } = record;
+  const { version, run, attempt, step, executor, root, dir, adopted, interactive, readOnly, writes, place } = record;
 
   const base: PlaceRecordBase = { version, run, attempt, step, executor, root, dir, place };
 
@@ -183,6 +187,8 @@ function baseOf(record: Placed): PlaceRecordBase {
   if (interactive) base.interactive = interactive;
 
   if (readOnly) base.readOnly = readOnly;
+
+  if (writes) base.writes = writes;
 
   return base;
 }
@@ -243,6 +249,8 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   if (lease.interactive) base.interactive = true;
 
   if (lease.readOnly) base.readOnly = true;
+
+  if (lease.writes) base.writes = lease.writes;
 
   if (!workspace) {
     await stageReader(root, placeFiles(config, run, lease.attempt).snapshot);
@@ -496,8 +504,8 @@ async function stageRole(input: {
   return overlaid(config, preparing, lease);
 }
 
-/** What the overlay of a lease's copy reads of it: the prompt it adds to, and the role and tool it delivers for. */
-type OverlaidLease = Pick<PlaceLease, 'prompt' | 'role' | 'tool'>;
+/** What the overlay of a lease's copy reads of it: the prompt it adds to, the role and tool it delivers for, and whether an answer, which gets none, reads the copy. */
+type OverlaidLease = Pick<PlaceLease, 'prompt' | 'role' | 'tool' | 'answer'>;
 
 type Opening = Extract<PlaceRecord, { phase: 'opening' }>;
 
@@ -516,9 +524,11 @@ type OpeningBase = Omit<PlaceRecordBase, 'dir' | 'place'>;
  */
 async function overlaid(config: LocalConfig, record: Preparing, lease: OverlaidLease, resume: { resume?: true } = {}): Promise<PlacePrepared> {
   const { root, dir, place, setup, expiresAt, step, executor } = record;
-  const { prompt, role, tool } = lease;
+  const { prompt, role, tool, answer } = lease;
 
-  const failure = await applyOverlay({
+  // An answer is one call teamai marks as its own, which runs no hook and gets its context from its prompt, so its
+  // copy stays as the run's base commit has it, with no team files delivered into it.
+  const failure = answer ? undefined : await applyOverlay({
     root, dir, configCommit: place.workspace.configCommit, saved: placeFiles(config, record.run, record.attempt).overlay, step, executor, role, tool, ...resume,
   });
 
@@ -808,7 +818,7 @@ async function finishRole(config: LocalConfig, files: PlaceFiles, record: Placed
     case 'checkout': {
       const failure = await finishReader({
         dir, file: files.snapshot, executor, outcome: end.outcome,
-        interactive: record.interactive ? true : undefined, readOnly: record.readOnly ? true : undefined,
+        interactive: record.interactive ? true : undefined, readOnly: record.readOnly ? true : undefined, writes: record.writes,
       });
 
       return failure ? { outcome: 'failed', message: failure.message, failure } : end;

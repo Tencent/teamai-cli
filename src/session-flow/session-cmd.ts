@@ -40,7 +40,8 @@ import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { SessionPublish } from './session-publish.js';
-import { FinishedSessions, type FinishedSession } from './finished-sessions.js';
+import { SessionWork } from './session-work.js';
+import { FinishedSessions, type FinishedSession, type ShareableSession } from './finished-sessions.js';
 import { autoDetectInit } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
@@ -145,24 +146,51 @@ async function listPushSource(platform: string, cwd: string, all: boolean) {
 // ---------------------------------------------------------------------------
 
 /**
- * Register SessionFlow's 7 subcommands on the `teamai session` command object.
+ * Register SessionFlow's 8 subcommands on the `teamai session` command object.
  */
-/** `teamai session list --finished`: prints the finished sessions to archive and judge, or why it lists none. */
-async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: string; cwd?: string; idle?: string; publish?: string; scorers?: string; json?: boolean }): Promise<void> {
-  const answer = opts.author !== undefined || opts.all || opts.repoRoot !== undefined
-    ? { ok: false as const, code: 'invalid_arguments', message: '--finished lists the sessions of this machine, so it takes no --author, --all or --repo-root.' }
-    : await FinishedSessions.list(opts, { env: process.env, current: await currentConfig(opts.cwd), now: new Date().toISOString() });
+/**
+ * `teamai session list --finished`: prints the finished sessions to archive and judge, or with `--all` every finished
+ * session to share learnings from, or why it lists none.
+ */
+async function listFinished(opts: { author?: string; all?: boolean; repoRoot?: string; cwd?: string; idle?: string; within?: string; publish?: string; scorers?: string; json?: boolean }): Promise<void> {
+  const { all, within, ...options } = opts;
 
-  if (!answer.ok) {
-    if (opts.json) process.stdout.write(`${JSON.stringify({ error: { code: answer.code, message: answer.message } })}\n`);
-    console.error(`Error: ${answer.message}`);
-    process.exitCode = 1;
+  if (opts.author !== undefined || opts.repoRoot !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--finished lists the sessions of this machine, so it takes no --author or --repo-root.' }, opts.json);
+
+  if (!all && within !== undefined) return refuseCommand({ code: 'invalid_arguments', message: '--within sets how far back --finished --all looks, so it takes --all. Add --all to list the sessions to share learnings from.' }, opts.json);
+  const ctx = { env: process.env, current: await currentConfig(opts.cwd), now: new Date().toISOString() };
+
+  if (all) {
+    const answer = await FinishedSessions.shareable(within === undefined ? options : { ...options, within }, ctx);
+
+    if (!answer.ok) return refuseCommand(answer, opts.json);
+
+    if (opts.json) process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
+    else printShareable(answer.list);
 
     return;
   }
 
+  const answer = await FinishedSessions.list(options, ctx);
+
+  if (!answer.ok) return refuseCommand(answer, opts.json);
+
   if (opts.json) process.stdout.write(`${JSON.stringify({ list: answer.list })}\n`);
   else printFinished(answer.list);
+}
+
+/** Says why a session command did nothing, also as `{"error":{"code","message"}}` with `--json`, and exits 1. */
+function refuseCommand({ code, message }: { code: string; message: string }, json: boolean | undefined): void {
+  if (json) process.stdout.write(`${JSON.stringify({ error: { code, message } })}\n`);
+  console.error(`Error: ${message}`);
+  process.exitCode = 1;
+}
+
+/** Prints each session to share learnings from on a line of its own: its id, source, when it was last active and its first prompt. */
+function printShareable(list: readonly ShareableSession[]): void {
+  if (list.length === 0) console.log('No finished sessions to share learnings from here.');
+
+  for (const one of list) console.log(`  ${one.session}  ${one.source}  ${one.ended}  ${one.prompt || '-'}`);
 }
 
 /** Prints each finished session on a line of its own: its id, source, whether to publish it and its scorers. */
@@ -170,6 +198,27 @@ function printFinished(list: readonly FinishedSession[]): void {
   if (list.length === 0) console.log('No finished sessions to archive or judge here.');
 
   for (const one of list) console.log(`  ${one.session}  ${one.source}  ${one.publish ? 'publish' : '-'}  ${one.scorers.join(', ') || '-'}`);
+}
+
+/**
+ * `teamai session show`: a session of this machine, the caller's own or not, as a judge of it reads it, with the
+ * subagents it started and every secret this scope knows redacted.
+ */
+async function showSession(sessionId: string, opts: { source: string; cwd?: string; json?: boolean }): Promise<void> {
+  const unread = noAdapter(opts.source, 'read');
+
+  if (unread) return refuseCommand(unread, opts.json);
+  const config = await currentConfig(opts.cwd);
+
+  if (!config) return refuseCommand({ code: 'not_initialized', message: 'teamai is not set up in this directory, so it has no team secrets to redact the session with. Run teamai init.' }, opts.json);
+  const read = await SessionWork.read(config, { platform: opts.source, sessionId });
+
+  if (!read.ok) {
+    return refuseCommand({ code: 'session_not_found', message: `No ${opts.source} session ${safeText(sessionId)} on this machine has anything to show. Run teamai session list --finished --all for the sessions it can show.` }, opts.json);
+  }
+
+  if (opts.json) process.stdout.write(`${JSON.stringify({ session: sessionId, source: opts.source, transcript: read.judged.body })}\n`);
+  else process.stdout.write(`${read.judged.body}\n`);
 }
 
 /** The config of the scope of `cwd`, or of this directory; undefined where teamai is not set up. */
@@ -631,16 +680,17 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
   // ── session list ───────────────────────────────────────────
   sessionCmd
     .command('list')
-    .description('List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step\'s, is never listed, nor a scorer whose mark is open or closed.')
+    .description('List team sessions for the current project. With --finished, list instead the finished sessions of this machine that teamai-finished-sessions archives and judges, in the data home of this directory (inside a workflow step, of its run): each with its source, whether to publish it and the scorers to judge it with, and demand named when --scorers named them. A session teamai launched, such as a workflow step\'s, is never listed, nor a scorer whose mark is open or closed. With --finished --all, list every finished session of this machine to share learnings from, whatever the session policies and archive say, last active within --within, leaving out those a learning was contributed from, each with when it was last active and its first prompt, redacted; any run may list them, one an agent started too.')
     .option('--repo-root <path>', 'Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--author <name>', 'Filter by author')
-    .option('--all', 'List sessions across all projects in the team repo (not just the current one)')
+    .option('--all', 'List sessions across all projects in the team repo (not just the current one). With --finished: every finished session to share learnings from, not only those to archive and judge (no --publish or --scorers)')
     .option('--finished', 'List the finished sessions of this machine to archive and judge, not the team\'s pushed ones')
     .option('--idle <duration>', 'With --finished: how long an attended session has been idle to count as finished, such as 6h (default). An unattended one counts once a drain reached it.')
+    .option('--within <duration>', 'With --finished --all: how recently a session was last active to be listed, such as 3d (default 7d)')
     .option('--publish <policy>', 'With --finished: policy (sessions.publish for the session\'s run mode decides, the default), always or never. Inside a workflow step, only a run a person started may pass always or never.')
     .option('--scorers <json>', 'With --finished: a JSON array of scorers to judge every finished session with, unsampled; [] (the default) takes the scorers scoring.sessions: auto names. Inside a workflow step, only a run a person started may name scorers.')
-    .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}')
+    .option('--json', 'With --finished: print {"list":[{"session","source","publish","scorers","demand"}]}; with --all, {"list":[{"session","source","ended","prompt"}]}')
     .action(async (opts) => {
       if (opts.finished) {
         await listFinished(opts);
@@ -701,6 +751,18 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
 
       console.log(`\n  ${sessions.length} session(s)\n`);
+    });
+
+  // ── session show ───────────────────────────────────────────
+  sessionCmd
+    .command('show')
+    .description('Print a session of this machine, your own or another, such as one session list --finished --all lists: its transcript and its subagents\', with the secrets this directory\'s teamai knows redacted, as a judge of it reads it. Exits 1 with session_not_found when no session of --source by that id has anything to show.')
+    .argument('<sessionId>', 'Session id, as session list --finished --all prints it')
+    .requiredOption('--source <platform>', 'Platform the session belongs to, such as claude-code, codex or hermes')
+    .option('--cwd <path>', 'Working directory (defaults to current directory)')
+    .option('--json', 'Print {"session","source","transcript"}, or {"error":{"code","message"}}')
+    .action(async (sessionId: string, opts: { source: string; cwd?: string; json?: boolean }) => {
+      await showSession(sessionId, opts);
     });
 
   // ── session resume ─────────────────────────────────────────

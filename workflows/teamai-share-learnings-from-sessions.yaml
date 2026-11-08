@@ -1,0 +1,35 @@
+schemaVersion: v1alpha1
+name: teamai-share-learnings-from-sessions
+description: Share what earlier sessions taught as team learnings - list this machine's finished sessions of every tool from the last week, ask which to share, then run teamai-share-learnings on each picked one without publishing it. Use when the person asks to share learnings from past sessions.
+invoke: ask
+inputs:
+  # How far back to look, such as 7d or 30d: a session last active longer ago is not offered.
+  within: string
+defaults:
+  inputs: { within: 7d }
+steps:
+  - id: sessions
+    # Every finished session last active within inputs.within that no learning was contributed from, whatever the session policies say.
+    command: teamai session list --finished --all --within "$WITHIN" --json
+    env: { WITHIN: "{{ inputs.within }}" }
+    output: { list: [{ session: string, source: string, ended: string, prompt: string }] }
+  - id: pick
+    needs: [sessions]
+    if: length(steps.sessions.outputs.list) > 0
+    for_each: steps.sessions.outputs.list
+    workflow:
+      outputs: { choice: steps.ask.choice }
+      steps:
+        - id: ask
+          choose:
+            message: |-
+              {{ item.source }} session {{ item.session }}, last active {{ item.ended }}
+              First prompt: {{ item.prompt }}
+              share goes through what it taught with you; skip leaves it.
+            options: [share, skip]
+  - id: share
+    needs: [pick]
+    # One at a time: each one is a conversation with the person.
+    for_each: { items: "filter(steps.pick.results, .outputs.choice == 'share')", max_parallel: 1 }
+    workflow: teamai-share-learnings
+    with: { session: "{{ item.item.session }}", source: "{{ item.item.source }}", publish: false, scorers: [] }

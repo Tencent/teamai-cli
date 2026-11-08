@@ -13,6 +13,8 @@ import { z } from 'zod';
 
 import { type JsonValue, JsonObjectSchema } from './types.js';
 import { log } from './utils/logger.js';
+import { writeFileAtomic } from './utils/fs.js';
+import { withFileLock } from './update.js';
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -207,14 +209,24 @@ export async function loadPendingReview(cwd: string): Promise<PendingReviewItem[
 /**
  * 覆盖式写入整个 jsonl（每行一个 JSON）。原子性：先写 .tmp 再 rename。
  */
-export async function savePendingReview(cwd: string, items: PendingReviewItem[]): Promise<void> {
+async function writePendingReview(cwd: string, items: PendingReviewItem[]): Promise<void> {
     const filePath = getPendingReviewPath(cwd);
-    const tmpPath = `${filePath}.tmp`;
-
-    await fs.ensureDir(path.dirname(filePath));
     const content = items.map((item) => JSON.stringify(item)).join('\n') + (items.length > 0 ? '\n' : '');
-    await fs.writeFile(tmpPath, content, 'utf8');
-    await fs.rename(tmpPath, filePath);
+    await writeFileAtomic(filePath, content);
+}
+
+/** Every writer shares the lock; a removal holds it from the read through the atomic replacement. */
+async function withReviewLock<T>(cwd: string, change: () => Promise<T>): Promise<T> {
+    const filePath = getPendingReviewPath(cwd);
+    const result = await withFileLock(`${filePath}.lock`, { attempts: 100, delayMs: 50 }, change);
+
+    if (!result.held) throw new Error(`Another teamai command is changing ${filePath}. Wait for it to finish, then try again.`);
+
+    return result.value;
+}
+
+export async function savePendingReview(cwd: string, items: PendingReviewItem[]): Promise<void> {
+    await withReviewLock(cwd, () => writePendingReview(cwd, items));
 }
 
 /**
@@ -248,8 +260,7 @@ export async function appendPendingReview(
     };
 
     const filePath = getPendingReviewPath(cwd);
-    await fs.ensureDir(path.dirname(filePath));
-    await fs.appendFile(filePath, JSON.stringify(item) + '\n', 'utf8');
+    await withReviewLock(cwd, () => fs.appendFile(filePath, JSON.stringify(item) + '\n', 'utf8'));
 
     return item;
 }
@@ -258,14 +269,14 @@ export async function appendPendingReview(
  * 按 id 移除条目。返回是否真的移除。
  */
 export async function removePendingReview(cwd: string, id: string): Promise<boolean> {
-    const items = await loadPendingReview(cwd);
-    const filtered = items.filter((item) => item.id !== id);
+    return withReviewLock(cwd, async () => {
+        const items = await loadPendingReview(cwd);
+        const filtered = items.filter((item) => item.id !== id);
 
-    if (filtered.length === items.length) {
-        return false;
-    }
+        if (filtered.length === items.length) return false;
 
-    await savePendingReview(cwd, filtered);
+        await writePendingReview(cwd, filtered);
 
-    return true;
+        return true;
+    });
 }

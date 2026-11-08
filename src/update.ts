@@ -1023,7 +1023,8 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
     return { available: compareVersions(current, latest) < 0, current, latest, source };
   };
 
-  const hasCache = isCacheValid(state.lastUpdateCheck);
+  // A legacy null does not say which installation was current when the registry was checked.
+  const hasCache = isCacheValid(state.lastUpdateCheck) && Boolean(state.availableUpdate);
 
   // Use cached result if valid
   if (!options?.force && hasCache) return cached('cache');
@@ -1049,7 +1050,7 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
     await saveState({
       ...state,
       lastUpdateCheck: new Date().toISOString(),
-      availableUpdate: available ? latest : null,
+      availableUpdate: latest,
     });
   }
 

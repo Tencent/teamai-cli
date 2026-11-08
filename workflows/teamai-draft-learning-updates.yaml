@@ -1,0 +1,59 @@
+schemaVersion: v1alpha1
+name: teamai-draft-learning-updates
+description: Draft an update of each doc, rule and skill the team recalls often but rarely adopts, written beside it as <entry>.draft.md for a person to review. teamai recall maintenance --update-quality starts it.
+invoke: deny
+private: true
+# knowledge_root is the checkout holding the entries, the team repo or a project's .teamai/; the drafts land under it.
+inputs: { knowledge_root: string }
+steps:
+  - id: stale
+    command: teamai recall maintenance stale
+    output:
+      entries: [{ doc_id: string, path: string, type: string, recalled_count: number, upvoted_count: number, user_count: number }]
+  - id: draft
+    needs: [stale]
+    for_each: steps.stale.outputs.entries
+    # One entry that cannot be drafted leaves the others; report names it, and the command exits 1.
+    continue_on_failure: true
+    workflow:
+      steps:
+        - id: context
+          command: teamai recall maintenance draft-context --path "$ENTRY" --doc-id "$DOC_ID"
+          env: { ENTRY: "{{ item.path }}", DOC_ID: "{{ item.doc_id }}" }
+          output: { content: string, related: string }
+        - id: ask
+          needs: [context]
+          answer: |-
+            You are a technical writer updating a team knowledge base entry.
+
+            The following {{ item.type }} entry has been recalled {{ item.recalled_count }} times by {{ item.user_count }} team members but was adopted only {{ item.upvoted_count }} time(s). This indicates the content is relevant to common queries but not actionable enough to be directly useful.
+
+            Current content:
+            ---
+            {{ steps.context.outputs.content }}
+            ---
+            {{ steps.context.outputs.related }}
+
+            Please rewrite this entry to be more actionable and directly useful. Keep the same topic but:
+            1. Add concrete examples or commands where applicable
+            2. Remove outdated or vague information
+            3. Incorporate relevant insights from the adopted learnings above
+            4. Keep the same YAML frontmatter format (update the date field to today)
+            5. Be concise — aim for the same or shorter length
+
+            Output ONLY the updated markdown file content (including frontmatter).
+          output: { text: string }
+          timeout: 600s
+        - id: write
+          needs: [ask]
+          command: teamai recall maintenance write-draft --path "$ENTRY" --draft "$DRAFT"
+          env: { ENTRY: "{{ item.path }}", DRAFT: "{{ steps.ask.outputs.text }}" }
+          writes: ["{{ inputs.knowledge_root }}"]
+          output: { draft: string }
+  - id: report
+    needs: [draft]
+    if: steps.draft.outcome == 'success' || steps.draft.outcome == 'failed'
+    command: teamai recall maintenance draft-report --results "$RESULTS"
+    env: { RESULTS: "{{ steps.draft.results }}" }
+    output: { text: string, exit_code: number }
+outputs: { text: steps.report.outputs.text, exit_code: steps.report.outputs.exit_code }

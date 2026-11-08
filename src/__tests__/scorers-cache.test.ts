@@ -4,9 +4,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
-import { loadCachedScorer, syncScorerDefinitions } from '../scorers/cache.js';
+import { defaultScorerRubric, loadCachedScorer, syncScorerDefinitions } from '../scorers/cache.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
 import { log } from '../utils/logger.js';
+import { routingScorers } from '../scorers/skill-routing.js';
 
 const dirs: string[] = [];
 
@@ -260,5 +261,105 @@ describe('scorer cache', () => {
     git(repository, 'push', '--set-upstream', 'origin', 'main');
     await syncScorerDefinitions(config);
     expect((await loadCachedScorer(config, 'quality'))?.teamRevision).toBe(git(repository, 'rev-parse', 'HEAD'));
+  });
+});
+
+describe('a team file that replaces a default scorer', () => {
+  const release = { name: 'release', description: 'Cut an npm release.' };
+
+  const ROUTING = `---
+labels:
+  - { value: helped, score: 1, description: "{{ skill.name }} did what the session asked of it." }
+  - { value: noise, score: 0, description: "{{ skill.name }} was loaded and did nothing." }
+passingScore: 1
+---
+Judge only {{ skill.name }}, against its entry in skills.available.
+`;
+
+  it('asks routing questions with teamai\'s default rubric while the team has no file of its name', async () => {
+    const config = testConfig();
+    await syncScorerDefinitions(config);
+
+    const [question] = await routingScorers(config, [release]);
+
+    expect(question?.pin.content).toBe(`---
+labels:
+  - { value: fit, score: 1, description: "release is in skills.used, and the session needed what its description says." }
+  - { value: idle, score: 1, description: "release is not in skills.used, and the session did not need what its description says, or another skill or the agent's own steps did it." }
+  - { value: extra, score: 0, description: "release is in skills.used, and the session did not need what its description says." }
+  - { value: missed, score: 0, description: "The session needed what the description of release says, release is not in skills.used, and nothing else did it." }
+passingScore: 1
+sessions: true
+---
+
+Judge only the team skill \`release\`, against its entry in \`skills.available\` in evidence.json.
+`);
+  });
+
+  it('asks them with the team\'s scorers/teamai-routing.md, filled in, and lists it as no scorer of its own', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-routing.md', ROUTING);
+
+    expect(await syncScorerDefinitions(config)).toEqual({ cached: [], invalid: [], verified: [] });
+    const [question] = await routingScorers(config, [{ ...release, namespace: 'ops' }]);
+
+    expect(question?.scorer).toBe('teamai:routing:ops:release');
+    expect(question?.definition.labels.map(({ value, description }) => [value, description])).toEqual([['helped', 'release did what the session asked of it.'], ['noise', 'release was loaded and did nothing.']]);
+    expect(question?.definition.prompt).toBe('Judge only release, against its entry in skills.available.\n');
+    expect(await loadCachedScorer(config, 'teamai-routing')).toBeNull();
+  });
+
+  it('refuses a file that reads a variable the default does not offer, with a coded diagnostic, and the default runs', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-routing.md', ROUTING.replace('Judge only {{ skill.name }}', 'Judge only {{ skill.title }} and {{ inputs.doc }}, from {{ skill.namespace }}'));
+
+    const { invalid } = await syncScorerDefinitions(config);
+
+    expect(invalid).toEqual([
+      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ skill.title }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name; teamai\'s default runs until the file reads only those' },
+      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ inputs.doc }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name; teamai\'s default runs until the file reads only those' },
+      { file: 'scorers/teamai-routing.md', code: 'default_scorer_variable', message: 'reads {{ skill.namespace }}, which teamai\'s default scorer teamai-routing does not offer. It offers skill.name; teamai\'s default runs until the file reads only those' },
+    ]);
+    const [question] = await routingScorers(config, [release]);
+    expect(question?.definition.labels.map(({ value }) => value)).toEqual(['fit', 'idle', 'extra', 'missed']);
+  });
+
+  it('refuses a file whose variables in the frontmatter are not quoted, since a value with a colon would break it', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-routing.md', ROUTING.replace('description: "{{ skill.name }} was loaded and did nothing."', 'description: {{ skill.name }} was loaded and did nothing.'));
+
+    const { invalid } = await syncScorerDefinitions(config);
+
+    expect(invalid).toEqual([expect.objectContaining({ file: 'scorers/teamai-routing.md', code: 'default_scorer_invalid' })]);
+  });
+
+  it('runs the default again once the team removes its file', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-routing.md', ROUTING);
+    await syncScorerDefinitions(config);
+    fs.rmSync(path.join(config.repo.localPath, 'scorers', 'teamai-routing.md'));
+
+    await syncScorerDefinitions(config);
+
+    const [question] = await routingScorers(config, [release]);
+    expect(question?.definition.labels.map(({ value }) => value)).toEqual(['fit', 'idle', 'extra', 'missed']);
+  });
+
+  it('refuses a scorers/teamai-adoption.md that reads a variable adoption does not offer, and keeps teamai\'s rubric', async () => {
+    const config = testConfig();
+    writeScorer(config, 'teamai-adoption.md', `---
+labels:
+  - { value: used, score: 1, description: "{{ skill.name }} was used." }
+  - { value: unused, score: 0, description: "{{ doc.id }} was not." }
+passingScore: 1
+sessions: true
+---
+Judge only {{ doc.id }}.
+`);
+
+    const { invalid } = await syncScorerDefinitions(config);
+
+    expect(invalid).toEqual([{ file: 'scorers/teamai-adoption.md', code: 'default_scorer_variable', message: 'reads {{ skill.name }}, which teamai\'s default scorer teamai-adoption does not offer. It offers doc.id, doc.path and doc.file; teamai\'s default runs until the file reads only those' }]);
+    expect((await defaultScorerRubric(config, 'teamai-adoption')).overridden).toBe(false);
   });
 });

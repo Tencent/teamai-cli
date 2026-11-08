@@ -690,6 +690,12 @@ export const DEFAULT_TOOL_PATHS = {
   // .codebuddy/rules, which the two share (one copy), and in user scope its
   // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
   // (`locate`'s install gate), whatever directory its rules land in.
+  //
+  // `rules` and `agents` are the project-scope values, so `userScope` restates
+  // both for the user scope: the engine resolves them against the app's data
+  // root (`<configDir>/rules`, `<configDir>/agents`), not against the
+  // project's `.codebuddy/`. The restatement is what `applyWorkBuddyLiveRoot`
+  // moves to the live root — the project paths must not follow it.
   workbuddy: {
     skills: '.workbuddy/skills',
     rules: '.codebuddy/rules',
@@ -698,7 +704,7 @@ export const DEFAULT_TOOL_PATHS = {
     agents: '.workbuddy/agents',
     mcp: '.workbuddy/mcp.json',
     mcpProject: '.mcp.json',
-    userScope: { rules: '.workbuddy/rules' },
+    userScope: { rules: '.workbuddy/rules', agents: '.workbuddy/agents' },
   },
   // OpenCode reads project config from <root>/.opencode/ but user config from
   // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
@@ -954,6 +960,18 @@ export const MemberSettingsSchema = z.object({
     sessions: z.unknown().optional(),
     /** How many sessions a local day may lease for judging; 0 turns session scoring off. Another value is kept as its text, which sets nothing. */
     daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
+    /**
+     * Ask a finished session's judge one routing question per skill it was delivered, over the team's
+     * `scorers/scoring.yaml`; in ~/.teamai/config.yaml below a workspace or self scope, only false applies. Another value
+     * is kept as its text, which sets nothing.
+     */
+    skill_routing: z.union([z.boolean(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
+    /**
+     * Ask a finished session's judge whether it adopted each recalled doc it never opened (#1391), over the team's
+     * `scorers/scoring.yaml`; in ~/.teamai/config.yaml below a workspace or self scope, only false applies. Another value
+     * is kept as its text, which sets nothing.
+     */
+    recall_adoption: z.union([z.boolean(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
   }).optional(),
 });
 
@@ -1102,6 +1120,11 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
    * knowledge (skills, rules, agents, docs, instructions, learnings, wiki); hooks, MCP, env and models stay the member's.
    */
   stepRole?: string;
+  /**
+   * The config file a run with no `teamai init` built for itself in a temporary directory (`EphemeralScope`). Runtime-only:
+   * every process of the run gets it as `TEAMAI_EPHEMERAL_CONFIG` and loads this config, never one from its directory.
+   */
+  ephemeralConfig?: string;
 };
 
 /**
@@ -1433,6 +1456,7 @@ export const StateSchema = z.object({
    */
   opencodeContextEntries: z.array(z.object({ config: z.string(), entry: z.string() })).optional(),
   lastUpdateCheck: z.string().nullable().default(null),
+  /** Last checked registry version, also when the checking installation was already current. */
   availableUpdate: z.string().nullable().default(null),
 });
 
@@ -2738,20 +2762,36 @@ export const UserVotesSchema = z.looseObject({
 
 export type UserVotes = z.infer<typeof UserVotesSchema>;
 
-/** Vote entry with dual counters (V2). */
+/** A counter of a vote entry a teamai before #1391 did not write: absent until a delta first moves it. */
+const OptionalCountSchema = z.number().optional().catch(undefined);
+
+/**
+ * Vote entry with dual counters (V2). `upvoted_count` is every upvote, so any reader keeps reading the total; the
+ * adoption estimator (#1391) also reads which of them a judge gave, how many sessions a judge asked about the doc, and
+ * how many sessions recalled it. A counter a later teamai adds is kept as written.
+ */
 const VoteEntryV2Schema = z.looseObject({
   recalled_count: z.number().catch(0),
   upvoted_count: z.number().catch(0),
   last_recalled_at: z.string().catch(''),
   last_upvoted_at: z.string().optional().catch(undefined),
+  judge_upvoted_count: OptionalCountSchema,
+  judged_count: OptionalCountSchema,
+  recalled_session_count: OptionalCountSchema,
 });
 
 export type VoteEntryV2 = z.infer<typeof VoteEntryV2Schema>;
 
-/** Unsynchronized delta for a single document (V2). */
+/**
+ * Unsynchronized delta for a single document (V2): each `<counter>_delta` moves the entry's `<counter>_count` when it
+ * merges, so a counter a later teamai adds travels too.
+ */
 const VoteDeltaSchema = z.looseObject({
   recalled_delta: z.number().catch(0),
   upvoted_delta: z.number().catch(0),
+  judge_upvoted_delta: OptionalCountSchema,
+  judged_delta: OptionalCountSchema,
+  recalled_session_delta: OptionalCountSchema,
 });
 
 export type VoteDelta = z.infer<typeof VoteDeltaSchema>;
@@ -2827,6 +2867,9 @@ export const UserVotesV2Schema = z.looseObject({
   votes: voteTableSchema(VoteEntryV2Schema).nullish().transform((table) => table ?? {}),
   deltas: VoteDeltasSchema.nullish().transform((table) => table ?? {}),
   upvotedSessions: UpvoteLedgerSchema.optional().catch(undefined),
+  // Each identity shares one atomic write with its counters. `pull` forgets both once the recall log stopped naming the session (forgetSessionIdentities).
+  recalledSessions: z.record(z.string(), VoteIdsSchema).optional(),
+  adoptionCredits: z.record(z.string(), VoteIdsSchema).optional(),
   pendingSync: PendingVoteSyncSchema.optional().catch(undefined),
   deliveredSyncIds: VoteIdsSchema.optional().catch(undefined),
 });
@@ -2936,12 +2979,40 @@ export const DEFAULT_CLAUDE_ROOT = '.claude';
 
 export const CODEX_TOOL_ID = 'codex';
 
-/** WorkBuddy's toolPaths id and pre-5.7 root segment (#946). */
+/**
+ * WorkBuddy's toolPaths id and its data root under $HOME.
+ *
+ * Both roots are the app's, not two generations of one app: `.workbuddy` is
+ * WorkBuddy's, `.workbuddy-ai` is WorkBuddy AI's (the international edition,
+ * a separate install with its own `WorkBuddyAI.exe` and update channel). A
+ * machine can hold both, so which one is live is read, never assumed (#1273).
+ */
 export const WORKBUDDY_TOOL_ID = 'workbuddy';
 export const WORKBUDDY_TOOL_ROOT = '.workbuddy';
 
-/** WorkBuddy 5.7+'s runtime root (#1273). */
-export const WORKBUDDY_NEW_GENERATION_ROOT = '.workbuddy-ai';
+/** WorkBuddy AI's data root — the sibling product's, resolved the same way (#1273). */
+export const WORKBUDDY_AI_ROOT = '.workbuddy-ai';
+
+/** The file the app rewrites in the root it starts from, whose timestamp names the live app (#1273). */
+export const WORKBUDDY_LAST_LAUNCH_FILE = 'last-launch.json';
+
+/**
+ * The user-scope leaves that sit directly under WorkBuddy's data root and move
+ * with it (#1273). Both `.mcp.json` spellings are here because the engine reads
+ * them in that order.
+ *
+ * `settings.json` is absent on purpose: hooks are resolved from it and hooks
+ * still write the default root, so moving it would report a delivery that never
+ * lands. Any other spelling — a team's `userScope.rules: '.workbuddy/shared-rules'`
+ * — is an override, and an override names a destination that must be kept.
+ */
+export const WORKBUDDY_LIVE_ROOT_LEAVES: ReadonlySet<string> = new Set([
+  'skills',
+  'rules',
+  'agents',
+  'mcp.json',
+  '.mcp.json',
+]);
 
 /** Muse Code (Meta), whose CLI binary is `muse`. */
 export const MUSE_TOOL_ID = 'muse';
@@ -2977,8 +3048,31 @@ export interface RelocatableTool {
  * The home and path flavor a tool root resolves against: this process's by
  * default, or a member's machine described by `locate`'s host, so a Linux test
  * can resolve a Windows member's recorded roots.
+ *
+ * `readTextNow` and `existsNow` default to this process's filesystem, and carry
+ * the names `Host` already uses, so a `Host` is a `HomePaths` and `locate` reads
+ * the machine it was asked about rather than the one running the inspection (#1273).
  */
-export type HomePaths = { readonly home: string; readonly path: path.PlatformPath };
+export type HomePaths = {
+  readonly home: string;
+  readonly path: path.PlatformPath;
+  readonly readTextNow?: (file: string) => string | null;
+  readonly existsNow?: (file: string) => boolean;
+};
+
+function readTextAt(at: HomePaths, file: string): string | null {
+  if (at.readTextNow !== undefined) return at.readTextNow(file);
+
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function existsAt(at: HomePaths, file: string): boolean {
+  return at.existsNow !== undefined ? at.existsNow(file) : fs.existsSync(file);
+}
 
 function processHomePaths(): HomePaths {
   return { home: getUserHome(), path };
@@ -3376,35 +3470,127 @@ export function applyToolRoots(
 }
 
 /**
- * WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops reading
- * `.workbuddy/` (#1273), so skills go to the directory the app actually scans
- * — live-verified in the issue (13 team skills showed in the live `/` menu).
- * The new root wins whenever it exists, because an upgrade leaves the old one
- * behind as an unread leftover. Only the default skills path swaps, so a team
- * that redirected on purpose keeps its own. Every other surface keeps its
- * `.workbuddy/` path: written there while that root exists, held by `locate`
- * once it is gone. Returns the same object when no swap fires.
+ * Which WorkBuddy root the app on this machine last started from (#1273).
+ *
+ * `.workbuddy/` belongs to WorkBuddy and `.workbuddy-ai/` to WorkBuddy AI, and
+ * either can outlive the other: uninstalling one leaves its root behind, and
+ * then both exist while only one has a running app behind it. Presence cannot
+ * tell which. `last-launch.json` can — the app rewrites it in the root it
+ * starts from, so the newer timestamp names the app that is actually there.
+ *
+ * `undecided` when neither root records a launch — a project directory, or a
+ * build that predates the file. Callers then fall back to presence, the only
+ * evidence there was before this check.
  */
-function applyWorkBuddyGeneration(
+export function workbuddyLaunchedFrom(
+  roots: { readonly old: string; readonly new: string },
+  readText: (file: string) => string | null,
+  joinPath: (dir: string, file: string) => string = path.join,
+): 'old' | 'new' | 'undecided' {
+  const launchedAt = (root: string): number | undefined => {
+    const text = readText(joinPath(root, WORKBUDDY_LAST_LAUNCH_FILE));
+
+    if (text === null) return undefined;
+
+    try {
+      const record = z.object({ timestamp: z.string() }).safeParse(JSON.parse(text));
+      const at = record.success ? Date.parse(record.data.timestamp) : Number.NaN;
+
+      return Number.isNaN(at) ? undefined : at;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const oldAt = launchedAt(roots.old);
+  const newAt = launchedAt(roots.new);
+
+  if (oldAt === undefined) return newAt === undefined ? 'undecided' : 'new';
+
+  if (newAt === undefined) return 'old';
+
+  return newAt >= oldAt ? 'new' : 'old';
+}
+
+/**
+ * WorkBuddy keeps its per-user data under a root the app picks, and the
+ * surfaces teamai writes resolve as fixed leaves under it (#1273): the engine
+ * reads `<configDir>/rules`, `<configDir>/agents` and `<configDir>/mcp.json`
+ * (plus `skills/` beside them). `WORKBUDDY_CONFIG_DIR` names that root at
+ * runtime; the fallback is `~/.workbuddy` for WorkBuddy and `~/.workbuddy-ai`
+ * for WorkBuddy AI, its international edition. Those are two products with a
+ * root each, not two generations of one, so both can sit on one machine.
+ *
+ * Which of the two is running comes from `workbuddyLaunchedFrom`: the launch
+ * record is rewritten in the root the app starts from, so the newer one wins
+ * even when the other product left its root behind. When neither root records
+ * a launch, the new root existing still wins, the rule this had before (#1290).
+ *
+ * Only the four default paths swap, so a team that redirected on purpose keeps
+ * its own. `settings` deliberately stays put — the hooks half of #1273 owns it.
+ * Project scope keeps every project path (only `skills` moves there, as
+ * before): its rules and agents live under the project's `.codebuddy/`, which
+ * no root change touches. Returns the same object when no swap fires.
+ */
+function applyWorkBuddyLiveRoot(
   toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
   localConfig: { scope?: Scope; projectRoot?: string },
+  at: HomePaths,
 ): z.infer<typeof ToolPathsTableSchema> {
   const workbuddy = toolPaths[WORKBUDDY_TOOL_ID];
 
-  if (!workbuddy || workbuddy.skills !== '.workbuddy/skills') return toolPaths;
+  if (!workbuddy || workbuddy.skills !== `${WORKBUDDY_TOOL_ROOT}/skills`) return toolPaths;
 
-  const baseDir = localConfig.scope === 'project' && localConfig.projectRoot !== undefined
-    ? localConfig.projectRoot
-    : getUserHome();
+  const projectRoot = localConfig.scope === 'project' ? localConfig.projectRoot : undefined;
+  const projectScope = projectRoot !== undefined;
 
-  // The new root present means 5.7+ is the live generation (an upgrade leaves
-  // `.workbuddy/` behind as a leftover the app no longer reads), so it wins
-  // even when both roots exist (#1290).
-  if (fs.existsSync(path.join(baseDir, WORKBUDDY_NEW_GENERATION_ROOT))) {
-    return { ...toolPaths, [WORKBUDDY_TOOL_ID]: { ...workbuddy, skills: `${WORKBUDDY_NEW_GENERATION_ROOT}/skills` } };
+  // `at.home`, not this process's home: `locate` answers about the machine it
+  // was handed, and the swap has to read that machine's `last-launch.json` (#1273).
+  const baseDir = projectRoot ?? at.home;
+  const newRoot = at.path.join(baseDir, WORKBUDDY_AI_ROOT);
+  const oldRoot = at.path.join(baseDir, WORKBUDDY_TOOL_ROOT);
+
+  const launched = workbuddyLaunchedFrom(
+    { old: oldRoot, new: newRoot },
+    (file) => readTextAt(at, file),
+    (dir, file) => at.path.join(dir, file),
+  );
+
+  if (launched !== 'new' && !(launched === 'undecided' && existsAt(at, newRoot))) return toolPaths;
+
+  if (projectScope) {
+    return { ...toolPaths, [WORKBUDDY_TOOL_ID]: { ...workbuddy, skills: `${WORKBUDDY_AI_ROOT}/skills` } };
   }
 
-  return toolPaths;
+  return { ...toolPaths, [WORKBUDDY_TOOL_ID]: moveWorkbuddyUserPaths(workbuddy) };
+}
+
+/**
+ * The WorkBuddy user paths that move with the live root: skills, the MCP file,
+ * and the user rules and agents `userScope` restates for the engine's
+ * `<configDir>/…` leaves. Each value moves only while it still holds its
+ * default, so a team override survives.
+ */
+function moveWorkbuddyUserPaths(
+  workbuddy: z.infer<typeof ToolPathsSchema>,
+): z.infer<typeof ToolPathsSchema> {
+  const moved = (value: string | undefined, leaf: string): string | undefined =>
+    value === `${WORKBUDDY_TOOL_ROOT}/${leaf}` ? `${WORKBUDDY_AI_ROOT}/${leaf}` : value;
+
+  const userScope = workbuddy.userScope;
+
+  if (userScope === undefined) return { ...workbuddy, skills: `${WORKBUDDY_AI_ROOT}/skills` };
+
+  return {
+    ...workbuddy,
+    skills: `${WORKBUDDY_AI_ROOT}/skills`,
+    mcp: moved(workbuddy.mcp, 'mcp.json'),
+    userScope: {
+      ...userScope,
+      rules: userScope.rules === null ? null : moved(userScope.rules, 'rules'),
+      agents: moved(userScope.agents, 'agents'),
+    },
+  };
 }
 
 /**
@@ -3432,10 +3618,11 @@ export function scopedToolPaths(
   localConfig: { scope?: Scope; toolRoots?: Readonly<Record<string, string>> },
   at?: HomePaths,
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
-  const generationAdjusted = applyWorkBuddyGeneration(teamConfig.toolPaths, localConfig);
+  const at0 = at ?? processHomePaths();
+  const liveRootAdjusted = applyWorkBuddyLiveRoot(teamConfig.toolPaths, localConfig, at0);
 
-  if (localConfig.scope !== 'user') return generationAdjusted;
-  const rooted = applyToolRoots(generationAdjusted, localConfig.toolRoots, at);
+  if (localConfig.scope !== 'user') return liveRootAdjusted;
+  const rooted = applyToolRoots(liveRootAdjusted, localConfig.toolRoots, at);
   const out: Record<string, z.infer<typeof ToolPathsSchema>> = {};
 
   for (const [tool, paths] of Object.entries(rooted)) {
@@ -3464,10 +3651,10 @@ export function scopedToolPaths(
 
   if (copilot?.hooks) out[COPILOT_TOOL_ID] = { ...copilot, hooks: `hooks/${path.basename(copilot.hooks)}` };
 
-  // Re-apply the WorkBuddy generation swap after the user-scope merge: a
+  // Re-apply the live-root swap after the user-scope merge: a
   // `userScope.skills` carrying the default `.workbuddy/skills` restores the
-  // unread old path over the adjusted one (#1290).
-  return applyWorkBuddyGeneration(out, localConfig);
+  // other product's path over the live one (#1290).
+  return applyWorkBuddyLiveRoot(out, localConfig, at0);
 }
 
 /** True when the local config is single-repo mode (the business repo is the team repo). */
@@ -3963,34 +4150,6 @@ export interface MRThread {
 export interface MRFetchOptions {
   /** Read the review threads too (default true). */
   discussions?: boolean;
-  /**
-   * The marker `teamai ci extract-mr --comment-marker` posts its comments
-   * with; those are left out of the threads, as comments with the default
-   * `<!-- teamai:` prefix always are.
-   */
-  commentMarker?: string;
-}
-
-/**
- * AI 对单个候选文件的分类结果。
- */
-export interface ClassifiedItem {
-  /** 源文件路径 */
-  sourcePath: string;
-  /** 原始文件内容（前 3000 字） */
-  rawContent: string;
-  /** 知识类型判断 */
-  type: 'rule' | 'doc' | 'learning';
-  /** AI 建议标题 */
-  title: string;
-  /** AI 生成的摘要 */
-  summary: string;
-  /** AI 建议的 tags */
-  tags: string[];
-  /** 分类置信度 0-1 */
-  confidence: number;
-  /** 是否为个人偏好/环境特定配置（true 则过滤，不导入团队库） */
-  isPersonal: boolean;
 }
 
 /**
@@ -4013,66 +4172,6 @@ export interface CodebaseSuggestion {
   action: 'add' | 'update' | 'noop';
   /** 建议写入的 Markdown 内容 */
   content: string;
-}
-
-/**
- * codebase.md lint 检查的单条问题。
- */
-export interface LintIssue {
-  /** 问题严重程度 */
-  severity: 'high' | 'medium' | 'low';
-  /** 问题类型 */
-  category: 'contradiction' | 'outdated' | 'orphan' | 'missing';
-  /** 问题位置（章节名或行号区间） */
-  location: string;
-  /** 问题描述 */
-  description: string;
-  /** 修复建议 */
-  suggestion: string;
-}
-
-/**
- * lintCodebaseMd 的返回结构，包含所有发现的问题与总体摘要。
- */
-export interface LintReport {
-  /** 所有 lint 问题列表 */
-  issues: LintIssue[];
-  /** 一句话总结 */
-  summary: string;
-}
-
-/**
- * 单条 import 会话条目，记录每个候选项的处理状态。
- */
-export interface ImportSessionItem {
-  /** 条目唯一 ID */
-  id: string;
-  /** 来源文件路径（本地文件导入时） */
-  sourcePath?: string;
-  /** MR URL（MR 导入时） */
-  mrUrl?: string;
-  /** 处理状态 */
-  status: 'pending' | 'accepted' | 'skipped' | 'edited';
-  /** AI 生成的 learning 草稿 */
-  learningDraft?: LearningDraft;
-  /** AI 生成的 codebase 变更建议 */
-  codebaseSuggestions?: CodebaseSuggestion[];
-}
-
-/**
- * import 会话的完整状态，持久化到 ~/.teamai/import-session.json 支持 --resume。
- */
-export interface ImportSession {
-  /** 会话唯一 ID */
-  id: string;
-  /** 创建时间（ISO 8601） */
-  createdAt: string;
-  /** 导入模式 */
-  mode: 'local' | 'mr' | 'dir';
-  /** 所有候选条目 */
-  items: ImportSessionItem[];
-  /** 已处理条目数（用于 --resume 进度恢复） */
-  progress: number;
 }
 
 // ─── Webhook types ──────────────────────────────────────

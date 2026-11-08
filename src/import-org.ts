@@ -9,7 +9,7 @@
  *  2. provider.listOrgRepos → OrgRepoInfo[]
  *  3. 按 includePattern / excludePattern / excludeArchived 过滤
  *  4. 生成扁平的 repo-whitelist 草稿（.teamai/repo-whitelist.draft.yaml）
- *  5. 若 skipImport=false，调 importFromRepoList 完成首次全量导入（产物写入 teamwiki）
+ *  5. 若 skipImport=false，调 importFromRepoList 完成首次全量导入（产物写入 teamwiki）; a repository that fails exits 1
  */
 
 import path from 'node:path';
@@ -227,32 +227,22 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
 
     // 5. 批量导入
     if (!opts.skipImport) {
-        const whitelistPath = whitelistDraftPath;
+        log.info(`Starting batch import (whitelist: ${whitelistDraftPath})...`);
 
-        if (await fs.pathExists(whitelistPath)) {
-            log.info(`Starting batch import (whitelist: ${whitelistPath})...`);
+        const imported = await importFromRepoList({
+            listPath: whitelistDraftPath,
+            concurrency: 3,
+            forceSsh: opts.forceSsh ?? false,
+            dryRun: opts.dryRun,
+            output: opts.output,
+            incremental: false,
+            skipEnrich: opts.skipEnrich ?? false,
+            mode: 'org',
+            command: 'teamai import --from-org',
+        });
 
-            try {
-                const result = await importFromRepoList({
-                    listPath: whitelistPath,
-                    concurrency: 3,
-                    forceSsh: opts.forceSsh ?? false,
-                    dryRun: opts.dryRun,
-                    output: opts.output,
-                    incremental: false,
-                    skipEnrich: opts.skipEnrich ?? false,
-                });
-
-                // importFromRepoList already rebuilt the indexes and pushed them via MR.
-                log.info(
-                    `Batch import complete: ${result.succeeded} succeeded, ${result.failed.length} failed, ${result.skipped.length} skipped`,
-                );
-            } catch (err) {
-                log.warn(`Batch import error (non-blocking): ${String(err)}`);
-            }
-        } else {
-            log.debug('Whitelist file not found, skipping batch import');
-        }
+        // The run printed its summary and set the exit code: 1 when a repository failed.
+        if (imported.kind === 'run' && imported.end === undefined) process.exitCode = 1;
     }
 
     log.success(`Org initialization complete (${filteredRepos.length} repos)`);

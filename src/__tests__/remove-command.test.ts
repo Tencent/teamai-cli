@@ -18,6 +18,7 @@ const gitMocks = vi.hoisted(() => ({
   pushRepoBranch: vi.fn().mockResolvedValue(true),
   checkoutMaster: vi.fn(),
   generateBranchName: vi.fn().mockReturnValue('teamai/push/alice/1'),
+  unusedBranchName: vi.fn().mockResolvedValue('teamai/push/alice/1'),
 }));
 vi.mock('../utils/git.js', () => gitMocks);
 vi.mock('../utils/pending-push.js', () => ({
@@ -279,5 +280,17 @@ describe('teamai remove exits 1 when nothing was removed', () => {
 
     expect(process.exitCode).toBe(1);
     expect(vi.mocked(spinMocks.fail).mock.calls.flat().join(' ')).toContain('Git push failed');
+  });
+
+  // Two removals in one second generate one name, and the first leaves its branch behind, so the second's
+  // checkout fails with "a branch named ... already exists" unless the name is one nothing has yet (#1740 follow-up).
+  it('pushes onto the free branch name, not the one a removal in the same second already took', async () => {
+    gitMocks.unusedBranchName.mockResolvedValueOnce('teamai/push/alice/1-2');
+
+    await remove('agents', ['vr'], { force: true });
+
+    expect(gitMocks.unusedBranchName).toHaveBeenCalledWith('/tmp/team-repo', 'alice');
+    expect(gitMocks.pushRepoBranch.mock.calls[0]?.[3]).toBe('teamai/push/alice/1-2');
+    expect(process.exitCode).toBeUndefined();
   });
 });

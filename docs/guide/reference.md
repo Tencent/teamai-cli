@@ -61,7 +61,7 @@ sharing:
 
 workflows:
   retention: 14d              # how long doctor --fix leaves what a settled run left: a duration such as 14d, or never
-  driver: local                # the driver teamai score, score --drain and a session start start their runs for: local, none, or a driver's name
+  driver: local                # the driver for the runs that teamai score, benchmark run and the other commands that start a workflow, score --drain and a session start begin: local, none, or a driver's name
 
 ```
 
@@ -113,7 +113,7 @@ The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHi
 | Recall on for the whole team | `sharing: { recall: { enabled: true } }` | the team's `teamai.yaml` |
 | No judging of the sessions you run by hand, in any workspace | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
 | Keep what workflow runs leave for a week on this machine ([The branches a run leaves](./workflow.md#the-branches-a-run-leaves)) | `workflows: { retention: 7d }` | `~/.teamai/config.yaml` |
-| Leave the runs `teamai score`, `teamai score --drain` and a session start begin to driver `acme-sandbox`, which this machine does not run: each run waits for it. `workflow start` and `resume` do not read it | `workflows: { driver: acme-sandbox }` | the team's `teamai.yaml` |
+| Leave the runs `teamai score`, `teamai benchmark run` and the other commands that start a workflow, `teamai score --drain` and a session start begin to driver `acme-sandbox`, which this machine does not run: each run waits for it. `workflow start` and `resume` do not read it | `workflows: { driver: acme-sandbox }` | the team's `teamai.yaml` |
 
 `teamai doctor` names the file of the workspace it runs in. The dashboard's [Member settings](./dashboard.md#member-settings) panel shows the same for the workspace you select.
 
@@ -182,7 +182,7 @@ A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, 
 
 #### AI tool (`ai.tool`)
 
-teamai's own AI calls (enrich, codebase, import, promote, the votes judge) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, name a tool id such as `codex`. The first of these that is set wins:
+teamai's own AI calls (enrich, codebase, import, promote) run on the first installed tool that teamai launches: Claude Code and its internal builds first, then Codex and its internal builds, then the other tools [Tool support](./tool-support.md) marks for AI calls. To use another, name a tool id such as `codex`. The first of these that is set wins:
 
 1. `TEAMAI_AI_TOOL`, for one shell.
 2. `ai.tool` in the config of the workspace or self install the command runs in, `~/.teamai/projects/<slug>/config.yaml`.

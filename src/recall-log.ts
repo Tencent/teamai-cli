@@ -9,6 +9,10 @@
  *   evidence  a PostToolUse read of a file under the knowledge roots, or a search that showed its lines, by its actor: its path and status, never its command or output
  *   link      a child session a subagent ran in, and the session that started it (OpenCode's task tool)
  *   consumed  evidence that has been credited, so it never votes again
+ *   credit    a root session's credit of a recalled doc, by a read (tool) or an adoption label (judge): the first for a
+ *             session and doc stands; the votes file deduplicates the effect durably (#1391). A judge credit is written before its votes
+ *             and again once they are, so a busy votes file is retried at pull
+ *   counted   a root session counted once in a doc's recalled sessions (#1391)
  *
  * It never holds a query, prompt, tool output or file content. It is local and
  * owner-only, and lives in `dashboard/`, which every data home's `.gitignore`
@@ -129,9 +133,33 @@ export interface ConsumedLine {
   evidence: string;
 }
 
-export type RecallLogLine = RunLine | ClaimLine | EvidenceLine | LinkLine | ConsumedLine;
+/**
+ * A root session's credit of a recalled doc (#1391): a read that opened it (`tool`), or an adoption label (`judge`),
+ * whose `adopted` says whether it upvoted. `votes` says whether the votes file holds it yet: a judge credit claims the
+ * session and doc as `pending` before it writes the votes, and its `written` line follows, under the same `id`.
+ */
+export interface CreditLine {
+  kind: 'credit';
+  ts: string;
+  id: string;
+  session: string;
+  doc: string;
+  source: 'tool' | 'judge';
+  adopted: boolean;
+  votes: 'pending' | 'written';
+}
 
-const RecallLogKindSchema = z.enum(['run', 'claim', 'evidence', 'link', 'consumed']);
+/** A root session counted once in a doc's `recalled_session_count` (#1391). */
+export interface CountedLine {
+  kind: 'counted';
+  ts: string;
+  session: string;
+  doc: string;
+}
+
+export type RecallLogLine = RunLine | ClaimLine | EvidenceLine | LinkLine | ConsumedLine | CreditLine | CountedLine;
+
+const RecallLogKindSchema = z.enum(['run', 'claim', 'evidence', 'link', 'consumed', 'credit', 'counted']);
 
 /**
  * The recall log of the scope `config` names, beside its votes: a historical

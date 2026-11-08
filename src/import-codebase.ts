@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -13,7 +12,6 @@ import { log } from './utils/logger.js';
 import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
-import { isOverrideInvalid } from './tool-launch/call.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
 const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as const;
@@ -409,244 +407,240 @@ async function seedBaseline(wikiRoot: string, stagingWiki: string, slug: string)
   return true;
 }
 
-/**
- * Extract a source checkout into `<wikiRoot>/evidence/code/<slug>/`, the one
- * code path every import source shares (`--dir`, `--from-repo`, `ci extract-mr`).
- *
- * Extraction runs in a temporary directory, never in the source checkout, so a
- * teamwiki already there is left alone. The published evidence, the per-repo
- * graph, the incremental caches and source-manifest.json land in the
- * codebase's evidence directory; the root source-manifest.json keeps the most
- * recent baseline for `teamai codebase --status`.
- *
- * @returns false when an incremental run found nothing changed (nothing is
- *          written), true when the evidence was published
- */
-export async function importCodebase(opts: ImportCodebaseOptions): Promise<boolean> {
-  const { sourceDir, slug, wikiRoot } = opts;
-  const staging = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-extract-'));
-
-  try {
-    const stagingWiki = path.join(staging, 'teamwiki');
-    const seeded = opts.incremental ? await seedBaseline(wikiRoot, stagingWiki, slug) : false;
-
-    if (opts.incremental && !seeded) log.debug(`[import] ${slug}: no published baseline, running a full extraction`);
-
-    const wrote = await extractCodebase({
-      path: sourceDir,
-      project: slug,
-      outputRoot: staging,
-      json: false,
-      incremental: seeded,
-      skipEnrich: opts.skipEnrich,
-      maxFiles: opts.maxFiles,
-      repoUrl: opts.repoUrl,
-      branch: opts.branch,
-      sourceMrUrl: opts.sourceMrUrl,
-    });
-
-    // An up-to-date or empty source writes nothing: keep the published evidence.
-    if (!wrote) return false;
-
-    const stagingEvidence = path.join(stagingWiki, 'evidence', 'code', slug);
-    const evidenceDest = path.join(wikiRoot, 'evidence', 'code', slug);
-
-    // `--dir` named a checkout with an origin after its directory before it took
-    // the remote's slug: adopt that evidence rather than leave a duplicate.
-    const { legacySlug } = opts;
-    const legacyDest = legacySlug && legacySlug !== slug ? path.join(wikiRoot, 'evidence', 'code', legacySlug) : null;
-
-    if (legacySlug && legacyDest && await fs.pathExists(legacyDest)) {
-      const legacy = await publishedSource({ publishedDir: legacyDest, stagedDir: stagingEvidence, slug: legacySlug, sourceDir });
-
-      switch (legacy.kind) {
-        case 'same':
-          if (await fs.pathExists(evidenceDest)) {
-            log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
-              + 'Move any curated docs you want to keep from it, then remove it.');
-          } else {
-            await fs.move(legacyDest, evidenceDest);
-            log.info(`Moved teamwiki/evidence/code/${legacySlug}/ to teamwiki/evidence/code/${slug}/`);
-          }
-
-          break;
-        case 'unknown':
-          // Evidence older than its source manifest cannot be shown to be
-          // this repo's, so it is not moved.
-          log.warn(`teamwiki/evidence/code/${legacySlug}/ names no repository, so it was left in place. `
-            + `If it is an older copy of teamwiki/evidence/code/${slug}/, move any curated docs you want to keep from it, then remove it.`);
-          break;
-        case 'other-checkout':
-          // The legacy name holds another checkout's evidence, proven by a
-          // hashed root this source did not come from: it is not an older
-          // copy of this one, so it stays without a warning (#1502).
-          break;
-        case 'different':
-          // Another repository's evidence keeps its own name.
-          break;
-        default: {
-          const unhandled: never = legacy;
-          throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
-        }
-      }
-    }
-
-    const [publishedManifest, stagedManifest] = await Promise.all([
-      readJsonIfPresent(path.join(evidenceDest, '_manifest.json')),
-      readJsonIfPresent(path.join(stagingEvidence, '_manifest.json')),
-    ]);
-
-    const publishedComponents = componentSlugs(publishedManifest);
-    const currentComponents = componentSlugs(stagedManifest);
-    const removedComponents = new Set([...publishedComponents].filter((component) => !currentComponents.has(component)));
-
-    const stagedDocs = new Set(
-      await fs.readdir(path.join(stagingEvidence, 'docs')).catch(() => []),
-    );
-
-    const stagedDomains = await fs.pathExists(path.join(stagingEvidence, '_domains.json'));
-    // A missing manifest is the only case where nothing can be pruned.
-    const hasManifest = Boolean(stagedManifest);
-
-    const source = await publishedSource({ publishedDir: evidenceDest, stagedDir: stagingEvidence, slug, sourceDir });
-
-    switch (source.kind) {
-      case 'different':
-        throw differentSourceError(slug, source);
-      case 'other-checkout':
-        // Reached through `localCheckoutSlug`, another checkout's evidence
-        // under this name has already been answered with a suffix; a direct
-        // import replaces it like any `unknown` provenance. The distinction
-        // matters only where the name passed as a legacy slug is reported.
-        // fall through
-      case 'same':
-      case 'unknown':
-        break;
-      default: {
-        const unhandled: never = source;
-        throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
-      }
-    }
-
-    if (source.kind === 'same') {
-      // Carry over the artifacts that only AI enrichment and deep enrich write.
-      // Extraction never regenerates them, so replacing the published evidence
-      // would silently drop curated docs and domain metadata. Existing staged
-      // files win: a fresh extraction or a new AI classification is newer than
-      // what the teamwiki holds. `_review/` is deliberately not carried over: it
-      // records which components deep enrich already documented, and a repo that
-      // changed must regenerate those docs instead of skipping them.
-      for (const artifact of ['docs', '_domains.json']) {
-        const published = path.join(evidenceDest, artifact);
-
-        if (!(await fs.pathExists(published))) continue;
-        await fs.copy(published, path.join(stagingEvidence, artifact), { overwrite: false, errorOnExist: false });
-      }
-
-      const enrichedManifest = opts.skipEnrich ? keepEnrichedComponents({ published: publishedManifest, staged: stagedManifest }) : null;
-
-      if (enrichedManifest) {
-        await fs.writeJson(path.join(stagingEvidence, '_manifest.json'), enrichedManifest, { spaces: 2 });
-      }
-
-      const stagedDocsDir = path.join(stagingEvidence, 'docs');
-
-      if (await fs.pathExists(stagedDocsDir)) {
-        // Deep enrich's graph pages describe the previous extraction; never
-        // carry them forward. The freshly extracted graph replaces them, and
-        // the generated README routes to the new pages.
-        for (const entry of await fs.readdir(stagedDocsDir)) {
-          if (stagedDocs.has(entry)) continue;
-
-          if (entry === 'README.md' || /^graph-g\d+-/.test(entry)) {
-            await fs.remove(path.join(stagedDocsDir, entry));
-          }
-        }
-
-        // A component that disappeared from the new manifest must not keep a doc.
-        if (hasManifest) {
-          for (const component of removedComponents) {
-            try {
-              assertSafeResourceName(component);
-            } catch {
-              continue;
-            }
-
-            await fs.remove(path.join(stagedDocsDir, `${component}.md`));
-          }
-        }
-      }
-
-      // Keep the carried domain metadata in step with the new manifest: drop
-      // removed components and the keywords that named them.
-      if (hasManifest && !stagedDomains) {
-        const domainsPath = path.join(stagingEvidence, '_domains.json');
-        const domains = await readJsonIfPresent(domainsPath);
-
-        if (domains) {
-          // A JSON value that is not a string is in neither set, so it is dropped from components and kept in keywords.
-          const current = new Set<JsonValue>(currentComponents);
-          const removed = new Set<JsonValue>(removedComponents);
-
-          if (Array.isArray(domains['components']) && stagedManifest) {
-            domains['components'] = domains['components'].filter((component) => current.has(component));
-          }
-
-          if (Array.isArray(domains['keywords']) && removedComponents.size > 0) {
-            domains['keywords'] = domains['keywords'].filter((keyword) => !removed.has(keyword));
-          }
-
-          await fs.writeJson(domainsPath, domains, { spaces: 2 });
-        }
-      }
-    }
-
-    // Replace the old pages so a removed module's page does not linger.
-    if (await fs.pathExists(evidenceDest)) {
-      for (const entry of await fs.readdir(evidenceDest)) {
-        if (entry !== '.indices') await fs.remove(path.join(evidenceDest, entry));
-      }
-    }
-
-    await fs.ensureDir(evidenceDest);
-    await fs.copy(stagingEvidence, evidenceDest, { overwrite: true });
-
-    const destIndices = path.join(evidenceDest, '.indices');
-    await fs.ensureDir(destIndices);
-
-    for (const file of ['graph-index.json', ...INCREMENTAL_CACHES]) {
-      const src = path.join(stagingWiki, '.indices', file);
-
-      if (await fs.pathExists(src)) await fs.copy(src, path.join(destIndices, file), { overwrite: true });
-    }
-
-    const stagingManifest = path.join(stagingWiki, 'source-manifest.json');
-
-    if (await fs.pathExists(stagingManifest)) {
-      await publishRootManifest(stagingManifest, wikiRoot);
-    }
-
-    return true;
-  } finally {
-    await fs.remove(staging).catch(() => {});
-  }
+/** Where an import extracts a codebase before it publishes it: `<stagingRoot>/teamwiki`, laid out as a teamwiki. */
+export interface StagedCodebase {
+  /** Source checkout that was extracted. */
+  sourceDir: string;
+  /** Evidence slug: `teamwiki/evidence/code/<slug>/`. */
+  slug: string;
+  /** The directory holding the staging `teamwiki/`. */
+  stagingRoot: string;
+  /** The teamwiki the evidence is published into. */
+  wikiRoot: string;
 }
 
 /**
- * Reconcile product docs with code knowledge, then deep-enrich the codebase.
- * Reconcile is non-blocking; deep enrich runs only when `_manifest.json` exists.
+ * Extract a source checkout into the staging teamwiki under `stagingRoot`, the one code path every import source shares
+ * (`--dir`, `--from-repo`, `ci extract-mr`), never in the source checkout, so a teamwiki already there is left alone.
+ * An incremental run first seeds it with the baseline this codebase was last published with. Nothing is asked of an AI
+ * tool: the staging teamwiki holds the deterministic evidence, which teamai-codebase-enrich may enrich before
+ * `publishStaging` publishes it.
  *
- * @returns false when deep enrich ran and did not finish; what is missing, or
- *   the error, is already printed as a warning
+ * @returns false when an incremental run found nothing changed or the source has nothing to extract (nothing is
+ *          written), true when the evidence was staged
  */
-export async function reconcileAndDeepEnrich(params: {
-  slug: string;
-  wikiRoot: string;
-  sourceDir: string;
-  skipEnrich: boolean;
-}): Promise<boolean> {
-  const { slug, wikiRoot, sourceDir, skipEnrich } = params;
+export async function extractToStaging(opts: ImportCodebaseOptions & { stagingRoot: string }): Promise<boolean> {
+  const { slug, wikiRoot, stagingRoot } = opts;
+  const stagingWiki = path.join(stagingRoot, 'teamwiki');
+  const seeded = opts.incremental ? await seedBaseline(wikiRoot, stagingWiki, slug) : false;
 
+  if (opts.incremental && !seeded) log.debug(`[import] ${slug}: no published baseline, running a full extraction`);
+
+  return extractCodebase({
+    path: opts.sourceDir,
+    project: slug,
+    outputRoot: stagingRoot,
+    json: false,
+    incremental: seeded,
+    skipEnrich: opts.skipEnrich,
+    maxFiles: opts.maxFiles,
+    repoUrl: opts.repoUrl,
+    branch: opts.branch,
+    sourceMrUrl: opts.sourceMrUrl,
+  });
+}
+
+/**
+ * Publish a staged codebase into `<wikiRoot>/evidence/code/<slug>/`. The published evidence, the per-repo graph, the
+ * incremental caches and source-manifest.json land in the codebase's evidence directory; the root source-manifest.json
+ * keeps the most recent baseline for `teamai codebase --status`. What only AI enrichment and deep enrich write is
+ * carried over from the evidence it replaces.
+ */
+export async function publishStaging(opts: StagedCodebase & { legacySlug?: string; skipEnrich?: boolean }): Promise<void> {
+  const { sourceDir, slug, wikiRoot } = opts;
+  const stagingWiki = path.join(opts.stagingRoot, 'teamwiki');
+  const stagingEvidence = path.join(stagingWiki, 'evidence', 'code', slug);
+  const evidenceDest = path.join(wikiRoot, 'evidence', 'code', slug);
+
+  // `--dir` named a checkout with an origin after its directory before it took
+  // the remote's slug: adopt that evidence rather than leave a duplicate.
+  const { legacySlug } = opts;
+  const legacyDest = legacySlug && legacySlug !== slug ? path.join(wikiRoot, 'evidence', 'code', legacySlug) : null;
+
+  if (legacySlug && legacyDest && await fs.pathExists(legacyDest)) {
+    const legacy = await publishedSource({ publishedDir: legacyDest, stagedDir: stagingEvidence, slug: legacySlug, sourceDir });
+
+    switch (legacy.kind) {
+      case 'same':
+        if (await fs.pathExists(evidenceDest)) {
+          log.warn(`teamwiki/evidence/code/${legacySlug}/ is an older copy of teamwiki/evidence/code/${slug}/. `
+            + 'Move any curated docs you want to keep from it, then remove it.');
+        } else {
+          await fs.move(legacyDest, evidenceDest);
+          log.info(`Moved teamwiki/evidence/code/${legacySlug}/ to teamwiki/evidence/code/${slug}/`);
+        }
+
+        break;
+      case 'unknown':
+        // Evidence older than its source manifest cannot be shown to be
+        // this repo's, so it is not moved.
+        log.warn(`teamwiki/evidence/code/${legacySlug}/ names no repository, so it was left in place. `
+          + `If it is an older copy of teamwiki/evidence/code/${slug}/, move any curated docs you want to keep from it, then remove it.`);
+        break;
+      case 'other-checkout':
+        // The legacy name holds another checkout's evidence, proven by a
+        // hashed root this source did not come from: it is not an older
+        // copy of this one, so it stays without a warning (#1502).
+        break;
+      case 'different':
+        // Another repository's evidence keeps its own name.
+        break;
+      default: {
+        const unhandled: never = legacy;
+        throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
+      }
+    }
+  }
+
+  const [publishedManifest, stagedManifest] = await Promise.all([
+    readJsonIfPresent(path.join(evidenceDest, '_manifest.json')),
+    readJsonIfPresent(path.join(stagingEvidence, '_manifest.json')),
+  ]);
+
+  const publishedComponents = componentSlugs(publishedManifest);
+  const currentComponents = componentSlugs(stagedManifest);
+  const removedComponents = new Set([...publishedComponents].filter((component) => !currentComponents.has(component)));
+
+  const stagedDocs = new Set(
+    await fs.readdir(path.join(stagingEvidence, 'docs')).catch(() => []),
+  );
+
+  const stagedDomains = await fs.pathExists(path.join(stagingEvidence, '_domains.json'));
+  // A missing manifest is the only case where nothing can be pruned.
+  const hasManifest = Boolean(stagedManifest);
+
+  const source = await publishedSource({ publishedDir: evidenceDest, stagedDir: stagingEvidence, slug, sourceDir });
+
+  switch (source.kind) {
+    case 'different':
+      throw differentSourceError(slug, source);
+    case 'other-checkout':
+      // Reached through `localCheckoutSlug`, another checkout's evidence
+      // under this name has already been answered with a suffix; a direct
+      // import replaces it like any `unknown` provenance. The distinction
+      // matters only where the name passed as a legacy slug is reported.
+      // fall through
+    case 'same':
+    case 'unknown':
+      break;
+    default: {
+      const unhandled: never = source;
+      throw new Error(`Unhandled published source: ${JSON.stringify(unhandled)}`);
+    }
+  }
+
+  if (source.kind === 'same') {
+    // Carry over the artifacts that only AI enrichment and deep enrich write.
+    // Extraction never regenerates them, so replacing the published evidence
+    // would silently drop curated docs and domain metadata. Existing staged
+    // files win: a fresh extraction or a new AI classification is newer than
+    // what the teamwiki holds. `_review/` is deliberately not carried over: it
+    // records which components deep enrich already documented, and a repo that
+    // changed must regenerate those docs instead of skipping them.
+    for (const artifact of ['docs', '_domains.json']) {
+      const published = path.join(evidenceDest, artifact);
+
+      if (!(await fs.pathExists(published))) continue;
+      await fs.copy(published, path.join(stagingEvidence, artifact), { overwrite: false, errorOnExist: false });
+    }
+
+    const enrichedManifest = opts.skipEnrich ? keepEnrichedComponents({ published: publishedManifest, staged: stagedManifest }) : null;
+
+    if (enrichedManifest) {
+      await fs.writeJson(path.join(stagingEvidence, '_manifest.json'), enrichedManifest, { spaces: 2 });
+    }
+
+    const stagedDocsDir = path.join(stagingEvidence, 'docs');
+
+    if (await fs.pathExists(stagedDocsDir)) {
+      // Deep enrich's graph pages describe the previous extraction; never
+      // carry them forward. The freshly extracted graph replaces them, and
+      // the generated README routes to the new pages.
+      for (const entry of await fs.readdir(stagedDocsDir)) {
+        if (stagedDocs.has(entry)) continue;
+
+        if (entry === 'README.md' || /^graph-g\d+-/.test(entry)) {
+          await fs.remove(path.join(stagedDocsDir, entry));
+        }
+      }
+
+      // A component that disappeared from the new manifest must not keep a doc.
+      if (hasManifest) {
+        for (const component of removedComponents) {
+          try {
+            assertSafeResourceName(component);
+          } catch {
+            continue;
+          }
+
+          await fs.remove(path.join(stagedDocsDir, `${component}.md`));
+        }
+      }
+    }
+
+    // Keep the carried domain metadata in step with the new manifest: drop
+    // removed components and the keywords that named them.
+    if (hasManifest && !stagedDomains) {
+      const domainsPath = path.join(stagingEvidence, '_domains.json');
+      const domains = await readJsonIfPresent(domainsPath);
+
+      if (domains) {
+        // A JSON value that is not a string is in neither set, so it is dropped from components and kept in keywords.
+        const current = new Set<JsonValue>(currentComponents);
+        const removed = new Set<JsonValue>(removedComponents);
+
+        if (Array.isArray(domains['components']) && stagedManifest) {
+          domains['components'] = domains['components'].filter((component) => current.has(component));
+        }
+
+        if (Array.isArray(domains['keywords']) && removedComponents.size > 0) {
+          domains['keywords'] = domains['keywords'].filter((keyword) => !removed.has(keyword));
+        }
+
+        await fs.writeJson(domainsPath, domains, { spaces: 2 });
+      }
+    }
+  }
+
+  // Replace the old pages so a removed module's page does not linger.
+  if (await fs.pathExists(evidenceDest)) {
+    for (const entry of await fs.readdir(evidenceDest)) {
+      if (entry !== '.indices') await fs.remove(path.join(evidenceDest, entry));
+    }
+  }
+
+  await fs.ensureDir(evidenceDest);
+  await fs.copy(stagingEvidence, evidenceDest, { overwrite: true });
+
+  const destIndices = path.join(evidenceDest, '.indices');
+  await fs.ensureDir(destIndices);
+
+  for (const file of ['graph-index.json', ...INCREMENTAL_CACHES]) {
+    const src = path.join(stagingWiki, '.indices', file);
+
+    if (await fs.pathExists(src)) await fs.copy(src, path.join(destIndices, file), { overwrite: true });
+  }
+
+  const stagingManifest = path.join(stagingWiki, 'source-manifest.json');
+
+  if (await fs.pathExists(stagingManifest)) {
+    await publishRootManifest(stagingManifest, wikiRoot);
+  }
+
+}
+
+/** Reconcile product docs with the code knowledge just published. Non-blocking: a failure is only logged at debug. */
+export async function reconcileTeamwiki(wikiRoot: string): Promise<void> {
   try {
     const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
     const result = await reconcileKnowledge({ wikiRoot, dryRun: false });
@@ -657,31 +651,15 @@ export async function reconcileAndDeepEnrich(params: {
   } catch (err) {
     log.debug(`reconcile skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
-
-  const evidenceDir = path.join(wikiRoot, 'evidence', 'code', slug);
-
-  if (skipEnrich || !(await fs.pathExists(path.join(evidenceDir, '_manifest.json')))) return true;
-
-  try {
-    const { deepEnrich } = await import('./deep-enrich.js');
-    const result = await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
-
-    if (result.complete) log.info(`Deep enrich complete: ${slug}`);
-
-    return result.complete;
-  } catch (err) {
-    if (isOverrideInvalid(err)) throw err;
-    log.warn(`Deep enrich failed for ${slug}: ${err instanceof Error ? err.message : String(err)}`);
-
-    return false;
-  }
 }
 
 /**
- * Fail the import a person ran whose deep enrich did not finish, and say how to
- * resume it. The extracted evidence stays published.
+ * Say that the deep enrich of an import did not finish, and how to resume it. The extracted evidence stays published;
+ * the import exits 1.
+ *
+ * @param output - The `--output` directory, when the teamwiki is not the team repo's
  */
-export function failIncompleteDeepEnrich({ slug, output }: {
+export function warnIncompleteDeepEnrich({ slug, output }: {
   slug: string;
   output: string | undefined;
 }): void {
@@ -692,7 +670,6 @@ export function failIncompleteDeepEnrich({ slug, output }: {
     : `teamai codebase --deep-enrich --project ${project}`;
 
   log.warn(`Deep enrich incomplete: ${slug}. Run \`${retry}\` to retry.`);
-  process.exitCode = 1;
 }
 
 /** Quoted only when needed, so a printed command can be copied as is. */
@@ -722,7 +699,7 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
   const { localConfig: lc, teamConfig: tc } = team;
   const { autoPushViaMR } = await import('./utils/git.js');
 
-  const prUrl = await autoPushViaMR(
+  const mrPush = await autoPushViaMR(
     lc.repo.localPath,
     message,
     ['.'],
@@ -730,35 +707,9 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
     { repo: lc.repo, username: lc.username, provider: lc.provider },
   );
 
-  if (prUrl) log.success(`MR created: ${prUrl}`);
+  // Nothing to commit, or a failed push autoPushViaMR already warned about, pushed no branch.
+  if (!mrPush.pushed) return;
+
+  if (mrPush.prUrl) log.success(`MR created: ${mrPush.prUrl}`);
   else log.success(`Branch pushed to team knowledge repo (${lc.repo.remote})`);
-}
-
-/**
- * `teamai import --dir`, and the teamwiki update of `teamai ci extract-mr`:
- * import a checkout, reconcile and deep-enrich it, and refresh the indexes.
- *
- * @returns whether the teamwiki changed, and for a change whether deep enrich
- *   finished (true when it did not run)
- */
-export async function importLocalCheckout(
-  opts: ImportCodebaseOptions,
-): Promise<{ updated: false } | { updated: true; deepEnrichComplete: boolean }> {
-  const updated = await importCodebase(opts);
-
-  if (!updated) {
-    log.info(`${opts.slug}: no source changes since the last import, teamwiki unchanged`);
-
-    return { updated: false };
-  }
-
-  log.info(`teamwiki/ knowledge graph updated: ${opts.slug}`);
-
-  const deepEnrichComplete = await reconcileAndDeepEnrich({
-    slug: opts.slug, wikiRoot: opts.wikiRoot, sourceDir: opts.sourceDir, skipEnrich: opts.skipEnrich ?? false,
-  });
-
-  await refreshTeamwikiIndexes(opts.wikiRoot);
-
-  return { updated: true, deepEnrichComplete };
 }

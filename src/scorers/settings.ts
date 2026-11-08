@@ -5,6 +5,7 @@
  *   isolation: verified  # the least isolation every judge of the team's scorers needs
  *   sessions: { attended: off, unattended: auto }  # per run mode, off, ask or auto; true or false sets both
  *   skill_routing: true  # a session's judge also answers one routing question per delivered team skill (#1469)
+ *   recall_adoption: true  # ... and one adoption question per recalled doc the session never opened (#1391)
  *   daily_limit: 10      # sessions one data home leases per local day, unless a member's config.yaml says
  *
  * `scorers/<ns>/scoring.yaml` is read where `<ns>` is an active scorers namespace, as model aliases are where theirs
@@ -31,7 +32,7 @@ import { loadMemberSettings } from '../config.js';
 import { SessionPolicy, type PolicySource, type SessionPolicies } from '../session-flow/session-policy.js';
 
 /** Every key a `scoring.yaml` may set: the parser handles each one, and the problem for any other key lists them. */
-const SCORING_KEYS = ['batch', 'isolation', 'sessions', 'skill_routing', 'daily_limit'] as const;
+const SCORING_KEYS = ['batch', 'isolation', 'sessions', 'skill_routing', 'recall_adoption', 'daily_limit'] as const;
 
 /** A scoring.yaml document: a mapping whose values each setting reads for itself. */
 const ScoringMappingSchema = z.record(z.string(), z.unknown());
@@ -46,7 +47,7 @@ function isScoringKey(key: string): key is ScoringKey {
 
 /** What one `scoring.yaml` sets, or why it cannot be read; every message names the file. */
 export type ScoringFileRead =
-  | { ok: true; batch?: boolean; isolation?: string; sessions?: Partial<SessionPolicies>; skillRouting?: boolean; dailyLimit?: number; problems: string[] }
+  | { ok: true; batch?: boolean; isolation?: string; sessions?: Partial<SessionPolicies>; skillRouting?: boolean; recallAdoption?: boolean; dailyLimit?: number; problems: string[] }
   | { ok: false; reason: string };
 
 export function parseScoringFile(relativePath: string, text: string): ScoringFileRead {
@@ -103,6 +104,14 @@ export function parseScoringFile(relativePath: string, text: string): ScoringFil
         break;
       }
 
+      case 'recall_adoption': {
+        const recallAdoption = z.boolean().safeParse(value);
+
+        if (recallAdoption.success) read.recallAdoption = recallAdoption.data;
+        else read.problems.push(`${relativePath}: recall_adoption is ${JSON.stringify(value)}, not true or false, so it is ignored`);
+        break;
+      }
+
       case 'daily_limit': {
         const dailyLimit = WholeNumberSchema.safeParse(value);
 
@@ -135,7 +144,7 @@ export type SessionScoring = { policies: SessionPolicies; dailyLimit: number; da
  * finished sessions are judge work.
  */
 export type ScopeScoring =
-  | { ok: true; batch: boolean | undefined; isolation: IsolationSetting[]; sessions: SessionScoring; skillRouting: boolean; problems: string[] }
+  | { ok: true; batch: boolean | undefined; isolation: IsolationSetting[]; sessions: SessionScoring; skillRouting: boolean; recallAdoption: boolean; problems: string[] }
   | { ok: false; reason: string };
 
 /** A `scoring.yaml` this member reads; `namespace` is null for the root file. */
@@ -144,6 +153,7 @@ interface TeamFile {
   relativePath: string;
   sessions?: Partial<SessionPolicies>;
   skillRouting?: boolean;
+  recallAdoption?: boolean;
   dailyLimit?: number;
 }
 
@@ -162,7 +172,7 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   inNamespaces: readonly TeamFile[];
   problems: string[];
 }): SessionScoring {
-  const member = config.scoring?.sessions;
+  const member = config.scoring?.sessions ?? (isUpvoteJudgeAlias() ? { attended: 'auto' } : undefined);
   const limit = config.scoring?.daily_limit;
   // The config schema keeps an invalid daily_limit as its text, so only a number is a limit.
   const memberLimit = z.number().safeParse(limit).data;
@@ -171,7 +181,7 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   if (limit !== undefined && memberLimit === undefined) problems.push(`config.yaml scoring.daily_limit is ${limit}, not a whole number of 0 or more, so it is ignored`);
 
   if (machine?.daily_limit !== undefined && machineDailyLimit === undefined) problems.push(`~/.teamai/config.yaml scoring.daily_limit is ${machine.daily_limit}, not a whole number of 0 or more, so it is ignored`);
-  const fromMember = SessionPolicy.read('config.yaml scoring.sessions', member ?? {}, { booleans: true });
+  const fromMember = SessionPolicy.read(config.scoring?.sessions === undefined && member !== undefined ? `${UPVOTE_JUDGE_ALIAS}=1 as scoring.sessions` : 'config.yaml scoring.sessions', member ?? {}, { booleans: true });
   const fromMachine = SessionPolicy.read('~/.teamai/config.yaml scoring.sessions', machine?.sessions ?? {}, { booleans: true });
   problems.push(...fromMember.problems, ...fromMachine.problems);
   const defaults = { attended: 'off', unattended: 'auto' } as const;
@@ -197,6 +207,46 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   const off = { policy: 'off', source: dailyLimitSource } as const;
 
   return { policies: { attended: off, unattended: off }, dailyLimit: 0, dailyLimitSource };
+}
+
+/**
+ * `TEAMAI_UPVOTE_JUDGE=1`, which turned on the removed votes-judge Stop hook, reads as a member config of
+ * `scoring: { recall_adoption: true, sessions: { attended: auto } }` for each key that config leaves unset.
+ */
+const UPVOTE_JUDGE_ALIAS = 'TEAMAI_UPVOTE_JUDGE';
+
+function isUpvoteJudgeAlias(): boolean {
+  return process.env[UPVOTE_JUDGE_ALIAS] === '1';
+}
+
+/** What `teamai doctor` says while TEAMAI_UPVOTE_JUDGE=1 is set. */
+export function upvoteJudgeAliasNotes(): string[] {
+  return isUpvoteJudgeAlias()
+    ? ['TEAMAI_UPVOTE_JUDGE=1 is deprecated: no Stop hook judges adoption any more. It reads as scoring.recall_adoption: true and scoring.sessions: { attended: auto } for each key config.yaml leaves unset; set those in config.yaml and unset TEAMAI_UPVOTE_JUDGE.']
+    : [];
+}
+
+/**
+ * skill_routing or recall_adoption: the member config's over the team's, and for recall_adoption the alias's when the
+ * member config leaves it unset; a machine's false turns it off.
+ */
+function memberSwitchOf({ key, config, machine, team, problems }: {
+  key: 'skill_routing' | 'recall_adoption'; config: LocalConfig; machine: LocalConfig['scoring']; team: boolean; problems: string[];
+}): boolean {
+  // The config schema keeps a value that is not true or false as its text.
+  const read = (source: string, value: boolean | string | undefined): boolean | undefined => {
+    if (value === undefined || value === true || value === false) return value;
+    problems.push(`${source} scoring.${key} is ${JSON.stringify(value)}, not true or false, so it is ignored`);
+
+    return undefined;
+  };
+
+  const alias = key === 'recall_adoption' && isUpvoteJudgeAlias() ? true : undefined;
+  const member = read('config.yaml', config.scoring?.[key]) ?? alias;
+
+  if (read('~/.teamai/config.yaml', machine?.[key]) === false) return false;
+
+  return member ?? team;
 }
 
 function failed(cause: string): ScopeScoring {
@@ -247,10 +297,14 @@ export async function scopeScoring(config: LocalConfig): Promise<ScopeScoring> {
   const teamIsolation = isolations.length > 0 ? isolations : rootFile?.isolation !== undefined ? [rootFile] : [];
   // In user scope, ~/.teamai/config.yaml is this scope's own config.
   const machine = config.scope === 'user' ? undefined : (await loadMemberSettings()).scoring;
-  // skill_routing resolves as sessions' team files do, but simply: an active namespace's file overrides the root
-  // file's key, and one that sets false turns it off. Nothing sets it: off, for it costs judge launches.
-  const routingFiles = inNamespaces.filter((file) => file.skillRouting !== undefined);
-  const skillRouting = routingFiles.some((file) => file.skillRouting === false) ? false : routingFiles[0]?.skillRouting ?? rootFile?.skillRouting ?? false;
+
+  // skill_routing and recall_adoption resolve as sessions' team files do, but simply: an active namespace's file
+  // overrides the root file's key, and one that sets false turns it off. Nothing sets one: off, for it costs judge launches.
+  const teamSwitch = (key: 'skillRouting' | 'recallAdoption'): boolean => {
+    const setting = inNamespaces.filter((file) => file[key] !== undefined);
+
+    return setting.some((file) => file[key] === false) ? false : setting[0]?.[key] ?? rootFile?.[key] ?? false;
+  };
 
   return {
     ok: true,
@@ -261,7 +315,8 @@ export async function scopeScoring(config: LocalConfig): Promise<ScopeScoring> {
       ...(machine?.isolation === undefined ? [] : [{ source: '~/.teamai/config.yaml scoring.isolation', value: machine.isolation }]),
     ],
     sessions: sessionScoring({ config, machine, rootFile, inNamespaces, problems }),
-    skillRouting,
+    skillRouting: memberSwitchOf({ key: 'skill_routing', config, machine, team: teamSwitch('skillRouting'), problems }),
+    recallAdoption: memberSwitchOf({ key: 'recall_adoption', config, machine, team: teamSwitch('recallAdoption'), problems }),
     problems,
   };
 }

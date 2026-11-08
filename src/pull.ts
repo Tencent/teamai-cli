@@ -1162,7 +1162,7 @@ export function addPushBaseRev(record: CheckoutRecord, rev: string): void {
 export async function checkoutRecordKey(localConfig: LocalConfig): Promise<string | undefined> {
   switch (localConfig.scope) {
     case 'user':
-      return checkoutKey(getUserHome());
+      return checkoutKey(await canonicalUserHome());
     case 'project':
       return localConfig.projectRoot ? checkoutKey(localConfig.projectRoot) : undefined;
     default: {
@@ -1170,6 +1170,106 @@ export async function checkoutRecordKey(localConfig: LocalConfig): Promise<strin
       throw new Error(`Unknown scope: ${String(unhandled)}`);
     }
   }
+}
+
+/**
+ * Remove syntactic aliases such as a trailing separator before keying HOME.
+ * Symlink and Windows-case aliases migrate through the sole legacy user record
+ * instead of realpath/lowercasing here: macOS exposes `/var` through
+ * `/private/var`, and changing that long-standing key would hide records from
+ * readers outside pull.
+ */
+async function canonicalUserHome(): Promise<string> {
+  return path.resolve(getUserHome());
+}
+
+/**
+ * Rewrite a recorded destination below an equivalent spelling of HOME to the
+ * spelling this process uses. The record key alone is not enough: delivery
+ * hashes are keyed by absolute paths, so a symlink or Windows casing change
+ * would otherwise make every previously delivered copy look unrecorded.
+ */
+async function currentUserPath(recorded: string, currentHome: string, canonicalHome: string): Promise<string> {
+  if (!path.isAbsolute(recorded)) return recorded;
+  let ancestor = path.resolve(recorded);
+
+  while (true) {
+    const resolved = await realpath(ancestor).catch(() => ancestor);
+    const comparable = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+
+    if (comparable === canonicalHome) return path.join(currentHome, path.relative(ancestor, recorded));
+    const parent = path.dirname(ancestor);
+
+    if (parent === ancestor) return recorded;
+    ancestor = parent;
+  }
+}
+
+/** Re-key a user record's absolute delivery paths to this process's HOME spelling. */
+async function rebaseUserDelivered(record: CheckoutRecord): Promise<void> {
+  if (!record.delivered) return;
+  const currentHome = path.resolve(getUserHome());
+  const resolvedHome = await realpath(currentHome).catch(() => currentHome);
+  const canonicalHome = process.platform === 'win32' ? resolvedHome.toLowerCase() : resolvedHome;
+  const rebased: DeliveredHashes = {};
+
+  const entries = await Promise.all(Object.entries(record.delivered).map(async ([file, hash]) => ({
+    file,
+    hash,
+    current: await currentUserPath(file, currentHome, canonicalHome),
+  })));
+
+  // Exact current-spelling entries win when a previous interrupted pull left
+  // both them and legacy aliases in the record.
+  for (const { file, hash, current } of entries) {
+    if (file === current) rebased[file] = hash;
+  }
+
+  for (const { hash, current } of entries) {
+    if (rebased[current] === undefined) rebased[current] = hash;
+  }
+
+  record.delivered = rebased;
+}
+
+/**
+ * The checkout record and the key that currently holds it. User-scope state
+ * has exactly one logical checkout (HOME), so a sole record written by an
+ * older CLI is that checkout even when HOME was spelled differently. An
+ * ambiguous legacy state is left alone rather than borrowing another record.
+ */
+async function checkoutRecordEntry(
+  localConfig: LocalConfig,
+  state: Pick<State, 'lastPullByWorkspace'>,
+): Promise<{ key: string | undefined; storedKey: string | undefined; record: CheckoutRecord | undefined }> {
+  if (localConfig.scope === 'user') return userScopeRecordEntry(state);
+  const key = await checkoutRecordKey(localConfig);
+
+  if (!key) return { key, storedKey: undefined, record: undefined };
+  const exact = state.lastPullByWorkspace?.[key];
+
+  return { key, storedKey: exact ? key : undefined, record: exact };
+}
+
+async function userScopeRecordEntry(
+  state: Pick<State, 'lastPullByWorkspace'>,
+): Promise<{ key: string; storedKey: string | undefined; record: CheckoutRecord | undefined }> {
+  const key = await checkoutKey(await canonicalUserHome());
+  const exact = state.lastPullByWorkspace?.[key];
+
+  if (exact) {
+    await rebaseUserDelivered(exact);
+
+    return { key, storedKey: key, record: exact };
+  }
+
+  const entries = Object.entries(state.lastPullByWorkspace ?? {});
+
+  if (entries.length === 1) await rebaseUserDelivered(entries[0][1]);
+
+  return entries.length === 1
+    ? { key, storedKey: entries[0][0], record: entries[0][1] }
+    : { key, storedKey: undefined, record: undefined };
 }
 
 /**
@@ -1190,8 +1290,7 @@ export async function resolveCheckoutBases(
   localConfig: LocalConfig,
   state: Pick<State, 'lastPullRev' | 'lastInheritedPullRev' | 'lastPullByWorkspace'>,
 ): Promise<CheckoutBases> {
-  const key = await checkoutRecordKey(localConfig);
-  const record = key ? state.lastPullByWorkspace?.[key] : undefined;
+  const { key, record } = await checkoutRecordEntry(localConfig, state);
   const revs = checkoutBaseRevs(record);
 
   if (record && revs.length > 0) return { source: 'checkout', record, revs };
@@ -1220,27 +1319,25 @@ function homeRevs(state: Pick<State, 'lastPullRev' | 'lastInheritedPullRev'>): s
  * one of its push bases (#823).
  */
 export async function userScopeRecord(state: State): Promise<CheckoutRecord> {
-  const key = await checkoutKey(getUserHome());
+  const { key, storedKey, record: stored } = await userScopeRecordEntry(state);
   const rev = state.lastPullRev ?? FORCED_FULL_SYNC_REV;
   const pushBaseRevs = homeRevs(state).filter((base) => base !== rev);
 
   const fromSharedFields: CheckoutRecord = { rev, targets: state.lastPullTargets ?? [] };
 
   if (pushBaseRevs.length > 0) fromSharedFields.pushBaseRevs = pushBaseRevs;
-  const record = state.lastPullByWorkspace?.[key] ?? fromSharedFields;
+  const record = stored ?? fromSharedFields;
+  const records = { ...state.lastPullByWorkspace };
 
-  state.lastPullByWorkspace = { ...state.lastPullByWorkspace, [key]: record };
+  if (storedKey && storedKey !== key) delete records[storedKey];
+  state.lastPullByWorkspace = { ...records, [key]: record };
 
   return record;
 }
 
 /** The record of the checkout `localConfig`'s pulls deliver into, if any. */
 export async function deliveringCheckoutRecord(localConfig: LocalConfig, state?: State): Promise<CheckoutRecord | undefined> {
-  const key = await checkoutRecordKey(localConfig);
-
-  if (!key) return undefined;
-
-  return (state ?? await loadStateForScope(localConfig)).lastPullByWorkspace?.[key];
+  return (await checkoutRecordEntry(localConfig, state ?? await loadStateForScope(localConfig))).record;
 }
 
 /**
@@ -1280,8 +1377,7 @@ export type TeamDelivery =
  */
 export async function teamDelivery(localConfig: LocalConfig, tool: string, options: { beforeOwnPull?: boolean } = {}): Promise<TeamDelivery> {
   const state = await loadStateForScope(localConfig);
-  const key = await checkoutRecordKey(localConfig);
-  const record = key ? state.lastPullByWorkspace?.[key] : undefined;
+  const { key, record } = await checkoutRecordEntry(localConfig, state);
 
   const gap = (reason: DeliveryGap): TeamDelivery => (record
     ? { complete: false, key, record, gap: reason }
@@ -1413,13 +1509,13 @@ function setAgentModels(record: CheckoutRecord, agentModels: AgentModelRecords):
 
 /** The ledger a pull of that checkout starts from (see DeliveryLedger), carrying the pull's `recorder` when it has one. */
 async function openCheckoutLedger(localConfig: LocalConfig, state?: State, recorder?: DeliveryRecorder): Promise<DeliveryLedger> {
-  const key = await checkoutRecordKey(localConfig);
-  const records = (state ?? await loadStateForScope(localConfig)).lastPullByWorkspace ?? {};
-  const record = key ? records[key] : undefined;
+  const loaded = state ?? await loadStateForScope(localConfig);
+  const records = loaded.lastPullByWorkspace ?? {};
+  const { storedKey, record } = await checkoutRecordEntry(localConfig, loaded);
 
   // Only words a kept copy (#993): a record lost to a new key is not this checkout's.
   const otherRecords: DeliveredHashes = Object.assign({}, ...Object.entries(records)
-    .filter(([other]) => other !== key)
+    .filter(([other]) => other !== storedKey)
     .map(([, other]) => other.delivered ?? {}));
 
   const ledger = openLedger(record?.delivered, record?.agentModels, otherRecords);
@@ -1442,9 +1538,8 @@ export async function editDeliveryRecord(localConfig: LocalConfig): Promise<{ le
     ledger,
     save: async () => {
       if (JSON.stringify(ledger.hashes) === opened) return;
-      const key = await checkoutRecordKey(localConfig);
       const state = await loadStateForScope(localConfig);
-      const record = key ? state.lastPullByWorkspace?.[key] : undefined;
+      const record = (await checkoutRecordEntry(localConfig, state)).record;
 
       if (!record) return;
       record.delivered = ledger.hashes;
@@ -2139,7 +2234,7 @@ async function pullForScope(
       const sameChildren = !workspaceKey || state.lastPullByWorkspace?.[workspaceKey]?.children === localConfig.children?.fingerprint;
 
       if (!sameChildren) log.debug(`[${scopeLabel}] The workspace's children changed, syncing`);
-      const checkout = recordKey ? state.lastPullByWorkspace?.[recordKey] : undefined;
+      const checkout = (await checkoutRecordEntry(localConfig, state)).record;
 
       // A change in manifest/members.yaml arrives with the fetch and can leave
       // the checked-out revision where it was — a pinned workspace reads
@@ -2314,7 +2409,7 @@ async function pullForScope(
   // and this pull's writes are recorded when the state is saved (#822).
   // A dry run's writers report what they would write, for its preview of the block.
   const ledger = await openCheckoutLedger(localConfig, undefined, policy.recorder);
-  const previousRecord = recordKey ? (await loadStateForScope(localConfig)).lastPullByWorkspace?.[recordKey] : undefined;
+  const previousRecord = (await checkoutRecordEntry(localConfig, await loadStateForScope(localConfig))).record;
   const unpinnedRef = localConfig.repo.ref === undefined ? previousRecord?.teamRef : undefined;
 
   const reportKeptCopies = (): number => {
@@ -2922,7 +3017,7 @@ async function pullForScope(
   let syncedSessionToolHomes: SessionToolHomes | undefined;
 
   if (!options.dryRun && resourceTypes.includes('skills')) {
-    const previous = recordKey ? (await loadStateForScope(localConfig)).lastPullByWorkspace?.[recordKey] : undefined;
+    const previous = (await checkoutRecordEntry(localConfig, await loadStateForScope(localConfig))).record;
     // A resource a collision held, or this pull did not sync, keeps the places recorded before.
     const syncedCurrent: PlacesRecord = { blocks: current.blocks };
 
@@ -3040,9 +3135,10 @@ async function pullForScope(
       const others = previousRev === null && live ? awaitingFullSync(live) : live;
       // The delivered paths are rewritten after the last writer of this pull
       // (see syncDeliveredGitExclude): until then, the checkout's previous ones.
-      const gitExcludePaths = state.lastPullByWorkspace?.[recordKey]?.gitExcludePaths;
-      const seeded = rootsSeeded || state.lastPullByWorkspace?.[recordKey]?.rootsSeeded;
-      const claudeMdExcludes = state.lastPullByWorkspace?.[recordKey]?.claudeMdExcludes;
+      const storedRecord = (await checkoutRecordEntry(localConfig, state)).record;
+      const gitExcludePaths = storedRecord?.gitExcludePaths;
+      const seeded = rootsSeeded || storedRecord?.rootsSeeded;
+      const claudeMdExcludes = storedRecord?.claudeMdExcludes;
 
       const record: CheckoutRecord = { rev: deliveredRev, targets: syncedTargets, delivered: ledger.hashes };
 
@@ -3264,7 +3360,7 @@ export async function resolveInstructionBlocks(
   const recallEnabled = isRecallEnabled(localConfig, config);
 
   const blocks: InstructionBlocks = {
-    recall: recallEnabled ? compileRecallRulesBlock() : null,
+    recall: recallEnabled ? compileRecallRulesBlock(config.language) : null,
     directRecall: recallEnabled ? compileDirectRecallRulesBlock() : null,
   };
 
@@ -3457,9 +3553,10 @@ export function compileDirectRecallRulesBlock(): string {
  *   2. Declare which doc_ids were actually consulted at task completion.
  *
  * Delivered to the instruction targets of tools with the subagent (an
- * `agents` path) — see syncManagedInstructions.
+ * `agents` path) — see syncManagedInstructions. `teamai.yaml` `language: en`
+ * drops the Chinese self-exemption, as it does in the recall rule (#1014).
  */
-export function compileRecallRulesBlock(): string {
+export function compileRecallRulesBlock(language?: 'en' | 'zh'): string {
     const lines = [
         TEAMAI_RECALL_RULES_START,
         '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
@@ -3467,8 +3564,10 @@ export function compileRecallRulesBlock(): string {
         '## Team Knowledge Recall (teamai)',
         '',
         '> **Self-exemption (must read first):** If you ARE the `teamai-recall` subagent yourself, this rule does NOT apply to you — do not invoke `teamai-recall` (or any recall) again. Proceed directly to performing the knowledge search that is your task. This prevents infinite subagent recursion in tools (e.g. Cursor) whose always-apply rules leak into subagent sessions.',
-        '>',
-        '> **自豁免（务必先读）：** 如果你自己就是 `teamai-recall` subagent，本规则对你不适用——不要再调用 `teamai-recall`（或任何 recall），直接执行你本职的知识检索任务。此举防止在（如 Cursor 等）会把 always-apply 规则泄漏进 subagent 会话的工具中发生无限递归。',
+        ...(language === 'en' ? [] : [
+            '>',
+            '> **自豁免（务必先读）：** 如果你自己就是 `teamai-recall` subagent，本规则对你不适用——不要再调用 `teamai-recall`（或任何 recall），直接执行你本职的知识检索任务。此举防止在（如 Cursor 等）会把 always-apply 规则泄漏进 subagent 会话的工具中发生无限递归。',
+        ]),
         '',
         '**Before** starting a task that involves code changes, debugging,',
         'or design decisions, you **SHOULD** invoke the `teamai-recall`',

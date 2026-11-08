@@ -9,6 +9,9 @@ import { log } from './utils/logger.js';
 import { lenientList } from './utils/json.js';
 import { getUserHome } from './utils/home.js';
 import { type LocalConfig, JsonObjectSchema } from './types.js';
+import type { SessionRun } from './launch-context.js';
+import { WorkflowOffers, type Proposal } from './workflow-offers.js';
+import type { OutputSchema } from './workflow/types.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
 //
@@ -25,6 +28,8 @@ import { type LocalConfig, JsonObjectSchema } from './types.js';
 //      │   └─ GitHub: gh pr list --state merged --json
 //      ├─ filter by hint cache (avoid re-hinting same MR)
 //      └─ Has new MRs? → STDOUT JSON { hookSpecificOutput.additionalContext }
+//          offering teamai-import-from-mr where a hook may offer it, whose
+//          describe then proposes the MRs this session was offered
 //
 
 /** Days to look back for merged MRs. */
@@ -35,6 +40,12 @@ const MAX_MRS = 10;
 
 /** Cache TTL: 30 days. After this, cache is cleared. */
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The sessions whose offer the cache keeps, the latest ones. */
+const OFFERED_SESSIONS = 20;
+
+/** teamai's default that turns merged MRs into learnings, which the hint offers. */
+const IMPORT_FROM_MR = 'teamai-import-from-mr';
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -56,6 +67,14 @@ const HintCacheSchema = z.object({
   hintedMrIds: lenientList(z.string()),
   /** ISO 8601 timestamp of last update. */
   updatedAt: z.string(),
+  /**
+   * The URLs of the MRs the hint listed to each session it offered teamai-import-from-mr, by session id, which describe
+   * proposes to that session. An older cache holds only the session offered last.
+   */
+  offered: z.union([
+    z.record(z.string(), lenientList(z.string())),
+    z.object({ session: z.string(), urls: lenientList(z.string()) }).transform(({ session, urls }) => ({ [session]: urls })),
+  ]).optional(),
 });
 
 type HintCache = z.infer<typeof HintCacheSchema>;
@@ -103,6 +122,16 @@ function loadCache(owner: string, repo: string): HintCache {
     // cache missing or malformed — start fresh
     return { hintedMrIds: [], updatedAt: new Date().toISOString() };
   }
+}
+
+/**
+ * The offers of the cache once session `sessionId` is offered `urls`: read again, so a session of the repository that
+ * saved its own offer since this one loaded the cache keeps it, and only the latest {@link OFFERED_SESSIONS} are kept.
+ */
+function offerTo(owner: string, repo: string, sessionId: string, urls: string[]): Record<string, string[]> {
+  const others = Object.entries(loadCache(owner, repo).offered ?? {}).filter(([session]) => session !== sessionId);
+
+  return Object.fromEntries([...others, [sessionId, urls] as const].slice(-OFFERED_SESSIONS));
 }
 
 /**
@@ -395,21 +424,28 @@ async function listGitHubMergedMRs(
  * @param mrs  New merged MRs that have not been imported yet
  * @returns    Hint string. English only when language is `en`; otherwise the historical bilingual text.
  */
-export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh'): string {
-  // One command for every MR: `--from-mr` takes several URLs, publishes the
+export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh', { offersWorkflow = false }: { offersWorkflow?: boolean } = {}): string {
+  // One run for every MR: teamai-import-from-mr takes several URLs, publishes the
   // accepted learnings once and updates each repository's teamwiki once (#1104).
-  const command = `  teamai import --from-mr ${mrs.map((mr) => mr.url).join(' ')}`;
+  // Its describe proposes the URLs, so each MR line names its own.
+  const command = offersWorkflow
+    ? '  teamai workflow start --describe teamai-import-from-mr --driver skill'
+    : `  teamai import --from-mr ${mrs.map((mr) => mr.url).join(' ')}`;
+
+  const url = (mr: MRSummary): string => (offersWorkflow ? ` ${mr.url}` : '');
 
   if (language === 'en') {
     const lines = [
       `[teamai:mr-hint] Found ${mrs.length} recently merged MR(s) not yet imported into the team knowledge base.`,
       '',
-      'After this task, tell the user they can turn these MRs into learnings with:',
+      offersWorkflow
+        ? 'After this task, offer the user to turn these MRs into learnings with the teamai-import-from-mr workflow. Its describe proposes these MRs:'
+        : 'After this task, tell the user they can turn these MRs into learnings with:',
       '',
     ];
 
     for (const mr of mrs) {
-      lines.push(`- ${mr.title} (merged: ${mr.mergedAt.slice(0, 10)})`);
+      lines.push(`- ${mr.title} (merged: ${mr.mergedAt.slice(0, 10)})${url(mr)}`);
     }
 
     lines.push('');
@@ -427,7 +463,7 @@ export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh'): stri
 
   for (const mr of mrs) {
     const date = mr.mergedAt.slice(0, 10);
-    lines.push(`- ${mr.title}（merged: ${date}）`);
+    lines.push(`- ${mr.title}（merged: ${date}）${url(mr)}`);
   }
 
   lines.push('');
@@ -435,7 +471,9 @@ export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh'): stri
 
   lines.push('');
   lines.push('[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.');
-  lines.push('Please remind the user to run `teamai import --from-mr <url...>` when convenient.');
+  lines.push(offersWorkflow
+    ? 'Please offer the user the teamai-import-from-mr workflow when convenient. Its describe proposes these MRs.'
+    : 'Please remind the user to run `teamai import --from-mr <url...>` when convenient.');
 
   return lines.join('\n');
 }
@@ -490,6 +528,7 @@ async function mrHintAllowed(localConfig?: LocalConfig | null): Promise<boolean>
 export async function computeMrHintOutput(
   language?: 'en' | 'zh',
   localConfig?: LocalConfig | null,
+  session?: { sessionId: string; cwd: string; run: SessionRun },
 ): Promise<string | null> {
   if (process.env.TEAMAI_MR_HINT_DISABLED === '1') return null;
 
@@ -550,12 +589,16 @@ export async function computeMrHintOutput(
     return null;
   }
 
+  // The workflow where a hook may offer it to this session; else the command, as a session teamai launched gets it.
+  const offeredTo = session && localConfig && (await WorkflowOffers.offerable(localConfig, IMPORT_FROM_MR, session)) !== undefined ? session : undefined;
+  const offered = offeredTo ? offerTo(owner, repo, offeredTo.sessionId, newMrs.map((mr) => mr.url)) : cache.offered;
+
   // Update cache with all MR IDs seen this round
   const updatedIds = [...alreadyHinted, ...newMrs.map((mr) => mr.id)];
-  saveCache(owner, repo, { hintedMrIds: updatedIds, updatedAt: new Date().toISOString() });
+  saveCache(owner, repo, { hintedMrIds: updatedIds, updatedAt: new Date().toISOString(), offered });
 
   // Build additionalContext hint
-  const hintText = buildHintMessage(newMrs, language);
+  const hintText = buildHintMessage(newMrs, language, { offersWorkflow: offeredTo !== undefined });
 
   return JSON.stringify({
     hookSpecificOutput: {
@@ -564,6 +607,68 @@ export async function computeMrHintOutput(
     },
   });
 }
+
+// ─── describe proposals ──────────────────────────────────
+
+/** The inputs of teamai-import-from-mr teamai proposes values for, by name and parsed type. */
+const CONTRACT = {
+  mrs: { type: 'array', items: { type: 'string' } },
+  all: { type: 'boolean' },
+  publish: { type: 'boolean' },
+  dir: { type: 'string' },
+  output: { type: 'boolean' },
+  discussions: { type: 'boolean' },
+  language: { type: 'enum', values: ['en', 'zh'] },
+} as const satisfies Record<string, OutputSchema>;
+
+/** The MRs the hint listed in session `session`, in the repository whose checkout is `cwd`. */
+function mrsProposal(cwd: string, session: string | undefined): Proposal {
+  if (session === undefined) return { why: 'No agent session found: give the MR or PR URLs.' };
+  const remote = getGitRemote(cwd);
+  const repo = remote === null ? null : parseRemoteToRepo(remote);
+  const urls = repo === null ? undefined : loadCache(repo.owner, repo.repo).offered?.[session];
+
+  if (urls === undefined || urls.length === 0) {
+    return { why: 'No value: the session-start hint listed no merged MR in this session. Give the MR or PR URLs.' };
+  }
+
+  return { value: urls, why: 'The merged MRs the session-start hint listed in this session.' };
+}
+
+/**
+ * What describe proposes for the declared `inputs` of teamai-import-from-mr, by input: each input the contract names
+ * with the same type. The MRs are those the hint listed in the calling session; the rest make the run
+ * `teamai import --from-mr` starts, which asks about each draft and publishes what the person accepts.
+ */
+async function proposals(
+  config: LocalConfig,
+  { inputs }: { inputs: Readonly<Record<string, OutputSchema>> },
+  caller: { session: string | undefined; cwd: string },
+): Promise<Record<string, Proposal>> {
+  const matching = WorkflowOffers.contractInputs(inputs, CONTRACT);
+
+  if (matching.length === 0) return {};
+
+  const { loadTeamConfig } = await import('./config.js');
+  const team = await loadTeamConfig(config.repo.localPath);
+
+  const proposed: Record<keyof typeof CONTRACT, Proposal> = {
+    mrs: mrsProposal(caller.cwd, caller.session),
+    all: { value: false, why: 'Ask the person to accept, edit or skip each draft. true publishes every draft unasked.' },
+    publish: { value: true, why: 'Publish the drafts the person accepts to the team repository. false writes and pushes nothing, so the drafts are only the run\'s outputs.' },
+    dir: { value: config.repo.localPath, why: 'The team repository the learnings are published to.' },
+    output: { value: false, why: 'Publish into the team repository. true writes each draft into dir as a file instead.' },
+    discussions: { value: true, why: 'Read each MR\'s review threads, which carry what the review decided.' },
+    language: team?.language
+      ? { value: team.language, why: 'The language teamai.yaml sets, which the learnings are written in.' }
+      : { value: 'zh', why: 'teamai.yaml sets no language, so the learnings are written in zh, as teamai import --from-mr writes them.' },
+  };
+
+  return Object.fromEntries(matching.map((input) => [input, proposed[input]]));
+}
+
+/** What describe proposes for teamai-import-from-mr, the workflow the hint offers. */
+export const MrHintOffer = { proposals } as const;
 
 /** The SessionStart hook's stdin object; anything else reads as no payload. */
 const HookPayloadSchema = JsonObjectSchema;
@@ -612,7 +717,11 @@ export async function mrHint(tool?: string): Promise<void> {
     // on: mrHintAllowed treats a missing config as "no switch to read".
   }
 
-  const output = await computeMrHintOutput(language, hookConfig);
+  const { deriveSessionId } = await import('./utils/session-id.js');
+  const { resolveHookCwd } = await import('./utils/hook-cwd.js');
+  const { readSessionRun, sessionRun } = await import('./launch-context.js');
+  const session = { sessionId: deriveSessionId(payload, { includeCwd: true }), cwd: resolveHookCwd(payload) ?? process.cwd(), run: readSessionRun(payload) ?? sessionRun(process.env) };
+  const output = await computeMrHintOutput(language, hookConfig, session);
 
   if (output) process.stdout.write(output + '\n');
 }

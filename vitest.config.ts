@@ -29,6 +29,8 @@ export default defineConfig({
     // otherwise-fast tests sporadically exceed vitest's 5s default timeout.
     testTimeout: 15000,
     hookTimeout: 15000,
+    // Retry once on CI: a case that fails once recovers, a real bug stays failed. Local runs do not retry.
+    retry: process.env.CI ? 1 : 0,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

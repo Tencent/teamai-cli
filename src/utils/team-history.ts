@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { createGit, readBlobs } from './git.js';
+import { spawn } from 'node:child_process';
+import { createGit, gitBinary, readBlobs } from './git.js';
 import { log } from './logger.js';
 
 // ─── History proof (#993) ────────────────────────────────────
@@ -11,7 +12,7 @@ import { log } from './logger.js';
 //  branch the checkout has (HEAD), as far as the clone has it: a shallow clone
 //  proves less, never more.
 //
-//  Whole files compare by git blob id, without reading a historical blob. A
+//  Whole files compare by git blob id, then by checkout-filtered bytes. A
 //  resource whose render is not its source bytes (an MCP server, a hook entry,
 //  a rendered rule) reads each historical version once and renders it.
 
@@ -115,13 +116,51 @@ export async function blobIdOf(repoPath: string, content: string | Uint8Array): 
   return createHash(await format).update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 }
 
+/** The blob id Git gives `content` after applying `path`'s clean filters. */
+async function filteredBlobIdOf(repoPath: string, pathspec: string, content: string | Uint8Array): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn(gitBinary(), ['hash-object', `--path=${pathspec}`, '--stdin'], {
+      cwd: repoPath,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+
+    const output: Buffer[] = [];
+    let settled = false;
+
+    const done = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    child.stdout.on('data', (chunk: Buffer) => output.push(chunk));
+    child.on('error', () => done(null));
+    child.on('close', (code) => done(code === 0 ? Buffer.concat(output).toString('utf8').trim() || null : null));
+    child.stdin.on('error', () => done(null));
+    child.stdin.end(content instanceof Uint8Array ? content : Buffer.from(content, 'utf8'));
+  });
+}
+
+/** Whether `pathspec` has a custom clean/smudge filter in this checkout. */
+async function hasCheckoutFilter(repoPath: string, pathspec: string): Promise<boolean> {
+  try {
+    const output = await createGit(repoPath).raw(['check-attr', 'filter', '--', pathspec]);
+    const value = output.trim().split(': ').at(-1);
+
+    return value !== undefined && value !== 'unspecified' && value !== 'unset';
+  } catch {
+    return false;
+  }
+}
+
 /** The content teamai would write for one historical version, or null for none. */
 export type HistoryRender = (content: Buffer, version: HistoricalVersion) => string | Uint8Array | null;
 
 /**
  * Whether `candidate` equals the file at `pathspec` at some revision of HEAD
- * in `repoPath` (without `render`), or teamai's render of it (with). Compared
- * by blob id. Null when git cannot read the history; a version git cannot
+ * in `repoPath` (raw or checkout-filtered bytes without `render`), or teamai's
+ * render of it (with). Compared by blob id. Null when git cannot read the
+ * history; a version git cannot
  * read is skipped.
  */
 export async function matchesHistory(
@@ -137,7 +176,35 @@ export async function matchesHistory(
   const versions = all.filter((version) => version.mode !== '120000');
   const id = await blobIdOf(repoPath, candidate);
 
-  if (!render) return versions.some((v) => v.blob === id);
+  if (!render && versions.some((v) => v.blob === id)) return true;
+
+  if (!render) {
+    for (const versionPath of new Set(versions.map((version) => version.path))) {
+      const filtered = await filteredBlobIdOf(repoPath, versionPath, candidate);
+
+      const hit = filtered
+        ? versions.find((version) => version.path === versionPath && version.blob === filtered)
+        : undefined;
+
+      const checkedOut = hit ? await readRenderedBlob(repoPath, hit.blob, hit.path) : null;
+
+      if (checkedOut && await blobIdOf(repoPath, checkedOut) === id) return true;
+
+      // A custom filter need not round-trip: a smudge-only expansion has no
+      // clean hash that names its source blob. Preserve the old checkout-byte
+      // proof for that uncommon case, without restoring the per-version cost
+      // for ordinary unmatched files.
+      if (await hasCheckoutFilter(repoPath, versionPath)) {
+        for (const version of versions.filter((candidateVersion) => candidateVersion.path === versionPath)) {
+          const rendered = await readRenderedBlob(repoPath, version.blob, version.path);
+
+          if (rendered && await blobIdOf(repoPath, rendered) === id) return true;
+        }
+      }
+    }
+
+    return false;
+  }
 
   for (const version of versions) {
     const content = await readBlob(repoPath, version.blob);

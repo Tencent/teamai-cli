@@ -4,7 +4,7 @@ import fse from 'fs-extra';
 import { gitTracks, gitUntracked } from '../git-exclude.js';
 import type { DeliveryRecorder } from '../git-exclude-delivered.js';
 import type { AgentModelRecords, CopyOrigin, DeliveryTarget, ResourceItem } from '../types.js';
-import { fileHash, listFilesRecursive, remove } from '../utils/fs.js';
+import { fileHash, isDraft, listFilesRecursive, remove } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { resolveReal } from '../utils/path-safety.js';
 import { historicalVersions, matchesHistory, readBlob, readRenderedBlob } from '../utils/team-history.js';
@@ -777,7 +777,7 @@ export async function recordDelivered(hashes: DeliveredHashes, dest: string, ski
   const files = skillSource === undefined
     ? [dest]
     : (await listFilesRecursive(skillSource))
-      .filter((file) => path.basename(file) !== CONTRIBUTORS_FILE)
+      .filter((file) => path.basename(file) !== CONTRIBUTORS_FILE && !isDraft(file))
       .map((file) => path.join(dest, file));
 
   for (const file of files) {

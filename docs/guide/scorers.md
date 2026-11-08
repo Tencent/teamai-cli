@@ -493,9 +493,11 @@ $ teamai workflow next r9a1… --prepare --json '{"driver":{"kind":"cursor","mac
 $ teamai score --session 7c1e… --scorer ./scorers/review-quality.md
 ```
 
-Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any judge runs. The judge runs as it does for a cached scorer, also with `--batch` and inside a session.
+Before you push a new or edited scorer, try it on a session from your checkout of the team repo. `--scorer` takes a path, a value with a `/` or ending in `.md`, relative to the current directory. The file is checked as `teamai pull` checks it, and an invalid file fails with pull's message before any run starts. The command starts the [default workflow](workflow.md#default-workflows) `teamai-try-scorer` on the driver `--driver` or `workflows.driver` names, else local. It runs [`teamai-score`](#the-teamai-score-workflow) twice with the file and `store: false`, on the session and on its first prompt alone, then `teamai score report` reads both verdicts. The judge runs as it does for a cached scorer, also with `--batch`: a judge no tool here can take for the file's `model` or `isolation` holds the run with `confined_pending`.
 
 The file's label is never stored, so the command takes no `--push`, `--run` takes scorer names only, and a scorer name beside a file is refused: score it in a command of its own. The output prints the label with its reasoning and `"stored": false`. Next to it, `stored` lists the newest label kept on this machine for that session and the scorer of the same name, one per rubric, so you see whether your edit changes the verdict. `control` is the file judged a second time, on the session's first prompt alone. When it passes, it carries a warning: the rubric passes a session where the agent did nothing, so it may not judge the work. It warns and never fails, since a rubric may judge the prompt by design.
+
+`teamai-try-scorer` is `invoke: deny`, so from an agent session the command answers `invoke_denied`. Ask the agent for `/teamai-new-scorer` instead. It writes the scorer with you, tries it the same way on the session you name, shows the verdict, and asks before it proposes `scorers/<name>.md` to the team as a pull request.
 
 A workflow or a whole team branch is tried with `teamai pull --team-ref <branch>` ([distribution](distribution.md)).
 
@@ -625,7 +627,7 @@ precision(ops:release) ≈ 31 / (31 + 6) = 84%   loaded where it was not needed 
 recall(ops:release)    ≈ 31 / (31 + 9) = 78%   not loaded where it was needed 9 times
 ```
 
-Every skill gets the same rubric, with only the skill's name, and its namespace, filled in. Rewriting a skill's description leaves the scorer's measurement unchanged, so the counts from before and after the change can be compared:
+Every skill gets the same rubric, with only the skill's name filled in. Rewriting a skill's description leaves the scorer's measurement unchanged, so the counts from before and after the change can be compared:
 
 ```text
 fit     1  <skill> is in skills.used, and the session needed what its description says.
@@ -635,6 +637,8 @@ missed  0  The session needed what the description of <skill> says, <skill> is n
 Judge only the team skill <skill>, against its entry in skills.available in evidence.json.
 ```
 
+That rubric is teamai's [default scorer](#default-scorers) `scorers/teamai-routing.md`. A team file of that name changes it for every skill.
+
 An active scorers namespace's `scoring.yaml` overrides the root file's `skill_routing`, and one that sets `false` turns routing off for its members:
 
 ```yaml
@@ -642,7 +646,9 @@ An active scorers namespace's `scoring.yaml` overrides the root file's `skill_ro
 skill_routing: false
 ```
 
-To use your own rubric instead, leave `skill_routing` off and write one scorer per skill. This one adds an `unavailable` value for sessions that were not delivered `release`:
+A member's `scoring.skill_routing` in `config.yaml` wins over the team's. `~/.teamai/config.yaml` below a workspace or self scope can only turn it off, so a machine never starts paid judging.
+
+To judge one skill its own way, leave `skill_routing` off and write one scorer per skill. This one adds an `unavailable` value for sessions that were not delivered `release`:
 
 `scorers/ops/routing-release.md`:
 
@@ -662,6 +668,37 @@ Judge only the team skill `release`, against its entry in `skills.available` in 
 ```
 
 With [`batch: true`](#batching), one judge launch answers all of a session's scorers that ask for the same model and tool. Each scorer samples sessions on its own, so ten per-skill scorers at 25% still reach about 94% of sessions while getting about a quarter of the answers. At 100%, the same launches answer every scorer. To spend less, lower `daily_limit` instead of `samplingRate`.
+
+#### Recall adoption
+
+Adoption questions ask whether a session used each doc `teamai recall` gave it but it never opened, such as one a recall subagent summarised. A doc the session opened is credited without a judge. Turn them on for the team, or for yourself:
+
+```yaml
+# scorers/scoring.yaml in the team repo
+recall_adoption: true
+```
+
+```yaml
+# ~/.teamai/projects/<project>/config.yaml, one member
+scoring:
+  recall_adoption: true
+  sessions: { attended: auto }
+```
+
+A member's `recall_adoption` wins over the team's. `~/.teamai/config.yaml` below a workspace or self scope can only turn it off, so a machine never starts paid judging. `TEAMAI_UPVOTE_JUDGE=1` reads as the member setting above for each key the member config leaves unset, and `teamai doctor` says it is deprecated.
+
+A finished root session gets one question per such doc, `teamai:adoption:<hash>`, named after the doc's vote key:
+
+```text
+session 7c1e…  recalled: pod-startup-timeouts, helm-values, retry-policy
+opened by a tool call  → helm-values                      credited, no judge
+teamai:adoption:3f9a1c… (pod-startup-timeouts)  → adopted   upvote, judged_count +1
+teamai:adoption:b27e04… (retry-policy)          → ignored   judged_count +1
+```
+
+The judge reads the doc as the session got it, in `recalled/<hash>.md` of the evidence: at most 1,200 characters of a `.md` file under the team's knowledge roots. A doc it cannot read there gets no question. The questions share one judge launch and count toward `daily_limit`. A doc is credited once per root session, by a read or by a verdict, whichever comes first; judging it again on demand stores a label and credits nothing. When the votes file is busy, the verdict waits in the recall log and the next `teamai score` or `teamai pull` writes it. The recall log keeps a line for at most 30 days. A verdict written after the log has dropped every line of its session credits nothing, so a score run paused that long does not credit adoption, and `teamai pull` forgets which docs that session was credited for. See [Knowledge](knowledge.md#recall-adoption-and-upvotes) for what the counts do to confidence.
+
+The rubric is the [default scorer](#default-scorers) `scorers/teamai-adoption.md`.
 
 ### teamai-finished-sessions
 
@@ -725,13 +762,49 @@ As the job's last step, after the tool exits, the drain sees the session complet
 
 Runs and scoring marks live in the runner's data home, so a runner killed before its drain loses that judging. A long-lived VM runs `teamai score --drain` at the end of each job.
 
+## Default scorers
+
+teamai ships the rubric of each question it generates per item as a default scorer in the installed package. A team file of the same name in `scorers/` replaces it for every member at their next `teamai pull`:
+
+| Default | Asks | Variables |
+|---|---|---|
+| `scorers/teamai-routing.md` | one [routing question](#skill-routing) per team skill a session was delivered | `skill.name` |
+| `scorers/teamai-adoption.md` | one [adoption question](#recall-adoption) per recalled doc a session never opened | `doc.id`, `doc.path`, `doc.file` |
+
+A default is a scorer file whose text reads its variables as `{{ … }}`, filled in for each item. This one judges whether a skill was worth its context:
+
+`scorers/teamai-routing.md`:
+
+```markdown
+---
+labels:
+  - { value: earned, score: 1, description: "{{ skill.name }} was loaded, and the final reply used what it says." }
+  - { value: skipped, score: 1, description: "{{ skill.name }} was not loaded, and the session did not need it." }
+  - { value: wasted, score: 0, description: "{{ skill.name }} was loaded, and nothing in the final reply used it." }
+  - { value: missed, score: 0, description: "The session needed {{ skill.name }} and did not load it." }
+passingScore: 1
+sessions: true
+---
+Judge only the team skill `{{ skill.name }}`, against its entry in `skills.available` in evidence.json.
+```
+
+Pull refuses a file that reads anything but its default's variables, or that is no scorer once they are filled in, and the default keeps running:
+
+```console
+$ teamai pull
+⚠ [scorers] scorers/teamai-routing.md: reads {{ skill.title }}, which teamai's default scorer teamai-routing does not offer. It offers skill.name; teamai's default runs until the file reads only those
+```
+
+Put each `{{ … }}` of the frontmatter inside a double-quoted string, as above: pull fills the file in with values that hold quotes, colons and newlines, and refuses it when one breaks the YAML. The file is not a scorer of its own: no step lists it, and `teamai score --scorer teamai-routing` finds no scorer. A changed rubric is a new rubric hash for each question, so its labels are counted apart from the old ones, as for [any scorer](#when-the-scorer-changes).
+
 ## The teamai-score workflow
 
 `teamai score` and `teamai-share-session` label a subject by starting the [default workflow](workflow.md#default-workflows) `teamai-score`, `workflows/teamai-score.yaml` in the installed package:
 
 ```text
 teamai-score   private, invoke: deny, timeout 336h
-inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named }
+inputs: { subject: string, scorers: [string], label: string, batch: boolean, demand: auto | named, files: [string], store: boolean, control: boolean }
+defaults: { inputs: { files: [], store: true, control: false } }
 
 plan           teamai score plan → the groups: scorers that share one judge launch and the same stages
 score          once per group:
@@ -740,11 +813,11 @@ score          once per group:
   judge        a prompt confined to the evidence directory, unless a stage decided or label is set
   label        teamai score label → each scorer's label
   write        teamai score write → scores/labels.jsonl and the pending outbox
-  publish      teamai score publish → this member's pending labels, published to teamai-reports
+  publish      teamai score publish → this member's pending labels, published to teamai-reports; skipped when store is false
   settle       teamai score settle, after a step of the group broke
 ```
 
-`subject` is `run:<run>:<step>:<pass>`, `session:<source>:<id>` or `team-session:<author>:<archive>`. The run is `private`: it and the judge's reasoning stay on this machine. `invoke: deny` keeps every agent session from starting it, so an agent never labels its own work. A score verb run outside a `teamai-score` attempt answers `score_attempt_required`.
+`subject` is `run:<run>:<step>:<pass>`, `session:<source>:<id>` or `team-session:<author>:<archive>`. `files`, `store` and `control` have [defaults](workflow-advanced.md#give-an-input-a-default), so a step that runs `teamai-score` may leave them out; [`teamai-try-scorer`](#try-a-scorer-file) sets them to judge scorer files on a session, `store: false` writes and publishes no label, and `control: true` judges the session's first prompt alone. The run is `private`: it and the judge's reasoning stay on this machine. `invoke: deny` keeps every agent session from starting it, so an agent never labels its own work. A score verb run outside a `teamai-score` attempt answers `score_attempt_required`.
 
 ### Replace it for your team
 
@@ -767,13 +840,13 @@ Pull refuses a file that changes what a label means, and teamai's default runs i
 
 | Code | The file |
 |---|---|
-| `score_override_contract` | changes `inputs` or any `outputs`, drops `private: true`, or sets `invoke` to anything but `deny` |
+| `score_override_contract` | changes `inputs`, their `defaults`, or any `outputs`, drops `private: true`, or sets `invoke` to anything but `deny` |
 | `score_override_command` | runs a command other than a score verb with the arguments teamai's gives it, gives a verb other `env`, or adds a `finally` step or a `setup` command |
 | `score_override_workflow_step` | has a `workflow:` step other than the inline `score` |
 | `score_override_prompt` | has a prompt step not confined to a directory, or one that lists `scorers` |
 | `score_override_confined_dir` | confines the judge to a directory that is not an output of a step it needs |
 | `score_override_judge_prompt` | has a judge prompt that does not read `steps.evidence.outputs.rubric` and `steps.evidence.outputs.schema` |
-| `score_override_publish` | runs `teamai score publish` without `deliver: publish` to `teamai-reports`, or publishes to another branch |
+| `score_override_publish` | runs `teamai score publish` without `deliver: publish` to `teamai-reports`, publishes to another branch, or publishes without `if: inputs.store`, so a run that only tries scorers would publish |
 | `score_override_step_missing` | drops or renames `plan`, `evidence`, `judge`, `label`, `write`, `publish` or `settle`, or `check` while a scorer here has a check |
 | `default_override_alias` | is another workflow with `alias: teamai-score` |
 

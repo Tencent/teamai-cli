@@ -151,12 +151,33 @@ export function setStderrOnly(s: boolean): boolean {
   return previous;
 }
 
-/** Write a "non-error" log line. Goes to stderr in hook mode, stdout otherwise. */
-function writeInfoLine(line: string): void {
-  if (stderrMode) {
-    console.error(line);
-  } else {
+/**
+ * Set by the local driver for a command step. Its stderr is the step's progress, which a shortcut shows: in stderr-only
+ * mode each line meant for stdout then starts with {@link STDOUT_MARK}, so the shortcut prints it on stdout again, and
+ * an unmarked line, an error's or a spinner's, stays on stderr.
+ */
+export const PROGRESS_STREAMS_ENV = 'TEAMAI_PROGRESS_STREAMS';
+
+const STDOUT_MARK = '\u001e';
+
+/** The stream a line of a step's stderr was meant for, and its text without the mark. */
+export function streamOfLine(line: string): { stream: 'stdout' | 'stderr'; text: string } {
+  return line.startsWith(STDOUT_MARK) ? { stream: 'stdout', text: line.slice(STDOUT_MARK.length) } : { stream: 'stderr', text: line };
+}
+
+/** A step's stderr as a person reads it: without the marks that say which lines were meant for stdout. */
+export function withoutStreamMarks(text: string): string {
+  return text.replaceAll(STDOUT_MARK, '');
+}
+
+/** Write a line of the command's output: stdout, or stderr in stderr-only mode, marked when a step's progress keeps streams. */
+export function writeInfoLine(line: string): void {
+  if (!stderrMode) {
     console.log(line);
+  } else if (process.env[PROGRESS_STREAMS_ENV] === '1') {
+    console.error(line.split('\n').map((part) => `${STDOUT_MARK}${part}`).join('\n'));
+  } else {
+    console.error(line);
   }
 }
 

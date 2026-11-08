@@ -11,6 +11,7 @@ const gitMocks = vi.hoisted(() => ({
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
   pushRepoBranch: vi.fn(),
   checkoutMaster: vi.fn().mockResolvedValue(undefined),
+  unusedBranchName: vi.fn().mockResolvedValue('teamai/push/test/20260305-120000'),
 }));
 vi.mock('../utils/git.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/git.js')>()),

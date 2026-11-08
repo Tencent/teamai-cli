@@ -5,22 +5,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// Mock the AI client so extract/deep-enrich cannot hang on a live CLI.
-vi.mock('../tool-launch/call.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../tool-launch/call.js')>(),
-  callTool: vi.fn(async () => {
-    throw new Error('mock: AI unavailable');
-  }),
-  callToolParallel: vi.fn(async () => {
-    throw new Error('mock: AI batch unavailable');
-  }),
-}));
-
-import { CallError, callToolParallel } from '../tool-launch/call.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { repoIdentity } from '../utils/git.js';
-import { codebaseCmd } from '../codebase-cmd.js';
-import { runHiddenDeepEnrich } from '../deep-enrich.js';
+import { DeepEnrich } from '../deep-enrich.js';
 import { scopeGlobalGraph } from '../graph-aggregate.js';
 import { loadGraphIndex } from '../wiki-engine/core/graph-index.schema.js';
 import {
@@ -148,8 +135,8 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
     expect(report.manifest.written).toBe(true);
     expect(report.manifest.source).toBe('fallback');
     expect(report.manifest.components).toBeGreaterThanOrEqual(1);
-    expect(report.manifest.note).toMatch(/Wrote fallback _manifest\.json/);
-    expect(report.manifest.note).toMatch(/no AI enrich/);
+    // teamai-codebase-enrich may replace it next, so the extract does not say it ran without AI enrich.
+    expect(report.manifest.note).toBeUndefined();
 
     expect(fs.existsSync(path.join(root, 'teamwiki', 'source-manifest.json'))).toBe(true);
 
@@ -162,17 +149,6 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
       expect(component.docPath).toEqual(expect.any(String));
       expect(component.docPath?.length).toBeGreaterThan(0);
     }
-  });
-
-  it('fails instead of writing the fallback when the member names a tool teamai cannot run', async () => {
-    const root = createWidgetFixture();
-    // AI enrich only asks about a module with at least five facts.
-    fs.writeFileSync(path.join(root, 'src', 'shapes.ts'), ['Circle', 'Square', 'Triangle', 'Hexagon', 'Ellipse', 'Rhombus'].map((shape) => `export class ${shape} {\n  area() { return 1; }\n}\n`).join(''));
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.mocked(callToolParallel).mockRejectedValueOnce(new CallError('override_invalid', 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches.'));
-
-    await expect(extractCodebase({ path: root, project: 'widget', json: true })).rejects.toMatchObject({ kind: 'override_invalid' });
-    expect(fs.existsSync(path.join(root, 'teamwiki', 'evidence', 'code', 'widget', '_manifest.json'))).toBe(false);
   });
 
   it('writes the same fallback when --skip-enrich is set', async () => {
@@ -336,34 +312,6 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
     expect(fs.existsSync(path.join(outside, 'source-manifest.json'))).toBe(false);
   });
 
-  it('writes a fallback when AI enrich is attempted and fails', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-508-ai-fail-'));
-    temporaryDirectories.push(root);
-    fs.mkdirSync(path.join(root, 'src'));
-    fs.writeFileSync(
-      path.join(root, 'src', 'app.ts'),
-      [
-        'export class Alpha { a() { return 1; } }',
-        'export class Beta { b() { return 2; } }',
-        'export class Gamma { c() { return 3; } }',
-        'export class Delta { d() { return 4; } }',
-        'export class Epsilon { e() { return 5; } }',
-        '',
-      ].join('\n'),
-    );
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    await extractCodebase({ path: root, project: 'widget', json: true });
-
-    const report = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as {
-      manifest: { written: boolean; source: string; components: number; note?: string };
-    };
-    expect(report.manifest.written).toBe(true);
-    expect(report.manifest.source).toBe('fallback');
-    expect(report.manifest.note).toMatch(/Wrote fallback _manifest\.json/);
-    expect(readEvidenceManifest(root, 'widget').components.length).toBeGreaterThanOrEqual(1);
-  });
-
   it('prints English fallback text when not using --json', async () => {
     const root = createWidgetFixture();
     const lines: string[] = [];
@@ -371,7 +319,7 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
       lines.push(args.map(String).join(' '));
     });
 
-    await extractCodebase({ path: root, project: 'widget' });
+    await extractCodebase({ path: root, project: 'widget', skipEnrich: true });
 
     const output = lines.join('\n');
     expect(output).toMatch(/\[extract\] widget complete/);
@@ -380,115 +328,16 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
     expect(output).not.toMatch(/AI enrich produced no manifest; deep-enrich will have no components/);
   });
 
-  it('does not abort deep-enrich for empty evidence after a successful extract', async () => {
+  it('plans deep-enrich for the fallback components after an extract without AI enrich', async () => {
     const root = createWidgetFixture();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
-    process.exitCode = undefined;
 
-    await codebaseCmd({ deepEnrich: true, project: 'widget', output: root, json: true });
+    const planned = await DeepEnrich.plan({ project: 'widget', wikiRoot: path.join(root, 'teamwiki') });
 
-    const output = vi.mocked(console.log).mock.calls.flat().map(String).join('\n');
-    expect(output).not.toMatch(/No components in evidence/);
-    expect(output).not.toMatch(/No components in _manifest\.json/);
-    expect(output).not.toMatch(/Run `teamai codebase --extract` first/);
-
-    const lastJson = [...vi.mocked(console.log).mock.calls]
-      .map(call => String(call[0]))
-      .toReversed()
-      .find(text => text.trim().startsWith('{'));
-    expect(lastJson).toBeTruthy();
-    const report = JSON.parse(lastJson!) as { complete?: boolean; missingComponents?: string[] };
-    expect(report.complete).toBe(false);
-    expect(report.missingComponents?.length).toBeGreaterThan(0);
-    expect(process.exitCode).toBe(1);
-  });
-
-  it('hidden deep-enrich after extract does not abort for missing components', async () => {
-    const root = createWidgetFixture();
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
-    process.exitCode = undefined;
-
-    const result = await runHiddenDeepEnrich({
-      project: 'widget',
-      wikiRoot: path.join(root, 'teamwiki'),
-    });
-
-    expect(result.complete).toBe(false);
-    expect(result.missingComponents.length).toBeGreaterThan(0);
-    expect(process.exitCode).toBe(1);
-  });
-
-  it('does not overwrite a successful AI enrich with the fallback', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-508-ai-ok-'));
-    temporaryDirectories.push(root);
-    fs.mkdirSync(path.join(root, 'src'));
-    fs.writeFileSync(
-      path.join(root, 'src', 'app.ts'),
-      [
-        'export class Alpha { a() { return 1; } }',
-        'export class Beta { b() { return 2; } }',
-        'export class Gamma { c() { return 3; } }',
-        'export class Delta { d() { return 4; } }',
-        'export class Epsilon { e() { return 5; } }',
-        '',
-      ].join('\n'),
-    );
-    vi.mocked(callToolParallel).mockImplementation(async (tasks) =>
-      tasks.map((task) =>
-        task.parse(
-          '{"domain":"widgets","responsibilities":["render"],"layer":"service","summary":"ui","description":"ui kit","keywords":["widget"]}',
-        ),
-      ),
-    );
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    await extractCodebase({ path: root, project: 'widget', json: true });
-
-    const report = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as {
-      manifest: { written: boolean; source: string; note?: string };
-    };
-    expect(report.manifest.written).toBe(true);
-    expect(report.manifest.source).toBe('ai');
-    expect(report.manifest.note).toBeUndefined();
-
-    const manifest = readEvidenceManifest(root, 'widget');
-    expect(manifest.components.length).toBeGreaterThanOrEqual(1);
-    expect(manifest.components[0]?.category).toBe('service');
-    expect(manifest.components[0]?.responsibilities).toEqual(['render']);
-  });
-
-  it('leaves out a module whose AI reply names no domain and keeps the modules whose reply does', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-508-ai-partial-'));
-    temporaryDirectories.push(root);
-    const classes = (prefix: string) =>
-      Array.from({ length: 5 }, (_, index) => `export class ${prefix}${index} { run() { return ${index}; } }`).join('\n') + '\n';
-    fs.mkdirSync(path.join(root, 'src'));
-    fs.writeFileSync(path.join(root, 'src', 'app.ts'), classes('App'));
-    fs.mkdirSync(path.join(root, 'lib'));
-    fs.writeFileSync(path.join(root, 'lib', 'util.ts'), classes('Util'));
-    vi.mocked(callToolParallel)
-      .mockImplementationOnce(async (tasks) =>
-        tasks.map((task) =>
-          task.parse(
-            task.prompt.includes('模块名: lib')
-              ? '{"responsibilities":["helpers"],"summary":"shared helpers"}'
-              : '{"domain":"widgets","responsibilities":["render"],"layer":"service","summary":"ui"}',
-          ),
-        ),
-      )
-      .mockImplementationOnce(async (tasks) =>
-        tasks.map((task) => task.parse('{"domain":"widgets","description":"ui kit","keywords":["widget"]}')),
-      );
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    await extractCodebase({ path: root, project: 'widget', json: true });
-
-    const manifest = readEvidenceManifest(root, 'widget');
-    expect(manifest.components.map((component) => [component.slug, component.category])).toEqual([['src', 'service']]);
+    expect(planned?.components.length).toBeGreaterThan(0);
+    expect(planned?.architecture.needed).toBe(true);
   });
 
   it('says so when extractable files yield no components to put in a manifest', async () => {

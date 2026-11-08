@@ -8,13 +8,12 @@ import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
-import { SessionShare } from '../../../session-share.js';
-import { SessionToTask } from '../../../session-to-task.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
 import { isToolId, TOOLS } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import type { ToolId } from '../../../tools.js';
 import { agentSessionFromEnv } from '../../../utils/session-id.js';
+import { WorkflowOffers } from '../../../workflow-offers.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type ResumeClaim, type WorkflowClient } from '../../protocol.js';
 import type { WorkflowFailure } from '../../types.js';
@@ -481,8 +480,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
 
     context.trace?.(row);
     const caller = { session: context.session, tool: call.tool ?? context.tool };
-    const [share, task] = await Promise.all([SessionShare.proposals(context.config, description, caller), SessionToTask.proposals(context.config, description, { ...caller, cwd: context.cwd })]);
-    const proposed = { ...share, ...task };
+    const proposed = await WorkflowOffers.proposals(context.config, description, { ...caller, cwd: context.cwd });
 
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }, proposed) } } };
   }
