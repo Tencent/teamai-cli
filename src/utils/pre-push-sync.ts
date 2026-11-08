@@ -19,6 +19,7 @@ import { installOf, locate, ownOf, writable } from '../locate.js';
 import { ruleFileExtensionForTool, ruleFormatForTool, teamRuleNameForFile, usesCopilotInstructions } from '../resources/rule-format.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
+import { isInSkippedFolder, skippedFoldersIn } from '../folder-markers.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
 
@@ -91,6 +92,7 @@ async function syncRulesToLocal(
   const teamRulesDir = path.join(repoPath, 'rules');
 
   if (!await pathExists(teamRulesDir)) return;
+  const skippedFolders = await skippedFoldersIn(repoPath, 'rules');
   const { RulesHandler } = await import('../resources/rules.js');
   const rulesHandler = new RulesHandler();
 
@@ -162,8 +164,9 @@ async function syncRulesToLocal(
         return added === null ? [] : [added];
       };
 
-      // Only process files that exist in both places but differ
-      if (!await pathExists(teamFilePath)) continue;
+      // Only process files that exist in both places but differ. A file in a
+      // folder this release cannot read is no rule here (#1791).
+      if (isInSkippedFolder(teamRelPath, skippedFolders) || !await pathExists(teamFilePath)) continue;
 
       if (format) {
         const { bodyEquals, render } = format;

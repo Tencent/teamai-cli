@@ -198,6 +198,9 @@ export async function status(options: GlobalOptions): Promise<void> {
       continue;
     }
 
+    // Push leaves out what lies in a folder this release cannot read (#1791).
+    items = items.filter((item) => !isInSkippedFolder(item.relativePath, skippedFolders));
+
     if (items.length > 0) {
       anyNew = true;
       console.log(`  [${handler.type}] ${items.length} new`);

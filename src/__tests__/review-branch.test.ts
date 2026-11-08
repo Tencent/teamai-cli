@@ -1801,4 +1801,15 @@ describe('reviewBranchDir: folders this teamai cannot read (#1791)', () => {
       },
     ]);
   });
+
+  it('checks no scoring settings in a scorer folder', async () => {
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'SCORER.md'), '# Style\n');
+    await fse.outputFile(path.join(repoDir, 'scorers', 'style', 'scoring.yaml'), 'batch: maybe\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings.map((finding) => finding.message)).toEqual([
+      'scorers/style/ is a scorer folder, which this teamai cannot read yet; it was skipped. Run teamai update.',
+    ]);
+  });
 });

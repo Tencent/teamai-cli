@@ -154,6 +154,9 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     write(homeDir, '.claude/rules/api-style/extra.md', '# Extra API rule\n');
     write(homeDir, '.claude/rules/naming.md', '# Naming\n\nName things for what they hold.\n');
 
+    const status = await runCLI(['status', '--verbose'], homeDir, sandbox);
+
+    expect(status.output).toContain('  [rules] 1 new\n    - naming\n');
     const pushed = await runCLI(['push', '--all'], homeDir, sandbox);
     const branches = execFileSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/'], { cwd: remote, encoding: 'utf8' })
       .split('\n').filter(Boolean);

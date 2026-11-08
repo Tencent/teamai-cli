@@ -6,6 +6,7 @@ import { RulesHandler } from '../resources/rules.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { getHandler } from '../resources/index.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
+import { scopeScoring } from '../scorers/settings.js';
 import { suiteDirectories } from '../benchmark/suite-cache.js';
 import { AgentsHandler } from '../resources/agents.js';
 import { listEntryFiles, resolveEntries } from '../namespaced-entries.js';
@@ -107,6 +108,13 @@ describe('scorers', () => {
 
     expect(result.invalid).toEqual([]);
     expect(result.cached).toEqual(['quality']);
+  });
+
+  it('reads no scoring settings from a scorer folder', async () => {
+    await put('scorers/style/SCORER.md', SCORER);
+    await put('scorers/style/scoring.yaml', 'isolation: [verified\n');
+
+    expect(await scopeScoring({ ...localConfig, scope: 'project', projectRoot: repo, dataHome: path.join(repo, '.data') })).toMatchObject({ ok: true });
   });
 });
 

@@ -106,11 +106,13 @@ async function entryNames(dir: string): Promise<{ names: Set<string>; dirs: stri
       dirs: entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.')).map((entry) => entry.name),
     };
   } catch (error) {
-    // A type directory a team does not use is absent; an unreadable one is not.
+    // Read as empty, as the scans that call this read such a directory: an
+    // unreadable one fails no pull here that it did not fail before.
     const code = errnoCode(error);
 
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { names: new Set(), dirs: [] };
-    throw error;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') log.debug(`Could not read ${dir} for folder markers: ${error instanceof Error ? error.message : String(error)}`);
+
+    return { names: new Set(), dirs: [] };
   }
 }
 

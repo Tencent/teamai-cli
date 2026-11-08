@@ -1297,8 +1297,11 @@ function stepsWithRole(steps: readonly WorkflowStep[], prefix: string): string[]
 
 /** Every `scorers/scoring.yaml` and `scorers/<dir>/scoring.yaml` of the branch, active for anyone or not: what it cannot parse, a key or value it ignores, and an isolation teamai does not know. */
 async function scoringSettingsFindings(repoDir: string, readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
+  // A scorer folder this release cannot read holds no settings it reads (#1791).
+  const skipped = await skippedFoldersIn(repoDir, 'scorers');
+
   const dirs = (await fse.readdir(path.join(repoDir, 'scorers'), { withFileTypes: true }).catch(() => []))
-    .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    .filter((entry) => entry.isDirectory() && !isInSkippedFolder(`scorers/${entry.name}/`, skipped)).map((entry) => entry.name).sort();
 
   const findings: Finding[] = [];
 

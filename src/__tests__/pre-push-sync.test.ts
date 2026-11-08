@@ -105,6 +105,17 @@ describe('syncTeamUpdatesToLocal — rules', () => {
     expect(content).toBe('v2 content');
   });
 
+  it('leaves a copy alone whose team file now lies in a skipped rule folder (#1791)', async () => {
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), '# API style');
+    await fse.outputFile(path.join(repoPath, 'rules', 'api-style', 'checklist.md'), 'v2 content');
+    await fse.outputFile(path.join(homeDir, '.claude/rules', 'api-style', 'checklist.md'), 'v1 content');
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 content'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    expect(await fse.readFile(path.join(homeDir, '.claude/rules', 'api-style', 'checklist.md'), 'utf-8')).toBe('v1 content');
+  });
+
   it('records the rule it syncs as delivered, and leaves an edited one on record (#822)', async () => {
     await fse.writeFile(path.join(repoPath, 'rules', 'synced.md'), 'v2 content');
     await fse.writeFile(path.join(repoPath, 'rules', 'edited.md'), 'v2 content');
