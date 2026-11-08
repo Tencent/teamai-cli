@@ -283,6 +283,15 @@ describe('hook-handlers registry', () => {
     expect(log.debug).toHaveBeenCalledWith(expect.stringMatching(/update=\d+ms\(failed\)/));
   });
 
+  it('records an automatic update that could not reach the registry as failed', async () => {
+    mockDoUpdate.mockResolvedValueOnce('unreachable');
+    const handlers = buildHandlerRegistry().filter((r) => r.handler.name === 'update');
+    const dispatcher = createDispatcher({ handlers, localConfig: null });
+    const result = await dispatcher.dispatch('stop', '*', {}, 'claude', 'background');
+    expect(result.errors).toHaveLength(1);
+    expect(log.debug).toHaveBeenCalledWith(expect.stringMatching(/update=\d+ms\(failed\)/));
+  });
+
   it('post-tool-use runs every non-output handler detached, leaving the inline pass empty (#1216)', () => {
     // dashboard-report and recall-attribution always return null — pure side
     // effects, the exact criterion `background` documents — and the same

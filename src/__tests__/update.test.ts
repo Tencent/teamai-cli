@@ -888,6 +888,25 @@ describe('update', () => {
     },
   );
 
+  it('exits 0 for a manual update when the registry is unreachable and the last check found nothing newer', async () => {
+    mockedLoadState.mockResolvedValue({
+      ...defaultState,
+      lastUpdateCheck: new Date().toISOString(),
+      availableUpdate: null,
+    });
+    mockedExecSync.mockRejectedValue(new Error('E500'));
+    const before = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await update({});
+
+      expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining('the last check found no newer version'));
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
   it.each([{ check: true }, {}])(
     'says the update status is unknown without a recent check (%j)', async (options) => {
       mockedExecSync.mockRejectedValue(new Error('E500'));

@@ -1080,8 +1080,12 @@ function registryUnreachableMessage(result: CheckResult): string | null {
  * What a self-update attempt did. `failed` means the requested update did not complete:
  * the difference matters to `teamai update`, which must not report success,
  * and to the hook path, which discards the exit status anyway.
+ *
+ * `unreachable` is the registry being down while the last check found nothing
+ * newer, so nothing was requested and nothing failed: `teamai update` exits 0 as
+ * it always has, while the hook path records it as `failed`.
  */
-export type UpdateOutcome = 'ok' | 'skipped' | 'failed';
+export type UpdateOutcome = 'ok' | 'skipped' | 'failed' | 'unreachable';
 
 /** Automatic hooks keep a diagnostic record; an explicit update also shows the remedy. */
 function reportUnsupportedUpdate(message: string, automatic: boolean): void {
@@ -1104,9 +1108,11 @@ export async function doUpdate(runningScope: LocalConfig | null, options?: { for
   if (unreachable) log.warn(unreachable);
 
   if (!result.available) {
-    if (!unreachable) log.info(`Already up to date (v${result.current})`);
+    if (unreachable) return 'unreachable';
 
-    return unreachable ? 'failed' : 'skipped';
+    log.info(`Already up to date (v${result.current})`);
+
+    return 'skipped';
   }
 
   // Load configs for update policy. Team config is the default; local
