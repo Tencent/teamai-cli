@@ -781,7 +781,7 @@ export const TOOLS = {
       shell: 'system',
       teamHooks: 'home',
     },
-    sessions: 'none',
+    sessions: ['copilot'],
     launch: 'copilot',
     autoCompact: 'none',
     skillAllowedTools: false,
