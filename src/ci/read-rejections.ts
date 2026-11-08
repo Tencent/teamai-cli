@@ -12,6 +12,7 @@ import { githubApiUrl, parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
+import { paginate } from './paginate.js';
 import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '../utils/logger.js';
 
@@ -82,10 +83,11 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
   const result: RejectionResult = { rejectedIds: new Set(), approvedIds: new Set(), allIds: new Set() };
 
   // Read all comments
-  const resp = await githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`);
-
-  if (!resp.ok) throw new Error(`GitHub comments request failed (${resp.status})`);
-  const comments = z.array(GitHubCommentSchema).parse(await resp.json());
+  const comments = await paginate(
+    (page) => githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`),
+    'GitHub comments',
+    GitHubCommentSchema,
+  );
 
   for (const comment of comments) {
     const markerId = extractMarkerId(comment.body);
@@ -94,15 +96,15 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
     result.allIds.add(markerId);
 
     // Read the reactions
-    const reactResp = await githubRequest(
-      `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions?per_page=100`,
+    const reactions = await paginate(
+      (page) => githubRequest(
+        `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions?per_page=100&page=${page}`,
+      ),
+      `GitHub reactions for comment ${comment.id}`,
+      GitHubReactionSchema,
+      (reaction) => reaction.content === '-1',
     );
 
-    if (!reactResp.ok) {
-      throw new Error(`GitHub reactions request failed for comment ${comment.id} (${reactResp.status})`);
-    }
-
-    const reactions = z.array(GitHubReactionSchema).parse(await reactResp.json());
     const hasThumbsDown = reactions.some((r) => r.content === '-1');
 
     if (hasThumbsDown) {
@@ -150,10 +152,11 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
   const mrGlobalId = await getMrGlobalId(projectId, mrIid);
 
   // Read all notes
-  const resp = await tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`);
-
-  if (!resp.ok) throw new Error(`TGit notes request failed (${resp.status})`);
-  const notes = z.array(TGitNoteSchema).parse(await resp.json());
+  const notes = await paginate(
+    (page) => tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100&page=${page}`),
+    'TGit notes',
+    TGitNoteSchema,
+  );
 
   for (const note of notes) {
     const markerId = extractMarkerId(note.body);
