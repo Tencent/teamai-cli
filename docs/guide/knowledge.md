@@ -75,6 +75,8 @@ Choice, followed by an optional note: edit Weekday deploys
 
 An accepted item lands by its type in `rules/`, `docs/` or `learnings/` of the team repo, with that `type:` in its frontmatter, and the import commits and pushes. A file the AI tool cannot classify fails the import, and nothing is written. The review needs a terminal: inside a workflow step, or with input that is not a terminal, pass `--all`. `--from-claude` is the older name of `--from-tools`. The workflows behind these are [`teamai-import-rules` and `teamai-import-from-iwiki`](workflow.md#default-workflows); a stopped import continues with `teamai workflow resume <run>`, which replaces `--resume`.
 
+When section writes are queued in `.teamai/pending-review.jsonl`, `teamai review --apply` and `--reject` preserve entries another import adds concurrently. Queue writers share a lock; if it stays busy, the command fails without changing the queue. Wait for the other writer to finish, then retry.
+
 ### Searching knowledge
 
 ```bash

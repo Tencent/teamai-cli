@@ -75,6 +75,8 @@ Choice, followed by an optional note: edit Weekday deploys
 
 接受的条目按类型写入团队仓库的 `rules/`、`docs/` 或 `learnings/`，frontmatter 带上该 `type:`，随后导入会提交并推送。AI 工具无法分类某个文件时，导入失败，什么也不写。逐条确认需要终端：在 workflow 步骤里，或输入不是终端时，请加 `--all`。`--from-claude` 是 `--from-tools` 的旧名。它们背后的 workflow 是 [`teamai-import-rules` 和 `teamai-import-from-iwiki`](workflow.md#默认工作流)；中断的导入用 `teamai workflow resume <run>` 继续，它取代了 `--resume`。
 
+章节写入排入 `.teamai/pending-review.jsonl` 时，`teamai review --apply` 和 `--reject` 会保留其他导入同时追加的条目。队列写入共用一把锁；如果锁持续占用，命令会报错且不修改队列。等另一个写入操作结束后重试。
+
 ### 搜索知识
 
 ```bash

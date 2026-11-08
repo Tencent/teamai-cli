@@ -174,6 +174,12 @@ describe('buildSelfModeGitignore', () => {
     expect(ignoredBy(gi, USAGE_SIDE_FILES)).toEqual(USAGE_SIDE_FILES);
   });
 
+  it('ignores review queue locks and rewrite temps in new and migrated self-mode repos', () => {
+    const files = ['pending-review.jsonl.lock', 'pending-review.jsonl.lock.sentinel', 'pending-review.jsonl.123.abcdef123456.tmp'];
+    expect(ignoredBy(gi, files)).toEqual(files);
+    expect(ignoredBy(migrateSelfModeGitignoreContent('pending-review.jsonl\n').content, files)).toEqual(files);
+  });
+
   it('ignores the temp copy an interrupted config save leaves (#823)', () => {
     expect(ignoredBy(gi, [CONFIG_SAVE_TEMP])).toEqual([CONFIG_SAVE_TEMP]);
   });
@@ -234,7 +240,7 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
     const old = [
       'env.sh', 'env.local', 'teamai.lock',
       'learnings-wt/', '.learnings-lock', 'pending-learnings/', 'env/',
-      'usage.jsonl.*', 'usage.pending-*.jsonl', 'config.yaml.*.tmp', 'managed-hooks.json',
+      'usage.jsonl.*', 'usage.pending-*.jsonl', 'pending-review.jsonl.*', 'config.yaml.*.tmp', 'managed-hooks.json',
     ].join('\n');
     const { changed, content } = migrateSelfModeGitignoreContent(old);
     expect(changed).toBe(false); // nothing to remove, env.local already present
@@ -265,7 +271,7 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
     const old = [
       '# env is machine-local', 'config.yaml', 'env.local', 'teamai.lock',
       'learnings-wt/', '.learnings-lock', 'pending-learnings/',
-      'usage.jsonl.*', 'usage.pending-*.jsonl', 'config.yaml.*.tmp', 'managed-hooks.json',
+      'usage.jsonl.*', 'usage.pending-*.jsonl', 'pending-review.jsonl.*', 'config.yaml.*.tmp', 'managed-hooks.json',
     ].join('\n');
     const { changed, content } = migrateSelfModeGitignoreContent(old);
     // No bare `env` line, env.local already present → unchanged.
