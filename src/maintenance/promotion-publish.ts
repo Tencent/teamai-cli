@@ -5,7 +5,7 @@ import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { getDataHome, SYNC_LOCK_FILENAME } from '../types.js';
 import { assertNotReadOnly } from '../read-only.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { commitSkippingHooks, createGit, unusedBranchName } from '../utils/git.js';
+import { commitSkippingHooks, createGit, createGitWithBlockTimeout, unusedBranchName } from '../utils/git.js';
 import { withKnowledgeWorktree } from '../utils/reports-branch.js';
 import { publishLearningsMaintenance } from '../utils/learnings-publish.js';
 import { listLearningFiles } from '../utils/learnings-roots.js';
@@ -83,7 +83,9 @@ async function publish(
       await git.raw(['--literal-pathspecs', 'add', '--', relativePath]);
       await commitSkippingHooks(git, `${message}\n\n${description}`);
       // Push from the detached worktree: a local branch would outlive it in the member's checkout.
-      await git.push(['origin', `HEAD:refs/heads/${branch}`]);
+      // The push talks to origin, so it runs under the block timeout (#1749); the
+      // add/commit above stay on the plain instance, which is silent while it works.
+      await createGitWithBlockTimeout(repoPath).push(['--progress', 'origin', `HEAD:refs/heads/${branch}`]);
       log.success(`Promotion artifact pushed to branch ${branch}`);
 
       if (getProvider(localConfig.provider ?? teamConfig.provider).name === 'git') {

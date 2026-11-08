@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { readFileSafe, writeFile, listFiles, ensureDir, pathExists } from '../utils/fs.js';
 import { FrontmatterDateSchema } from '../utils/frontmatter.js';
 import { assertSafePath } from '../utils/path-safety.js';
-import { createGit, getDefaultBranch, PUSH_BRANCH_PREFIX } from '../utils/git.js';
+import { createGit, createGitWithBlockTimeout, getDefaultBranch, PUSH_BRANCH_PREFIX } from '../utils/git.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 import { computeAllConfidence } from './confidence.js';
@@ -130,8 +130,12 @@ export async function findPromotionCandidates(
  */
 export async function fetchPromotionRefs(knowledgeCheckout: string): Promise<void> {
   const branch = await getDefaultBranch(knowledgeCheckout);
-  await createGit(knowledgeCheckout).fetch([
+  // A fetch of the team repo's origin: bound it like every other remote call
+  // (#1749), so a stalled ssh cannot hold the sync lock and `recall promote`
+  // forever. `--progress` keeps a slow but moving transfer from tripping it.
+  await createGitWithBlockTimeout(knowledgeCheckout).fetch([
     '--prune',
+    '--progress',
     'origin',
     `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
     `+refs/heads/${PUSH_BRANCH_PREFIX}*:refs/remotes/origin/${PUSH_BRANCH_PREFIX}*`,
