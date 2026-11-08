@@ -3,6 +3,12 @@ import type { JsonObject } from '../types.js';
 import { isRecord } from './expression.js';
 import type { OutputSchema } from './types.js';
 
+/** A workflow bundle as a step prints it: the definition, and the workflows it runs by name under the keys it names them by. */
+export const BundleSchema = z.object({
+  definition: z.record(z.string(), z.unknown()),
+  workflows: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
+}).strict();
+
 /** A step's output as a lease carries it, the parsed shorthand. */
 export const OutputSchemaSchema: z.ZodType<OutputSchema> = z.lazy(() => z.union([
   z.object({ type: z.enum(['string', 'number', 'boolean', 'json', 'workflow']) }),
@@ -91,7 +97,7 @@ function jsonSchemaOf(schema: OutputSchema): JsonObject {
       return {
         type: 'object',
         description: 'A workflow bundle, where definition is a workflow file as JSON.',
-        properties: { definition: { type: 'object' }, workflows: { type: 'object' }, scorers: { type: 'object' }, teamRevision: { type: 'string' } },
+        properties: Object.fromEntries(Object.keys(BundleSchema.shape).map((key) => [key, { type: 'object' }])),
         required: ['definition'],
         additionalProperties: false,
       };

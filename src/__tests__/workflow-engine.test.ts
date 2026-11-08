@@ -333,7 +333,7 @@ describe('workflow engine', () => {
     expect(expectedOutput({ type: 'object', fields: { verdict: { type: 'enum', values: ['pass', 'fail'] }, notes: { type: 'json' }, plan: { type: 'workflow' } } }))
       .toBe('a value that matches this JSON Schema: `{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},"notes":{},'
         + '"plan":{"type":"object","description":"A workflow bundle, where definition is a workflow file as JSON.",'
-        + '"properties":{"definition":{"type":"object"},"workflows":{"type":"object"},"scorers":{"type":"object"},"teamRevision":{"type":"string"}},'
+        + '"properties":{"definition":{"type":"object"},"workflows":{"type":"object"}},'
         + '"required":["definition"],"additionalProperties":false}},'
         + '"required":["verdict","notes","plan"]}`');
     // The example in docs/guide/workflow.md, as the guide quotes it.
