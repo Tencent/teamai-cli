@@ -24,8 +24,7 @@ import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, isSelfMode, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
-import { findSkippedFolders, isInSkippedFolder, skippedFolderMessage } from './folder-markers.js';
-import { warnOnce } from './utils/warn-once.js';
+import { findSkippedFolders, isInSkippedFolder, reportSkippedFolders } from './folder-markers.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
@@ -2026,10 +2025,10 @@ async function pushCore(
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
   const listed = fullScan.filter((item: PushItem) => {
-    const skippedFolder = skippedFolders.find((folder) => isInSkippedFolder(item.relativePath, [folder]));
+    const holding = skippedFolders.filter((folder) => isInSkippedFolder(item.relativePath, [folder]));
 
-    if (skippedFolder) {
-      warnOnce(skippedFolderMessage(skippedFolder));
+    if (holding.length > 0) {
+      reportSkippedFolders(holding);
 
       return false;
     }

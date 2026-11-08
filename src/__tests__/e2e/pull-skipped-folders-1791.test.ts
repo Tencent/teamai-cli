@@ -149,4 +149,19 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     expect(doctor.output).toContain(`    → ${RULE_LINE}`);
     expect(doctor.output).toContain(`    → ${WORKFLOW_LINE}`);
   }, 60_000);
+
+  it('pushes nothing into a skipped folder, and the rest as before', async () => {
+    write(homeDir, '.claude/rules/api-style/extra.md', '# Extra API rule\n');
+    write(homeDir, '.claude/rules/naming.md', '# Naming\n\nName things for what they hold.\n');
+
+    const pushed = await runCLI(['push', '--all'], homeDir, sandbox);
+    const branches = execFileSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/'], { cwd: remote, encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+
+    expect(branches, pushed.output).toHaveLength(1);
+    const files = execFileSync('git', ['diff', '--name-only', 'main', branches[0]], { cwd: remote, encoding: 'utf8' }).split('\n').filter(Boolean);
+
+    expect(files, pushed.output).toEqual(['rules/naming.md']);
+    expect(pushed.output).toContain(RULE_LINE);
+  }, 60_000);
 });

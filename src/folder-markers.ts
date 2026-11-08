@@ -13,6 +13,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { errnoCode } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 
@@ -24,7 +25,7 @@ function isMarkedType(type: string): type is MarkedType {
   return MARKED_TYPES.some((marked) => marked === type);
 }
 
-interface FolderMarker {
+export interface FolderMarker {
   /** What the dashboard calls such a folder. */
   readonly kind: string;
   /** The file whose presence makes its directory a folder resource. */
@@ -104,8 +105,12 @@ async function entryNames(dir: string): Promise<{ names: Set<string>; dirs: stri
       names: new Set(entries.map((entry) => entry.name)),
       dirs: entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.')).map((entry) => entry.name),
     };
-  } catch {
-    return { names: new Set(), dirs: [] };
+  } catch (error) {
+    // A type directory a team does not use is absent; an unreadable one is not.
+    const code = errnoCode(error);
+
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { names: new Set(), dirs: [] };
+    throw error;
   }
 }
 

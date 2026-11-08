@@ -111,12 +111,15 @@ describe('scorers', () => {
 });
 
 describe('benchmarks', () => {
-  it('reads no suite from a benchmark suite folder', async () => {
+  it('reads no suite from a benchmark suite folder, at the root or in a namespace', async () => {
     const suite = 'name: fix\n';
+    await put('manifest/roles.yaml', 'version: 1\nroles:\n  - id: dev\n    resources: { knowledge: [], skills: [], benchmarks: [dev] }\n');
     await put('benchmarks/fix/suite.yaml', suite);
     await putMarkerAndLowerCase('benchmarks/api', 'SUITE.yaml', suite);
+    await put('benchmarks/dev/lint/suite.yaml', suite);
+    await putMarkerAndLowerCase('benchmarks/dev/load', 'SUITE.yaml', suite);
 
-    expect(await suiteDirectories({ ...localConfig, dataHome: path.join(repo, '.data') })).toEqual(['benchmarks/fix']);
+    expect(await suiteDirectories({ ...localConfig, dataHome: path.join(repo, '.data') })).toEqual(['benchmarks/dev/lint', 'benchmarks/fix']);
   });
 });
 
@@ -126,6 +129,8 @@ describe('agents', () => {
     await put('agents/reviewer/AGENT.md', '# Reviewer\n');
     await put('agents/reviewer/checklist.md', '# Checklist\n');
     await put('agents/team/helper.yaml', 'name: helper\n');
+    await put('agents/team/planner/AGENT.md', '# Planner\n');
+    await put('agents/team/planner/planner.yaml', 'name: planner\n');
 
     const names = (await new AgentsHandler().scanTeamForPull(teamConfig, localConfig)).map((agent) => agent.name).sort();
 
@@ -139,6 +144,8 @@ describe('hooks', () => {
     await put('hooks/lint/HOOK.yaml', 'event: PreToolUse\n');
     await put('hooks/lint/hooks.yaml', 'hooks: []\n');
     await put('hooks/team/hooks.yaml', 'hooks: []\n');
+    await put('hooks/team/format/HOOK.yaml', 'event: PostToolUse\n');
+    await put('hooks/team/format/hooks.yaml', 'hooks: []\n');
 
     expect((await listEntryFiles(repo, 'hooks')).map((file) => file.relativePath)).toEqual(['hooks/hooks.yaml', 'hooks/team/hooks.yaml']);
   });
