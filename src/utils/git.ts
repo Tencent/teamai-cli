@@ -1138,7 +1138,9 @@ export async function remoteBranchExists(
   branchName: string,
 ): Promise<boolean | null> {
   try {
-    const out = await createGit(localPath).listRemote(['--heads', 'origin', `refs/heads/${branchName}`]);
+    // `listRemote` is a network call: bound it like the fetches (#1749), so a
+    // stalled remote returns "unknown" (null) instead of holding the caller.
+    const out = await createGitWithBlockTimeout(localPath).listRemote(['--heads', 'origin', `refs/heads/${branchName}`]);
 
     return out.trim().length > 0;
   } catch (e) {
@@ -2034,7 +2036,11 @@ export async function getFileContentAtRev(
 
 export async function getRepoStatus(localPath: string): Promise<{ ahead: number; behind: number; modified: string[] }> {
   const git = createGit(localPath);
-  await git.fetch();
+  // The fetch talks to origin, so it runs under the block timeout like every
+  // other team-repo remote call (#1749): a stalled ssh makes `teamai status`
+  // hang forever otherwise. The local `status` below stays on the plain
+  // instance, which prints nothing while it works.
+  await createGitWithBlockTimeout(localPath).fetch(['--progress']);
   const status = await git.status();
 
   return {
