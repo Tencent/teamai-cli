@@ -173,16 +173,12 @@ async function findGitHubComment(
   prNumber: string,
   marker: string,
 ): Promise<GitHubComment | null> {
-  const resp = await githubRequest(
-    `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
-    'GET',
+  const comments = await paginateGitLab(
+    (page) => githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`, 'GET'),
+    20,
+    'GitHub comment list',
+    { item: GitHubCommentSchema, stopWhen: (item) => item.body.includes(marker), pagination: 'link' },
   );
-
-  if (!resp.ok) {
-    throw new Error(`GitHub comment list request failed (${resp.status})`);
-  }
-
-  const comments = z.array(GitHubCommentSchema).parse(await resp.json());
 
   return comments.find((c) => c.body.includes(marker)) ?? null;
 }
@@ -291,16 +287,12 @@ async function findTGitComment(
   mrGlobalId: number,
   marker: string,
 ): Promise<TGitNote | null> {
-  const resp = await tgitRequest(
-    `/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`,
-    'GET',
+  const notes = await paginateGitLab(
+    (page) => tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100&page=${page}`, 'GET'),
+    20,
+    'TGit note list',
+    { item: TGitNoteSchema, stopWhen: (item) => item.body.includes(marker) },
   );
-
-  if (!resp.ok) {
-    throw new Error(`TGit note list request failed (${resp.status})`);
-  }
-
-  const notes = z.array(TGitNoteSchema).parse(await resp.json());
 
   return notes.find((n) => n.body.includes(marker)) ?? null;
 }

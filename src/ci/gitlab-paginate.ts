@@ -15,18 +15,18 @@ import { z } from 'zod';
  */
 
 /**
- * Fetches a GitLab list endpoint until `x-next-page` is gone or a lookup matches.
+ * Fetches a list until its next-page header is gone or a lookup matches.
  *
  * @param fetchPage - fetches one page (must set `redirect: 'manual'` itself)
  * @param maxPages - page limit (GitLab returns up to 100 items per page)
  * @param label - endpoint name used in error messages
- * @param options - the schema of one item, and a stop condition for item lookups (omit `stopWhen` when all items are needed)
+ * @param options - the schema of one item, a stop condition for item lookups, and optional GitHub Link pagination
  */
 export async function paginateGitLab<T>(
   fetchPage: (page: number) => Promise<Response>,
   maxPages: number,
   label: string,
-  options: { item: z.ZodType<T>; stopWhen?: (item: T) => boolean },
+  options: { item: z.ZodType<T>; stopWhen?: (item: T) => boolean; pagination?: 'link' },
 ): Promise<T[]> {
   const { item, stopWhen } = options;
   const pageSchema = z.array(item);
@@ -51,7 +51,11 @@ export async function paginateGitLab<T>(
 
     if (stopWhen && items.some(stopWhen)) return all;
 
-    if (!resp.headers.get('x-next-page')) return all;
+    const hasNext = options.pagination === 'link'
+      ? /rel="?next"?/.test(resp.headers.get('link') ?? '')
+      : Boolean(resp.headers.get('x-next-page'));
+
+    if (!hasNext) return all;
   }
 
   throw new Error(
