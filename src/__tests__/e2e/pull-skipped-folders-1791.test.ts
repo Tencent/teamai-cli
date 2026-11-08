@@ -181,7 +181,7 @@ describe('real CLI: pull skips a folder whose type this teamai cannot read (#179
     const placed = refs.filter((ref) => execFileSync('git', ['ls-tree', '-r', '--name-only', ref], { cwd: remote, encoding: 'utf8' }).includes('rules/api-style/tone.md'));
 
     expect(pushed.code, pushed.output).not.toBe(0);
-    expect(pushed.output).toContain(`[rules] tone cannot be placed in rules/api-style/tone.md: ${RULE_LINE}`);
+    expect(pushed.output).toContain('[rules] tone cannot be placed in rules/api-style/tone.md: rules/api-style/ holds RULE.md, which this teamai cannot read. Push it with --role <another namespace> or --shared.');
     expect(placed).toEqual([]);
   }, 60_000);
 });

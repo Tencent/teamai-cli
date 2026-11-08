@@ -24,7 +24,7 @@ import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, isSelfMode, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
-import { findSkippedFolders, isInSkippedFolder, reportSkippedFolders, skippedFolderMessage } from './folder-markers.js';
+import { FOLDER_MARKERS, findSkippedFolders, isInSkippedFolder, reportSkippedFolders } from './folder-markers.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
@@ -2031,7 +2031,7 @@ async function pushCore(
       const folder = skippedFolders.find((candidate) => isInSkippedFolder(item.relativePath, [candidate]));
 
       if (!folder) continue;
-      log.error(`[${item.type}] ${item.name} cannot be placed in ${item.relativePath}: ${skippedFolderMessage(folder)}`);
+      log.error(`[${item.type}] ${item.name} cannot be placed in ${item.relativePath}: ${folder.path} holds ${FOLDER_MARKERS[folder.type].marker}, which this teamai cannot read. Push it with --role <another namespace> or --shared.`);
       refused = true;
     }
 
