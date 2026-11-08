@@ -905,7 +905,7 @@ describe('update', () => {
     mockedLoadState.mockResolvedValue({
       ...defaultState,
       lastUpdateCheck: new Date().toISOString(),
-      availableUpdate: null,
+      availableUpdate: getCurrentVersion(),
     });
     mockedExecSync.mockRejectedValue(new Error('E500'));
     const before = process.exitCode;
