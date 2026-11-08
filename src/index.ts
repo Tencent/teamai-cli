@@ -1424,7 +1424,7 @@ program
   .option('-p, --port <port>', 'Port number', String(3721))
   .action(async (cmdOpts) => {
     const { startDashboard } = await import('./dashboard.js');
-    await startDashboard(parseIntOption('--port', String(cmdOpts.port), 1, 65535));
+    await startDashboard(parseIntOption('--port', String(cmdOpts.port), 0, 65535));
   });
 
 program
