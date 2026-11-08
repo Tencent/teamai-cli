@@ -26,7 +26,8 @@ const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, 
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { reconcileHooks } = await import('../hooks.js');
-const { log, setSilent, _resetState, _setLogFilePath } = await import('../utils/logger.js');
+const { log, setSilent } = await import('../utils/logger.js');
+const { _resetState, _setLogFilePath } = await import('../utils/debug-log.js');
 const { commitFile, initRepo, recordDelivery } = await import('./helpers/delivered-checkout.js');
 
 describe('readStdin', () => {

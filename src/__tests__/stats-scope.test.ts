@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import { showStats } from '../stats.js';
-import { _setLogFilePath, _resetState } from '../utils/logger.js';
+import { _setLogFilePath, _resetState } from '../utils/debug-log.js';
 import { resolveAnchors } from '../utils/git.js';
 import { resolvePartitionDir } from '../utils/partition.js';
 import { writeFile, ensureDir } from '../utils/fs.js';
