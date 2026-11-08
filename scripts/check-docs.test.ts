@@ -9,8 +9,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const command = path.join(ROOT, 'scripts/check-docs.mjs');
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
-// Each run of the check is a new process that compiles and loads about 320 TypeScript modules: about 2.5 s of one core
-// when the machine is idle, and up to 16 s while the full suite keeps every core busy. A case gets 30 s per run.
+// Each run of the check is a new process that compiles and loads about 320 TypeScript modules: about 1 s of one core
+// when the machine is idle. A run without --only also executes the workflow examples in the docs: about 5.5 s idle,
+// and 11 to 17 s while the full suite keeps every core busy. A case gets 30 s per run. Cases run one at a time: run
+// concurrently on a CI runner busy with the full suite, they split the same cores and every full run passed 30 s.
 const RUN_MS = 30_000;
 vi.setConfig({ testTimeout: RUN_MS });
 
@@ -32,7 +34,8 @@ it('check refuses a stale command reference without rewriting it', () => {
   const root = checkout();
   const reference = path.join(root, 'skill-data/core/references/commands.md');
   fs.writeFileSync(reference, 'stale commands\n');
-  const checked = run(root);
+  // Generated files are compared whatever --only names, so the cheapest related check is enough.
+  const checked = run(root, '--only=skill-commands-exist');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('Generated documentation is stale: skill-data/core/references/commands.md');
   expect(fs.readFileSync(reference, 'utf8')).toBe('stale commands\n');
@@ -65,21 +68,21 @@ it('check rejects a README matrix that disagrees with the tool descriptor', () =
   const root = checkout();
   const readme = path.join(root, 'README.md');
   fs.writeFileSync(readme, fs.readFileSync(readme, 'utf8').replace('<tr><td>Claude Code</td>', '<tr><td>Invented Tool</td>'));
-  const checked = run(root);
+  const checked = run(root, '--only=readme-matrix');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('Documentation check failed: lists every tool but the internal builds');
 });
 it('check rejects an invented command in served skills', () => {
   const root = checkout();
   fs.appendFileSync(path.join(root, 'skill-data/core/SKILL.md'), '\n`teamai extract graph`\n');
-  const checked = run(root);
+  const checked = run(root, '--only=skill-commands-exist');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('unknown command "extract"');
 });
 it('check rejects removed wiki workflow instructions', () => {
   const root = checkout();
   fs.appendFileSync(path.join(root, 'skill-data/wiki/SKILL.md'), '\nRun GRAPH-CAPABILITIES.md first.\n');
-  const checked = run(root);
+  const checked = run(root, '--only=team-wiki-codebase-skill');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('does not point at GRAPH-CAPABILITIES.md');
 });
@@ -87,7 +90,7 @@ it('check rejects a syntactically valid workflow example the engine cannot run',
   const root = checkout();
   const page = path.join(root, 'docs/guide/workflow.md');
   fs.writeFileSync(page, fs.readFileSync(page, 'utf8').replace('needs: [compile]', 'needs: [missing-build-step]'));
-  const checked = run(root);
+  const checked = run(root, '--only=workflow-docs-examples');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('docs/guide/workflow.md');
   expect(checked.output).toContain('missing-build-step');
@@ -97,7 +100,7 @@ it('check pulls an unnamed workflow fragment on a page that is not a workflow pa
   const page = path.join(root, 'docs/guide/dashboard.md');
   const before = fs.readFileSync(page, 'utf8');
   fs.writeFileSync(page, `${before}\n\`\`\`yaml\nschemaVersion: v1alpha1\ndescription: Review the change.\nsteps:\n  - id: review\n    prompt: Review the change.\n    retries_forever: true\n\`\`\`\n`);
-  const checked = run(root);
+  const checked = run(root, '--only=workflow-docs-examples');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain(`docs/guide/dashboard.md:${before.split('\n').length + 2}`);
   expect(checked.output).toContain('retries_forever');
@@ -108,7 +111,7 @@ it.each([
 ])('check refuses invalid skill usage %s', (invocation, diagnostic) => {
   const root = checkout();
   fs.appendFileSync(path.join(root, 'skills/teamai/SKILL.md'), `\n\`${invocation}\`\n`);
-  const checked = run(root);
+  const checked = run(root, '--only=skill-commands-exist');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('skills/teamai/SKILL.md');
   expect(checked.output).toContain(diagnostic);
@@ -130,7 +133,7 @@ it('check executes the advanced lease examples and rejects changed engine output
   const root = checkout();
   const page = path.join(root, 'docs/guide/workflow-advanced.md');
   fs.writeFileSync(page, fs.readFileSync(page, 'utf8').replace('"revision":1', '"revision":99'));
-  const checked = run(root);
+  const checked = run(root, '--only=workflow-docs-examples');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('docs/guide/workflow-advanced.md: the next table answers what the engine answers');
 });
@@ -139,7 +142,7 @@ it('check refuses a deployed stub that pre-approves starting any workflow', () =
   const root = checkout();
   const stub = path.join(root, 'skills/teamai/SKILL.md');
   fs.writeFileSync(stub, fs.readFileSync(stub, 'utf8').replace('Bash(teamai workflow start --describe:*)', 'Bash(teamai workflow start:*)'));
-  const checked = run(root);
+  const checked = run(root, '--only=skill-content');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('pre-approves only read-only skill and workflow calls');
 });
