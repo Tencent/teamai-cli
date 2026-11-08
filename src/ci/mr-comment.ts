@@ -13,7 +13,6 @@ import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { TEAMAI_COMMENT_SIGNATURE } from '../providers/mr-threads.js';
-import { paginate } from './paginate.js';
 import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '../utils/logger.js';
 
@@ -174,11 +173,11 @@ async function findGitHubComment(
   prNumber: string,
   marker: string,
 ): Promise<GitHubComment | null> {
-  const comments = await paginate(
+  const comments = await paginateGitLab(
     (page) => githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`, 'GET'),
+    20,
     'GitHub comment list',
-    GitHubCommentSchema,
-    (item) => item.body.includes(marker),
+    { item: GitHubCommentSchema, stopWhen: (item) => item.body.includes(marker), pagination: 'link' },
   );
 
   return comments.find((c) => c.body.includes(marker)) ?? null;
@@ -288,11 +287,11 @@ async function findTGitComment(
   mrGlobalId: number,
   marker: string,
 ): Promise<TGitNote | null> {
-  const notes = await paginate(
+  const notes = await paginateGitLab(
     (page) => tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100&page=${page}`, 'GET'),
+    20,
     'TGit note list',
-    TGitNoteSchema,
-    (item) => item.body.includes(marker),
+    { item: TGitNoteSchema, stopWhen: (item) => item.body.includes(marker) },
   );
 
   return notes.find((n) => n.body.includes(marker)) ?? null;

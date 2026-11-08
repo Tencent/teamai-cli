@@ -12,7 +12,6 @@ import { githubApiUrl, parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
-import { paginate } from './paginate.js';
 import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '../utils/logger.js';
 
@@ -83,10 +82,11 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
   const result: RejectionResult = { rejectedIds: new Set(), approvedIds: new Set(), allIds: new Set() };
 
   // Read all comments
-  const comments = await paginate(
+  const comments = await paginateGitLab(
     (page) => githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`),
+    20,
     'GitHub comments',
-    GitHubCommentSchema,
+    { item: GitHubCommentSchema, pagination: 'link' },
   );
 
   for (const comment of comments) {
@@ -96,13 +96,21 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
     result.allIds.add(markerId);
 
     // Read the reactions
-    const reactions = await paginate(
-      (page) => githubRequest(
-        `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions?per_page=100&page=${page}`,
-      ),
+    const reactions = await paginateGitLab(
+      async (page) => {
+        const resp = await githubRequest(
+          `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions?per_page=100&page=${page}`,
+        );
+
+        if (!resp.ok) {
+          throw new Error(`GitHub reactions request failed for comment ${comment.id} (${resp.status})`);
+        }
+
+        return resp;
+      },
+      20,
       `GitHub reactions for comment ${comment.id}`,
-      GitHubReactionSchema,
-      (reaction) => reaction.content === '-1',
+      { item: GitHubReactionSchema, stopWhen: (reaction) => reaction.content === '-1', pagination: 'link' },
     );
 
     const hasThumbsDown = reactions.some((r) => r.content === '-1');
@@ -152,10 +160,11 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
   const mrGlobalId = await getMrGlobalId(projectId, mrIid);
 
   // Read all notes
-  const notes = await paginate(
+  const notes = await paginateGitLab(
     (page) => tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100&page=${page}`),
+    20,
     'TGit notes',
-    TGitNoteSchema,
+    { item: TGitNoteSchema },
   );
 
   for (const note of notes) {

@@ -3,7 +3,11 @@ import { postOrUpdateMrComment } from '../ci/mr-comment.js';
 import { readRejections } from '../ci/read-rejections.js';
 
 const marker = '<!-- teamai:ci-extract:learning -->';
-const response = (body: unknown) => new Response(JSON.stringify(body));
+const response = (body: unknown) => new Response(JSON.stringify(body), {
+  headers: Array.isArray(body) && body.length === 100
+    ? { link: '<https://api.github.com/next>; rel="next"', 'x-next-page': '2' }
+    : {},
+});
 const filler = Array.from({ length: 100 }, (_, id) => ({ id, body: 'discussion', content: '+1' }));
 
 beforeEach(() => {

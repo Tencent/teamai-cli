@@ -88,7 +88,7 @@ describe('readRejections API failures', () => {
       .mockResolvedValueOnce(new Response(null, { status: 403 })));
 
     await expect(readRejections('https://github.com/acme/app/pull/7'))
-      .rejects.toThrow('GitHub reactions for comment 42 request failed (403)');
+      .rejects.toThrow('GitHub reactions request failed for comment 42 (403)');
   });
 
   it('fails when the TGit note list cannot be read', async () => {
